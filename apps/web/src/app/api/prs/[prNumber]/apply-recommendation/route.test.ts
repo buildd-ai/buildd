@@ -14,6 +14,8 @@ const mockTasksValues = mock((_v: any) => {});
 const mockTasksReturning = mock(() => Promise.resolve([{ id: 'apply-task-1' }]) as any);
 const mockMissionNotesValues = mock((_v: any) => Promise.resolve());
 
+const mockPerformLandingAction = mock((_i: any) => Promise.resolve({} as any));
+mock.module('@/lib/landing-action-run', () => ({ performLandingAction: mockPerformLandingAction }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/pr-resolve', () => ({ resolveOpenWorkerForUser: mockResolveOpenWorkerForUser }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
@@ -113,6 +115,7 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     mockDispatchNewTask.mockReset();
     mockAppendPrActivity.mockReset();
     mockSupersedeAncestorEscalations.mockReset();
+    mockPerformLandingAction.mockReset();
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -258,5 +261,80 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     expect(body).toEqual({ ok: true, dispatched: false, taskId: 'existing-task-1' });
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
     expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('POST /api/prs/[prNumber]/apply-recommendation — signed landing link', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockResolveOpenWorkerForUser.mockReset();
+    mockMissionNotesFindMany.mockReset();
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    mockDispatchNewTask.mockReset();
+    mockPerformLandingAction.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+  });
+
+  const body = { workspaceId: 'ws-1', token: 'signed.token', action: 'conflict' };
+  const doneOk = { status: 'done', ok: true, stale: false, liveHeadSha: null, result: { action: 'conflict', summary: 'Conflict resolution dispatched.', taskId: 'c1' } };
+
+  it('still requires a session: a bare signed link is not enough', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    const [req, ctx] = makeRequest('42', body);
+    expect((await POST(req, ctx)).status).toBe(401);
+    expect(mockPerformLandingAction).not.toHaveBeenCalled();
+  });
+
+  it('runs the landing action for the session-resolved PR owner, not the escalation path', async () => {
+    mockPerformLandingAction.mockResolvedValue(doneOk);
+    const [req, ctx] = makeRequest('42', body);
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect((await res.json()).result.summary).toBe('Conflict resolution dispatched.');
+    expect(mockPerformLandingAction).toHaveBeenCalledWith({
+      token: 'signed.token',
+      action: 'conflict',
+      workspaceId: 'ws-1',
+      prNumber: 42,
+      taskId: 't-1',
+      workerId: 'w-1',
+    });
+    // No open escalation note is needed for a landing tap.
+    expect(mockMissionNotesFindMany).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects an expired link with 410 and a replayed one with 200 alreadyDone', async () => {
+    mockPerformLandingAction.mockResolvedValueOnce({ status: 'rejected', code: 'expired', httpStatus: 410 });
+    let [req, ctx] = makeRequest('42', body);
+    let res = await POST(req, ctx);
+    expect(res.status).toBe(410);
+    expect((await res.json()).code).toBe('expired');
+
+    mockPerformLandingAction.mockResolvedValueOnce({ status: 'already_done', result: doneOk.result });
+    [req, ctx] = makeRequest('42', body);
+    res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect((await res.json()).alreadyDone).toBe(true);
+  });
+
+  it('409 while another tap is in flight; 502 when the action fails', async () => {
+    mockPerformLandingAction.mockResolvedValueOnce({ status: 'in_progress' });
+    let [req, ctx] = makeRequest('42', body);
+    expect((await POST(req, ctx)).status).toBe(409);
+
+    mockPerformLandingAction.mockResolvedValueOnce({ status: 'done', ok: false, stale: false, error: 'boom' });
+    [req, ctx] = makeRequest('42', body);
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toBe('boom');
+  });
+
+  it('404 when the PR has no owning task', async () => {
+    mockResolveOpenWorkerForUser.mockResolvedValue({ ...openWorker, taskId: null, task: null });
+    const [req, ctx] = makeRequest('42', body);
+    expect((await POST(req, ctx)).status).toBe(404);
   });
 });

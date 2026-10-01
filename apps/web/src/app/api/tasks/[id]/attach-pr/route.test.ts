@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 const TASK_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -81,6 +82,15 @@ describe('POST /api/tasks/[id]/attach-pr', () => {
     expect(res.status).toBe(403);
     expect(mockAttach).not.toHaveBeenCalled();
   });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`refuses a scoped ${preset} preset token: attaching a PR needs tasks:admin`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'admin', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+      const res = await call({ prNumber: 17 });
+      expect(res.status).toBe(403);
+      expect(mockAttach).not.toHaveBeenCalled();
+    });
+  }
 
   it('refuses a task that has not finished', async () => {
     mockTasksFindFirst.mockResolvedValue({ ...completedTask, status: 'in_progress' });

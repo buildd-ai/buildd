@@ -6,6 +6,8 @@ import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -37,6 +39,7 @@ import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
+import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
@@ -71,7 +74,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff, PathCollisionNotice } from '@buildd/shared';
-import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
@@ -532,7 +535,8 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may read only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // GET also accepts the dashboard session (the in-app chat reads worker
   // milestones as the signed-in user). PATCH stays worker-key-only. A key,
   // when present, is authoritative.
@@ -556,6 +560,10 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // The workspace row carries the webhook dispatch bearer token; neither a
+  // team member reading a worker nor a cloud container has any use for it.
+  const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
+
   if (!account) {
     // Session: membership of the worker workspace's team, as on the dashboard.
     // Outside it the worker does not exist for this caller.
@@ -563,19 +571,14 @@ export async function GET(
     if (!access) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    // The workspace row carries the webhook dispatch bearer token; a team
-    // member reading a worker has no use for it.
-    const workspace = worker.workspace
-      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
-      : worker.workspace;
-    return NextResponse.json({ ...worker, workspace });
+    return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(worker);
+  return NextResponse.json(account.taskScope ? redacted() : worker);
 }
 
 // PATCH /api/workers/[id] - Update worker status
@@ -587,7 +590,8 @@ export async function PATCH(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may update only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -605,7 +609,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -2868,7 +2872,11 @@ export async function PATCH(
       // this PATCH's values merged over the row, after the budget check (a
       // budget wall is the more specific diagnosis). A turns-less PATCH
       // auto-increments the row by one, so count that turn here too.
+      // Never for an interactive (claim_task, runner = 'mcp') worker: no runner
+      // streams turns or spend for it, so its zeros say nothing about whether a
+      // session died — judging it by this shape discarded real verdicts.
       const isSilentStartCompletion = status === 'completed' && !shouldAutoRetry && !completionBudgetError &&
+        worker.runner !== INTERACTIVE_WORKER_RUNNER &&
         isSilentStartShape({
           turns: typeof updates.turns === 'number'
             ? updates.turns
@@ -4807,6 +4815,48 @@ async function handleReviewerOutcomeIfNeeded(
         workspaceId,
       });
 
+      // This merge is authorised by a MODEL verdict, so it is bounded by the
+      // branch it lands in: a quarantined mission integration branch, never
+      // the workspace's trunk. Keyed off the PR's real base ref inside
+      // evaluateAutoMergeSafety — not off a workspace-level flag, so a
+      // workspace whose task PRs still target dev cannot inherit unattended
+      // merges by accident.
+      const approveBound = {
+        protectedBranches: protectedBaseBranches({
+          gitConfig: workspace.gitConfig,
+          releaseConfig: workspace.releaseConfig,
+        }),
+      };
+
+      // ONE landing call replaces the two attempts below once the workspace is
+      // in `enforce`. It evaluates the LIVE head (eventHeadSha null), not the
+      // SHA the reviewer read: if the branch moved since, carry-forward decides
+      // whether this approval still covers it, and a behind PR is refreshed
+      // once with a marker — there is no second attempt against a superseded
+      // head to misread its update-branch refusal as a conflict. The bound's
+      // fallback to the unbounded self-merge rule is a branch inside landPr.
+      const landingMode = resolveLandingMode(workspace.gitConfig);
+      if (landingMode !== 'off') {
+        const outcome = await landPr({
+          workspaceId,
+          installationId,
+          repoFullName,
+          prNumber,
+          eventHeadSha: null,
+          door: 'approve',
+          actor: { kind: 'system' },
+          mode: landingMode,
+          policy: approvePolicy!,
+          owner: { taskId: originalWorker.taskId ?? null, workerId: originalWorker.id },
+          bound: approveBound,
+          releaseConfig: workspace.releaseConfig ?? null,
+        });
+        if (landingMode === 'enforce') {
+          console.log(`[reviewer] approve for PR #${prNumber}: landing outcome ${outcome.kind}`);
+          break;
+        }
+      }
+
       const boundMergeResult = await tryAutoMergeWorkerPr({
         installationId,
         repoFullName,
@@ -4814,18 +4864,7 @@ async function handleReviewerOutcomeIfNeeded(
         headSha,
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
         policy: approvePolicy!,
-        // This merge is authorised by a MODEL verdict, so it is bounded by the
-        // branch it lands in: a quarantined mission integration branch, never
-        // the workspace's trunk. Keyed off the PR's real base ref inside
-        // evaluateAutoMergeSafety — not off a workspace-level flag, so a
-        // workspace whose task PRs still target dev cannot inherit unattended
-        // merges by accident.
-        bound: {
-          protectedBranches: protectedBaseBranches({
-            gitConfig: workspace.gitConfig,
-            releaseConfig: workspace.releaseConfig,
-          }),
-        },
+        bound: approveBound,
       });
 
       // The bound above only ever authorises landing in a quarantined mission

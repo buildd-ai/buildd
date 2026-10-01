@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 /**
  * POST /api/knowledge/ingest-jobs  — enqueue a full-scope ingest job for a workspace.
  * GET  /api/knowledge/ingest-jobs  — list recent ingest jobs (admin, optional ?workspaceId=).
@@ -28,7 +29,7 @@ const VALID_TRIGGERS: TriggerValue[] = ['manual', 'backfill', 'repo_link', 'sche
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null);
+  const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Worker tokens are scoped to their accessible workspaces; admin tokens can reach any workspace.
-  if (account.level !== 'admin') {
+  if (!hasTokenRouteAdminAccess(account, req, 'knowledge:admin')) {
     const accessible = await getIngestAccessibleWorkspaceIds(account);
     if (!accessible.has(workspaceId)) {
       return NextResponse.json({ error: 'Workspace not found or not accessible' }, { status: 404 });
@@ -114,11 +115,11 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null);
+  const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
-  if (account.level !== 'admin') {
+  if (!hasTokenRouteAdminAccess(account, req, 'knowledge:admin')) {
     return NextResponse.json({ error: 'Admin-level API key required' }, { status: 403 });
   }
 

@@ -88,6 +88,9 @@ export const RUNNER_ACCOUNT_COLUMNS = {
   budgetExhaustedAt: true,
   budgetResetsAt: true,
   createdAt: true,
+  // The host-runner toggle: its state, and which team decides it.
+  hostRunner: true,
+  teamId: true,
 } as const;
 
 /** A runner account (token) as the Runners section receives it. */
@@ -104,6 +107,8 @@ export interface RunnerAccountDto {
   budgetExhaustedAt: Date | string | null;
   budgetResetsAt: Date | string | null;
   createdAt: Date | string | null;
+  hostRunner: boolean;
+  teamId: string;
   team: { name: string } | null;
   accountWorkspaces: { workspaceId: string }[];
 }
@@ -134,6 +139,8 @@ export async function loadRunnerAccounts(teamIds: string[]): Promise<RunnerAccou
     budgetExhaustedAt: a.budgetExhaustedAt ?? null,
     budgetResetsAt: a.budgetResetsAt ?? null,
     createdAt: a.createdAt ?? null,
+    hostRunner: a.hostRunner === true,
+    teamId: a.teamId,
     team: a.team ? { name: a.team.name } : null,
     accountWorkspaces: (a.accountWorkspaces ?? []).map((w: { workspaceId: string }) => ({ workspaceId: w.workspaceId })),
   }));

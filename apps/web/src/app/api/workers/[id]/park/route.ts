@@ -16,13 +16,14 @@
  * degraded by cleanupUnresumedAnswers into the cold continuation it would
  * have been.
  *
- * Auth: the runner API key of the account that owns the worker.
+ * Auth: the runner API key of the account that owns the worker, or the
+ * per-task token of that worker's task (confined to that task's worker).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { isUuid } from '@/lib/uuid';
 import { parkWhere, parkedUntilFor, unparkWhere } from '@/lib/worker-park';
 
@@ -30,7 +31,7 @@ export const dynamic = 'force-dynamic';
 
 async function authorize(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey);
   if (!account) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
   if (account.level === 'trigger') return { error: NextResponse.json({ error: 'Trigger tokens cannot park workers' }, { status: 403 }) };
   return { account };
@@ -47,17 +48,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const worker = await db.query.workers.findFirst({
     where: eq(workers.id, id),
-    columns: { id: true, accountId: true, status: true },
+    columns: { id: true, accountId: true, taskId: true, status: true },
     with: { task: { columns: { missionId: true } } },
   });
-  if (!worker || worker.accountId !== account.id) return notFound();
+  if (!worker || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) return notFound();
 
   const now = new Date();
   const until = parkedUntilFor(now, !!(worker as { task?: { missionId?: string | null } | null }).task?.missionId);
   const [parked] = await db
     .update(workers)
     .set({ parkedUntil: until, updatedAt: now })
-    .where(parkWhere(id, account.id))
+    .where(parkWhere(id, account.id, account.taskScope?.taskId))
     .returning({ id: workers.id, parkedUntil: workers.parkedUntil });
   if (!parked) return NextResponse.json({ error: 'not_parkable', status: worker.status }, { status: 409 });
   return NextResponse.json({ parkedUntil: until.toISOString() });
@@ -71,7 +72,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
   const [cleared] = await db
     .update(workers)
     .set({ parkedUntil: null })
-    .where(unparkWhere(id, auth.account.id))
+    .where(unparkWhere(id, auth.account.id, auth.account.taskScope?.taskId))
     .returning({ id: workers.id });
   if (!cleared) return notFound();
   return NextResponse.json({ ok: true });

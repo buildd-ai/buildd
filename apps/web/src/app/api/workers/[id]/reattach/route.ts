@@ -13,12 +13,12 @@
  * Zero rows is a refusal (409): already re-attached, expired, never parked,
  * not yours. It never creates a worker row, so the claim route's live-worker
  * guard keeps meaning "one live run per task". Auth: the runner API key of the
- * account that owns the worker.
+ * account that owns the worker, or the per-task token of that worker's task.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { isUuid } from '@/lib/uuid';
 import { reattachWhere } from '@/lib/worker-park';
 
@@ -26,7 +26,8 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token may take over only its own task's worker (reattachWhere's taskId).
+  const account = await authenticateTaskScopedCaller(apiKey);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (account.level === 'trigger') return NextResponse.json({ error: 'Trigger tokens cannot re-attach workers' }, { status: 403 });
 
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const [worker] = await db
     .update(workers)
     .set({ parkedUntil: null, updatedAt: now })
-    .where(reattachWhere(id, account.id, now))
+    .where(reattachWhere(id, account.id, now, account.taskScope?.taskId))
     .returning({ id: workers.id, taskId: workers.taskId, status: workers.status });
 
   if (!worker) {

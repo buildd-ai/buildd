@@ -421,7 +421,7 @@ policy allows a human override for this cause).
 
 **Tap flow — decision: a signed one-time action URL with a confirm screen.**
 The URL is `https://buildd.dev/app/prs/<n>/act?t=<token>` where `token` is an
-HMAC-signed payload `{ workspaceId, prNumber, headSha, action, exp, nonce }`.
+HMAC-signed payload `{ workspaceId, prNumber, headSha, action, reason, exp, nonce }`.
 
 - **Auth.** The token only selects the action; the page still requires a
   signed-in session belonging to the workspace's team. A token alone never
@@ -431,9 +431,11 @@ HMAC-signed payload `{ workspaceId, prNumber, headSha, action, exp, nonce }`.
   page says so and re-runs `landPr` instead of acting on stale advice.
 - **Expiry.** 24 hours. Expired → the page falls back to the PR's current
   state with the normal actions.
-- **Replay.** The nonce is consumed atomically on first confirm (stored in the
-  same `pagedKeys` entry); a second confirm shows "already done" with the
-  result.
+- **Replay.** The nonce is consumed atomically on first confirm (stored in
+  `context.landing.actions`, next to `pagedKeys`, as `claimed` then `done` with
+  the result; a failed action releases it so the person can tap again); a
+  second confirm shows "already done" with the result. `reason` in the token
+  decides which options the confirm screen offers.
 - **Signing.** Reuse the HMAC + TTL pattern of `signInstallState` /
   `readInstallState` (`github-install-state.ts`) in a small
   `landing-action-token.ts`; no new secret material.

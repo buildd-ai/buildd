@@ -149,6 +149,19 @@ export async function countDue(job: string, nowMs: number = Date.now()): Promise
 }
 
 /**
+ * Members due at or before `nowMs`, oldest first, at most `limit`. `[]` when
+ * nothing is due or Redis cannot answer — callers that must tell those apart
+ * ask `countDue` first (the gate does), and the floor tick re-seeds the set.
+ */
+export async function listDue(job: string, nowMs: number, limit: number): Promise<string[]> {
+  return safe<string[]>(
+    'zrange due',
+    async r => (await r.zrange<string[]>(dueKey(job), '-inf', nowMs, { byScore: true, offset: 0, count: limit })).map(String),
+    [],
+  );
+}
+
+/**
  * Replace the whole set with `entries` — the self-healing half of the pattern.
  *
  * A dropped ZADD would otherwise hide work forever. Runs only on ticks that

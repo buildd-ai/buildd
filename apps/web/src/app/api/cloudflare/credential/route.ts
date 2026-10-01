@@ -14,7 +14,7 @@ import { decodeCloudflareValue, findCloudflareSecret, maskCloudflareCredential }
  */
 export async function GET(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
-  const account = apiKey ? await authenticateApiKey(apiKey) : null;
+  const account = apiKey ? await authenticateApiKey(apiKey, req) : null;
 
   let teamIds: string[];
   if (account) {

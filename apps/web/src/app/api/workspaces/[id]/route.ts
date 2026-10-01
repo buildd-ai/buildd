@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubRepos, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
@@ -148,7 +149,7 @@ export async function PATCH(
   // Support both session auth and API key auth
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {
@@ -212,7 +213,7 @@ export async function PATCH(
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
-        ? apiAccount.level === 'admin'
+        ? hasTokenRouteAdminAccess(apiAccount, req)
         : sessionRole === 'owner' || sessionRole === 'admin';
       if (!isAdmin) {
         return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });

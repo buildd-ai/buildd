@@ -3,6 +3,7 @@ process.env.NODE_ENV = 'production';
 
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 // Save original NODE_ENV to restore later
 const originalNodeEnv = process.env.NODE_ENV;
@@ -177,6 +178,17 @@ mock.module('@/lib/pr-activity-comment', () => ({
 // Mock pr-review-status — reviewer role selection
 mock.module('@/lib/pr-review-status', () => ({
   pickReviewerRole: mockPickReviewerRole,
+}));
+
+// The landing function — its decisions are covered in lib/pr-landing.test.ts;
+// here only the merge_pr door's wiring is asserted. Mode resolution is the real rule.
+const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'sha-42' }));
+mock.module('@/lib/pr-landing', () => ({
+  landPr: mockLandPr,
+  resolveLandingMode: (gitConfig: any) => {
+    const mode = gitConfig?.landing?.mode;
+    return mode === 'off' || mode === 'shadow' || mode === 'enforce' ? mode : 'shadow';
+  },
 }));
 
 // Import handler AFTER mocks
@@ -391,6 +403,24 @@ describe('POST /api/github/pr', () => {
     expect(res.status).toBe(403);
     const data = await res.json();
     expect(data.error).toBe('Worker belongs to different account');
+  });
+
+  it("refuses a per-task token for a team worker that is not its own", async () => {
+    const scoped = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 } };
+    mockAuthenticateApiKey.mockResolvedValue(scoped);
+    // Same team (so an account key would pass), but another account's worker...
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1', accountId: 'account-2', taskId: 'task-own', name: 'test-worker', workspace: WORKSPACE_OK,
+    });
+    const body = { workerId: 'w-1', title: 'My PR', head: 'feature-branch' };
+    let res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body }));
+    expect(res.status).toBe(403);
+    // ...or its own account's worker on another task.
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1', accountId: 'account-1', taskId: 'task-other', name: 'test-worker', workspace: WORKSPACE_OK,
+    });
+    res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body }));
+    expect(res.status).toBe(403);
   });
 
   // A shared runner on its own team reaches this workspace through a claim
@@ -3070,6 +3100,103 @@ describe('PUT /api/github/pr', () => {
       expect(mockWorkersUpdate).not.toHaveBeenCalled();
     });
 
+    describe('landing function (gitConfig.landing.mode=enforce)', () => {
+      const ENFORCE = { landing: { mode: 'enforce' } };
+      function enforceWorker(mergePolicy: Record<string, unknown>) {
+        workerOk();
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: 'task-1', prUrl: 'https://github.com/owner/repo/pull/42',
+          workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy, ...ENFORCE } },
+        });
+      }
+      beforeEach(() => {
+        mockLandPr.mockReset();
+        mockLandPr.mockImplementation(async () => ({ kind: 'waiting_ci', headSha: 'sha-42' }));
+      });
+
+      it('a stored terminal approve under agent-review is accepted (landPr decides), not refused on tier', async () => {
+        enforceWorker({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 } });
+        mockReadPrReviewStatus.mockResolvedValue({
+          state: 'approved', terminal: true, reviewTaskId: 't1', adoptedTaskId: 'task-1',
+          verdict: 'approve', confidence: 0.96, summary: 'ok', feedback: null, escalationReason: null,
+          iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+        } as any);
+        mockLandPr.mockImplementation(async () => ({ kind: 'merged', sha: 'merge-sha' }));
+        mockWorkersUpdate.mockClear();
+
+        const res = await put();
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.merged).toBe(true);
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0]).toMatchObject({
+          workspaceId: 'ws-1', installationId: 12345, repoFullName: 'owner/repo', prNumber: 42,
+          door: 'merge_pr', mode: 'enforce', actor: { kind: 'agent', workerId: 'w-1' },
+          policy: { tier: 'agent-review' }, owner: { taskId: 'task-1', workerId: 'w-1' }, mergeMethod: 'squash',
+        });
+        // The merge is landPr's, never a second one from the route.
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+        expect(mockWorkersUpdate).toHaveBeenCalled();
+      });
+
+      it('behind base: the branch is refreshed with a marker; 202, nothing more asked of the caller', async () => {
+        enforceWorker({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+        mockLandPr.mockImplementation(async () => ({ kind: 'updating_branch', newHeadSha: 'fresh-head-sha' }));
+
+        const res = await put();
+
+        expect(res.status).toBe(202);
+        const data = await res.json();
+        expect(data.merged).toBe(false);
+        expect(data.branchUpdated).toBe(true);
+        expect(data.hint).toContain('No further merge_pr call');
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+
+      it('a human decision is a 403 naming the cause', async () => {
+        enforceWorker({ tier: 'human' });
+        mockLandPr.mockImplementation(async () => ({ kind: 'needs_human', cause: 'human_tier', reason: 'this workspace merges by human decision' }));
+
+        const res = await put();
+
+        expect(res.status).toBe(403);
+        const data = await res.json();
+        expect(data.cause).toBe('human_tier');
+        expect(data.error).toContain('human decision');
+      });
+
+      it('a fix in flight is a 409 naming the task', async () => {
+        enforceWorker({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+        mockLandPr.mockImplementation(async () => ({ kind: 'needs_fix', fix: 'ci_fix', reason: 'CI red', taskId: 'fix-1' }));
+
+        const res = await put();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).fixTaskId).toBe('fix-1');
+      });
+
+      it('admin force stays outside landPr', async () => {
+        enforceWorker({ tier: 'human' });
+        mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' } as any);
+
+        await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-1', prNumber: 42, force: true } }));
+
+        expect(mockLandPr).not.toHaveBeenCalled();
+      });
+
+      it('shadow (the default) observes, then the legacy gates decide', async () => {
+        workerOk();
+
+        const res = await put();
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0].mode).toBe('shadow');
+        expect(res.status).toBe(200);
+        expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("refuses under 'agent-review' — a self-merge routes around the reviewer", async () => {
       // The most important refusal: green CI does not substitute for the
       // verdict, so this cannot be satisfied by making the PR cleaner.
@@ -3367,6 +3494,25 @@ describe('PUT /api/github/pr', () => {
       expect((await res.json()).error).toContain('admin token');
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
+
+    for (const preset of ['ci', 'runner'] as const) {
+      it(`rejects force from a scoped ${preset} preset token: bypassing merge policy needs the admin scope`, async () => {
+        workerOk();
+        mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+          workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+        });
+
+        const res = await PUT(createPutRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { workerId: 'w-1', prNumber: 42, force: true },
+        }));
+
+        expect(res.status).toBe(403);
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+    }
 
     it('lets an admin token force past the policy', async () => {
       // A human-held admin token is the human. Refusing it would make the gate

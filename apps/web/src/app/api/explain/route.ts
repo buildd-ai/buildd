@@ -40,7 +40,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
-    const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') ?? null);
+    const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') ?? null, req);
     const sessionUser = account ? null : await getCurrentUser();
     if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

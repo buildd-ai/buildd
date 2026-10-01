@@ -518,6 +518,15 @@ export class BuilddClient {
       const data = await this.fetch(`/api/workspaces/${workspaceId}/config`);
       return data;
     } catch (err) {
+      // An auth refusal is not "no config": running on as unconfigured would
+      // drop the git config, agent instructions, PR target and budget cap
+      // without a word. Fail the run instead.
+      if (isServerRefusal(err) && (err.status === 401 || err.status === 403)) {
+        throw new Error(
+          `Cannot read workspace config for ${workspaceId}: the server refused this runner's credentials (HTTP ${err.status}). ` +
+          'Not running without it.',
+        );
+      }
       console.warn('Failed to fetch workspace config:', err);
       return { configStatus: 'unconfigured' };
     }

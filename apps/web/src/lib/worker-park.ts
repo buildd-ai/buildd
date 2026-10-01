@@ -29,28 +29,37 @@ export function parkedUntilFor(now: Date, isMissionTask: boolean): Date {
   return new Date(now.getTime() + (isMissionTask ? PARK_MISSION_MAX_MS : PARK_MAX_MS));
 }
 
-export function parkWhere(workerId: string, accountId: string) {
+/**
+ * `taskId` (optional, every predicate below): a per-task token's task. When
+ * set, the row must also be on that task, so the token touches only its own
+ * worker.
+ */
+const onTask = (taskId?: string) => (taskId ? [eq(workers.taskId, taskId)] : []);
+
+export function parkWhere(workerId: string, accountId: string, taskId?: string) {
   return and(
     eq(workers.id, workerId),
     eq(workers.accountId, accountId),
     inArray(workers.status, [...PARKABLE_STATUSES]),
+    ...onTask(taskId),
   );
 }
 
-export function unparkWhere(workerId: string, accountId: string) {
-  return and(eq(workers.id, workerId), eq(workers.accountId, accountId));
+export function unparkWhere(workerId: string, accountId: string, taskId?: string) {
+  return and(eq(workers.id, workerId), eq(workers.accountId, accountId), ...onTask(taskId));
 }
 
 /**
  * One conditional UPDATE is the whole re-attach: it clears the park, so of two
  * processes racing for the same worker exactly one gets the row back.
  */
-export function reattachWhere(workerId: string, accountId: string, now: Date) {
+export function reattachWhere(workerId: string, accountId: string, now: Date, taskId?: string) {
   return and(
     eq(workers.id, workerId),
     eq(workers.accountId, accountId),
     inArray(workers.status, [...PARKABLE_STATUSES]),
     gt(workers.parkedUntil, now),
+    ...onTask(taskId),
   );
 }
 
