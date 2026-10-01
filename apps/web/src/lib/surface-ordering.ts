@@ -644,30 +644,104 @@ export async function settleSurfaceIntentsOnClose(
     const surfaces = held.filter((s) => serialized.has(s));
     if (surfaces.length === 0) return { woke: [] };
     const contenders = groupContenders(await deps.loadOpenIntents(workspaceId, surfaces)).filter((c) => c.prNumber !== prNumber);
-    const next = new Set<number>();
-    for (const s of surfaces) {
-      const onSurface = contenders.filter((c) => c.surfaces.includes(s));
-      // Only the closed PR's lane moved. Unknown base: wake the head of every lane.
-      const lanes = closedBase ? [closedBase] : [...new Set(onSurface.map((c) => c.baseRef))];
-      for (const lane of lanes) {
-        const head = onSurface.find((c) => (lane ? sameBaseLane(lane, c) : c.baseRef === null));
-        if (head && head.prNumber !== input.exceptPr) next.add(head.prNumber);
-      }
-    }
-    const woke: number[] = [];
-    for (const n of next) {
-      try {
-        await deps.redrive(workspaceId, n);
-        woke.push(n);
-      } catch (err) {
-        console.warn(`[surface-ordering] waking PR #${n} after #${prNumber} closed failed:`, errMessage(err));
-      }
-    }
-    return { woke };
+    // Only the closed PR's lane moved. Unknown base: wake the head of every lane.
+    const next = laneHeads(contenders, surfaces, closedBase ? [closedBase] : null);
+    if (input.exceptPr !== undefined) next.delete(input.exceptPr);
+    return { woke: await redriveAll(deps, workspaceId, next, `#${prNumber} closed`) };
   } catch (err) {
     console.warn(`[surface-ordering] wakeup after PR #${prNumber} closed failed:`, errMessage(err));
     return { woke: [] };
   }
+}
+
+/**
+ * The first contender of each given lane on each surface. `lanes` null = every
+ * lane present on the surface (a null-base contender heads only the null lane).
+ */
+function laneHeads(contenders: Contender[], surfaces: string[], lanes: string[] | null): Set<number> {
+  const next = new Set<number>();
+  for (const s of surfaces) {
+    const onSurface = contenders.filter((c) => c.surfaces.includes(s));
+    for (const lane of lanes ?? [...new Set(onSurface.map((c) => c.baseRef))]) {
+      const head = onSurface.find((c) => (lane ? sameBaseLane(lane, c) : c.baseRef === null));
+      if (head) next.add(head.prNumber);
+    }
+  }
+  return next;
+}
+
+async function redriveAll(deps: Pick<SettleDeps, 'redrive'>, workspaceId: string, prs: Set<number>, why: string): Promise<number[]> {
+  const woke: number[] = [];
+  for (const n of prs) {
+    try {
+      await deps.redrive(workspaceId, n);
+      woke.push(n);
+    } catch (err) {
+      console.warn(`[surface-ordering] waking PR #${n} after ${why} failed:`, errMessage(err));
+    }
+  }
+  return woke;
+}
+
+// ── Retarget → move lanes + wake ─────────────────────────────────────────────
+
+export interface RetargetDeps extends Pick<SettleDeps, 'loadOpenIntents' | 'loadGitConfig' | 'redrive'> {
+  /** Point every open intent of this PR at `toBase`; returns the surfaces they cover. */
+  retargetOwnIntents: (workspaceId: string, prNumber: number, toBase: string) => Promise<string[]>;
+}
+
+/**
+ * A PR's base branch changed after its intents were recorded (someone edited
+ * it, or GitHub retargeted it to trunk because its mission branch was deleted).
+ * Its rows still name the old base, so contenders on the new base do not see
+ * it until its own guard next runs — and the old lane still waits on it.
+ *
+ * The UPDATE runs regardless of ordering mode: intents are recorded for every
+ * workspace with conflict surfaces, a base edit is a rare event, and it is one
+ * indexed write that only makes a recorded fact true again. Wakeups are merge
+ * behaviour, so they run only under `enforce`: the head of the old lane (the PR
+ * left it) and of the new lane (it may now head it, or sit behind someone)
+ * re-enter their normal merge door. Never throws.
+ */
+export async function retargetSurfaceIntents(
+  input: { workspaceId: string; prNumber: number; fromBase: string | null; toBase: string },
+  depsIn?: Partial<RetargetDeps>,
+): Promise<{ woke: number[] }> {
+  const { workspaceId, prNumber, fromBase, toBase } = input;
+  if (!toBase || fromBase === toBase) return { woke: [] };
+  const deps = { ...defaultRetargetDeps(), ...depsIn } as RetargetDeps;
+  try {
+    const held = await deps.retargetOwnIntents(workspaceId, prNumber, toBase);
+    if (held.length === 0) return { woke: [] };
+    const gitConfig = await deps.loadGitConfig(workspaceId);
+    if (resolveSurfaceOrderingMode(gitConfig) !== 'enforce') return { woke: [] };
+    const serialized = new Set(serializedSurfaceDefs(gitConfig).map((d) => d.label));
+    const surfaces = [...new Set(held)].filter((s) => serialized.has(s));
+    if (surfaces.length === 0) return { woke: [] };
+    const contenders = groupContenders(await deps.loadOpenIntents(workspaceId, surfaces));
+    const lanes = fromBase ? [fromBase, toBase] : null;
+    return { woke: await redriveAll(deps, workspaceId, laneHeads(contenders, surfaces, lanes), `#${prNumber} was retargeted`) };
+  } catch (err) {
+    console.warn(`[surface-ordering] retargeting PR #${prNumber}'s intents to '${toBase}' failed:`, errMessage(err));
+    return { woke: [] };
+  }
+}
+
+function defaultRetargetDeps(): RetargetDeps {
+  const settle = defaultSettleDeps();
+  return {
+    async retargetOwnIntents(workspaceId, prNumber, toBase) {
+      const rows = await db
+        .update(changeIntents)
+        .set({ baseRef: toBase })
+        .where(ownOpenIntentsWhere(workspaceId, prNumber))
+        .returning({ surface: changeIntents.surface });
+      return [...new Set(rows.map((r) => r.surface))];
+    },
+    loadOpenIntents: settle.loadOpenIntents,
+    loadGitConfig: settle.loadGitConfig,
+    redrive: settle.redrive,
+  };
 }
 
 // ── Default bindings ─────────────────────────────────────────────────────────
