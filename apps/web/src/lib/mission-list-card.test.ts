@@ -167,7 +167,8 @@ describe('buildMissionListCard — recurring, held and done', () => {
   it('a local mission with queued work reads as Local, running in a local session — not Held, not Stalled', () => {
     const row: ListMissionRow = {
       id: 'm7', title: 'Run it here', status: 'active', executor: 'local',
-      tasks: [task('a', { roleSlug: 'builder' }), task('b', { roleSlug: 'builder' })],
+      // Filed moments ago: inside LOCAL_SESSION_QUIET_MS, the session may be about to claim.
+      tasks: [task('a', { roleSlug: 'builder', createdAt: new Date(NOW - 5 * 60_000) }), task('b', { roleSlug: 'builder', createdAt: new Date(NOW - 4 * 60_000) })],
     };
     const summary = summarizeMissionForCard(row, { now: NOW });
     const card = build(row);
@@ -181,6 +182,33 @@ describe('buildMissionListCard — recurring, held and done', () => {
     // The same mission on runners is the genuine stall.
     const runnerCard = build({ ...row, id: 'm8', executor: 'runner' });
     expect(runnerCard.status.label).toBe('Stalled');
+  });
+
+  it('a local mission whose claimable work nobody has touched for longer than the quiet window is Stranded, with the runner CTA', () => {
+    const row: ListMissionRow = {
+      id: 'm7s', title: 'Run it here', status: 'active', executor: 'local', workspaceId: 'ws-1',
+      tasks: [
+        task('a', { status: 'completed', createdAt: new Date(NOW - 5 * 3600_000), workers: [{ status: 'completed', startedAt: new Date(NOW - 5 * 3600_000), completedAt: new Date(NOW - 3 * 3600_000) }] }),
+        task('b', { roleSlug: 'builder', createdAt: new Date(NOW - 2 * 3600_000) }),
+      ],
+    };
+    const summary = summarizeMissionForCard(row, { now: NOW });
+    const card = build(row);
+    expect(card.status).toEqual({ label: 'Stranded', tone: 'warning' });
+    expect(card.sentence).toBe('Stranded: no local session for 2h. Continue on a runner?');
+    expect(card.strand).toMatchObject({ missionId: 'm7s', taskId: 'b', claimable: 1, blockedReason: null });
+    expect(summary.state.chip.label).toBe('STRANDED');
+    // Needs you, from the same view the CTA reads: grouped as an ask, not as running.
+    expect(summary.group).toBe('attention');
+  });
+
+  it('a stranded mission whose flip would be refused shows the CTA disabled with the reason, never hidden', () => {
+    const row: ListMissionRow = {
+      id: 'm7n', title: 'No workspace', status: 'active', executor: 'local', workspaceId: null,
+      tasks: [task('b', { createdAt: new Date(NOW - 3 * 3600_000) })],
+    };
+    const card = build(row);
+    expect(card.strand?.blockedReason).toMatch(/no workspace/);
   });
 
   it('a local mission the session has claimed is still Local, with its live worker', () => {

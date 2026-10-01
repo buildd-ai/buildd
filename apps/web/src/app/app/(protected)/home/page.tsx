@@ -68,6 +68,7 @@ import { HomeMissionsSummary, type HomeMissionRow } from './HomeMissionsSummary'
 import { loadHomeFleet, type HomeFleetData } from '@/lib/home-fleet';
 import { homeHeadline, startOfDayInZone } from '@/lib/fleet-view';
 import { buildMissionListCard, shortAgo, type ListMissionRow } from '@/lib/mission-list-card';
+import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { buildMissionCardView as buildHomeCardView } from '@/lib/mission-card-view';
 import { missionTaskHref as homeTaskHref } from '@/lib/mission-task-href';
 import { getChatAvailability } from '@/lib/chat-availability';
@@ -493,7 +494,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
+            columns: { id: true, teamId: true, title: true, description: true, initiativeId: true, workspaceId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, executor: true, startAt: true, goalCriteria: true, goalCriteriaState: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true, createdAt: true, updatedAt: true },
             with: {
               tasks: {
                 columns: MISSION_CARD_TASK_COLUMNS,
@@ -573,8 +574,14 @@ export default async function HomePage({
             }
             const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
             const model = buildMissionListCard(row, view, summary, { now: nowMs });
-            return [{ view, model, completedAt: m.completedAt }];
+            return [{ view, model, completedAt: m.completedAt, row }];
           });
+          // Stranded local missions: the decision shadow looks after the
+          // response (lib/strand-choice-shadow.ts); it can only order buttons.
+          await applyStrandChoice(
+            listed.flatMap(r => (r.model.strand ? [{ row: r.row as unknown as MissionCardRow & { teamId?: string | null }, strand: r.model.strand }] : [])),
+            { now: nowMs, userId: user.id },
+          );
           homeMissionRows = listed
             .filter(r => r.model.kind === 'active' || r.model.kind === 'recurring' || r.model.kind === 'done')
             .sort((a, b) => ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[a.model.kind] - ({ active: 0, recurring: 1, done: 2 } as Record<string, number>)[b.model.kind])

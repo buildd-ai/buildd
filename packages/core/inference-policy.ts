@@ -35,6 +35,7 @@ export type InferenceCapability =
   | 'task_role_shadow'
   | 'orchestration_manifest'
   | 'orchestration_claim'
+  | 'mission_strand_choice'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -123,6 +124,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Hold/start shadow',
     description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
     costHint: '~$0.00003 per check',
+  },
+  // Stranded local missions (apps/web/src/lib/strand-choice-decision.ts).
+  // Shadow first: logged only; it can at most reorder the two buttons, and
+  // only once its gate is raised in code after a readout. Never flips anything.
+  mission_strand_choice: {
+    id: 'mission_strand_choice',
+    kind: 'opt_in',
+    label: 'Stranded mission shadow',
+    description: 'A decision model says whether a stranded local mission should continue on a runner or wait for your session. Logged only; you always choose.',
+    costHint: '~$0.00003 per stranded mission, cached',
   },
   chat: {
     id: 'chat',

@@ -115,6 +115,13 @@ export interface MissionListCardModel {
   question: ListQuestion | null;
   /** A non-question ask (merge, retry) — the card links to it. */
   ask: { label: string; href: string } | null;
+  /**
+   * A stranded local mission (`deriveLocalStrand`): the "Continue on a runner"
+   * call, built from the same view the status word reads. `blockedReason` is
+   * set when the executor flip would be refused; the button then renders
+   * disabled with it, never hidden. Null otherwise.
+   */
+  strand: StrandCta | null;
   /** Shown under the title when the status word alone would mislead (stalled, paused, needs you). */
   sentence: string | null;
   recurring: {
@@ -130,6 +137,35 @@ export interface MissionListCardModel {
   held: { ready: number; roles: string[]; since: string | null } | null;
   /** `durationMs`: filed → completed. `activeMs`: wall time agents worked (`activeWorkMs`). */
   done: { prs: number; fixes: number; durationMs: number | null; activeMs: number | null; completedAt: string | null } | null;
+}
+
+export interface StrandCta {
+  missionId: string;
+  /** How long nothing has touched the claimable work, ms. */
+  quietMs: number;
+  /** The oldest claimable task, for the keep-local hint (`claim_task {taskId}`). */
+  taskId: string | null;
+  claimable: number;
+  blockedReason: string | null;
+  /**
+   * Which button leads. `runner-first` unless a gated, confident decision says
+   * otherwise (`strandButtonOrder`); a page may set it after the model's look.
+   */
+  order: 'runner-first' | 'local-first';
+}
+
+/** The strand CTA for a mission view, or null. One reading for every surface. */
+export function strandCtaFor(missionId: string, state: { situation: { focus: unknown } }): StrandCta | null {
+  const f = state.situation.focus as { kind?: string; stranded?: { quietMs: number; flipBlockedReason: string | null }; taskIds?: string[]; count?: number } | null;
+  if (f?.kind !== 'task' || !f.stranded) return null;
+  return {
+    missionId,
+    quietMs: f.stranded.quietMs,
+    taskId: f.taskIds?.[0] ?? null,
+    claimable: f.count ?? f.taskIds?.length ?? 0,
+    blockedReason: f.stranded.flipBlockedReason,
+    order: 'runner-first',
+  };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -289,6 +325,7 @@ export function buildMissionListCard(
 
   // ── Kind + the one status word ──
   const needsYou = missionNeedsYou(summary.state) || counts.needsYou > 0;
+  const strand = strandCtaFor(row.id, summary.state);
   let kind: ListCardKind;
   if (view.group === 'completed') kind = 'done';
   else if (isRecurring) kind = 'recurring';
@@ -300,6 +337,8 @@ export function buildMissionListCard(
   const status: MissionListCardModel['status'] = (() => {
     if (kind === 'done') return { label: 'Done', tone: 'success' };
     if (kind === 'held') return { label: 'Held', tone: 'warning' };
+    // Not LOCAL: nothing is happening, and nothing will until the owner acts.
+    if (strand) return { label: 'Stranded', tone: 'warning' };
     if (needsYou) return { label: 'Needs you', tone: 'warning' };
     // A local mission is active work run from a person's session: LOCAL, in
     // the running tone — never Held, and never Stalled for want of a runner.
@@ -383,7 +422,7 @@ export function buildMissionListCard(
   return {
     id: row.id, kind, status, phases, counts,
     live: { count: summary.liveWorkers, dots },
-    elapsedMin, criteria, question, ask, sentence, recurring, held, done,
+    elapsedMin, criteria, question, ask, strand, sentence, recurring, held, done,
   };
 }
 

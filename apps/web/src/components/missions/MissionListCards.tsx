@@ -21,6 +21,7 @@ import { nextRunLabel, shortAgo, shortDuration, type ListTone, type MissionListC
 import { STATUS_TONE_EDGE, STATUS_TONE_SQUARE, STATUS_TONE_TEXT } from '@/lib/status-tone';
 import { timeAgo } from '@/lib/mission-helpers';
 import PhaseBar, { CELL_BOX } from './PhaseBar';
+import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 
 export interface ListCardProps {
   view: MissionCardView;
@@ -180,6 +181,7 @@ export function ActiveMissionCard({ view, model, workspaceName }: ListCardProps)
         <PhaseBar phases={model.phases} />
       </div>
       {model.question && <InlineAnswer question={model.question} />}
+      {model.strand && <ContinueOnRunnerCta strand={model.strand} className="mt-3.5" />}
       {model.ask && (
         <Link
           href={model.ask.href}
