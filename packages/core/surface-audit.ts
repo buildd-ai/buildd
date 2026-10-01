@@ -93,6 +93,12 @@ export function surfaceAuditMissingReason(uiPaths: string[], source: 'manifest' 
   );
 }
 
+/** The one plain sentence a person reads in place of `surfaceAuditMissingReason` (which is written for agents). */
+export function surfaceAuditHeadline(fileCount: number): string {
+  if (fileCount <= 0) return 'This mission changed UI and no visual audit has run.';
+  return `This mission changed ${fileCount} UI ${fileCount === 1 ? 'file' : 'files'} and no visual audit has run.`;
+}
+
 /** True when a task title is itself an auto-appended surface-audit task. */
 export function isSurfaceAuditTask(title: string): boolean {
   return title.startsWith(SURFACE_AUDIT_TITLE_PREFIX);

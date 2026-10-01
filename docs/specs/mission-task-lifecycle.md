@@ -1314,8 +1314,9 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `buildDecideItems()`, `EscalatedMissionCandidate`
 - Home DECIDE card (one CTA, recommendation only — never a pre-selected
   exit): `apps/web/src/components/WaitingOnYouDecideCard.tsx`
-- Mission-detail decision sheet (the three real exits — file the work / fix
-  the criterion / waive): `apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheet.tsx`,
+- Mission-detail decision sheet (the three goal-criteria exits — file the work
+  / fix the criterion / waive — plus the two visual-audit exits, see the
+  surface-audit gate below): `apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheet.tsx`,
   `apps/web/src/lib/criteria-decision-links.ts` (task-composer link),
   `apps/web/src/lib/goal-criterion-label.ts` (client-safe criterion labeling)
 - "File the work" resolution: `apps/web/src/app/api/tasks/route.ts` (POST,
@@ -1677,6 +1678,37 @@ mission's merged work *actually changed*, via `evaluateSurfaceAuditGate`:
   and the engine never waives. The same PATCH carrying `status: completed`
   is refused with 409 `surface_audit_missing` unless a waiver is supplied or
   already recorded. Archiving is not gated.
+- **Decision sheet** (`MissionDecisionSheet`): the exits it renders follow the
+  blocker the server reports, so no button leads to a refusal. A missing audit
+  shows exactly two actions, **Run visual audit** and **Waive with reason**; the
+  goal-criteria exits (file the work, fix the criterion, waive and complete)
+  render only while criteria are unmet, and nothing renders when neither holds.
+  Each action has a one-line subtitle, the headline is one plain sentence
+  (`surfaceAuditHeadline`), the changed files sit in a collapsed, wrapping list,
+  and no API or tool name appears in text a person reads (the agent-facing
+  wording stays in the API error body).
+  - *Run visual audit* is `POST /api/missions/[id]/surface-audit`
+    (`requestMissionSurfaceAudit`): files the `[surface audit]` task for the
+    visual-auditor role, scoped to the files the PRs changed, and is idempotent
+    (an open or finished audit is returned, only a failed or cancelled one is
+    replaced). On an `executor: local` mission the sheet says buildd's runners
+    will not claim it.
+  - *Waive with reason* requires a reason of at least 10 characters (the same
+    minimum as the API, checked on the client first), then sends
+    `surfaceAuditWaiver` with `status: completed` in one PATCH. The sheet shows
+    the recorded reason only after the PATCH succeeds. With goal criteria also
+    unmet it sends the waiver alone, so the criteria are never waived by
+    implication.
+  - **Suggestion**: opening the sheet on this blocker asks a decision model
+    (`POST /api/missions/[id]/surface-audit/advice`, capability
+    `surface_audit_advice`, built in) whether to audit or waive, from the changed
+    UI files and the shipped work titles (never descriptions or diffs). A
+    confident pick is pre-selected with a one-sentence reason, and a waive pick
+    prefills the editable reason. It only suggests: the person always confirms.
+    No key, a timeout, an error, a low-confidence pick or a sensitive workspace
+    all mean no suggestion, and both actions stand bare. Results are cached per
+    mission and the set of merged PRs on each server instance, and the spend is
+    recorded like other decision calls.
 
 **Non-goals**: The recurring workspace-wide `Weekly mobile UI audit` mission is
 unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
@@ -1702,10 +1734,25 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
   waiver is refused.
 - AC-35: GIVEN a backend-only mission, or one with a completed audit, THEN the
   completion gate does not apply.
+- AC-36: GIVEN a mission blocked only on a missing visual audit WHEN its
+  decision sheet renders THEN it offers exactly "Run visual audit" and "Waive
+  with reason" and none of the goal-criteria exits; with only unmet criteria it
+  offers only the criteria exits; with both it offers both groups.
+- AC-37: GIVEN the waiver field WHEN the reason is under 10 characters THEN no
+  request is sent; WHEN a valid reason is submitted THEN the mission is
+  completed with that reason recorded, and a refused request records and shows
+  nothing.
+- AC-38: GIVEN the suggestion call fails, times out or is not confident THEN
+  both actions render live with nothing pre-selected.
 
 **Code surface**:
 - `apps/web/src/lib/mission-surface-audit-gate.ts` — `evaluateSurfaceAuditGate()`
 - `packages/core/surface-audit.ts` — pure predicates and checklist content
-- `apps/web/src/lib/mission-surface-audit.ts` — `ensureMissionSurfaceAudit()`
+- `apps/web/src/lib/mission-surface-audit.ts` — `ensureMissionSurfaceAudit()`,
+  `requestMissionSurfaceAudit()`
+- `apps/web/src/lib/surface-audit-advice.ts` — `adviseSurfaceAudit()` (the
+  decision-sheet suggestion)
+- `apps/web/src/app/api/missions/[id]/surface-audit/route.ts` and
+  `.../surface-audit/advice/route.ts`
 - `apps/web/src/app/api/tasks/route.ts` — trigger point (`POST` handler)
 - `packages/core/db/schema.ts` — `missions.autoSurfaceAudit` (default `true`)

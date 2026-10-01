@@ -8,6 +8,7 @@ import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { formatCompletionRecord, situationRepeatsCompletion } from '@/lib/mission-completion-record';
 import { deriveTaskHealthSignal, foreignDependencyIds, formatNextRun, selectMissionCompletionSummary, MISSION_COMPLETED_NOTE_TITLE, buildReviewerRetryMap } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, hasPendingDeliverableWork as computeHasPendingDeliverableWork, computeMissionAuthorshipHealth, computeMissionFlightStrip } from '@buildd/core/mission-helpers';
+import { surfaceAuditHeadline } from '@buildd/core/surface-audit';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
@@ -1121,6 +1122,10 @@ export default async function MissionDetailPage({
         const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
         const failingCriterionIndex = failingState ? failingState.index : null;
         const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
+        const waitingOn = missionAnswer?.waitingOn ?? null;
+        const surfaceAuditBlocked = waitingOn?.kind === 'human_decision' && waitingOn.surfaceAudit === true;
+        const surfaceAuditPaths = surfaceAuditBlocked && waitingOn.surfaceAuditPaths ? waitingOn.surfaceAuditPaths : [];
+        const criteriaUnmet = goalCriteria.length > 0 && goalCriteriaStateFull?.overall !== 'pass';
         const fileWorkHref = buildFileWorkHref({
           missionId: id,
           missionTitle: mission.title,
@@ -1133,13 +1138,19 @@ export default async function MissionDetailPage({
               <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
                 Needs your decision
               </span>
-              <span className="text-[12px] text-text-secondary">{readingCopy}</span>
+              <span className="min-w-0 text-[12px] text-text-secondary [overflow-wrap:anywhere]">
+                {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
+              </span>
             </div>
             <MissionDecisionSheet
               missionId={id}
               goalCriteria={goalCriteria}
               failingCriterionIndex={failingCriterionIndex}
               fileWorkHref={fileWorkHref}
+              criteriaUnmet={criteriaUnmet}
+              surfaceAudit={surfaceAuditBlocked
+                ? { paths: surfaceAuditPaths, executorLocal: (mission as any).executor === 'local' }
+                : null}
             />
           </div>
         );
