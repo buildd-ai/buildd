@@ -134,9 +134,13 @@ token), and chat read-only status.
 workspace: a session viewer must be a member of the workspace's team, an API
 account must be open-mode and on the same team or explicitly linked to the
 workspace (`verifyAccountWorkspaceAccess`; restricted mode means linked accounts
-only). Team-default rows are visible to every team member. The same check gates
-`GET`, `PATCH`, `DELETE` and `verify` on a single row, which answer 404 for an
-unreachable workspace-scoped backend rather than confirming it exists.
+only). Team-default rows are visible to every team member. A caller that is
+both an account and a user (an OAuth JWT bearer) is decided by the account. The
+same check gates `POST` with a `workspaceId`, and `GET`, `PATCH`, `DELETE` and
+`verify` on a single row; each answers 404 for an unreachable workspace rather
+than confirming it or its backend exists. `POST` runs it before the
+one-backend-per-scope 409, so an unlinked admin can neither redirect a
+restricted workspace's evidence nor learn that it already has a backend.
 
 ## What gets written
 
@@ -293,8 +297,13 @@ never raw URLs.
      against `:id`. A route with a `:evidenceId` path segment would fail
      `routeReachProblems`.
 - `get_task`, `get_pr` and `explain` include the task's object list inline
-  (id, kind, bytes, upload state; newest first, capped at 20, covering the task
-  and its root task's runs). The list is best-effort: a lookup failure returns
+  (id, kind, bytes, upload state; newest first, capped at 20). It covers the
+  task's own objects plus, when the task is a root, its descendants'; a retry
+  child does not see its root's runs. The list follows the same reach rule as
+  `read_evidence`: a key not linked to a restricted workspace gets a 404 from
+  `get_task` and `explain`, and `get_pr` omits the list. Each non-empty list
+  writes one read-audit line naming the surface (`get_task`, `get_pr` or
+  `explain`). The list is best-effort: a lookup failure returns
   an empty list rather than failing the read (invariant 5). **Pointers only:**
   the objects' key lines are not repeated here because the compact error
   evidence already carries them (`result.evidence`, printed by `get_task`), and

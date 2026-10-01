@@ -499,26 +499,6 @@ export function toEvidenceObjectSummary(row: EvidenceObjectRow): EvidenceObjectS
   };
 }
 
-export interface EvidenceReadAudit {
-  surface: 'GET /api/tasks/:id/evidence' | 'GET /api/evidence';
-  op: 'list' | 'read';
-  workspaceId: string;
-  taskId?: string | null;
-  prNumber?: number | null;
-  evidenceIds: string[];
-  actor: { userId?: string; accountId?: string };
-  query?: Record<string, string>;
-  bytesReturned?: number;
-  truncated?: boolean;
-}
-
-/**
- * Audit record for one evidence read. Written as one structured log line, the
- * same channel the `[lease-shadow]` and cron audit lines use, because there is
- * no read-audit table and the spec forbids inventing one here. Never throws.
- */
-export function auditEvidenceRead(entry: EvidenceReadAudit): void {
-  try {
-    console.info(`[evidence-read] ${JSON.stringify({ ...entry, at: new Date().toISOString() })}`);
-  } catch { /* an audit line never fails a read */ }
-}
+// The audit line lives in its own module so the inline list can use it
+// without importing this file's S3 read path.
+export { auditEvidenceRead, type EvidenceReadAudit } from './evidence-audit';
