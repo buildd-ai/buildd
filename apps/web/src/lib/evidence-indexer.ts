@@ -21,24 +21,39 @@
  *
  * Nothing here changes a task or worker status (invariant 5).
  */
-import { and, asc, eq, inArray, lt, or, type SQL } from 'drizzle-orm';
+import { and, asc, eq, lt, or, type SQL } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, tasks, workspaces } from '@buildd/core/db/schema';
 import { chunkEvidenceLog, type EvidenceChunk } from '@buildd/core/evidence-chunker';
 import { createSecretRedactor } from '@buildd/core/redaction';
 import type { KnowledgeStore, UpsertChunk } from '@buildd/core/knowledge-store';
 import { openEvidenceObject, type EvidenceObjectRow } from './evidence-read';
+import { abandonPendingEvidence, confirmEvidenceUpload, type EvidenceConfirmResult } from './evidence-confirm';
 import { extractFailureDigest } from './ci-failure-digest';
 
 /** A `failed` row is retried once this long has passed since its last attempt. */
 export const EVIDENCE_INDEX_RETRY_AFTER_MS = 60 * 60 * 1000;
 /**
- * A runner's presigned PUT is valid for 15 minutes and nothing confirms it, so a
- * `pending` row whose object is still missing after this long never arrived.
+ * Reaper grace. A runner confirms its own upload right after the PUT
+ * (`POST /api/workers/[id]/evidence/[evidenceId]/confirm`), and the presigned
+ * PUT expires after 15 minutes. A row still `pending` after this long lost its
+ * confirm (an older runner, a crash, a network error), so the sweep settles it
+ * with the same check the confirm route runs.
  */
 export const PENDING_UPLOAD_GRACE_MS = 60 * 60 * 1000;
-/** Rows per sweep run; the rest wait for the next tick. */
+/**
+ * A pending row whose bucket still cannot be checked this long after upload
+ * (revoked credential, deleted bucket) is settled `unreadable` instead of being
+ * retried forever. Past retention for buildd_default, so nothing is lost.
+ */
+export const PENDING_UPLOAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Stored rows indexed per sweep run; the rest wait for the next tick. */
 export const EVIDENCE_INDEX_BATCH = 25;
+/**
+ * Pending rows reaped per sweep run. A budget of its own, taken after the
+ * stored rows, so stuck uploads can never crowd indexing out.
+ */
+export const EVIDENCE_REAP_BATCH = 5;
 /** Most decoded text read from one object. Longer bodies keep their tail. */
 export const MAX_INDEX_TEXT_BYTES = 16 * 1024 * 1024;
 
@@ -54,11 +69,17 @@ export interface EvidenceIndexCandidate {
 export type EvidenceRowUpdate = {
   /** `queued` only re-stamps updated_at, so a deferred row goes to the back of the line. */
   indexState: 'indexed' | 'skipped' | 'failed' | 'queued';
-  uploadState?: 'stored' | 'failed';
 };
 
 export interface EvidenceIndexerDeps {
+  /** Stored rows to index (evidenceIndexCandidateWhere). */
   loadCandidates(limit: number, now: Date): Promise<EvidenceIndexCandidate[]>;
+  /** Pending rows past the confirm grace (evidenceReapCandidateWhere). */
+  loadReapCandidates(limit: number, now: Date): Promise<EvidenceIndexCandidate[]>;
+  /** Settle a stale `pending` row (HEAD on its backend); see evidence-confirm.ts. */
+  confirmUpload(row: EvidenceObjectRow): Promise<EvidenceConfirmResult>;
+  /** Give up on a pending row past PENDING_UPLOAD_MAX_AGE_MS: settle it unreadable. */
+  abandonUpload(row: EvidenceObjectRow, reason: string): Promise<EvidenceConfirmResult>;
   openObject(row: EvidenceObjectRow): Promise<AsyncIterable<Uint8Array>>;
   store: Pick<KnowledgeStore, 'upsert'> & Partial<Pick<KnowledgeStore, 'deleteBySource'>>;
   updateRow(id: string, fields: EvidenceRowUpdate): Promise<void>;
@@ -82,10 +103,10 @@ export interface EvidenceIndexSweepResult {
   chunks: number;
 }
 
-/** Rows the sweep picks up. Exported so the predicate can be asserted as rendered SQL. */
+/** Stored rows the sweep indexes. Exported so the predicate can be asserted as rendered SQL. */
 export function evidenceIndexCandidateWhere(now: Date): SQL {
   return and(
-    inArray(evidenceObjects.uploadState, ['pending', 'stored']),
+    eq(evidenceObjects.uploadState, 'stored'),
     or(
       eq(evidenceObjects.indexState, 'queued'),
       and(
@@ -96,14 +117,20 @@ export function evidenceIndexCandidateWhere(now: Date): SQL {
   )!;
 }
 
+/**
+ * Pending rows the reaper settles: past the confirm grace, in any index state
+ * (so a sensitive, `skipped` row is settled too; it is still never indexed).
+ */
+export function evidenceReapCandidateWhere(now: Date): SQL {
+  return and(
+    eq(evidenceObjects.uploadState, 'pending'),
+    lt(evidenceObjects.createdAt, new Date(now.getTime() - PENDING_UPLOAD_GRACE_MS)),
+  )!;
+}
+
 export const evidenceNamespace = (workspaceId: string) => `${workspaceId}:evidence`;
 export const evidenceSourcePath = (evidenceId: string) => `evidence/${evidenceId}`;
 const short = (id: string) => id.slice(0, 8);
-
-function statusOf(err: unknown): number | undefined {
-  const s = (err as { status?: unknown } | null)?.status;
-  return typeof s === 'number' ? s : undefined;
-}
 
 function message(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, 300);
@@ -171,7 +198,7 @@ export async function indexEvidenceObject(
   c: EvidenceIndexCandidate,
   deps: EvidenceIndexerDeps,
 ): Promise<EvidenceIndexResult> {
-  const { row } = c;
+  let { row } = c;
   const ns = evidenceNamespace(row.workspaceId);
   const clearOld = () => deps.store.deleteBySource?.(ns, { sourcePath: evidenceSourcePath(row.id), sourceType: EVIDENCE_SOURCE_TYPE });
   const record = async (fields: EvidenceRowUpdate) => {
@@ -179,6 +206,40 @@ export async function indexEvidenceObject(
       console.warn(`[evidence-index] could not record ${fields.indexState} for ${row.id}: ${message(err)}`);
     }
   };
+
+  if (row.uploadState === 'pending') {
+    let confirmed: EvidenceConfirmResult;
+    try {
+      confirmed = await deps.confirmUpload(row);
+    } catch (err) {
+      confirmed = { uploadState: 'pending', bytes: row.bytes, changed: false, reason: message(err) };
+    }
+    if (confirmed.uploadState === 'pending') {
+      const age = deps.now().getTime() - new Date(row.createdAt).getTime();
+      if (age > PENDING_UPLOAD_MAX_AGE_MS) {
+        let abandoned: EvidenceConfirmResult | null = null;
+        try {
+          abandoned = await deps.abandonUpload(row, `the bucket could not be checked for ${Math.round(PENDING_UPLOAD_MAX_AGE_MS / 86_400_000)} days: ${confirmed.reason ?? 'unknown error'}`.slice(0, 300));
+        } catch { /* fall through to a re-stamp */ }
+        if (abandoned && abandoned.uploadState !== 'pending') {
+          return { outcome: 'skipped', chunks: 0, error: abandoned.reason ?? `upload ${abandoned.uploadState}` };
+        }
+      }
+      // Re-stamp so it moves to the back of the line; the index state is kept.
+      await record({ indexState: row.indexState === 'skipped' ? 'skipped' : 'queued' });
+      return { outcome: 'deferred', chunks: 0, ...(confirmed.reason ? { error: confirmed.reason } : {}) };
+    }
+    if (confirmed.uploadState !== 'stored') {
+      // confirmEvidenceUpload already wrote the row (failed/unreadable, index skipped).
+      return { outcome: 'skipped', chunks: 0, error: confirmed.reason ?? `upload ${confirmed.uploadState}` };
+    }
+    row = { ...row, uploadState: 'stored', bytes: confirmed.bytes };
+    if (row.indexState === 'skipped') {
+      // Skipped at upload (a sensitive workspace then) stays skipped, whatever the
+      // workspace's class is now: the object is never opened for indexing.
+      return { outcome: 'skipped', chunks: 0 };
+    }
+  }
 
   if (c.dataClass === 'sensitive') {
     // Nothing is sent to the embedder; purge whatever was indexed before.
@@ -191,17 +252,6 @@ export async function indexEvidenceObject(
   try {
     text = await readText(await deps.openObject(row));
   } catch (err) {
-    if (row.uploadState === 'pending' && statusOf(err) === 410) {
-      const age = deps.now().getTime() - new Date(row.createdAt).getTime();
-      if (age < PENDING_UPLOAD_GRACE_MS) {
-        // Still in flight, maybe. Re-stamp it so a burst of these cannot hold
-        // the front of the batch and starve rows that are ready.
-        await record({ indexState: 'queued' });
-        return { outcome: 'deferred', chunks: 0 };
-      }
-      await record({ indexState: 'skipped', uploadState: 'failed' });
-      return { outcome: 'skipped', chunks: 0, error: 'upload never arrived' };
-    }
     const error = message(err);
     await record({ indexState: 'failed' });
     return { outcome: 'failed', chunks: 0, error };
@@ -217,9 +267,7 @@ export async function indexEvidenceObject(
     const upserts = toUpsertChunks(c, chunks);
     await clearOld();
     if (upserts.length > 0) await deps.store.upsert(ns, upserts);
-    await record(row.uploadState === 'pending'
-      ? { indexState: 'indexed', uploadState: 'stored' }
-      : { indexState: 'indexed' });
+    await record({ indexState: 'indexed' });
     return { outcome: 'indexed', chunks: upserts.length };
   } catch (err) {
     const error = message(err);
@@ -231,12 +279,27 @@ export async function indexEvidenceObject(
 /** One sweep: index up to `limit` candidate rows, sequentially (the embedder is rate-limited). */
 export async function runEvidenceIndexSweep(
   deps: EvidenceIndexerDeps = defaultEvidenceIndexerDeps(),
-  opts: { limit?: number } = {},
+  opts: { limit?: number; reapLimit?: number } = {},
 ): Promise<EvidenceIndexSweepResult> {
   const now = deps.now();
+  // Stored rows first, on the full budget; then the reaper on its own, smaller
+  // one. A pile of unreachable pending rows therefore cannot delay indexing.
   const rows = await deps.loadCandidates(opts.limit ?? EVIDENCE_INDEX_BATCH, now);
   const out: EvidenceIndexSweepResult = { considered: rows.length, indexed: 0, skipped: 0, failed: 0, deferred: 0, chunks: 0 };
   for (const c of rows) {
+    const r = await indexEvidenceObject(c, deps);
+    out[r.outcome]++;
+    out.chunks += r.chunks;
+    if (r.error && r.outcome === 'failed') console.warn(`[evidence-index] ${c.row.id}: ${r.error}`);
+  }
+  let reap: EvidenceIndexCandidate[] = [];
+  try {
+    reap = await deps.loadReapCandidates(opts.reapLimit ?? EVIDENCE_REAP_BATCH, now);
+  } catch (err) {
+    console.warn(`[evidence-index] could not load pending rows to reap: ${message(err)}`);
+  }
+  out.considered += reap.length;
+  for (const c of reap) {
     const r = await indexEvidenceObject(c, deps);
     out[r.outcome]++;
     out.chunks += r.chunks;
@@ -252,6 +315,28 @@ function summaryOf(result: unknown): string | null {
   return typeof s === 'string' && s.trim() ? s : null;
 }
 
+async function loadWhere(where: SQL, limit: number): Promise<EvidenceIndexCandidate[]> {
+  const rows = await db
+    .select({
+      row: evidenceObjects,
+      dataClass: workspaces.dataClass,
+      taskTitle: tasks.title,
+      taskResult: tasks.result,
+    })
+    .from(evidenceObjects)
+    .innerJoin(workspaces, eq(workspaces.id, evidenceObjects.workspaceId))
+    .leftJoin(tasks, eq(tasks.id, evidenceObjects.taskId))
+    .where(where)
+    .orderBy(asc(evidenceObjects.updatedAt))
+    .limit(limit);
+  return rows.map(r => ({
+    row: r.row,
+    dataClass: r.dataClass ?? null,
+    taskTitle: r.taskTitle ?? null,
+    taskSummary: summaryOf(r.taskResult),
+  }));
+}
+
 export function defaultEvidenceIndexerDeps(store?: EvidenceIndexerDeps['store']): EvidenceIndexerDeps {
   let lazyStore = store;
   const getStore = async () => {
@@ -263,28 +348,11 @@ export function defaultEvidenceIndexerDeps(store?: EvidenceIndexerDeps['store'])
     return lazyStore;
   };
   return {
-    async loadCandidates(limit, now) {
-      const rows = await db
-        .select({
-          row: evidenceObjects,
-          dataClass: workspaces.dataClass,
-          taskTitle: tasks.title,
-          taskResult: tasks.result,
-        })
-        .from(evidenceObjects)
-        .innerJoin(workspaces, eq(workspaces.id, evidenceObjects.workspaceId))
-        .leftJoin(tasks, eq(tasks.id, evidenceObjects.taskId))
-        .where(evidenceIndexCandidateWhere(now))
-        .orderBy(asc(evidenceObjects.updatedAt))
-        .limit(limit);
-      return rows.map(r => ({
-        row: r.row,
-        dataClass: r.dataClass ?? null,
-        taskTitle: r.taskTitle ?? null,
-        taskSummary: summaryOf(r.taskResult),
-      }));
-    },
-    openObject: row => openEvidenceObject(row, { acceptPending: true }),
+    loadCandidates: (limit, now) => loadWhere(evidenceIndexCandidateWhere(now), limit),
+    loadReapCandidates: (limit, now) => loadWhere(evidenceReapCandidateWhere(now), limit),
+    confirmUpload: row => confirmEvidenceUpload(row),
+    abandonUpload: (row, reason) => abandonPendingEvidence(row, reason),
+    openObject: row => openEvidenceObject(row),
     store: {
       upsert: async (ns, chunks) => (await getStore()).upsert(ns, chunks),
       deleteBySource: async (ns, sel) => (await getStore()).deleteBySource?.(ns, sel),

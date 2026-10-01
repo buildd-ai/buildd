@@ -251,19 +251,21 @@ describe('openEvidenceObject', () => {
   }) as any;
   const client = { send: async () => ({ Body: chunks(gzipSync(Buffer.from('hello\n'))) }) };
 
-  it('refuses a pending object by default', async () => {
-    await expect(openEvidenceObject(row('pending'), { client, bucket: 'b' })).rejects.toBeInstanceOf(EvidenceReadError);
-  });
-
-  // Nothing confirms a runner PUT, so the indexer probes a pending row itself.
-  it('opens a pending object when the caller accepts pending', async () => {
-    const body = await openEvidenceObject(row('pending'), { client, bucket: 'b', acceptPending: true });
+  it('opens a stored object', async () => {
+    const body = await openEvidenceObject(row('stored'), { client, bucket: 'b' });
     let out = '';
     for await (const c of body) out += Buffer.from(c).toString();
     expect(out).toBe('hello\n');
   });
 
-  it('still refuses a failed object when accepting pending', async () => {
-    await expect(openEvidenceObject(row('failed'), { client, bucket: 'b', acceptPending: true })).rejects.toBeInstanceOf(EvidenceReadError);
+  // A runner upload becomes readable only once it is confirmed (the confirm
+  // route, or the indexer's reaper for a confirm that never came).
+  it('refuses a pending object, with no way to opt in', async () => {
+    await expect(openEvidenceObject(row('pending'), { client, bucket: 'b', acceptPending: true } as any))
+      .rejects.toBeInstanceOf(EvidenceReadError);
+  });
+
+  it('refuses a failed object', async () => {
+    await expect(openEvidenceObject(row('failed'), { client, bucket: 'b' })).rejects.toBeInstanceOf(EvidenceReadError);
   });
 });

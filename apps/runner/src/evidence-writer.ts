@@ -45,7 +45,14 @@ export interface EvidenceUploadDeps {
   requestEvidenceUploadUrl?: (
     workerId: string,
     req: EvidenceUploadRequest,
-  ) => Promise<{ uploadUrl: string; key: string } | null>;
+  ) => Promise<{ uploadUrl: string; key: string; evidenceId?: string } | null>;
+  /**
+   * Tell the server the PUT landed so it can HEAD the object and mark the row
+   * `stored` (until then the read routes refuse it). Called only after a 2xx PUT;
+   * best-effort. Optional so an older client simply skips it (the server's
+   * reaper settles the row later).
+   */
+  confirmEvidenceUpload?: (workerId: string, evidenceId: string) => Promise<unknown>;
   put?: (url: string, body: Uint8Array, contentType: string, contentLength: number) => Promise<boolean>;
   log?: typeof sessionLog;
 }
@@ -248,6 +255,7 @@ export class EvidenceWriter {
         return 'failed';
       }
       log(workerId, 'info', 'evidence_upload', `kind=${kind} seq=${seq} key=${signed.key} bytes=${sizeBytes}`, taskId);
+      await this.confirm(kind, seq, signed.evidenceId);
       return 'uploaded';
     } catch (err) {
       this.warn(kind, err, seq);
@@ -255,14 +263,26 @@ export class EvidenceWriter {
     }
   }
 
-  private warn(kind: EvidenceKind, err: unknown, seq?: number): void {
+  /** Best-effort: the object is already in the bucket, so a failed confirm is only logged. */
+  private async confirm(kind: EvidenceKind, seq: number, evidenceId: string | undefined): Promise<void> {
+    const { workerId, taskId, deps } = this.opts;
+    if (!evidenceId || typeof deps.confirmEvidenceUpload !== 'function') return;
+    try {
+      const ok = await deps.confirmEvidenceUpload(workerId, evidenceId);
+      if (!ok) (deps.log ?? sessionLog)(workerId, 'warn', 'evidence_confirm_failed', `kind=${kind} seq=${seq} evidence=${evidenceId}`, taskId);
+    } catch (err) {
+      this.warn(kind, err, seq, 'evidence_confirm_failed');
+    }
+  }
+
+  private warn(kind: EvidenceKind, err: unknown, seq?: number, event = 'evidence_upload_failed'): void {
     try {
       let msg = err instanceof Error ? err.message : 'unknown error';
       try { msg = this.opts.redact(msg); } catch { msg = 'unknown error'; }
       (this.opts.deps.log ?? sessionLog)(
         this.opts.workerId,
         'warn',
-        'evidence_upload_failed',
+        event,
         `kind=${kind}${seq === undefined ? '' : ` seq=${seq}`} ${msg}`,
         this.opts.taskId,
       );
