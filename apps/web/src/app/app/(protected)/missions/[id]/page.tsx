@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
+import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -26,6 +26,9 @@ import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
 import MissionInlineEdit from './MissionInlineEdit';
 import MissionDescription from './MissionDescription';
+import MissionShippedHeader from './MissionShippedHeader';
+import { buildShippedHeaderView } from '@/lib/mission-shipped-header';
+import { shippedArtifactKey } from '@/lib/mission-shipped-report';
 import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
@@ -879,7 +882,7 @@ export default async function MissionDetailPage({
 
   // The breadcrumb initiative, the initiative-selector options, the release
   // footer and the completion note are mutually independent.
-  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows] = await Promise.all([
+  const [initiativeName, teamInitiativeOptions, releaseFooterData, completionNote, carryingReleaseId, feedNoteRows, shippedRow] = await Promise.all([
     // Breadcrumb: URL param takes priority, DB-stored initiative is the fallback
     // so users see the parent initiative even when navigating directly to the mission.
     (from === 'initiative' && initiativeId)
@@ -932,7 +935,17 @@ export default async function MissionDetailPage({
       orderBy: desc(missionNotes.createdAt),
       limit: 200,
     }),
+    // The stored "What shipped" record. A read failure only costs the header.
+    mission.status === 'completed'
+      ? db.query.artifacts.findFirst({
+          where: and(eq(artifacts.missionId, id), eq(artifacts.key, shippedArtifactKey(id))),
+          columns: { metadata: true },
+        }).then(row => row ?? null, () => null)
+      : Promise.resolve(null),
   ]);
+  const shippedView = mission.status === 'completed'
+    ? buildShippedHeaderView((shippedRow?.metadata as { shipped?: unknown } | null)?.shipped, (mission as any).completedAt)
+    : null;
   const feedNotes = feedNoteRows.map(n => ({
     id: n.id, type: n.type as string, authorType: n.authorType as string, title: n.title ?? null,
     taskId: n.taskId ?? null, createdAt: new Date(n.createdAt).getTime(),
@@ -1294,7 +1307,9 @@ export default async function MissionDetailPage({
     artifacts: allArtifacts.map(a => ({ key: a.key ?? null, type: a.type ?? null })),
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
   });
-  const completionText = completionPick
+  // The lede answers "what changed for me?" in place of the D3 text; every
+  // other header variant sits above it.
+  const completionText = completionPick && !shippedView?.lede
     ? (completionPick.source === 'completion_record' ? formatCompletionRecord(completionPick.text) : completionPick.text)
     : null;
   // The band says running / needs-you / done by itself. Anything else the
@@ -1433,6 +1448,7 @@ export default async function MissionDetailPage({
       endedAt={boardModel.endedAt}
       activeMs={boardModel.activeMs}
     >
+      {shippedView && <MissionShippedHeader missionId={id} view={shippedView} />}
       {content}
       <div data-testid="mission-board-footer" className="mt-10">
         {orchestratorRow}
