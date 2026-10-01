@@ -76,7 +76,9 @@ function MessageLine({ message }: { message: Message }) {
  */
 function rowMessage(message: Message, b: StorageBackend): Message {
   if (message.type === 'error' && b.lastError && b.status !== 'ok' && message.text.includes(b.lastError)) {
-    return { ...message, text: 'The check failed just now. The error is shown above.' };
+    // Keep anything after the error (verify warnings, e.g. a publicly readable probe).
+    const rest = message.text.slice(message.text.indexOf(b.lastError) + b.lastError.length).trim();
+    return { ...message, text: `The check failed just now. The error is shown above.${rest ? ` ${rest}` : ''}` };
   }
   return message;
 }
