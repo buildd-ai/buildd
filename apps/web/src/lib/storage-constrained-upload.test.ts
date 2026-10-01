@@ -19,7 +19,6 @@ mock.module('@buildd/core/config', () => ({
     storageBucket: 'test-bucket',
     storageAccessKey: 'test-access-key',
     storageSecretKey: 'test-secret-key',
-    storagePublicUrl: '',
   },
 }));
 
