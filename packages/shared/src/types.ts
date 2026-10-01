@@ -761,6 +761,10 @@ export interface Task {
   dependsOn: string[];
   // Declared files/globs this task expects to create or modify
   pathManifest?: string[] | null;
+  // Declaration snapshot + provenance for pathManifest (see PathDeclaration)
+  pathDeclaration?: PathDeclaration | null;
+  // Ownership revision: bumped by every lease acquisition, narrowing and release
+  pathClaimRevision?: number;
   // Connector IDs this task requires — subset of the role's connectorRefs.
   // Only these connectors trigger a hard claim-block when unavailable.
   requiredConnectors?: string[] | null;
@@ -1747,6 +1751,35 @@ export interface LoopHistoryEntry {
   satisfied: boolean;
   summary: string;
   evidence?: Record<string, unknown>;
+}
+
+/**
+ * Declaration snapshot + provenance for a task's pathManifest, stored as JSONB
+ * in tasks.path_declaration. `pathManifest` is the current *effective* scope
+ * and shrinks when a stale claim is narrowed; this keeps what was declared so
+ * conformance checks and audits can compare the two. First write wins:
+ * `declared` is set at creation, or on the first runtime mutation for a task
+ * created before this column existed. See
+ * docs/design/conflict-aware-orchestration.md §1.
+ */
+export interface PathDeclaration {
+  declared: string[] | null;
+  source: 'creation' | 'runtime';
+  snapshotAt: string;
+  /**
+   * dependsOn edges added at creation because manifests overlapped, as opposed
+   * to caller-supplied edges. Only these may ever be removed on narrowing.
+   */
+  inferredDependsOn?: string[];
+  /** Most recent narrowings, oldest first, capped. */
+  narrowings?: PathNarrowing[];
+}
+
+export interface PathNarrowing {
+  at: string;
+  dropped: string[];
+  surface: string;
+  reason: string | null;
 }
 
 // Subject anchor — normalized external identity for what a task acts on.

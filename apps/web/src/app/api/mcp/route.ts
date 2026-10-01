@@ -29,7 +29,7 @@ import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCa
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
 import { eq } from "drizzle-orm";
-import { checkPathClaim } from "@/lib/path-claim-check";
+import { checkPathClaim, narrowPathClaim } from "@/lib/path-claim-check";
 import { gateCallerOrigin } from "@/lib/gate-ledger";
 import { enqueueWorkerMessage, type WorkerMessage } from "@buildd/core/worker-messages";
 import { WORKER_MSG_MAX_PER_WINDOW, consumeWorkerMsgRateLimit, workerMsgRetryAfterSeconds } from "@/lib/worker-message-rate-limit";
@@ -491,6 +491,32 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           };
         }
 
+        // release=true is the inverse: give paths back. Same shared
+        // implementation as DELETE /api/tasks/[id]/path-claim; the worker
+        // context scopes it to this worker's own task.
+        if (args?.release === true) {
+          const narrowed = await narrowPathClaim({
+            taskId: workerRow.taskId,
+            paths: args?.paths,
+            reason: args?.reason,
+            expectedRevision: args?.expectedRevision,
+            surface: 'mcp:check_path_claim',
+            callerOrigin: gateCallerOrigin({ workerId }),
+          });
+          switch (narrowed.kind) {
+            case 'invalid_paths':
+              return { content: [{ type: "text" as const, text: narrowed.error }], isError: true };
+            case 'wildcard':
+              return { content: [{ type: "text" as const, text: JSON.stringify({ error: narrowed.error }) }], isError: true };
+            case 'not_found':
+              return { content: [{ type: "text" as const, text: "Task not found." }], isError: true };
+            case 'revision_conflict':
+              return { content: [{ type: "text" as const, text: JSON.stringify({ released: false, retryable: true, currentRevision: narrowed.currentRevision, error: 'Path claims changed since expectedRevision; re-read and retry' }) }], isError: true };
+            case 'narrowed':
+              return { content: [{ type: "text" as const, text: JSON.stringify({ released: true, releasedPaths: narrowed.releasedPaths, pathManifest: narrowed.pathManifest, notifiedWaiters: narrowed.notifiedWaiters, revision: narrowed.revision }) }] };
+          }
+        }
+
         const outcome = await checkPathClaim({
           taskId: workerRow.taskId,
           paths: args?.paths,
@@ -509,7 +535,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           case 'conflict':
             return { content: [{ type: "text" as const, text: JSON.stringify(outcome.body) }] };
           case 'claimed':
-            return { content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: outcome.pathManifest }) }] };
+            return { content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: outcome.pathManifest, revision: outcome.revision }) }] };
         }
       } else if (name === "send_worker_message") {
         // Requires worker or admin token — trigger tokens don't run agent work

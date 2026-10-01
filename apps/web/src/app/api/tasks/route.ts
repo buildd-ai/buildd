@@ -724,6 +724,9 @@ export async function POST(req: NextRequest) {
     // dependsOn is copied in first and never modified — only inferred edges are
     // subject to this rule.
     let resolvedDependsOn: string[] = Array.isArray(dependsOn) ? [...dependsOn] : [];
+    // Recorded on pathDeclaration so a later narrowing can tell these apart
+    // from caller-supplied edges, which must never be removed.
+    const inferredDependsOn: string[] = [];
     if (pathManifest && pathManifest.length > 0 && !isAdvisoryManifest(pathManifest)) {
       const existingDepsSet = new Set(resolvedDependsOn);
       const inFlightTasks = await db.query.tasks.findMany({
@@ -738,6 +741,7 @@ export async function POST(req: NextRequest) {
         if (existingDepsSet.has(t.id)) continue;
         if (shouldSerializeByManifest(pathManifest, t.pathManifest as string[] | null)) {
           resolvedDependsOn.push(t.id);
+          inferredDependsOn.push(t.id);
           existingDepsSet.add(t.id);
         }
       }
@@ -1271,7 +1275,17 @@ export async function POST(req: NextRequest) {
         ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
-        ...(pathManifest ? { pathManifest } : {}),
+        ...(pathManifest ? {
+          pathManifest,
+          // The declaration as filed. pathManifest is the effective scope and
+          // may later shrink (narrowPathClaims); this snapshot does not.
+          pathDeclaration: {
+            declared: pathManifest,
+            source: 'creation' as const,
+            snapshotAt: new Date().toISOString(),
+            ...(inferredDependsOn.length > 0 ? { inferredDependsOn } : {}),
+          },
+        } : {}),
         ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),
         ...(finalKind !== undefined ? { kind: finalKind } : {}),
         ...(finalComplexity !== undefined ? { complexity: finalComplexity } : {}),

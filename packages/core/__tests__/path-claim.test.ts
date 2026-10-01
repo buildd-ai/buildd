@@ -1,7 +1,7 @@
 /**
  * Unit tests for packages/core/path-claim.ts
  *
- * Tests: checkPathClaimConflict, insertClaims, releaseClaims,
+ * Tests: checkPathClaimConflict, rearmWaiter,
  *        registerWaiter (with BFS deadlock detection), getActiveClaimsByWorkspace,
  *        wildcard exclusion, and starvation guard.
  */
@@ -63,8 +63,13 @@ const mockUpdate = mock((_table: any) => {
   return chain;
 });
 
+// values() → { onConflictDoUpdate } — registerWaiter upserts to re-arm.
+const mockOnConflictDoUpdate = mock(async (_cfg: any) => undefined);
+function valuesChain(impl: () => Promise<unknown> = async () => undefined) {
+  return mock((_v: any) => ({ onConflictDoUpdate: mock(async (cfg: any) => { mockOnConflictDoUpdate(cfg); return impl(); }) }));
+}
 const mockInsert = mock((_table: any) => {
-  const valChain = { values: mock(async () => undefined) };
+  const valChain = { values: valuesChain() };
   insertCalls.push(valChain);
   return valChain;
 });
@@ -128,11 +133,7 @@ mock.module('../path-overlap', () => ({
 // ── Import after mocks ───────────────────────────────────────────────────────
 
 import {
-  appendPathManifest,
   checkPathClaimConflict,
-  claimObservedPaths,
-  insertClaims,
-  releaseClaims,
   rearmWaiter,
   registerWaiter,
   getActiveClaimsByWorkspace,
@@ -429,162 +430,6 @@ describe('checkPathClaimConflict — parked holder TTL', () => {
   });
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// insertClaims
-// ────────────────────────────────────────────────────────────────────────────
-
-describe('insertClaims', () => {
-  beforeEach(resetQueues);
-
-  it('returns empty array for empty paths input', async () => {
-    const inserted = await insertClaims(WS, TASK_A, []);
-    expect(inserted).toEqual([]);
-    expect(mockInsert).not.toHaveBeenCalled();
-  });
-
-  it('inserts new paths and returns them', async () => {
-    // No existing claims for this task
-    queueFindMany('pathClaims', []);
-    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
-
-    const inserted = await insertClaims(WS, TASK_A, ['src/foo.ts', 'src/bar.ts']);
-    expect(inserted).toEqual(['src/foo.ts', 'src/bar.ts']);
-    expect(mockInsert).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips paths already claimed by this task (idempotent)', async () => {
-    queueFindMany('pathClaims', [{ path: 'src/foo.ts' }]);
-    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
-
-    const inserted = await insertClaims(WS, TASK_A, ['src/foo.ts', 'src/bar.ts']);
-    expect(inserted).toEqual(['src/bar.ts']);
-    expect(mockInsert).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not call insert when all paths are already claimed', async () => {
-    queueFindMany('pathClaims', [{ path: 'src/foo.ts' }]);
-
-    const inserted = await insertClaims(WS, TASK_A, ['src/foo.ts']);
-    expect(inserted).toEqual([]);
-    expect(mockInsert).not.toHaveBeenCalled();
-  });
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// appendPathManifest
-//
-// No CAS/retry loop to test here — that is the point of this function. A
-// single UPDATE evaluated against the row's current value replaced the
-// fixed-retry compare-and-swap that could exhaust its attempts under bursty
-// concurrent calls for the same task and surface a bare "concurrent update
-// conflict" indistinguishable from a real blocker.
-// ────────────────────────────────────────────────────────────────────────────
-
-describe('appendPathManifest', () => {
-  beforeEach(resetQueues);
-
-  it('returns the manifest from the UPDATE ... RETURNING row', async () => {
-    mockExecute.mockResolvedValue({ rows: [{ path_manifest: ['src/a.ts', 'src/b.ts'] }] });
-
-    const result = await appendPathManifest(TASK_A, ['src/b.ts']);
-    expect(result).toEqual(['src/a.ts', 'src/b.ts']);
-    expect(mockExecute).toHaveBeenCalledTimes(1);
-  });
-
-  it('issues exactly one statement regardless of how many paths are appended', async () => {
-    mockExecute.mockResolvedValue({ rows: [{ path_manifest: ['a', 'b', 'c'] }] });
-
-    await appendPathManifest(TASK_A, ['a', 'b', 'c']);
-    expect(mockExecute).toHaveBeenCalledTimes(1);
-  });
-
-  it('falls back to the requested paths if the row is missing (task deleted mid-flight)', async () => {
-    mockExecute.mockResolvedValue({ rows: [] });
-
-    const result = await appendPathManifest(TASK_A, ['src/only.ts']);
-    expect(result).toEqual(['src/only.ts']);
-  });
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// releaseClaims
-// ────────────────────────────────────────────────────────────────────────────
-
-describe('releaseClaims', () => {
-  beforeEach(resetQueues);
-
-  it('returns null when task has no active claims', async () => {
-    queueFindMany('pathClaims', []);
-    const result = await releaseClaims(TASK_A);
-    expect(result).toBeNull();
-    expect(mockUpdate).not.toHaveBeenCalled();
-  });
-
-  it('soft-deletes active claims and returns release info', async () => {
-    queueFindMany('pathClaims', [
-      { id: 'claim-1', workspaceId: WS, path: 'src/foo.ts' },
-      { id: 'claim-2', workspaceId: WS, path: 'src/bar.ts' },
-    ]);
-    // No pending waiters
-    queueFindMany('pathClaimWaiters', []);
-
-    mockUpdate.mockReturnValue(makeUpdateChain());
-
-    const result = await releaseClaims(TASK_A);
-    expect(result).not.toBeNull();
-    expect(result?.workspaceId).toBe(WS);
-    expect(result?.releasedPaths).toEqual(['src/foo.ts', 'src/bar.ts']);
-    expect(result?.notifiedWaiters).toEqual([]);
-    expect(mockUpdate).toHaveBeenCalledTimes(1); // only claim update; no waiters
-  });
-
-  it('stamps notifiedAt on pending waiters and returns their IDs', async () => {
-    queueFindMany('pathClaims', [
-      { id: 'claim-1', workspaceId: WS, path: 'src/foo.ts' },
-    ]);
-    queueFindMany('pathClaimWaiters', [
-      { id: 'waiter-1', waitingTaskId: TASK_B },
-      { id: 'waiter-2', waitingTaskId: TASK_C },
-    ]);
-
-    mockUpdate.mockReturnValue(makeUpdateChain());
-
-    const result = await releaseClaims(TASK_A);
-    expect(result?.notifiedWaiters).toEqual([TASK_B, TASK_C]);
-    // update called twice: once for claims, once for waiters
-    expect(mockUpdate).toHaveBeenCalledTimes(2);
-  });
-
-  // The waiting agent needs to know WHICH path freed, not just that something
-  // did — that is what the path_released message carries.
-  it('returns the blocked path per waiter so the release message can name it', async () => {
-    queueFindMany('pathClaims', [
-      { id: 'claim-1', workspaceId: WS, path: 'src/foo.ts' },
-    ]);
-    queueFindMany('pathClaimWaiters', [
-      { id: 'waiter-1', waitingTaskId: TASK_B, blockedPath: 'src/foo.ts' },
-      { id: 'waiter-2', waitingTaskId: TASK_C, blockedPath: 'src/foo.ts' },
-    ]);
-
-    mockUpdate.mockReturnValue(makeUpdateChain());
-
-    const result = await releaseClaims(TASK_A);
-    expect(result?.waiters).toEqual([
-      { waitingTaskId: TASK_B, blockedPath: 'src/foo.ts' },
-      { waitingTaskId: TASK_C, blockedPath: 'src/foo.ts' },
-    ]);
-  });
-
-  it('does not call waiter update when no pending waiters', async () => {
-    queueFindMany('pathClaims', [{ id: 'claim-1', workspaceId: WS, path: 'src/a.ts' }]);
-    queueFindMany('pathClaimWaiters', []);
-    mockUpdate.mockReturnValue(makeUpdateChain());
-
-    await releaseClaims(TASK_A);
-    expect(mockUpdate).toHaveBeenCalledTimes(1); // claim soft-delete only
-  });
-});
-
 describe('rearmWaiter', () => {
   beforeEach(resetQueues);
 
@@ -610,7 +455,7 @@ describe('registerWaiter', () => {
   it('registers a new waiter when no deadlock cycle exists', async () => {
     // BFS from TASK_B: TASK_B waits on nothing → no cycle
     queueFindMany('pathClaimWaiters', []); // BFS level 1: no outgoing edges from TASK_B
-    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
+    mockInsert.mockReturnValue({ values: valuesChain() });
 
     const result = await registerWaiter(TASK_A, TASK_B, 'src/foo.ts', WS);
     expect(result).toEqual({ registered: true });
@@ -621,76 +466,66 @@ describe('registerWaiter', () => {
     queueFindMany('pathClaimWaiters', []); // BFS: no cycle
     // Simulate unique constraint violation
     mockInsert.mockReturnValue({
-      values: mock(async () => { throw new Error('duplicate key value violates unique constraint'); }),
+      values: valuesChain(async () => { throw new Error('connection reset'); }),
     });
 
     const result = await registerWaiter(TASK_A, TASK_B, 'src/foo.ts', WS);
     expect(result).toEqual({ registered: true }); // error swallowed
   });
 
-  it('detects a direct cycle: A waits on B, B tries to wait on A → deadlock', async () => {
-    // BFS from TASK_B: TASK_B already waits on TASK_A
-    // detectDeadlockCycle(blockingTaskId=TASK_B, waitingTaskId=TASK_A):
-    //   Start from TASK_A. Check: where does TASK_A wait?
-    //   TASK_A waits on TASK_B → we reach TASK_B (= newBlockingTaskId) → cycle!
-    queueFindMany('pathClaimWaiters', [
-      { blockingTaskId: TASK_B }, // TASK_A is waiting on TASK_B
-    ]);
+  // A waiter woken by a narrowing that collides with the same holder again
+  // must be pending again, or the holder's terminal release would skip it.
+  it('re-registering the same (blocker, waiter, path) re-arms the row', async () => {
+    queueFindMany('pathClaimWaiters', []); // BFS: no cycle
+    mockOnConflictDoUpdate.mockClear();
+    mockInsert.mockReturnValue({ values: valuesChain() });
+
+    await registerWaiter(TASK_A, TASK_B, 'src/foo.ts', WS);
+    expect(mockOnConflictDoUpdate).toHaveBeenCalledTimes(1);
+    expect(mockOnConflictDoUpdate.mock.calls[0][0].set).toEqual({ notifiedAt: null });
+  });
+
+  // registerWaiter(blocking, waiting): "waiting waits on blocking". The BFS
+  // walks the BLOCKER's pending waits, looking for the waiter.
+
+  it('detects a direct cycle: B already waits on A, now A tries to wait on B → deadlock', async () => {
+    // BFS from TASK_B: TASK_B waits on TASK_A (= the new waiter) → cycle.
+    queueFindMany('pathClaimWaiters', [{ blockingTaskId: TASK_A }]);
 
     const result = await registerWaiter(TASK_B, TASK_A, 'src/foo.ts', WS) as any;
     expect(result.deadlock).toBe(true);
-    expect(result.cycle).toBeDefined();
-    expect(result.cycle).toContain(TASK_A);
-    expect(result.cycle).toContain(TASK_B);
+    expect(result.cycle).toEqual([TASK_A, TASK_B, TASK_A]);
     // No insert should happen when deadlock is detected
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
-  it('detects a multi-hop cycle: A→B→C→A', async () => {
-    // Scenario: A holds x, B holds y, C holds z
-    // Existing waiter graph: B waits on A (B→A), C waits on B (C→B)
-    // New edge: A waits on C (A→C) would close the cycle A→C→B→A
-    //
-    // registerWaiter(blockingTaskId=C, waitingTaskId=A, ...)
-    // detectDeadlockCycle(newBlockingTaskId=C, newWaitingTaskId=A):
-    //   BFS from A. Where does A wait? A waits on nothing (no existing edge from A).
-    //   But we need the cycle to exist with B and C in the graph.
-    //
-    // Actually the BFS traverses: start=A, look for where A is waiting.
-    // For A→C→B→A cycle: existing graph is A waits on C (no! that's the new edge).
-    // Let me re-think:
-    //
-    // Existing: B waits on A, C waits on B. New proposed: A waits on C.
-    // detectDeadlockCycle(blockingTaskId=C, waitingTaskId=A):
-    //   Start BFS from A (the one trying to wait).
-    //   Where does A wait? A currently waits on nothing (queue returns []).
-    //   Oh wait... we also need A currently waiting on something for there to be a cycle.
-    //
-    // The simpler 3-node cycle: A waits on B (existing), B waits on C (existing).
-    // New: C tries to wait on A → detectDeadlockCycle(blocking=A, waiting=C)
-    //   BFS from C. Where does C wait? C waits on B.
-    //   Where does B wait? B waits on A = newBlockingTaskId → cycle!
+  it('detects a multi-hop cycle: A waits on B, B waits on C, now C tries to wait on A', async () => {
+    // registerWaiter(blocking=A, waiting=C). BFS from A:
+    queueFindMany('pathClaimWaiters', [{ blockingTaskId: TASK_B }]); // A waits on B
+    queueFindMany('pathClaimWaiters', [{ blockingTaskId: TASK_C }]); // B waits on C = the waiter
 
-    // BFS call 1: where does TASK_C (the waiter) wait?
-    queueFindMany('pathClaimWaiters', [{ blockingTaskId: TASK_B }]); // C waits on B
-    // BFS call 2: where does TASK_B wait?
-    queueFindMany('pathClaimWaiters', [{ blockingTaskId: TASK_A }]); // B waits on A → A == newBlockingTaskId
-
-    // registerWaiter(blockingTaskId=TASK_A, waitingTaskId=TASK_C, ...)
     const result = await registerWaiter(TASK_A, TASK_C, 'src/z.ts', WS) as any;
     expect(result.deadlock).toBe(true);
-    expect(result.cycle).toBeDefined();
-    expect(result.cycle.length).toBeGreaterThanOrEqual(3);
+    expect(result.cycle).toEqual([TASK_C, TASK_A, TASK_B, TASK_C]);
   });
 
-  it('no deadlock when BFS finds no path back to blocker', async () => {
-    // TASK_B waits on some other task (TASK_C), not on TASK_A
-    queueFindMany('pathClaimWaiters', [{ blockingTaskId: TASK_C }]); // B→C
-    queueFindMany('pathClaimWaiters', []); // C waits on nothing
-    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
+  it('no deadlock when BFS finds no path back to the waiter', async () => {
+    // registerWaiter(blocking=A, waiting=B). A waits on C, C waits on nothing.
+    queueFindMany('pathClaimWaiters', [{ blockingTaskId: TASK_C }]);
+    queueFindMany('pathClaimWaiters', []);
+    mockInsert.mockReturnValue({ values: valuesChain() });
 
     const result = await registerWaiter(TASK_A, TASK_B, 'src/foo.ts', WS);
     expect(result).toEqual({ registered: true });
+  });
+
+  it('walks only pending waits — a notified edge is no longer a wait', async () => {
+    queueFindMany('pathClaimWaiters', []);
+    mockInsert.mockReturnValue({ values: valuesChain() });
+    await registerWaiter(TASK_A, TASK_B, 'src/foo.ts', WS);
+    const where = (pathClaimWaitersFindMany.mock.calls[0][0] as any).where;
+    expect(where.args).toContainEqual({ type: 'eq', a: 'waiting_task_id', b: TASK_A });
+    expect(where.args).toContainEqual({ type: 'isNull', a: 'notified_at' });
   });
 });
 
@@ -702,10 +537,10 @@ describe('checkPathClaimConflict — wildcard task does not block workspace', ()
   beforeEach(resetQueues);
 
   it('wildcard-manifest task claims are never inserted, so they cannot block', async () => {
-    // If a task has "**" in pathManifest, the route returns 400 before calling insertClaims.
+    // If a task has "**" in pathManifest, the route returns 400 before calling acquirePathClaims.
     // So path_claims rows with path="**" can never exist. This test confirms that
     // even if a "**" row somehow existed, pathsOverlap([specific], ["**"]) would be
-    // called — but since insertClaims blocks "**" at insertion, this is defence-in-depth.
+    // called — but since the "**" check runs before acquisition, this is defence-in-depth.
     //
     // From the route layer: check_path_claim(['**']) → 400 before reaching this function.
     // The invariant is: path_claims rows never contain "**".
@@ -719,122 +554,6 @@ describe('checkPathClaimConflict — wildcard task does not block workspace', ()
   });
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// releaseClaims — released claim does not free path while PR is still open
-// ────────────────────────────────────────────────────────────────────────────
-
-describe('releaseClaims — separation of concerns', () => {
-  beforeEach(resetQueues);
-
-  it('releaseClaims only soft-deletes path_claims rows; it does not modify PR state', async () => {
-    // Per spec: an open PR is a separate signal tracked in tasks.prNumber / tasks.status.
-    // releaseClaims touches only path_claims and path_claim_waiters — no PR table writes.
-    // The claim is effectively released (releasedAt stamped), but whether the underlying
-    // PR is still open is orthogonal. The claim route and findBlockingPr handle PR state.
-    queueFindMany('pathClaims', [{ id: 'c1', workspaceId: WS, path: 'src/foo.ts' }]);
-    queueFindMany('pathClaimWaiters', []);
-    mockUpdate.mockReturnValue(makeUpdateChain());
-
-    const result = await releaseClaims(TASK_A);
-    // Release recorded in path_claims
-    expect(result?.releasedPaths).toContain('src/foo.ts');
-    // One update (claims), zero waiter update
-    expect(mockUpdate).toHaveBeenCalledTimes(1);
-    // No insert to task/PR tables
-    expect(mockInsert).not.toHaveBeenCalled();
-  });
-});
-
-// ────────────────────────────────────────────────────────────────────────────
-// claimObservedPaths — the §6d touch signal, promoted to a held lease
-// ────────────────────────────────────────────────────────────────────────────
-
-describe('claimObservedPaths', () => {
-  beforeEach(resetQueues);
-
-  it('leases a concrete observed path', async () => {
-    queueFindMany('pathClaims', []);
-    const values = mock(async () => undefined);
-    mockInsert.mockReturnValue({ values });
-
-    const leased = await claimObservedPaths(WS, TASK_A, ['apps/web/src/lib/foo.ts']);
-
-    expect(leased).toEqual(['apps/web/src/lib/foo.ts']);
-    // The row must carry the workspace and the task, or the claim-route
-    // backstop (which reads by workspace and skips the owning task) cannot
-    // scope it: it would either miss the lease or block its own holder.
-    expect(values).toHaveBeenCalledWith([
-      { workspaceId: WS, taskId: TASK_A, path: 'apps/web/src/lib/foo.ts' },
-    ]);
-  });
-
-  it('never leases a regenerable path — a generated file is not a mutex', async () => {
-    queueFindMany('pathClaims', []);
-    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
-
-    const leased = await claimObservedPaths(WS, TASK_A, [
-      'docs/specs/INDEX.md',
-      'packages/core/drizzle/meta/_journal.json',
-    ]);
-
-    expect(leased).toEqual([]);
-    expect(mockInsert).not.toHaveBeenCalled();
-  });
-
-  it('keeps the real work from a mixed touch set and drops the generated file', async () => {
-    queueFindMany('pathClaims', []);
-    const values = mock(async () => undefined);
-    mockInsert.mockReturnValue({ values });
-
-    const leased = await claimObservedPaths(WS, TASK_A, [
-      'packages/core/db/schema.ts',
-      'packages/core/drizzle/meta/_journal.json',
-    ]);
-
-    expect(leased).toEqual(['packages/core/db/schema.ts']);
-  });
-
-  it('drops the repo-wide sentinel — an undeclared scope is not a lock', async () => {
-    queueFindMany('pathClaims', []);
-    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
-
-    const leased = await claimObservedPaths(WS, TASK_A, ['**']);
-
-    expect(leased).toEqual([]);
-    expect(mockInsert).not.toHaveBeenCalled();
-  });
-
-  it('normalizes and dedupes so one file is never leased twice', async () => {
-    queueFindMany('pathClaims', []);
-    const values = mock(async () => undefined);
-    mockInsert.mockReturnValue({ values });
-
-    const leased = await claimObservedPaths(WS, TASK_A, [
-      'apps/web/src/lib/',
-      'apps/web/src/lib',
-      '  ',
-    ]);
-
-    expect(leased).toEqual(['apps/web/src/lib']);
-  });
-
-  it('is idempotent across syncs — a path already held is not re-inserted', async () => {
-    queueFindMany('pathClaims', [{ path: 'apps/web/src/lib/foo.ts' }]);
-    const values = mock(async () => undefined);
-    mockInsert.mockReturnValue({ values });
-
-    const leased = await claimObservedPaths(WS, TASK_A, [
-      'apps/web/src/lib/foo.ts',
-      'apps/web/src/lib/bar.ts',
-    ]);
-
-    expect(leased).toEqual(['apps/web/src/lib/bar.ts']);
-  });
-
-  it('does not touch the DB for an empty touch set', async () => {
-    const leased = await claimObservedPaths(WS, TASK_A, []);
-    expect(leased).toEqual([]);
-    expect(mockInsert).not.toHaveBeenCalled();
-    expect(pathClaimsFindMany).not.toHaveBeenCalled();
-  });
-});
+// insertClaims / appendPathManifest were replaced by acquirePathClaims; it,
+// narrowPathClaims, releaseClaims and claimObservedPaths are covered against a
+// table model in path-claim-ownership.test.ts.

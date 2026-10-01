@@ -361,6 +361,8 @@ UPDATE tasks t SET
   release_result = pg_temp.qa_json(t.release_result),
   output_schema = pg_temp.qa_json(t.output_schema),
   path_manifest = pg_temp.qa_json(t.path_manifest),
+  -- Declared paths plus free-text narrowing reasons.
+  path_declaration = pg_temp.qa_json(t.path_declaration),
   loop_config = pg_temp.qa_json(t.loop_config),
   subject_anchor = pg_temp.qa_json(t.subject_anchor),
   external_id = CASE WHEN t.external_id IS NULL THEN NULL ELSE 'EXT-' || s.n END,

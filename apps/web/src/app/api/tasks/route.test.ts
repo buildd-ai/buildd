@@ -2741,6 +2741,36 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(200);
     expect(captured().dependsOn).toEqual(['sibling-real-overlap']);
+    // Provenance: the declaration as filed, and which edge was inferred.
+    expect(captured().pathDeclaration).toMatchObject({
+      declared: ['apps/web/src/lib/shared.ts'],
+      source: 'creation',
+      inferredDependsOn: ['sibling-real-overlap'],
+    });
+  });
+
+  it('records a caller-supplied edge as explicit, never as inferred', async () => {
+    const captured = missionPathManifestSetup();
+    const explicitDepId = '11111111-1111-1111-1111-111111111111';
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ id: explicitDepId }])
+      .mockResolvedValueOnce([{ id: explicitDepId, pathManifest: ['apps/web/src/lib'] }]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Mission task B',
+        missionId: 'mission-1',
+        dependsOn: [explicitDepId],
+        pathManifest: ['apps/web/src/lib/shared.ts'],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toEqual([explicitDepId]);
+    expect(captured().pathDeclaration.inferredDependsOn).toBeUndefined();
   });
 
   it('preserves caller-supplied dependsOn on a wildcard-defaulted mission task', async () => {

@@ -26,7 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration,TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -1260,6 +1260,12 @@ export const tasks = pgTable('tasks', {
   // Used by the orchestrator to add dependsOn edges between tasks that touch the same paths,
   // and by the claim-time guard to defer a task whose paths overlap an open PR.
   pathManifest: jsonb('path_manifest').$type<string[] | null>(),
+  // What was declared, kept apart from the effective pathManifest above, plus
+  // which dependsOn edges were inferred and every narrowing. See PathDeclaration.
+  pathDeclaration: jsonb('path_declaration').$type<PathDeclaration | null>(),
+  // Ownership revision: bumped by lease acquisition, narrowing and terminal
+  // release (packages/core/path-claim.ts) so a narrow can CAS on what it read.
+  pathClaimRevision: integer('path_claim_revision').default(0).notNull(),
   // Connector IDs (subset of the role's connectorRefs) that this task MUST have available.
   // The claim route hard-blocks only on connectors in this list; missing connectors outside
   // it are advisory and do not prevent claiming.
