@@ -21,6 +21,7 @@ import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpe
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
 import { recordTaskAreaOutcome } from '@buildd/core/task-area-prediction-source';
+import { recordOrchestrationTouchLabel } from '@buildd/core/orchestration-ledger-source';
 import { detectCbmFleetDisabled, detectCbmEnforcedUnused, CBM_HEALTH_TERMINAL_STATUSES } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
@@ -1181,6 +1182,23 @@ export async function PATCH(
         ? [...observed, ...touchedPaths.filter((p: unknown): p is string => typeof p === 'string')]
         : observed;
       await recordTaskAreaOutcome(worker.taskId, finalPaths);
+      // Final touched-file label for orchestration decisions (conflict-aware
+      // orchestration §5), from the same observation, before the clear. Writes
+      // only for a task a decision looked at; never throws into this PATCH.
+      try {
+        await recordOrchestrationTouchLabel({
+          taskId: worker.taskId,
+          workspaceId: worker.workspaceId,
+          workerId: worker.id,
+          workerStatus: status,
+          paths: finalPaths,
+          prNumber: worker.prNumber ?? null,
+          headSha: worker.lastCommitSha ?? null,
+          baseRef: worker.prBaseRef ?? null,
+        });
+      } catch (err) {
+        console.warn(`[Worker ${id}] orchestration touch label failed (non-fatal):`, err);
+      }
     }
     updates.observedTouches = null;
   } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {

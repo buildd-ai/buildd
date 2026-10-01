@@ -577,6 +577,14 @@ mock.module('@buildd/core/path-claim', () => ({
   rearmWaiter: mockRearmWaiter,
 }));
 
+// Orchestration decision outcome labels (conflict-aware orchestration §5):
+// the terminal touched-file label write goes through a real db client, so it
+// is stubbed here and asserted below.
+const mockRecordOrchestrationTouchLabel = mock(async (_input: any) => true);
+mock.module('@buildd/core/orchestration-ledger-source', () => ({
+  recordOrchestrationTouchLabel: mockRecordOrchestrationTouchLabel,
+}));
+
 const mockSchedulePrScopeReconcile = mock((_input: any) => {});
 mock.module('@/lib/pr-scope-reconcile-trigger', () => ({ schedulePrScopeReconcile: mockSchedulePrScopeReconcile }));
 
@@ -1572,6 +1580,97 @@ describe('PATCH /api/workers/[id]', () => {
       const data = await res.json();
       expect(data.retryable).toBe(true);
       expect(data.abort).toBeUndefined();
+    });
+  });
+
+  // ── Orchestration outcome label (conflict-aware orchestration §5) ─────────
+  // The final touched-file label must be persisted from the observation the
+  // terminal PATCH is about to clear; nothing else keeps a per-task file list.
+  describe('orchestration touch label', () => {
+    const terminalWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+      milestones: [],
+      observedTouches: ['apps/web/a.ts'],
+      prNumber: 12,
+      lastCommitSha: 'sha-1',
+      prBaseRef: 'dev',
+    };
+
+    function captureSets() {
+      const sets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          sets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed' }]) })) };
+        }),
+      });
+      return sets;
+    }
+
+    it('records the accumulated + final paths with the PR keys, and still clears the column', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...terminalWorker });
+      mockRecordOrchestrationTouchLabel.mockClear();
+      const sets = captureSets();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom', touchedPaths: ['apps/web/b.ts'] },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockRecordOrchestrationTouchLabel).toHaveBeenCalledTimes(1);
+      expect(mockRecordOrchestrationTouchLabel.mock.calls[0][0]).toEqual({
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        workerId: 'worker-1',
+        workerStatus: 'failed',
+        paths: ['apps/web/a.ts', 'apps/web/b.ts'],
+        prNumber: 12,
+        headSha: 'sha-1',
+        baseRef: 'dev',
+      });
+      expect(sets.some(s => 'observedTouches' in s && s.observedTouches === null)).toBe(true);
+    });
+
+    it('a failing label write never fails the terminal PATCH', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...terminalWorker });
+      mockRecordOrchestrationTouchLabel.mockClear();
+      mockRecordOrchestrationTouchLabel.mockImplementationOnce(async () => { throw new Error('db down'); });
+      captureSets();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'boom' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(mockRecordOrchestrationTouchLabel).toHaveBeenCalledTimes(1);
+      expect(res.status).not.toBe(500);
+    });
+
+    it('a non-terminal sync writes no label', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...terminalWorker });
+      mockRecordOrchestrationTouchLabel.mockClear();
+      captureSets();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { touchedPaths: ['apps/web/c.ts'] },
+      });
+      await PATCH(req, { params: mockParams });
+
+      expect(mockRecordOrchestrationTouchLabel).not.toHaveBeenCalled();
     });
   });
 
