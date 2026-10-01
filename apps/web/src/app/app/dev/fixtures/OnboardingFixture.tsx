@@ -34,7 +34,7 @@ export function onboardingFixtureReport(view: OnboardingFixtureView): WorkspaceR
   if (view === 'no-repo') return { items: [], nextStep: 'link-repo', skill: 'workspace-onboarding', truncated: false };
   if (view === 'spec') {
     return {
-      items: items.map((i) => (i.id === 'spec-root' ? { ...i, status: 'detected' as const, fix: null } : i)).filter((i) => i.id !== 'agent-instructions'),
+      items: items.map((i) => (i.id === 'spec-root' ? { ...i, status: 'detected' as const, fix: null, evidence: [] } : i)).filter((i) => i.id !== 'agent-instructions'),
       nextStep: 'author-spec',
       skill: 'workspace-onboarding',
       truncated: false,

@@ -200,6 +200,7 @@ export function ReadinessCard({ workspaceId }: { workspaceId: string }) {
                                             onChange={() => toggle(item.id)}
                                         />
                                     )}
+                                    {!selectable && fixable.length > 0 && <span aria-hidden="true" className="size-4 shrink-0" />}
                                     <span
                                         aria-hidden="true"
                                         data-testid={`readiness-dot-${item.id}`}
