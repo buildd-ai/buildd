@@ -249,6 +249,7 @@ export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy', sc
 If the path is unclaimed by any active sibling task, your task's pathManifest is atomically extended and you can proceed.
 If the path is already claimed by a sibling task, you receive blockingTaskId and must report blocked so a dependsOn edge can be added.
 If a deadlock cycle is detected (the blocking task is transitively waiting on you), deadlock=true is returned with a cycle array and actionable guidance on how to break it: cancel and retry, escalate to the blocking task's owner, or use mission-level maxConcurrentTasks=1.
+With release=true, gives the paths back instead: frees your leases on them (and under them), drops them from your manifest, and wakes only tasks waiting on them.
 
 Requires a worker context (?worker=<workerId> in the MCP URL).`,
       annotations: {
@@ -307,7 +308,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           },
           body: {
             type: "object" as const,
-            description: "Type-specific payload (max 2 KB). path_blocked_on_you: {paths: string[], blockedTaskId: string}. path_released: {paths: string[], releasedAt: string, reason: 'merged'|'pending_merge'|'abandoned'}. question: {text: string}. answer: {replyToMsgId: string, text: string}.",
+            description: "Type-specific payload (max 2 KB). path_blocked_on_you: {paths: string[], blockedTaskId: string}. path_released: {paths: string[], releasedAt: string, reason: 'merged'|'pending_merge'|'abandoned'|'narrowed'}. question: {text: string}. answer: {replyToMsgId: string, text: string}.",
           },
           hopCount: {
             type: "number" as const,

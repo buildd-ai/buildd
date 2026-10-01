@@ -34,6 +34,9 @@ import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import { checkBaseRefreshHold } from '@/lib/base-refresh';
+import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
  * The base-freshness refusal below: behind the base but not conflicting.
@@ -46,7 +49,7 @@ export function isBehindBaseRefusal(reason: string): boolean {
 
 export type AutoMergeRefusalClass =
   | 'ci' | 'deny_path' | 'migration' | 'size' | 'conflict' | 'blocked'
-  | 'base_freshness' | 'model_bound' | 'stale_head' | 'github_read' | 'other';
+  | 'base_freshness' | 'model_bound' | 'stale_head' | 'github_read' | 'semantic_hold' | 'other';
 
 /**
  * Which safety rail an `evaluateAutoMergeSafety` refusal came from, for the
@@ -64,6 +67,7 @@ export function classifyAutoMergeRefusal(reason: string): AutoMergeRefusalClass 
   if (/^model approve:/.test(reason)) return 'model_bound';
   if (/PR head changed|live PR head/.test(reason)) return 'stale_head';
   if (/^could not (fetch|verify)|^malformed PR files/.test(reason)) return 'github_read';
+  if (/^semantic hold \(/.test(reason)) return 'semantic_hold';
   return 'other';
 }
 
@@ -152,6 +156,12 @@ export async function evaluateAutoMergeSafety(
      * measures the gap itself.
      */
     skipBaseFreshness?: boolean;
+    /**
+     * The workspace gitConfig, for the post-refresh semantic hold
+     * (base-refresh.ts `checkBaseRefreshHold`). Every merge door passes it;
+     * omitted, or with `semanticRefresh` off, the hold makes no read.
+     */
+    gitConfig?: WorkspaceGitConfig | null;
     /** Out-param: facts this check read from the live PR, so a caller does not re-read them. Filled as soon as the PR is read, before any rail can refuse. */
     observed?: {
       baseRef?: string | null;
@@ -207,6 +217,22 @@ export async function evaluateAutoMergeSafety(
       }`,
     };
   }
+
+  // Post-refresh semantic hold (conflict-aware-orchestration.md §4): a refresh
+  // can merge in base commits that landed after its semantic verdict. Under
+  // enforce the PR waits here until that arrived range is re-verified. Only
+  // consulted once CI is green, and makes no read when the check is off.
+  const hold = await checkBaseRefreshHold({
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha,
+    taskId: opts?.taskId ?? null,
+    workspaceId: opts?.workspaceId ?? null,
+    workerId: opts?.workerId ?? null,
+    gitConfig: opts?.gitConfig,
+  });
+  if (hold.blocks) return { ok: false, reason: hold.reason };
 
   // LEGACY FALLBACK (added 2026-09-24, REMOVE NEXT RELEASE — see
   // LEGACY_PATH_FALLBACK_NOTE in @buildd/shared). Hand-written denyPaths /
@@ -494,8 +520,45 @@ export async function tryAutoMergeWorkerPr(params: {
   worker: { id: string; taskId: string | null; workspaceId?: string };
   policy: MergePolicy;
   bound?: ModelApproveBound;
+  /**
+   * The workspace gitConfig, used ONLY by surface merge ordering (the merge
+   * decision itself is `policy`). Omitted, the ordering check loads it.
+   */
+  surfaceOrderingConfig?: WorkspaceGitConfig | null;
 }): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
+
+  // Surface merge ordering (conflict-aware-orchestration.md §3) — FIRST, before
+  // the safety rails, because their refusal path can refresh the branch
+  // (dispatchConflictRetry). A PR waiting behind an earlier PR on a serialized
+  // surface must not be mutated; the earlier PR's close re-drives it. Off by
+  // default: no reads unless the workspace opted in.
+  // Resolved at most once per call: ordering, the review gate and both conflict
+  // paths all need it, and a caller that passes `worker.workspaceId` costs no read.
+  let workspaceIdRead: Promise<string | null> | null = null;
+  const workspaceIdOnce = () =>
+    (workspaceIdRead ??= worker.workspaceId
+      ? Promise.resolve(worker.workspaceId)
+      : worker.taskId ? resolveWorkspaceId(worker.taskId) : Promise.resolve(null));
+  const orderWorkspaceId = await workspaceIdOnce();
+  const surfaceOrder = orderWorkspaceId
+    ? await checkSurfaceOrder({
+        workspaceId: orderWorkspaceId,
+        installationId,
+        repoFullName,
+        prNumber,
+        headSha,
+        gitConfig: params.surfaceOrderingConfig,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        door: 'auto-merge',
+        callerOrigin: 'system',
+      })
+    : ({ blocks: false, slot: null } as const);
+  if (surfaceOrder.blocks) {
+    console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${surfaceOrder.reason}`);
+    return { merged: false, reason: surfaceOrder.reason };
+  }
 
   // One mission read serves both callers of it inside the safety rails: the
   // size-gate exemption and, when a model verdict authorised this merge, the
@@ -530,7 +593,7 @@ export async function tryAutoMergeWorkerPr(params: {
     prNumber,
     headSha,
     policy,
-    { mission, bound, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: worker.id, observed },
+    { mission, bound, workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: worker.id, observed, gitConfig: params.surfaceOrderingConfig },
   );
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
@@ -552,7 +615,7 @@ export async function tryAutoMergeWorkerPr(params: {
 
     // Conflict path: dispatch a same-branch retry rather than asking the human.
     if (classifyMergeFailure(safetyCheck.reason) === 'conflict' && worker.taskId) {
-      const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
+      const workspaceId = await workspaceIdOnce();
       if (workspaceId) {
         const dispatchResult = await dispatchConflictRetry({
           workerId: worker.id,
@@ -615,7 +678,7 @@ export async function tryAutoMergeWorkerPr(params: {
   //
   // No override here by construction: nothing unattended may bypass a verdict.
   // A human override lives on the dashboard route, where a person is present.
-  const reviewWorkspaceId = worker.workspaceId ?? (worker.taskId ? await resolveWorkspaceId(worker.taskId) : null);
+  const reviewWorkspaceId = await workspaceIdOnce();
   if (reviewWorkspaceId) {
     const reviewGate = await guardReviewVerdict({
       workspaceId: reviewWorkspaceId,
@@ -680,7 +743,14 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha);
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
+    mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha),
+  );
+  if ('refused' in slotted) {
+    console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);
+    return { merged: false, reason: slotted.refused };
+  }
+  const result = slotted.result;
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);
@@ -705,7 +775,7 @@ export async function tryAutoMergeWorkerPr(params: {
   });
   // Handle race-condition conflict (PR was clean at eval time but dirty at merge time)
   if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
-    const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
+    const workspaceId = await workspaceIdOnce();
     if (workspaceId) {
       const dispatchResult = await dispatchConflictRetry({
         workerId: worker.id,

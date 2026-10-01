@@ -19,7 +19,24 @@ import { isApprovalSelfMergeable } from './pr-review-status';
 /** The bar an approval must clear when the workspace sets no threshold. */
 export const DEFAULT_REVIEW_CONFIDENCE_THRESHOLD = 0.6;
 
-const VERDICTS: ReadonlyArray<ReviewerTaskOutput['verdict']> = ['approve', 'request-changes', 'escalate'];
+export const REVIEWER_VERDICTS: ReadonlyArray<ReviewerTaskOutput['verdict']> = ['approve', 'request-changes', 'escalate'];
+const VERDICTS = REVIEWER_VERDICTS;
+
+/**
+ * Map a spelling variant of a canonical verdict (request_changes,
+ * requestChanges, REQUEST-CHANGES, "request changes") to the canonical value.
+ * Only case and word separators are normalized — a different word
+ * ("approved", "reject") is not an obvious variant and stays unrecognized.
+ */
+export function normalizeReviewerVerdict(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  const canonical = raw
+    .trim()
+    .replace(/([a-z])([A-Z])/g, '$1-$2')
+    .replace(/[\s_-]+/g, '-')
+    .toLowerCase();
+  return (VERDICTS as readonly string[]).includes(canonical) ? canonical : raw;
+}
 
 export type ParsedReviewerOutput =
   | { ok: true; output: ReviewerTaskOutput }
@@ -34,11 +51,12 @@ export function parseReviewerOutput(raw: unknown): ParsedReviewerOutput {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, reason: 'structuredOutput is not an object' };
   }
-  const o = raw as Record<string, unknown>;
+  const o = { ...(raw as Record<string, unknown>) };
+  o.verdict = normalizeReviewerVerdict(o.verdict);
   if (typeof o.verdict !== 'string' || !(VERDICTS as readonly string[]).includes(o.verdict)) {
     return {
       ok: false,
-      reason: `verdict must be one of ${VERDICTS.join(', ')} (got ${JSON.stringify(o.verdict ?? null)})`,
+      reason: `verdict must be exactly one of ${VERDICTS.map((v) => `"${v}"`).join(', ')} (got ${JSON.stringify(o.verdict ?? null)})`,
     };
   }
   if (typeof o.confidence !== 'number' || !Number.isFinite(o.confidence) || o.confidence < 0 || o.confidence > 1) {

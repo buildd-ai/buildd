@@ -27,7 +27,10 @@ export const MISSION_LIST_EXECUTOR_FIXTURE_STATE = 'mission-list-executor';
 /** The mission Settings sheet's check-ins and organizer runs (MissionCheckInsFixture.tsx). */
 export const MISSION_CHECK_INS_FIXTURE_STATE = 'mission-check-ins';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE];
+/** The workspace onboarding card with a stubbed readiness report (OnboardingFixture.tsx). */
+export const ONBOARDING_FIXTURE_STATE = 'onboarding';
+
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

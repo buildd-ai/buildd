@@ -221,6 +221,10 @@ DELETE FROM notification_deliveries;
 DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
+-- Orchestration decision ledger: touch labels carry file paths.
+DELETE FROM orchestration_manifest_predictions;
+DELETE FROM orchestration_touch_labels;
+DELETE FROM orchestration_decisions;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,
@@ -361,6 +365,8 @@ UPDATE tasks t SET
   release_result = pg_temp.qa_json(t.release_result),
   output_schema = pg_temp.qa_json(t.output_schema),
   path_manifest = pg_temp.qa_json(t.path_manifest),
+  -- Declared paths plus free-text narrowing reasons.
+  path_declaration = pg_temp.qa_json(t.path_declaration),
   loop_config = pg_temp.qa_json(t.loop_config),
   subject_anchor = pg_temp.qa_json(t.subject_anchor),
   external_id = CASE WHEN t.external_id IS NULL THEN NULL ELSE 'EXT-' || s.n END,
@@ -513,7 +519,13 @@ UPDATE external_links SET
 
 UPDATE change_intents SET
   surface = pg_temp.qa_hash('path/', surface),
-  branch = pg_temp.qa_branch(branch);
+  branch = pg_temp.qa_branch(branch),
+  base_ref = pg_temp.qa_branch(base_ref);
+
+UPDATE surface_reservations SET
+  surface = pg_temp.qa_hash('path/', surface),
+  repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
+  base_ref = pg_temp.qa_branch(base_ref);
 
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);

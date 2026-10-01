@@ -8,6 +8,7 @@ import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { RepoLinkCard } from './config/RepoLinkCard';
 
 export default async function WorkspaceDetailPage({
   params,
@@ -150,6 +151,11 @@ export default async function WorkspaceDetailPage({
             </NewWorkLink>
           </div>
         </div>
+
+        {/* No repo means workers have nothing to work in; linking one is an admin write. */}
+        {!workspace.repo && (access.role === 'owner' || access.role === 'admin') && (
+          <RepoLinkCard workspaceId={workspace.id} />
+        )}
 
         {/* Tab bar — scrolls sideways on phones; the edge fade signals there
             is more (Configure is otherwise off-screen). */}

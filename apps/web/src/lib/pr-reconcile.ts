@@ -513,6 +513,9 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             worker.workspaceId,
             worker.prNumber,
           );
+          // A lost close event also left this PR's change intents open, so a
+          // later PR on a serialized surface would wait on it forever.
+          await settleSurfaceIntents(worker.workspaceId, worker.prNumber);
         } else if (pr.state === 'closed') {
           await recordCheck(worker.id, {
             prLifecycleStatus: 'closed',
@@ -526,6 +529,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             worker.workspaceId,
             worker.prNumber,
           );
+          await settleSurfaceIntents(worker.workspaceId, worker.prNumber);
         } else {
           // Still open — record the check and clear the failure streak. The PR
           // resolved fine; it simply has not landed yet. GitHub gave a real
@@ -820,4 +824,18 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
   }
 
   return result;
+}
+
+/**
+ * Missed-close reconciliation for surface merge ordering
+ * (conflict-aware-orchestration.md §3): close the PR's change intents, drop its
+ * reservations, wake whoever waited behind it. Never throws.
+ */
+async function settleSurfaceIntents(workspaceId: string, prNumber: number): Promise<void> {
+  try {
+    const { settleSurfaceIntentsOnClose } = await import('@/lib/surface-ordering');
+    await settleSurfaceIntentsOnClose({ workspaceId, prNumber });
+  } catch (err) {
+    console.warn(`[pr-reconcile] surface settle failed for PR #${prNumber}:`, err);
+  }
 }

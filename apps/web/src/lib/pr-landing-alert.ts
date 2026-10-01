@@ -24,6 +24,8 @@ const UNPAGED_CAUSES: ReadonlySet<HumanCause> = new Set(['human_tier', 'landing_
 
 const CAUSE_WORDS: Partial<Record<HumanCause, string>> = {
   refresh_exhausted: 'it lost the race to the base branch',
+  refresh_failed: 'its branch could not be updated from the base (not a conflict)',
+  semantic_unverified: 'it and the base edit the same files and the overlap could not be verified',
   fix_exhausted: 'the automatic fixes ran out of attempts',
   blocking_verdict: 'the reviewer is blocking it',
   low_confidence: 'the review is not confident enough',

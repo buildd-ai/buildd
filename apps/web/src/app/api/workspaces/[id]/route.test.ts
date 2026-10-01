@@ -580,6 +580,82 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.gitConfig).toMatchObject({ mergePolicy: null });
   });
 
+  // Path-claim enforcement is a workspace opt-in (conflict-aware-orchestration.md §2).
+  it('accepts gitConfig.pathClaimEnforcement enforce/advisory and null to clear', async () => {
+    for (const value of ['enforce', 'advisory', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { pathClaimEnforcement: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, pathClaimEnforcement: value });
+    }
+  });
+
+  // Surface merge ordering is a workspace opt-in (conflict-aware-orchestration.md §3).
+  it('accepts gitConfig.surfaceOrdering off/shadow/enforce and null to clear', async () => {
+    for (const value of ['off', 'shadow', 'enforce', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { surfaceOrdering: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, surfaceOrdering: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.surfaceOrdering value (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { surfaceOrdering: true } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/surfaceOrdering/);
+  });
+
+  it('accepts gitConfig.semanticRefresh off/shadow/enforce and null to clear', async () => {
+    for (const value of ['off', 'shadow', 'enforce', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { semanticRefresh: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, semanticRefresh: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.semanticRefresh value (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { semanticRefresh: true } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/semanticRefresh/);
+  });
+
+  it('rejects a non-boolean serialize flag or non-string schema triggers (returns 400)', async () => {
+    for (const gitConfig of [
+      { conflictSurfaces: [{ pattern: 'bun.lock', label: 'lockfile', serialize: 'yes' }] },
+      { sequenceNamespaces: [{ dir: 'd', anchorFile: 'd/j.json', label: 'm', serialize: 1 }] },
+      { sequenceNamespaces: [{ dir: 'd', anchorFile: 'd/j.json', label: 'm', triggers: 'schema.ts' }] },
+    ]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+    const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { pathClaimEnforcement: true } } });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/pathClaimEnforcement/);
+  });
+
   it('rejects gitConfig.mergePolicy with unknown keys (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

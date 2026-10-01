@@ -53,7 +53,7 @@ mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ type: 'eq', a, b }),
 }));
 
-const { releaseAndNotify, resolveReleaseReasonForTask } = await import('./path-claim-release');
+const { releaseAndNotify, deliverPathReleased, resolveReleaseReasonForTask } = await import('./path-claim-release');
 
 const WS = 'ws-1';
 const HOLDER = 'task-holder';
@@ -217,6 +217,43 @@ describe('releaseAndNotify', () => {
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
     const [, msg] = mockEnqueue.mock.calls[0] as any[];
     expect(msg.body.paths).toEqual(['a.ts']);
+  });
+});
+
+describe('deliverPathReleased — selective narrowing', () => {
+  it('messages only the waiters in the result, with reason narrowed', async () => {
+    await deliverPathReleased(HOLDER, {
+      workspaceId: WS,
+      releasedPaths: ['src/a.ts'],
+      notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'src/a.ts' }],
+    }, 'narrowed');
+
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    const [to, msg] = (mockEnqueue.mock.calls[0] as unknown) as [string, any];
+    expect(to).toBe(WAITER_A);
+    expect(msg.body).toMatchObject({ paths: ['src/a.ts'], reason: 'narrowed' });
+    expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-1', 'path_claim_released',
+      expect.objectContaining({ reason: 'narrowed', waitingTaskIds: [WAITER_A] }));
+  });
+
+  it('a failed delivery re-arms the waiter so the next release event retries it', async () => {
+    mockEnqueue.mockImplementation(async () => { throw new Error('queue full'); });
+    await deliverPathReleased(HOLDER, {
+      workspaceId: WS,
+      releasedPaths: ['src/a.ts'],
+      notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'src/a.ts' }],
+    }, 'narrowed');
+    expect(mockRearm).toHaveBeenCalledWith(HOLDER, WAITER_A);
+  });
+
+  it('never throws, even when the Pusher fan-out fails', async () => {
+    mockTriggerEvent.mockImplementationOnce(async () => { throw new Error('pusher down'); });
+    await deliverPathReleased(HOLDER, {
+      workspaceId: WS, releasedPaths: ['x'], notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'x' }],
+    }, 'abandoned');
   });
 });
 

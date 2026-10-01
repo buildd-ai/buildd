@@ -32,6 +32,8 @@ export type InferenceCapability =
   | 'heartbeat_triage'
   | 'task_category'
   | 'task_role_shadow'
+  | 'orchestration_manifest'
+  | 'orchestration_claim'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -95,6 +97,24 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Task role shadow',
     description: 'A decision model says which role it would give a task filed without one. Logged only; never changes the task.',
     costHint: '~$0.00003 per task',
+  },
+  // Conflict-aware orchestration decisions (docs/design/conflict-aware-orchestration.md
+  // §5, packages/core/orchestration-decision.ts). Opt-in shadows: they ship dark,
+  // and opting in records suggestions only until a decision's applying cohort is
+  // raised from zero after a held-out readout.
+  orchestration_manifest: {
+    id: 'orchestration_manifest',
+    kind: 'opt_in',
+    label: 'Scope prediction shadow',
+    description: 'A decision model predicts which files a task filed without a scope will touch. Logged only until measured.',
+    costHint: '~$0.0001 per task',
+  },
+  orchestration_claim: {
+    id: 'orchestration_claim',
+    kind: 'opt_in',
+    label: 'Hold/start shadow',
+    description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
+    costHint: '~$0.00003 per check',
   },
   chat: {
     id: 'chat',

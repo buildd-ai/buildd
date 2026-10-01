@@ -10,12 +10,15 @@
  *   - reviewer supersession on PR merge, human review interrupt, task
  *     reassignment, and the answered-question continuation path
  *   - the path-claims maintenance sweep, for whatever the above missed
+ *
+ * Selective narrowing (lib/path-claim-check.ts `narrowPathClaim`) reuses the
+ * delivery half, `deliverPathReleased`, for just the waiters it freed.
  */
 
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { releaseClaims, rearmWaiter } from '@buildd/core/path-claim';
+import { releaseClaims, rearmWaiter, type ReleaseResult } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage } from '@buildd/core/worker-messages';
 import { triggerEvent, channels } from '@/lib/pusher';
 
@@ -25,11 +28,13 @@ import { triggerEvent, channels } from '@/lib/pusher';
  * `merged`        the holder's PR is in the base branch: rebase.
  * `pending_merge` the holder finished, PR still open: locks free, base unchanged.
  * `abandoned`     failed, closed unmerged, or reaped: nothing landed.
+ * `narrowed`      the holder is still working but gave these paths back
+ *                 without landing anything on them: base unchanged.
  *
- * Required rather than defaulted: there are three call sites and each one knows
- * the answer, while a default would quietly re-introduce "merged" as a lie.
+ * Required rather than defaulted: every call site knows the answer, while a
+ * default would quietly re-introduce "merged" as a lie.
  */
-export type PathReleaseReason = 'merged' | 'pending_merge' | 'abandoned';
+export type PathReleaseReason = 'merged' | 'pending_merge' | 'abandoned' | 'narrowed';
 
 /**
  * Release all active path_claims for a task, deliver a `path_released` message
@@ -46,8 +51,28 @@ export type PathReleaseReason = 'merged' | 'pending_merge' | 'abandoned';
 export async function releaseAndNotify(taskId: string, reason: PathReleaseReason): Promise<void> {
   try {
     const result = await releaseClaims(taskId);
-    if (!result) return; // no active claims — nothing to do
+    if (!result) return; // nothing released and nobody waiting
+    await deliverPathReleased(taskId, result, reason);
+  } catch (err) {
+    console.error(`[path-claim] releaseAndNotify failed for task ${taskId}:`, err);
+  }
+}
 
+/**
+ * Deliver `path_released` to each waiter in `result` (already stamped
+ * notified by the core release/narrow statement), re-arming any waiter whose
+ * delivery fails, then fan out `path_claim_released` for dashboards.
+ *
+ * Only the waiters in `result` are messaged — for a narrowing that is exactly
+ * the ones blocked on a released path, not every waiter on the task.
+ * Never throws.
+ */
+export async function deliverPathReleased(
+  taskId: string,
+  result: ReleaseResult,
+  reason: PathReleaseReason,
+): Promise<void> {
+  try {
     const { workspaceId, releasedPaths, notifiedWaiters } = result;
     if (notifiedWaiters.length === 0) return;
 
@@ -68,9 +93,10 @@ export async function releaseAndNotify(taskId: string, reason: PathReleaseReason
     }
 
     const releasedAt = new Date().toISOString();
-    // Parallel, and each failure re-arms its own waiter: `releaseClaims` has
+    // Parallel, and each failure re-arms its own waiter: the core statement has
     // already stamped notifiedAt, so without the re-arm a failed enqueue is a
-    // permanently silent waiter (no retry, no starvation warning either).
+    // permanently silent waiter. The next release event for this task (a
+    // repeated terminal signal, or the maintenance sweep) wakes it again.
     await Promise.all([...pathsByWaiter].map(async ([waitingTaskId, paths]) => {
       try {
         const delivered = await enqueueWorkerMessage(
@@ -99,10 +125,11 @@ export async function releaseAndNotify(taskId: string, reason: PathReleaseReason
         taskId,
         paths: releasedPaths,
         waitingTaskIds: notifiedWaiters,
+        reason,
       },
     );
   } catch (err) {
-    console.error(`[path-claim] releaseAndNotify failed for task ${taskId}:`, err);
+    console.error(`[path-claim] path_released delivery failed for task ${taskId}:`, err);
   }
 }
 

@@ -129,6 +129,35 @@ export const GATE_SLUGS = {
    * once the PR is approved and green. See `lib/pr-landing-metrics.ts`.
    */
   PR_LANDING: 'pr_landing',
+  /**
+   * Surface merge ordering (`lib/surface-ordering.ts`, conflict-aware-orchestration.md
+   * §3). `deferred` = an enforcing wait behind an earlier open PR on a serialized
+   * surface (`detail.kind` 'ordering') or unverifiable intent state ('unverified');
+   * `warned` = shadow would-defer or a reported cross-surface order inversion;
+   * `accepted` = a merge reservation was taken (the denominator); `bypassed` = an
+   * explicit authorized override. Distinct from `change_intent`, whose `warned`
+   * rows are the advisory overlap notes and never gate anything.
+   */
+  SURFACE_ORDERING: 'surface_ordering',
+  /**
+   * Path declaration outcomes and manifest provenance (§3 denominators):
+   * `accepted` = declared/acquired, `deferred` = denied by a live holder,
+   * `warned` = degraded (coordination unavailable, edits proceeded). `detail.provenance`
+   * says where the declaration came from (creation / plan_step / doc_fix /
+   * check_path_claim / observed / hook) — the generic MCP histogram cannot.
+   */
+  PATH_DECLARATION: 'path_declaration',
+  /**
+   * Deterministic base refresh of a behind-only PR (conflict-aware-orchestration.md
+   * §4). `accepted` = GitHub merged the base in (no agent); `deferred` = an
+   * operational update failure (`detail.failure`: rate_limit / auth / transient /
+   * unknown) or an unverified semantic check awaiting a bounded recheck, or a
+   * verified same-symbol edit sent to semantic review (`detail.verdict`);
+   * `warned` = shadow semantic verdict or a moved head; `rejected` = attempts
+   * exhausted, with an operational diagnostic posted. A textual conflict is
+   * never recorded here as an operational failure — it goes to the conflict agent.
+   */
+  BASE_REFRESH: 'base_refresh',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
