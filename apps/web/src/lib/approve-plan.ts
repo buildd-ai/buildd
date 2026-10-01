@@ -11,6 +11,7 @@ import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/c
 import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
 import { dispatchPlanChildTask } from './task-dispatch';
+import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -389,6 +390,22 @@ export async function approvePlan(
         },
       })
       .returning();
+
+    // Manifest provenance denominator (conflict-aware-orchestration.md §3).
+    {
+      const declared = (created as { pathManifest?: unknown } | undefined)?.pathManifest;
+      recordPathDeclaration({
+        result: 'succeeded',
+        provenance: docFix?.specPath ? 'doc_fix' : 'plan_step',
+        surface: 'approve-plan',
+        workspaceId: task.workspaceId ?? null,
+        missionId: task.missionId ?? null,
+        taskId: created.id,
+        callerOrigin: 'system',
+        pathCount: Array.isArray(declared) ? declared.length : 0,
+        detail: { shape: manifestShape(declared), planningTaskId },
+      });
+    }
 
     refToId[step.ref] = created.id;
     refToTitle[step.ref] = step.title;

@@ -110,6 +110,16 @@ mock.module('@/lib/pr-activity-comment', () => ({
   appendPrActivity: mockAppendPrActivity,
 }));
 
+// Surface merge ordering (lib/surface-ordering-door.ts): pass-through by default
+// so every other test here sees the unchanged door; the ordering describe below
+// drives it.
+let mockCheckSurfaceOrder = mock(async (_input: any) => ({ blocks: false, slot: null }) as any);
+let mockMergeInSurfaceSlot = mock(async (_verdict: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: (input: any) => mockCheckSurfaceOrder(input),
+  mergeInSurfaceSlot: (verdict: any, merge: () => Promise<any>) => mockMergeInSurfaceSlot(verdict, merge),
+}));
+
 import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure, classifyAutoMergeRefusal } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
@@ -2209,5 +2219,85 @@ describe('classifyAutoMergeRefusal', () => {
     ['something new', 'other'],
   ])('%s → %s', (reason, cls) => {
     expect(classifyAutoMergeRefusal(reason)).toBe(cls as any);
+  });
+});
+
+// ── Surface merge ordering (conflict-aware-orchestration.md §3) ──────────────
+describe('tryAutoMergeWorkerPr — surface ordering gate', () => {
+  const CLEAN_GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const ORDINARY_FILES = [{ filename: 'apps/web/src/lib/foo.ts', additions: 4, deletions: 1 }];
+  const policy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } as MergePolicy;
+  const call = (extra: Record<string, unknown> = {}) => tryAutoMergeWorkerPr({
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prNumber: 42,
+    headSha: 'head-sha',
+    worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+    policy,
+    ...extra,
+  } as any);
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockClear();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }) as any);
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
+  });
+
+  it('defers before ANY GitHub read or branch mutation when an earlier PR holds the surface', async () => {
+    mockCheckSurfaceOrder = mock(async () => ({
+      blocks: true, kind: 'ordering', reason: 'waiting for PR #41 to close first', counterpartPrNumber: 41, surface: 'Drizzle migrations',
+    }) as any);
+    const result = await call();
+    expect(result).toEqual({ merged: false, reason: 'waiting for PR #41 to close first' });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('asks the gate with the door, the live head and the workspace config', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    const gitConfig = { surfaceOrdering: 'enforce' };
+    await call({ surfaceOrderingConfig: gitConfig });
+    const asked = mockCheckSurfaceOrder.mock.calls[0][0];
+    expect(asked).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head-sha', door: 'auto-merge', callerOrigin: 'system', gitConfig });
+  });
+
+  it('merges inside the surface slot, and a refused slot never calls merge', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockMergeInSurfaceSlot = mock(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }) as any);
+    const result = await call();
+    expect(result).toEqual({ merged: false, reason: 'PR #40 is merging on Drizzle migrations right now' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('without a passed workspace id, the task\'s workspace is read once for the whole call', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockFindFirst = mock((opts: any) => (opts?.columns?.workspaceId && Object.keys(opts.columns).length === 1 ? { workspaceId: 'ws-1' } : null) as any);
+    await call({ worker: { id: 'worker-1', taskId: 'task-1' } });
+    const workspaceReads = mockFindFirst.mock.calls.filter(([opts]: any[]) => opts?.columns?.workspaceId && Object.keys(opts.columns).length === 1);
+    expect(workspaceReads).toHaveLength(1);
+    expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1' });
+  });
+
+  it('default (gate passes, no slot): merges exactly as before', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    expect(await call()).toEqual({ merged: true });
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
   });
 });

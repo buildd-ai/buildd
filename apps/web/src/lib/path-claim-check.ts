@@ -28,6 +28,7 @@ import {
 } from '@buildd/core/path-claim';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { GATE_SLUGS, fireGateEvent, type GateCallerOrigin } from '@/lib/gate-ledger';
+import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { deliverPathReleased } from '@/lib/path-claim-release';
 
 export const PATH_CLAIM_WILDCARD_ERROR =
@@ -158,6 +159,12 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
       blockingTaskId: conflict.blockingTaskId,
       blockingTaskTitle: blocker?.title ?? null,
       blockingMissionId: blocker?.missionId ?? null,
+      // The holder's lease (may be a directory) and every requested path that
+      // is held. A declaration is all-or-nothing, so nothing was granted; the
+      // list lets an enforcing runner deny the held paths by name and keep the
+      // free ones queued (conflict-aware-orchestration.md §2).
+      blockingPath: conflict.blockingPath,
+      blockedPaths: acquired.blocked.map(b => ({ path: b.path, blockingTaskId: b.blockingTaskId, blockingPath: b.blockingPath })),
       message,
     };
 
@@ -198,6 +205,11 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
       },
     });
 
+    recordPathDeclaration({
+      result: 'denied', provenance: 'check_path_claim', surface, workspaceId: task.workspaceId,
+      missionId: task.missionId, taskId: task.id, callerOrigin, pathCount: paths.length,
+      detail: { blockedCount: acquired.blocked.length },
+    });
     return { kind: 'conflict', body };
   }
 
@@ -206,6 +218,11 @@ export async function checkPathClaim(input: PathClaimCheckInput): Promise<PathCl
     reason: 'paths successfully claimed', workspaceId: task.workspaceId,
     missionId: task.missionId, taskId: task.id, callerOrigin,
     detail: { claimResult: 'claimed', pathCount: paths.length, leased: acquired.inserted.length },
+  });
+  recordPathDeclaration({
+    result: 'succeeded', provenance: 'check_path_claim', surface, workspaceId: task.workspaceId,
+    missionId: task.missionId, taskId: task.id, callerOrigin, pathCount: paths.length,
+    detail: { leased: acquired.inserted.length },
   });
   return {
     kind: 'claimed',

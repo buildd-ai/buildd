@@ -63,7 +63,6 @@ import {
 } from '@/lib/subject-anchor-observer';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
-import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
@@ -584,6 +583,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             policy,
             owner: { taskId: worker.taskId ?? null, workerId: worker.id },
             releaseConfig: workspace.releaseConfig ?? null,
+            gitConfig: workspace.gitConfig ?? null,
           });
           if (landingMode === 'enforce') {
             console.log(`[pr-landing] check_suite ${repository.full_name}#${pr.number}@${headSha}: ${outcome.kind}`);
@@ -638,6 +638,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             headSha,
             worker,
             policy,
+            surfaceOrderingConfig: workspace.gitConfig ?? null,
           });
           continue;
         }
@@ -650,6 +651,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           headSha,
           worker,
           policy,
+          surfaceOrderingConfig: workspace.gitConfig ?? null,
         });
       }
 
@@ -1159,10 +1161,21 @@ async function handlePullRequestEvent(event: {
       }
     }
 
-    // Close any open changeIntent rows for this PR — surfaces are now free.
-    closeIntentsForPr(worker.workspaceId, pr.number).catch(e =>
-      console.error(`[webhook] closeIntentsForPr failed for PR #${pr.number}:`, e),
-    );
+    // Close any open changeIntent rows for this PR — surfaces are now free —
+    // drop its merge reservations, and re-drive the PR that was waiting behind
+    // it on each serialized surface (conflict-aware-orchestration.md §3). The
+    // wake is network work, so it runs in after(); settle never throws.
+    {
+      const settleWorkspaceId = worker.workspaceId;
+      const settle = () => import('@/lib/surface-ordering')
+        .then((m) => m.settleSurfaceIntentsOnClose({ workspaceId: settleWorkspaceId, prNumber: pr.number }))
+        .then(() => {}, (e) => console.error(`[webhook] surface settle failed for PR #${pr.number}:`, e));
+      try {
+        after(settle);
+      } catch {
+        await settle();
+      }
+    }
 
     // Reconciliation sweep: update subject state for tasks anchored to this PR.
     // Best-effort — sweep failure must never fail the webhook response.
@@ -2640,6 +2653,7 @@ async function maybeAutoMergeNoCiPr(
       headSha: pr.head.sha,
       worker,
       policy,
+      surfaceOrderingConfig: workspace.gitConfig ?? null,
     });
   }
 }

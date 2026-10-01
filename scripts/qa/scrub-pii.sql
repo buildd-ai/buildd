@@ -518,7 +518,13 @@ UPDATE external_links SET
 
 UPDATE change_intents SET
   surface = pg_temp.qa_hash('path/', surface),
-  branch = pg_temp.qa_branch(branch);
+  branch = pg_temp.qa_branch(branch),
+  base_ref = pg_temp.qa_branch(base_ref);
+
+UPDATE surface_reservations SET
+  surface = pg_temp.qa_hash('path/', surface),
+  repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
+  base_ref = pg_temp.qa_branch(base_ref);
 
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);

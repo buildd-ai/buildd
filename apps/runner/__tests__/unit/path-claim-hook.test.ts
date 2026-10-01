@@ -1,19 +1,22 @@
 /**
- * Unit tests for the PreToolUse path-claim hook (§6c of path-claims.md).
+ * Unit tests for the PreToolUse path-claim hook (§6c of path-claims.md,
+ * §2 of conflict-aware-orchestration.md).
  *
  * Covers:
- *  - Hook fires on Edit/Write/MultiEdit and calls claimPaths with correct path
- *  - Timeout (>200ms): edit proceeds, new path queued in pendingPaths
- *  - Network error: edit proceeds, path queued
- *  - Queued paths are flushed (included + cleared) on next successful claim
- *  - Queued paths appear in update_progress body (worker-sync)
- *  - Hook is advisory: 409 does not block the edit, pendingPaths cleared
- *  - Hook ignores non-write tools (Read, Bash, etc.)
+ *  - Path extraction and worktree-relative normalization; escapes never claimed
+ *  - Advisory mode (default): a 409 never blocks the edit
+ *  - Enforce mode: a confirmed live holder denies the edit, naming task and path
+ *  - Bounded network deadline: a hung or failing service never freezes the
+ *    session, queues the path and records degraded enforcement
+ *  - Per-path pending queues: a denied path is never cleared as if acquired,
+ *    queued paths flush in their own request, and a queued path the server now
+ *    reports held is a checkpoint collision (it was already written)
+ *  - Once a collision is recorded, further edits are refused
  *
  * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/path-claim-hook.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock } from 'bun:test';
 
 // ─── Module stubs (must precede imports) ────────────────────────────────────
 
@@ -32,10 +35,15 @@ mock.module('../../src/worker-store', () => ({
   getWorker: () => null,
 }));
 
-import { HookFactory } from '../../src/hook-factory';
+import { HookFactory, PATH_CLAIM_HOOK_DEADLINE_MS } from '../../src/hook-factory';
+import type { PathClaimResponse } from '../../src/buildd';
 import type { LocalWorker } from '../../src/types';
+import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const ROOT = '/work/tree';
+const BLOCKER = 'bbbbbbbb-1111-2222-3333-444444444444';
 
 function makeWorker(overrides: Partial<LocalWorker> = {}): LocalWorker {
   return {
@@ -64,56 +72,68 @@ function makeWorker(overrides: Partial<LocalWorker> = {}): LocalWorker {
     phaseStart: null,
     phaseToolCount: 0,
     phaseTools: [],
+    worktreePath: ROOT,
     ...overrides,
   } as unknown as LocalWorker;
 }
 
-type ClaimResult = { claimed: boolean; blockingTaskId?: string } | null;
+const CLAIMED: PathClaimResponse = { kind: 'claimed' };
+const conflict = (path: string, blockingPath = path): PathClaimResponse => ({
+  kind: 'conflict',
+  blockingTaskId: BLOCKER,
+  blockingTaskTitle: 'Other task',
+  blockingPath,
+  blocked: [{ path, blockingTaskId: BLOCKER, blockingPath }],
+});
+const UNAVAILABLE: PathClaimResponse = { kind: 'unavailable', reason: 'timeout' };
 
-function makeFactory(claimResult: () => Promise<ClaimResult>) {
-  const claimPaths = mock(claimResult);
+function makeFactory(respond: (paths: string[]) => Promise<PathClaimResponse> | PathClaimResponse) {
+  const claimPaths = mock(async (_taskId: string, paths: string[]) => respond(paths));
+  const milestones: any[] = [];
+  const collisions: any[] = [];
   const factory = new HookFactory({
     config: {},
     buildd: { claimPaths } as any,
-    addMilestone: () => {},
+    addMilestone: (_w, m) => { milestones.push(m); },
     emit: () => {},
     pendingPermissionRequests: new Map(),
+    onPathCollision: (_w, c) => { collisions.push(c); },
   });
-  return { factory, claimPaths };
+  return { factory, claimPaths, milestones, collisions };
 }
 
 function makeInput(toolName: string, toolInput: Record<string, unknown>) {
   return { hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput };
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
+const isDeny = (r: any) => r?.hookSpecificOutput?.permissionDecision === 'deny';
+const reasonOf = (r: any) => String(r?.hookSpecificOutput?.permissionDecisionReason ?? '');
 
-describe('createPathClaimHook — basic path extraction', () => {
-  test('Edit: calls claimPaths with file_path', async () => {
-    const { factory, claimPaths } = makeFactory(async () => ({ claimed: true }));
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
+// ─── Extraction + normalization ──────────────────────────────────────────────
 
-    await hook(makeInput('Edit', { file_path: 'apps/web/src/foo.ts' }) as any);
+describe('createPathClaimHook — path extraction and normalization', () => {
+  test('Edit: absolute worktree path is claimed worktree-relative', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const hook = factory.createPathClaimHook(makeWorker());
+
+    await hook(makeInput('Edit', { file_path: `${ROOT}/apps/web/src/foo.ts` }) as any);
 
     expect(claimPaths).toHaveBeenCalledTimes(1);
     expect(claimPaths).toHaveBeenCalledWith('task-abc', ['apps/web/src/foo.ts']);
   });
 
-  test('Write: calls claimPaths with file_path', async () => {
-    const { factory, claimPaths } = makeFactory(async () => ({ claimed: true }));
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
+  test('Write: relative path claimed as-is', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const hook = factory.createPathClaimHook(makeWorker());
 
     await hook(makeInput('Write', { file_path: 'packages/core/src/bar.ts' }) as any);
 
     expect(claimPaths).toHaveBeenCalledWith('task-abc', ['packages/core/src/bar.ts']);
   });
 
-  test('MultiEdit: calls claimPaths with all file_paths (deduped)', async () => {
-    const { factory, claimPaths } = makeFactory(async () => ({ claimed: true }));
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
+  test('MultiEdit: top-level file_path and per-edit paths, deduped', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const hook = factory.createPathClaimHook(makeWorker());
 
     await hook(makeInput('MultiEdit', {
       edits: [
@@ -124,147 +144,288 @@ describe('createPathClaimHook — basic path extraction', () => {
     }) as any);
 
     expect(claimPaths).toHaveBeenCalledTimes(1);
-    const [, paths] = claimPaths.mock.calls[0];
-    expect(paths).toContain('apps/web/a.ts');
-    expect(paths).toContain('apps/web/b.ts');
-    expect(paths).toHaveLength(2);
+    expect(claimPaths.mock.calls[0][1]).toEqual(['apps/web/a.ts', 'apps/web/b.ts']);
   });
 
-  test('Read: ignored (not a write tool)', async () => {
-    const { factory, claimPaths } = makeFactory(async () => ({ claimed: true }));
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
+  test('an escape path is never sent as a claim (advisory: edit left to the confinement hook)', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const hook = factory.createPathClaimHook(makeWorker());
+
+    const result = await hook(makeInput('Edit', { file_path: '/work/other-tree/x.ts' }) as any);
+
+    expect(claimPaths).not.toHaveBeenCalled();
+    expect(result).toEqual({});
+  });
+
+  test('enforce: an escape path is denied and named', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const hook = factory.createPathClaimHook(makeWorker({ pathClaimMode: 'enforce' } as any));
+
+    const result = await hook(makeInput('Write', { file_path: '../escape.ts' }) as any);
+
+    expect(claimPaths).not.toHaveBeenCalled();
+    expect(isDeny(result)).toBe(true);
+    expect(reasonOf(result)).toContain('../escape.ts');
+    expect(reasonOf(result)).toContain(RUNNER_DENIAL_MARKER);
+  });
+
+  test('runtime scratch paths are not claimed', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const hook = factory.createPathClaimHook(makeWorker());
+
+    await hook(makeInput('Write', { file_path: `${ROOT}/.buildd/notes.json` }) as any);
+
+    expect(claimPaths).not.toHaveBeenCalled();
+  });
+
+  test('Read and Bash are ignored', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const hook = factory.createPathClaimHook(makeWorker({ pathClaimMode: 'enforce' } as any));
 
     await hook(makeInput('Read', { file_path: 'apps/web/src/foo.ts' }) as any);
+    await hook(makeInput('Bash', { command: 'echo hi > a.ts' }) as any);
 
     expect(claimPaths).not.toHaveBeenCalled();
-  });
-
-  test('Bash: ignored', async () => {
-    const { factory, claimPaths } = makeFactory(async () => ({ claimed: true }));
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
-
-    await hook(makeInput('Bash', { command: 'echo hi' }) as any);
-
-    expect(claimPaths).not.toHaveBeenCalled();
-  });
-
-  test('returns {} (never blocks the edit)', async () => {
-    const { factory } = makeFactory(async () => ({ claimed: true }));
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
-
-    const result = await hook(makeInput('Edit', { file_path: 'foo.ts' }) as any);
-
-    expect(result).toEqual({});
   });
 });
 
-describe('createPathClaimHook — fail-open on timeout / error', () => {
-  test('null return (timeout): edit proceeds, path queued in pendingPaths', async () => {
-    const { factory } = makeFactory(async () => null);  // simulates timeout/network error
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
+// ─── Advisory vs enforce ─────────────────────────────────────────────────────
 
-    const result = await hook(makeInput('Edit', { file_path: 'apps/web/src/foo.ts' }) as any);
+describe('createPathClaimHook — advisory (default) never blocks', () => {
+  test('a clean claim allows the edit', async () => {
+    const { factory } = makeFactory(() => CLAIMED);
+    const result = await factory.createPathClaimHook(makeWorker())(makeInput('Edit', { file_path: 'foo.ts' }) as any);
+    expect(result).toEqual({});
+  });
+
+  test('a confirmed 409 still allows the edit and queues nothing', async () => {
+    const { factory } = makeFactory(() => conflict('foo.ts'));
+    const worker = makeWorker();
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'foo.ts' }) as any);
+    expect(result).toEqual({});
+    expect(worker.pendingPaths ?? []).toEqual([]);
+  });
+});
+
+describe('createPathClaimHook — enforce denies confirmed holders', () => {
+  test('a confirmed live holder denies the edit, naming the blocking task and path', async () => {
+    const { factory } = makeFactory(() => conflict('apps/web/a.ts', 'apps/web'));
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/web/a.ts' }) as any);
+
+    expect(isDeny(result)).toBe(true);
+    const reason = reasonOf(result);
+    expect(reason).toContain(RUNNER_DENIAL_MARKER);
+    expect(reason).toContain('apps/web/a.ts');
+    expect(reason).toContain('bbbbbbbb');
+    expect(reason).toContain('Other task');
+    expect(reason).toContain('apps/web');
+  });
+
+  test('a denied path is not queued as if it had been written or acquired', async () => {
+    const { factory } = makeFactory(() => conflict('apps/web/a.ts'));
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+
+    await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/web/a.ts' }) as any);
+
+    expect(worker.pendingPaths ?? []).toEqual([]);
+    // A pre-edit denial is not a collision: nothing was written.
+    expect((worker as any).pathCollision).toBeUndefined();
+  });
+
+  test('a clean claim in enforce mode allows the edit', async () => {
+    const { factory } = makeFactory(() => CLAIMED);
+    const result = await factory.createPathClaimHook(makeWorker({ pathClaimMode: 'enforce' } as any))(makeInput('Write', { file_path: 'a.ts' }) as any);
+    expect(result).toEqual({});
+  });
+
+  test('after a recorded collision every further edit is refused without a network call', async () => {
+    const { factory, claimPaths } = makeFactory(() => CLAIMED);
+    const worker = makeWorker({
+      pathClaimMode: 'enforce',
+      pathCollision: { path: 'x.ts', blockingTaskId: BLOCKER, source: 'sync', detectedAt: 1 },
+    } as any);
+
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'other.ts' }) as any);
+
+    expect(isDeny(result)).toBe(true);
+    expect(reasonOf(result)).toContain('x.ts');
+    expect(claimPaths).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Network deadline / fail-open ────────────────────────────────────────────
+
+describe('createPathClaimHook — bounded network deadline', () => {
+  test('a hung service does not freeze the session: the hook returns within its deadline', async () => {
+    const { factory, milestones } = makeFactory(() => new Promise<PathClaimResponse>(() => {}));
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+
+    const started = Date.now();
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/web/src/foo.ts' }) as any);
+    const elapsed = Date.now() - started;
 
     expect(result).toEqual({});
+    expect(elapsed).toBeLessThan(PATH_CLAIM_HOOK_DEADLINE_MS + 250);
     expect(worker.pendingPaths).toEqual(['apps/web/src/foo.ts']);
+    expect((worker as any).pathClaimDegraded).toBe(1);
+    expect(milestones.some(m => String(m.label).toLowerCase().includes('degraded'))).toBe(true);
   });
 
-  test('null return (network error): path queued, edit proceeds', async () => {
-    const { factory } = makeFactory(async () => null);
-    const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
+  test('unavailable (timeout/network/5xx) queues the path and allows the edit, even when enforcing', async () => {
+    const { factory } = makeFactory(() => UNAVAILABLE);
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
 
-    await hook(makeInput('Write', { file_path: 'src/index.ts' }) as any);
+    const result = await factory.createPathClaimHook(worker)(makeInput('Write', { file_path: 'src/index.ts' }) as any);
 
-    expect(worker.pendingPaths).toContain('src/index.ts');
+    expect(result).toEqual({});
+    expect(worker.pendingPaths).toEqual(['src/index.ts']);
   });
 
-  test('thrown error: edit proceeds, path queued', async () => {
-    const { factory } = makeFactory(async () => { throw new Error('unexpected'); });
+  test('a thrown client error is treated as unavailable', async () => {
+    const { factory } = makeFactory(() => { throw new Error('unexpected'); });
     const worker = makeWorker();
-    const hook = factory.createPathClaimHook(worker);
-
-    const result = await hook(makeInput('Edit', { file_path: 'foo.ts' }) as any);
-
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'foo.ts' }) as any);
     expect(result).toEqual({});
     expect(worker.pendingPaths).toContain('foo.ts');
   });
+
+  test('the pending queue is bounded', async () => {
+    const { factory } = makeFactory(() => UNAVAILABLE);
+    const worker = makeWorker({ pendingPaths: Array.from({ length: 600 }, (_, i) => `p${i}.ts`) } as any);
+    await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'new.ts' }) as any);
+    expect(worker.pendingPaths!.length).toBeLessThanOrEqual(500);
+    expect(worker.pendingPaths).toContain('new.ts');
+  });
 });
 
-describe('createPathClaimHook — pending path flush', () => {
-  test('pending paths are included in next claim call', async () => {
-    const { factory, claimPaths } = makeFactory(async () => ({ claimed: true }));
-    const worker = makeWorker({ pendingPaths: ['apps/old/a.ts', 'apps/old/b.ts'] } as any);
-    const hook = factory.createPathClaimHook(worker);
+// ─── Per-path pending queue ──────────────────────────────────────────────────
 
-    await hook(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
-
-    const [, paths] = claimPaths.mock.calls[0];
-    expect(paths).toContain('apps/old/a.ts');
-    expect(paths).toContain('apps/old/b.ts');
-    expect(paths).toContain('apps/new/c.ts');
-  });
-
-  test('successful claim clears pendingPaths', async () => {
-    const { factory } = makeFactory(async () => ({ claimed: true }));
+describe('createPathClaimHook — per-path pending queue', () => {
+  test('queued paths flush in their own request, so a held queued path cannot deny a free edit', async () => {
+    const { factory, claimPaths } = makeFactory((paths) =>
+      paths.includes('apps/old/a.ts') ? conflict('apps/old/a.ts') : CLAIMED,
+    );
     const worker = makeWorker({ pendingPaths: ['apps/old/a.ts'] } as any);
-    const hook = factory.createPathClaimHook(worker);
 
-    await hook(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
 
-    expect(worker.pendingPaths).toEqual([]);
-  });
-
-  test('advisory 409 also clears pendingPaths (server received the request)', async () => {
-    const { factory } = makeFactory(async () => ({ claimed: false, blockingTaskId: 'other-task' }));
-    const worker = makeWorker({ pendingPaths: ['apps/old/a.ts'] } as any);
-    const hook = factory.createPathClaimHook(worker);
-
-    const result = await hook(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
-
-    // Edit must still proceed
     expect(result).toEqual({});
-    // pendingPaths cleared since the server was reached
+    expect(claimPaths).toHaveBeenCalledTimes(2);
+    const batches = claimPaths.mock.calls.map(c => c[1]);
+    expect(batches).toContainEqual(['apps/new/c.ts']);
+    expect(batches).toContainEqual(['apps/old/a.ts']);
+  });
+
+  test('a successful flush clears only the flushed paths', async () => {
+    const { factory } = makeFactory(() => CLAIMED);
+    const worker = makeWorker({ pendingPaths: ['apps/old/a.ts', 'apps/old/b.ts'] } as any);
+
+    await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
+
     expect(worker.pendingPaths).toEqual([]);
   });
 
-  test('failed claim accumulates all paths in pendingPaths', async () => {
-    const { factory } = makeFactory(async () => null);
-    const worker = makeWorker({ pendingPaths: ['apps/old/a.ts'] } as any);
-    const hook = factory.createPathClaimHook(worker);
+  test('advisory: a queued path now held elsewhere is dropped; the free ones stay queued (all-or-nothing granted nothing)', async () => {
+    const { factory, collisions } = makeFactory((paths) =>
+      paths.includes('apps/old/a.ts') ? conflict('apps/old/a.ts') : CLAIMED,
+    );
+    const worker = makeWorker({ pendingPaths: ['apps/old/a.ts', 'apps/old/b.ts'] } as any);
 
-    await hook(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
+    await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
+
+    expect(worker.pendingPaths).toEqual(['apps/old/b.ts']);
+    expect(collisions).toEqual([]);
+  });
+
+  test('enforce: a queued (already written) path now held elsewhere is a collision, and the edit is refused', async () => {
+    const { factory, collisions } = makeFactory((paths) =>
+      paths.includes('apps/old/a.ts') ? conflict('apps/old/a.ts') : CLAIMED,
+    );
+    const worker = makeWorker({ pathClaimMode: 'enforce', pendingPaths: ['apps/old/a.ts'] } as any);
+
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
+
+    expect(collisions).toHaveLength(1);
+    expect(collisions[0]).toMatchObject({ path: 'apps/old/a.ts', blockingTaskId: BLOCKER, source: 'hook_flush' });
+    expect((worker as any).pathCollision).toMatchObject({ path: 'apps/old/a.ts' });
+    expect(isDeny(result)).toBe(true);
+  });
+
+  test('a failed flush keeps every queued path and adds the new one', async () => {
+    const { factory } = makeFactory(() => UNAVAILABLE);
+    const worker = makeWorker({ pendingPaths: ['apps/old/a.ts'] } as any);
+
+    await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/new/c.ts' }) as any);
 
     expect(worker.pendingPaths).toContain('apps/old/a.ts');
     expect(worker.pendingPaths).toContain('apps/new/c.ts');
   });
+});
 
-  test('pending paths are included in update_progress PATCH body', async () => {
-    // Verify that worker-sync includes pendingPaths in the update when non-empty.
-    // We test this by constructing the update object the same way worker-sync does.
-    const worker = makeWorker({ pendingPaths: ['apps/web/src/foo.ts', 'apps/web/src/bar.ts'] } as any);
+// ─── Checkpoint guard: Bash push, create_pr, completion ──────────────────────
 
-    // Mirror the worker-sync spread logic
-    const pendingPathsField = worker.pendingPaths?.length
-      ? { pendingPaths: [...worker.pendingPaths] }
-      : {};
+describe('createPathCheckpointGuardHook — checkpoint enforcement for ships', () => {
+  const held = { path: 'src/from-bash.ts', blockingTaskId: BLOCKER, blockingTaskTitle: 'Other task', blockingPath: 'src', source: 'pre_push' as const, detectedAt: 1 };
 
-    expect(pendingPathsField).toEqual({
-      pendingPaths: ['apps/web/src/foo.ts', 'apps/web/src/bar.ts'],
-    });
+  function guard(worker: LocalWorker, result: any) {
+    const { factory, collisions } = makeFactory(() => CLAIMED);
+    const sweep = mock(async () => (typeof result === 'function' ? result() : result));
+    return { hook: factory.createPathCheckpointGuardHook(worker, sweep as any), sweep, collisions };
+  }
+
+  test('advisory: never sweeps, never blocks', async () => {
+    const { hook, sweep } = guard(makeWorker(), held);
+    expect(await hook(makeInput('Bash', { command: 'git push origin HEAD' }) as any)).toEqual({});
+    expect(sweep).not.toHaveBeenCalled();
   });
 
-  test('update_progress PATCH body omits pendingPaths when queue is empty', async () => {
-    const worker = makeWorker({ pendingPaths: [] } as any);
+  test('enforce: a Bash write found at pre-push refuses the push and starts the deferral', async () => {
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+    const { hook, sweep, collisions } = guard(worker, held);
 
-    const pendingPathsField = worker.pendingPaths?.length
-      ? { pendingPaths: [...worker.pendingPaths] }
-      : {};
+    const result = await hook(makeInput('Bash', { command: 'git push -u origin HEAD' }) as any);
 
-    expect(pendingPathsField).toEqual({});
+    expect(sweep).toHaveBeenCalledWith(worker, 'pre_push');
+    expect(isDeny(result)).toBe(true);
+    expect(reasonOf(result)).toContain('src/from-bash.ts');
+    expect(reasonOf(result)).toContain('bbbbbbbb');
+    expect(collisions).toHaveLength(1);
+    expect((worker as any).pathCollision).toMatchObject({ path: 'src/from-bash.ts' });
+  });
+
+  test('enforce: create_pr and a non-error complete_task are checkpoints too', async () => {
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+    const { hook, sweep } = guard(worker, null);
+    await hook(makeInput('mcp__buildd__buildd', { action: 'create_pr', params: {} }) as any);
+    await hook(makeInput('mcp__buildd__buildd', { action: 'complete_task', params: { summary: 'x' } }) as any);
+    expect(sweep.mock.calls.map((c: any[]) => c[1])).toEqual(['pre_push', 'completion']);
+  });
+
+  test('enforce: a failure report (complete_task with error) and ordinary Bash are not gated', async () => {
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+    const { hook, sweep } = guard(worker, held);
+    expect(await hook(makeInput('mcp__buildd__buildd', { action: 'complete_task', params: { error: 'gave up' } }) as any)).toEqual({});
+    expect(await hook(makeInput('Bash', { command: 'bun run test' }) as any)).toEqual({});
+    expect(sweep).not.toHaveBeenCalled();
+  });
+
+  test('enforce: a clean sweep lets the push through', async () => {
+    const { hook } = guard(makeWorker({ pathClaimMode: 'enforce' } as any), null);
+    expect(await hook(makeInput('Bash', { command: 'git push' }) as any)).toEqual({});
+  });
+
+  test('enforce: a sweep that throws is fail-open', async () => {
+    const { hook } = guard(makeWorker({ pathClaimMode: 'enforce' } as any), () => { throw new Error('git broke'); });
+    expect(await hook(makeInput('Bash', { command: 'git push' }) as any)).toEqual({});
+  });
+
+  test('enforce: once a collision is recorded, push and completion are refused without another sweep', async () => {
+    const worker = makeWorker({ pathClaimMode: 'enforce', pathCollision: held } as any);
+    const { hook, sweep } = guard(worker, null);
+    expect(isDeny(await hook(makeInput('Bash', { command: 'git push' }) as any))).toBe(true);
+    expect(isDeny(await hook(makeInput('mcp__buildd__buildd', { action: 'complete_task', params: {} }) as any))).toBe(true);
+    expect(sweep).not.toHaveBeenCalled();
   });
 });

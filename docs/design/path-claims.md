@@ -606,6 +606,48 @@ The response includes `blockingManifest` so the worker can reason about whether 
 - Deadlock risk is the same as §5a, but triggered more frequently because the hook fires on every Edit rather than only on explicit `check_path_claim` calls. The cycle-check on waiter registration (§3d) must run on the hook path too.
 - Latency risk: in strict mode, a slow control plane stalls every Edit. The fail-open rule (§6c) applies here too — strict mode hard-blocks only when the claim succeeds with a 409, not when the endpoint is unreachable.
 
+**As built (conflict-aware orchestration, Step C).** "Strict mode" shipped as
+`gitConfig.pathClaimEnforcement: 'enforce'` (absent or `'advisory'` = today's
+behaviour; set it with `manage_workspaces action=update gitConfig={...}`).
+In enforce mode:
+
+- The hook (`apps/runner/src/hook-factory.ts`) makes paths worktree-relative,
+  refuses escapes, and denies Edit/Write/MultiEdit on a confirmed 409, naming
+  the holder task and path. The 409 body lists every held path (`blockedPaths`),
+  so queued paths flush in their own request and only answered paths leave the
+  queue. Timeout/network/5xx still fail open within a 300ms hook deadline and
+  are recorded as degraded enforcement.
+- §6d's committed-only `origin/HEAD`-or-`origin/dev` observation is replaced by
+  a sweep against the task's resolved PR base (the mission integration branch on
+  a mission task) unioned with NUL-delimited staged/unstaged/untracked status,
+  renames counted on both sides (`apps/runner/src/path-claim-enforcement.ts`).
+  The PR base is carried on the worker as `prBaseRef` and persisted. It is not
+  the ref the worktree was cut from: on a resume that is the prior attempt's
+  branch, and measuring against it would drop every file earlier attempts
+  committed. `resolvePrBaseRef` derives it from `resolveTaskPrBase`, the rule
+  the prompt and `create_pr` use, so a `baseBranch` equal to the task's own
+  branch (the marker CI, conflict and answer resumes and infra requeues write)
+  is never taken as a base. A mission task whose integration branch cannot be
+  named gets no base rather than trunk, so the sweep reports only uncommitted
+  changes. It runs on every sync, and before `git push`,
+  `gh pr create`, `create_pr` and a non-error `complete_task`. Observed paths
+  go through the same exclusive acquisition; one another live task holds comes
+  back on the PATCH response as `pathCollisions`. A sync offers only paths new
+  to `observedTouches`; the pre-push and completion sweeps re-offer the whole
+  list (`checkpointSweep`), so an earlier acquisition that failed is retried
+  before the change ships. Only paths recorded in `observedTouches` are leased;
+  paths past its 500 cap are dropped with a `path_claim` `warned` gate event.
+- A collision found there has already happened, so it is checkpoint
+  enforcement, not prevention: the runner refuses further edits and ships,
+  commits a checkpoint (pushed unless a PR already exists), reports a
+  `Deferred:` failure and ends the session. The server requeues it without
+  charging a retry, appends the collided path to the manifest so the claim
+  route holds it until the holder releases, records `path_declaration.collision`
+  and sets `resumeBranch` to the pushed checkpoint
+  (`apps/web/src/lib/path-collision-deferral.ts`). No agent waits for a lease.
+- Codex has no PreToolUse seam: it gets the sync sweep only, and the session
+  says so at start.
+
 ### 6f. Extracting the sibling-overlap query into a shared helper
 
 The sibling-overlap query — fetch active siblings, run `pathsOverlap()`, return first conflict — is currently duplicated in:
