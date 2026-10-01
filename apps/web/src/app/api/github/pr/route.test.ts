@@ -205,6 +205,15 @@ mock.module('@/lib/surface-ordering-door', () => ({
 
 // Import handler AFTER mocks
 const mockCloseAncestorRetryPrs = mock(async (_opts: any) => [] as any[]);
+// The behind-base refresh (lib/base-refresh.ts) owns the lease, failure
+// classification and the semantic check; the route maps its outcome. The hold
+// passes through by default.
+const mockRefreshBehindPr = mock(async (_p: any) => ({ kind: 'updated' }) as any);
+const mockCheckBaseRefreshHold = mock(async (_p: any) => ({ blocks: false }) as any);
+mock.module('@/lib/base-refresh', () => ({
+  refreshBehindPr: (p: any) => mockRefreshBehindPr(p),
+  checkBaseRefreshHold: (p: any) => mockCheckBaseRefreshHold(p),
+}));
 mock.module('@/lib/retry-pr-supersession', () => ({ closeAncestorRetryPrs: mockCloseAncestorRetryPrs }));
 
 import { POST, PATCH, PUT, GET } from './route';
@@ -3441,6 +3450,20 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
     });
 
+    it('consults the post-refresh semantic hold with the workspace gitConfig and refuses while it holds', async () => {
+      workerOk();
+      mockCheckBaseRefreshHold.mockImplementationOnce(async () => ({ blocks: true, needsPerson: true, reason: 'semantic hold (needs a person): y' }));
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('semantic hold');
+      expect(mockCheckBaseRefreshHold.mock.calls.at(-1)![0]).toMatchObject({ prNumber: 42, headSha: 'sha-42', taskId: 'task-1' });
+      expect(mockCheckBaseRefreshHold.mock.calls.at(-1)![0]).toHaveProperty('gitConfig');
+      expect(mockCheckBaseRefreshHold.mock.calls.at(-1)![0].gitConfig).not.toBeUndefined();
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
     // The friction behind PR #2658: an agent's merge_pr under concurrent landing
     // hits "PR is N commits behind dev" and had no recourse but a manual
     // rebase. The route now brings the branch up to date itself — but must NOT
@@ -3464,8 +3487,14 @@ describe('PUT /api/github/pr', () => {
         return calls;
       }
 
-      it('updates the branch from base and asks for a retry once CI re-runs, without merging', async () => {
+      beforeEach(() => {
+        mockRefreshBehindPr.mockReset();
+        mockRefreshBehindPr.mockImplementation(async () => ({ kind: 'updated' }));
+      });
+
+      it('refreshes through base-refresh (lease, classification, semantic hold) and asks for a retry, without merging', async () => {
         workerOk();
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', requiresReview: false, missionId: 'm-1', context: {} });
         const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
 
         const res = await put();
@@ -3475,19 +3504,53 @@ describe('PUT /api/github/pr', () => {
         expect(data.branchUpdated).toBe(true);
         expect(data.error).toContain('behind');
         expect(data.hint).toContain('merge_pr');
-        expect(calls).toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+        expect(mockRefreshBehindPr).toHaveBeenCalledTimes(1);
+        expect(mockRefreshBehindPr.mock.calls[0][0]).toMatchObject({
+          installationId: expect.any(Number), repoFullName: 'owner/repo', prNumber: 42, headSha: 'sha-42',
+          taskId: 'task-1', workerId: 'w-1', missionId: 'm-1',
+        });
+        expect(mockRefreshBehindPr.mock.calls[0][0]).toHaveProperty('gitConfig');
+        // The route no longer calls update-branch itself.
+        expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
         expect(mockMergePullRequest).not.toHaveBeenCalled();
       });
 
-      it('falls back to the 403 refusal when GitHub cannot update the branch', async () => {
+      it.each([
+        [{ kind: 'in_flight' }, 'in_flight'],
+        [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, 'deferred'],
+        [{ kind: 'head_changed', reason: 'moved' }, 'head_changed'],
+        [{ kind: 'up_to_date', reason: '422 no new commits' }, 'up_to_date'],
+        [{ kind: 'semantic_deferred', rechecks: 1, reason: 'no index' }, 'semantic_deferred'],
+      ])('%o is a wait (409), with no merge and no branchUpdated', async (outcome, kind) => {
         workerOk();
-        behindGithub(() => Promise.reject(new Error('422 merge conflict between base and head')));
+        behindGithub(() => Promise.resolve({}));
+        mockRefreshBehindPr.mockImplementation(async () => outcome);
+
+        const res = await put();
+
+        expect(res.status).toBe(409);
+        const data = await res.json();
+        expect(data.refresh).toBe(kind);
+        expect(data.branchUpdated).toBeUndefined();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [{ kind: 'conflict', reason: '422 merge conflict' }, 'conflict'],
+        [{ kind: 'exhausted', failure: 'auth', attempts: 3, reason: '403' }, 'exhausted'],
+        [{ kind: 'semantic_conflict', assessment: { verdict: 'same_symbol', reason: 'both edit f' } }, 'semantic_conflict'],
+        [{ kind: 'semantic_unverified', rechecks: 3, reason: 'no index' }, 'semantic_unverified'],
+      ])('%o falls back to the 403 refusal naming the refresh outcome', async (outcome, kind) => {
+        workerOk();
+        behindGithub(() => Promise.resolve({}));
+        mockRefreshBehindPr.mockImplementation(async () => outcome);
 
         const res = await put();
 
         expect(res.status).toBe(403);
         const data = await res.json();
         expect(data.error).toContain('behind');
+        expect(data.refresh).toBe(kind);
         expect(data.branchUpdated).toBeUndefined();
         expect(mockMergePullRequest).not.toHaveBeenCalled();
       });

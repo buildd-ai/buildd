@@ -508,6 +508,8 @@ describe('dispatchConflictRetry', () => {
       [{ kind: 'in_flight' }, { refreshInFlight: true }],
       [{ kind: 'semantic_deferred', rechecks: 1, reason: 'no index' }, { semanticDeferred: true }],
       [{ kind: 'semantic_unverified', rechecks: 3, reason: 'no index' }, { semanticUnverified: true }],
+      [{ kind: 'up_to_date', reason: '422 no new commits' }, { alreadyUpToDate: true }],
+      [{ kind: 'exhausted', failure: 'refused', attempts: 3, reason: '422 Validation Failed' }, { refreshExhausted: true, refreshFailure: 'refused' }],
     ])('%o spawns no agent', async (outcome, expected) => {
       mockUpdateBehindPrBranch.mockResolvedValue(outcome);
       const result = await dispatchConflictRetry(behind);

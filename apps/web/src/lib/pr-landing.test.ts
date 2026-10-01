@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 // A fake GitHub answers by path, so the real `evaluateAutoMergeSafety` runs its
@@ -185,6 +185,12 @@ let mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>): Pr
 mock.module('@/lib/surface-ordering-door', () => ({
   checkSurfaceOrder: (i: any) => mockCheckSurfaceOrder(i),
   mergeInSurfaceSlot: (v: any, m: () => Promise<any>) => mockMergeInSurfaceSlot(v, m),
+}));
+
+// Post-refresh semantic hold (base-refresh.ts): pass-through unless a test sets it.
+let mockCheckBaseRefreshHold = mock(async (_i: any) => ({ blocks: false }) as any);
+mock.module('@/lib/base-refresh', () => ({
+  checkBaseRefreshHold: (i: any) => mockCheckBaseRefreshHold(i),
 }));
 
 import {
@@ -687,6 +693,7 @@ describe('landPr — behind base is work with an owner', () => {
       ['refreshInFlight', { dispatched: false, refreshInFlight: true }],
       ['refreshDeferred', { dispatched: false, refreshDeferred: true, refreshFailure: 'rate_limit' }],
       ['semanticDeferred', { dispatched: false, semanticDeferred: true }],
+      ['alreadyUpToDate', { dispatched: false, alreadyUpToDate: true }],
     ])('%s → waiting, not needs_fix(conflict)', async (_n, result) => {
       mockDispatchConflictRetry.mockImplementation(async () => result);
       const out = await land();
@@ -1000,5 +1007,31 @@ describe('landPr — surface ordering', () => {
     expect(outcome.kind).toBe('merged');
     expect(mockMergeInSurfaceSlot).toHaveBeenCalledTimes(1);
     expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Post-refresh semantic hold (conflict-aware-orchestration.md §4) ─────────
+
+describe('landPr — post-refresh semantic hold', () => {
+  afterEach(() => { mockCheckBaseRefreshHold = mock(async (_i: any) => ({ blocks: false }) as any); });
+
+  it('passes the workspace gitConfig through to the hold', async () => {
+    const gitConfig = { semanticRefresh: 'enforce' } as any;
+    await land({ gitConfig });
+    expect(mockCheckBaseRefreshHold).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1', gitConfig }));
+  });
+
+  it('a re-check still in progress waits, and nothing merges', async () => {
+    mockCheckBaseRefreshHold = mock(async () => ({ blocks: true, needsPerson: false, reason: 'semantic hold (rechecking): x' }) as any);
+    const out = await land({ gitConfig: { semanticRefresh: 'enforce' } as any });
+    expect(out.kind).toBe('waiting_ci');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('an exhausted or same-symbol hold needs a person', async () => {
+    mockCheckBaseRefreshHold = mock(async () => ({ blocks: true, needsPerson: true, reason: 'semantic hold (needs a person): y' }) as any);
+    const out = await land({ gitConfig: { semanticRefresh: 'enforce' } as any });
+    expect(out).toMatchObject({ kind: 'needs_human', cause: 'semantic_unverified' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 });

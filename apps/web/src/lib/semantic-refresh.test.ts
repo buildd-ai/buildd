@@ -207,3 +207,24 @@ describe('assessSemanticOverlap', () => {
     expect(fetched).toBe(0);
   });
 });
+
+describe('assessSemanticOverlap — pinned base (post-refresh re-verification)', () => {
+  // After update-branch the PR head is the merge commit, so the live-head check
+  // would read head_changed. Re-verifying the newly arrived base range pins both
+  // ends instead: the pre-update head and the base commit that was merged in.
+  it('compares exactly the pinned head and base, without reading the live PR or the base tip', async () => {
+    const { api, calls } = fakeApi({ liveHead: 'x'.repeat(40), prFiles: [{ filename: 'a.ts', patch: P(1, 1) }], baseFiles: [{ filename: 'b.ts', patch: P(1, 1) }] });
+    const r = await assessSemanticOverlap({ ...BASE, api, provider: pinnedProvider(() => []), pinnedBaseSha: TIP });
+    expect(r.verdict).toBe('disjoint_paths');
+    expect(r.baseSha).toBe(TIP);
+    expect(calls).not.toContain('/repos/acme/app/pulls/7');
+    expect(calls.some((c) => c.startsWith('/repos/acme/app/commits/'))).toBe(false);
+    expect(calls).toEqual([`/repos/acme/app/compare/${TIP}...${HEAD}`, `/repos/acme/app/compare/${HEAD}...${TIP}`]);
+  });
+
+  it('a shared file at a pinned base is still unknown without a pinned index', async () => {
+    const { api } = fakeApi({ prFiles: [{ filename: 'a.ts', patch: P(1, 2) }], baseFiles: [{ filename: 'a.ts', patch: P(40, 2) }] });
+    const r = await assessSemanticOverlap({ ...BASE, api, pinnedBaseSha: TIP });
+    expect(r.verdict).toBe('unknown');
+  });
+});

@@ -8,8 +8,10 @@
  *
  * A refusal is classified (conflict-aware-orchestration.md §4): only GitHub's
  * own 422 "merge conflict" is textual-conflict evidence. A moved head is a
- * re-read; rate limits, auth and transient/unknown errors are operational and
- * must never be mistaken for a conflict that needs an agent.
+ * re-read; "no new commits" means the branch already has its base; any other
+ * 422 is a deterministic refusal (`refused`) that retrying cannot change; rate
+ * limits, auth and transient/unknown errors are operational. None of those is
+ * ever mistaken for a conflict that needs an agent.
  */
 
 import { githubApi } from '@/lib/github';
@@ -19,6 +21,10 @@ type Api = (installationId: number, path: string, init?: RequestInit) => Promise
 export type BranchUpdateFailure =
   | 'conflict'
   | 'head_changed'
+  /** 422 "no new commits": the branch already contains its base. Nothing to do. */
+  | 'up_to_date'
+  /** Any other 422: GitHub refused this request deterministically; a retry cannot help. */
+  | 'refused'
   | 'rate_limit'
   | 'auth'
   | 'transient'
@@ -40,7 +46,8 @@ export function classifyBranchUpdateFailure(message: string): BranchUpdateFailur
   if (status === 422) {
     if (/merge conflict/.test(lower)) return 'conflict';
     if (/expected head sha|head ref/.test(lower)) return 'head_changed';
-    return 'unknown';
+    if (/no new commits/.test(lower)) return 'up_to_date';
+    return 'refused';
   }
   if (status === 429 || ((status === 403 || status === null) && /rate limit/.test(lower))) return 'rate_limit';
   if (status === 401 || status === 403) return 'auth';

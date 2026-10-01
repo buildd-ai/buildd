@@ -555,6 +555,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       workerId: owner.workerId,
       skipBaseFreshness: true,
       observed,
+      gitConfig: input.gitConfig,
     });
 
   let safety = await runSafety(input.bound);
@@ -589,6 +590,10 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
         return conflictOutcome(reason);
       case 'blocked':
         return human('branch_protection', reason);
+      case 'semantic_hold':
+        // Base commits merged in after the semantic verdict are being re-verified
+        // (base-refresh.ts): a wait while rechecks remain, a person after.
+        return /^semantic hold \(needs a person\)/.test(reason) ? human('semantic_unverified', reason) : waiting(reason);
       default:
         return human('unsafe_other', reason);
     }
@@ -793,6 +798,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
       return waiting(`updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry (${reason})`, { refresh: 'deferred', failure: res.refreshFailure ?? null });
     }
     if (res.semanticDeferred) return waiting(`semantic overlap with the base is not yet verified; will recheck (${reason})`, { refresh: 'semantic_deferred' });
+    if (res.alreadyUpToDate) return waiting(`the branch already has every base commit; re-reading (${reason})`, { refresh: 'up_to_date' });
     if (res.refreshExhausted) {
       return human('refresh_failed', `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict (${reason})`, { failure: res.refreshFailure ?? null });
     }

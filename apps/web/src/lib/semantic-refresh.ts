@@ -128,6 +128,12 @@ export interface SemanticLimits {
 
 export const DEFAULT_SEMANTIC_LIMITS: SemanticLimits = { maxSharedFiles: 20, maxLookups: 80, lookupTimeoutMs: 5000 };
 
+/**
+ * Longest a default-limits check can spend in symbol lookups: every lookup in
+ * the budget running to its timeout. The refresh lease must outlive this.
+ */
+export const SEMANTIC_CHECK_WORST_CASE_MS = DEFAULT_SEMANTIC_LIMITS.maxLookups * DEFAULT_SEMANTIC_LIMITS.lookupTimeoutMs;
+
 /** GitHub's compare endpoint lists at most this many files; a full page may be truncated. */
 const COMPARE_FILE_CAP = 300;
 
@@ -160,6 +166,13 @@ export async function assessSemanticOverlap(params: {
   api?: Api;
   provider?: RevisionSymbolProvider;
   limits?: Partial<SemanticLimits>;
+  /**
+   * Judge against this exact base commit instead of the PR's live base tip, and
+   * skip the live-head check. Used to re-verify a refresh after the fact
+   * (base-refresh.ts `checkBaseRefreshHold`): the PR head is then the
+   * update-branch merge commit, and both ends of the comparison are history.
+   */
+  pinnedBaseSha?: string;
 }): Promise<SemanticAssessment> {
   const api = params.api ?? githubApi;
   const provider = params.provider ?? getServerSymbolProvider();
@@ -173,18 +186,22 @@ export async function assessSemanticOverlap(params: {
   let prFiles: CompareFile[] | null;
   let baseFiles: CompareFile[] | null;
   try {
-    const pr = (await api(params.installationId, `${repo}/pulls/${params.prNumber}`)) as {
-      head?: { sha?: string }; base?: { ref?: string };
-    } | null;
-    const liveHead = pr?.head?.sha ?? null;
-    if (liveHead !== headSha) {
-      return { verdict: 'head_changed', reason: `the PR head is ${liveHead?.slice(0, 7) ?? 'unknown'}, not the evaluated ${headSha.slice(0, 7)}` };
+    if (params.pinnedBaseSha) {
+      baseSha = params.pinnedBaseSha;
+    } else {
+      const pr = (await api(params.installationId, `${repo}/pulls/${params.prNumber}`)) as {
+        head?: { sha?: string }; base?: { ref?: string };
+      } | null;
+      const liveHead = pr?.head?.sha ?? null;
+      if (liveHead !== headSha) {
+        return { verdict: 'head_changed', reason: `the PR head is ${liveHead?.slice(0, 7) ?? 'unknown'}, not the evaluated ${headSha.slice(0, 7)}` };
+      }
+      baseRef = pr?.base?.ref ?? null;
+      if (!baseRef) return { verdict: 'unknown', reason: 'GitHub returned no base branch for the PR' };
+      const tip = (await api(params.installationId, `${repo}/commits/${encodeURIComponent(baseRef)}`)) as { sha?: string } | null;
+      baseSha = typeof tip?.sha === 'string' ? tip.sha : null;
+      if (!baseSha) return { verdict: 'unknown', reason: `could not resolve the tip of ${baseRef}`, baseRef };
     }
-    baseRef = pr?.base?.ref ?? null;
-    if (!baseRef) return { verdict: 'unknown', reason: 'GitHub returned no base branch for the PR' };
-    const tip = (await api(params.installationId, `${repo}/commits/${encodeURIComponent(baseRef)}`)) as { sha?: string } | null;
-    baseSha = typeof tip?.sha === 'string' ? tip.sha : null;
-    if (!baseSha) return { verdict: 'unknown', reason: `could not resolve the tip of ${baseRef}`, baseRef };
     const prSide = await api(params.installationId, `${repo}/compare/${baseSha}...${headSha}`);
     const baseSide = await api(params.installationId, `${repo}/compare/${headSha}...${baseSha}`);
     const mbA = (prSide as { merge_base_commit?: { sha?: string } } | null)?.merge_base_commit?.sha ?? null;
