@@ -45,7 +45,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
-import { parseReviewerOutput, applyConfidenceGate } from '@/lib/reviewer-output';
+import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
@@ -1329,6 +1329,24 @@ export async function PATCH(
     // contract instead of skipping the check outright.
     const isReviewerTask = terminalTaskRow[0]?.category === 'review'
       && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
+
+    // An interactive (claim_task, runner = 'mcp') reviewer calls complete_task
+    // itself and can still read the response, so refuse a malformed verdict here
+    // with the allowed values instead of accepting the call and failing the
+    // worker afterwards. A runner-reported completion has no agent turn left to
+    // read a refusal, so it keeps the requeue-once contract guard further down.
+    if (isReviewerTask && worker.runner === 'mcp') {
+      const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
+      if (submitted && typeof submitted === 'object' && submitted.verdict) {
+        const parsed = parseReviewerOutput(submitted);
+        if (!parsed.ok) {
+          return NextResponse.json({
+            error: `Review verdict not recorded: ${parsed.reason}. Call complete_task again with structuredOutput { verdict: ${REVIEWER_VERDICTS.map((v) => `"${v}"`).join(' | ')}, confidence: <number 0-1>, summary: <string> }.`,
+            hint: 'structuredOutput.verdict',
+          }, { status: 400 });
+        }
+      }
+    }
 
     // A bookkeeping task (heartbeats, criteria evaluators, plan-rejection
     // replans — see packages/core/db/schema.ts taskClass) reports its outcome
@@ -2953,6 +2971,9 @@ export async function PATCH(
       const hasVerdictKey = Boolean((body.structuredOutput as { verdict?: unknown } | undefined)?.verdict);
       let parsedReview = isReviewerCompletion ? parseReviewerOutput(body.structuredOutput) : null;
       let reviewContractViolation = isReviewerCompletion && parsedReview?.ok === false;
+      // Persist the canonical spelling (request_changes → request-changes), not
+      // the variant the agent typed.
+      if (parsedReview?.ok) body.structuredOutput = parsedReview.output;
       // Prose (no verdict at all) and a malformed verdict fail the same
       // contract; only the message differs.
       const malformedVerdictReason = reviewContractViolation && hasVerdictKey && parsedReview?.ok === false
