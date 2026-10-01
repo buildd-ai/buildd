@@ -8820,6 +8820,68 @@ describe('PATCH /api/workers/[id]', () => {
       }
     });
 
+    describe('verdict spelling variants', () => {
+      function captureTaskSets() {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        return taskSetCalls;
+      }
+
+      it('request_changes is normalized and treated as request-changes, not a contract violation', async () => {
+        setupReviewerTaskCompletion('request-changes');
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: {
+            status: 'completed',
+            structuredOutput: { verdict: 'request_changes', confidence: 0.9, summary: 's', feedback: 'Fix it' },
+          },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(taskSetCalls.some((u: any) => u.status === 'pending' && u.context?.reviewContractRetryCount)).toBe(false);
+        const completed = taskSetCalls.find((u: any) => u.status === 'completed');
+        expect(completed).toBeDefined();
+        expect(completed.result.structuredOutput.verdict).toBe('request-changes');
+      });
+
+      it('interactive worker: a malformed verdict gets a 400 naming the allowed values, with no state change', async () => {
+        setupReviewerTaskCompletion('approve');
+        mockWorkersFindFirst.mockReset();
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'reviewer-task-1',
+          runner: 'mcp',
+          turns: 0,
+          pendingInstructions: null,
+        });
+        const taskSetCalls = captureTaskSets();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', structuredOutput: { verdict: 'rejected', confidence: 0.9, summary: 's' } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const json = await res.json();
+        expect(json.error).toContain('"request-changes"');
+        expect(json.error).toContain('"approve"');
+        expect(json.hint).toBe('structuredOutput.verdict');
+        expect(taskSetCalls).toHaveLength(0);
+      });
+    });
+
     // An approve at any confidence used to post a GitHub APPROVE and run the
     // bounded merge; the workspace threshold only guarded the unbounded
     // self-merge.
