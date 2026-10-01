@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, typingPrefixes } from './storyboard';
+import { captureFile, captureKey, clickTargets, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, typingPrefixes, typedValues, hideCss } from './storyboard';
 
 describe('resolveViewports', () => {
   test('desktop comes from the board viewport; phone is built in', () => {
@@ -135,5 +135,27 @@ describe('typingPrefixes', () => {
   });
   test('more frames than characters is one frame per character', () => {
     expect(typingPrefixes('abc', 10)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('typedValues', () => {
+  test('from an empty field: frame 0 is empty, the last is the whole text', () => {
+    const v = typedValues('', 'add a check', 3);
+    expect(v[0]).toBe('');
+    expect(v[v.length - 1]).toBe('add a check');
+  });
+  test('append: every frame keeps what the page pre-filled (the Edit button\'s prefix)', () => {
+    const base = 'Change the draft "Multi-currency invoices": ';
+    const v = typedValues(base, 'also pay a EUR invoice end to end', 6);
+    expect(v[0]).toBe(base);
+    for (const x of v) expect(x.startsWith(base)).toBe(true);
+    expect(v[v.length - 1]).toBe(base + 'also pay a EUR invoice end to end');
+  });
+});
+
+describe('hideCss', () => {
+  test('a bare word is a testid, anything else a selector; nothing to hide is no CSS', () => {
+    expect(hideCss(['canvas-ask', '.x > y'])).toBe('[data-testid="canvas-ask"] { display: none !important; }\n.x > y { display: none !important; }');
+    expect(hideCss(undefined)).toBe('');
   });
 });
