@@ -12,7 +12,8 @@
  * Board's flying tiles) lives in an `fx` layer inside the transformed image,
  * in image pixels, so it tracks the camera exactly.
  */
-import { burstAt, cameraAt, captionsAt, clamp, cutDuration, fadeOutAt, fleetAt, layersAt, maskAt, placeScreen, spotAt, stillAt, tapAt, type Cut, type Rect, type Shot } from './timeline';
+import { buildMotion, motionImages } from './motion';
+import { burstPose, captionPlace, cameraAt, captionsAt, clamp, cutDuration, fadeOutAt, fleetAt, layersAt, maskAt, placeScreen, spotAt, stillAt, tapAt, type Cut, type Rect, type Shot } from './timeline';
 
 type Palette = { bg: string; surface: string; text: string; muted: string; rule: string; shadow: string; dim: string; track: string };
 const PALETTES: Record<'dark' | 'light', Palette> = {
@@ -29,6 +30,8 @@ type Built = {
   imgs: HTMLImageElement[];
   fx?: { root: HTMLDivElement; svg: SVGSVGElement; path: SVGPathElement; masks: HTMLDivElement[]; marks: HTMLDivElement[]; sprites: HTMLDivElement[]; covers: HTMLDivElement[] };
   fleet?: { bars: HTMLDivElement[]; rows: HTMLDivElement[]; count: HTMLSpanElement };
+  motion?: (local: number) => void;
+  place: 'top' | 'bottom';
   chips: HTMLDivElement[];
   tap: HTMLDivElement;
 };
@@ -78,12 +81,19 @@ function buildFx(shot: Shot, body: HTMLElement): Built['fx'] {
   const box = { position: 'absolute', left: '0', top: '0', opacity: '0' } as Partial<CSSStyleDeclaration>;
   const masks = (shot.masks ?? []).map(() => el('div', { ...box }, root));
   const covers = (shot.burst?.tiles ?? []).map(() => el('div', { ...box }, root));
+  // The spotlight is a masked flat rect: white keeps the dim, black holes let
+  // the still through. A mask (not an even-odd path) so overlapping holes,
+  // e.g. a card and the button on it, stay lit.
   const svg = document.createElementNS(SVG, 'svg');
   Object.assign(svg.style, { position: 'absolute', left: '0', top: '0', overflow: 'visible' });
+  const id = `spot-${Math.random().toString(36).slice(2)}`;
+  const mask = document.createElementNS(SVG, 'mask');
+  mask.setAttribute('id', id);
+  mask.setAttribute('maskUnits', 'userSpaceOnUse');
   const path = document.createElementNS(SVG, 'path');
-  path.setAttribute('fill-rule', 'evenodd');
   path.setAttribute('fill', P.dim);
-  svg.appendChild(path);
+  path.setAttribute('mask', `url(#${id})`);
+  svg.append(mask, path);
   root.appendChild(svg);
   const sprites = (shot.burst?.tiles ?? []).map(() => el('div', { ...box, backgroundRepeat: 'no-repeat', transformOrigin: '50% 50%' }, root));
   const marks = (shot.marks ?? []).map(() => el('div', { ...box, background: ACCENT }, root));
@@ -130,6 +140,7 @@ function build(cut: Cut, root: HTMLElement): Built[] {
     const imgs: HTMLImageElement[] = [];
     let fx: Built['fx'];
     let fleet: Built['fleet'];
+    let motion: Built['motion'];
     if (shot.layout === 'phone') {
       const g = phoneGeometry(cut, shot);
       Object.assign(body.style, {
@@ -151,6 +162,9 @@ function build(cut: Cut, root: HTMLElement): Built[] {
       fx = buildFx(shot, body);
     } else if (shot.layout === 'fleet' && shot.fleet) {
       fleet = buildFleet(shot, layer);
+    } else if (shot.layout === 'motion' && shot.motion) {
+      motion = buildMotion(shot.motion, layer, P);
+      imgs.push(...motionImages(layer));
     } else if (shot.card) {
       const box = el('div', { position: 'absolute', inset: '0', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '22px' }, layer);
       const title = el('div', { display: 'flex', alignItems: 'center', gap: '22px', fontFamily: MONO, fontWeight: '600', fontSize: '72px', color: P.text }, box);
@@ -165,7 +179,7 @@ function build(cut: Cut, root: HTMLElement): Built[] {
       border: `4px solid ${ACCENT}`, boxShadow: `4px 4px 0 0 ${P.shadow}`, opacity: '0', boxSizing: 'border-box', zIndex: '6',
     }, layer);
     el('div', { position: 'absolute', left: '50%', top: '50%', width: '14px', height: '14px', marginLeft: '-7px', marginTop: '-7px', background: ACCENT }, tap);
-    return { shot, layer, body, imgs, fx, fleet, chips, tap };
+    return { shot, layer, body, imgs, fx, fleet, motion, chips, tap, place: captionPlace(cut, shot) };
   });
 }
 
@@ -209,24 +223,24 @@ function poseFx(b: Built, local: number, img: HTMLImageElement, W: number, H: nu
       background: fill, opacity: String(m.fill === 'dim' ? s.opacity * 0.62 : s.opacity),
     });
   });
-  // The burst: each tile lifted off the still, flying from the origin to its place.
+  // The burst: each tile lifted off the still, flying to its place (burstPose).
   if (shot.burst) {
     const bu = shot.burst;
     bu.tiles.forEach((t, i) => {
-      const p = burstAt(bu, i, local);
+      const q = burstPose(bu, i, local);
       const r = px(t, W, H);
       const cover = fx.covers[i];
       const sp = fx.sprites[i];
-      if (p >= 1) { cover.style.opacity = '0'; sp.style.opacity = '0'; return; }
+      if (q.p >= 1) { cover.style.opacity = '0'; sp.style.opacity = '0'; return; }
       const sx = bu.sample === 'left' ? t.x - 8 / W : t.x + 3 / W;
       Object.assign(cover.style, { left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 6}px`, height: `${r.height + 6}px`, background: sampleAt(img, sx, t.y + t.h / 2), opacity: '1' });
-      const dx = (bu.origin.x * W - (r.left + r.width / 2)) * (1 - p);
-      const dy = (bu.origin.y * H - (r.top + r.height / 2)) * (1 - p);
-      const sh = Math.round(8 * (1 - p)) / scale;
+      const dx = (q.x + q.w / 2 - (t.x + t.w / 2)) * W;
+      const dy = (q.y + q.h / 2 - (t.y + t.h / 2)) * H;
+      const sh = Math.round(8 * (1 - q.p)) / scale;
       Object.assign(sp.style, {
         left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`,
         backgroundImage: `url("${img.dataset.src}")`, backgroundSize: `${W}px ${H}px`, backgroundPosition: `${-r.left}px ${-r.top}px`,
-        transform: `translate(${dx}px, ${dy}px) scale(${0.3 + 0.7 * p})`, opacity: String(p <= 0 ? 0 : Math.min(1, p * 5)),
+        transform: `translate(${dx}px, ${dy}px) scale(${q.scale})`, opacity: String(q.opacity),
         boxShadow: sh > 0 ? `${sh}px ${sh}px 0 0 ${P.shadow}` : 'none', zIndex: '2',
       });
     });
@@ -234,13 +248,15 @@ function poseFx(b: Built, local: number, img: HTMLImageElement, W: number, H: nu
   // The spotlight: one flat dim over everything but the holes.
   const spot = spotAt(shot.spot, local);
   if (spot.dim > 0) {
-    const holes = spot.rects.map((r) => {
-      const q = px(r, W, H);
-      return `M${q.left} ${q.top}h${q.width}v${q.height}h${-q.width}Z`;
-    }).join('');
+    // Padding in output pixels, applied after the zoom: the hole always clears its element.
+    const k = ((shot.spot ?? []).filter((x) => x.at <= local).pop()?.padPx ?? 0) / scale;
+    const holes = spot.rects.filter((r) => r.w > 0 && r.h > 0).map((r) => px(r, W, H));
+    const mask = fx.svg.querySelector('mask')!;
+    mask.setAttribute('x', '0'); mask.setAttribute('y', '0'); mask.setAttribute('width', String(W)); mask.setAttribute('height', String(H));
+    mask.innerHTML = `<rect x="0" y="0" width="${W}" height="${H}" fill="white"/>` + holes.map((q) => `<rect x="${q.left - k}" y="${q.top - k}" width="${q.width + 2 * k}" height="${q.height + 2 * k}" fill="black"/>`).join('');
     fx.svg.setAttribute('width', String(W));
     fx.svg.setAttribute('height', String(H));
-    fx.path.setAttribute('d', `M0 0H${W}V${H}H0Z${holes}`);
+    fx.path.setAttribute('d', `M0 0H${W}V${H}H0Z`);
     fx.path.setAttribute('fill-opacity', String(spot.dim));
     fx.svg.style.display = 'block';
   } else {
@@ -276,7 +292,7 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
   const u = clamp(local / shot.dur);
   const cam = cameraAt(shot.camera, u);
   let toFrame = (x: number, y: number) => ({ x, y });
-  if (b.imgs.length) {
+  if (b.imgs.length && (shot.layout === 'screen' || shot.layout === 'phone')) {
     const still = stillAt(shot.images, local);
     b.imgs.forEach((img, i) => {
       img.style.opacity = i === still.index ? String(still.alpha) : still.prev && shot.images[i].src === still.prev ? '1' : '0';
@@ -304,6 +320,10 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
     }
   }
   if (b.fleet) poseFleet(b, local);
+  if (b.motion) {
+    b.motion(local);
+    toFrame = (x, y) => ({ x: x * cut.width, y: y * cut.height });
+  }
   const last = !cut.loop && b === built[built.length - 1];
   const caps = captionsAt(shot, local, last ? cut.fade + 60 : cut.fade);
   b.chips.forEach((c, i) => {
@@ -314,7 +334,7 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
       const g = phoneGeometry(cut, shot);
       Object.assign(c.style, { left: `${g.x + g.w + 110}px`, top: '50%', transform: 'translateY(-50%)', maxWidth: `${cut.width - (g.x + g.w + 110) - 110}px` });
     } else {
-      Object.assign(c.style, { left: '72px', bottom: '72px' });
+      Object.assign(c.style, b.place === 'top' ? { left: '72px', top: '72px', bottom: 'auto' } : { left: '72px', bottom: '72px', top: 'auto' });
     }
   });
   const tap = tapAt(shot.taps, local);

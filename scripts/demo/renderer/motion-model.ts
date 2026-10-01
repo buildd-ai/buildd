@@ -1,0 +1,97 @@
+/**
+ * The abstract "brand motion" beats of v6x, pure: what each shows at a given
+ * moment, and the sounds it makes. motion.ts draws them; nothing here touches
+ * the DOM, so the tests read the same numbers the frames do.
+ *
+ *   type    one sentence typed large
+ *   split   the sentence becomes 12 tiles, dropping into three columns, one column at a time
+ *   fleet   four runner rows; six role-coloured bars light up and fill, a row at a time
+ *   phone   a phone with one question and two options; one is tapped
+ *   screens two screenshot frames, each stamped with a check
+ *   done    "Done." and one line of what was verified
+ */
+import type { FleetRunner } from './timeline';
+
+export type Motion =
+  | { kind: 'type'; label: string; text: string; from: number; to: number }
+  | { kind: 'split'; label: string; text: string; columns: Array<{ title: string; tiles: string[] }>; from: number; stagger: number; columnGap: number; dur: number }
+  | { kind: 'fleet'; label: string; runners: FleetRunner[]; from: number; stagger: number; grow: number; total: number }
+  | { kind: 'phone'; label: string; question: string; options: [string, string]; tapAt: number }
+  | { kind: 'screens'; label: string; images: [{ src: string; width: number; height: number }, { src: string; width: number; height: number }]; checks: [number, number] }
+  | { kind: 'done'; label: string; title: string; sub: string; from: number };
+
+function ease(u: number) {
+  const x = Math.min(1, Math.max(0, u));
+  return x * x * x * (x * (6 * x - 15) + 10);
+}
+
+/** Characters of the sentence showing at `local`. */
+export function typedChars(m: Extract<Motion, { kind: 'type' }>, local: number): number {
+  return Math.round(m.text.length * Math.min(1, Math.max(0, (local - m.from) / (m.to - m.from))));
+}
+
+/** When tile (column c, row r) of a split starts falling. */
+export function splitStart(m: Extract<Motion, { kind: 'split' }>, c: number, r: number): number {
+  let t = m.from;
+  for (let k = 0; k < c; k++) t += m.columns[k].tiles.length * m.stagger + m.columnGap;
+  return t + r * m.stagger;
+}
+
+/** Each tile's progress (0 hidden at the column top, 1 in place), by column. */
+export function splitAt(m: Extract<Motion, { kind: 'split' }>, local: number): number[][] {
+  return m.columns.map((col, c) => col.tiles.map((_, r) => ease((local - splitStart(m, c, r)) / m.dur)));
+}
+
+/** The sentence at the top of a split fades to a quiet header as the first tiles land. */
+export function splitHeadline(m: Extract<Motion, { kind: 'split' }>, local: number): number {
+  return 1 - 0.55 * ease((local - m.from) / 0.8);
+}
+
+/** Fleet: per live slot, how lit its row is (0..1) and how full its bar is (0..1), plus the live count. */
+export function fleetRows(m: Extract<Motion, { kind: 'fleet' }>, local: number): { lit: number[]; bars: number[]; live: number } {
+  const lit: number[] = [], bars: number[] = [];
+  let j = 0;
+  for (const r of m.runners) for (const s of r.slots) if (s) {
+    const t0 = m.from + j * m.stagger;
+    lit.push(ease((local - t0) / 0.35));
+    bars.push(ease((local - t0) / m.grow));
+    j++;
+  }
+  return { lit, bars, live: lit.filter((x) => x > 0).length };
+}
+
+/** Phone: 0 before the tap, rising to 1 as the chosen option fills. */
+export function phoneChosen(m: Extract<Motion, { kind: 'phone' }>, local: number): number {
+  return ease((local - m.tapAt) / 0.3);
+}
+
+/** Screens: each frame's check, 0..1. */
+export function screenChecks(m: Extract<Motion, { kind: 'screens' }>, local: number): [number, number] {
+  return [ease((local - m.checks[0]) / 0.25), ease((local - m.checks[1]) / 0.25)];
+}
+
+export function doneIn(m: Extract<Motion, { kind: 'done' }>, local: number): number {
+  return ease((local - m.from) / 0.6);
+}
+
+/** The sounds a motion beat makes, in seconds into its shot. */
+export function motionCues(m: Motion): Array<{ type: 'key' | 'tap' | 'pluck' | 'chime'; at: number; note?: number }> {
+  switch (m.kind) {
+    case 'type': {
+      const out = [];
+      const step = (m.to - m.from) / m.text.length;
+      for (let i = 0; i < m.text.length; i += 2) out.push({ type: 'key' as const, at: m.from + i * step });
+      return out;
+    }
+    case 'split': return m.columns.map((_, c) => ({ type: 'pluck' as const, at: splitStart(m, c, 0) + m.dur, note: c }));
+    case 'fleet': {
+      const out = [];
+      let j = 0;
+      for (const r of m.runners) for (const s of r.slots) if (s) out.push({ type: 'pluck' as const, at: m.from + j++ * m.stagger, note: j });
+      return out;
+    }
+    case 'phone': return [{ type: 'tap', at: m.tapAt }];
+    case 'screens': return m.checks.map((at) => ({ type: 'tap' as const, at }));
+    case 'done': return [{ type: 'chime', at: m.from + 0.2 }];
+  }
+}
