@@ -44,7 +44,7 @@ import {
   type RunOptions,
 } from '@builddai/ai-kit/decide';
 import type { OrchestrationDecisionOutcome } from './orchestration-decision';
-import { hasConcretePathManifest } from './path-overlap';
+import { hasConcretePathManifest, pathsOverlap, REPO_WIDE_SENTINEL } from './path-overlap';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -67,6 +67,12 @@ export const MANIFEST_PICK_MIN_CONFIDENCE: number | null = null;
  * supports a threshold; flipping it is a reviewed code change, not a config.
  */
 export const GATED_MANIFEST_APPLICATION_ENABLED = false;
+/**
+ * Requested share of tasks in the applying arm. Zero. Whatever is requested,
+ * the promotion guard (`./orchestration-promotion.ts`) grants zero unless a
+ * readout found the measured pick template `eligible_for_gated`.
+ */
+export const MANIFEST_APPLYING_FRACTION = 0;
 
 export const candidateLabel = (i: number): string => `c${i}`;
 
@@ -502,19 +508,47 @@ export interface SetScore {
 
 const ratio = (a: number, b: number): number | null => (b > 0 ? a / b : null);
 
+/**
+ * A selection entry as a path-overlap operand: a glob is cut at its first
+ * wildcard segment (`packages/core/**\/*.ts` covers `packages/core`), a
+ * trailing slash is dropped, the repo-wide sentinel covers nothing. Globs are
+ * literal in `pathsOverlap`, so without this a regex baseline that names a
+ * directory pattern would score zero on files it plainly covers.
+ */
+export function selectionOperand(entry: string): string | null {
+  if (typeof entry !== 'string') return null;
+  const t = entry.trim();
+  if (!t || t === REPO_WIDE_SENTINEL) return null;
+  const segs = t.split('/');
+  const cut = segs.findIndex(seg => GLOB_CHARS.test(seg));
+  const kept = (cut === -1 ? segs : segs.slice(0, cut)).filter(seg => seg !== '');
+  return kept.length ? kept.join('/') : null;
+}
+
+/**
+ * Whole-set score with `pathsOverlap` semantics, the same rule claims and
+ * deferrals use: an entry hits when it overlaps an actual file (exact, or a
+ * directory containing it). For concrete file selections (the model's picks,
+ * the neighbour union) this is exact matching; for the regex baseline, which
+ * yields directories and globs, it is the fair reading.
+ *
+ * precision = entries that cover something touched / entries;
+ * recall = actual files some entry covers / actual files.
+ */
 export function scoreManifestSet(input: { selected: readonly string[]; candidates: readonly string[]; actual: readonly string[] }): SetScore {
-  const sel = new Set(input.selected);
+  const sel = [...new Set(input.selected.map(selectionOperand).filter((p): p is string => p !== null))];
   const cand = new Set(input.candidates);
   const act = [...new Set(input.actual)];
-  const tp = act.filter(p => sel.has(p)).length;
+  const covered = act.filter(a => sel.some(e => pathsOverlap([e], [a])));
+  const hits = sel.filter(e => act.some(a => pathsOverlap([e], [a]))).length;
   const inCand = act.filter(p => cand.has(p)).length;
   return {
-    predicted: sel.size,
+    predicted: sel.length,
     actual: act.length,
-    truePositives: tp,
-    precision: ratio(tp, sel.size),
-    recall: ratio(tp, act.length),
-    omittedPathRate: ratio(act.length - tp, act.length),
+    truePositives: covered.length,
+    precision: ratio(hits, sel.length),
+    recall: ratio(covered.length, act.length),
+    omittedPathRate: ratio(act.length - covered.length, act.length),
     candidateRecall: ratio(inCand, act.length),
     candidateMisses: act.filter(p => !cand.has(p)).sort(),
   };
@@ -616,35 +650,52 @@ export interface TouchedObservation {
 
 export type ManifestPredictionLabel =
   | { status: 'missing'; reason: 'no_terminal_observation' }
+  /** Every session failed: what it touched is failed work, not the task's scope. */
+  | { status: 'missing'; reason: 'failed_work_only'; failedWork: string[] }
   | {
       status: 'observed';
+      /** Files touched by sessions that did not fail: the truth. */
       actual: string[];
       landed: boolean;
+      /** Some session failed. */
       failed: boolean;
+      /** Files touched only by failed sessions: reported, never graded. */
+      failedWork: string[];
       unknownScope: boolean;
       model: SetScore;
       baselines: { regex: SetScore; neighbourUnion: SetScore };
     };
+
+const cleanPaths = (obs: readonly TouchedObservation[]) =>
+  [...new Set(obs.flatMap(t => t.paths).filter(p => typeof p === 'string' && p.trim() !== ''))].sort();
 
 /**
  * Grade one prediction against what the task actually touched (the terminal
  * observations F persists, unioned across sessions, plus the full PR diff when
  * the caller has it) — never against the caller manifest. Baselines are scored
  * on the same task and the same candidate set.
+ *
+ * §5a: observed edits, landed edits and failed work stay distinct. Touches
+ * from a failed session are reported as `failedWork` and never graded, so a
+ * session that wandered before failing cannot inflate (or deflate) recall.
  */
 export function labelManifestPrediction(input: {
   prediction: ManifestPredictionRecord & { regexPaths: readonly string[]; neighbourUnionPaths: readonly string[] };
   touched: readonly TouchedObservation[];
 }): ManifestPredictionLabel {
   if (input.touched.length === 0) return { status: 'missing', reason: 'no_terminal_observation' };
-  const actual = [...new Set(input.touched.flatMap(t => t.paths).filter(p => typeof p === 'string' && p.trim() !== ''))].sort();
+  const good = input.touched.filter(t => !t.failed);
+  const actual = cleanPaths(good);
+  const failedWork = cleanPaths(input.touched.filter(t => t.failed)).filter(p => !actual.includes(p));
+  if (good.length === 0) return { status: 'missing', reason: 'failed_work_only', failedWork };
   const p = input.prediction;
   const score = (selected: readonly string[]) => scoreManifestSet({ selected, candidates: p.candidates, actual });
   return {
     status: 'observed',
     actual,
     landed: input.touched.some(t => t.landed),
-    failed: input.touched.every(t => t.failed),
+    failed: input.touched.some(t => t.failed),
+    failedWork,
     unknownScope: p.unknownScope,
     model: score(p.selected),
     baselines: { regex: score(p.regexPaths), neighbourUnion: score(p.neighbourUnionPaths) },

@@ -18,9 +18,18 @@
  *     definition, zero applying fraction), so the route never reaches the
  *     ledger lookup. When reached, START relaxes only the named advisory gate;
  *     declared paths are still acquired through the exclusive primitive
- *     before the claim, and every later gate still runs.
+ *     before the claim, and every later gate still runs. A START that then
+ *     loses the atomic claim gives back the leases it took
+ *     (`releaseGatedStartPaths`).
+ *
+ * The applying fraction is never read raw: it goes through the promotion
+ * guard (`resolveApplyingFraction`, packages/core/orchestration-promotion.ts),
+ * which returns zero unless a readout found the exact measured definition
+ * `eligible_for_gated` for the gate's candidate policy. No such evidence is
+ * recorded, so a requested fraction alone cannot open the cohort.
  */
 import { after } from 'next/server';
+import { TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
 import type { Decision } from '@builddai/ai-kit/decide';
 import {
   CLAIM_HOLD_APPLYING_FRACTION,
@@ -43,6 +52,7 @@ import {
   runOrchestrationDecision,
   type OrchestrationDecisionDeps,
 } from '@buildd/core/orchestration-decision';
+import { resolveApplyingFraction, type PromotionEvidence } from '@buildd/core/orchestration-promotion';
 import { intersectPaths, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import type { AcquireInput, AcquireResult } from '@buildd/core/path-claim';
 import type { ClaimDecisionKey } from '@buildd/core/orchestration-claim-source';
@@ -54,13 +64,20 @@ type ClaimHoldDecision = Decision<typeof CLAIM_HOLD_QUESTIONS>;
 export interface ClaimHoldDeps {
   /** Override the definition (tests; Step I's readout of a candidate policy). */
   decision?: ClaimHoldDecision;
+  /** The REQUESTED fraction. The promotion guard decides what is granted. */
   applyingFraction?: number;
+  /** Default: the committed `ORCHESTRATION_PROMOTIONS` (empty). */
+  promotions?: readonly PromotionEvidence[];
   decide?: typeof runOrchestrationDecision;
   decisionDeps?: OrchestrationDecisionDeps;
   hasRecent?: (k: ClaimDecisionKey) => Promise<boolean>;
   loadHolder?: (opts: { workspaceId: string; taskId: string | null; prNumber: number | null }) => Promise<ClaimHoldHolderState | null>;
   findAppliedStart?: (k: ClaimDecisionKey) => Promise<boolean>;
   acquire?: (input: AcquireInput) => Promise<AcquireResult>;
+  /** Status of the task after a lost claim race (null: not found). */
+  readTaskStatus?: (opts: { workspaceId: string; taskId: string }) => Promise<string | null>;
+  /** Whole-task lease release with waiter delivery. Default `releaseAndNotify(taskId, 'abandoned')`. */
+  release?: (taskId: string) => Promise<void>;
   now?: () => number;
   /** How work is deferred past the response. Default `after()`, detached if out of scope. */
   schedule?: (fn: () => Promise<void>) => void;
@@ -323,7 +340,7 @@ export async function runClaimHoldShadow(notes: readonly ClaimHoldNote[], deps: 
           workspaceId: c.workspaceId, taskId: c.holder.taskId, prNumber: c.holder.prNumber,
         })),
         isValidAnswer: (v) => v === 'HOLD' || v === 'START',
-        cohort: { fraction: deps.applyingFraction ?? CLAIM_HOLD_APPLYING_FRACTION, unitId: c.taskId },
+        cohort: { fraction: grantedFraction(deps, c.gate), unitId: c.taskId },
         // The access just resolved is reused, so the adapter does not read the team again.
         deps: { ...deps.decisionDeps, resolveAccess: async () => access },
       });
@@ -362,9 +379,27 @@ export function scheduleClaimHoldShadow(collector: ClaimHoldCollector, deps: Cla
 
 // ── 3. Gated START (unreachable as shipped) ──────────────────────────────────
 
+const GATES: readonly ClaimHoldCandidate['gate'][] = ['advisory_manifest', 'open_pr_overlap'];
+
+/** The applying fraction the promotion guard grants for one gate's candidate policy. */
+export function grantedFraction(deps: ClaimHoldDeps, gate: ClaimHoldCandidate['gate']): number {
+  try {
+    return resolveApplyingFraction({
+      decision: deps.decision ?? CLAIM_HOLD_DECISION,
+      question: 'action',
+      candidatePolicyVersion: claimHoldCandidatePolicyVersion(gate),
+      requestedFraction: deps.applyingFraction ?? CLAIM_HOLD_APPLYING_FRACTION,
+      promotions: deps.promotions,
+    }).fraction;
+  } catch {
+    return 0;
+  }
+}
+
 /** Is the gated START path live at all? Cheap, synchronous, false as shipped. */
 export function gatedStartReachable(deps: ClaimHoldDeps = {}): boolean {
-  return isGatedStartReachable(deps.decision ?? CLAIM_HOLD_DECISION, deps.applyingFraction ?? CLAIM_HOLD_APPLYING_FRACTION);
+  const decision = deps.decision ?? CLAIM_HOLD_DECISION;
+  return GATES.some(g => isGatedStartReachable(decision, grantedFraction(deps, g)));
 }
 
 /**
@@ -373,8 +408,9 @@ export function gatedStartReachable(deps: ClaimHoldDeps = {}): boolean {
  * false without any I/O while unreachable, and on any error.
  */
 export async function gatedStartApplies(note: ClaimHoldNote | null, deps: ClaimHoldDeps = {}): Promise<boolean> {
-  if (!note || !gatedStartReachable(deps)) return false;
+  if (!note) return false;
   const decision = deps.decision ?? CLAIM_HOLD_DECISION;
+  if (!isGatedStartReachable(decision, grantedFraction(deps, note.candidate.gate))) return false;
   const now = (deps.now ?? (() => Date.now()))();
   try {
     return await (deps.findAppliedStart ?? defaultFindAppliedStart)(keyFor(note, decision, new Date(now - CLAIM_HOLD_START_TTL_MS)));
@@ -383,23 +419,75 @@ export async function gatedStartApplies(note: ClaimHoldNote | null, deps: ClaimH
   }
 }
 
+export interface GatedStartAcquisition {
+  /** All declared paths are now this task's: the claim may proceed. */
+  ok: boolean;
+  /** Leases this acquisition inserted (what a lost claim race gives back). */
+  inserted: string[];
+}
+
 /**
  * Acquire a gated START's declared paths through Section 1's exclusive
- * primitive, all-or-nothing, before the claim. False (HOLD) on any conflict,
+ * primitive, all-or-nothing, before the claim. Not ok (HOLD) on any conflict,
  * a closed task or an error. A scope-undeclared START has nothing to acquire
  * up front; its observed touches are leased by the same primitive later.
  */
 export async function acquireGatedStartPaths(
   input: { workspaceId: string; taskId: string; paths: string[] },
   deps: Pick<ClaimHoldDeps, 'acquire'> = {},
-): Promise<boolean> {
+): Promise<GatedStartAcquisition> {
   const paths = input.paths.filter(p => p !== REPO_WIDE_SENTINEL);
-  if (paths.length === 0) return true;
+  if (paths.length === 0) return { ok: true, inserted: [] };
   try {
     const res = await (deps.acquire ?? defaultAcquire)({ workspaceId: input.workspaceId, taskId: input.taskId, paths, declare: true });
-    return res.kind === 'acquired' && res.blocked.length === 0;
+    return res.kind === 'acquired' && res.blocked.length === 0
+      ? { ok: true, inserted: [...res.inserted] }
+      : { ok: false, inserted: [] };
   } catch (err) {
     console.warn('[claim] gated START path acquisition failed (holding):', (err as Error)?.message ?? err);
-    return false;
+    return { ok: false, inserted: [] };
+  }
+}
+
+/** A task in one of these is owned by a claim that won: its leases are that claim's. */
+const OWNED_BY_LIVE_CLAIM: ReadonlySet<string> = new Set<string>(
+  TASK_STATUSES.filter(s => s !== 'pending' && !isTerminalTaskStatus(s)),
+);
+
+const defaultReadTaskStatus: NonNullable<ClaimHoldDeps['readTaskStatus']> = async ({ workspaceId, taskId }) => {
+  const [{ db }, { tasks }, { and, eq }] = await Promise.all([
+    import('@buildd/core/db'),
+    import('@buildd/core/db/schema'),
+    import('drizzle-orm'),
+  ]);
+  const rows = await db.select({ status: tasks.status }).from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId))).limit(1);
+  return rows[0]?.status ?? null;
+};
+const defaultRelease = async (taskId: string) => (await import('@/lib/path-claim-release')).releaseAndNotify(taskId, 'abandoned');
+
+export type GatedStartRelease = 'nothing_inserted' | 'kept_live_owner' | 'released' | 'error';
+
+/**
+ * The gated START acquired paths, then lost the atomic pending→assigned
+ * claim. If another claim now owns the task, the leases are the same task's
+ * and protect its live work: keep them. Otherwise (re-queued, cancelled,
+ * finished, gone) nothing is editing under them, so release the task's leases
+ * the way every terminal path does, waking whoever waits. Never throws; the
+ * path-claims reaper is the backstop for a failed release.
+ */
+export async function releaseGatedStartPaths(
+  input: { workspaceId: string; taskId: string; inserted: string[] },
+  deps: Pick<ClaimHoldDeps, 'readTaskStatus' | 'release'> = {},
+): Promise<GatedStartRelease> {
+  if (input.inserted.length === 0) return 'nothing_inserted';
+  try {
+    const status = await (deps.readTaskStatus ?? defaultReadTaskStatus)({ workspaceId: input.workspaceId, taskId: input.taskId });
+    if (status && OWNED_BY_LIVE_CLAIM.has(status)) return 'kept_live_owner';
+    await (deps.release ?? defaultRelease)(input.taskId);
+    return 'released';
+  } catch (err) {
+    console.warn('[claim] gated START lease release after a lost claim failed (reaper will retry):', (err as Error)?.message ?? err);
+    return 'error';
   }
 }
