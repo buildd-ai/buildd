@@ -117,6 +117,7 @@
     "./ecosystem-detect": "./ecosystem-detect.ts",
     "./risk-class-detect": "./risk-class-detect.ts",
     "./workspace-readiness": "./workspace-readiness.ts",
+    "./onboarding-scaffold": "./onboarding-scaffold.ts",
     "./spec-conformance": "./spec-conformance.ts",
     "./spec-conformance-detect": "./spec-conformance-detect.ts",
     "./spec-conformance-schedule": "./spec-conformance-schedule.ts",
