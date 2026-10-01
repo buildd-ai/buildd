@@ -118,6 +118,15 @@ const mockTasksFindManyForExecutorChange = mock(async (options?: any) => {
   return missionTasksToReturn;
 });
 
+// The gate has its own suite (lib/mission-surface-audit-gate.test.ts); here it
+// is a controllable verdict, so the route's refusal and waiver wiring is what is tested.
+let surfaceGateVerdict: any = { required: false, why: 'no_ui_change' };
+const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGateVerdict);
+mock.module('@/lib/mission-surface-audit-gate', () => ({
+  evaluateSurfaceAuditGate: mockEvaluateSurfaceAuditGate,
+  loadSurfaceAuditGateTasks: async () => [],
+}));
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -1796,5 +1805,119 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(dispatchUnblockedTaskCalls.length).toBe(2);
     expect(dispatchUnblockedTaskCalls[0].task.id).toBe('task-pending');
     expect(dispatchUnblockedTaskCalls[1].task.id).toBe('task-assigned');
+  });
+});
+
+describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
+  const MID = '11111111-1111-4111-8111-111111111111';
+  const uiGate = { required: true, source: 'diff', uiPaths: ['apps/web/src/components/Card.tsx'] };
+  const patch = (body: Record<string, unknown>) =>
+    PATCH(new NextRequest(`http://localhost/api/missions/${MID}`, { method: 'PATCH', body: JSON.stringify(body) }), { params: makeParams(MID) });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReset();
+    insertedNotes = [];
+    updatedSetData = null;
+    surfaceGateVerdict = { required: false, why: 'no_ui_change' };
+    mockEvaluateSurfaceAuditGate.mockClear();
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null,
+      status: 'active', priority: 0, goalCriteria: null,
+    });
+    mockMissionsUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedSetData = { ...updatedSetData, ...data };
+        return { where: mock(() => ({ returning: mock(() => [{ id: MID, ...data }]) })) };
+      }),
+    }));
+  });
+
+  it('refuses a human completion of a UI mission with no audit, with an actionable reason', async () => {
+    surfaceGateVerdict = uiGate;
+    const res = await patch({ status: 'completed' });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('surface_audit_missing');
+    expect(body.error).toContain('apps/web/src/components/Card.tsx');
+    expect(body.error).toContain('surfaceAuditWaiver');
+    expect(updatedSetData).toBeNull();
+  });
+
+  it('a waiver supplied with the completion lets it through and records the reason', async () => {
+    surfaceGateVerdict = uiGate;
+    const res = await patch({ status: 'completed', surfaceAuditWaiver: 'Copy-only change, checked by hand' });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.status).toBe('completed');
+    const note = insertedNotes.find(n => n.title === 'Surface audit waived');
+    expect(note).toBeDefined();
+    expect(note.body).toBe('Copy-only change, checked by hand');
+    expect(note.authorType).toBe('user');
+  });
+
+  it('a backend-only mission completes without a waiver', async () => {
+    const res = await patch({ status: 'completed' });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.status).toBe('completed');
+    expect(insertedNotes.some(n => n.title === 'Surface audit waived')).toBe(false);
+  });
+
+  it('a mission the gate clears (audit present or already waived) completes', async () => {
+    surfaceGateVerdict = { required: false, why: 'has_audit' };
+    expect((await patch({ status: 'completed' })).status).toBe(200);
+  });
+
+  it('does not gate archiving, or a mission that is already closed', async () => {
+    surfaceGateVerdict = uiGate;
+    expect((await patch({ status: 'archived' })).status).toBe(200);
+
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null,
+      status: 'completed', priority: 0, goalCriteria: null,
+    });
+    expect((await patch({ status: 'completed' })).status).toBe(200);
+  });
+
+  it('rejects a waiver with no real reason', async () => {
+    const res = await patch({ surfaceAuditWaiver: 'skip' });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('surfaceAuditWaiver');
+    expect(insertedNotes).toHaveLength(0);
+  });
+
+  it('rejects a waiver from an in-task agent', async () => {
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-1', name: 'key', level: 'admin', teamId: 'team-1' } as any);
+    const res = await PATCH(
+      new NextRequest(`http://localhost/api/missions/${MID}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ surfaceAuditWaiver: 'Not needed, nothing user-facing', actorWorkerId: 'worker-1' }),
+        headers: { authorization: 'Bearer bld_test' },
+      }),
+      { params: makeParams(MID) },
+    );
+    
+    expect(res.status).toBe(403);
+    expect(insertedNotes).toHaveLength(0);
+  });
+
+  it('accepts a waiver from an admin API key acting for a person (MCP)', async () => {
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReturnValue({ id: 'acct-1', name: 'key', level: 'admin', teamId: 'team-1' } as any);
+    const res = await PATCH(
+      new NextRequest(`http://localhost/api/missions/${MID}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ surfaceAuditWaiver: 'Not needed, nothing user-facing' }),
+        headers: { authorization: 'Bearer bld_test' },
+      }),
+      { params: makeParams(MID) },
+    );
+    expect(res.status).toBe(200);
+    expect(insertedNotes.find(n => n.title === 'Surface audit waived')?.authorType).toBe('mcp');
   });
 });

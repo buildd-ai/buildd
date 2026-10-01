@@ -12,7 +12,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-07-21
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
-- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-09-09
+- [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-09-30
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 - [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-09-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
@@ -49,7 +49,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-28
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-30
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
 ### releases (4)

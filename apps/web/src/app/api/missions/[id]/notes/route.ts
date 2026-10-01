@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missionNotes, missions, workspaces } from '@buildd/core/db/schema';
@@ -26,11 +27,11 @@ async function resolveMissionAccess(req: NextRequest, missionId: string) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) return null;
 
-  if (apiAccount && apiAccount.level !== 'admin') return null;
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, req.method === 'GET' ? 'tasks:read' : undefined)) return null;
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
 

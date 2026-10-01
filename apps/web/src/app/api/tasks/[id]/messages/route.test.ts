@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 const TASK_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -89,6 +90,18 @@ describe('GET /api/tasks/[id]/messages', () => {
     const data = await (await GET(req(), { params: Promise.resolve({ id: TASK_ID }) })).json();
     expect(data.canSend).toBe(false);
   });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`canSend is false for a scoped ${preset} preset token of the task's team`, async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'admin', teamId: 'team-1', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+      mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', instructionHistory: [] });
+      const data = await (await GET(req(), { params: Promise.resolve({ id: TASK_ID }) })).json();
+      expect(data.canSend).toBe(false);
+    });
+  }
 
   it('returns the latest worker\'s messages and id', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });

@@ -18,6 +18,8 @@ import {
   buildContainerEnv,
   warmReposEnabled,
   crashReportAction,
+  parseTaskTokenResponse,
+  taskTokenRequest,
   decideDispatch,
   isOrphanedRun,
   isValidTaskId,
@@ -104,9 +106,9 @@ describe('resumable runs config', () => {
   });
 
   test('container env: BUILDD_ONCE_PARK and the snapshot URL only when on', () => {
-    const off = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k' });
+    const off = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k' }, 'bldt_task');
     expect('BUILDD_ONCE_PARK' in off).toBe(false);
-    const on = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', RESUMABLE_RUNS: '1' });
+    const on = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', RESUMABLE_RUNS: '1' }, 'bldt_task');
     expect(on.BUILDD_ONCE_PARK).toBe('1');
     expect(on.BUILDD_SNAPSHOT_URL).toBe('https://buildd-snapshots.invalid');
     expect('BUILDD_WARM_REPO' in on).toBe(false);
@@ -174,10 +176,10 @@ describe('isValidTaskId', () => {
 
 describe('container env', () => {
   test('minimal env with a placeholder model key, the cloud marker and no GitHub token', () => {
-    const env = buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' });
+    const env = buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' }, 'bldt_task');
     expect(env).toEqual({
       BUILDD_SERVER: 'http://127.0.0.1:9',
-      BUILDD_API_KEY: 'bld_test',
+      BUILDD_API_KEY: 'bldt_task',
       ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
       BUILDD_DISABLE_AUTO_UPDATE: '1',
       BUILDD_EXECUTOR: 'cloud',
@@ -187,8 +189,8 @@ describe('container env', () => {
   });
 
   test('security: no model or GitHub secret reaches the container, whatever the Worker holds', () => {
-    // Every secret the Worker could hold is in the source; only the runner's
-    // own API key may come out the other side.
+    // Every secret the Worker could hold is in the source; only the per-task
+    // token may come out the other side.
     const workerEnv = {
       BUILDD_SERVER: 'https://buildd.example', BUILDD_API_KEY: 'bld_runner_key',
       DISPATCH_TOKEN: 'dispatch-secret', AI_GATEWAY_TOKEN: 'gw-secret',
@@ -199,9 +201,9 @@ describe('container env', () => {
       GH_TOKEN: 'ghs_real', GITHUB_TOKEN: 'ghs_real', ANTHROPIC_BASE_URL: 'https://gateway.example/anthropic',
       MODEL: 'm', PUSHER_KEY: 'pk',
     };
-    const env = buildContainerEnv(workerEnv as never);
+    const env = buildContainerEnv(workerEnv as never, 'bldt_task');
     const values = Object.values(env).join('\n');
-    for (const secret of ['dispatch-secret', 'gw-secret', 'sk-ant-direct-secret', 'proxy-secret-key', 'litellm.example.com', 'sk-ant-real', 'oauth-real', 'ghs_real']) {
+    for (const secret of ['bld_runner_key', 'dispatch-secret', 'gw-secret', 'sk-ant-direct-secret', 'proxy-secret-key', 'litellm.example.com', 'sk-ant-real', 'oauth-real', 'ghs_real']) {
       expect(values).not.toContain(secret);
     }
     for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AI_GATEWAY_TOKEN', 'DISPATCH_TOKEN', 'ANTHROPIC_BASE_URL', 'MODEL_PROXY_URL', 'MODEL_PROXY_KEY', 'MODEL_PROXY_AUTH_HEADER']) {
@@ -214,17 +216,17 @@ describe('container env', () => {
   test('passes optional settings through only when set', () => {
     const env = buildContainerEnv({
       BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', MODEL: '', PUSHER_KEY: 'pk',
-    });
+    }, 'bldt_task');
     expect(env.PUSHER_KEY).toBe('pk');
     expect('MODEL' in env).toBe(false);
   });
 
   test('warm repos: the flag and the snapshot URL only when the Worker turned them on', () => {
-    const off = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k' });
+    const off = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k' }, 'bldt_task');
     expect('BUILDD_WARM_REPO' in off).toBe(false);
     expect('BUILDD_SNAPSHOT_URL' in off).toBe(false);
-    expect('BUILDD_WARM_REPO' in buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '0' })).toBe(false);
-    const on = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '1' });
+    expect('BUILDD_WARM_REPO' in buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '0' }, 'bldt_task')).toBe(false);
+    const on = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '1' }, 'bldt_task');
     expect(on.BUILDD_WARM_REPO).toBe('1');
     expect(on.BUILDD_SNAPSHOT_URL).toBe('https://buildd-snapshots.invalid');
   });
@@ -236,9 +238,30 @@ describe('container env', () => {
     expect(warmReposEnabled({ WARM_REPOS: 'yes', SNAPSHOTS: {} })).toBe(false);
   });
 
-  test('refuses to build without a server or key (the runner would default to production)', () => {
-    expect(() => buildContainerEnv({ BUILDD_API_KEY: 'k' })).toThrow(/BUILDD_SERVER/);
-    expect(() => buildContainerEnv({ BUILDD_SERVER: 's' })).toThrow(/BUILDD_API_KEY/);
+  test('refuses to build without a server (the runner would default to production)', () => {
+    expect(() => buildContainerEnv({ BUILDD_API_KEY: 'k' }, 'bldt_task')).toThrow(/BUILDD_SERVER/);
+  });
+
+  test('security: refuses any container credential that is not a per-task token', () => {
+    for (const token of ['bld_runner_key', '', 'k', undefined]) {
+      expect(() => buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'bld_runner_key' }, token as never)).toThrow(/per-task token/);
+    }
+  });
+
+  test('the token is minted with the runner key, for exactly this task', () => {
+    const { url, init } = taskTokenRequest({ BUILDD_SERVER: 'https://buildd.example/', BUILDD_API_KEY: 'bld_k' }, 't-1');
+    expect(url).toBe('https://buildd.example/api/runner/task-token');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer bld_k');
+    expect(JSON.parse(init.body as string)).toEqual({ taskId: 't-1' });
+    expect(() => taskTokenRequest({ BUILDD_SERVER: 's' }, 't-1')).toThrow(/BUILDD_API_KEY/);
+  });
+
+  test('a mint response must carry a per-task token for this task', () => {
+    expect(parseTaskTokenResponse({ token: 'bldt_x', taskId: 't-1' }, 't-1')).toBe('bldt_x');
+    expect(() => parseTaskTokenResponse({ token: 'bld_x', taskId: 't-1' }, 't-1')).toThrow(/per-task token/);
+    expect(() => parseTaskTokenResponse({ token: 'bldt_x', taskId: 't-2' }, 't-1')).toThrow(/different task/);
+    expect(() => parseTaskTokenResponse(null, 't-1')).toThrow();
   });
 
   test('command runs the image helper for exactly this task', () => {

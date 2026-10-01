@@ -283,6 +283,8 @@ export type WaitingOnDescriptor =
       label: string;
       detail: string | null;
       visualReview?: { cells: number; roundCapOpen: boolean; enforced: boolean };
+      /** The mission changed UI and no surface audit passed (`surface_audit_missing`). */
+      surfaceAudit?: true;
     }
   /**
    * Everything open is on a known self-resolving condition. Resumes by itself.
@@ -812,6 +814,11 @@ function resolve(input: MissionStateInput): Resolution {
     if (visual) return visual;
   }
 
+  // 9¾. The mission changed UI and nothing has looked at it
+  //     (`surface_audit_missing`). The owner either runs the audit or waives it.
+  const surface = surfaceAuditFact(input);
+  if (surface) return surface;
+
   // 10. The work is done and the completion gate has not cleared. NEVER
   //     `blocked` — see ruling 1 in the module note. Tone comes straight from
   //     `deriveCriteriaGatePresentation`, so an unverified criterion on a
@@ -1278,6 +1285,23 @@ function visualReviewFact(input: MissionStateInput): Resolution | null {
   };
 }
 
+/** Rule 9¾ — completion refused for want of a surface audit on a UI change. */
+function surfaceAuditFact(input: MissionStateInput): Resolution | null {
+  if (input.completion?.code !== 'surface_audit_missing') return null;
+  return {
+    kind: 'awaiting_decision',
+    waitingOn: {
+      kind: 'human_decision',
+      tone: 'warning',
+      label: 'This mission changed UI and has no visual audit',
+      detail: input.completion.reason || null,
+      surfaceAudit: true,
+    },
+    displayState: 'waiting_decision',
+    source: 'canCompleteMission',
+  };
+}
+
 /** Rule 10 — the completion gate has not cleared. Never `blocked`. */
 function criteriaFact(input: MissionStateInput): Resolution | null {
   const { criteriaGate, completion } = input;
@@ -1438,6 +1462,7 @@ function collectOutstanding(input: MissionStateInput, resolved: Resolution): Out
     fromResolution(criteriaFact(input)),
     fromResolution(openTaskFact(input, live)),
     fromResolution(visualReviewFact(input)),
+    fromResolution(surfaceAuditFact(input)),
   ];
 
   const seen = new Set<WaitingOnDescriptor['kind']>();
@@ -1702,6 +1727,9 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         return waitingOn.visualReview.cells > 0
           ? 'Open the visual review and decide each screen: looks right, or needs fix.'
           : 'Open the visual review and decide whether the remaining issues get fixed or waived.';
+      }
+      if (waitingOn.surfaceAudit) {
+        return 'Create a `[surface audit]` task in this mission and let it finish, or waive it with a reason (manage_missions update, surfaceAuditWaiver).';
       }
       return 'Decide this yourself; no automated step will clear it.';
     case 'self_resolving_wait':

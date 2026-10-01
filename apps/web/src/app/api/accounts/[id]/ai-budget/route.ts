@@ -12,7 +12,7 @@ const deps: AccountBudgetDeps = {
   async caller(req) {
     const h = req.headers.get('authorization');
     const bearer = h?.replace(/^Bearer\s+/i, '').trim() || null;
-    const account = bearer ? await authenticateApiKey(bearer) : null;
+    const account = bearer ? await authenticateApiKey(bearer, req) : null;
     if (account?.teamId) return { kind: 'account', accountId: account.id, teamId: account.teamId, level: account.level };
     const user = await getCurrentUser();
     return user ? { kind: 'user', userId: user.id } : null;

@@ -41,6 +41,13 @@ describe('POST /api/cloudflare/credential/reveal', () => {
     expect(mockAuth).not.toHaveBeenCalled();
   });
 
+  it('refuses a per-task token, whatever account minted it', async () => {
+    mockAuth.mockResolvedValue({ id: 'a1', teamId: 'team-1', level: 'admin' });
+    const res = await POST(req('Bearer bldt_payload.sig'));
+    expect(res.status).toBe(401);
+    expect(mockFind).not.toHaveBeenCalled();
+  });
+
   it('refuses an unknown key', async () => {
     const res = await POST(req('Bearer bld_unknown'));
     expect(res.status).toBe(401);
