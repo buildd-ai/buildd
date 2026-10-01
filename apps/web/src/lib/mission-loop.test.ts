@@ -272,6 +272,7 @@ describe('mission-loop', () => {
       path: 'heartbeat',
       predicate: 'task pt1 result.missionComplete=true',
       proposed: true,
+      authorTaskId: 'pt1',
     });
     expect(mockRunMission).not.toHaveBeenCalled();
     expect(mockSpawnEvaluationTask).not.toHaveBeenCalled();
