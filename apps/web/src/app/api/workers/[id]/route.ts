@@ -1199,6 +1199,20 @@ export async function PATCH(
     if (merged.length > 500) {
       console.warn(`[Worker ${id}] observedTouches cap hit (${merged.length}) — truncating to 500`);
       updates.observedTouches = merged.slice(0, 500);
+      // A path past the cap is neither recorded nor leased: say so on the
+      // ledger, or a task over the cap loses path-claim coverage silently.
+      const dropped = merged.slice(500);
+      fireGateEvent({
+        gate: GATE_SLUGS.PATH_CLAIM,
+        surface: 'PATCH /api/workers/[id]',
+        outcome: 'warned',
+        reason: 'observed touches past the 500-path cap were not recorded or leased: path-claim enforcement degraded',
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        callerOrigin: 'worker',
+        detail: { cap: 500, dropped: dropped.length, sample: dropped.slice(0, 10) },
+      });
     } else {
       updates.observedTouches = merged;
     }
@@ -4037,9 +4051,12 @@ export async function PATCH(
   // earlier acquisition that failed or lost a race left the path in
   // observedTouches without a lease, and the diff-against-column rule would
   // never offer it again — yet this is the sweep right before it ships.
-  // Own leases are no-ops in acquireObservedPaths; bounded like the column.
+  // Own leases are no-ops in acquireObservedPaths.
+  // Only recorded paths: a lease must always be visible in observedTouches,
+  // so an incoming path past the cap (warned above) is not offered.
+  const recordedTouches = new Set(Array.isArray(updates.observedTouches) ? (updates.observedTouches as string[]) : []);
   const offeredPaths = checkpointSweep === true && Array.isArray(touchedPaths)
-    ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string'))].slice(0, 500)
+    ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string' && recordedTouches.has(p)))]
     : newlyObservedPaths;
   if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
