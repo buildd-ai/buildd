@@ -337,7 +337,36 @@ mock.module('@buildd/core/model-tier-registry', () => ({
   },
 }));
 
+// Hold/start-at-claim shadow (§5b). The real module runs; only its
+// dependencies are swapped per test through `holdStartTest.deps`, and the
+// after-response work is captured so a test can await it. Default: a team
+// that has not opted in, so no other test in this file sees any change.
+const realHoldStart = { ...(await import('./hold-start-shadow')) };
+const holdStartOff = () => ({
+  hasRecent: async () => false,
+  loadHolder: async () => null,
+  decisionDeps: {
+    resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', message: 'off' } }) as any,
+    record: async () => {},
+  },
+});
+const holdStartTest = {
+  deps: holdStartOff() as Record<string, any>,
+  scheduled: [] as Promise<void>[],
+};
+mock.module('./hold-start-shadow', () => ({
+  ...realHoldStart,
+  scheduleClaimHoldShadow: (c: any) => realHoldStart.scheduleClaimHoldShadow(c, {
+    ...holdStartTest.deps,
+    schedule: (fn: () => Promise<void>) => { holdStartTest.scheduled.push(fn()); },
+  }),
+  gatedStartReachable: () => realHoldStart.gatedStartReachable(holdStartTest.deps),
+  gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
+  acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
+}));
+
 import { POST } from './route';
+import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 
 function createMockRequest(options: {
@@ -7610,5 +7639,318 @@ describe('claim route: interactive session marker', () => {
     const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
     expect(insertedRunner()).toBe('mcp');
+  });
+});
+
+describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
+  const JEV = 'typesafe/jev-1.13-20260917';
+  const GATED = defineD({
+    id: 'buildd.orchestration_claim_hold',
+    promptVersion: 'test-gated',
+    questions: { action: choiceQ({ question: 'q' }, { HOLD: 'h', START: 's' }) },
+    mode: 'gated',
+    minConfidence: 0.8,
+  });
+
+  const rows: any[] = [];
+  function holdStartOn(over: Record<string, any> = {}) {
+    return {
+      hasRecent: async () => false,
+      loadHolder: async () => ({ title: 'Holder', workerStatus: 'completed', lastActivityAt: null, prLifecycle: 'ci_green', baseStale: false }),
+      decisionDeps: {
+        resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }) as any,
+        call: (async () => ({
+          ok: true,
+          answers: { action: { choice: 'START', confidence: 0.99, distribution: {} } },
+          model: JEV,
+          usage: { inputTokens: 10, outputTokens: 1, costUsd: 0 },
+          latencyMs: 1,
+          attempts: 1,
+        })) as any,
+        record: async (row: any) => { rows.push(row); },
+      },
+      ...over,
+    };
+  }
+
+  function apiAccount() {
+    return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
+  }
+
+  const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
+
+  function task(over: Record<string, unknown> = {}) {
+    return {
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      missionId: null,
+      title: 'Task one',
+      backend: 'claude' as const,
+      dependsOn: [],
+      pathManifest: ['apps/web/src/lib/widget.ts'],
+      context: {},
+      createdAt: new Date('2026-09-30T11:00:00Z'),
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      ...over,
+    };
+  }
+
+  /** Re-arm every mock for one claim: one candidate task, optional open PR and in-flight rows. */
+  function arm(opts: { tasks: any[]; openPrs?: any[]; prManifests?: any[]; inFlight?: any[]; leases?: Map<string, string[]> | Error; missions?: any[] }) {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    for (const m of [mockSecretsFindMany, mockConnectorsFindMany, mockConnectorSharesFindMany, mockConnectorWorkspacesFindMany, mockWorkspaceSkillsFindMany, mockOauthEpisodesFindMany, mockBackendPausesFindMany]) {
+      m.mockReset();
+      m.mockResolvedValue([] as any);
+    }
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue((opts.missions ?? []) as any);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce((opts.openPrs ?? []) as any).mockResolvedValue([]);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValueOnce(opts.tasks as any).mockResolvedValueOnce((opts.prManifests ?? []) as any).mockResolvedValue([]);
+    mockGetActiveClaimsByWorkspace.mockReset();
+    if (opts.leases instanceof Error) mockGetActiveClaimsByWorkspace.mockRejectedValue(opts.leases);
+    else mockGetActiveClaimsByWorkspace.mockResolvedValue(opts.leases ?? new Map());
+    mockDbSelect.mockReset();
+    mockDbSelect.mockReturnValue(makeSelectChain(opts.inFlight ?? []));
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+    });
+    mockDbExecute.mockReset();
+    mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+  }
+
+  async function claimWith(deps: Record<string, any>, setup: () => void) {
+    setup();
+    holdStartTest.deps = deps;
+    holdStartTest.scheduled = [];
+    rows.length = 0;
+    // Per-instance memos (a disabled team is not re-checked for a minute) would
+    // carry the "off" run into the "on" one; each claim here is a fresh instance.
+    realHoldStart.resetClaimHoldMemos();
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    const body = await res.json();
+    await Promise.all(holdStartTest.scheduled);
+    return { status: res.status, body, rows: [...rows], scheduled: holdStartTest.scheduled.length };
+  }
+
+  const scenarios: Record<string, () => void> = {
+    advisoryManifest: () => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+      missions: mission,
+      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
+    }),
+    openPrAfterWorkerEnded: () => arm({
+      tasks: [task()],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }),
+  };
+
+  afterEach(() => { holdStartTest.deps = holdStartOff(); });
+
+  for (const [name, setup] of Object.entries(scenarios)) {
+    it(`${name}: the claim response is identical with the capability on and off, and only "on" records a shadow row`, async () => {
+      const off = await claimWith(holdStartOff(), setup);
+      const on = await claimWith(holdStartOn(), setup);
+      expect(on.status).toBe(off.status);
+      expect(on.body).toEqual(off.body);
+      expect(off.body.workers).toHaveLength(0);
+      expect(off.rows).toHaveLength(0);
+      expect(on.rows).toHaveLength(1);
+      expect(on.rows[0]).toMatchObject({
+        capability: 'orchestration_claim',
+        ruleVerdict: 'HOLD',
+        suggested: 'START',
+        effective: 'HOLD',
+        applied: false,
+        status: 'suggested',
+        reason: 'shadow',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        teamId: 'team-1',
+        prNumber: null,
+        experimentArm: 'observe',
+        propensity: 1,
+        candidatePolicyVersion: name === 'advisoryManifest' ? 'ch1.advisory_manifest' : 'ch1.open_pr_overlap',
+      });
+    });
+  }
+
+  it.each([
+    ['conflictSurfaces is an object', { conflictSurfaces: { label: 'x', pattern: 'apps', serialize: true } }],
+    ['a conflictSurfaces pattern is not a string', { conflictSurfaces: [{ label: 'x', pattern: 42, serialize: true }] }],
+    ['sequenceNamespaces is an object', { sequenceNamespaces: { label: 'm', dir: 'db', serialize: true } }],
+  ])('a malformed workspace gitConfig (%s) leaves the claim response unchanged: same deferral, no 500', async (_name, gitConfig) => {
+    const openPrs = [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }];
+    const prManifests = [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }];
+    const baseline = await claimWith(holdStartOn(), () => arm({ tasks: [task()], openPrs, prManifests }));
+    const malformed = await claimWith(holdStartOn(), () => arm({
+      tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig } })], openPrs, prManifests,
+    }));
+    expect(malformed.status).toBe(200);
+    expect(malformed.body).toEqual(baseline.body);
+    expect(malformed.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    expect(malformed.scheduled).toBe(0);
+  });
+
+  it('the response never waits on the decision (a model call that never answers)', async () => {
+    let called = false;
+    const hanging = holdStartOn();
+    hanging.decisionDeps.call = (() => { called = true; return new Promise(() => {}); }) as any;
+    scenarios.openPrAfterWorkerEnded();
+    holdStartTest.deps = hanging;
+    holdStartTest.scheduled = [];
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toHaveLength(0);
+    expect(holdStartTest.scheduled).toHaveLength(1);
+    // The call may or may not have started by now; either way the response is out.
+    void called;
+  });
+
+  const noCandidate: Record<string, () => void> = {
+    'a live PR holder (worker running)': () => arm({
+      tasks: [task()],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'running', prLifecycleStatus: 'pr_open' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }),
+    'an exclusive live lease (layer 2)': () => arm({
+      tasks: [task()],
+      leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+    }),
+    'a migration path': () => arm({
+      tasks: [task({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/drizzle/0300_x.sql'] }],
+    }),
+    'a failed lease read (unknown state)': () => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+      missions: mission,
+      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
+      leases: new Error('db down'),
+    }),
+    'a mission pacing deferral (not advisory)': () => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+      missions: [{ ...mission[0], pacingMode: 'paced', pacingMaxPerHour: 1, lastTaskStartedAt: new Date() }],
+    }),
+  };
+
+  for (const [name, setup] of Object.entries(noCandidate)) {
+    it(`never consults the decision for ${name}`, async () => {
+      const on = await claimWith(holdStartOn(), setup);
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.scheduled).toBe(0);
+      expect(on.rows).toHaveLength(0);
+    });
+  }
+
+  it.each([
+    ['conflictRetryPrNumber'],
+    ['reviewerRetryPrNumber'],
+    ['ciRetryPrNumber'],
+  ])('preserves the %s own-PR exemption: claims, nothing asked', async (column) => {
+    const on = await claimWith(holdStartOn(), () => arm({
+      tasks: [task({ [column]: 41 })],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+    expect(on.scheduled).toBe(0);
+  });
+
+  it('preserves the subject-PR exemption: claims, nothing asked', async () => {
+    const on = await claimWith(holdStartOn(), () => arm({
+      tasks: [task({ subjectKind: 'pull_request', subjectPrNumber: 41 })],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+    expect(on.scheduled).toBe(0);
+  });
+
+  it('as shipped, the gated START lookup is never made', async () => {
+    let lookups = 0;
+    const on = await claimWith(holdStartOn({ findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
+    expect(on.body.workers).toHaveLength(0);
+    expect(lookups).toBe(0);
+  });
+
+  describe('gated START, when reached (not reachable as shipped)', () => {
+    const acquired: any[] = [];
+    const gated = (over: Record<string, any> = {}) => holdStartOn({
+      decision: GATED,
+      applyingFraction: 1,
+      findAppliedStart: async () => true,
+      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, blocked: [], pathManifest: null, revision: 1 }; },
+      ...over,
+    });
+    beforeEach(() => { acquired.length = 0; });
+
+    it('relaxes only the open-PR overlap and acquires the declared paths exclusively first', async () => {
+      const on = await claimWith(gated(), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    });
+
+    it('a failed exclusive acquisition keeps the hold', async () => {
+      const on = await claimWith(gated({ acquire: async () => ({ kind: 'conflict', conflict: {}, blocked: [] }) }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+
+    it('no applied START for this state: the hold stands', async () => {
+      const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(0);
+    });
+
+    it('still never relaxes a live lease, even with an applied START on record', async () => {
+      const on = await claimWith(gated(), () => arm({
+        tasks: [task()],
+        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+        leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+      }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(acquired).toHaveLength(0);
+    });
+
+    it('relaxes the scope-undeclared serialization; acquires nothing up front', async () => {
+      const on = await claimWith(gated(), scenarios.advisoryManifest);
+      expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toHaveLength(0);
+    });
+
+    it('a later gate (mission concurrency cap) still applies after a relaxed advisory gate', async () => {
+      const on = await claimWith(gated(), () => arm({
+        tasks: [task()],
+        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      }));
+      expect(on.body.workers).toHaveLength(1);
+      const capped = await claimWith(gated(), () => arm({
+        tasks: [task({ missionId: 'mission-A' })],
+        missions: [{ ...mission[0], maxConcurrentTasks: 1 }],
+        inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/other.ts'] }],
+        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      }));
+      expect(capped.body.workers).toHaveLength(0);
+      expect(capped.body.diagnostics?.deferrals?.mission_concurrent).toBe(1);
+      expect(acquired).toHaveLength(1);
+    });
   });
 });
