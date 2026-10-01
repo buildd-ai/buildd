@@ -339,6 +339,15 @@ with an unavailable server provider, so every shared-file refresh reads `unknown
 and is never auto-cleared. Enabling clearance needs only a provider that answers
 at the exact requested commit.
 
+Step G status: creation-time manifest prediction ships in shadow
+(`packages/core/manifest-prediction.ts`, `manifest-prediction-source.ts`,
+scheduled after the creation response). The server CBM candidate adapter has the
+same limitation and answers `unavailable`, so candidates are completed-task diff
+neighbours only, coverage records `neighbour_diff_only`, and every prediction
+keeps its unknown-scope marker. Gated application is prepared
+(`prepareGatedManifest`) but disabled in code; with CBM unavailable it would
+refuse every prediction on unknown scope anyway.
+
 ## Non-goals
 
 Keeping agent sessions alive waiting for leases, CI or another PR; replacing
