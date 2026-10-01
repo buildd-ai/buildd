@@ -4,8 +4,10 @@
  * `?state=evidence-storage`: Settings → Storage with fixture backends. The
  * real page starts collapsed and needs a configured bucket, so a route
  * screenshot never reaches an open row, the edit form or the add form.
- * Top: the list with a failing workspace backend open (status, last error,
- * lifecycle rule). Bottom: the team default being edited, and the add form.
+ * Sections, top to bottom: no backends; a team default plus a failing
+ * workspace backend open (status, last error, lifecycle rule); a verify in
+ * progress; a verify that failed; the team default being edited ("credential
+ * set") with the add form open.
  */
 import SettingsPage from '../../(protected)/settings/_components/SettingsPage';
 import StorageSection from '../../(protected)/settings/storage/StorageSection';
@@ -55,10 +57,30 @@ const WORKSPACES = [
 export default function EvidenceStorageFixture() {
   return (
     <div className="min-h-screen bg-surface-1">
+      <SettingsPage title="Storage: none yet" description="Fixture: no backends, so evidence goes to the managed bucket.">
+        <StorageSection workspaces={WORKSPACES} fixture={{ backends: [], canManage: true }} />
+      </SettingsPage>
       <SettingsPage title="Storage" description="Fixture: list with a failing backend open.">
         <StorageSection
           workspaces={WORKSPACES}
           fixture={{ backends: [TEAM, WORKSPACE], canManage: true, openId: WORKSPACE.id }}
+        />
+      </SettingsPage>
+      <SettingsPage title="Storage: verifying" description="Fixture: a verify in progress on the team default.">
+        <StorageSection
+          workspaces={WORKSPACES}
+          fixture={{ backends: [TEAM], canManage: true, openId: TEAM.id, busy: true }}
+        />
+      </SettingsPage>
+      <SettingsPage title="Storage: verify failed" description="Fixture: the check just failed on a workspace backend.">
+        <StorageSection
+          workspaces={WORKSPACES}
+          fixture={{
+            backends: [WORKSPACE],
+            canManage: true,
+            openId: WORKSPACE.id,
+            message: { type: 'error', text: `The check failed: ${WORKSPACE.lastError}`, backendId: WORKSPACE.id },
+          }}
         />
       </SettingsPage>
       <SettingsPage title="Storage: edit and add" description="Fixture: the team default being edited, and the add form.">

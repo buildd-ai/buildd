@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import CopyBlock from '@/components/CopyBlock';
 import { useConfirm } from '@/components/useConfirm';
 import ConnectionRow, { StatusChip } from '../_components/ConnectionRow';
 import SettingsSection from '../SettingsSection';
@@ -29,7 +28,46 @@ interface Verification {
   warnings?: string[];
 }
 
-type Message = { type: 'success' | 'error'; text: string };
+/** `backendId`: the row the message is about; it shows inside that row when open, next to its buttons. */
+type Message = { type: 'success' | 'error'; text: string; backendId?: string };
+
+/**
+ * A copyable snippet. JSON keeps its lines and scrolls sideways rather than
+ * breaking a key mid-word (the shared CopyBlock breaks anywhere); a command
+ * wraps at spaces.
+ */
+function SnippetBlock({ label, text, wrap }: { label: string; text: string; wrap: boolean }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard blocked: the text is still selectable */ }
+  }
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <span className="text-xs text-text-secondary">{label}</span>
+        <button type="button" onClick={copy} className="btn btn-quiet" aria-label={`Copy ${label}`}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className={`bg-surface-4 text-text-primary p-3 text-xs ${wrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre overflow-x-auto'}`}>
+        {text}
+      </pre>
+    </div>
+  );
+}
+
+function MessageLine({ message }: { message: Message }) {
+  return (
+    <div role="status" data-testid="storage-message"
+      className={`text-sm break-words ${message.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>
+      {message.text}
+    </div>
+  );
+}
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : 'never');
 
@@ -61,7 +99,10 @@ export default function StorageSection({ workspaces, fixture }: {
    * this data and UI state instead of loading, so a screenshot reaches an
    * open row, the edit form and the add form.
    */
-  fixture?: { backends: StorageBackend[]; canManage: boolean; openId?: string; editingId?: string; adding?: boolean };
+  fixture?: {
+    backends: StorageBackend[]; canManage: boolean; openId?: string; editingId?: string; adding?: boolean;
+    busy?: boolean; message?: Message;
+  };
 }) {
   const { confirm, confirmDialog } = useConfirm();
   const [backends, setBackends] = useState<StorageBackend[]>(fixture?.backends ?? []);
@@ -71,8 +112,8 @@ export default function StorageSection({ workspaces, fixture }: {
   const [openId, setOpenId] = useState<string | null>(fixture?.openId ?? null);
   const [editingId, setEditingId] = useState<string | null>(fixture?.editingId ?? null);
   const [adding, setAdding] = useState(fixture?.adding ?? false);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<Message | null>(null);
+  const [busy, setBusy] = useState(fixture?.busy ?? false);
+  const [message, setMessage] = useState<Message | null>(fixture?.message ?? null);
 
   const load = useCallback(async () => {
     try {
@@ -113,9 +154,10 @@ export default function StorageSection({ workspaces, fixture }: {
       });
       const data = await readJson(res);
       if (!res.ok) throw new Error((data.error as string) ?? 'Could not save the backend');
+      const newId = (data.backend as StorageBackend | undefined)?.id;
       setAdding(false);
-      setOpenId((data.backend as StorageBackend | undefined)?.id ?? null);
-      setMessage(verificationMessage('Saved', data.verification as Verification | undefined));
+      setOpenId(newId ?? null);
+      setMessage({ ...verificationMessage('Saved', data.verification as Verification | undefined), backendId: newId });
       await load();
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not save the backend' });
@@ -142,10 +184,10 @@ export default function StorageSection({ workspaces, fixture }: {
       const data = await readJson(res);
       if (!res.ok) throw new Error((data.error as string) ?? 'Could not save the backend');
       setEditingId(null);
-      setMessage(verificationMessage('Saved', data.verification as Verification | undefined));
+      setMessage({ ...verificationMessage('Saved', data.verification as Verification | undefined), backendId: backend.id });
       await load();
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not save the backend' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Could not save the backend', backendId: backend.id });
     } finally {
       setBusy(false);
     }
@@ -161,11 +203,11 @@ export default function StorageSection({ workspaces, fixture }: {
       const v = data as unknown as Verification;
       const warn = v.warnings?.length ? ` ${v.warnings.join(' ')}` : '';
       setMessage(v.status === 'ok'
-        ? { type: 'success', text: `Verified: buildd wrote, read back and deleted a check object.${warn}` }
-        : { type: 'error', text: `The check failed: ${v.error ?? 'unknown error'}${warn}` });
+        ? { type: 'success', text: `Verified: buildd wrote, read back and deleted a check object.${warn}`, backendId: backend.id }
+        : { type: 'error', text: `The check failed: ${v.error ?? 'unknown error'}${warn}`, backendId: backend.id });
       await load();
     } catch (err) {
-      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verify failed' });
+      setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verify failed', backendId: backend.id });
     } finally {
       setBusy(false);
     }
@@ -236,14 +278,12 @@ export default function StorageSection({ workspaces, fixture }: {
               onCancelEdit={() => setEditingId(null)}
               onSave={(form) => update(b, form)}
               onRemove={() => remove(b)}
+              message={message?.backendId === b.id ? message : null}
             />
           ))}
         </div>
-        {message && (
-          <div role="status" data-testid="storage-message"
-            className={`mt-3 text-sm break-words ${message.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>
-            {message.text}
-          </div>
+        {message && !(message.backendId && message.backendId === openId && backends.some((b) => b.id === openId)) && (
+          <div className="mt-3"><MessageLine message={message} /></div>
         )}
       </SettingsSection>
 
@@ -264,7 +304,7 @@ export default function StorageSection({ workspaces, fixture }: {
 }
 
 function BackendRow({
-  backend: b, scope, open, onToggle, editing, canManage, busy, onVerify, onEdit, onCancelEdit, onSave, onRemove,
+  backend: b, scope, open, onToggle, editing, canManage, busy, onVerify, onEdit, onCancelEdit, onSave, onRemove, message,
 }: {
   backend: StorageBackend;
   scope: string;
@@ -278,6 +318,7 @@ function BackendRow({
   onCancelEdit: () => void;
   onSave: (form: StorageForm) => void;
   onRemove: () => void;
+  message: Message | null;
 }) {
   const chip = statusChip(b);
   const managed = b.provider === 'buildd_default';
@@ -294,7 +335,10 @@ function BackendRow({
       onToggle={onToggle}
     >
       {editing ? (
-        <BackendForm mode="edit" backend={b} busy={busy} onSubmit={onSave} onCancel={onCancelEdit} />
+        <div className="space-y-3">
+          <BackendForm mode="edit" backend={b} busy={busy} onSubmit={onSave} onCancel={onCancelEdit} />
+          {message && <MessageLine message={message} />}
+        </div>
       ) : (
         <div className="space-y-4">
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs font-mono" data-testid="storage-details">
@@ -354,6 +398,7 @@ function BackendRow({
               </button>
             </div>
           )}
+          {message && <MessageLine message={message} />}
 
           {snippet && (
             <div className="space-y-2 border-t border-border-default pt-4" data-testid="storage-lifecycle">
@@ -362,8 +407,8 @@ function BackendRow({
                 buildd deletes evidence after {b.retentionDays} days. Add this rule to the bucket as a backstop, so
                 objects under <span className="font-mono">{b.prefix}/</span> expire on the same day even if a delete is missed.
               </p>
-              <CopyBlock label="lifecycle.json" text={snippet.config} />
-              <CopyBlock label="Apply it" text={snippet.command} />
+              <SnippetBlock label="lifecycle.json" text={snippet.config} wrap={false} />
+              <SnippetBlock label="Apply it" text={snippet.command} wrap />
             </div>
           )}
         </div>

@@ -233,7 +233,10 @@ describe('add, verify, remove', () => {
     await click(byTestId('storage-verify'));
     expect(requests.some((r) => r.method === 'POST' && r.url === `/api/evidence-backends/${ID}/verify`)).toBe(true);
     expect(byTestId('storage-message')?.textContent).toContain('Verified');
-    expect(document.body.textContent).toContain('Verified');
+    // The result lands inside the row, next to the button that asked for it,
+    // not below the card where a phone would have to scroll to find it.
+    expect(document.body.querySelector(`[data-testid="storage-row-${ID}"] [data-testid="storage-message"]`)).not.toBeNull();
+    expect(document.body.querySelectorAll('[data-testid="storage-message"]').length).toBe(1);
   });
 
   it('remove confirms, then deletes', async () => {
