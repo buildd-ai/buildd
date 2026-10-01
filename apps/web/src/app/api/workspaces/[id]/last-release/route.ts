@@ -26,7 +26,7 @@ export async function GET(
 
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
-    const apiAccount = await authenticateApiKey(apiKey);
+    const apiAccount = await authenticateApiKey(apiKey, req);
     const user = await getCurrentUser();
 
     if (!apiAccount && !user && process.env.NODE_ENV !== 'development') {

@@ -29,6 +29,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
@@ -53,7 +54,7 @@ function safeEqual(a: string, b: string): boolean {
 
 export async function POST(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) return fail(401, 'Unauthorized');
   if (account.level === 'trigger') return fail(403, 'Trigger tokens cannot request GitHub tokens');
 
@@ -96,6 +97,8 @@ export async function POST(req: NextRequest) {
 
   // Same claim authority the claim route applies: an open workspace of the
   // account's own team, or an explicit canClaim link.
+  // A workspace-restricted token acts only inside its own list.
+  if (!tokenWorkspaceAllowed(account.workspaceIds, ws.id)) return fail(404, 'Task not found');
   const ownOpen = !!account.teamId && isOpenWithinTeams(ws, [account.teamId]);
   if (!ownOpen) {
     const perms = await getAccountWorkspacePermissions(account.id);

@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -18,6 +19,8 @@ function validateTaskId(id: string): NextResponse | null {
 }
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsTask } from '@/lib/task-token-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
@@ -82,7 +85,8 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may read only its own task.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -90,6 +94,10 @@ export async function GET(
 
   const idError = validateTaskId(id);
   if (idError) return idError;
+
+  if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
+    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+  }
 
   try {
     const task = await db.query.tasks.findFirst({
@@ -176,7 +184,7 @@ export async function GET(
       }));
     }
 
-    const response: Record<string, unknown> = { ...task };
+    const response: Record<string, unknown> = { ...task, workspace: withoutDispatchToken(task.workspace) };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
 
@@ -202,7 +210,7 @@ export async function PATCH(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -413,8 +421,8 @@ export async function PATCH(
     // ordinary workspace API key (bld_xxx, level 'worker'/'trigger') must not be able
     // to rewrite a completed task's audit trail just because it has workspace access.
     if (resultSummary !== undefined) {
-      if (apiAccount && apiAccount.level !== 'admin') {
-        return NextResponse.json({ error: 'Correcting a task result requires an admin-level token' }, { status: 403 });
+      if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'tasks:admin')) {
+        return NextResponse.json({ error: 'Correcting a task result requires tasks:admin scope or an admin-level legacy token' }, { status: 403 });
       }
       if (typeof resultSummary !== 'string' || resultSummary.trim() === '') {
         return NextResponse.json({ error: 'resultSummary must be a non-empty string' }, { status: 400 });
@@ -560,7 +568,7 @@ export async function DELETE(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

@@ -31,7 +31,9 @@ const CEILINGS: Record<string, number> = {
   'layout.tsx': 3,
   'missions/page.tsx': 11,
   'missions/[id]/page.tsx': 15,
-  'tasks/[id]/page.tsx': 19,
+  // 20: the plan-chain eyebrow (runner online count) landed alongside the
+  // stored evidence record, each adding one wait.
+  'tasks/[id]/page.tsx': 20,
 };
 
 /**

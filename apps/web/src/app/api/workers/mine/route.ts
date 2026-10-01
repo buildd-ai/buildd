@@ -11,7 +11,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 // POST /api/discrepancies/[id]/dispatch-doc-fix — the "Dispatch doc fix"
 // action on a grouped code-ahead DISCREPANCY card.
@@ -133,6 +134,15 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
     expect(res.status).toBe(403);
   });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`403s for a scoped ${preset} preset token: dispatching needs missions:admin`, async () => {
+      currentUser = null;
+      apiAccountRow = { id: 'acct-1', level: 'admin', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null };
+      const res = await POST(req(), { params: params('dddddddd-dddd-4ddd-8ddd-dddddddddddd') });
+      expect(res.status).toBe(403);
+    });
+  }
 
   it('404s when the row does not exist', async () => {
     discrepancyRow = null;

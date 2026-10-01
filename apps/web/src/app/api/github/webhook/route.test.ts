@@ -1108,11 +1108,29 @@ describe('POST /api/github/webhook', () => {
   // ── Check suite handling ────────────────────────────────────────────────
   describe('check_suite handling', () => {
     // Helpers for the CI-failure → retry-task path.
-    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string; foreignCommit?: boolean; taskResult?: Record<string, unknown> } = {}) {
+    function withFailedWorkerPr(opts: {
+      taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string;
+      foreignCommit?: boolean; taskResult?: Record<string, unknown>; title?: string;
+      /** GitHub's view of the PR: open (default), merged, or closed unmerged. */
+      prState?: 'open' | 'merged' | 'closed';
+      /** Fix-attempt rows already filed against the PR (the in-flight + budget read). */
+      fixAttempts?: any[];
+    } = {}) {
+      if (opts.fixAttempts) {
+        // Only the first tasks select is the fix-attempt read; the release-PR
+        // lookup that runs after it reads tasks too and must see nothing.
+        let rows: any[] | null = opts.fixAttempts;
+        selectTableResults = (table: any) => {
+          if (table !== schemaMock.tasks) return null;
+          const out = rows;
+          rows = null;
+          return out;
+        };
+      }
       mockWorkersFindFirst.mockReturnValue({
         id: 'w1', branch: 'buildd/abc12345-fix', prNumber: 42,
         task: {
-          id: 't1', title: 'Fix the thing', description: 'orig desc',
+          id: 't1', title: opts.title ?? 'Fix the thing', description: 'orig desc',
           workspaceId: 'ws1', missionId: opts.missionId !== undefined ? opts.missionId : 'm1',
           context: opts.taskCtx ?? {},
           result: opts.taskResult ?? null,
@@ -1136,7 +1154,12 @@ describe('POST /api/github/webhook', () => {
             commit: { author: { email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' } },
           });
         }
-        return Promise.resolve({ draft: false });
+        const prState = opts.prState ?? 'open';
+        return Promise.resolve({
+          draft: false,
+          state: prState === 'open' ? 'open' : 'closed',
+          merged: prState === 'merged',
+        });
       });
     }
 
@@ -1422,30 +1445,112 @@ describe('POST /api/github/webhook', () => {
       expect(insertCalls.length).toBe(0);
     });
 
-    it('skips retry and notifies mission when task is already completed (missionId set)', async () => {
-      withFailedWorkerPr({ status: 'completed', missionId: 'mission-99' });
+    // A worker calls complete_task right after it pushes, so by the time CI
+    // reports, the PR's root task and the review-fix attempt that pushed are
+    // both 'completed'. That PR is open and red: it still gets the retry.
+    it('a completed review-fix attempt whose push goes red gets exactly one CI retry', async () => {
+      withFailedWorkerPr({
+        status: 'completed',
+        title: '[builder · after review #1] Fix the thing',
+        fixAttempts: [
+          { id: 'rf1', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: null, context: {}, createdAt: '2026-01-01T00:00:00Z' },
+        ],
+      });
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
-      expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
-      expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
-      const [calledMissionId, opts] = mockNotifyMissionPrReady.mock.calls[0];
-      expect(calledMissionId).toBe('mission-99');
-      expect(opts.reason).toBe('ci_failed');
+      expect(insertCalls.length).toBe(1);
+      const inserted = insertCalls[0].values;
+      expect(inserted.title).toBe('[builder · after CI #1] Fix the thing');
+      expect(inserted.ciRetryPrNumber).toBe(42);
+      // Counts against the budget: an agent-authored push burns attempt 1.
+      expect((inserted.context as any).iteration).toBe(1);
+      expect((inserted.context as any).maxIterations).toBe(3);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
     });
 
-    it('skips retry silently when task is completed with no missionId', async () => {
-      withFailedWorkerPr({ status: 'completed', missionId: null });
+    it('counts the budget from the CI retries already filed, not the completed owner\'s context', async () => {
+      // The root task carries no iteration; two earlier agent CI retries did.
+      withFailedWorkerPr({
+        status: 'completed',
+        fixAttempts: [
+          { id: 'c1', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: { iteration: 1 }, createdAt: '2026-01-01T00:00:00Z' },
+          { id: 'c2', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: { iteration: 2 }, createdAt: '2026-01-01T01:00:00Z' },
+          // A foreign push and a drift diagnosis never burn the budget.
+          { id: 'c3', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: { foreign_head_sha: true }, createdAt: '2026-01-01T02:00:00Z' },
+          { id: 'd1', status: 'completed', creationSource: 'webhook', outputRequirement: 'artifact_required', ciRetryPrNumber: 42, context: {}, createdAt: '2026-01-01T03:00:00Z' },
+        ],
+      });
 
-      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
-      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(1);
+      expect((insertCalls[0].values.context as any).iteration).toBe(3);
+    });
+
+    it('a completed owner whose PR already used the whole budget escalates instead of retrying', async () => {
+      withFailedWorkerPr({
+        status: 'completed',
+        gitConfig: { maxCiRetries: 2 },
+        fixAttempts: [
+          { id: 'c1', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, context: {}, createdAt: '2026-01-01T00:00:00Z' },
+          { id: 'c2', status: 'failed', creationSource: 'webhook', ciRetryPrNumber: 42, context: {}, createdAt: '2026-01-01T01:00:00Z' },
+        ],
+      });
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
       expect(insertCalls.length).toBe(0);
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
-      expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+      expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(true);
     });
+
+    for (const live of ['pending', 'in_progress'] as const) {
+      it(`does not stack a second CI retry while one is ${live}`, async () => {
+        withFailedWorkerPr({
+          status: 'completed',
+          fixAttempts: [
+            { id: 'c1', status: live, creationSource: 'webhook', ciRetryPrNumber: 42, context: { iteration: 1 }, createdAt: '2026-01-01T00:00:00Z' },
+          ],
+        });
+
+        const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { head_sha: 'newsha1' } })));
+
+        expect(res.status).toBe(200);
+        expect(insertCalls.length).toBe(0);
+        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+        expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+      });
+    }
+
+    it('does not stack a CI retry on a review fix that is still running', async () => {
+      withFailedWorkerPr({
+        status: 'completed',
+        fixAttempts: [
+          { id: 'rf1', status: 'in_progress', creationSource: 'webhook', ciRetryPrNumber: null, context: {}, createdAt: '2026-01-01T00:00:00Z' },
+        ],
+      });
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    for (const prState of ['merged', 'closed'] as const) {
+      it(`does not retry when the PR is already ${prState}`, async () => {
+        withFailedWorkerPr({ status: 'completed', prState });
+
+        const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+        expect(res.status).toBe(200);
+        expect(insertCalls.length).toBe(0);
+        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+        expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
+      });
+    }
 
     // AC-5: failed/cancelled tasks must not spawn retry children
     it('skips retry for failed task (AC-5)', async () => {
@@ -3088,6 +3193,40 @@ describe('POST /api/github/webhook', () => {
 
       const openUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
       expect(openUpdate).toBeDefined();
+      expect((openUpdate!.setValues as any).prIsDraft).toBe(false);
+    });
+
+    it.each([
+      ['converted_to_draft', true],
+      ['ready_for_review', false],
+    ] as const)('records prIsDraft on %s', async (action, draft) => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-draft',
+        workspaceId: 'ws1',
+        taskId: 'task-draft',
+        prNumber: 43,
+      });
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      const payload = {
+        action,
+        pull_request: {
+          number: 43,
+          merged: false,
+          draft,
+          head: { ref: 'buildd/abc-draft', sha: 'sha-43' },
+          html_url: 'https://github.com/test-org/test-repo/pull/43',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const lifecycleUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
+      expect(lifecycleUpdate).toBeDefined();
+      expect((lifecycleUpdate!.setValues as any).prIsDraft).toBe(draft);
     });
 
     it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {

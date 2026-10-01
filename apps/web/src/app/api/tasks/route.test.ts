@@ -11,6 +11,7 @@ mock.module('@buildd/core/gate-events', () => ({
   recordOrCoalesceDeferral: async () => null,
 }));
 import { NextRequest } from 'next/server';
+import { canAccessTokenRoute } from '@/lib/token-route-policy';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -90,9 +91,10 @@ mock.module('@/lib/auth-helpers', () => ({
 
 // Mock api-auth - authenticateApiKey delegates to mockAccountsFindFirst
 mock.module('@/lib/api-auth', () => ({
-  authenticateApiKey: async (apiKey: string | null) => {
+  authenticateApiKey: async (apiKey: string | null, req: NextRequest) => {
     if (!apiKey) return null;
-    return mockAccountsFindFirst();
+    const account = await mockAccountsFindFirst();
+    return account && canAccessTokenRoute(account, req) ? account : null;
   },
   hashApiKey: (key: string) => `hashed_${key}`,
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
@@ -461,6 +463,29 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
+  });
+
+  it('creates a task with a CI write scope and no administrator level', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    const created = { id: 'task-ci', workspaceId: 'ws-1', title: 'CI task', status: 'pending' };
+    mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+    const response = await POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_ci' },
+      body: { workspaceId: 'ws-1', title: 'CI task' },
+    }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).id).toBe('task-ci');
+  });
+
+  it('rejects analytics readers before inserting a task', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-reader', level: 'worker', scopes: ['analytics:read'] });
+    const response = await POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_reader' },
+      body: { workspaceId: 'ws-1', title: 'Should not be created' },
+    }));
+    expect(response.status).toBe(401);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
   });
 
   it('returns 401 when no auth', async () => {

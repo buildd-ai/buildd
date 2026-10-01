@@ -103,6 +103,22 @@ describe('GET /api/workspaces/[id]/config', () => {
     expect(data.gitConfig).toBeDefined();
   });
 
+  it("a per-task token reads its own task's workspace config, and no other", async () => {
+    const scoped = (workspaceId: string) => ({
+      id: 'acct-1', teamId: 'team-1', level: 'worker',
+      taskScope: { taskId: 'task-1', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: { defaultBranch: 'main' }, configStatus: 'admin_confirmed' });
+    const get = () => GET(new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      headers: new Headers({ Authorization: 'Bearer bld_test' }),
+    }), { params: mockParams });
+
+    mockAuthenticateApiKey.mockResolvedValue(scoped('ws-1'));
+    expect((await get()).status).toBe(200);
+    mockAuthenticateApiKey.mockResolvedValue(scoped('ws-other'));
+    expect((await get()).status).toBe(404);
+  });
+
   it('returns 401 for a Bearer token that authenticates no account', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: {} });
 

@@ -18,12 +18,12 @@ export function onboardingFoldKey(teamId: string): string {
  * new team and chat. Three ways through, OpenRouter first. Members never see
  * this. It leaves Home once chat is available.
  */
-export default function ProviderOnboardingCard({ teamId }: { teamId: string }) {
+export default function ProviderOnboardingCard({ teamId, hasActionableWork }: { teamId: string; hasActionableWork?: boolean }) {
   const router = useRouter();
   const search = useSearchParams();
   const flow = providerFlowMessage(search);
   const isMobile = useIsMobile();
-  const [folded, setFolded] = useState(false);
+  const [folded, setFolded] = useState(hasActionableWork ?? false);
   const [provider, setProvider] = useState<ChatProvider>('openrouter');
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState<null | 'save' | 'own'>(null);
@@ -131,7 +131,7 @@ export default function ProviderOnboardingCard({ teamId }: { teamId: string }) {
   );
 
   return (
-    <section className="mb-8 pb-16 md:pb-0 border-2 border-border-strong bg-card shadow-[var(--card-shadow)]" data-testid="provider-onboarding" data-folded="false" aria-labelledby="provider-onboarding-h">
+    <section className="mb-6 pb-8 md:pb-0 border-2 border-border-strong bg-card shadow-[var(--card-shadow)]" data-testid="provider-onboarding" data-folded="false" aria-labelledby="provider-onboarding-h">
       <div className="flex items-start justify-between gap-3 px-5 pt-4">
         <div>
           <div className="section-label !text-accent-text">Chat setup · 1 of 2</div>

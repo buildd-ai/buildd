@@ -30,7 +30,7 @@ describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => 
     // included in the chain so the user can navigate from reviewer to builder.
     expect(pageSource).toContain('if (task.parentTaskId && task.parentTask) {');
     // The parent carries its classification so selectExecutionPlan can drop attempts (D9).
-    expect(pageSource).toContain('{ id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId },');
+    expect(pageSource).toContain('{ id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug, taskClass: task.parentTask.taskClass, mode: task.parentTask.mode, parentTaskId: task.parentTask.parentTaskId, context: task.parentTask.context },');
   });
 
   it('filters out self-loop chains', () => {

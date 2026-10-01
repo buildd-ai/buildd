@@ -1,6 +1,6 @@
 ---
 name: visual-review
-description: "Take phone- and desktop-width screenshots of buildd's web app and review them before calling UI work done. Use for any change that touches what a page renders. Covers the local recipe (scripts/qa/shoot.sh, needs a DATABASE_URL) and the worker recipe (dispatch the Visual QA workflow on your branch and download the qa-screenshots artifact, no DB needed)."
+description: "Take phone- and desktop-width screenshots of buildd's web app and review them before calling UI work done. Use for any change that touches what a page renders. Covers the local recipe (scripts/qa/shoot.sh, needs a DATABASE_URL), the worker recipe (dispatch the Visual QA workflow on your branch and download the qa-screenshots artifact, no DB needed), and the preview recipe for workspaces with Vercel previews (get_page_source, and its two auth-wall failure modes)."
 author: buildd
 ---
 
@@ -114,6 +114,47 @@ don't turn it on by habit.
   bad shot. Check `captures.json`, which records `error`, `redirected` and
   `devOverlay` per route.
 
+## Preview recipe (other workspaces with Vercel previews)
+
+A workspace whose repo deploys a Vercel preview per commit can audit that instead of
+booting the app: set `gitConfig.visualQa.pageSource` to `vercel-preview` or `auto`
+(`auto` falls back to the sandbox when the commit has no READY preview). Buildd itself
+stays on `sandbox`. Design: `docs/design/visual-qa-auditor.md` → "Page source".
+
+1. `buildd action=get_page_source params={ waitSeconds: 45 }` (add `sha` or `prNumber`).
+   It reads the commit's GitHub deployment statuses with the workspace's GitHub App, so
+   no Vercel token is needed. `pending` means call again; `preview_unavailable` is loud.
+2. Capture from `decision.baseUrl`:
+   ```bash
+   QA_BASE_URL=<baseUrl> QA_PAGE_SOURCE=vercel-preview QA_ROUTES=/,/settings \
+     QA_VIEWPORT=mobile bun scripts/qa/capture.ts
+   ```
+   Not in buildd's repo? Use a throwaway kit with its **own** browsers path:
+   ```bash
+   git clone --depth 1 https://github.com/buildd-ai/buildd /tmp/qa-kit/src
+   cd /tmp/qa-kit && bun add playwright
+   export PLAYWRIGHT_BROWSERS_PATH=/tmp/qa-kit/browsers
+   bunx playwright install chromium && bun src/scripts/qa/capture.ts
+   ```
+   Without that export, `playwright install` from a different version garbage-collects
+   the shared `~/.cache/ms-playwright` builds, including the runner's own browser. A
+   browser that will not launch exits 1, never 0.
+3. Upload each shot with `metadata.qa.source` copied from `captures.json`.
+
+**Diagnosing the two failure modes.** capture.ts exits 3 and records `configError` on
+the capture instead of taking a shot. Neither is a visual finding:
+
+| `configError` | What you hit | Fix (the owner's) |
+|---|---|---|
+| `protection_bypass_missing` | Vercel's login / SSO wall | Vercel project → Deployment Protection → Protection Bypass for Automation; store it with `manage_secrets` (`purpose: role_env_secret`) and map it in `gitConfig.envMapping` as `VERCEL_AUTOMATION_BYPASS_SECRET` |
+| `app_auth_not_configured` | the app's own sign-in page | Preferred: a preview-only auth bypass env var in the Vercel **Preview** environment that signs in a test user (like buildd's dev auto-login). Else a Playwright storageState JSON as a secret mapped as `VISUAL_QA_STORAGE_STATE` (sessions expire) |
+
+`get_page_source` also reports `auth.*.mapped`, so "not mapped" is visible before you
+capture. Set `gitConfig.visualQa.signInPaths` if the app's sign-in page is not at
+`/login`, `/signin`, `/sign-in`, `/auth` or `/api/auth/signin`. Never print the bypass
+secret or the storage state; capture.ts writes the state to a 0600 temp file and logs
+neither.
+
 ## What to check
 
 - **First screen at 390px.** Does the thing the page is for show up without
@@ -147,6 +188,5 @@ don't turn it on by habit.
   `/app/tasks/<id>` via `@aws-sdk/client-s3`. The fix is to add the package to
   `transpilePackages` in `apps/web/next.config.mjs`. `src/lib/next-config.test.ts`
   enforces that for direct dependencies.
-- **Vercel previews are behind org auth.** Pointing `QA_BASE_URL` at a preview gets
-  you the Vercel login page unless you have `VERCEL_AUTOMATION_BYPASS_SECRET` or a
-  storage state. Use the dispatch instead.
+- **Vercel previews have two auth walls.** See "Preview recipe" below. For buildd
+  itself there are no per-PR previews, so use the dispatch.

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
@@ -124,6 +125,15 @@ describe('POST /api/workers/[id]/activity', () => {
 
     expect(res.status).toBe(200);
   });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`returns 404 for a scoped ${preset} preset token of the team that does not run the worker`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-9', teamId: 'team-1', level: 'admin', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+      mockWorkersFindFirst.mockResolvedValue({ id: WORKER_ID, accountId: 'account-1', milestones: [], workspace: { teamId: 'team-1' } });
+      const res = await POST(createMockRequest({ toolName: 'Read' }, 'bld_scoped'), { params: mockParams });
+      expect(res.status).toBe(404);
+    });
+  }
 
   it('returns 400 when toolName missing', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });

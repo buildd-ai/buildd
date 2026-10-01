@@ -69,6 +69,7 @@ export type PrActivityKind =
   | 'migration_collision_fixing'
   | 'ci_exhausted'
   | 'fix_started'
+  | 'fix_ended'
   | 'changes_pushed'
   | 'review_superseded_by_merge'
   | 'human_applied_recommendation'
@@ -203,6 +204,17 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       // Only ever written once a worker has CLAIMED the fix task. This is the
       // one state allowed to say buildd is changing the branch.
       return { tone: 'working', label: `Fixing · ${fixText(hasIteration(e) ? e : story.fix)}` };
+    case 'fix_ended': {
+      // Written when the fix task's worker finishes, so `Fixing` never outlives
+      // it. A completed fix hands over to CI; a new red result appends
+      // `ci_fixing` / `ci_exhausted` after this. `detail` carries a non-clean
+      // outcome ("failed", "cancelled").
+      const fix = capitalize(fixText(hasIteration(e) ? e : story.fix));
+      return e.detail
+        // The row appends `detail` itself; the header does not, so name it there.
+        ? { tone: 'waiting', label: `${fix} ended`, headline: `${fix} ended · ${e.detail}` }
+        : { tone: 'waiting', label: `${fix} finished`, status: 'waiting on checks' };
+    }
     case 'changes_pushed': {
       const sha = e.sha ? `\`${e.sha}\`` : null;
       return {
@@ -375,7 +387,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
   'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
   'migration_collision_fixing',
-  'ci_exhausted', 'fix_started', 'changes_pushed', 'review_superseded_by_merge',
+  'ci_exhausted', 'fix_started', 'fix_ended', 'changes_pushed', 'review_superseded_by_merge',
   'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
 ]);
 

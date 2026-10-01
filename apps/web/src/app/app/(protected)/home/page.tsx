@@ -1896,7 +1896,7 @@ export default async function HomePage({
         {chatPlacement.kind === 'chat' && chatTeamId && (
           <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact={audience === 'operator'} initialWorkspaceId={wsFilter ?? null} />
         )}
-        {chatPlacement.kind === 'onboarding' && chatTeamId && <ProviderOnboardingCard teamId={chatTeamId} />}
+        {chatPlacement.kind === 'onboarding' && chatTeamId && <ProviderOnboardingCard teamId={chatTeamId} hasActionableWork={needsYouCount > 0} />}
         {chatPlacement.kind === 'connect-own' && chatTeamId && (
           <ConnectOwnKeyCard teamId={chatTeamId} returnTo="/app/home" />
         )}

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
 
 const mockGetCurrentUser = mock(() => null as any);
@@ -219,6 +220,15 @@ describe('POST /api/tasks/cleanup', () => {
 
     expect(res.status).toBe(401);
   });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`refuses a scoped ${preset} preset token: cleanup needs tasks:admin`, async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+      const res = await POST(createMockRequest({ Authorization: 'Bearer bld_test' }));
+      expect(res.status).toBe(401);
+    });
+  }
 
   it('allows session auth', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });

@@ -9,6 +9,7 @@ import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/rol
 import { isStorageConfigured } from '@/lib/storage';
 import { normalizeBackend } from '@/lib/normalize-backend';
 import { isUuid } from '@/lib/uuid';
+import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 
 function computeContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -85,7 +86,12 @@ export async function PATCH(
       background, maxTurns, color, mcpServers, requiredEnvVars, connectorRefs, isRole,
       repoUrl, enabled, defaultBackend } = body;
 
+    // Routing text (role-routing.md §2): validated, never truncated.
+    const routing = parseRoutingPatch(body);
+    if (!routing.ok) return NextResponse.json({ error: routing.error }, { status: 400 });
+
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (routing.patch) updates.metadata = applyRoutingPatch(existing.metadata, routing.patch);
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (content !== undefined) {
