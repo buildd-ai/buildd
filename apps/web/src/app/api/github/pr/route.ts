@@ -32,6 +32,8 @@ import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
 import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
+import { updateBehindPrBranch } from '@/lib/pr-branch-update';
+import { resolveSemanticRefreshMode } from '@/lib/semantic-refresh';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { loadPrAttempts } from '@/lib/pr-attempts';
@@ -1549,7 +1551,21 @@ export async function PUT(req: NextRequest) {
           // lease, failure classification and, opted in, the semantic check
           // and its enforce-mode hold. This door never dispatches an agent —
           // a conflict or a semantic finding is reported back to the caller.
-          const update = worker.taskId
+          // A worker with no task has nowhere to keep refresh state. With the
+          // semantic check off there is nothing to hold, so it keeps the old
+          // direct update (pinned to the evaluated head); with it on, it is
+          // refused rather than let past the check.
+          const taskless = !worker.taskId && resolveSemanticRefreshMode(workspace.gitConfig) === 'off'
+            ? await updateBehindPrBranch({
+                installationId: repo.installation.installationId,
+                repoFullName: repo.fullName,
+                prNumber,
+                headSha,
+              })
+            : null;
+          const update: RefreshOutcome | null = taskless
+            ? (taskless.updated ? { kind: 'updated' } : null)
+            : worker.taskId
             ? await refreshBehindPr({
                 installationId: repo.installation.installationId,
                 repoFullName: repo.fullName,

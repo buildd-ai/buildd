@@ -41,7 +41,11 @@
  * consults `checkBaseRefreshHold` (via `evaluateAutoMergeSafety`) before
  * merging: it reads the update merge's base parent and, if the base moved,
  * re-runs the check on the pre-update head against that base. Under enforce
- * the PR is held until that re-check clears it.
+ * the PR is held until that re-check clears it. The record and its budget are
+ * keyed to a head: a push by anyone else supersedes it, and the pushed head is
+ * verified on its own with a fresh budget — so pushing a fix clears a hold.
+ * The record is written together with the lease (provisional until the
+ * verdict is in), so a lost release write leaves a re-check, never a pass.
  *
  * The semantic check runs only when the workspace opts in (`gitConfig.
  * semanticRefresh`); off by default, so the default path makes no extra reads
@@ -81,14 +85,33 @@ export function refreshLeaseMs(mode: SemanticRefreshMode): number {
 }
 
 /**
- * A refresh whose clearance was computed against `verifiedBaseSha`. Written
- * when a shadow/enforce refresh merges the base in; cleared once the merged-in
- * base parent is shown equal to it, or re-verified. PR-scoped, not head-scoped:
- * the update itself moves the head.
+ * An outstanding semantic verification, keyed to ONE head.
+ *
+ *  - `refresh`: a refresh merged (or is merging) the base into `headSha`. It
+ *    applies to `headSha` (update not landed yet: passes) and to buildd's own
+ *    update merge of it — the commit whose first parent is `headSha` — which
+ *    is re-verified: `checkHeadSha` (the PR side) against the base actually
+ *    merged in, unless that base is `verifiedBaseSha`. `verifiedBaseSha` null
+ *    means no verdict was recorded (e.g. the refresh never finished): the
+ *    whole arrived range is re-checked, never assumed clear.
+ *  - `head`: a hold on exactly `headSha`, re-checked against the live base.
+ *
+ * Any other head — someone pushed — makes the record stale: the new head gets
+ * a fresh, bounded verification of its own. So a pushed fix is what clears a
+ * hold, and toggling the check off and on cannot bring back a hold for a head
+ * that has since changed.
  */
 export interface PendingBaseVerify {
-  preUpdateHeadSha: string;
-  verifiedBaseSha: string;
+  /** Identity for compare-and-set: a mutation applies only to the record it read. */
+  id: string;
+  kind: 'refresh' | 'head';
+  headSha: string;
+  /** refresh: buildd's update merge, once observed, and the base parent it merged in. */
+  mergeHeadSha?: string | null;
+  arrivedBaseSha?: string | null;
+  /** refresh: the PR side of the pinned re-check. */
+  checkHeadSha: string;
+  verifiedBaseSha: string | null;
   mode: 'shadow' | 'enforce';
   rechecks: number;
   diagnosedAt?: string | null;
@@ -108,6 +131,8 @@ export interface BaseRefreshState {
   /** Semantic-unverified diagnostic posted for this head. */
   semanticDiagnosedAt?: string | null;
   pendingBaseVerify?: PendingBaseVerify | null;
+  /** Identifies the refresh holding the lease, so only it releases the lease. */
+  leaseId?: string | null;
   rev: number;
 }
 
@@ -241,6 +266,54 @@ export async function postRefreshDiagnostic(input: DiagnosticInput, deps: Diagno
   });
 }
 
+// ── Compare-and-set with retry ───────────────────────────────────────────────
+
+/**
+ * Apply `mutate` under the `rev` CAS, re-reading and re-applying on a lost
+ * write. `mutate` returns null to abandon (the record it needed is gone).
+ * Returns the written state, or null when nothing was written.
+ */
+async function casMutate(
+  taskId: string,
+  readState: (taskId: string) => Promise<BaseRefreshState | null>,
+  writeState: (taskId: string, priorRev: number, next: BaseRefreshState) => Promise<boolean>,
+  current: BaseRefreshState | null,
+  mutate: (latest: BaseRefreshState) => BaseRefreshState | null,
+  tries = 3,
+): Promise<BaseRefreshState | null> {
+  let base = current;
+  for (let i = 0; i < tries; i++) {
+    if (!base) base = await readState(taskId).catch(() => null);
+    if (!base) return null;
+    const next = mutate(base);
+    if (!next) return null;
+    const written: BaseRefreshState = { ...next, rev: base.rev + 1 };
+    if (await writeState(taskId, base.rev, written).catch(() => false)) return written;
+    base = null;
+  }
+  return null;
+}
+
+function newId(now: number): string {
+  return `${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+type Parents = { kind: 'parents'; parents: string[] } | { kind: 'unreadable'; reason: string };
+
+async function readParents(api: Api, installationId: number, repoFullName: string, sha: string): Promise<Parents> {
+  try {
+    const commit = (await api(installationId, `/repos/${repoFullName}/commits/${sha}`)) as { parents?: Array<{ sha?: string }> } | null;
+    return { kind: 'parents', parents: (commit?.parents ?? []).map((p) => p?.sha ?? '').filter(Boolean) };
+  } catch (err) {
+    return { kind: 'unreadable', reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** buildd's update merge of `from`: a two-parent commit whose first parent is `from`. */
+function isUpdateMergeOf(parents: string[], from: string): boolean {
+  return parents.length === 2 && parents[0] === from;
+}
+
 // ── Orchestration ────────────────────────────────────────────────────────────
 
 function freshFor(prior: BaseRefreshState | null, prNumber: number, headSha: string): BaseRefreshState {
@@ -253,9 +326,11 @@ function freshFor(prior: BaseRefreshState | null, prNumber: number, headSha: str
     lastFailure: null,
     semanticRechecks: 0,
     inFlightUntil: null,
+    leaseId: null,
     diagnosedAt: null,
     semanticDiagnosedAt: null,
-    // PR-scoped: the update that wrote it is what moved the head.
+    // Keyed by its own head (see PendingBaseVerify), so it is carried here and
+    // judged stale or live against the head that is actually merged.
     pendingBaseVerify: prior && prior.prNumber === prNumber ? prior.pendingBaseVerify ?? null : null,
     rev: prior?.rev ?? 0,
   };
@@ -267,6 +342,7 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
   const assess = deps.assess ?? ((p) => assessSemanticOverlap(p));
   const readState = deps.readState ?? readStateFromDb;
   const writeState = deps.writeState ?? writeStateToDb;
+  const api = deps.api ?? (githubApi as Api);
   const diagnose = deps.diagnose ?? ((input: DiagnosticInput) => postRefreshDiagnostic(input));
   const { installationId, repoFullName, prNumber, headSha, workspaceId, taskId } = params;
   const mode = resolveSemanticRefreshMode(params.gitConfig);
@@ -311,24 +387,88 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
     };
   }
 
-  // Reserve the PR's one mutation slot.
-  const reserved: BaseRefreshState = { ...state, inFlightUntil: new Date(now() + refreshLeaseMs(mode)).toISOString(), rev: state.rev + 1 };
+  // The verification this refresh leaves behind, written WITH the lease so it
+  // cannot be lost: provisional (no verified base) until the verdict is in. An
+  // unresolved record for this very head — the head is buildd's earlier update
+  // merge, or a hold on it — is carried, so its unverified range stays covered.
+  const priorPending = state.pendingBaseVerify ?? null;
+  let provisional: PendingBaseVerify | null = null;
+  let carry = false;
+  if (mode !== 'off') {
+    if (priorPending) {
+      if (priorPending.kind === 'head') carry = priorPending.headSha === headSha;
+      else if (priorPending.mergeHeadSha === headSha) carry = true;
+      else if (priorPending.headSha !== headSha) {
+        const p = await readParents(api, installationId, repoFullName, headSha);
+        // Unreadable: carry — keeping a hold is the safe side.
+        carry = p.kind === 'unreadable' || isUpdateMergeOf(p.parents, priorPending.headSha);
+      }
+    }
+    const base = { id: newId(now()), kind: 'refresh' as const, headSha, mergeHeadSha: null, arrivedBaseSha: null, mode, at: new Date(now()).toISOString() };
+    provisional = carry && priorPending
+      ? {
+          ...base,
+          checkHeadSha: priorPending.kind === 'head' ? priorPending.headSha : priorPending.checkHeadSha,
+          // A carried hold was never cleared: nothing on its range is verified.
+          verifiedBaseSha: priorPending.kind === 'head' ? null : priorPending.verifiedBaseSha,
+          rechecks: priorPending.rechecks,
+          diagnosedAt: priorPending.diagnosedAt ?? null,
+        }
+      : { ...base, checkHeadSha: headSha, verifiedBaseSha: null, rechecks: 0, diagnosedAt: null };
+  }
+
+  // Reserve the PR's one mutation slot. Under enforce the semantic attempt is
+  // counted here, before the check starts, so a request that dies mid-check
+  // still spends budget.
+  const leaseId = newId(now());
+  const countedRechecks = mode === 'enforce' ? state.semanticRechecks + 1 : state.semanticRechecks;
+  const reserved: BaseRefreshState = {
+    ...state,
+    inFlightUntil: new Date(now() + refreshLeaseMs(mode)).toISOString(),
+    leaseId,
+    semanticRechecks: countedRechecks,
+    pendingBaseVerify: provisional ?? priorPending,
+    rev: state.rev + 1,
+  };
   if (!(await writeState(taskId, state.rev, reserved).catch(() => false))) return { kind: 'in_flight' };
   state = reserved;
 
-  /** Release the lease with the given changes; a lost CAS only means someone else wrote. */
-  const release = async (changes: Partial<BaseRefreshState>) => {
-    const next: BaseRefreshState = { ...state, ...changes, inFlightUntil: null, rev: state.rev + 1 };
-    if (await writeState(taskId, state.rev, next).catch(() => false)) state = next;
+  /**
+   * Release the lease with these changes, retrying a lost CAS on the latest
+   * record (a hold in another door may have written meanwhile). `pending`
+   * decides the verification record from the latest one; it only touches the
+   * record this refresh wrote. If every retry loses, the provisional record
+   * stays — which re-checks, never passes.
+   */
+  const release = async (changes: Partial<BaseRefreshState>, pending?: (ours: PendingBaseVerify) => PendingBaseVerify | null) => {
+    const written = await casMutate(taskId, readState, writeState, state, (latest) => {
+      if (latest.leaseId !== leaseId) return null;
+      const next: BaseRefreshState = { ...latest, ...changes, inFlightUntil: null, leaseId: null };
+      if (pending && provisional && latest.pendingBaseVerify?.id === provisional.id) {
+        next.pendingBaseVerify = pending(latest.pendingBaseVerify);
+      }
+      return next;
+    });
+    if (written) state = written;
+    else console.warn(`[base-refresh] could not release the lease on ${repoFullName}#${prNumber}; it expires on its own`);
   };
+  /** Not refreshed: the prior verification record stands. */
+  const restore = () => priorPending;
+  /** The attempt did not end unknown, so it does not spend the unknown budget. */
+  const uncounted = { semanticRechecks: countedRechecks - (mode === 'enforce' ? 1 : 0) };
 
   // Semantic check, opt-in only.
   let assessment: SemanticAssessment | undefined;
   if (mode !== 'off') {
-    assessment = await assess({ installationId, repoFullName, prNumber, headSha }).catch((err) => ({
-      verdict: 'unknown' as const,
-      reason: `semantic check failed: ${err instanceof Error ? err.message : String(err)}`,
-    }));
+    // Earlier attempts on this head spent the budget without finishing (e.g.
+    // timed out mid-check): no more checks, tell a person.
+    const spentUnfinished = mode === 'enforce' && countedRechecks > MAX_SEMANTIC_RECHECKS;
+    assessment = spentUnfinished
+      ? { verdict: 'unknown' as const, reason: `the last ${MAX_SEMANTIC_RECHECKS} semantic checks on this head did not finish` }
+      : await assess({ installationId, repoFullName, prNumber, headSha }).catch((err) => ({
+          verdict: 'unknown' as const,
+          reason: `semantic check failed: ${err instanceof Error ? err.message : String(err)}`,
+        }));
     const verdict = assessment.verdict;
     const detail = {
       verdict,
@@ -339,7 +479,7 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
     };
 
     if (verdict === 'head_changed') {
-      await release({});
+      await release(uncounted, restore);
       ledger('warned', `head moved before refresh: ${assessment.reason}`, detail);
       return { kind: 'head_changed', reason: assessment.reason };
     }
@@ -349,16 +489,16 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
         ledger('warned', `shadow: semantic check ${verdict}: ${assessment.reason}`, detail);
       }
     } else if (verdict === 'same_symbol') {
-      await release({ baseSha: assessment.baseSha ?? null });
+      await release({ ...uncounted, baseSha: assessment.baseSha ?? null }, restore);
       ledger('deferred', `same-symbol edit on both sides: ${assessment.reason}`, detail);
       return { kind: 'semantic_conflict', assessment };
     } else if (verdict === 'unknown') {
       // Bounded per head, whatever the base does (see the header).
       const baseSha = assessment.baseSha ?? null;
-      const rechecks = Math.min(state.semanticRechecks + 1, MAX_SEMANTIC_RECHECKS);
+      const rechecks = Math.min(countedRechecks, MAX_SEMANTIC_RECHECKS);
       if (rechecks >= MAX_SEMANTIC_RECHECKS) {
         const firstTime = !state.semanticDiagnosedAt;
-        await release({ baseSha, semanticRechecks: rechecks, semanticDiagnosedAt: state.semanticDiagnosedAt ?? new Date(now()).toISOString() });
+        await release({ baseSha, semanticRechecks: rechecks, semanticDiagnosedAt: state.semanticDiagnosedAt ?? new Date(now()).toISOString() }, restore);
         if (firstTime) {
           ledger('rejected', `semantic overlap unverified after ${rechecks} checks: ${assessment.reason}`, detail);
           await diagnose({
@@ -367,7 +507,7 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
         }
         return { kind: 'semantic_unverified', rechecks, reason: assessment.reason };
       }
-      await release({ baseSha, semanticRechecks: rechecks });
+      await release({ baseSha, semanticRechecks: rechecks }, restore);
       ledger('deferred', `semantic overlap unknown (check ${rechecks}/${MAX_SEMANTIC_RECHECKS}): ${assessment.reason}`, detail);
       return { kind: 'semantic_deferred', rechecks, reason: assessment.reason };
     }
@@ -376,14 +516,13 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
   const res = await update({ installationId, repoFullName, prNumber, headSha });
   if (res.updated) {
     // Record what the verdict was computed against, so a base that moved
-    // before GitHub ran the merge is re-verified before anything merges. An
-    // earlier unresolved record is kept: its range is still unverified.
+    // before GitHub ran the merge is re-verified before anything merges. A
+    // carried record keeps its own (older) verified base.
     const verifiedBaseSha = assessment?.baseSha ?? null;
-    const pendingBaseVerify: PendingBaseVerify | null = state.pendingBaseVerify
-      ?? (mode !== 'off' && verifiedBaseSha
-        ? { preUpdateHeadSha: headSha, verifiedBaseSha, mode, rechecks: 0, diagnosedAt: null, at: new Date(now()).toISOString() }
-        : null);
-    await release({ failures: 0, lastFailure: null, baseSha: verifiedBaseSha ?? state.baseSha, pendingBaseVerify });
+    await release(
+      { ...uncounted, failures: 0, lastFailure: null, baseSha: verifiedBaseSha ?? state.baseSha },
+      (ours) => (carry ? ours : { ...ours, verifiedBaseSha }),
+    );
     ledger('accepted', 'branch updated from base via GitHub; CI re-runs on the new head', {
       verdict: assessment?.verdict ?? null,
     });
@@ -393,16 +532,16 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
   const failure: BranchUpdateFailure = res.failure ?? 'unknown';
   const reason = res.reason ?? 'update-branch failed';
   if (failure === 'conflict') {
-    await release({});
+    await release(uncounted, restore);
     return { kind: 'conflict', reason };
   }
   if (failure === 'head_changed') {
-    await release({});
+    await release(uncounted, restore);
     ledger('warned', `head moved during refresh: ${reason}`, { failure });
     return { kind: 'head_changed', reason };
   }
   if (failure === 'up_to_date') {
-    await release({});
+    await release(uncounted, restore);
     ledger('warned', `nothing to refresh, the branch already has its base: ${reason}`, { failure });
     return { kind: 'up_to_date', reason };
   }
@@ -412,7 +551,7 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
   const attempts = failure === 'refused' ? MAX_REFRESH_FAILURES : state.failures + 1;
   if (attempts >= MAX_REFRESH_FAILURES) {
     const firstTime = !state.diagnosedAt;
-    await release({ failures: attempts, lastFailure: failure, diagnosedAt: state.diagnosedAt ?? new Date(now()).toISOString() });
+    await release({ ...uncounted, failures: attempts, lastFailure: failure, diagnosedAt: state.diagnosedAt ?? new Date(now()).toISOString() }, restore);
     if (firstTime) {
       ledger('rejected', failure === 'refused'
         ? `update-branch refused by GitHub (not retried): ${reason}`
@@ -423,7 +562,7 @@ export async function refreshBehindPr(params: RefreshParams, deps: BaseRefreshDe
     }
     return { kind: 'exhausted', failure, attempts, reason };
   }
-  await release({ failures: attempts, lastFailure: failure });
+  await release({ ...uncounted, failures: attempts, lastFailure: failure }, restore);
   ledger('deferred', `update-branch ${failure} (attempt ${attempts}/${MAX_REFRESH_FAILURES}): ${reason}`, { failure, attempts });
   return { kind: 'deferred', failure, attempts, reason };
 }
@@ -452,16 +591,12 @@ export type HoldVerdict = { blocks: false } | { blocks: true; reason: string; ne
 const OK: HoldVerdict = { blocks: false };
 
 /**
- * Before a merge: if a refresh merged the base in after a semantic verdict,
- * show that the base commit actually merged in is the one the verdict covered,
- * or re-verify the range that arrived since. Under enforce the PR is held until
- * that passes. Reasons start `semantic hold (rechecking)` or `semantic hold
- * (needs a person)` so callers can tell a wait from an escalation.
- *
- * The base parent comes from the head commit when it is the update merge
- * (first parent = the pre-update head). If the head has moved past it, the live
- * base tip stands in: it contains every base commit merged so far, so checking
- * against it is a superset, never a gap.
+ * Before a merge: is there an outstanding semantic verification for THIS head
+ * (see PendingBaseVerify)? Under enforce the PR is held until it passes, with
+ * a bounded budget per head. Reasons start `semantic hold (rechecking)` or
+ * `semantic hold (needs a person)` so callers can tell a wait from an
+ * escalation. A push of any other head supersedes the record: the new head is
+ * verified on its own with a fresh budget, so a pushed fix clears a hold.
  */
 export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefreshDeps = {}): Promise<HoldVerdict> {
   if (params.gitConfig === undefined || !params.taskId) return OK;
@@ -477,11 +612,9 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
   const { installationId, repoFullName, prNumber, headSha } = params;
   const taskId = params.taskId;
 
-  const state = await readState(taskId).catch(() => null);
-  const pending = state?.prNumber === prNumber ? state.pendingBaseVerify ?? null : null;
+  let state = await readState(taskId).catch(() => null);
+  let pending = state?.prNumber === prNumber ? state.pendingBaseVerify ?? null : null;
   if (!state || !pending) return OK;
-  // The update has not landed on this head: nothing unchecked was merged in.
-  if (headSha === pending.preUpdateHeadSha) return OK;
 
   const ledger = (outcome: 'accepted' | 'deferred' | 'warned' | 'rejected', reason: string, detail: Record<string, unknown> = {}) => {
     const input = {
@@ -494,105 +627,138 @@ export async function checkBaseRefreshHold(params: HoldParams, deps: BaseRefresh
       taskId,
       workerId: params.workerId ?? null,
       callerOrigin: 'system' as const,
-      detail: { prNumber, headSha, repoFullName, semanticMode: mode, preUpdateHeadSha: pending.preUpdateHeadSha, verifiedBaseSha: pending.verifiedBaseSha, ...detail },
+      detail: { prNumber, headSha, repoFullName, semanticMode: mode, pendingKind: pending?.kind, pendingHeadSha: pending?.headSha, verifiedBaseSha: pending?.verifiedBaseSha ?? null, ...detail },
     };
     if (outcome === 'deferred') fireDeferralEvent(input);
     else fireGateEvent(input);
   };
-  const write = async (next: PendingBaseVerify | null) => {
-    await writeState(taskId, state.rev, { ...state, pendingBaseVerify: next, rev: state.rev + 1 }).catch(() => false);
+  /** Replace the record we read (by id) with `next`; retried on a lost CAS. */
+  const writePending = async (next: PendingBaseVerify | null): Promise<void> => {
+    const ours = pending!.id;
+    const written = await casMutate(taskId, readState, writeState, state, (latest) =>
+      latest.pendingBaseVerify?.id === ours ? { ...latest, pendingBaseVerify: next } : null);
+    if (written) state = written;
+    if (next) pending = next;
   };
   const hold = (needsPerson: boolean, why: string): HoldVerdict => ({
     blocks: true,
     needsPerson,
     reason: `semantic hold (${needsPerson ? 'needs a person' : 'rechecking'}): ${why}`,
   });
-
-  const enforcing = mode === 'enforce' && pending.mode === 'enforce';
-  if (enforcing && pending.rechecks >= MAX_SEMANTIC_RECHECKS && pending.diagnosedAt) {
-    return hold(true, `base commits merged in after the semantic check could not be verified after ${pending.rechecks} checks`);
-  }
-
-  // Which base commit did the update merge in?
-  let arrivedBase: string | null = null;
-  try {
-    const commit = (await api(installationId, `/repos/${repoFullName}/commits/${headSha}`)) as { parents?: Array<{ sha?: string }> } | null;
-    const parents = (commit?.parents ?? []).map((p) => p?.sha ?? null);
-    if (parents.length === 2 && parents[0] === pending.preUpdateHeadSha && parents[1]) {
-      arrivedBase = parents[1];
-    } else {
-      const pr = (await api(installationId, `/repos/${repoFullName}/pulls/${prNumber}`)) as { base?: { ref?: string } } | null;
-      const ref = pr?.base?.ref;
-      const tip = ref ? ((await api(installationId, `/repos/${repoFullName}/commits/${encodeURIComponent(ref)}`)) as { sha?: string } | null) : null;
-      arrivedBase = typeof tip?.sha === 'string' ? tip.sha : null;
-    }
-  } catch (err) {
-    arrivedBase = null;
-    if (!enforcing) {
-      await write(null);
-      ledger('warned', `shadow: could not read the merged-in base: ${err instanceof Error ? err.message : String(err)}`);
-      return OK;
-    }
-  }
-
-  if (arrivedBase === pending.verifiedBaseSha) {
-    await write(null);
-    ledger('accepted', 'the base merged in is the base the semantic verdict covered');
-    return OK;
-  }
-
-  if (!enforcing) {
-    await write(null);
-    ledger('warned', `shadow: base moved between the semantic check and the update (${pending.verifiedBaseSha.slice(0, 7)} -> ${arrivedBase?.slice(0, 7) ?? 'unknown'}); not re-verified`);
-    return OK;
-  }
-
-  let assessment: SemanticAssessment;
-  if (!arrivedBase) {
-    assessment = { verdict: 'unknown', reason: 'could not read which base commit the update merged in' };
-  } else {
-    assessment = await assess({ installationId, repoFullName, prNumber, headSha: pending.preUpdateHeadSha, pinnedBaseSha: arrivedBase }).catch((err) => ({
-      verdict: 'unknown' as const,
-      reason: `semantic re-check failed: ${err instanceof Error ? err.message : String(err)}`,
-    }));
-  }
-  const detail = { arrivedBaseSha: arrivedBase, verdict: assessment.verdict, sharedPaths: assessment.sharedPaths ?? [], evidence: assessment.evidence ?? [] };
   const missionId = async () => (params.missionId !== undefined
     ? params.missionId
     : await (deps.missionOf ?? missionOfFromDb)(taskId).catch(() => null));
-  const diagnosticBase = { taskId, installationId, repoFullName, prNumber, headSha };
+  const enforcing = mode === 'enforce' && pending.mode === 'enforce';
+  const rekeyToHead = async (): Promise<void> => {
+    await writePending({
+      id: newId(now()), kind: 'head', headSha, mergeHeadSha: null, arrivedBaseSha: null, checkHeadSha: headSha,
+      verifiedBaseSha: null, mode: 'enforce', rechecks: 0, diagnosedAt: null, at: new Date(now()).toISOString(),
+    });
+  };
 
-  if (assessment.verdict === 'disjoint_paths' || assessment.verdict === 'disjoint_symbols') {
-    await write(null);
-    ledger('accepted', `base moved before the update; the arrived range re-verified: ${assessment.reason}`, detail);
-    return OK;
-  }
-
-  if (assessment.verdict === 'same_symbol') {
-    const firstTime = !pending.diagnosedAt;
-    const stamp = pending.diagnosedAt ?? new Date(now()).toISOString();
-    await write({ ...pending, rechecks: MAX_SEMANTIC_RECHECKS, diagnosedAt: stamp });
-    if (firstTime) {
-      ledger('rejected', `base commits merged in after the check edit the same symbols: ${assessment.reason}`, detail);
-      await diagnose({ kind: 'semantic_conflict', ...diagnosticBase, missionId: await missionId(), reason: assessment.reason })
-        .catch((err) => console.error('[base-refresh] diagnostic failed:', err));
+  // ── Which head is this, relative to the record? ──
+  let pinnedBase: string | null = null;
+  if (pending.kind === 'refresh') {
+    // The update has not landed on this head: nothing unchecked was merged in.
+    if (headSha === pending.headSha) return OK;
+    let isOurMerge = headSha === pending.mergeHeadSha;
+    if (isOurMerge) {
+      pinnedBase = pending.arrivedBaseSha ?? null;
+    } else {
+      const p = await readParents(api, installationId, repoFullName, headSha);
+      if (p.kind === 'unreadable') {
+        if (!enforcing) {
+          await writePending(null);
+          ledger('warned', `shadow: could not read the head commit: ${p.reason}`);
+          return OK;
+        }
+        // Fail closed; spend budget on the record as it stands.
+        return bounded(async () => ({ verdict: 'unknown', reason: `could not read the head commit: ${p.reason}` }));
+      }
+      isOurMerge = isUpdateMergeOf(p.parents, pending.headSha);
+      if (isOurMerge) {
+        pinnedBase = p.parents[1];
+        await writePending({ ...pending, mergeHeadSha: headSha, arrivedBaseSha: pinnedBase });
+      }
     }
-    return hold(true, `base commits merged in after the check edit the same symbols as this PR (${assessment.reason})`);
+    if (!isOurMerge) {
+      // Someone pushed: the record is about a head that is no longer merged.
+      if (!enforcing) {
+        await writePending(null);
+        ledger('warned', 'shadow: a push superseded the refresh before it was verified');
+        return OK;
+      }
+      ledger('warned', 'a push superseded the refresh record; verifying the new head on its own');
+      await rekeyToHead();
+    }
+  } else if (pending.headSha !== headSha) {
+    if (!enforcing) {
+      await writePending(null);
+      return OK;
+    }
+    ledger('warned', 'a push superseded the held head; verifying the new head on its own');
+    await rekeyToHead();
   }
 
-  // unknown (or a re-read that saw a moved head — never a clearance).
-  const rechecks = Math.min(pending.rechecks + 1, MAX_SEMANTIC_RECHECKS);
-  if (rechecks >= MAX_SEMANTIC_RECHECKS) {
-    const firstTime = !pending.diagnosedAt;
-    await write({ ...pending, rechecks, diagnosedAt: pending.diagnosedAt ?? new Date(now()).toISOString() });
-    if (firstTime) {
-      ledger('rejected', `base commits merged in after the check unverified after ${rechecks} checks: ${assessment.reason}`, detail);
-      await diagnose({ kind: 'semantic_unverified', ...diagnosticBase, missionId: await missionId(), reason: assessment.reason })
-        .catch((err) => console.error('[base-refresh] diagnostic failed:', err));
+  // ── Verify ──
+  if (pending.kind === 'refresh') {
+    if (pinnedBase && pending.verifiedBaseSha && pinnedBase === pending.verifiedBaseSha) {
+      await writePending(null);
+      ledger('accepted', 'the base merged in is the base the semantic verdict covered');
+      return OK;
     }
-    return hold(true, `base commits merged in after the semantic check could not be verified (${assessment.reason})`);
+    if (!enforcing) {
+      await writePending(null);
+      ledger('warned', `shadow: base moved between the semantic check and the update (${pending.verifiedBaseSha?.slice(0, 7) ?? 'unrecorded'} -> ${pinnedBase?.slice(0, 7) ?? 'unknown'}); not re-verified`);
+      return OK;
+    }
+    const pr = pending.checkHeadSha;
+    const base = pinnedBase;
+    return bounded(async () => base
+      ? assess({ installationId, repoFullName, prNumber, headSha: pr, pinnedBaseSha: base })
+      : { verdict: 'unknown', reason: 'could not tell which base commit the update merged in' });
   }
-  await write({ ...pending, rechecks });
-  ledger('deferred', `base moved before the update; re-check ${rechecks}/${MAX_SEMANTIC_RECHECKS} unverified: ${assessment.reason}`, detail);
-  return hold(false, `base commits merged in after the semantic check are not yet verified, check ${rechecks}/${MAX_SEMANTIC_RECHECKS} (${assessment.reason})`);
+  // A hold on exactly this head, against the live base.
+  return bounded(async () => assess({ installationId, repoFullName, prNumber, headSha }));
+
+  /** One bounded verification of the record, counted before it starts. */
+  async function bounded(run: () => Promise<SemanticAssessment>): Promise<HoldVerdict> {
+    const p = pending!;
+    const diagnosticBase = { taskId, installationId, repoFullName, prNumber, headSha };
+    const tellOnce = async (kind: 'semantic_conflict' | 'semantic_unverified', why: string, detail: Record<string, unknown>) => {
+      if (p.diagnosedAt) return;
+      await writePending({ ...pending!, rechecks: Math.max(pending!.rechecks, MAX_SEMANTIC_RECHECKS), diagnosedAt: new Date(now()).toISOString() });
+      ledger('rejected', why, detail);
+      await diagnose({ kind, ...diagnosticBase, missionId: await missionId(), reason: why })
+        .catch((err) => console.error('[base-refresh] diagnostic failed:', err));
+    };
+
+    if (p.rechecks >= MAX_SEMANTIC_RECHECKS) {
+      // Spent: either a person was told, or earlier checks died mid-run.
+      await tellOnce('semantic_unverified', `the last ${MAX_SEMANTIC_RECHECKS} semantic checks on this head did not clear it`, {});
+      return hold(true, `semantic overlap on this head could not be verified after ${p.rechecks} checks`);
+    }
+    const attempt = p.rechecks + 1;
+    await writePending({ ...p, rechecks: attempt });
+    const a = await run().catch((err) => ({
+      verdict: 'unknown' as const,
+      reason: `semantic re-check failed: ${err instanceof Error ? err.message : String(err)}`,
+    })) as SemanticAssessment;
+    const detail = { pinnedBaseSha: pinnedBase, verdict: a.verdict, sharedPaths: a.sharedPaths ?? [], evidence: a.evidence ?? [] };
+    if (a.verdict === 'disjoint_paths' || a.verdict === 'disjoint_symbols') {
+      await writePending(null);
+      ledger('accepted', `re-verified: ${a.reason}`, detail);
+      return OK;
+    }
+    if (a.verdict === 'same_symbol') {
+      await tellOnce('semantic_conflict', a.reason, detail);
+      return hold(true, `the same symbols are edited on both sides (${a.reason}); push a fix to the branch to re-check`);
+    }
+    if (attempt >= MAX_SEMANTIC_RECHECKS) {
+      await tellOnce('semantic_unverified', a.reason, detail);
+      return hold(true, `semantic overlap could not be verified (${a.reason})`);
+    }
+    ledger('deferred', `re-check ${attempt}/${MAX_SEMANTIC_RECHECKS} unverified: ${a.reason}`, detail);
+    return hold(false, `not yet verified, check ${attempt}/${MAX_SEMANTIC_RECHECKS} (${a.reason})`);
+  }
 }

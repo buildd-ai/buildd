@@ -3515,6 +3515,35 @@ describe('PUT /api/github/pr', () => {
         expect(mockMergePullRequest).not.toHaveBeenCalled();
       });
 
+      it('a worker with no task keeps the old direct update when the semantic check is off', async () => {
+        workerOk();
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: null, prUrl: 'https://github.com/owner/repo/pull/42', workspace: WORKSPACE_OK,
+        });
+        const calls = behindGithub(() => Promise.resolve({ message: 'Updating pull request branch.' }));
+
+        const res = await put();
+
+        expect(res.status).toBe(409);
+        expect((await res.json()).branchUpdated).toBe(true);
+        expect(calls).toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+        expect(mockRefreshBehindPr).not.toHaveBeenCalled();
+      });
+
+      it('a worker with no task is refused, not updated, when the semantic check is on', async () => {
+        workerOk();
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'w-1', accountId: 'account-1', taskId: null, prUrl: 'https://github.com/owner/repo/pull/42',
+          workspace: { ...WORKSPACE_OK, gitConfig: { ...(WORKSPACE_OK as any).gitConfig, semanticRefresh: 'enforce' } },
+        });
+        const calls = behindGithub(() => Promise.resolve({}));
+
+        const res = await put();
+
+        expect(res.status).toBe(403);
+        expect(calls).not.toContain('PUT /repos/owner/repo/pulls/42/update-branch');
+      });
+
       it.each([
         [{ kind: 'in_flight' }, 'in_flight'],
         [{ kind: 'deferred', failure: 'rate_limit', attempts: 1, reason: '429' }, 'deferred'],
