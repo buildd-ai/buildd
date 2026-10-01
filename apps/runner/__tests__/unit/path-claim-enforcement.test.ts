@@ -290,18 +290,58 @@ describe('sweepWorktreeChanges (real git)', () => {
 });
 
 describe('resolvePrBaseRef', () => {
-  test('a fresh worktree: the resolved worktree base is the PR base', () => {
-    expect(resolvePrBaseRef({ worktreeBase: 'origin/mission/m-1', defaultBranch: 'dev', context: { baseBranch: 'mission/m-1' } })).toBe('origin/mission/m-1');
-    expect(resolvePrBaseRef({ worktreeBase: 'origin/dev', defaultBranch: 'dev', context: {} })).toBe('origin/dev');
+  const MISSION = { workingBranch: 'mission/m-1', integrationBranchEnabled: true };
+  const HEAD = 'buildd/task-1';
+  const base = (task: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    resolvePrBaseRef({ task: task as any, head: HEAD, worktreeBase: 'origin/dev', fallbacks: ['dev'], ...extra });
+
+  test('a trunk task: trunk', () => {
+    expect(base({ context: {} })).toBe('origin/dev');
   });
-  test('resumed from the remote resume branch: the declared base, not the resume branch', () => {
-    expect(resolvePrBaseRef({ worktreeBase: 'origin/buildd/task-1', defaultBranch: 'dev', context: { resumeBranch: 'buildd/task-1', baseBranch: 'mission/m-1' } })).toBe('origin/mission/m-1');
+  test('a mission task: the integration branch, even with no baseBranch in context', () => {
+    expect(base({ missionId: 'm', mission: MISSION, context: {} })).toBe('origin/mission/m-1');
   });
-  test('resumed from a local-only branch, no declared base: trunk', () => {
-    expect(resolvePrBaseRef({ worktreeBase: 'buildd/task-1', defaultBranch: 'dev', context: { resumeBranch: 'buildd/task-1' } })).toBe('origin/dev');
+  test('a stacked predecessor named in baseBranch is the base', () => {
+    expect(base({ context: { baseBranch: 'buildd/predecessor' } })).toBe('origin/buildd/predecessor');
   });
-  test('no worktree base at all: declared base, else trunk', () => {
-    expect(resolvePrBaseRef({ worktreeBase: undefined, defaultBranch: 'main', context: null })).toBe('origin/main');
+
+  // Every resume flavour except the reviewer loop writes baseBranch == resumeBranch == the
+  // worker's own branch (ci-retry, conflict-retry, answer-resume, stale-workers requeues).
+  // That value is a continuity marker, never the PR base.
+  for (const flavour of ['ci retry', 'conflict retry', 'answer resume', 'infra requeue']) {
+    test(`${flavour}: {resumeBranch: X, baseBranch: X} is a marker, trunk task -> trunk`, () => {
+      expect(base({ context: { resumeBranch: HEAD, baseBranch: HEAD } }, { worktreeBase: `origin/${HEAD}` })).toBe('origin/dev');
+    });
+    test(`${flavour}: {resumeBranch: X, baseBranch: X} on a mission task -> the integration branch`, () => {
+      expect(base({ missionId: 'm', mission: MISSION, context: { resumeBranch: HEAD, baseBranch: HEAD } }, { worktreeBase: `origin/${HEAD}` })).toBe('origin/mission/m-1');
+    });
+  }
+  test('a marker that names the resume branch is ignored even when the head differs', () => {
+    expect(base({ context: { resumeBranch: 'buildd/old', baseBranch: 'buildd/old' } })).toBe('origin/dev');
+  });
+  test('reviewer-loop retry: resume branch plus the real PR base', () => {
+    expect(base({ context: { resumeBranch: HEAD, baseBranch: 'buildd/predecessor' } })).toBe('origin/buildd/predecessor');
+  });
+  test('a mission task whose integration branch is unknown gets no base, never trunk', () => {
+    // missionId present but no mission fields on the claim
+    expect(base({ missionId: 'm', context: { resumeBranch: HEAD, baseBranch: HEAD } })).toBeUndefined();
+    // integration enabled with no working branch
+    expect(base({ missionId: 'm', mission: { integrationBranchEnabled: true, workingBranch: null }, context: {} })).toBeUndefined();
+  });
+  test('a mission task whose integration branch is missing on the remote gets no base, never trunk', () => {
+    expect(base({ missionId: 'm', mission: MISSION, context: {} }, { worktreeFallback: { candidate: 'mission/m-1', reason: 'missing' } })).toBeUndefined();
+  });
+  test('a direct-strategy mission (no integration branch) is a trunk task', () => {
+    expect(base({ missionId: 'm', mission: { integrationBranchEnabled: false, workingBranch: null }, context: {} })).toBe('origin/dev');
+  });
+  test('a missing stacked predecessor: the trunk the worktree was cut from', () => {
+    expect(base({ context: { baseBranch: 'buildd/gone' } }, { worktreeFallback: { candidate: 'buildd/gone', reason: 'missing' } })).toBe('origin/dev');
+  });
+  test('the mission PR task itself bases on trunk', () => {
+    expect(resolvePrBaseRef({
+      task: { title: 'Ship mission: x', taskClass: 'bookkeeping', missionId: 'm', mission: MISSION, context: {} } as any,
+      head: 'mission/m-1', worktreeBase: 'origin/mission/m-1', fallbacks: ['dev'],
+    })).toBe('origin/dev');
   });
 });
 
@@ -329,8 +369,13 @@ describe('resumed task sweep (real git)', () => {
     // Attempt 2 resumes from it and edits b.ts.
     writeFileSync(join(work, 'b.ts'), 'b\n');
 
-    const context = { resumeBranch: 'buildd/task-1', baseBranch: 'mission/m-1' };
-    const prBase = resolvePrBaseRef({ worktreeBase: 'origin/buildd/task-1', defaultBranch: 'dev', context });
+    // What a CI retry / conflict retry / answer resume actually writes.
+    const context = { resumeBranch: 'buildd/task-1', baseBranch: 'buildd/task-1' };
+    const prBase = resolvePrBaseRef({
+      task: { missionId: 'm', mission: { workingBranch: 'mission/m-1', integrationBranchEnabled: true }, context },
+      head: 'buildd/task-1', worktreeBase: 'origin/buildd/task-1', fallbacks: ['dev'],
+    });
+    expect(prBase).toBe('origin/mission/m-1');
     const sweep = sweepWorktreeChanges(work, prBase);
     expect(sweep.baseResolved).toBe(true);
     expect(sweep.paths).toEqual(['a.ts', 'b.ts']);

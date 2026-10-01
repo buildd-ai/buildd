@@ -624,13 +624,19 @@ In enforce mode:
   The PR base is carried on the worker as `prBaseRef` and persisted. It is not
   the ref the worktree was cut from: on a resume that is the prior attempt's
   branch, and measuring against it would drop every file earlier attempts
-  committed (`resolvePrBaseRef`). It runs on every sync, and before `git push`,
+  committed. `resolvePrBaseRef` derives it from `resolveTaskPrBase`, the rule
+  the prompt and `create_pr` use, so a `baseBranch` equal to the task's own
+  branch (the marker CI, conflict and answer resumes and infra requeues write)
+  is never taken as a base. A mission task whose integration branch cannot be
+  named gets no base rather than trunk, so the sweep reports only uncommitted
+  changes. It runs on every sync, and before `git push`,
   `gh pr create`, `create_pr` and a non-error `complete_task`. Observed paths
   go through the same exclusive acquisition; one another live task holds comes
   back on the PATCH response as `pathCollisions`. A sync offers only paths new
   to `observedTouches`; the pre-push and completion sweeps re-offer the whole
   list (`checkpointSweep`), so an earlier acquisition that failed is retried
-  before the change ships.
+  before the change ships. Only paths recorded in `observedTouches` are leased;
+  paths past its 500 cap are dropped with a `path_claim` `warned` gate event.
 - A collision found there has already happened, so it is checkpoint
   enforcement, not prevention: the runner refuses further edits and ships,
   commits a checkpoint (pushed unless a PR already exists), reports a

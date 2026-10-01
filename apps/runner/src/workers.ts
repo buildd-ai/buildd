@@ -2129,7 +2129,13 @@ export class WorkerManager {
         // The PR's base, which the path-claim sweep measures against. Read
         // after setup: a fallback to a fresh base has already cleared the
         // resume fields from the context.
-        worker.prBaseRef = resolvePrBaseRef({ worktreeBase: setupResult.base, defaultBranch, context: fullTask.context });
+        worker.prBaseRef = resolvePrBaseRef({
+          task: fullTask,
+          head: setupResult.branch,
+          worktreeBase: setupResult.base,
+          fallbacks: [gitConfig?.targetBranch, defaultBranch],
+          worktreeFallback: setupResult.fallback ?? null,
+        });
         // Resume and shared-branch collision recovery can both change the ref.
         // The server must acknowledge this actual branch before the agent starts
         // (see startWithPersistedBranch below), since create_pr derives its head

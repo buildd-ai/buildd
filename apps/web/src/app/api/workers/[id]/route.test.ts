@@ -14167,6 +14167,32 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     );
   });
 
+  it('a checkpoint sweep past the cap leases only recorded paths, and records the drop as degraded', async () => {
+    setupBaseWorkerMock();
+    const stored = Array.from({ length: 499 }, (_, i) => `src/f${i}.ts`);
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, observedTouches: stored });
+    gateEventInserts.length = 0;
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        touchedPaths: ['src/f0.ts', 'src/new-a.ts', 'src/new-b.ts', 'src/new-c.ts'],
+        checkpointSweep: true,
+      },
+    });
+    await PATCH(req, { params: mockParams });
+    await new Promise(r => setTimeout(r, 0));
+
+    // 499 stored + new-a fills the column; new-b/new-c are past it.
+    const offered = mockClaimObservedPaths.mock.calls.at(-1)![2] as string[];
+    expect(offered).toEqual(['src/f0.ts', 'src/new-a.ts']);
+    const row = gateEventInserts.find((g: any) => g.gate === 'path_claim' && g.outcome === 'warned');
+    expect(row).toBeDefined();
+    expect(row.detail).toMatchObject({ cap: 500, dropped: 2 });
+  });
+
   it('a read-only reviewer leases nothing: checking out the PR branch is not an edit', async () => {
     setupBaseWorkerMock();
     mockTasksFindFirst.mockResolvedValue({
