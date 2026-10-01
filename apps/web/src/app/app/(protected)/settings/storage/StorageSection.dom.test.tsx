@@ -78,7 +78,7 @@ beforeEach(() => {
     if (url.endsWith('/verify') && method === 'POST' && verifyFails) {
       // A failing check stores the same error as lastError, so the refreshed row carries it too.
       list = list.map((b) => ({ ...b, status: 'failing', lastError: 'AccessDenied on PutObject' }));
-      return Response.json({ backendId: ID, status: 'failing', error: 'AccessDenied on PutObject', warnings: [], verifiedAt: '2026-10-01T00:00:00.000Z' });
+      return Response.json({ backendId: ID, status: 'failing', error: 'AccessDenied on PutObject', warnings: ['The probe object was readable without credentials.'], verifiedAt: '2026-10-01T00:00:00.000Z' });
     }
     if (url.endsWith('/verify') && method === 'POST') {
       list = list.map((b) => ({ ...b, status: 'ok', lastError: null }));
@@ -256,6 +256,8 @@ describe('add, verify, remove', () => {
     expect(row.split('AccessDenied on PutObject').length - 1).toBe(1);
     // The transient line still says the check just ran and failed.
     expect(byTestId('storage-message')?.textContent).toMatch(/failed/i);
+    // Warnings after the error are kept.
+    expect(byTestId('storage-message')?.textContent).toContain('readable without credentials');
   });
 
   it('remove confirms, then deletes', async () => {
