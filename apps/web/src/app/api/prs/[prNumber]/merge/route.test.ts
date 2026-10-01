@@ -841,6 +841,25 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     expect(mockLandPr.mock.calls[0]![0].actor.override).toEqual({ verdict: true });
   });
 
+  it('enforce: the size and freshness overrides reach landPr alongside the verdict one, and nothing else is overridable', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    const [req, ctx] = makeRequest('42', { overrides: { size: true, freshness: true, ciGreen: true } });
+    await POST(req, ctx);
+    expect(mockLandPr.mock.calls[0]![0].actor.override).toEqual({ size: true, freshness: true });
+
+    mockLandPr.mockClear();
+    const [req2, ctx2] = makeRequest('42', { overrides: { verdict: true } });
+    await POST(req2, ctx2);
+    expect(mockLandPr.mock.calls[0]![0].actor.override).toEqual({ verdict: true });
+  });
+
+  it('enforce: no override flag passes no override to landPr', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    const [req, ctx] = makeRequest('42');
+    await POST(req, ctx);
+    expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'human', userId: 'u-1' });
+  });
+
   it('shadow/off: red CI on the live head is refused even with override (no door is exempt)', async () => {
     for (const gitConfig of [{}, { landing: { mode: 'off' } }]) {
       mockWorkspacesFindFirst.mockResolvedValue({ ...workspace, gitConfig });

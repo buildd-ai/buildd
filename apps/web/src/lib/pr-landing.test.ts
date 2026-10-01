@@ -44,6 +44,7 @@ const mockGithubApi = mock(async (_installationId: number, path: string): Promis
     if (gh.failPr) throw new Error('boom');
     return {
       state: gh.state,
+      title: 'Add the thing',
       merged: gh.merged,
       merge_commit_sha: gh.merged ? 'merge-sha' : null,
       mergeable_state: gh.mergeableState,
@@ -894,5 +895,38 @@ describe('outcomeOwner', () => {
     ];
     for (const [o, want] of cases) expect(outcomeOwner(o)).toEqual(want);
     expect(outcomeOwner({ kind: 'merged', sha: 's' })).toBeNull();
+  });
+});
+
+describe('landPr — alert hook', () => {
+  const alertMock = mock(async (_i: any) => {});
+  beforeEach(() => alertMock.mockClear());
+
+  it('hands the outcome, live head and PR title to the alert in enforce', async () => {
+    gh.prFiles = ['secrets/key.ts'];
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['secrets/'] } };
+    const out = await land({ policy }, { ...deps(), alert: alertMock });
+    expect(alertMock).toHaveBeenCalledTimes(1);
+    expect(alertMock.mock.calls[0]![0]).toMatchObject({
+      workspaceId: 'ws-1',
+      prNumber: 42,
+      headSha: 'head1',
+      prTitle: 'Add the thing',
+      taskId: 'task-1',
+      outcome: out,
+    });
+  });
+
+  it('does not page from shadow or off', async () => {
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    await land({ mode: 'shadow' }, { ...deps(), alert: alertMock });
+    await land({ mode: 'off' }, { ...deps(), alert: alertMock });
+    expect(alertMock).not.toHaveBeenCalled();
+  });
+
+  it('an alert that throws never changes the landing outcome', async () => {
+    gh.checkRuns = [{ name: 'build', status: 'completed', conclusion: 'failure' }];
+    const out = await land({}, { ...deps(), alert: async () => { throw new Error('pushover down'); } });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 'ci_fix' });
   });
 });
