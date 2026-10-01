@@ -55,7 +55,7 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
   onAdd: (c: GoalCriterion) => void;
   onCancel: () => void;
 }) {
-  const [type, setType] = useState<GoalCriterionType>(initial?.type ?? 'all_prs_merged');
+  const [type, setType] = useState<GoalCriterionType>(initial?.type ?? 'command');
   const [label, setLabel] = useState(initial?.label ?? '');
   const [command, setCommand] = useState(initial?.type === 'command' ? initial.command : '');
   const [artifactKey, setArtifactKey] = useState(initial?.type === 'artifact_exists' ? initial.key ?? '' : '');

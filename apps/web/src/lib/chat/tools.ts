@@ -119,7 +119,7 @@ const criterion = z.object({
   description: z.string().optional(),
   notMechanizableReason: z.string().optional(),
   key: z.string().optional(),
-}).describe('A completion gate. Prefer command / all_prs_merged / no_open_tasks. "description" needs description + notMechanizableReason (10+ chars).');
+}).describe('A completion gate. Prefer a proof of the outcome: a command that exits 0 only when it holds, or artifact_exists for a named deliverable; all_prs_merged / no_open_tasks only close out the work. "description" needs description + notMechanizableReason (10+ chars).');
 
 /** Hand-written schemas where the generic one would read worse to the model. */
 function explicitSchema(action: string, ops: [string, ...string[]] | null): z.ZodType | null {

@@ -42,6 +42,13 @@ export const GATE_SLUGS = {
   BRANCH_STRATEGY: 'branch_strategy',
   /** Missions create/update — `goalCriteria` validation, incl. notMechanizableReason. */
   GOAL_CRITERIA: 'goal_criteria',
+  /**
+   * Missions create/update — ADVISORY ONLY: a goal criterion the shadow decision
+   * verdict graded weak (no user-noticeable outcome, or not checkable without
+   * reading prose). Never blocks, never rewrites. Separate from GOAL_CRITERIA,
+   * which is the validation 400. See docs/specs/mission-goal-criteria-quality.md.
+   */
+  GOAL_CRITERIA_QUALITY: 'goal_criteria_quality',
   /** PATCH /api/workers/[id] — the outputRequirement completion gate, and `discardEdits`. */
   OUTPUT_REQUIREMENT: 'output_requirement',
   /** PATCH /api/workers/[id] — the handoff completion gate: tasks with dependents must include handoff.delivered. */

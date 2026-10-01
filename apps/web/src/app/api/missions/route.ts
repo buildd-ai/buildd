@@ -29,6 +29,7 @@ import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
+import { scheduleGoalQualityShadow } from '@/lib/goal-criteria-quality-shadow';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -499,6 +500,22 @@ export async function POST(req: NextRequest) {
     // Non-blocking: post a work-tracker suggestion note if the workspace has one configured
     if (resolvedWorkspaceId) {
       maybePostWorkTrackerNote(mission.id, resolvedWorkspaceId).catch(() => {});
+    }
+
+    // Advisory goal-criteria verdict (docs/specs/mission-goal-criteria-quality.md):
+    // after the response, never awaited, and in shadow mode it changes nothing
+    // the caller sees. Only runs once validation passed and the row exists.
+    if (Array.isArray(goalCriteria) && goalCriteria.length > 0) {
+      scheduleGoalQualityShadow({
+        missionId: mission.id,
+        teamId,
+        workspaceId: resolvedWorkspaceId,
+        criteria: goalCriteria,
+        accountId: apiAccount?.id ?? null,
+        userId: user?.id ?? null,
+        surface: 'POST /api/missions',
+        callerOrigin: gateCaller,
+      });
     }
 
     // Build informative creation response

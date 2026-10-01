@@ -99,7 +99,12 @@ describe('validateGoalCriteria — at least one mechanical criterion required', 
     }]);
     expect(err).toContain('mechanical criterion');
     for (const t of MECHANICAL_CRITERION_TYPES) expect(err).toContain(t);
-    expect(err).toContain('all_prs_merged + no_open_tasks');
+    // It points at a proof of the outcome, not at bookkeeping as "a cheap default"
+    // (docs/specs/mission-goal-criteria-quality.md §6, AC-13).
+    expect(err).not.toContain('all_prs_merged + no_open_tasks');
+    expect(err).not.toContain('cheap default');
+    expect(err).toMatch(/command.*exits 0/);
+    expect(err).toMatch(/artifact_exists.*deliverable/);
   });
 
   it('accepts description paired with a mechanical criterion', () => {
