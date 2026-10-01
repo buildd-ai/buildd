@@ -57,6 +57,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  accounts: { id: 'accounts.id' },
   workers: { id: 'workers.id' },
   tasks: { id: 'tasks.id' },
   evidenceObjects: {
@@ -162,6 +163,26 @@ describe('POST /api/workers/[id]/evidence-upload-url', () => {
     const res = await POST(req(ok), { params: mockParams });
     expect(res.status).toBe(403);
     expect(mockGenerateEvidenceUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it('passes the request to auth, so a scoped token is checked against this route', async () => {
+    await POST(req(ok), { params: mockParams });
+    const [, request] = mockAuthenticateApiKey.mock.calls[0] as any[];
+    expect(request?.method).toBe('POST');
+    expect(new URL(request.url).pathname).toBe(`/api/workers/${WORKER}/evidence-upload-url`);
+  });
+
+  it("a per-task token signs for its own worker, never the same account's worker on another task", async () => {
+    const scoped = (taskId: string) => ({
+      id: ACCOUNT, teamId: TEAM, level: 'worker', taskScope: { taskId, workspaceId: WORKSPACE, expiresAt: Date.now() + 60_000 },
+    });
+    mockAuthenticateApiKey.mockResolvedValue(scoped(ROOT_TASK));
+    expect((await POST(req(ok), { params: mockParams })).status).toBe(403);
+    expect(mockGenerateEvidenceUploadUrl).not.toHaveBeenCalled();
+    expect(inserted).toHaveLength(0);
+    mockAuthenticateApiKey.mockResolvedValue(scoped(TASK));
+    expect((await POST(req(ok), { params: mockParams })).status).toBe(200);
+    expect(inserted[0].taskId).toBe(TASK);
   });
 
   it('returns 403 when the worker team does not match the caller team', async () => {

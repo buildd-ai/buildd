@@ -4,6 +4,7 @@ import { tasks } from '@buildd/core/db/schema';
 import type { EvidenceKind, TaskEvidenceListResponse, TaskEvidenceReadResponse } from '@buildd/shared';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveTaskIdForCaller } from '@/lib/resolve-task-id';
@@ -25,6 +26,9 @@ const READ_QUERY_KEYS = ['tail', 'grep', 'range', 'cursor'] as const;
 //   Never returns a presigned URL (docs/specs/byo-evidence-storage.md).
 //
 // `id` may be an 8+ character prefix, resolved within the caller's workspaces.
+//
+// A scoped token needs analytics:read (the read_evidence capability). With
+// both a session and a bearer the account decides, as GET /api/tasks/[id] does.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -34,15 +38,17 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // authenticateApiKey checks a restricted token's workspace only for a full
+  // task UUID in the path; a prefix id is resolved here, so check it here too.
   const canAccess = async (workspaceId: string): Promise<boolean> =>
-    apiAccount && !user
-      ? verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
+    apiAccount
+      ? tokenWorkspaceAllowed(apiAccount.workspaceIds, workspaceId) && verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
       : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
 
   const resolved = await resolveTaskIdForCaller(rawId, canAccess);
@@ -68,7 +74,7 @@ export async function GET(
     return NextResponse.json({ error: `kind must be one of: ${EVIDENCE_KINDS.join(', ')}` }, { status: 400 });
   }
 
-  const actor = user ? { userId: user.id } : { accountId: apiAccount!.id };
+  const actor = apiAccount ? { accountId: apiAccount.id } : { userId: user!.id };
   const scope = { id, workspaceId: task.workspaceId };
 
   const evidenceId = sp.get('evidenceId');

@@ -21,11 +21,14 @@ const TASK_LIMIT = 50;
 //   the task to read it through (GET /api/tasks/:id/evidence).
 //
 // Listing only; text is read through the task route, which checks lineage.
+// A scoped token needs analytics:read and, if restricted, workspaceId among its
+// workspaces (both checked in authenticateApiKey). With both a session and a
+// bearer the account decides, as GET /api/tasks/[id] does.
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -35,7 +38,7 @@ export async function GET(req: NextRequest) {
   if (!workspaceId || !isUuid(workspaceId)) {
     return NextResponse.json({ error: 'workspaceId (a full UUID) is required' }, { status: 400 });
   }
-  const allowed = apiAccount && !user
+  const allowed = apiAccount
     ? await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId)
     : !!(await verifyWorkspaceAccess(user!.id, workspaceId));
   if (!allowed) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -44,7 +47,7 @@ export async function GET(req: NextRequest) {
   if (kind && !EVIDENCE_KINDS.includes(kind as EvidenceKind)) {
     return NextResponse.json({ error: `kind must be one of: ${EVIDENCE_KINDS.join(', ')}` }, { status: 400 });
   }
-  const actor = user ? { userId: user.id } : { accountId: apiAccount!.id };
+  const actor = apiAccount ? { accountId: apiAccount.id } : { userId: user!.id };
 
   const evidenceId = sp.get('evidenceId');
   if (evidenceId) {

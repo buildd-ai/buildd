@@ -53,6 +53,8 @@ describe('GET /api/evidence', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
     mockGetCurrentUser.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockReset();
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
     mockAuthenticateApiKey.mockReset();
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1' });
     mockVerifyAccountWorkspaceAccess.mockReset();
@@ -81,6 +83,21 @@ describe('GET /api/evidence', () => {
     const res = await GET(req(`workspaceId=${WS_OTHER}&prNumber=7`));
     expect(res.status).toBe(404);
     expect(mockWorkersFindMany).not.toHaveBeenCalled();
+    expect(mockObjFindMany).not.toHaveBeenCalled();
+  });
+
+  it('passes the request to auth, so a scoped token is checked against this route', async () => {
+    await GET(req(`workspaceId=${WS}&prNumber=7`));
+    const [, request] = mockAuthenticateApiKey.mock.calls[0] as any[];
+    expect(request?.method).toBe('GET');
+    expect(new URL(request.url).searchParams.get('workspaceId')).toBe(WS);
+  });
+
+  it('a caller with both a session and a bearer is decided by the account', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockImplementation(async () => ({ teamId: 't', role: 'member' }));
+    // The session user reaches WS_OTHER; the bearer's account does not.
+    expect((await GET(req(`workspaceId=${WS_OTHER}&prNumber=7`))).status).toBe(404);
     expect(mockObjFindMany).not.toHaveBeenCalled();
   });
 

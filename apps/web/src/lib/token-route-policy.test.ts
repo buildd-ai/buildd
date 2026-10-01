@@ -33,6 +33,21 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/workspaces/ws-b/config', 'PATCH'))).toBe(false);
   });
+  test('evidence reads take analytics:read, matching the read_evidence action', () => {
+    const token = { scopes: ['analytics:read'] };
+    expect(requiredTokenScope('/api/tasks/t-1/evidence', 'GET')).toBe('analytics:read');
+    expect(requiredTokenScope('/api/evidence', 'GET')).toBe('analytics:read');
+    expect(canAccessTokenRoute(token, request('/api/tasks/t-1/evidence?tail=50'))).toBe(true);
+    expect(canAccessTokenRoute(token, request('/api/evidence?workspaceId=ws-a&prNumber=1'))).toBe(true);
+    expect(canAccessTokenRoute({ scopes: ['tasks:read'] }, request('/api/tasks/t-1/evidence'))).toBe(false);
+    // Downloads are session-only; writes are runner routes under workers:write.
+    expect(canAccessTokenRoute(token, request('/api/evidence/download?taskId=t&evidenceId=e'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/workers/w-1/evidence-upload-url', 'POST'))).toBe(false);
+    expect(canAccessTokenRoute({ scopes: ['workers:write'] }, request('/api/workers/w-1/evidence-upload-url', 'POST'))).toBe(true);
+    const restricted = { scopes: ['analytics:read'], workspaceIds: ['ws-a'] };
+    expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-b&prNumber=1'))).toBe(false);
+    expect(canAccessTokenRoute(restricted, request('/api/evidence?workspaceId=ws-a&prNumber=1'))).toBe(true);
+  });
   test('MCP transport defers to its action gate without requiring admin', () => {
     expect(canAccessTokenRoute({ scopes: ['analytics:read'] }, request('/api/mcp', 'POST'))).toBe(true);
   });

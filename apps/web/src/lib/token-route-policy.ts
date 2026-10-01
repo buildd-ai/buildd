@@ -25,6 +25,8 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   if (path === '/api/workers/active') return 'analytics:read';
   if (/^\/api\/workers\/[^/]+\/error-traces$/.test(path)) return 'analytics:read';
   if (path === '/api/explain' || (read && /^\/api\/connectors(\/|$)/.test(path))) return 'analytics:read';
+  // The read_evidence action's capability: MCP calls these with the caller's own token.
+  if (read && (/^\/api\/tasks\/[^/]+\/evidence$/.test(path) || path === '/api/evidence')) return 'analytics:read';
   if (/^\/api\/workers(\/|$)/.test(path)) return read ? 'tasks:read' : 'workers:write';
   if (/^\/api\/(tasks|discrepancies|artifacts|attachments|prs)(\/|$)/.test(path)) return read ? 'tasks:read' : 'tasks:write';
   if (/^\/api\/github\/pr(\/|$)/.test(path) || path === '/api/webhooks/ingest') return 'tasks:write';

@@ -8,7 +8,8 @@
  * (restricted = linked accounts only); a session user per team membership
  * (`verifyWorkspaceAccess`). A caller carrying both (an OAuth JWT bearer
  * resolves to an account and a user) is decided by the account, as
- * GET /api/tasks/[id] decides it.
+ * GET /api/tasks/[id] and the evidence read routes (GET /api/tasks/[id]/evidence,
+ * GET /api/evidence) decide it.
  */
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 import type { ExperimentViewer } from '@/lib/experiment-access';

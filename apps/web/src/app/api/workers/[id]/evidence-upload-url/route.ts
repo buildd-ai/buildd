@@ -3,7 +3,7 @@ import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, ne, sql } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import {
   EVIDENCE_UPLOAD_EXPIRY_SECONDS,
   generateEvidenceUploadUrl,
@@ -18,7 +18,8 @@ import { buildEvidenceObjectKey } from '@/lib/storage-keys';
  * Presigned PUT for one piece of run evidence (docs/specs/byo-evidence-storage.md,
  * "What gets written"). Generalises session-upload-url:
  *
- *  - Same authorization: the caller's account owns the worker and shares its team.
+ *  - Same authorization: the caller's account owns the worker and shares its team;
+ *    a per-task token (cloud runner) only for the worker on its own task.
  *  - The key is derived server-side (buildEvidenceObjectKey); a body key is ignored.
  *  - The backend is resolved per workspace (workspace → team → buildd_default) and
  *    the URL is signed with that backend's client, byte length bound in, 15 min.
@@ -82,7 +83,8 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A cloud container's per-task token may write evidence for its own worker only.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return refuse('Unauthorized', 401);
   }
@@ -115,7 +117,7 @@ export async function POST(
   if (!worker) {
     return refuse('Worker not found', 404);
   }
-  if (!worker.accountId || worker.accountId !== account.id) {
+  if (!worker.accountId || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return refuse('Forbidden', 403);
   }
   const workspace = worker.workspace;
