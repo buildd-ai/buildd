@@ -1651,6 +1651,9 @@ export const workers = pgTable('workers', {
   // NEVER be read as "trunk" — unknown has to degrade to the existing gate,
   // because guessing wrong here silently deletes a human review gate.
   prBaseRef: text('pr_base_ref'),
+  // Whether the PR is in draft status. Kept live by GitHub webhook events.
+  // null = no PR yet or status unknown (pre-migration workers).
+  prIsDraft: boolean('pr_is_draft'),
   // Supersession edge (task fcaf83d5): this worker's PR closed without merging,
   // but its diff landed anyway under a DIFFERENT, merged PR — e.g. a mission
   // integration branch got deleted out from under an open PR (#2355) and the
