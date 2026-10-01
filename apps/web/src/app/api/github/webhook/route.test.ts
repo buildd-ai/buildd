@@ -522,6 +522,11 @@ mock.module('@/lib/pr-review-request', () => ({
   listWorkspaceRoles: mockListWorkspaceRoles,
 }));
 
+const mockSchedulePrScopeReconcile = mock((_input: any) => {});
+mock.module('@/lib/pr-scope-reconcile-trigger', () => ({
+  schedulePrScopeReconcile: mockSchedulePrScopeReconcile,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -3819,6 +3824,23 @@ describe('POST /api/github/webhook', () => {
         prState: 'open', merged: false, mergeBlocked: null,
       } as any);
     }
+
+    it('schedules a PR-scope reconcile pinned to the pushed head', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockSchedulePrScopeReconcile.mockClear();
+
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(mockSchedulePrScopeReconcile).toHaveBeenCalledTimes(1);
+      expect(mockSchedulePrScopeReconcile.mock.calls[0][0]).toEqual({
+        workspaceId: 'ws1',
+        installationId: 5000,
+        repoFullName: 'test-org/test-repo',
+        prNumber: 42,
+        expectedHeadSha: NEW_SHA,
+      });
+    });
 
     it('re-dispatches exactly one reviewer when a push follows a request-changes verdict', async () => {
       withAgentReviewWorkspaceAndWorker();

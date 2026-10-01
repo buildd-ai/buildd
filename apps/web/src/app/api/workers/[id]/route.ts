@@ -78,6 +78,8 @@ import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { isReadOnlyReview } from '@/lib/read-only-review';
+import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { claimObservedPaths } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
@@ -3978,9 +3980,19 @@ export async function PATCH(
   //
   // Fire-and-forget: a lease is a coordination nicety, the progress report is
   // the contract, so a failure here must never reject the sync.
+  //
+  // A read-only reviewer is skipped: it checks out the PR branch, so the runner
+  // reports the whole PR diff as touched, and it never edits any of it. A
+  // reviewer *fix* attempt is not a review and still leases.
   if (newlyObservedPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
-      const leased = await claimObservedPaths(worker.workspaceId, worker.taskId, newlyObservedPaths);
+      const leaseTask = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { category: true, context: true },
+      });
+      const leased = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
+        ? []
+        : await claimObservedPaths(worker.workspaceId, worker.taskId, newlyObservedPaths);
       if (leased.length > 0) {
         console.log(`[path-claim] auto-lease: worker ${id} holds ${leased.length} observed path(s) for task ${worker.taskId}`);
       }
@@ -4948,6 +4960,9 @@ async function handleReviewerOutcomeIfNeeded(
       if (workspace) {
         await dispatchNewTask(retryTask, workspace);
         console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);
+        // The retry inherited the original's manifest; shrink it (and the
+        // finished reviewer's leases) to the PR's actual diff at this head.
+        schedulePrScopeReconcile({ workspaceId, installationId, repoFullName, prNumber, expectedHeadSha: headSha });
         await appendPrActivity({
           installationId,
           repoFullName,

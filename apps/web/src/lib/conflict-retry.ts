@@ -31,6 +31,7 @@ import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { lineageStamp } from '@/lib/attempt-lineage';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
+import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
@@ -664,6 +665,11 @@ export async function dispatchConflictRetry(
   console.log(
     `[conflict-retry] dispatched task ${newTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${retryTask.context.conflictIteration}/${retryTask.context.maxConflictIterations})`,
   );
+  // The retry inherited the original's manifest (or the sentinel); shrink it to
+  // the PR's actual diff at this head so it does not defer on unrelated leases.
+  if (installationId) {
+    schedulePrScopeReconcile({ workspaceId, installationId, repoFullName, prNumber, expectedHeadSha: headSha });
+  }
 
   return { dispatched: true, taskId: newTask.id };
 }
