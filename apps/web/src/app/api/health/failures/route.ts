@@ -16,6 +16,7 @@ import {
   type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-query';
+import { getLandingMetrics } from '@/lib/pr-landing-metrics';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import type {
   FailureAnalytics,
@@ -23,6 +24,7 @@ import type {
   FailureSignatureLookup,
   GateAnalytics,
   GateReasonFamily,
+  LandingMetrics,
 } from '@buildd/shared';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -152,7 +154,7 @@ export async function GET(req: NextRequest) {
   try {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') ?? null;
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     const sessionUser = account ? null : await getCurrentUser();
     if (!account && !sessionUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -240,6 +242,7 @@ export async function GET(req: NextRequest) {
         family?: FailureSignatureFamily;
         gates?: GateAnalytics;
         gateFamily?: GateReasonFamily;
+        landing?: LandingMetrics;
       } = { analytics };
       if (lookupInput) body.lookup = await lookupSignature(analytics, lookupInput, scopedWsIds, window);
       // `errorPrefix` means different things on the two families, so it is
@@ -249,6 +252,13 @@ export async function GET(req: NextRequest) {
       if (gateMode) {
         body.gates = await getGateAnalytics(scopedWsIds, window);
         if (prefixInput) body.gateFamily = await getGateReasonFamily(scopedWsIds, window, prefixInput);
+        // Time-to-land is a property of the pr_landing gate, shown with the
+        // overview; a prefix drill-down has no use for it. Null (read failed or
+        // empty scope) is omitted rather than reported as zero landings.
+        else {
+          const landing = await getLandingMetrics(scopedWsIds, window);
+          if (landing) body.landing = landing;
+        }
       }
       return NextResponse.json(body);
     }

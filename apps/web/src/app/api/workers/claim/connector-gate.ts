@@ -48,11 +48,15 @@ const PROBE_BUDGET_MS = 5000;
  * 1. never_mounted      — connector not in DB / wrong team / disabled for this workspace
  * 2. expired_or_revoked — credential missing, expired (oauth), or undecryptable (header/stdio)
  * 3. transient          — HTTP HEAD probe failed within budget; skips stdio connectors
+ *
+ * `probe: false` skips pass 3: role routing (lib/task-role-decision.ts) needs
+ * only the durable modes, and a transient failure is no reason to route away.
  */
 export async function checkConnectorRouting(
   roleSlug: string,
   workspaceId: string,
   teamId: string,
+  opts: { probe?: boolean } = {},
 ): Promise<ConnectorFailure[] | null> {
   const roleRows = await db.query.workspaceSkills.findMany({
     where: and(
@@ -252,7 +256,7 @@ export async function checkConnectorRouting(
   // Only for http connectors not already classified above.
 
   const alreadyFailedIds = new Set([...failures.map(f => f.connectorId)]);
-  const httpToProbe = visibleConnectors.filter(
+  const httpToProbe = opts.probe === false ? [] : visibleConnectors.filter(
     c => c.transport === 'http' && !alreadyFailedIds.has(c.id),
   );
 

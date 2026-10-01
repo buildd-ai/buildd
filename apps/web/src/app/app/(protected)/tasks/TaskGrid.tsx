@@ -45,6 +45,7 @@ export interface GridTask {
   chain?: ChainPositionResult | null;
   attemptCurrent?: number | null;
   attemptTotal?: number | null;
+  mismatchCount?: number;
   taskType?: TaskType | null;
   taskClass?: string | null;
   parentTaskId?: string | null;
@@ -124,6 +125,7 @@ function renderTaskCard(
         workerUpdatedAt={task.workerUpdatedAt}
         attemptCurrent={task.attemptCurrent}
         attemptTotal={task.attemptTotal}
+        mismatchCount={task.mismatchCount}
         runnerName={task.runnerName}
         {...gridTaskPrProps(task)}
         taskType={task.taskType}

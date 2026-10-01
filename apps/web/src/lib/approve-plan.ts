@@ -5,12 +5,13 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
-import type { PlanStep, TaskSubjectAnchor } from '@buildd/shared';
+import type { PathDeclaration, PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
 import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
 import { dispatchPlanChildTask } from './task-dispatch';
+import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -97,6 +98,39 @@ export interface ApprovePlanResult {
 
 function arraysEqual(a: number[], b: number[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Trim, strip trailing separators, drop blanks and duplicates. Order-preserving. */
+function normalizeStepManifest(paths: unknown): string[] {
+  if (!Array.isArray(paths)) return [];
+  const out: string[] = [];
+  for (const raw of paths) {
+    if (typeof raw !== 'string') continue;
+    const p = raw.trim().replace(/\/+$/, '');
+    if (p && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * The child's `pathManifest` + `pathDeclaration`. `docFixScope` (non-null for a
+ * doc-fix proposal child) outranks the step's own manifest; a step with no
+ * usable manifest files with neither column, as before.
+ */
+function stepScope(step: PlanStep, planningTaskId: string, docFixScope: string[] | null) {
+  const manifest = docFixScope ?? normalizeStepManifest(step.pathManifest);
+  if (manifest.length === 0) return {};
+  return {
+    pathManifest: manifest,
+    pathDeclaration: {
+      declared: manifest,
+      source: 'creation' as const,
+      snapshotAt: new Date().toISOString(),
+      origin: docFixScope
+        ? { kind: 'doc_fix' as const, planningTaskId }
+        : { kind: 'plan_step' as const, planningTaskId, stepRef: step.ref },
+    } satisfies PathDeclaration,
+  };
 }
 
 /**
@@ -307,9 +341,15 @@ export async function approvePlan(
         roleSlug: stepRole,
         requiredCapabilities: step.requiredCapabilities ?? [],
         outputRequirement: step.outputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto' | undefined,
-        // A proposal child inherits the doc-fix task's scope so the §11
-        // dispatch injection fires on the same document it is finalizing.
-        ...(docFix?.specPath ? { pathManifest: task.pathManifest ?? [docFix.specPath] } : {}),
+        // Scope, in precedence order: a proposal child inherits the doc-fix
+        // task's scope so the §11 dispatch injection fires on the same document
+        // it is finalizing; otherwise the step's own declared manifest. Either
+        // way the declaration is snapshotted with where it came from, so a
+        // later narrowing (path-claim narrow, PR-scope reconcile) keeps the
+        // original for conformance and audit.
+        ...stepScope(step, planningTaskId, docFix?.specPath
+          ? ((task.pathManifest as string[] | null) ?? [docFix.specPath])
+          : null),
         dependsOn: [], // Updated in second pass
         // The plan's own phase structure, stored once and never updated.
         missionPhaseIndex: phase.missionPhaseIndex,
@@ -350,6 +390,22 @@ export async function approvePlan(
         },
       })
       .returning();
+
+    // Manifest provenance denominator (conflict-aware-orchestration.md §3).
+    {
+      const declared = (created as { pathManifest?: unknown } | undefined)?.pathManifest;
+      recordPathDeclaration({
+        result: 'succeeded',
+        provenance: docFix?.specPath ? 'doc_fix' : 'plan_step',
+        surface: 'approve-plan',
+        workspaceId: task.workspaceId ?? null,
+        missionId: task.missionId ?? null,
+        taskId: created.id,
+        callerOrigin: 'system',
+        pathCount: Array.isArray(declared) ? declared.length : 0,
+        detail: { shape: manifestShape(declared), planningTaskId },
+      });
+    }
 
     refToId[step.ref] = created.id;
     refToTitle[step.ref] = step.title;

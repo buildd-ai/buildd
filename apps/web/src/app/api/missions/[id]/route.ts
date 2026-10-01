@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
@@ -30,6 +31,12 @@ import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
+import {
+  SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH,
+  SURFACE_AUDIT_WAIVER_NOTE_TITLE,
+  surfaceAuditMissingReason,
+} from '@buildd/core/surface-audit';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -55,13 +62,13 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'tasks:read')) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
@@ -195,13 +202,13 @@ export async function PATCH(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
@@ -221,7 +228,7 @@ export async function PATCH(
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       integrationBranchEnabled, branchStrategy,
-      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, autoSurfaceAudit,
+      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, autoSurfaceAudit, surfaceAuditWaiver,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
       startMode, arm, executor, actorWorkerId } = body;
 
@@ -234,6 +241,21 @@ export async function PATCH(
     const actor = await resolveFeedActor({ user, apiAccount, actorWorkerId });
 
     const gateCaller = gateCallerOrigin({ apiAccount, user, workerId: actorWorkerId });
+
+    // A waiver is a person's call. An in-task agent or the engine cannot waive
+    // the check that exists to catch an unreviewed UI change.
+    let surfaceWaiverReason: string | null = null;
+    if (surfaceAuditWaiver !== undefined) {
+      if (typeof surfaceAuditWaiver !== 'string' || surfaceAuditWaiver.trim().length < SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH) {
+        return NextResponse.json({
+          error: `surfaceAuditWaiver must be a reason of at least ${SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH} characters (why no visual audit is needed for this mission)`,
+        }, { status: 400 });
+      }
+      if (actor.kind !== 'user' && actor.kind !== 'mcp') {
+        return NextResponse.json({ error: 'Only a person can waive the surface audit; an in-task agent cannot' }, { status: 403 });
+      }
+      surfaceWaiverReason = surfaceAuditWaiver.trim();
+    }
 
     if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {
       const error = `Invalid branchStrategy: must be one of ${BRANCH_STRATEGIES.join(', ')}`;
@@ -346,6 +368,27 @@ export async function PATCH(
       // completed → archived) passed or was audited at the time it first
       // closed, and re-checking here would just replay the same stale verdict.
       const wasAlreadyClosed = existing.status === 'completed' || existing.status === 'archived';
+
+      // Unlike the criteria gate above, which a person may override with a
+      // note, a mission that changed UI without a surface audit is refused
+      // outright: closing it as "done" is the failure this exists to stop. The
+      // way through is a recorded reason (surfaceAuditWaiver), supplied in this
+      // same request or already on the mission. Archiving is not gated — it
+      // also means "abandoned", and claims nothing shipped.
+      if (status === 'completed' && !wasAlreadyClosed && !surfaceWaiverReason) {
+        const gate = await evaluateSurfaceAuditGate(existing, await loadSurfaceAuditGateTasks(id)).catch(err => {
+          console.error(`[missions] surface-audit gate check failed for ${id.slice(0, 8)} (not blocking):`, err);
+          return null;
+        });
+        if (gate?.required) {
+          return NextResponse.json({
+            error: surfaceAuditMissingReason(gate.uiPaths, gate.source),
+            code: 'surface_audit_missing',
+            uiPaths: gate.uiPaths.slice(0, 20),
+          }, { status: 409 });
+        }
+      }
+
       if ((status === 'completed' || status === 'archived') && !wasAlreadyClosed) {
         const storedCriteria = Array.isArray(existing.goalCriteria) ? existing.goalCriteria : [];
         const storedVerdict = (existing.goalCriteriaState as { overall?: string } | null)?.overall ?? null;
@@ -667,6 +710,18 @@ export async function PATCH(
         .where(eq(taskSchedules.id, existing.scheduleId));
     }
 
+    // Written before the status change and not swallowed: a waiver that could
+    // not be recorded must not let the mission close on it.
+    if (surfaceWaiverReason) {
+      await postMissionFeedEvent({
+        missionId: id,
+        type: 'update',
+        title: SURFACE_AUDIT_WAIVER_NOTE_TITLE,
+        body: surfaceWaiverReason,
+        actor,
+      });
+    }
+
     const [updated] = await db
       .update(missions)
       .set(updateData)
@@ -735,6 +790,16 @@ export async function PATCH(
       await computeAndStoreFlightStripCache(id, { missionCompletedAt: updated?.completedAt ?? new Date() }).catch(e =>
         console.error(`[missions/patch] flight-strip cache compute failed for ${id}:`, e)
       );
+      // The "What shipped" record for a human completion: mechanical facts only,
+      // no author. Awaited because a serverless response can end before a
+      // floating promise does; the PR-file reads are capped at a few seconds and
+      // the wrapper never throws.
+      const { storeMissionShippedReportSafely } = await import('@/lib/mission-shipped-report');
+      await storeMissionShippedReportSafely(id, {
+        authorTaskId: null,
+        origin: 'manual',
+        completedAt: updated?.completedAt ?? new Date(),
+      });
     }
 
     // Opting a mission in has one side effect that cannot wait for the next
@@ -925,13 +990,13 @@ export async function DELETE(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 

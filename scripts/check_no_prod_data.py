@@ -99,25 +99,27 @@ UNITS = (
 # apart. Tenancy counts here are small, so without this the real risk is missed.
 PROD_CONTEXT = r"\bprod(?:uction)?\b|\blive\b|\bcurrently\b|\btotal\b|\bwe (?:have|had)\b|\bacross all\b"
 
+# A leading zero (`0223`) marks a migration index or zero-padded id, never a
+# quoted population, so `(?!0\d)` keeps "its own 0223 into the mission" out.
 # A big figure beside a data noun. `(?<!#)` keeps every squash subject's trailing
 # "(#1964)" out -- that alone was 162 hits on this repo's history.
 # `(?:/[\d,]+)?` catches the "N,NNN/N,NNN rows" form: the real disclosure that
 # prompted this check was written that way, and without it the slash defeats the
 # match entirely.
 COUNT_BIG = re.compile(
-    rf"(?<![\w.#-])({BIG})(?:\s*/\s*[\d,]+)?\s+(?!(?:{UNITS})\b)"
+    rf"(?<![\w.#-])(?!0\d)({BIG})(?:\s*/\s*[\d,]+)?\s+(?!(?:{UNITS})\b)"
     rf"(?:[a-z-]+\s+){{0,2}}?({NOUNS})\b",
     re.I,
 )
 # Any figure, however small, beside a tenancy noun.
 COUNT_TENANCY = re.compile(
-    rf"(?<![\w./#-])(\d+)(?:\s*/\s*[\d,]+)?\s+(?!(?:{UNITS})\b)"
+    rf"(?<![\w./#-])(?!0\d)(\d+)(?:\s*/\s*[\d,]+)?\s+(?!(?:{UNITS})\b)"
     rf"(?:[a-z-]+\s+){{0,2}}?({TENANCY})\b",
     re.I,
 )
 # A small figure beside a data noun, only in a production-flavoured sentence.
 COUNT_SMALL_IN_CONTEXT = re.compile(
-    rf"(?<![\w./#-])(\d{{2,3}})\s+(?!(?:{UNITS})\b)(?:[a-z-]+\s+){{0,2}}?({NOUNS})\b",
+    rf"(?<![\w./#-])(?!0\d)(\d{{2,3}})\s+(?!(?:{UNITS})\b)(?:[a-z-]+\s+){{0,2}}?({NOUNS})\b",
     re.I,
 )
 UUID_RE = re.compile(

@@ -2,12 +2,15 @@
  * Which calls may spend a team's provider key (a pay-per-token API key; runners
  * never use one, they work on their own subscription or seat).
  *
- * Three kinds of call site, each with its own rule:
+ * Four kinds of call site, each with its own rule:
  *
  * - **interactive** (`chat`): always on. It runs whenever a key resolves; there
  *   is no switch (`teams.chatDisabled` is deprecated and unread).
  * - **built_in** decision calls (task classification, the task category shadow
  *   check): low cost, no toggle. They run whenever a key resolves.
+ * - **opt_in** decision shadows (the task role shadow): off unless the team
+ *   row lists the capability in `teams.enabledDecisionShadows`. A new shadow
+ *   ships dark, and turning one on never turns on another.
  * - **server_feature** (goal grading, visual QA judgment, mission summaries):
  *   each has a runner path. The default follows the team's billing model: a
  *   pay-per-token team key → server-side; subscription only → runner. An admin
@@ -28,9 +31,12 @@ export type InferenceCapability =
   | 'mission_summary'
   | 'heartbeat_triage'
   | 'task_category'
+  | 'task_role_shadow'
+  | 'orchestration_manifest'
+  | 'orchestration_claim'
   | 'chat';
 
-export type CapabilityKind = 'interactive' | 'built_in' | 'server_feature';
+export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
 
 export interface CapabilityDescriptor {
   id: InferenceCapability;
@@ -85,6 +91,31 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'A decision model picks each task\'s category when it is confident. Never changes a category you set, or a review task.',
     costHint: '~$0.00002 per task',
   },
+  task_role_shadow: {
+    id: 'task_role_shadow',
+    kind: 'opt_in',
+    label: 'Task role shadow',
+    description: 'A decision model says which role it would give a task filed without one. Logged only; never changes the task.',
+    costHint: '~$0.00003 per task',
+  },
+  // Conflict-aware orchestration decisions (docs/design/conflict-aware-orchestration.md
+  // §5, packages/core/orchestration-decision.ts). Opt-in shadows: they ship dark,
+  // and opting in records suggestions only until a decision's applying cohort is
+  // raised from zero after a held-out readout.
+  orchestration_manifest: {
+    id: 'orchestration_manifest',
+    kind: 'opt_in',
+    label: 'Scope prediction shadow',
+    description: 'A decision model predicts which files a task filed without a scope will touch. Logged only until measured.',
+    costHint: '~$0.0001 per task',
+  },
+  orchestration_claim: {
+    id: 'orchestration_claim',
+    kind: 'opt_in',
+    label: 'Hold/start shadow',
+    description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
+    costHint: '~$0.00003 per check',
+  },
   chat: {
     id: 'chat',
     kind: 'interactive',
@@ -128,9 +159,14 @@ function storedMode(modes: unknown, feature: ServerFeature): FeatureMode | null 
   return v === 'server' || v === 'runner' ? v : null;
 }
 
+/** The opt-in capabilities. Only these may be listed in `teams.enabledDecisionShadows`. */
+export const OPT_IN_CAPABILITIES = ALL_INFERENCE_CAPABILITIES.filter(c => INFERENCE_CAPABILITIES[c].kind === 'opt_in');
+
 /** The team columns the gate reads. */
 export interface InferenceGate {
   featureModes?: unknown;
+  /** `teams.enabledDecisionShadows`: the opt_in capabilities this team turned on. */
+  enabledDecisionShadows?: unknown;
 }
 
 /**
@@ -142,6 +178,9 @@ export function isInferenceAllowed(capability: InferenceCapability, gate: Infere
   const d = INFERENCE_CAPABILITIES[capability];
   if (!d) return false;
   if (d.kind === 'built_in' || d.kind === 'interactive') return true;
+  if (d.kind === 'opt_in') {
+    return Array.isArray(gate.enabledDecisionShadows) && gate.enabledDecisionShadows.includes(capability);
+  }
   return storedMode(gate.featureModes, capability as ServerFeature) !== 'runner';
 }
 
@@ -172,4 +211,21 @@ export function normalizeFeatureModes(input: unknown): FeatureModes | null {
     if (m) out[f] = m;
   }
   return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Validate an operator-supplied `teams.enabledDecisionShadows`: a list of
+ * opt_in capability ids, or null. Deduped; empty stores as null, so the column
+ * has one "none enabled" form. An unknown or non-opt_in id is an error, never
+ * silently dropped: a typo would otherwise read as "enabled" to the operator.
+ */
+export function normalizeDecisionShadows(input: unknown): { ok: true; value: string[] | null } | { ok: false; error: string } {
+  if (input === null) return { ok: true, value: null };
+  if (!Array.isArray(input)) return { ok: false, error: 'enabledDecisionShadows must be an array of capability ids, or null' };
+  const bad = input.filter(v => typeof v !== 'string' || !(OPT_IN_CAPABILITIES as string[]).includes(v));
+  if (bad.length > 0) {
+    return { ok: false, error: `enabledDecisionShadows accepts only opt-in capabilities (${OPT_IN_CAPABILITIES.join(', ')}); got ${bad.map(v => JSON.stringify(v)).join(', ')}` };
+  }
+  const value = [...new Set(input as string[])];
+  return { ok: true, value: value.length > 0 ? value : null };
 }

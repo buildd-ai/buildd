@@ -6,6 +6,8 @@ import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -19,11 +21,14 @@ import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpe
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
 import { recordTaskAreaOutcome } from '@buildd/core/task-area-prediction-source';
+import { recordOrchestrationTouchLabel } from '@buildd/core/orchestration-ledger-source';
 import { detectCbmFleetDisabled, detectCbmEnforcedUnused, CBM_HEALTH_TERMINAL_STATUSES } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
+import { lineageStamp } from '@/lib/attempt-lineage';
+import { persistTaskEvidence } from '@/lib/task-evidence-store';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
@@ -35,12 +40,13 @@ import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
+import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
-import { parseReviewerOutput, applyConfidenceGate } from '@/lib/reviewer-output';
+import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
@@ -51,9 +57,11 @@ import {
   constructFallbackStructuredOutput,
 } from '@/lib/reviewer-prose-fallback';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { BASH_FAILURE_PATTERN, BASH_RECOVERED_PATTERN, BASH_TRACE_EXCERPT_MAX } from '@buildd/core/bash-failure-trace';
 import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
+import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -66,15 +74,19 @@ import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
-import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus } from '@buildd/shared';
+import type { LoopHistoryEntry, TaskHandoff, PathCollisionNotice } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
-import { claimObservedPaths } from '@buildd/core/path-claim';
+import { isReadOnlyReview } from '@/lib/read-only-review';
+import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { acquireObservedPaths } from '@buildd/core/path-claim';
+import { recordPathCollisionDeferral } from '@/lib/path-collision-deferral';
+import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
@@ -525,7 +537,8 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may read only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // GET also accepts the dashboard session (the in-app chat reads worker
   // milestones as the signed-in user). PATCH stays worker-key-only. A key,
   // when present, is authoritative.
@@ -549,6 +562,10 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // The workspace row carries the webhook dispatch bearer token; neither a
+  // team member reading a worker nor a cloud container has any use for it.
+  const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
+
   if (!account) {
     // Session: membership of the worker workspace's team, as on the dashboard.
     // Outside it the worker does not exist for this caller.
@@ -556,19 +573,14 @@ export async function GET(
     if (!access) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    // The workspace row carries the webhook dispatch bearer token; a team
-    // member reading a worker has no use for it.
-    const workspace = worker.workspace
-      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
-      : worker.workspace;
-    return NextResponse.json({ ...worker, workspace });
+    return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(worker);
+  return NextResponse.json(account.taskScope ? redacted() : worker);
 }
 
 // PATCH /api/workers/[id] - Update worker status
@@ -580,7 +592,8 @@ export async function PATCH(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may update only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -598,7 +611,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -807,6 +820,15 @@ export async function PATCH(
     // Passive observed-touches: incremental list from git diff --name-only on the runner.
     // Server accumulates into workers.observedTouches for §6d collision detection.
     touchedPaths,
+    // Runner pre-push/completion sweep: re-offer every touchedPaths entry for
+    // lease, not only the ones new to observedTouches (see auto-lease below).
+    checkpointSweep,
+    // Enforce-mode path claims: the checkpoint collision a `Deferred:` failure
+    // is based on (lib/path-collision-deferral.ts). Ignored on anything else.
+    pathCollision: reportedPathCollision,
+    // Path-claim calls the runner let through degraded since its last report
+    // (a delta) — the declaration denominator, conflict-aware-orchestration.md §3.
+    pathClaimDegraded: reportedPathClaimDegraded,
     // Set by the runner's startup reconciliation (worker-sync.ts
     // restoreWorkersFromDisk) when it finds a local session whose process died
     // without ever reporting a terminal status — never sent by a live session.
@@ -916,7 +938,12 @@ export async function PATCH(
         taskId: worker.taskId,
         pattern: String(t.pattern).slice(0, 100),
         // Sensitive: drop excerpt prose, keep only pattern/source/ts for structured analysis
-        excerpt: isSensitive ? '' : String(t.excerpt).slice(0, 500),
+        excerpt: isSensitive
+          ? ''
+          : String(t.excerpt).slice(
+              0,
+              t.pattern === BASH_FAILURE_PATTERN || t.pattern === BASH_RECOVERED_PATTERN ? BASH_TRACE_EXCERPT_MAX : 500,
+            ),
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
@@ -1166,6 +1193,23 @@ export async function PATCH(
         ? [...observed, ...touchedPaths.filter((p: unknown): p is string => typeof p === 'string')]
         : observed;
       await recordTaskAreaOutcome(worker.taskId, finalPaths);
+      // Final touched-file label for orchestration decisions (conflict-aware
+      // orchestration §5), from the same observation, before the clear. Writes
+      // only for a task a decision looked at; never throws into this PATCH.
+      try {
+        await recordOrchestrationTouchLabel({
+          taskId: worker.taskId,
+          workspaceId: worker.workspaceId,
+          workerId: worker.id,
+          workerStatus: status,
+          paths: finalPaths,
+          prNumber: worker.prNumber ?? null,
+          headSha: worker.lastCommitSha ?? null,
+          baseRef: worker.prBaseRef ?? null,
+        });
+      } catch (err) {
+        console.warn(`[Worker ${id}] orchestration touch label failed (non-fatal):`, err);
+      }
     }
     updates.observedTouches = null;
   } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {
@@ -1177,6 +1221,20 @@ export async function PATCH(
     if (merged.length > 500) {
       console.warn(`[Worker ${id}] observedTouches cap hit (${merged.length}) — truncating to 500`);
       updates.observedTouches = merged.slice(0, 500);
+      // A path past the cap is neither recorded nor leased: say so on the
+      // ledger, or a task over the cap loses path-claim coverage silently.
+      const dropped = merged.slice(500);
+      fireGateEvent({
+        gate: GATE_SLUGS.PATH_CLAIM,
+        surface: 'PATCH /api/workers/[id]',
+        outcome: 'warned',
+        reason: 'observed touches past the 500-path cap were not recorded or leased: path-claim enforcement degraded',
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        callerOrigin: 'worker',
+        detail: { cap: 500, dropped: dropped.length, sample: dropped.slice(0, 10) },
+      });
     } else {
       updates.observedTouches = merged;
     }
@@ -1194,7 +1252,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1316,6 +1374,24 @@ export async function PATCH(
     // contract instead of skipping the check outright.
     const isReviewerTask = terminalTaskRow[0]?.category === 'review'
       && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
+
+    // An interactive (claim_task, runner = 'mcp') reviewer calls complete_task
+    // itself and can still read the response, so refuse a malformed verdict here
+    // with the allowed values instead of accepting the call and failing the
+    // worker afterwards. A runner-reported completion has no agent turn left to
+    // read a refusal, so it keeps the requeue-once contract guard further down.
+    if (isReviewerTask && worker.runner === 'mcp') {
+      const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
+      if (submitted && typeof submitted === 'object' && submitted.verdict) {
+        const parsed = parseReviewerOutput(submitted);
+        if (!parsed.ok) {
+          return NextResponse.json({
+            error: `Review verdict not recorded: ${parsed.reason}. Call complete_task again with structuredOutput { verdict: ${REVIEWER_VERDICTS.map((v) => `"${v}"`).join(' | ')}, confidence: <number 0-1>, summary: <string> }.`,
+            hint: 'structuredOutput.verdict',
+          }, { status: 400 });
+        }
+      }
+    }
 
     // A bookkeeping task (heartbeats, criteria evaluators, plan-rejection
     // replans — see packages/core/db/schema.ts taskClass) reports its outcome
@@ -2049,6 +2125,33 @@ export async function PATCH(
         .update(tasks)
         .set({ status: 'pending', claimedBy: null, claimedAt: null, expiresAt: null, updatedAt: new Date() })
         .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+      // An enforce-mode path collision: make the requeue wait for the holder
+      // (collided path joins the manifest, so the claim route's lease
+      // backstop defers it) and resume from the pushed checkpoint.
+      if (reportedPathCollision && typeof reportedPathCollision === 'object') {
+        const recorded = await recordPathCollisionDeferral({
+          taskId: worker.taskId,
+          collision: reportedPathCollision,
+          branch: worker.branch ?? null,
+        });
+        if (recorded) {
+          fireGateEvent({
+            gate: GATE_SLUGS.PATH_CLAIM,
+            surface: 'PATCH /api/workers/[id]',
+            outcome: 'deferred',
+            reason: 'checkpoint path collision: task deferred behind the holder',
+            workspaceId: worker.workspaceId,
+            taskId: worker.taskId,
+            workerId: worker.id,
+            callerOrigin: 'worker',
+            detail: {
+              path: (reportedPathCollision as Record<string, unknown>).path ?? null,
+              blockingTaskId: (reportedPathCollision as Record<string, unknown>).blockingTaskId ?? null,
+              source: (reportedPathCollision as Record<string, unknown>).source ?? null,
+            },
+          });
+        }
+      }
     }
     isBudgetReset = true; // reuse the "held for retry" machinery (no fail notif, re-broadcast pending)
   }
@@ -2826,7 +2929,11 @@ export async function PATCH(
       // this PATCH's values merged over the row, after the budget check (a
       // budget wall is the more specific diagnosis). A turns-less PATCH
       // auto-increments the row by one, so count that turn here too.
+      // Never for an interactive (claim_task, runner = 'mcp') worker: no runner
+      // streams turns or spend for it, so its zeros say nothing about whether a
+      // session died — judging it by this shape discarded real verdicts.
       const isSilentStartCompletion = status === 'completed' && !shouldAutoRetry && !completionBudgetError &&
+        worker.runner !== INTERACTIVE_WORKER_RUNNER &&
         isSilentStartShape({
           turns: typeof updates.turns === 'number'
             ? updates.turns
@@ -2936,6 +3043,9 @@ export async function PATCH(
       const hasVerdictKey = Boolean((body.structuredOutput as { verdict?: unknown } | undefined)?.verdict);
       let parsedReview = isReviewerCompletion ? parseReviewerOutput(body.structuredOutput) : null;
       let reviewContractViolation = isReviewerCompletion && parsedReview?.ok === false;
+      // Persist the canonical spelling (request_changes → request-changes), not
+      // the variant the agent typed.
+      if (parsedReview?.ok) body.structuredOutput = parsedReview.output;
       // Prose (no verdict at all) and a malformed verdict fail the same
       // contract; only the message differs.
       const malformedVerdictReason = reviewContractViolation && hasVerdictKey && parsedReview?.ok === false
@@ -3314,6 +3424,15 @@ export async function PATCH(
           fireMissionReleaseIfComplete(worker.workspaceId, taskMissionId, worker.taskId, id)
             .catch((err) => console.error(`[Worker ${id}] Mission release check failed:`, err));
         }
+      }
+
+      // Evidence: a compact record of why the task failed, or of the caveat on a
+      // success, so "did it fail, why" is answerable from buildd alone. Skipped
+      // when the task is going back to the queue (no terminal outcome yet).
+      // Awaited — a serverless function may freeze an un-awaited write — and
+      // contained: it never throws.
+      if (!shouldAutoRetry && loopDispatchResult?.kind !== 'requeue') {
+        await persistTaskEvidence(worker.taskId, id, { isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
@@ -3867,6 +3986,17 @@ export async function PATCH(
     await releaseAndNotify(worker.taskId, releaseReason);
   }
 
+  // A fix attempt (review fix, CI retry) just ended. The claim route wrote
+  // `Fixing` on the PR comment; close it here, or the comment keeps a spinner
+  // on a task that is no longer running. A later red CI result appends its own
+  // entry after this one. Only on the transition into a terminal status.
+  if (isTerminalStatus && worker.taskId && terminalTaskRow[0] && !isTerminalWorkerStatus(worker.status)) {
+    await announceFixEnded(
+      { id: worker.taskId, workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+      taskCancelledUnderSession ? 'cancelled' : status === 'completed' ? 'completed' : 'failed',
+    );
+  }
+
   // Mission cost-budget gate: check whether the mission's cumulative spend has
   // crossed its costBudgetUsd cap. Only fires on terminal worker status so we
   // read a stable, post-update cost from the DB. Never kills running workers —
@@ -3940,22 +4070,83 @@ export async function PATCH(
   //     fire once both sides have already edited the file.
   //
   // Leasing the touch converts §6d's after-the-fact report into a lock the next
-  // claim is deferred on. `claimObservedPaths` drops regenerable paths (a
-  // generated file is not a mutex) and the sentinel; release is already keyed to
+  // claim is deferred on. `claimObservedPaths` goes through the same locked
+  // acquisition as check_path_claim, so it never leases a path another live
+  // task holds, nor anything for a task that has closed. It drops regenerable
+  // paths (a generated file is not a mutex) and the sentinel; release is keyed to
   // taskId, so every terminal signal frees these with the correct reason —
   // merged / pending_merge / abandoned — with no new plumbing.
   //
   // Fire-and-forget: a lease is a coordination nicety, the progress report is
   // the contract, so a failure here must never reject the sync.
-  if (newlyObservedPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+  //
+  // A read-only reviewer is skipped: it checks out the PR branch, so the runner
+  // reports the whole PR diff as touched, and it never edits any of it. A
+  // reviewer *fix* attempt is not a review and still leases.
+  //
+  // A path the acquisition could not lease because another live task holds it
+  // was already written: that is a checkpoint collision
+  // (conflict-aware-orchestration.md §2). It comes back on the response as
+  // `pathCollisions`, naming the holder, so an enforcing runner stops and
+  // defers. Advisory runners only log it; §6d below still messages the holder.
+  let pathCollisions: PathCollisionNotice[] = [];
+  // A checkpoint sweep (pre-push/completion) re-offers everything it saw: an
+  // earlier acquisition that failed or lost a race left the path in
+  // observedTouches without a lease, and the diff-against-column rule would
+  // never offer it again — yet this is the sweep right before it ships.
+  // Own leases are no-ops in acquireObservedPaths.
+  // Only recorded paths: a lease must always be visible in observedTouches,
+  // so an incoming path past the cap (warned above) is not offered.
+  const recordedTouches = new Set(Array.isArray(updates.observedTouches) ? (updates.observedTouches as string[]) : []);
+  const offeredPaths = checkpointSweep === true && Array.isArray(touchedPaths)
+    ? [...new Set((touchedPaths as unknown[]).filter((p): p is string => typeof p === 'string' && recordedTouches.has(p)))]
+    : newlyObservedPaths;
+  if (offeredPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
     try {
-      const leased = await claimObservedPaths(worker.workspaceId, worker.taskId, newlyObservedPaths);
+      const leaseTask = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { category: true, context: true },
+      });
+      const { inserted: leased, blocked } = isReadOnlyReview(leaseTask?.category, leaseTask?.context)
+        ? { inserted: [] as string[], blocked: [] as Array<{ path: string; blockingTaskId: string; blockingPath: string }> }
+        : await acquireObservedPaths(worker.workspaceId, worker.taskId, offeredPaths);
       if (leased.length > 0) {
         console.log(`[path-claim] auto-lease: worker ${id} holds ${leased.length} observed path(s) for task ${worker.taskId}`);
+      }
+      // Declaration denominators (conflict-aware-orchestration.md §3).
+      recordPathDeclaration({
+        result: blocked.length > 0 ? 'denied' : 'succeeded', provenance: 'observed', surface: 'PATCH /api/workers/[id]',
+        workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: id, callerOrigin: 'worker',
+        pathCount: newlyObservedPaths.length, detail: { leased: leased.length, blocked: blocked.length },
+      });
+      if (blocked.length > 0) {
+        const holderIds = [...new Set(blocked.map(b => b.blockingTaskId))];
+        const holders = await db.query.tasks.findMany({
+          where: inArray(tasks.id, holderIds),
+          columns: { id: true, title: true },
+        }).catch(() => [] as Array<{ id: string; title: string | null }>);
+        const titles = new Map((holders ?? []).map(h => [h.id, h.title ?? null]));
+        pathCollisions = blocked.map(b => ({
+          path: b.path,
+          blockingTaskId: b.blockingTaskId,
+          blockingTaskTitle: titles.get(b.blockingTaskId) ?? null,
+          blockingPath: b.blockingPath,
+        }));
       }
     } catch (err) {
       console.error(`[path-claim] auto-lease failed for worker ${id}:`, err);
     }
+  }
+
+  if (
+    typeof reportedPathClaimDegraded === 'number' && Number.isInteger(reportedPathClaimDegraded)
+    && reportedPathClaimDegraded > 0 && reportedPathClaimDegraded <= 10_000 && worker.taskId
+  ) {
+    recordPathDeclaration({
+      result: 'degraded', provenance: 'hook', surface: 'PATCH /api/workers/[id]',
+      workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: id, callerOrigin: 'worker',
+      pathCount: reportedPathClaimDegraded,
+    });
   }
 
   // Worker self-classification (Rule K2-15/K2-16).
@@ -4333,6 +4524,7 @@ export async function PATCH(
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
     ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
+    ...(pathCollisions.length > 0 ? { pathCollisions } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
 
@@ -4711,6 +4903,49 @@ async function handleReviewerOutcomeIfNeeded(
         workspaceId,
       });
 
+      // This merge is authorised by a MODEL verdict, so it is bounded by the
+      // branch it lands in: a quarantined mission integration branch, never
+      // the workspace's trunk. Keyed off the PR's real base ref inside
+      // evaluateAutoMergeSafety — not off a workspace-level flag, so a
+      // workspace whose task PRs still target dev cannot inherit unattended
+      // merges by accident.
+      const approveBound = {
+        protectedBranches: protectedBaseBranches({
+          gitConfig: workspace.gitConfig,
+          releaseConfig: workspace.releaseConfig,
+        }),
+      };
+
+      // ONE landing call replaces the two attempts below once the workspace is
+      // in `enforce`. It evaluates the LIVE head (eventHeadSha null), not the
+      // SHA the reviewer read: if the branch moved since, carry-forward decides
+      // whether this approval still covers it, and a behind PR is refreshed
+      // once with a marker — there is no second attempt against a superseded
+      // head to misread its update-branch refusal as a conflict. The bound's
+      // fallback to the unbounded self-merge rule is a branch inside landPr.
+      const landingMode = resolveLandingMode(workspace.gitConfig);
+      if (landingMode !== 'off') {
+        const outcome = await landPr({
+          workspaceId,
+          installationId,
+          repoFullName,
+          prNumber,
+          eventHeadSha: null,
+          door: 'approve',
+          actor: { kind: 'system' },
+          mode: landingMode,
+          policy: approvePolicy!,
+          owner: { taskId: originalWorker.taskId ?? null, workerId: originalWorker.id },
+          bound: approveBound,
+          releaseConfig: workspace.releaseConfig ?? null,
+          gitConfig: workspace.gitConfig ?? null,
+        });
+        if (landingMode === 'enforce') {
+          console.log(`[reviewer] approve for PR #${prNumber}: landing outcome ${outcome.kind}`);
+          break;
+        }
+      }
+
       const boundMergeResult = await tryAutoMergeWorkerPr({
         installationId,
         repoFullName,
@@ -4718,18 +4953,8 @@ async function handleReviewerOutcomeIfNeeded(
         headSha,
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
         policy: approvePolicy!,
-        // This merge is authorised by a MODEL verdict, so it is bounded by the
-        // branch it lands in: a quarantined mission integration branch, never
-        // the workspace's trunk. Keyed off the PR's real base ref inside
-        // evaluateAutoMergeSafety — not off a workspace-level flag, so a
-        // workspace whose task PRs still target dev cannot inherit unattended
-        // merges by accident.
-        bound: {
-          protectedBranches: protectedBaseBranches({
-            gitConfig: workspace.gitConfig,
-            releaseConfig: workspace.releaseConfig,
-          }),
-        },
+        bound: approveBound,
+        surfaceOrderingConfig: workspace.gitConfig ?? null,
       });
 
       // The bound above only ever authorises landing in a quarantined mission
@@ -4756,6 +4981,7 @@ async function handleReviewerOutcomeIfNeeded(
           headSha,
           worker: { id: originalWorker.id, taskId: originalWorker.taskId },
           policy: approvePolicy,
+          surfaceOrderingConfig: workspace.gitConfig ?? null,
         });
         if (!selfMergeResult.merged) {
           console.log(
@@ -4894,6 +5120,7 @@ async function handleReviewerOutcomeIfNeeded(
             prNumber,
             prUrl,
             workerBranch,
+            ...lineageStamp(originalTask, [prNumber]),
           },
           pathManifest: originalTask.pathManifest,
           release: 'false',
@@ -4916,6 +5143,9 @@ async function handleReviewerOutcomeIfNeeded(
       if (workspace) {
         await dispatchNewTask(retryTask, workspace);
         console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);
+        // The retry inherited the original's manifest; shrink it (and the
+        // finished reviewer's leases) to the PR's actual diff at this head.
+        schedulePrScopeReconcile({ workspaceId, installationId, repoFullName, prNumber, expectedHeadSha: headSha });
         await appendPrActivity({
           installationId,
           repoFullName,

@@ -28,14 +28,22 @@ describe('synthesize', () => {
     expect(energy(b, 0, 1.99)).toBeLessThan(1e-9);
     expect(energy(b, 2, 2.2)).toBeGreaterThan(0);
   });
-  test('the tap has no tail: it is gone within a second', () => {
-    const b = synthesize([{ type: 'tap', at: 1 }], 4, { bed: false });
-    expect(energy(b, 2, 4)).toBeLessThan(energy(b, 1, 1.2) * 1e-4);
+  test('clicks, taps and ticks are 30-60 ms and leave nothing behind', () => {
+    for (const type of ['key', 'click', 'tap', 'pluck'] as const) {
+      const b = synthesize([{ type, at: 1 }], 2, { bed: false });
+      expect(energy(b, 1, 1.06)).toBeGreaterThan(0);
+      expect(energy(b, 1.07, 2)).toBeLessThan(1e-12);
+    }
   });
-  test('the chime rises: its three onsets are spaced, and the last lands last', () => {
+  test('a landing tile is near-silent next to a tap', () => {
+    const tap = synthesize([{ type: 'tap', at: 1 }, { type: 'pluck', at: 2 }], 3, { bed: false });
+    expect(energy(tap, 2, 2.06)).toBeLessThan(energy(tap, 1, 1.06) * 0.1);
+  });
+  test('completion is two soft notes: the second enters 140 ms later, and both have faded by 1.2 s', () => {
     const b = synthesize([{ type: 'chime', at: 1 }], 4, { bed: false });
-    expect(energy(b, 1.34, 1.4)).toBeGreaterThan(0);
-    expect(energy(b, 0.9, 0.999)).toBeLessThan(1e-9);
+    expect(energy(b, 0.9, 0.999)).toBeLessThan(1e-12);
+    expect(energy(b, 1.14, 1.3)).toBeGreaterThan(energy(b, 1.0, 1.02));
+    expect(energy(b, 2.3, 4)).toBeLessThan(energy(b, 1, 1.3) * 1e-3);
   });
   test('the same cues always make the same sound', () => {
     expect(synthesize(EVERY, 10)).toEqual(synthesize(EVERY, 10));

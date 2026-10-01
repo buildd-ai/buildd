@@ -58,7 +58,7 @@ steps:
     goto: /app/chat/{C1}
     waitFor: directive-card
     fullPage: true
-    highlightText: ["Keep the public API backward compatible."]
+    highlightText: ["From now on, keep the public API backward compatible."]
     hold: 900
 
   - id: s05-rule-saved

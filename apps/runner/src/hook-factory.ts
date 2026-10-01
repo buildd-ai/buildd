@@ -10,6 +10,36 @@ import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js
 import { BUILDD_MCP_TOOL_NAME } from './action-events';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
+import type { PathClaimResponse } from './buildd';
+import {
+  extractEditPaths,
+  normalizeWorktreePath,
+  isRuntimeExcluded,
+  isShipCommand,
+  describeHolder,
+  MAX_PENDING_PATHS,
+  type PathCollision,
+  type CollisionSource,
+} from './path-claim-enforcement.js';
+
+/**
+ * Hard ceiling on how long the path-claim hook holds an edit. The client's own
+ * request timeout is 200ms; this bounds the hook even if a request ignores its
+ * abort signal, so a hung coordination service can never freeze a session.
+ */
+export const PATH_CLAIM_HOOK_DEADLINE_MS = 300;
+
+/**
+ * Deny-reason parts once a checkpoint collision is recorded, spread into
+ * runnerDenial(). The runner is already checkpointing and deferring the task,
+ * so there is nothing for the agent to wait for.
+ */
+function collisionDenial(c: PathCollision, what: string): [string, string] {
+  return [
+    `${what} is refused: ${c.path}, which this task already changed, is held by ${describeHolder(c)}. The runner is saving a checkpoint of this worktree and deferring the task until that task releases it`,
+    'do not retry this call or make further edits; a later attempt resumes from the checkpoint',
+  ];
+}
 
 /**
  * The one shape of a PreToolUse denial. Every deny in this file goes through
@@ -38,6 +68,12 @@ export interface HookFactoryContext {
   buildd: BuilddClient;
   addMilestone: (worker: LocalWorker, milestone: Milestone) => void;
   emit: (event: any) => void;
+  /**
+   * A confirmed checkpoint collision in enforce mode. WorkerManager persists
+   * it, checkpoints the worktree and defers the task. Optional so tests and
+   * advisory callers need not supply it.
+   */
+  onPathCollision?: (worker: LocalWorker, collision: PathCollision) => void;
   pendingPermissionRequests: Map<string, {
     resolve: (result: any) => void;
     toolInput: Record<string, unknown>;
@@ -57,64 +93,212 @@ export class HookFactory {
   constructor(private ctx: HookFactoryContext) {}
 
   /**
-   * PreToolUse hook that auto-claims file paths at the moment of Edit/Write/MultiEdit.
-   * Calls POST /api/tasks/{taskId}/path-claim with a 200ms timeout.
+   * PreToolUse hook that acquires file paths at the moment of Edit/Write/MultiEdit
+   * (path-claims.md §6c, conflict-aware-orchestration.md §2).
    *
-   * FAIL-OPEN (non-negotiable): on timeout or network error the edit proceeds.
-   * Failed paths queue in worker.pendingPaths and are flushed on the next
-   * successful claim call (batched into that request) or sent via update_progress.
+   * Paths are made worktree-relative; an escape is never sent as a claim.
    *
-   * Advisory only: a 409 conflict response never blocks the edit.
+   * ADVISORY (default): a 409 never blocks the edit.
+   * ENFORCE (`gitConfig.pathClaimEnforcement: 'enforce'`): a confirmed live
+   * holder denies the edit and names the blocking task and path. After a
+   * recorded checkpoint collision every further edit is refused.
+   *
+   * FAIL-OPEN in both modes (non-negotiable): the call is bounded by
+   * PATH_CLAIM_HOOK_DEADLINE_MS; a timeout, network error or 5xx lets the edit
+   * proceed, queues the path in worker.pendingPaths and records degraded
+   * enforcement. Queued paths flush in their OWN request alongside the edit's,
+   * so a held queued path can never deny an unrelated free edit, and only the
+   * paths the server actually answered for leave the queue. A queued path the
+   * server now reports held was already written: in enforce mode that is a
+   * collision, handed to `onPathCollision`.
    */
   createPathClaimHook(worker: LocalWorker): HookCallback {
     return async (input) => {
       if ((input as any).hook_event_name !== 'PreToolUse') return {};
       const toolName = (input as any).tool_name as string;
-      if (toolName !== 'Edit' && toolName !== 'Write' && toolName !== 'MultiEdit') return {};
+      const rawPaths = extractEditPaths(toolName, (input as any).tool_input as Record<string, unknown>);
+      if (rawPaths.length === 0) return {};
 
-      const toolInput = (input as any).tool_input as Record<string, unknown>;
+      // A recorded collision refuses every further edit, without a network call.
+      const outcome = worker.pathClaimMode === 'enforce' && worker.pathCollision
+        ? null
+        : await this.claimEditPaths(worker, rawPaths);
+      if (worker.pathClaimMode === 'enforce' && worker.pathCollision) {
+        return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, 'this edit')));
+      }
+      return outcome ?? {};
+    };
+  }
 
-      // Extract target paths per tool type
+  /**
+   * The body of the path-claim hook: normalize, claim, rebuild the pending
+   * queue. Returns a deny result for a confirmed holder (enforce) or null. A
+   * collision is recorded on `worker.pathCollision`, not returned.
+   */
+  private async claimEditPaths(
+    worker: LocalWorker,
+    rawPaths: string[],
+  ): Promise<ReturnType<typeof denyPreToolUse> | null> {
+    {
+      const enforce = worker.pathClaimMode === 'enforce';
+      // Normalize to worktree-relative paths; collect escapes.
+      const root = worker.worktreePath || worker.sessionCwd;
       const newPaths: string[] = [];
-      if (toolName === 'MultiEdit') {
-        const edits = toolInput.edits as Array<Record<string, unknown>> | undefined;
-        if (Array.isArray(edits)) {
-          for (const edit of edits) {
-            const p = edit.file_path as string | undefined;
-            if (p) newPaths.push(p);
+      const escapes: string[] = [];
+      for (const raw of rawPaths) {
+        if (!root) { newPaths.push(raw); continue; }
+        const n = normalizeWorktreePath(raw, root);
+        if (n.ok) {
+          if (!isRuntimeExcluded(n.path) && !newPaths.includes(n.path)) newPaths.push(n.path);
+        } else if (n.reason === 'escape') {
+          escapes.push(raw);
+        }
+      }
+      if (enforce && escapes.length > 0) {
+        return denyPreToolUse(runnerDenial(
+          `${escapes.join(', ')} is outside this task's worktree, so it cannot be claimed for this task`,
+          root ? `edit the file under ${root}` : undefined,
+        ));
+      }
+      if (newPaths.length === 0) return null;
+
+      const pending = (worker.pendingPaths ?? []).filter(p => !newPaths.includes(p));
+      const [editResult, pendingResult] = await Promise.all([
+        this.claimWithinDeadline(worker.taskId, newPaths),
+        pending.length > 0 ? this.claimWithinDeadline(worker.taskId, pending) : Promise.resolve(null),
+      ]);
+
+      // Rebuild the queue path by path: keep what was not answered for.
+      let queue = [...(worker.pendingPaths ?? [])].filter(p => !newPaths.includes(p));
+      let collision: PathCollision | null = null;
+      if (pendingResult) {
+        if (pendingResult.kind === 'claimed') {
+          queue = queue.filter(p => !pending.includes(p));
+        } else if (pendingResult.kind === 'conflict') {
+          // All-or-nothing: nothing was granted. Held paths leave the queue
+          // (they will never be granted while held); the free ones retry.
+          const held = pendingResult.blocked ?? pending.map(path => ({
+            path, blockingTaskId: pendingResult.blockingTaskId, blockingPath: pendingResult.blockingPath ?? null,
+          }));
+          const heldSet = new Set(held.map(h => h.path));
+          queue = queue.filter(p => !heldSet.has(p));
+          console.log(`[Worker ${worker.id}] Path-claim: queued path(s) ${[...heldSet].join(', ')} now held by ${pendingResult.blockingTaskId}`);
+          if (enforce && held.length > 0) {
+            collision = {
+              path: held[0].path,
+              blockingTaskId: held[0].blockingTaskId,
+              blockingTaskTitle: pendingResult.blockingTaskTitle ?? null,
+              blockingPath: held[0].blockingPath ?? null,
+              source: 'hook_flush',
+              detectedAt: Date.now(),
+            };
           }
         }
-      } else {
-        const p = toolInput.file_path as string | undefined;
-        if (p) newPaths.push(p);
       }
 
-      if (newPaths.length === 0) return {};
-
-      // Combine pending paths with new paths for a single flush attempt
-      const pending = worker.pendingPaths ?? [];
-      const allPaths = [...new Set([...pending, ...newPaths])];
-
-      try {
-        const result = await this.ctx.buildd.claimPaths(worker.taskId, allPaths);
-        if (result !== null) {
-          // HTTP call reached the server — flush the pending queue regardless of 200/409
-          worker.pendingPaths = [];
-          if (result.claimed === false) {
-            console.log(`[Worker ${worker.id}] Path-claim advisory 409: ${result.blockingTaskId ?? 'unknown'} holds ${newPaths.join(', ')}`);
-          }
-        } else {
-          // Timeout or network error — fail-open, accumulate for next attempt
-          console.log(`[Worker ${worker.id}] Path-claim unavailable for ${newPaths.join(', ')} — queuing ${allPaths.length} path(s)`);
-          worker.pendingPaths = allPaths;
+      let denial: ReturnType<typeof denyPreToolUse> | null = null;
+      if (editResult.kind === 'unavailable') {
+        queue.push(...newPaths);
+        this.recordDegraded(worker, newPaths, editResult.reason);
+      } else if (editResult.kind === 'conflict') {
+        const blocked = editResult.blocked?.[0];
+        const path = blocked?.path ?? newPaths[0];
+        console.log(`[Worker ${worker.id}] Path-claim ${enforce ? 'DENY' : 'advisory'} 409: ${editResult.blockingTaskId} holds ${newPaths.join(', ')}`);
+        if (enforce) {
+          denial = denyPreToolUse(runnerDenial(
+            `${path} is being edited by ${describeHolder({
+              blockingTaskId: editResult.blockingTaskId,
+              blockingTaskTitle: editResult.blockingTaskTitle,
+              blockingPath: blocked?.blockingPath ?? editResult.blockingPath,
+            })}, and this workspace enforces path claims`,
+            'leave that file alone and work on the rest of the task. You are registered as a waiter; a path_released message arrives on a later update_progress check-in once it is free',
+          ));
         }
-      } catch {
-        // Unexpected error — fail-open
-        worker.pendingPaths = allPaths;
       }
 
-      // Never block the edit
-      return {};
+      if (queue.length > MAX_PENDING_PATHS) queue = queue.slice(queue.length - MAX_PENDING_PATHS);
+      worker.pendingPaths = queue;
+
+      if (collision) {
+        worker.pathCollision = collision;
+        this.ctx.onPathCollision?.(worker, collision);
+      }
+      return denial;
+    }
+  }
+
+  /** claimPaths, bounded by the hook's own deadline even if the client ignores its abort signal. */
+  private async claimWithinDeadline(taskId: string, paths: string[]): Promise<PathClaimResponse> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<PathClaimResponse>(resolve => {
+      timer = setTimeout(() => resolve({ kind: 'unavailable', reason: 'timeout' }), PATH_CLAIM_HOOK_DEADLINE_MS);
+    });
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => this.ctx.buildd.claimPaths(taskId, paths)).catch((): PathClaimResponse => ({ kind: 'unavailable', reason: 'error' })),
+        deadline,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private recordDegraded(worker: LocalWorker, paths: string[], reason: string) {
+    const first = !worker.pathClaimDegraded;
+    worker.pathClaimDegraded = (worker.pathClaimDegraded ?? 0) + 1;
+    console.log(`[Worker ${worker.id}] Path-claim unavailable (${reason}) for ${paths.join(', ')} — queued; enforcement degraded`);
+    if (first) {
+      this.ctx.addMilestone(worker, {
+        type: 'status',
+        label: `Path-claim service unavailable (${reason}): edits proceed, claims queued — enforcement degraded`,
+        ts: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * Checkpoint guard (enforce mode, Claude only): before a ship — `git push`,
+   * `gh pr create`, buildd `create_pr` or a non-error `complete_task` — sweep
+   * the worktree against the task's PR base and offer it to the server. A
+   * collision found there refuses the ship and starts the deferral; a sweep
+   * that could not reach the server lets it through (bounded fail-open).
+   *
+   * This is checkpoint enforcement, not a pre-edit guarantee: a Bash write is
+   * found here after it happened.
+   */
+  createPathCheckpointGuardHook(
+    worker: LocalWorker,
+    sweep: (worker: LocalWorker, source: CollisionSource) => Promise<PathCollision | null>,
+  ): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+      if (worker.pathClaimMode !== 'enforce') return {};
+      const toolName = (input as any).tool_name as string;
+      const toolInput = ((input as any).tool_input ?? {}) as Record<string, any>;
+
+      let source: CollisionSource | null = null;
+      let what = '';
+      if (toolName === 'Bash' && isShipCommand(toolInput.command)) {
+        source = 'pre_push'; what = 'this push';
+      } else if (toolName === BUILDD_MCP_TOOL_NAME) {
+        if (toolInput.action === 'create_pr') { source = 'pre_push'; what = 'create_pr'; }
+        else if (toolInput.action === 'complete_task' && !toolInput.params?.error) { source = 'completion'; what = 'complete_task'; }
+      }
+      if (!source) return {};
+
+      if (!worker.pathCollision) {
+        let found: PathCollision | null = null;
+        try {
+          found = await sweep(worker, source);
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] Checkpoint sweep failed (${source}) — allowing: ${err instanceof Error ? err.message : String(err)}`);
+          return {};
+        }
+        if (!found) return {};
+        worker.pathCollision = found;
+        this.ctx.onPathCollision?.(worker, found);
+      }
+      return denyPreToolUse(runnerDenial(...collisionDenial(worker.pathCollision, what)));
     };
   }
 

@@ -85,13 +85,14 @@ function sqlCoverage(sql: string) {
 // ids, timestamps-as-text, cron/timezone, colours, counts, numeric/uuid json.
 // Each entry is a decision; keep the reason next to anything non-obvious.
 const SAFE: Record<string, string[]> = {
-  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'decision_model',
+  teams: ['timezone', 'monthly_cost_month', 'budget_alerts_sent', 'enabled_inference_capabilities', 'inference_feature_modes', 'enabled_decision_shadows', 'decision_model',
     'chat_default_tier', // a chat tier name (CHAT_TIER_NAMES) or null
     'chat_retro'], // { lessons, proposals } booleans (apps/web/src/lib/chat-retro/settings.ts)
   team_members: ['chat_allowed_tool_groups', // tool-group keys from a fixed set (lib/chat/registry.ts TOOL_GROUPS)
     'chat_composer_prefs'], // { workspaceId: uuid | null, tier: CHAT_TIER_NAMES | null } (lib/chat/composer-prefs.ts)
   users: ['timezone'],
-  accounts: ['monthly_cost_month', 'budget_alerts_sent'],
+  // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
+  accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
     'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
   initiatives: ['context_artifact_ids'],
@@ -150,6 +151,7 @@ const SAFE: Record<string, string[]> = {
   ai_usage: ['tier', 'surface', 'kind', 'provider', 'model', 'plan_source'],
   model_tier_registry: ['model'],
   change_intents: ['head_sha'],
+  surface_reservations: ['head_sha', 'base_sha'],
   dark_check_alerts: ['check_name'],
   releases: ['head_sha', 'previous_sha', 'version'],
   release_tasks: ['commit_sha'],

@@ -110,6 +110,22 @@ mock.module('@/lib/pr-activity-comment', () => ({
   appendPrActivity: mockAppendPrActivity,
 }));
 
+// Surface merge ordering (lib/surface-ordering-door.ts): pass-through by default
+// so every other test here sees the unchanged door; the ordering describe below
+// drives it.
+let mockCheckSurfaceOrder = mock(async (_input: any) => ({ blocks: false, slot: null }) as any);
+let mockMergeInSurfaceSlot = mock(async (_verdict: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: (input: any) => mockCheckSurfaceOrder(input),
+  mergeInSurfaceSlot: (verdict: any, merge: () => Promise<any>) => mockMergeInSurfaceSlot(verdict, merge),
+}));
+
+// Post-refresh semantic hold (lib/base-refresh.ts): pass-through by default.
+let mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: false }) as any);
+mock.module('@/lib/base-refresh', () => ({
+  checkBaseRefreshHold: (input: any) => mockCheckBaseRefreshHold(input),
+}));
+
 import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure, classifyAutoMergeRefusal } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
@@ -2001,6 +2017,39 @@ describe('tryAutoMergeWorkerPr — review-verdict gate', () => {
     );
   });
 
+  it('passes the carry-forward hint so a diff-unchanged new head is not a stale approval', async () => {
+    greenPr();
+
+    await tryAutoMergeWorkerPr({
+      installationId: 7, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-sha', worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+    });
+
+    expect(mockGuardReviewVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({
+        carryForward: { installationId: 7, repoFullName: 'buildd-ai/buildd', baseRef: 'dev' },
+      }),
+    );
+  });
+
+  it('omits the hint when the PR base ref is not known', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+
+    await tryAutoMergeWorkerPr({
+      installationId: 7, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-sha', worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+    });
+
+    expect(mockGuardReviewVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ carryForward: null }),
+    );
+  });
+
   it('merges when the review approved — the approve path is unaffected', async () => {
     greenPr();
     mockGuardReviewVerdict.mockResolvedValue({ blocks: false, state: 'approved' });
@@ -2173,8 +2222,154 @@ describe('classifyAutoMergeRefusal', () => {
     ['PR head changed — ignoring stale merge trigger', 'stale_head'],
     ['could not verify the live PR head — refusing the merge', 'stale_head'],
     ['could not fetch PR files: timeout', 'github_read'],
+    ['semantic hold (rechecking): base commits merged in after the semantic check are not yet verified', 'semantic_hold'],
+    ['semantic hold (needs a person): base commits merged in after the check edit the same symbols', 'semantic_hold'],
     ['something new', 'other'],
   ])('%s → %s', (reason, cls) => {
     expect(classifyAutoMergeRefusal(reason)).toBe(cls as any);
+  });
+});
+
+// ── Surface merge ordering (conflict-aware-orchestration.md §3) ──────────────
+describe('tryAutoMergeWorkerPr — surface ordering gate', () => {
+  const CLEAN_GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const ORDINARY_FILES = [{ filename: 'apps/web/src/lib/foo.ts', additions: 4, deletions: 1 }];
+  const policy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } as MergePolicy;
+  const call = (extra: Record<string, unknown> = {}) => tryAutoMergeWorkerPr({
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prNumber: 42,
+    headSha: 'head-sha',
+    worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+    policy,
+    ...extra,
+  } as any);
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockClear();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }) as any);
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
+  });
+
+  it('defers before ANY GitHub read or branch mutation when an earlier PR holds the surface', async () => {
+    mockCheckSurfaceOrder = mock(async () => ({
+      blocks: true, kind: 'ordering', reason: 'waiting for PR #41 to close first', counterpartPrNumber: 41, surface: 'Drizzle migrations',
+    }) as any);
+    const result = await call();
+    expect(result).toEqual({ merged: false, reason: 'waiting for PR #41 to close first' });
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('asks the gate with the door, the live head and the workspace config', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    const gitConfig = { surfaceOrdering: 'enforce' };
+    await call({ surfaceOrderingConfig: gitConfig });
+    const asked = mockCheckSurfaceOrder.mock.calls[0][0];
+    expect(asked).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head-sha', door: 'auto-merge', callerOrigin: 'system', gitConfig });
+  });
+
+  it('merges inside the surface slot, and a refused slot never calls merge', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockMergeInSurfaceSlot = mock(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }) as any);
+    const result = await call();
+    expect(result).toEqual({ merged: false, reason: 'PR #40 is merging on Drizzle migrations right now' });
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('without a passed workspace id, the task\'s workspace is read once for the whole call', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockFindFirst = mock((opts: any) => (opts?.columns?.workspaceId && Object.keys(opts.columns).length === 1 ? { workspaceId: 'ws-1' } : null) as any);
+    await call({ worker: { id: 'worker-1', taskId: 'task-1' } });
+    const workspaceReads = mockFindFirst.mock.calls.filter(([opts]: any[]) => opts?.columns?.workspaceId && Object.keys(opts.columns).length === 1);
+    expect(workspaceReads).toHaveLength(1);
+    expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1' });
+  });
+
+  it('default (gate passes, no slot): merges exactly as before', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    expect(await call()).toEqual({ merged: true });
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Post-refresh semantic hold (conflict-aware-orchestration.md §4) ─────────
+
+describe('evaluateAutoMergeSafety — post-refresh semantic hold', () => {
+  const CLEAN_GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: false }) as any);
+  });
+
+  it('asks the hold with the PR, head, task and workspace gitConfig, and refuses when it holds', async () => {
+    mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: true, needsPerson: false, reason: 'semantic hold (rechecking): x' }) as any);
+    mockGithubApi.mockResolvedValueOnce({ check_runs: CLEAN_GREEN });
+    const gitConfig = { semanticRefresh: 'enforce' } as any;
+
+    const r = await evaluateAutoMergeSafety(...params, autoThresholdPolicy, { taskId: 'task-1', workspaceId: 'ws-1', workerId: 'w-1', gitConfig });
+
+    expect(r).toEqual({ ok: false, reason: 'semantic hold (rechecking): x' });
+    expect(mockCheckBaseRefreshHold).toHaveBeenCalledWith(expect.objectContaining({
+      installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head-sha', taskId: 'task-1', gitConfig,
+    }));
+    // Nothing past the hold is read.
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not consulted while CI is red (no wasted reads)', async () => {
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }] });
+    await evaluateAutoMergeSafety(...params, autoThresholdPolicy, { taskId: 'task-1', gitConfig: { semanticRefresh: 'enforce' } as any });
+    expect(mockCheckBaseRefreshHold).not.toHaveBeenCalled();
+  });
+});
+
+describe('tryAutoMergeWorkerPr — passes the workspace gitConfig to the semantic hold', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+    mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: true, needsPerson: true, reason: 'semantic hold (needs a person): y' }) as any);
+  });
+
+  it('a held PR is not merged', async () => {
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+    mockMergePullRequest.mockClear();
+    const gitConfig = { semanticRefresh: 'enforce' } as any;
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+      surfaceOrderingConfig: gitConfig,
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('semantic hold');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockCheckBaseRefreshHold).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1', gitConfig }));
   });
 });

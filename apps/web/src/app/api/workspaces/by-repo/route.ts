@@ -21,7 +21,7 @@ import { toPublicWorkspace } from '@/lib/workspace-public';
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   const user = account ? null : await getCurrentUser();
 
   if (!account && !user) {

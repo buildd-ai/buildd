@@ -10,11 +10,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, missionNotes, missions } from '@buildd/core/db/schema';
 import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { mergePullRequest, githubApi } from '@/lib/github';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -26,6 +28,46 @@ import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
+import { latestRunPerName } from '@/lib/auto-merge-bound';
+
+/**
+ * The dashboard's answer when the landing function did not merge. A refresh in
+ * flight is accepted work (202); everything else is a refusal the card shows.
+ */
+function dashboardLandingRefusal(outcome: Exclude<LandingOutcome, { kind: 'merged' }>): NextResponse {
+  switch (outcome.kind) {
+    case 'updating_branch':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        branchUpdated: true,
+        landing: outcome,
+        message: 'The branch was behind its base and has been updated. It merges when CI is green on the new head.',
+      }, { status: 202 });
+    case 'waiting_ci':
+      return NextResponse.json({
+        error: 'Not mergeable yet: checks or the review are still running on the PR head.',
+        landing: outcome,
+      }, { status: 409 });
+    case 'needs_fix':
+      return NextResponse.json({
+        error: `Merge refused: ${outcome.reason}`,
+        landing: outcome,
+        fix: outcome.fix,
+        fixTaskId: outcome.taskId ?? null,
+        ...(outcome.fix === 'ci_fix' ? { ciFailing: true } : {}),
+      }, { status: 409 });
+    case 'needs_human':
+      return NextResponse.json({
+        error: `Merge refused: ${outcome.reason}`,
+        landing: outcome,
+        cause: outcome.cause,
+        ...(outcome.cause === 'blocking_verdict' ? { reviewGateBlocked: true } : {}),
+      }, { status: 409 });
+  }
+}
 
 export async function POST(
   req: NextRequest,
@@ -57,13 +99,24 @@ export async function POST(
   // moment the human chose to override, so the audit trail records what they
   // actually saw rather than a fresh (and possibly since-changed) DB re-read.
   let override = false;
+  // Further things a person may knowingly override under `enforce` (the landing
+  // function's own overrides): the size cap and base freshness. Red CI and deny
+  // paths are never overridable.
+  let sizeOverride = false;
+  let freshnessOverride = false;
   let overrideEscalationReason: string | null = null;
+  // Set by the legacy review gate when it blocked and `override` bypassed it.
+  let reviewGateReason: string | null = null;
   try {
     const body = await req.json().catch(() => ({}));
     if (body?.workspaceId && typeof body.workspaceId === 'string') {
       rawWorkspaceId = body.workspaceId;
     }
-    if (body?.override === true) {
+    if (body?.overrides && typeof body.overrides === 'object') {
+      sizeOverride = body.overrides.size === true;
+      freshnessOverride = body.overrides.freshness === true;
+    }
+    if (body?.override === true || body?.overrides?.verdict === true) {
       override = true;
       if (typeof body.escalationReason === 'string' && body.escalationReason.trim().length > 0) {
         overrideEscalationReason = body.escalationReason.trim();
@@ -126,7 +179,7 @@ export async function POST(
     },
     with: {
       task: {
-        columns: { id: true, title: true, taskClass: true, missionId: true, status: true },
+        columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true },
       },
     },
   });
@@ -164,7 +217,7 @@ export async function POST(
   // GitHub to return 404 "Not Found" on the merge PUT.
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, worker.workspaceId),
-    columns: { id: true },
+    columns: { id: true, gitConfig: true, releaseConfig: true },
     with: {
       githubRepo: {
         columns: { fullName: true },
@@ -196,110 +249,25 @@ export async function POST(
     return NextResponse.json({ error: `cannot merge the mission PR yet: ${mergeGate.reason}` }, { status: 409 });
   }
 
-  // ── Review-verdict gate ─────────────────────────────────────────────────
-  //
-  // This route used to consult the review verdict at NO tier — its `override`
-  // flag existed only for the escalate card, so a plain Merge click landed a
-  // PR whose reviewer had just requested changes with nothing recorded.
-  //
-  // A human may still override; that is what `override: true` means here, and
-  // it is now recorded as a `bypassed` row in the gate ledger rather than
-  // passing unmarked. The head SHA is read live: `worker.lastCommitSha` lags a
-  // push, and lagging in that direction would make a stale verdict look current.
-  let reviewGateReason: string | null = null;
-  let liveHeadSha: string | null = null;
-  {
-    let liveBaseRef: string | null = null;
-    try {
-      const prForGate = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-      liveHeadSha = typeof prForGate?.head?.sha === 'string' ? prForGate.head.sha : null;
-      liveBaseRef = typeof prForGate?.base?.ref === 'string' ? prForGate.base.ref : null;
-    } catch (e) {
-      console.warn(`[pr-merge] could not read PR #${prNumber} head for the review gate:`, e);
-    }
-
-    if (!liveHeadSha) {
-      return NextResponse.json({ error: 'Could not verify the live PR head — retry the merge' }, { status: 409 });
-    }
-
-    const reviewGate = await guardReviewVerdict({
-      workspaceId: worker.workspaceId,
-      prNumber,
-      headSha: liveHeadSha,
-      surface: 'POST /api/prs/[prNumber]/merge',
-      taskId: worker.taskId ?? null,
-      workerId: worker.id,
-      callerOrigin: 'dashboard',
-      carryForward: liveBaseRef ? { installationId, repoFullName, baseRef: liveBaseRef } : null,
-    });
-
-    if (reviewGate.blocks) {
-      reviewGateReason = reviewGate.reason ?? 'a review verdict blocks this merge';
-      const gateDetail = {
-        prNumber,
-        headSha: liveHeadSha,
-        reviewState: reviewGate.state ?? null,
-        reviewKind: reviewGate.kind ?? null,
-        reviewTaskId: reviewGate.reviewTaskId ?? null,
-      };
-
-      if (!override) {
-        fireGateEvent({
-          gate: GATE_SLUGS.REVIEW_VERDICT,
-          surface: 'POST /api/prs/[prNumber]/merge',
-          outcome: 'rejected',
-          reason: reviewGateReason,
-          workspaceId: worker.workspaceId,
-          taskId: worker.taskId ?? null,
-          workerId: worker.id,
-          callerOrigin: 'dashboard',
-          detail: gateDetail,
-        });
-        return NextResponse.json(
-          {
-            error: `Merge refused: ${reviewGateReason}`,
-            reviewGateBlocked: true,
-            reviewState: reviewGate.state ?? null,
-            reviewKind: reviewGate.kind ?? null,
-            clearedBy: reviewGate.clearedBy ?? null,
-          },
-          { status: 409 },
-        );
-      }
-
-      // Overridden. Recorded BEFORE the merge attempt: the decision to bypass
-      // was made here whether or not GitHub then accepts the merge, and a
-      // bypass that only lands on success under-counts exactly the cases worth
-      // seeing. Every other guard below still runs unmodified.
-      fireGateEvent({
-        gate: GATE_SLUGS.REVIEW_VERDICT,
-        surface: 'POST /api/prs/[prNumber]/merge',
-        outcome: 'bypassed',
-        reason: reviewGateReason,
-        workspaceId: worker.workspaceId,
-        taskId: worker.taskId ?? null,
-        workerId: worker.id,
-        callerOrigin: 'dashboard',
-        detail: { ...gateDetail, overriddenBy: user.email },
-      });
-    }
-  }
-
   // Finalizes a merge that GitHub has confirmed happened — either the normal
   // success response, or a live re-check after an indeterminate one below.
   // Every side effect after the PUT itself lives here so both paths agree.
-  const finalizeSuccessfulMerge = async () => {
+  const finalizeSuccessfulMerge = async (opts: { missionFinalized?: boolean } = {}) => {
     await db
       .update(workers)
       .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
       .where(eq(workers.id, worker.id));
 
-    await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+    // landPr finalizes the mission PR itself when it merged.
+    if (!opts.missionFinalized) {
+      await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+    }
 
     // "Merge anyway" — record the override ONLY now that the merge actually
-    // succeeded. Every guard above (branch protection's required checks, the
-    // mission-PR branch-lifecycle gate) ran unmodified; override never skips
-    // them, it just means a failure past this point would have nothing to log.
+    // succeeded. Every other guard (red CI, branch protection's required
+    // checks, the mission-PR branch-lifecycle gate) ran unmodified; override
+    // never skips them, it just means a failure past this point would have
+    // nothing to log.
     if (override && worker.taskId) {
       // What the human actually overrode, most specific first: the text the
       // card was showing, then the gate's own reason (which names the blocking
@@ -370,8 +338,237 @@ export async function POST(
     return NextResponse.json({ ok: true, merged: true });
   };
 
+  // The live head and base, read once: the review gate, the CI guard and the
+  // landing function all evaluate this PR as GitHub has it now.
+  // `worker.lastCommitSha` lags a push, and lagging in that direction would
+  // make a stale verdict look current.
+  let liveHeadSha: string | null = null;
+  let liveBaseRef: string | null = null;
+  try {
+    const livePr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    liveHeadSha = typeof livePr?.head?.sha === 'string' ? livePr.head.sha : null;
+    liveBaseRef = typeof livePr?.base?.ref === 'string' ? livePr.base.ref : null;
+  } catch (e) {
+    console.warn(`[pr-merge] could not read PR #${prNumber} head for the review gate:`, e);
+  }
+
+  if (!liveHeadSha) {
+    return NextResponse.json({ error: 'Could not verify the live PR head — retry the merge' }, { status: 409 });
+  }
+
+  // ── The landing function (gitConfig.landing.mode) ───────────────────────
+  //
+  // Under `enforce` this door is one landPr call: carry-forward, the verdict,
+  // CI, deny paths and base freshness (a behind PR is refreshed and lands on
+  // its next green). `override` bypasses the review verdict only — exactly
+  // what it bypassed before; red CI and a deny path are never overridable.
+  // Under `shadow` the call only records what it would have done.
+  const landingMode = resolveLandingMode(workspace.gitConfig);
+  if (landingMode !== 'off') {
+    const missionForPolicy = worker.task?.missionId
+      ? await db.query.missions.findFirst({
+          where: eq(missions.id, worker.task.missionId),
+          columns: RESOLVE_POLICY_MISSION_COLUMNS,
+        })
+      : null;
+    const policy = resolvePolicy(workspace, missionForPolicy ?? null, worker.task ?? null, { baseRef: liveBaseRef });
+    const outcome = await landPr({
+      workspaceId: worker.workspaceId,
+      installationId,
+      repoFullName,
+      prNumber,
+      eventHeadSha: null,
+      door: 'dashboard',
+      actor: {
+        kind: 'human',
+        userId: user.id,
+        ...(override || sizeOverride || freshnessOverride
+          ? {
+              override: {
+                ...(override ? { verdict: true } : {}),
+                ...(sizeOverride ? { size: true } : {}),
+                ...(freshnessOverride ? { freshness: true } : {}),
+              },
+            }
+          : {}),
+      },
+      mode: landingMode,
+      policy,
+      owner: { taskId: worker.taskId ?? null, workerId: worker.id },
+      releaseConfig: workspace.releaseConfig ?? null,
+      gitConfig: workspace.gitConfig ?? null,
+    });
+    if (landingMode === 'enforce') {
+      return outcome.kind === 'merged'
+        ? finalizeSuccessfulMerge({ missionFinalized: true })
+        : dashboardLandingRefusal(outcome);
+    }
+  }
+
+  // ── Review-verdict gate ─────────────────────────────────────────────────
+  //
+  // This route used to consult the review verdict at NO tier — its `override`
+  // flag existed only for the escalate card, so a plain Merge click landed a
+  // PR whose reviewer had just requested changes with nothing recorded.
+  //
+  // A human may still override; that is what `override: true` means here, and
+  // it is now recorded as a `bypassed` row in the gate ledger rather than
+  // passing unmarked. The head SHA is read live: `worker.lastCommitSha` lags a
+  // push, and lagging in that direction would make a stale verdict look current.
+  {
+    const reviewGate = await guardReviewVerdict({
+      workspaceId: worker.workspaceId,
+      prNumber,
+      headSha: liveHeadSha,
+      surface: 'POST /api/prs/[prNumber]/merge',
+      taskId: worker.taskId ?? null,
+      workerId: worker.id,
+      callerOrigin: 'dashboard',
+      carryForward: liveBaseRef ? { installationId, repoFullName, baseRef: liveBaseRef } : null,
+    });
+
+    if (reviewGate.blocks) {
+      reviewGateReason = reviewGate.reason ?? 'a review verdict blocks this merge';
+      const gateDetail = {
+        prNumber,
+        headSha: liveHeadSha,
+        reviewState: reviewGate.state ?? null,
+        reviewKind: reviewGate.kind ?? null,
+        reviewTaskId: reviewGate.reviewTaskId ?? null,
+      };
+
+      if (!override) {
+        fireGateEvent({
+          gate: GATE_SLUGS.REVIEW_VERDICT,
+          surface: 'POST /api/prs/[prNumber]/merge',
+          outcome: 'rejected',
+          reason: reviewGateReason,
+          workspaceId: worker.workspaceId,
+          taskId: worker.taskId ?? null,
+          workerId: worker.id,
+          callerOrigin: 'dashboard',
+          detail: gateDetail,
+        });
+        return NextResponse.json(
+          {
+            error: `Merge refused: ${reviewGateReason}`,
+            reviewGateBlocked: true,
+            reviewState: reviewGate.state ?? null,
+            reviewKind: reviewGate.kind ?? null,
+            clearedBy: reviewGate.clearedBy ?? null,
+          },
+          { status: 409 },
+        );
+      }
+
+      // Overridden. Recorded BEFORE the merge attempt: the decision to bypass
+      // was made here whether or not GitHub then accepts the merge, and a
+      // bypass that only lands on success under-counts exactly the cases worth
+      // seeing. Every other guard below still runs unmodified.
+      fireGateEvent({
+        gate: GATE_SLUGS.REVIEW_VERDICT,
+        surface: 'POST /api/prs/[prNumber]/merge',
+        outcome: 'bypassed',
+        reason: reviewGateReason,
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id,
+        callerOrigin: 'dashboard',
+        detail: { ...gateDetail, overriddenBy: user.email },
+      });
+    }
+  }
+
+  // ── Red CI is never overridable ─────────────────────────────────────────
+  // This route used to rely on GitHub's branch protection alone, so a repo
+  // without required checks merged straight past a red build. A failing
+  // latest run on the live head refuses the merge, with or without
+  // `override`. An unreadable check list is left to GitHub, as before.
+  {
+    let failing: string[] = [];
+    try {
+      const runs = await githubApi(installationId, `/repos/${repoFullName}/commits/${liveHeadSha}/check-runs?per_page=100`);
+      failing = latestRunPerName(Array.isArray(runs?.check_runs) ? runs.check_runs : [])
+        .filter((r) => r.conclusion === 'failure' || r.conclusion === 'timed_out')
+        .map((r) => r.name);
+    } catch (e) {
+      console.warn(`[pr-merge] could not read check runs for PR #${prNumber}:`, e);
+    }
+    if (failing.length > 0) {
+      const reason = `CI is red on the PR head: ${failing.join(', ')}`;
+      fireGateEvent({
+        gate: GATE_SLUGS.MERGE_POLICY,
+        surface: 'POST /api/prs/[prNumber]/merge',
+        outcome: 'rejected',
+        reason,
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id,
+        callerOrigin: 'dashboard',
+        detail: { prNumber, headSha: liveHeadSha, failingChecks: failing, override },
+      });
+      return NextResponse.json({ error: `Merge refused: ${reason}`, ciFailing: failing }, { status: 409 });
+    }
+  }
+
+  // ── Post-refresh semantic hold (base-refresh.ts) ───────────────────────
+  // Every merge door consults it (docs/specs/base-refresh-classification.md).
+  // Under semanticRefresh `enforce`, a refresh that merged in base commits the
+  // semantic verdict never saw holds the PR until they are re-verified. With
+  // the check off it returns at once with no read, so the default path costs
+  // nothing. `override` is the review-verdict override only; a person who
+  // wants past a hold merges on GitHub or calls merge_pr with `force`.
+  // Before surface ordering, so a held PR never reserves a merge slot.
+  {
+    const hold = await checkBaseRefreshHold({
+      installationId,
+      repoFullName,
+      prNumber,
+      headSha: liveHeadSha,
+      taskId: worker.taskId ?? null,
+      workspaceId: worker.workspaceId,
+      workerId: worker.id,
+      missionId: (worker.task as { missionId?: string | null } | null)?.missionId ?? null,
+      gitConfig: workspace.gitConfig ?? null,
+    });
+    if (hold.blocks) {
+      return NextResponse.json(
+        { error: `Merge held: ${hold.reason}`, semanticHold: true, needsPerson: hold.needsPerson },
+        { status: 409 },
+      );
+    }
+  }
+
+  // ── Surface merge ordering (conflict-aware-orchestration.md §3) ─────────
+  // A person merging does not silently jump an earlier PR on a serialized
+  // surface. Off by default; there is no dashboard override for it.
+  const surfaceOrder = await checkSurfaceOrder({
+    workspaceId: worker.workspaceId,
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha: liveHeadSha,
+    gitConfig: workspace.gitConfig ?? null,
+    taskId: worker.taskId ?? null,
+    workerId: worker.id,
+    door: 'dashboard',
+    callerOrigin: 'dashboard',
+  });
+  if (surfaceOrder.blocks) {
+    return NextResponse.json(
+      { error: `Merge deferred: ${surfaceOrder.reason}`, surfaceOrderBlocked: true, waitingOnPr: surfaceOrder.counterpartPrNumber, surface: surfaceOrder.surface },
+      { status: 409 },
+    );
+  }
+
   // Perform the merge
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha);
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
+    mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha),
+  );
+  if ('refused' in slotted) {
+    return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });
+  }
+  const result = slotted.result;
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';

@@ -17,6 +17,8 @@ export type Stills = {
   box: (step: string, target: string, index?: number, viewport?: 'desktop' | 'phone') => Rect;
   /** Boxes with their recorded attributes (data-status/state/kind, text). */
   boxAttrs: (step: string, target: string, viewport?: 'desktop' | 'phone') => Array<{ rect: Rect; status?: string; state?: string; kind?: string; text?: string }>;
+  /** Any image in the repo (path from the repo root), e.g. a synthetic screenshot asset. */
+  file: (path: string) => ShotImage;
   /** A `highlightText` phrase: one rect per line, and its enclosing block. */
   text: (step: string, phrase: string, viewport?: 'desktop' | 'phone') => { rects: Rect[]; block: Rect };
 };

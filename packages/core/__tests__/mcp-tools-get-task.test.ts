@@ -145,6 +145,37 @@ describe('get_task', () => {
     expect(text).toContain('https://buildd.dev/share/abc');
   });
 
+  it('marks a shortened description and explains how to retrieve all instructions', async () => {
+    const description = 'x'.repeat(400) + '\n## Doctrine\nReview all policy sections.';
+    mockApi.mockResolvedValue({ id: TASK_ID, title: 'Review', status: 'assigned', description });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+    const text = result.content[0].text;
+    expect(text).toContain('x'.repeat(400) + `\n\n…[truncated ${description.length - 400} chars]`);
+    expect(text).toContain('fullDescription:true');
+    expect(text).not.toContain('## Doctrine');
+  });
+
+  it('returns the complete description when fullDescription is true', async () => {
+    const description = 'x'.repeat(400) + '\n## Doctrine\n## Workspace Policy\n## Escalation Rules\n## Proposed Policy Additions\nFinal instruction.';
+    mockApi.mockResolvedValue({ id: TASK_ID, title: 'Review', status: 'assigned', description });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID, fullDescription: true }, ctx());
+    expect(result.content[0].text).toContain(description);
+    expect(result.content[0].text).not.toContain('[truncated');
+  });
+
+  it.each([0, 399, 400])('preserves descriptions of %i chars without a truncation warning', async (length) => {
+    const description = 'x'.repeat(length);
+    mockApi.mockResolvedValue({ id: TASK_ID, title: 'Review', status: 'assigned', description });
+
+    const result = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx());
+    expect(result.content[0].text).not.toContain('[truncated');
+    expect(result.content[0].text).not.toContain('fullDescription:true');
+    if (length) expect(result.content[0].text).toContain(description);
+    else expect(result.content[0].text).not.toContain('## Description');
+  });
+
   it('handles task with no workers or artifacts', async () => {
     mockApi.mockResolvedValue({
       id: TASK_ID,
@@ -420,5 +451,127 @@ describe('get_task', () => {
 
     expect(result.content[0].text).not.toContain('not yet claimed by a worker');
     expect(result.content[0].text).not.toContain('no result snapshot available');
+  });
+});
+
+describe('get_task — evidence', () => {
+  const evidence = {
+    errorClass: 'test_failure',
+    keyLines: ['(fail) billing > rounds up', 'error: expected 2 received 3'],
+    lastFailingCommand: { command: 'bun run test', exitCode: 1 },
+    ciChecks: [{ name: 'unit', state: 'failed', url: 'https://ci.example/job/1' }],
+    diff: { files: 0, added: 0, removed: 0 },
+    links: { prUrl: 'https://example.invalid/pr/7' },
+    keyLinesSource: 'traces',
+    capturedAt: '2026-01-01T00:00:00.000Z',
+  };
+  const base = { id: TASK_ID, title: 'Fix rounding', priority: 3, workspace: { name: 'buildd' }, workers: [], artifacts: [] };
+
+  it('answers "why did it fail" inline: class, command, failing check and key lines', async () => {
+    const mockApi = mock().mockResolvedValue({ ...base, status: 'failed', result: { error: 'boom', evidence } });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('## Evidence');
+    expect(text).toContain('**Error class:** test_failure');
+    expect(text).toContain('`bun run test` (exit 1)');
+    expect(text).toContain('✗ unit — https://ci.example/job/1');
+    expect(text).toContain('(fail) billing > rounds up');
+  });
+
+  it('shows mismatch flags before the evidence', async () => {
+    const mockApi = mock().mockResolvedValue({
+      ...base, status: 'completed',
+      result: { summary: 'Pushed the fix', evidence, mismatch: [{ kind: 'pushed_without_diff', detail: 'diff is 0 files' }] },
+    });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('## ⚠️ Mismatch');
+    expect(text).toContain('diff is 0 files');
+    expect(text.indexOf('## ⚠️ Mismatch')).toBeLessThan(text.indexOf('## Evidence'));
+  });
+
+  it('prints nothing extra for a clean run', async () => {
+    const mockApi = mock().mockResolvedValue({ ...base, status: 'completed', result: { summary: 'Done' } });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_task', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).not.toContain('## Evidence');
+    expect(text).not.toContain('Mismatch');
+  });
+});
+
+describe('get_error_traces — evidence', () => {
+  it('returns the task\'s evidence with its traces', async () => {
+    const mockApi = mock().mockResolvedValue({
+      traces: [{ pattern: 'bash_nonzero_exit', excerpt: '$ bun run test [exit 1]\n(fail) x', source: 'Bash', ts: 't' }],
+      evidence: { errorClass: 'type_error', keyLines: ['a.ts(1,1): error TS2322'], diff: { files: 1, added: 1, removed: 0 }, links: {}, keyLinesSource: 'traces', capturedAt: 'x' },
+      mismatch: [],
+    });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_error_traces', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('bash_nonzero_exit');
+    expect(text).toContain('**Error class:** type_error');
+    expect(text).toContain('error TS2322');
+  });
+
+  it('still returns evidence when no trace was captured', async () => {
+    const mockApi = mock().mockResolvedValue({
+      traces: [],
+      evidence: { errorClass: 'test_failure', keyLines: ['(fail) from digest'], diff: { files: 0, added: 0, removed: 0 }, links: {}, keyLinesSource: 'ci_digest', capturedAt: 'x' },
+    });
+    const text = (await handleBuilddAction(mockApi as unknown as ApiFn, 'get_error_traces', { taskId: TASK_ID }, ctx())).content[0].text;
+    expect(text).toContain('No error traces');
+    expect(text).toContain('(fail) from digest');
+  });
+});
+
+describe('get_task — include validation and scheduling view', () => {
+  const api = (task: Record<string, unknown>) => mock(async () => ({ id: TASK_ID, title: 'Build step', status: 'pending', ...task })) as unknown as ApiFn;
+
+  it('rejects an unsupported include value instead of silently ignoring it', async () => {
+    const a = api({});
+    await expect(handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['workers', 'sheduling'] }, ctx()))
+      .rejects.toThrow(/unsupported: sheduling/);
+    expect(a).not.toHaveBeenCalled();
+  });
+
+  it('omits the scheduling section by default', async () => {
+    const out = await handleBuilddAction(api({ dependsOn: ['x'], tier: 'premium' }), 'get_task', { taskId: TASK_ID }, ctx());
+    expect(out.content[0].text).not.toContain('## Scheduling');
+  });
+
+  it('renders dependsOn, manifests, tier, verification command and spec source on request, without asking the server for it', async () => {
+    const a = api({
+      dependsOn: ['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'],
+      pathManifest: ['apps/web/src/a.ts', 'packages/core/b.ts'],
+      pathDeclaration: {
+        declared: ['apps/web/src/a.ts', 'packages/core/b.ts', 'docs/c.md'],
+        source: 'creation',
+        snapshotAt: '2026-10-01T00:00:00.000Z',
+        inferredDependsOn: ['bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'],
+        narrowings: [{ at: 'x', dropped: ['docs/c.md'], surface: 's', reason: null }],
+      },
+      pathClaimRevision: 2,
+      tier: 'premium',
+      complexity: 'normal',
+      kind: 'engineering',
+      context: { verificationCommand: 'bun run test', specSource: { specPath: 'docs/specs/x.md', planningTaskId: 'cccccccc-cccc-cccc-cccc-cccccccccccc' } },
+    });
+    const out = await handleBuilddAction(a, 'get_task', { taskId: TASK_ID, include: ['scheduling'] }, ctx());
+    const text = out.content[0].text;
+    expect(text).toContain('## Scheduling');
+    expect(text).toContain('**Depends on (2):** aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa, bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+    expect(text).toContain('**Path manifest (2):** apps/web/src/a.ts, packages/core/b.ts');
+    expect(text).toContain('**Declared manifest (creation):** apps/web/src/a.ts, packages/core/b.ts, docs/c.md');
+    expect(text).toContain('**Inferred dependsOn:** bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+    expect(text).toContain('**Narrowings:** 1');
+    expect(text).toContain('**Tier:** premium');
+    expect(text).toContain('**Verification command:** `bun run test`');
+    expect(text).toContain('**Spec source:** docs/specs/x.md (planning task cccccccc-cccc-cccc-cccc-cccccccccccc)');
+    // Scheduling is rendered from the task row; the server only expands workers/artifacts.
+    expect((a as any).mock.calls[0][0]).toBe(`/api/tasks/${TASK_ID}`);
+  });
+
+  it('states absent scheduling facts explicitly rather than omitting them', async () => {
+    const out = await handleBuilddAction(api({ dependsOn: [], pathManifest: null, tier: null }), 'get_task', { taskId: TASK_ID, include: ['workers', 'scheduling'] }, ctx());
+    const text = out.content[0].text;
+    expect(text).toContain('**Depends on:** none');
+    expect(text).toContain('**Path manifest:** none declared');
+    expect(text).toContain('**Tier:** unset');
   });
 });

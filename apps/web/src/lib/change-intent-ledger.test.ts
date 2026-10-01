@@ -35,7 +35,7 @@ describe('change-intent warning ledger', () => {
       expect(event).toMatchObject({ gate: 'change_intent', outcome: 'warned',
         workspaceId: 'workspace-test', missionId: 'mission-test', callerOrigin: 'system',
         surface: 'create_pr', reason: 'Change intent conflict surface overlap',
-        detail: { surfaces: ['schema', 'migrations'], currentPrNumber: 10, conflictingPrNumber: 9 },
+        detail: { surfaces: ['schema', 'migrations'], currentPrNumber: 10, conflictingPrNumber: 9, advisory: true },
       });
     }
   });

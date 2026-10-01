@@ -34,6 +34,8 @@ export interface PrCommitChecks {
   failure: { job?: string; test?: string; excerpt?: string } | null;
   /** What the next attempt did about it, in its own words. */
   fix?: string | null;
+  /** Why that next attempt itself ended as it did, and any mismatch between what it said and what was recorded. */
+  fixEvidence?: { errorClass: string; keyLines: string[]; mismatch: Array<{ kind: string; detail: string }> } | null;
   /** Check runs on this commit, when GitHub answered. */
   runs?: CiCheckRun[] | null;
 }
@@ -329,13 +331,22 @@ export function CommitChecksList({ commits }: { commits: PrCommitChecks[] }) {
               </div>
               <span className={`shrink-0 font-mono text-[13px] ${c.state === 'failed' ? 'text-status-error' : c.state === 'passed' ? 'text-status-success' : 'text-text-muted'}`}>{verdict}</span>
             </div>
-            {(c.failure?.excerpt || c.fix) && (
+            {(c.failure?.excerpt || c.fix || c.fixEvidence) && (
               <div className="mt-3 md:ml-[184px] border-l-4 border-status-error bg-surface-2 px-4 py-3 font-mono text-[12px] md:text-[13px] leading-relaxed">
                 {(c.failure?.job || c.failure?.test) && (
                   <div className="text-text-muted">{[c.failure.job, c.failure.test].filter(Boolean).join(' · ')}</div>
                 )}
                 {c.failure?.excerpt && <div className="mt-1 text-text-primary [overflow-wrap:anywhere]">{c.failure.excerpt}</div>}
                 {c.fix && <div className="mt-2 text-text-secondary [overflow-wrap:anywhere]">Fix: {c.fix}</div>}
+                {c.fixEvidence && (
+                  <div data-testid="pr-fix-evidence" className="mt-2 text-text-secondary [overflow-wrap:anywhere]">
+                    Fix attempt ended: <span className="text-status-error">{c.fixEvidence.errorClass}</span>
+                    {c.fixEvidence.keyLines[0] ? `: ${c.fixEvidence.keyLines[0]}` : ''}
+                  </div>
+                )}
+                {c.fixEvidence?.mismatch.map(m => (
+                  <div key={m.kind} data-testid="pr-fix-mismatch" className="mt-1 text-status-warning [overflow-wrap:anywhere]">⚠ {m.detail}</div>
+                ))}
               </div>
             )}
           </div>

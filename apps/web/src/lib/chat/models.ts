@@ -22,6 +22,7 @@ import type { ChatProvider } from '@buildd/shared';
 import { openRouterModelId } from './openrouter-id';
 import { resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
 import { gatewayModel } from '@builddai/ai-kit/models';
+import { createPublicGatewayFetcher } from '@buildd/core/net/fetch-public-gateway';
 
 export type ChatTier = Extract<Tier, 'budget' | 'standard' | 'premium'>;
 
@@ -47,9 +48,18 @@ export function languageModelFor(provider: ChatProvider, modelId: string, apiKey
 
 export { openRouterModelId };
 
-/** The planned model through a LiteLLM gateway, on its OpenAI-compatible API. */
-export function gatewayLanguageModel(gateway: LiteLLMGateway, provider: ChatProvider, modelId: string): LanguageModel {
-  return createOpenAI({ apiKey: gateway.apiKey, baseURL: gateway.baseURL })
+// One per process: it caches each gateway host's public-address check briefly.
+const gatewayFetch = createPublicGatewayFetcher();
+
+/** The planned model through a LiteLLM gateway, on its OpenAI-compatible API.
+ * Calls only reach public addresses and never follow redirects. */
+export function gatewayLanguageModel(
+  gateway: LiteLLMGateway,
+  provider: ChatProvider,
+  modelId: string,
+  fetchImpl: typeof fetch = gatewayFetch as typeof fetch,
+): LanguageModel {
+  return createOpenAI({ apiKey: gateway.apiKey, baseURL: gateway.baseURL, fetch: fetchImpl })
     .chat(gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, modelId));
 }
 

@@ -61,7 +61,7 @@ function fakeContainer() {
   };
 }
 
-function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response> } = {}) {
+function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response> } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const fc = fakeContainer();
   const fetches: Array<{ url: string; init: RequestInit }> = [];
@@ -85,6 +85,11 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
     installEgress: async () => {
       fc.calls.push('installEgress');
       if (opts.egressFails) throw new Error('interceptOutboundHttps failed');
+    },
+    mintTaskToken: async () => {
+      fc.calls.push('mintTaskToken');
+      if (opts.mintFails) throw new Error('POST /api/runner/task-token returned 503');
+      return 'bldt_test_task_token';
     },
     fetch: (async (url: string, init: RequestInit) => {
       fetches.push({ url, init });
@@ -132,11 +137,29 @@ describe('dispatch', () => {
     expect(env.GITHUB_TOKEN).toBeUndefined();
   });
 
+  test('security: the container holds the per-task token, never the runner key', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    const env = h.fc.starts[0]!.env;
+    expect(env.BUILDD_API_KEY).toBe('bldt_test_task_token');
+    expect(Object.values(env).join('\n')).not.toContain('bld_test_key');
+  });
+
+  test('a failed mint starts no container', async () => {
+    const h = harness({ mintFails: true });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.starts).toHaveLength(0);
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed' });
+    expect(h.state.error).toContain('task-token');
+  });
+
   test('telemetry: no OTLP endpoint means the container env is exactly buildContainerEnv (pinned)', async () => {
     const h = harness({ config: { OTEL_LOG_TOOL_DETAILS: '1', OTEL_TRACES_BETA: '1', OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json' } });
     h.sup.dispatch();
     await h.until(() => h.state.status === 'running');
-    expect(h.fc.starts[0]!.env).toEqual(buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test_key' }));
+    expect(h.fc.starts[0]!.env).toEqual(buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9' }, 'bldt_test_task_token'));
   });
 
   test('telemetry: an OTLP endpoint adds the Claude Code vars with this dispatch\'s task and attempt, never auth', async () => {

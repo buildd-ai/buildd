@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubRepos, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
@@ -148,7 +149,7 @@ export async function PATCH(
   // Support both session auth and API key auth
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {
@@ -212,7 +213,7 @@ export async function PATCH(
       .some(v => v !== undefined);
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
-        ? apiAccount.level === 'admin'
+        ? hasTokenRouteAdminAccess(apiAccount, req)
         : sessionRole === 'owner' || sessionRole === 'admin';
       if (!isAdmin) {
         return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
@@ -323,6 +324,52 @@ export async function PATCH(
           const path = result.error.issues[0]?.path.join('.') ?? '';
           return NextResponse.json(
             { error: `gitConfig.mergePolicy${path ? `.${path}` : ''}: ${msg}` },
+            { status: 400 },
+          );
+        }
+      }
+      // Path-claim enforcement opt-in: exact values only, so a truthy typo can
+      // never quietly turn edit denial on (or appear to and not).
+      if ('pathClaimEnforcement' in gitConfig) {
+        const mode = (gitConfig as Record<string, unknown>).pathClaimEnforcement;
+        if (mode !== null && mode !== 'advisory' && mode !== 'enforce') {
+          return NextResponse.json(
+            { error: "gitConfig.pathClaimEnforcement must be 'advisory', 'enforce' or null" },
+            { status: 400 },
+          );
+        }
+      }
+      // Surface merge ordering opt-in (conflict-aware-orchestration.md §3):
+      // exact values only, and the per-surface flags must be what they claim.
+      {
+        const gc = gitConfig as Record<string, unknown>;
+        if ('surfaceOrdering' in gc) {
+          const mode = gc.surfaceOrdering;
+          if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
+            return NextResponse.json(
+              { error: "gitConfig.surfaceOrdering must be 'off', 'shadow', 'enforce' or null" },
+              { status: 400 },
+            );
+          }
+        }
+        if ('semanticRefresh' in gc) {
+          const mode = gc.semanticRefresh;
+          if (mode !== null && mode !== 'off' && mode !== 'shadow' && mode !== 'enforce') {
+            return NextResponse.json(
+              { error: "gitConfig.semanticRefresh must be 'off', 'shadow', 'enforce' or null" },
+              { status: 400 },
+            );
+          }
+        }
+        const badSerialize = (list: unknown) =>
+          Array.isArray(list) && list.some((e) => e && typeof e === 'object' && 'serialize' in e && typeof (e as { serialize: unknown }).serialize !== 'boolean');
+        const badTriggers = Array.isArray(gc.sequenceNamespaces) && (gc.sequenceNamespaces as unknown[]).some((e) => {
+          const t = e && typeof e === 'object' ? (e as { triggers?: unknown }).triggers : undefined;
+          return t !== undefined && (!Array.isArray(t) || t.some((x) => typeof x !== 'string' || !x));
+        });
+        if (badSerialize(gc.conflictSurfaces) || badSerialize(gc.sequenceNamespaces) || badTriggers) {
+          return NextResponse.json(
+            { error: 'gitConfig surfaces: serialize must be a boolean and sequenceNamespaces[].triggers a list of paths' },
             { status: 400 },
           );
         }

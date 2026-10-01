@@ -75,7 +75,35 @@ mock.module('@buildd/core/db/schema', () => ({
   },
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
   missionNotes: { __name: 'missionNotes' },
+  missions: { id: 'id' },
 }));
+
+// The landing function — its decisions are covered in lib/pr-landing.test.ts;
+// here only the dashboard door's wiring is asserted. Mode resolution is the real rule.
+const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'head-A' }));
+mock.module('@/lib/pr-landing', () => ({
+  landPr: mockLandPr,
+  resolveLandingMode: (gitConfig: any) => {
+    const mode = gitConfig?.landing?.mode;
+    return mode === 'off' || mode === 'shadow' || mode === 'enforce' ? mode : 'shadow';
+  },
+}));
+
+// Surface merge ordering door. Default: ordering off — PASS, merge runs as-is.
+const SURFACE_PASS = { blocks: false as const, slot: null };
+const mockCheckSurfaceOrder = mock(async (_input: any) => SURFACE_PASS as any);
+const mockMergeInSurfaceSlot = mock(async (verdict: any, merge: () => Promise<any>) =>
+  verdict.blocks ? { refused: verdict.reason } : { result: await merge() },
+);
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: mockCheckSurfaceOrder,
+  mergeInSurfaceSlot: mockMergeInSurfaceSlot,
+}));
+
+// Post-refresh semantic hold (base-refresh.ts) — its decisions are covered in
+// lib/base-refresh.test.ts; here only that this door consults it. Default: pass.
+const mockCheckBaseRefreshHold = mock(async (_input: any): Promise<any> => ({ blocks: false }));
+mock.module('@/lib/base-refresh', () => ({ checkBaseRefreshHold: mockCheckBaseRefreshHold }));
 
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -423,8 +451,10 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
     expect(body.error).toMatch(/mergeable state|branch protection/i);
     // A definitive rejection never needs the live-state re-check. The one PR
     // read that does happen is the review gate's head-SHA lookup, which runs
-    // BEFORE the merge attempt — so exactly one call, not two.
-    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    // BEFORE the merge attempt — so exactly one PR read, not two. (The red-CI
+    // guard's check-runs read is a different endpoint.)
+    const prReads = mockGithubApi.mock.calls.filter((c: any[]) => /\/pulls\/42$/.test(c[1]));
+    expect(prReads).toHaveLength(1);
   });
 });
 
@@ -776,5 +806,306 @@ describe('POST /api/prs/[prNumber]/merge — review-verdict gate', () => {
     expect(res.status).toBe(200);
     expect(mockMergePullRequest).toHaveBeenCalled();
     expect(mockFireGateEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', () => {
+  const RED = { check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }] };
+  const enforceWorkspace = { ...workspace, gitConfig: { landing: { mode: 'enforce' } }, releaseConfig: null };
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'u@example.com' });
+    mockGetUserWorkspaceIds.mockReset();
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async (_i: number, path: string) =>
+      /\/check-runs/.test(path) ? RED : { head: { sha: 'head-A' }, base: { ref: 'dev' } });
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
+    mockWorkersUpdate.mockClear();
+    mockLandPr.mockReset();
+    mockLandPr.mockImplementation(async () => ({ kind: 'waiting_ci', headSha: 'head-A' }));
+  });
+
+  it('enforce: red CI is refused even with override — landPr says ci_fix, nothing merges', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    mockLandPr.mockImplementation(async () => ({ kind: 'needs_fix', fix: 'ci_fix', reason: 'CI checks still pending or failed: build' }));
+
+    const [req, ctx] = makeRequest('42', { override: true, escalationReason: 'looks fine to me' });
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.error).toContain('CI');
+    expect(data.fix).toBe('ci_fix');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    // The override reaches landPr as a verdict override only.
+    expect(mockLandPr.mock.calls[0]![0]).toMatchObject({
+      door: 'dashboard', mode: 'enforce', eventHeadSha: null,
+      actor: { kind: 'human', userId: 'u-1', override: { verdict: true } },
+      owner: { taskId: 't-1', workerId: 'w-1' }, workspaceId: 'ws-1', installationId: 12345678, repoFullName: 'org/repo',
+    });
+    expect(mockLandPr.mock.calls[0]![0].actor.override).toEqual({ verdict: true });
+  });
+
+  it('enforce: the size and freshness overrides reach landPr alongside the verdict one, and nothing else is overridable', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    const [req, ctx] = makeRequest('42', { overrides: { size: true, freshness: true, ciGreen: true } });
+    await POST(req, ctx);
+    expect(mockLandPr.mock.calls[0]![0].actor.override).toEqual({ size: true, freshness: true });
+
+    mockLandPr.mockClear();
+    const [req2, ctx2] = makeRequest('42', { overrides: { verdict: true } });
+    await POST(req2, ctx2);
+    expect(mockLandPr.mock.calls[0]![0].actor.override).toEqual({ verdict: true });
+  });
+
+  it('enforce: no override flag passes no override to landPr', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    const [req, ctx] = makeRequest('42');
+    await POST(req, ctx);
+    expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'human', userId: 'u-1' });
+  });
+
+  it('shadow/off: red CI on the live head is refused even with override (no door is exempt)', async () => {
+    for (const gitConfig of [{}, { landing: { mode: 'off' } }]) {
+      mockWorkspacesFindFirst.mockResolvedValue({ ...workspace, gitConfig });
+      mockMergePullRequest.mockClear();
+      const [req, ctx] = makeRequest('42', { override: true });
+      const res = await POST(req, ctx);
+      expect(res.status).toBe(409);
+      expect((await res.json()).ciFailing).toEqual(['build']);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    }
+    expect(mockFireGateEvent.mock.calls.some((c: any[]) => c[0].outcome === 'rejected' && /CI is red/.test(c[0].reason))).toBe(true);
+  });
+
+  it('shadow/off: a re-run that went green replaces the red run (latest run per name)', async () => {
+    mockGithubApi.mockImplementation(async (_i: number, path: string) =>
+      /\/check-runs/.test(path)
+        ? { check_runs: [
+            { id: 1, name: 'build', status: 'completed', conclusion: 'failure', started_at: '2030-01-01T00:00:00Z' },
+            { id: 2, name: 'build', status: 'completed', conclusion: 'success', started_at: '2030-01-01T01:00:00Z' },
+          ] }
+        : { head: { sha: 'head-A' }, base: { ref: 'dev' } });
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('enforce: a merged outcome runs the usual post-merge bookkeeping and no second merge', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    mockLandPr.mockImplementation(async () => ({ kind: 'merged', sha: 'merge-sha' }));
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).merged).toBe(true);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockWorkersUpdate).toHaveBeenCalled();
+    expect(mockLandPr.mock.calls[0]![0].actor).toEqual({ kind: 'human', userId: 'u-1' });
+  });
+
+  it('enforce: a behind PR is refreshed, not merged — 202', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    mockLandPr.mockImplementation(async () => ({ kind: 'updating_branch', newHeadSha: 'head-B' }));
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(202);
+    expect((await res.json()).branchUpdated).toBe(true);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('enforce: a blocking verdict without override is reported the way the card expects', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(enforceWorkspace);
+    mockLandPr.mockImplementation(async () => ({ kind: 'needs_human', cause: 'blocking_verdict', reason: 'the reviewer requested changes' }));
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.reviewGateBlocked).toBe(true);
+    expect(data.error).toContain('requested changes');
+  });
+});
+
+describe('POST /api/prs/[prNumber]/merge — surface merge ordering', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockReset();
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
+    mockInsertValues.mockReset();
+    mockInsertValues.mockResolvedValue(undefined as never);
+    mockCheckSurfaceOrder.mockReset();
+    mockCheckSurfaceOrder.mockResolvedValue(SURFACE_PASS as any);
+    mockMergeInSurfaceSlot.mockClear();
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  const WAIT = {
+    blocks: true, kind: 'ordering', reason: 'waiting for PR #40 to close first: both change Drizzle migrations on dev',
+    counterpartPrNumber: 40, surface: 'Drizzle migrations',
+  };
+
+  it('an ordering wait returns 409 naming the earlier PR, and never merges', async () => {
+    mockCheckSurfaceOrder.mockResolvedValue(WAIT as any);
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.surfaceOrderBlocked).toBe(true);
+    expect(body.waitingOnPr).toBe(40);
+    expect(body.surface).toBe('Drizzle migrations');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ door: 'dashboard', callerOrigin: 'dashboard', prNumber: 42, headSha: 'head-A' });
+  });
+
+  it('a refused reservation returns 409 and never merges', async () => {
+    mockCheckSurfaceOrder.mockResolvedValue({ blocks: false, slot: { surfaces: ['Drizzle migrations'] } } as any);
+    mockMergeInSurfaceSlot.mockImplementationOnce(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }));
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.surfaceOrderBlocked).toBe(true);
+    expect(body.error).toContain('merging on Drizzle migrations');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('"Merge anyway" overrides the review verdict only — it does not jump the surface order', async () => {
+    mockCheckSurfaceOrder.mockResolvedValue(WAIT as any);
+    const [req, ctx] = makeRequest('42', { override: true });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockCheckSurfaceOrder.mock.calls[0][0].override).toBeFalsy();
+  });
+
+  it('a pass merges inside the slot', async () => {
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(mockMergeInSurfaceSlot).toHaveBeenCalledTimes(1);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/prs/[prNumber]/merge — post-refresh semantic hold', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockReset();
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue({ ...workspace, gitConfig: { landing: { mode: 'off' }, semanticRefresh: 'enforce' } });
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
+    mockInsertValues.mockReset();
+    mockInsertValues.mockResolvedValue(undefined as never);
+    mockCheckSurfaceOrder.mockReset();
+    mockCheckSurfaceOrder.mockResolvedValue(SURFACE_PASS as any);
+    mockCheckBaseRefreshHold.mockReset();
+    mockCheckBaseRefreshHold.mockResolvedValue({ blocks: false });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  const HELD = { blocks: true, needsPerson: true, reason: 'semantic hold (needs a person): the same symbols are edited on both sides' };
+
+  it('a hold under enforce returns 409 and never merges (landing off)', async () => {
+    mockCheckBaseRefreshHold.mockResolvedValue(HELD);
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.semanticHold).toBe(true);
+    expect(body.needsPerson).toBe(true);
+    expect(body.error).toContain('semantic hold');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    // Judged on the live head, with the workspace config, so "off" makes no read.
+    expect(mockCheckBaseRefreshHold.mock.calls[0][0]).toMatchObject({
+      prNumber: 42, headSha: 'head-A', taskId: 't-1', workspaceId: 'ws-1', workerId: 'w-1',
+      gitConfig: { semanticRefresh: 'enforce' },
+    });
+  });
+
+  it('"Merge anyway" overrides the review verdict only — it does not bypass the hold', async () => {
+    mockCheckBaseRefreshHold.mockResolvedValue(HELD);
+    const [req, ctx] = makeRequest('42', { override: true });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a hold is consulted before the surface slot is reserved', async () => {
+    mockCheckBaseRefreshHold.mockResolvedValue(HELD);
+    const [req, ctx] = makeRequest();
+    await POST(req, ctx);
+    expect(mockCheckSurfaceOrder).not.toHaveBeenCalled();
+  });
+
+  it('no hold merges as before', async () => {
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(mockCheckBaseRefreshHold).toHaveBeenCalledTimes(1);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('red CI is refused before the hold is consulted (no extra reads on a refusal)', async () => {
+    mockGithubApi.mockImplementation(async (_i: any, path: string) =>
+      path.includes('/check-runs')
+        ? { check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }] }
+        : { head: { sha: 'head-A' } });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect(mockCheckBaseRefreshHold).not.toHaveBeenCalled();
   });
 });

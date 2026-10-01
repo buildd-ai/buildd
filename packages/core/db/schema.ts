@@ -26,7 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration,TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -80,6 +80,11 @@ export const teams = pgTable('teams', {
   // absent feature = the default, which follows the billing model (a team key
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
+  // The `opt_in` decision capabilities this team turned on (e.g.
+  // 'task_role_shadow'). NULL or absent = off; there is no default, so adding
+  // an opt_in capability never switches it on for anyone. See
+  // packages/core/inference-policy.ts.
+  enabledDecisionShadows: text('enabled_decision_shadows').array(),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -174,6 +179,11 @@ export const accounts = pgTable('accounts', {
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   apiKeyPrefix: text('api_key_prefix'),
+  // NULL preserves legacy levels; an empty list grants no capabilities.
+  scopes: jsonb('scopes').$type<string[]>(),
+  workspaceIds: jsonb('workspace_ids').$type<string[]>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
 
   // Authentication type
@@ -210,6 +220,12 @@ export const accounts = pgTable('accounts', {
   // the app's own provider-key limit is the hard ceiling
   // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
+
+  // A long-lived host runner key, flagged explicitly by a team owner/admin.
+  // Only such a key may use the credential lease / refresh routes or list the
+  // team's secrets (lib/credential-custody.ts); any other key gets team
+  // credentials only as handed to it at claim time.
+  hostRunner: boolean('host_runner').default(false).notNull(),
 
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
@@ -311,6 +327,11 @@ export interface WorkspaceGitConfig {
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
 
+  // Where the visual auditor's pages come from: 'sandbox' (absent = today's
+  // in-worker boot), 'vercel-preview', or 'auto'. Read only through
+  // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
+  visualQa?: import('../visual-qa-page-source').VisualQaConfig;
+
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
   maxBudgetUsd?: number;
@@ -352,6 +373,12 @@ export interface WorkspaceGitConfig {
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
   effort?: 'low' | 'medium' | 'high' | 'max';
 
+  // Path-claim enforcement (docs/design/conflict-aware-orchestration.md §2). Off by
+  // default ('advisory' or absent). 'enforce': a confirmed live holder denies
+  // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
+  // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
+  pathClaimEnforcement?: 'advisory' | 'enforce' | null;
+
   // Block config file changes during worker sessions (SDK v0.2.49+ ConfigChange hook)
   // When true, returns { continue: false } to prevent agents from modifying config files.
   blockConfigChanges?: boolean;
@@ -380,6 +407,10 @@ export interface WorkspaceGitConfig {
   conflictSurfaces?: Array<{
     pattern: string;  // prefix or glob, e.g. "packages/core/drizzle/**" or "bun.lock"
     label: string;    // shown in warning notes, e.g. "Drizzle migrations"
+    // Opt-in merge ordering (conflict-aware-orchestration.md §3). With
+    // `surfaceOrdering` on, a PR touching a serialized surface merges only after
+    // every earlier open PR on that surface has closed. Absent/false: warn only.
+    serialize?: boolean;
   }>;
   // sequenceNamespaces: directories where file-name distinctness does NOT prevent
   // integer-index collisions (Drizzle migrations, ADR numbering). At task-creation
@@ -390,7 +421,27 @@ export interface WorkspaceGitConfig {
     dir: string;        // e.g. "packages/core/drizzle"
     anchorFile: string; // e.g. "packages/core/drizzle/meta/_journal.json"
     label: string;
+    // Paths outside `dir` whose edit generates into the namespace (e.g.
+    // "packages/core/db/schema.ts"): a manifest touching one gets the anchor too,
+    // and a PR diff touching one counts as touching the namespace.
+    triggers?: string[];
+    // Opt-in: the namespace (dir + anchor + triggers, generated files included)
+    // is one serialized merge surface under `surfaceOrdering`. See conflictSurfaces.
+    serialize?: boolean;
   }>;
+  // Surface merge ordering (conflict-aware-orchestration.md §3). Off by default
+  // (absent/'off': no reads, no gate). 'shadow' records what it would defer;
+  // 'enforce' defers a PR behind earlier open PRs on a serialized surface and
+  // fails closed when intent state cannot be verified.
+  surfaceOrdering?: 'off' | 'shadow' | 'enforce' | null;
+  // Semantic check before a clean base refresh (conflict-aware-orchestration.md
+  // §4, apps/web/src/lib/semantic-refresh.ts). Off by default (no extra reads).
+  // 'shadow' records same-symbol / unknown verdicts and refreshes as before;
+  // 'enforce' sends a verified same-symbol edit to a semantic conflict review and
+  // withholds clearance when symbol coverage is unknown (bounded rechecks, then a
+  // diagnostic). No revision-pinned symbol index is reachable server-side yet,
+  // so under 'enforce' a shared-file refresh is never auto-cleared.
+  semanticRefresh?: 'off' | 'shadow' | 'enforce' | null;
 
   // When true, tasks with outputRequirement='pr_required' that do not already declare a
   // loopConfig automatically get loopConfig = { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }
@@ -427,6 +478,13 @@ export interface WorkspaceGitConfig {
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
+
+  // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
+  // docs/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
+  // paths only. `shadow` (absent = shadow): the landing decision is computed and
+  // recorded on the gate ledger beside the legacy action, which still runs.
+  // `enforce`: doors act on the landing outcome.
+  landing?: { mode?: 'off' | 'shadow' | 'enforce' };
 
   // Supersession precheck: ratio threshold for the drift-ratio detector.
   // When live GitHub PR stats are ≥ this multiple larger than recorded stats,
@@ -1250,6 +1308,12 @@ export const tasks = pgTable('tasks', {
   // Used by the orchestrator to add dependsOn edges between tasks that touch the same paths,
   // and by the claim-time guard to defer a task whose paths overlap an open PR.
   pathManifest: jsonb('path_manifest').$type<string[] | null>(),
+  // What was declared, kept apart from the effective pathManifest above, plus
+  // which dependsOn edges were inferred and every narrowing. See PathDeclaration.
+  pathDeclaration: jsonb('path_declaration').$type<PathDeclaration | null>(),
+  // Ownership revision: bumped by lease acquisition, narrowing and terminal
+  // release (packages/core/path-claim.ts) so a narrow can CAS on what it read.
+  pathClaimRevision: integer('path_claim_revision').default(0).notNull(),
   // Connector IDs (subset of the role's connectorRefs) that this task MUST have available.
   // The claim route hard-blocks only on connectors in this list; missing connectors outside
   // it are advisory and do not prevent claiming.
@@ -1627,6 +1691,9 @@ export const workers = pgTable('workers', {
   // NEVER be read as "trunk" — unknown has to degrade to the existing gate,
   // because guessing wrong here silently deletes a human review gate.
   prBaseRef: text('pr_base_ref'),
+  // Whether the PR is in draft status. Kept live by GitHub webhook events.
+  // null = no PR yet or status unknown (pre-migration workers).
+  prIsDraft: boolean('pr_is_draft'),
   // Supersession edge (task fcaf83d5): this worker's PR closed without merging,
   // but its diff landed anyway under a DIFFERENT, merged PR — e.g. a mission
   // integration branch got deleted out from under an open PR (#2355) and the
@@ -4086,6 +4153,10 @@ export const changeIntents = pgTable('change_intents', {
   prNumber: integer('pr_number'),
   branch: text('branch'),
   headSha: text('head_sha'),
+  // The PR's base branch (GitHub `base.ref`). Surface ordering compares only
+  // contenders landing on the same base; NULL = not yet known (treated as a
+  // possible same-base contender until a live read says otherwise).
+  baseRef: text('base_ref'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   closedAt: timestamp('closed_at', { withTimezone: true }),
 }, (t) => ({
@@ -4102,6 +4173,31 @@ export const changeIntentsRelations = relations(changeIntents, ({ one }) => ({
 
 export type ChangeIntent = typeof changeIntents.$inferSelect;
 export type NewChangeIntent = typeof changeIntents.$inferInsert;
+
+// Surface merge reservations — at most one PR per (workspace, repo, base branch,
+// serialized surface) is between "ordering passed" and "merge returned". Acquired with one
+// INSERT ... ON CONFLICT DO UPDATE ... WHERE (expired OR same PR) compare-and-set;
+// released by token on success, failure or bounded expiry. GitHub cannot share a
+// DB transaction, so an expired holder is reconciled against GitHub before reuse.
+// See apps/web/src/lib/surface-ordering.ts and conflict-aware-orchestration.md §3.
+export const surfaceReservations = pgTable('surface_reservations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  repoFullName: text('repo_full_name').notNull(),
+  // The base branch the PR lands on: two PRs only contend for a slot on the same base.
+  baseRef: text('base_ref').notNull(),
+  surface: text('surface').notNull(),
+  prNumber: integer('pr_number').notNull(),
+  headSha: text('head_sha').notNull(),
+  baseSha: text('base_sha'),
+  token: uuid('token').notNull(),
+  reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, (t) => ({
+  surfaceUnique: uniqueIndex('surface_reservations_surface_idx').on(t.workspaceId, t.repoFullName, t.baseRef, t.surface),
+}));
+
+export type SurfaceReservation = typeof surfaceReservations.$inferSelect;
 
 export type Initiative = typeof initiatives.$inferSelect;
 export type NewInitiative = typeof initiatives.$inferInsert;
@@ -4450,3 +4546,151 @@ export type NewWorkerTerminalRecord = typeof workerTerminalRecords.$inferInsert;
 
 export type CronRun = typeof cronRuns.$inferSelect;
 export type NewCronRun = typeof cronRuns.$inferInsert;
+
+// ── Orchestration decision / outcome ledger ──────────────────────────────────
+//
+// docs/design/conflict-aware-orchestration.md §5–§6. One row per look by an
+// orchestration decision (creation-time scope prediction, claim-time
+// hold/start), written by packages/core/orchestration-decision.ts. Content-free:
+// ids, versions, the definition fingerprint, a candidate-set digest, opaque
+// labels (anything else is stored hashed) and numbers. The readout groups by
+// (decision_id, fingerprint, candidate_policy_version, model, experiment_arm).
+// Written best-effort after the decision; a failed insert costs a row, never
+// the caller's request. Only workspace/team are FKs that cascade: the task row
+// may be deleted while its decision history stays useful as a censored label.
+export const orchestrationDecisions = pgTable('orchestration_decisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id'),
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  // The outcome-join keys, when the decision was about a PR.
+  prNumber: integer('pr_number'),
+  headSha: text('head_sha'),
+  baseRef: text('base_ref'),
+  baseSha: text('base_sha'),
+  // The inference capability that gated spend (orchestration_manifest | orchestration_claim).
+  capability: text('capability').notNull(),
+  // defineDecision identity: namespaced id, `promptVersion|model|engine-N`, 12-hex fingerprint.
+  decisionId: text('decision_id').notNull(),
+  decisionVersion: text('decision_version').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  question: text('question').notNull(),
+  // Pick index within a repeated choice (§5a); 0 for a single question.
+  step: integer('step').notNull().default(0),
+  // The kit policy for the question at the time: shadow | gated | live, and its threshold.
+  mode: text('mode').notNull().$type<'shadow' | 'gated' | 'live'>(),
+  minConfidence: real('min_confidence'),
+  // The model that actually answered (a team may route to a non-Jev model; it never applies).
+  model: text('model'),
+  candidatePolicyVersion: text('candidate_policy_version').notNull(),
+  candidateDigest: text('candidate_digest').notNull(),
+  candidateCount: integer('candidate_count').notNull(),
+  candidateTruncated: boolean('candidate_truncated').notNull().default(false),
+  ruleVerdict: text('rule_verdict'),
+  suggested: text('suggested'),
+  confidence: real('confidence'),
+  effective: text('effective'),
+  applied: boolean('applied').notNull().default(false),
+  status: text('status').notNull().$type<'applied' | 'suggested' | 'fallback'>(),
+  // fallback: capability_disabled | missing_key | retrieval_error | no_candidates | deadline | invalid | error
+  // suggested: shadow | below_threshold | non_jev | not_in_cohort
+  reason: text('reason'),
+  errorKind: text('error_kind'),
+  latencyMs: integer('latency_ms').notNull(),
+  retrievalMs: integer('retrieval_ms'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  costUsd: real('cost_usd'),
+  // Applying-cohort assignment, recorded at draw time (never reconstructed).
+  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe'>(),
+  propensity: real('propensity').notNull(),
+  applyingFraction: real('applying_fraction').notNull(),
+  // The kit's content-free DecisionReceipt (model, usage, latency, attempts).
+  receipt: jsonb('receipt').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceCreatedIdx: index('orchestration_decisions_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  decisionGroupIdx: index('orchestration_decisions_group_idx').on(t.decisionId, t.fingerprint, t.experimentArm),
+  taskIdx: index('orchestration_decisions_task_idx').on(t.taskId),
+}));
+
+export type OrchestrationDecision = typeof orchestrationDecisions.$inferSelect;
+export type NewOrchestrationDecision = typeof orchestrationDecisions.$inferInsert;
+
+// The final touched-file label for a decided task, one row per worker session,
+// written at terminal worker status BEFORE workers.observed_touches is cleared
+// (apps/web/src/app/api/workers/[id]/route.ts). Only for tasks that have an
+// orchestration_decisions row, so it grows with the decisions, not with every
+// worker. An empty array is a real observation (the session edited nothing);
+// a missing row is a missing label. `truncated` = the observation hit the
+// observed_touches cap and may be partial.
+export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  // The worker's terminal status: completed | failed | error.
+  workerStatus: text('worker_status').notNull(),
+  touchedPaths: jsonb('touched_paths').$type<string[]>().notNull(),
+  truncated: boolean('truncated').notNull().default(false),
+  prNumber: integer('pr_number'),
+  headSha: text('head_sha'),
+  baseRef: text('base_ref'),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskWorkerIdx: uniqueIndex('orchestration_touch_labels_task_worker_idx').on(t.taskId, t.workerId),
+  workspaceTaskIdx: index('orchestration_touch_labels_workspace_task_idx').on(t.workspaceId, t.taskId),
+}));
+
+export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
+export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;
+
+// Creation-time manifest predictions (docs/design/conflict-aware-orchestration.md
+// §5a, packages/core/manifest-prediction.ts). One row per task per candidate
+// policy, written in shadow AFTER the creation response for teams that opted in
+// to `orchestration_manifest`. Each pick also writes a content-free
+// orchestration_decisions row; THIS row holds what those rows cannot: the
+// ranked candidate files (so a pick's opaque label maps back to a file), each
+// pick's dynamic-definition fingerprint and offered-index map, the selection,
+// truncation/unknown-scope markers, candidate coverage and the same-task
+// baselines. It never feeds tasks.path_manifest or dependsOn.
+export const orchestrationManifestPredictions = pgTable('orchestration_manifest_predictions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  decisionId: text('decision_id').notNull(),
+  promptVersion: text('prompt_version').notNull(),
+  candidatePolicyVersion: text('candidate_policy_version').notNull(),
+  mode: text('mode').notNull().$type<'shadow' | 'gated' | 'live'>(),
+  // The leakage cutoff: neighbours/diffs must predate the task's creation.
+  taskCreatedAt: timestamp('task_created_at', { withTimezone: true }).notNull(),
+  candidates: jsonb('candidates').$type<string[]>().notNull(),
+  candidateSources: jsonb('candidate_sources').$type<string[]>().notNull(),
+  candidateCount: integer('candidate_count').notNull(),
+  candidateTruncated: boolean('candidate_truncated').notNull().default(false),
+  candidateOmitted: integer('candidate_omitted').notNull().default(0),
+  // { source, neighbours, neighboursUsed, excludedFuture, cbm, revision, revisionPinned, ... }
+  coverage: jsonb('coverage').$type<Record<string, unknown>>().notNull(),
+  // [{ step, fingerprint, decisionVersion, offered: number[], suggested, path, confidence, status, reason, applied }]
+  picks: jsonb('picks').$type<Array<Record<string, unknown>>>().notNull(),
+  selected: jsonb('selected').$type<string[]>().notNull(),
+  // done | exhausted | pick_cap | deadline | fallback | no_candidates | invalid | missing_key | retrieval_deadline
+  stopReason: text('stop_reason').notNull(),
+  complete: boolean('complete').notNull().default(false),
+  unknownScope: boolean('unknown_scope').notNull().default(true),
+  allApplied: boolean('all_applied').notNull().default(false),
+  pickCap: integer('pick_cap').notNull(),
+  regexPaths: jsonb('regex_paths').$type<string[]>().notNull(),
+  neighbourUnionPaths: jsonb('neighbour_union_paths').$type<string[]>().notNull(),
+  latencyMs: integer('latency_ms').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskPolicyIdx: uniqueIndex('orchestration_manifest_predictions_task_policy_idx').on(t.taskId, t.candidatePolicyVersion),
+  workspaceCreatedIdx: index('orchestration_manifest_predictions_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
+export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;

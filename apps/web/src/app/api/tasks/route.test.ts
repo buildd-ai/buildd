@@ -11,6 +11,7 @@ mock.module('@buildd/core/gate-events', () => ({
   recordOrCoalesceDeferral: async () => null,
 }));
 import { NextRequest } from 'next/server';
+import { canAccessTokenRoute } from '@/lib/token-route-policy';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -83,6 +84,14 @@ mock.module('@/lib/task-category-decision', () => ({
   scheduleTaskCategorize: mockScheduleTaskCategorize,
 }));
 
+// The creation-manifest shadow is covered by packages/core manifest-prediction
+// tests and task-manifest-prediction.test.ts; here only WHEN the route schedules
+// it, with what, and that it can neither change nor fail creation.
+const mockScheduleCreationManifestShadow = mock((..._args: any[]) => {});
+mock.module('@/lib/task-manifest-prediction', () => ({
+  scheduleCreationManifestShadow: mockScheduleCreationManifestShadow,
+}));
+
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -90,9 +99,10 @@ mock.module('@/lib/auth-helpers', () => ({
 
 // Mock api-auth - authenticateApiKey delegates to mockAccountsFindFirst
 mock.module('@/lib/api-auth', () => ({
-  authenticateApiKey: async (apiKey: string | null) => {
+  authenticateApiKey: async (apiKey: string | null, req: NextRequest) => {
     if (!apiKey) return null;
-    return mockAccountsFindFirst();
+    const account = await mockAccountsFindFirst();
+    return account && canAccessTokenRoute(account, req) ? account : null;
   },
   hashApiKey: (key: string) => `hashed_${key}`,
   extractApiKeyPrefix: (key: string) => key.substring(0, 12),
@@ -461,6 +471,29 @@ describe('POST /api/tasks', () => {
       creationSource: 'api',
       parentTaskId: null,
     });
+  });
+
+  it('creates a task with a CI write scope and no administrator level', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    const created = { id: 'task-ci', workspaceId: 'ws-1', title: 'CI task', status: 'pending' };
+    mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+    const response = await POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_ci' },
+      body: { workspaceId: 'ws-1', title: 'CI task' },
+    }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).id).toBe('task-ci');
+  });
+
+  it('rejects analytics readers before inserting a task', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-reader', level: 'worker', scopes: ['analytics:read'] });
+    const response = await POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_reader' },
+      body: { workspaceId: 'ws-1', title: 'Should not be created' },
+    }));
+    expect(response.status).toBe(401);
+    expect(mockTasksInsert).not.toHaveBeenCalled();
   });
 
   it('returns 401 when no auth', async () => {
@@ -2741,6 +2774,36 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(200);
     expect(captured().dependsOn).toEqual(['sibling-real-overlap']);
+    // Provenance: the declaration as filed, and which edge was inferred.
+    expect(captured().pathDeclaration).toMatchObject({
+      declared: ['apps/web/src/lib/shared.ts'],
+      source: 'creation',
+      inferredDependsOn: ['sibling-real-overlap'],
+    });
+  });
+
+  it('records a caller-supplied edge as explicit, never as inferred', async () => {
+    const captured = missionPathManifestSetup();
+    const explicitDepId = '11111111-1111-1111-1111-111111111111';
+    mockTasksFindMany
+      .mockResolvedValueOnce([{ id: explicitDepId }])
+      .mockResolvedValueOnce([{ id: explicitDepId, pathManifest: ['apps/web/src/lib'] }]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Mission task B',
+        missionId: 'mission-1',
+        dependsOn: [explicitDepId],
+        pathManifest: ['apps/web/src/lib/shared.ts'],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().dependsOn).toEqual([explicitDepId]);
+    expect(captured().pathDeclaration.inferredDependsOn).toBeUndefined();
   });
 
   it('preserves caller-supplied dependsOn on a wildcard-defaulted mission task', async () => {
@@ -2965,6 +3028,88 @@ describe('POST /api/tasks', () => {
     }));
 
     expect(response.status).toBe(400);
+  });
+
+  // ── Creation-manifest shadow (design §5a) ─────────────────────────────────
+  describe('creation-manifest shadow', () => {
+    beforeEach(() => { mockScheduleCreationManifestShadow.mockReset(); });
+
+    it('schedules a shadow prediction for a missing-scope mission task, after the response, without changing the stored manifest', async () => {
+      const captured = missionPathManifestSetup();
+      mockTasksFindMany.mockResolvedValue([]);
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', description: 'Do it', missionId: 'mission-1' },
+      }));
+      expect(response.status).toBe(200);
+      expect(captured().pathManifest).toEqual(['**']);
+      expect(mockScheduleCreationManifestShadow).toHaveBeenCalledTimes(1);
+      const [input, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(input).toMatchObject({
+        taskId: captured().id,
+        teamId: 'team-1',
+        workspaceId: 'ws-1',
+        missionId: 'mission-1',
+        accountId: 'account-123',
+        title: 'Build feature X',
+        description: 'Do it',
+        callerManifest: ['**'],
+      });
+      expect(input.createdAt instanceof Date).toBe(true);
+      expect(typeof schedule).toBe('function');
+    });
+
+    it('explicit caller manifests win: no prediction is scheduled', async () => {
+      missionPathManifestSetup();
+      mockTasksFindMany.mockResolvedValue([]);
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/feature.ts'] },
+      }));
+      expect(response.status).toBe(200);
+      expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
+    });
+
+    it('shadow leaves the manifest_required rejection byte-for-byte unchanged and schedules nothing', async () => {
+      missionPathManifestSetup();
+      mockTasksFindMany.mockResolvedValue([]);
+      const body = { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', outputRequirement: 'pr_required' };
+      const response = await POST(createMockRequest({ method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body }));
+      expect(response.status).toBe(400);
+      const json = await response.json();
+      expect(Object.keys(json).sort()).toEqual(['error', 'frictionSignature']);
+      expect(json.error).toBe(
+        'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
+        "If this task won't produce a PR, set outputRequirement: 'none' instead.",
+      );
+      expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
+    });
+
+    it('never fails or changes task creation when scheduling throws', async () => {
+      const captured = missionPathManifestSetup();
+      mockTasksFindMany.mockResolvedValue([]);
+      mockScheduleCreationManifestShadow.mockImplementationOnce(() => { throw new Error('boom'); });
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+      }));
+      expect(response.status).toBe(200);
+      expect(captured().pathManifest).toEqual(['**']);
+    });
+
+    it('does not add inferred dependsOn for a missing-scope task (the prediction never reaches overlap)', async () => {
+      const captured = missionPathManifestSetup();
+      mockTasksFindMany.mockResolvedValue([{ id: '00000000-0000-4000-8000-000000000077', pathManifest: ['apps/web/src/lib/feature.ts'] }]);
+      await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+      }));
+      expect(captured().dependsOn ?? []).toEqual([]);
+    });
   });
 
   it('accepts a mission task with pr_required output and a concrete pathManifest', async () => {

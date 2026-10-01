@@ -1,7 +1,19 @@
-// GET /api/cron/pr-reconcile[?scope=merge-state]
+// GET /api/cron/pr-reconcile[?scope=merge-state | ?scope=landing&gate=due]
 //
-// Two sweeps behind one route, on two cadences:
+// Sweeps behind one route, on three cadences:
 //
+//   ?scope=landing&gate=due  every few minutes — ONLY the landing backstop
+//                       (lib/pr-landing-sweep.ts), behind the Redis due-queue
+//                       gate (lib/cron-due-queue.ts): nothing due returns
+//                       before any query, so the cadence costs Redis reads and
+//                       no extra Neon wake. Re-drives approved, green,
+//                       unmerged PRs through landPr — the same function every
+//                       landing door calls. It rides this route rather than
+//                       owning one because the design (docs/design/
+//                       pr-landing-guarantee.md section F) chose to: it shares
+//                       the installation resolution and GitHub rate limiting
+//                       the reconcile sweep already has.
+//                       Without `gate=due` the scope is its own floor tick.
 //   ?scope=merge-state  hourly — reconcileStalePrWorkers() only. Heals workers
 //                       whose PR merged on GitHub but whose row still says
 //                       otherwise (missed webhook delivery), and notifies the
@@ -14,6 +26,12 @@
 //                       is age-tiered (lib/pr-freshness.ts): every open worker
 //                       PR is re-verified within its tier's SLA whether or not
 //                       anybody opens Home.
+//                       The hourly pass below also runs the landing sweep as the
+//                       FLOOR: it enumerates from Postgres and re-seeds the
+//                       due-queue, so a lost queue write costs an hour, not
+//                       the guarantee.
+//                       It also re-drives behind PRs whose branch refresh was
+//                       deferred outside landing enforce (lib/refresh-redrive.ts).
 //   (no scope)          daily — the above plus sweepDeadZonePrs(), which spawns
 //                       conflict-resolution tasks. That one creates work, so it
 //                       stays on the slower cadence.
@@ -50,18 +68,30 @@ import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { sweepDeferredDispatch } from '@/lib/deferred-dispatch-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
-import { withCronRun } from '@/lib/cron-run';
+import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
+import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
+import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
+import { gateOnDueQueue } from '@/lib/cron-due-queue';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
+/** What one landing sweep adds to a run's `changed`: PRs it actually moved. */
+const landingChanged = (r: LandingSweepResult) => r.merged + r.updatingBranch + r.needsFix;
+
 export async function GET(req: NextRequest) {
-  const mergeStateOnly = req.nextUrl.searchParams.get('scope') === 'merge-state';
-  // Two cadences are two health signals: the hourly merge-state pass and the
-  // daily full pass fail independently and must not be averaged together.
-  const job = mergeStateOnly ? 'pr-reconcile:merge-state' : 'pr-reconcile';
+  const scope = req.nextUrl.searchParams.get('scope');
+  const landingOnly = scope === 'landing';
+  const mergeStateOnly = scope === 'merge-state';
+  // Separate cadences are separate health signals: the fast landing tick, the
+  // hourly merge-state pass and the daily full pass fail independently and must
+  // not be averaged together.
+  const job = landingOnly ? 'pr-reconcile:landing' : mergeStateOnly ? 'pr-reconcile:merge-state' : 'pr-reconcile';
 
   return withCronRun(job, req, async (report) => {
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch] = await Promise.all([
+    if (landingOnly) return runLandingScope(req, report);
+
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -94,6 +124,19 @@ export async function GET(req: NextRequest) {
       // sees them (lib/deferred-dispatch-sweep.ts). Hourly on this route rather
       // than a new cron; isolated because it fans out to webhooks.
       sweepDeferredDispatch().catch(err => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The landing backstop's floor pass: enumerates from Postgres and re-seeds
+      // the due-queue the gated tick reads. Isolated — a landing failure must not
+      // discard merge-state healing, and the reverse. Hourly, like the rest.
+      sweepLandingPrs({ source: 'floor' }).catch(err => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // Behind PRs whose branch refresh was deferred by an operational failure
+      // outside landing `enforce`: no event is coming, so this re-enters the
+      // normal merge door, bounded per head (lib/refresh-redrive.ts). Hourly,
+      // on this tick, so it opens no extra Neon wake window; isolated.
+      redriveDeferredRefreshes().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
@@ -137,6 +180,16 @@ export async function GET(req: NextRequest) {
     } else {
       console.log(`[DeferredDispatch] dispatched=${deferredDispatch.dispatched} failed=${deferredDispatch.failed}`);
     }
+    if ('error' in landing) {
+      console.error('[LandingSweep] error:', landing.error);
+    } else {
+      logLanding(landing);
+    }
+    if ('error' in refreshRedrive) {
+      console.error('[RefreshRedrive] error:', refreshRedrive.error);
+    } else {
+      logRefreshRedrive(refreshRedrive);
+    }
     // `changed` is what separates a healthy idle sweep from a dead one. Rows
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
@@ -145,8 +198,13 @@ export async function GET(req: NextRequest) {
     const specRecheckErrors = 'error' in specRecheck ? 1 : specRecheck.rechecksFailed + specRecheck.followUpsFailed;
     const lineageErrors = 'error' in lineagePrs ? 1 : lineagePrs.stranded;
     const deferredDispatchErrors = 'error' in deferredDispatch ? 1 : deferredDispatch.failed;
+    const landingErrors = 'error' in landing ? 1 : landing.errors;
+    const refreshRedriveErrors = 'error' in refreshRedrive ? 1 : refreshRedrive.errors;
     report({
-      processed: reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total),
+      processed:
+        reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total)
+        + ('error' in landing ? 0 : landing.processed)
+        + ('error' in refreshRedrive ? 0 : refreshRedrive.redriven),
       changed:
         reconcile.stamped + reconcile.closed + reconcile.unresolvable + reconcile.conflictsDetected
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
@@ -154,9 +212,13 @@ export async function GET(req: NextRequest) {
         + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared)
         + ('error' in specRecheck ? 0 : specRecheck.rechecksDispatched + specRecheck.followUpsDispatched)
         + ('error' in lineagePrs ? 0 : lineagePrs.closed)
-        + ('error' in deferredDispatch ? 0 : deferredDispatch.dispatched),
-      errors: reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors + deferredDispatchErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch },
+        + ('error' in deferredDispatch ? 0 : deferredDispatch.dispatched)
+        + ('error' in landing ? 0 : landingChanged(landing))
+        + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted),
+      errors:
+        reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
+        + deferredDispatchErrors + landingErrors + refreshRedriveErrors,
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive },
     });
 
     return NextResponse.json({
@@ -169,6 +231,44 @@ export async function GET(req: NextRequest) {
       specRecheck,
       lineagePrs,
       deferredDispatch,
+      landing,
+      refreshRedrive,
     });
   });
+}
+
+function logRefreshRedrive(r: RefreshRedriveResult): void {
+  console.log(
+    `[RefreshRedrive] enumerated=${r.enumerated} redriven=${r.redriven} merged=${r.merged} exhausted=${r.exhausted} raced=${r.raced} notRedrivable=${r.notRedrivable} deferred=${r.deferred} errors=${r.errors} outcomes=${JSON.stringify(r.outcomes)}`,
+  );
+}
+
+function logLanding(r: LandingSweepResult): void {
+  console.log(
+    `[LandingSweep] source=${r.source} enumerated=${r.enumerated} processed=${r.processed} merged=${r.merged} updatingBranch=${r.updatingBranch} waitingCi=${r.waitingCi} needsFix=${r.needsFix} needsHuman=${r.needsHuman} headMoved=${r.headMoved} skipped=${JSON.stringify(r.skipped)} deferred=${r.deferred} truncated=${r.truncated} errors=${r.errors}`,
+  );
+}
+
+/**
+ * `?scope=landing`: the landing backstop alone. With `gate=due` a tick with
+ * nothing due returns before any query; without it the tick is its own floor.
+ */
+async function runLandingScope(req: NextRequest, report: CronReport): Promise<NextResponse> {
+  const gate = await gateOnDueQueue(PR_LANDING_DUE_QUEUE, req.nextUrl.searchParams);
+  if (!gate.proceed) {
+    return NextResponse.json({ ok: true, scope: 'landing', gated: true, reason: gate.reason });
+  }
+
+  // An unanswerable gate fails open (cron-due-queue.ts): with Redis down the due
+  // queue cannot be read, so enumerate from Postgres instead of doing nothing.
+  const source = gate.reseed || gate.reason === 'redis_unavailable' ? 'floor' : 'due';
+  const landing = await sweepLandingPrs({ source });
+  logLanding(landing);
+  report({
+    processed: landing.processed,
+    changed: landingChanged(landing),
+    errors: landing.errors,
+    result: { scope: 'landing', gate: gate.reason, landing },
+  });
+  return NextResponse.json({ ok: true, scope: 'landing', gate: gate.reason, landing });
 }

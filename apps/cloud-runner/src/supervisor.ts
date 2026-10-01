@@ -21,6 +21,7 @@
  */
 import {
   appendTail,
+  assertRunnerConfig,
   buildContainerEnv,
   EXIT_PARKED,
   crashReportAction,
@@ -97,6 +98,11 @@ export interface SupervisorDeps {
   waitUntil(promise: Promise<unknown>): void;
   /** Egress credential injection (WorkerAgent.installEgressHandlers). A failure fails the run before start. */
   installEgress(): Promise<void>;
+  /**
+   * Mint this run's per-task token (WorkerAgent.mintTaskToken). The container
+   * gets only this token; the runner key in `config` stays with the agent.
+   */
+  mintTaskToken(): Promise<string>;
   fetch: typeof fetch;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -283,15 +289,17 @@ export class TaskSupervisor {
     let code: number | null = null;
     let error: string | undefined;
     let configError = false;
+    let otelEnv: Record<string, string>;
     try {
-      let env: Record<string, string>;
       try {
-        env = { ...buildContainerEnv(this.d.config), ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }) };
+        assertRunnerConfig(this.d.config);
+        otelEnv = otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt });
       } catch (err) {
         configError = true;
         throw err;
       }
       if (c.running) await c.destroy('leftover container from a previous attempt');
+      const env = { ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()), ...otelEnv };
       await this.d.installEgress();
       c.start({ env, enableInternet: true, labels: { [RUN_LABEL_NAME]: runLabel(this.d.taskId, attempt) } });
       await c.setInactivityTimeout(this.d.config.inactivityTimeoutMs);

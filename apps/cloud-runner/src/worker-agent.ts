@@ -13,7 +13,9 @@ import {
   INITIAL_STATE,
   resolveInactivityTimeoutMs,
   resolveStartTimeoutMs,
+  parseTaskTokenResponse,
   resumableRunsEnabled,
+  taskTokenRequest,
   warmReposEnabled,
   type DispatchRequest,
   type RunState,
@@ -40,6 +42,7 @@ import { TaskSupervisor, type ContainerPort, type DispatchResult } from './super
 type EgressExports = { EgressHandler(options: { props: EgressProps }): Fetcher };
 
 const GITHUB_TOKEN_TIMEOUT_MS = 10_000;
+const TASK_TOKEN_TIMEOUT_MS = 10_000;
 const MODEL_ENDPOINT_TIMEOUT_MS = 10_000;
 
 export class WorkerAgent extends Agent<Env, RunState> {
@@ -86,6 +89,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
       keepAliveWhile: (fn) => this.keepAliveWhile(fn),
       waitUntil: (p) => this.ctx.waitUntil(p),
       installEgress: () => this.installEgressHandlers(),
+      mintTaskToken: () => this.mintTaskToken(),
       fetch: (input, init) => fetch(input, init),
       now: () => Date.now(),
       sleep: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
@@ -170,6 +174,20 @@ export class WorkerAgent extends Agent<Env, RunState> {
       throw new Error(`POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
     }
     return parseGithubGrant(await res.json());
+  }
+
+  /**
+   * A fresh per-task token for each run, minted with the Worker's runner key.
+   * The container is started with this token and never sees the runner key.
+   */
+  private async mintTaskToken(): Promise<string> {
+    const { url, init } = taskTokenRequest(this.env, this.name);
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TASK_TOKEN_TIMEOUT_MS) });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).slice(0, 200);
+      throw new Error(`POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
+    return parseTaskTokenResponse(await res.json(), this.name);
   }
 
   /**

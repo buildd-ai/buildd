@@ -28,6 +28,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { objectExists } from '@/lib/storage';
 import { isArtifactKeyForUpload, isAuditScreenshotKeyForUpload } from '@/lib/storage-keys';
 import { isSurfaceFixTask } from '@buildd/core/surface-audit';
+import type { PageSource } from '@buildd/core/visual-qa-page-source';
 import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import {
   QA_VIEWPORTS,
@@ -53,6 +54,8 @@ export interface QaMeta {
   finding: string;
   verdict: QaVerdict;
   fixTaskId: string | null;
+  /** Where the page came from (docs/design/visual-qa-auditor.md, "Page source"). Absent on older shots. */
+  source?: PageSource;
 }
 
 export interface QaShot {
@@ -98,6 +101,7 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
     finding: typeof qa.finding === 'string' ? qa.finding.trim() : '',
     verdict: qa.verdict as QaVerdict,
     fixTaskId: typeof qa.fixTaskId === 'string' ? qa.fixTaskId : null,
+    ...(qa.source === 'sandbox' || qa.source === 'vercel-preview' ? { source: qa.source } : {}),
   };
 }
 

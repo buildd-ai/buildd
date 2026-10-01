@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveRedisConfig } from './redis';
+import { resolveRedisConfig, listDue } from './redis';
 
 describe('resolveRedisConfig', () => {
   it('reports "none" when nothing is configured', () => {
@@ -60,5 +60,12 @@ describe('resolveRedisConfig', () => {
     const c = resolveRedisConfig({ UPSTASH_REDIS_REST_TOKEN: 'tok_only' });
     expect(c.status).toBe('partial');
     expect(c.host).toBeNull();
+  });
+});
+
+describe('listDue', () => {
+  it('returns an empty list when no Redis client is configured', async () => {
+    if (resolveRedisConfig(process.env).status === 'ok') return;
+    expect(await listDue('pr-landing', Date.now(), 10)).toEqual([]);
   });
 });

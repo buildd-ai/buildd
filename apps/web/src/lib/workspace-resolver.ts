@@ -22,12 +22,13 @@ export interface WorkspaceScope {
  */
 export type WorkspaceCaller =
   | WorkspaceScope
-  | { account: { id: string; teamId: string } }
+  | { account: { id: string; teamId: string; workspaceIds?: string[] | null } }
   | { userId: string };
 
 async function toScope(caller: WorkspaceCaller): Promise<WorkspaceScope> {
   if ('teamIds' in caller) return caller;
   if ('account' in caller) {
+    if (caller.account.workspaceIds != null) return { teamIds: [], workspaceIds: caller.account.workspaceIds };
     return {
       teamIds: [caller.account.teamId],
       workspaceIds: await getLinkedWorkspaceIds(caller.account.id),

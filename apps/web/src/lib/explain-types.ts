@@ -102,6 +102,14 @@ export interface HistoryNode {
   /** `derivePrDisplayState` (lib/pr-presentation.ts), projected; `none` = no PR. */
   prState: 'merged' | 'open' | 'closed' | 'conflict' | 'ci_failed' | 'none';
   createdAt: string | null;
+  /**
+   * Why this attempt ended the way it did, from `tasks.result.evidence`: the
+   * error class and the first few key lines. Absent on a clean run and on a
+   * task that has not ended yet.
+   */
+  evidence?: { errorClass: string; keyLines: string[] };
+  /** `result.mismatch` kinds — where the task's own account disagreed with what was recorded. */
+  mismatch?: Array<{ kind: string; detail: string }>;
   attempts: HistoryNode[];
 }
 

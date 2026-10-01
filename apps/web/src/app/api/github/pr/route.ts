@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
@@ -14,6 +15,7 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -21,20 +23,25 @@ import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-
 import { resolveWorkerByPrNumberInWorkspaces } from '@/lib/pr-resolve';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import {
-  resolveMatchedSurfaces,
   recordChangeIntents,
   findConflictingIntents,
   postConflictWarnings,
 } from '@/lib/change-intent';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import { resolveIntentSurfaces } from '@/lib/surface-ordering-config';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusal } from '@/lib/auto-merge';
+import { refreshBehindPr, type RefreshOutcome } from '@/lib/base-refresh';
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
+import { resolveSemanticRefreshMode } from '@/lib/semantic-refresh';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
+import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -176,7 +183,8 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may open a PR only for its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -216,6 +224,9 @@ export async function POST(req: NextRequest) {
     // Team membership OR being the account that runs the worker — see
     // canActOnWorkerPr for why neither check alone is enough.
     if (!(await canActOnWorkerPr(account, worker))) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+    if (account.taskScope && (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -942,7 +953,8 @@ export async function POST(req: NextRequest) {
     // Change-intent: record surface intents + post conflict warnings (best-effort, non-blocking)
     try {
       const taskPathManifest = (worker.task?.pathManifest as string[] | null) ?? [];
-      const matchedSurfaces = resolveMatchedSurfaces(taskPathManifest, workspace.gitConfig ?? null);
+      // Advisory warning surfaces plus opted-in serialized namespaces (schema triggers included).
+      const matchedSurfaces = resolveIntentSurfaces(taskPathManifest, workspace.gitConfig ?? null);
 
       if (matchedSurfaces.length > 0) {
         // Record intent rows first (so we don't find ourselves as a conflict)
@@ -952,6 +964,7 @@ export async function POST(req: NextRequest) {
           prNumber: prData.number,
           branch: head,
           headSha: prData.head?.sha ?? null,
+          baseRef: typeof prData.base?.ref === 'string' && prData.base.ref ? prData.base.ref : effectiveBase ?? null,
           matchedSurfaces,
         });
 
@@ -1031,7 +1044,7 @@ export async function PATCH(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1100,12 +1113,113 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
+/**
+ * How the `merge_pr` door reports a behind-base refresh (lib/base-refresh.ts).
+ * `wait` outcomes are a 409 — retry later, nothing is wrong; the rest are the
+ * 403 refusal, naming why the branch was not brought up to date.
+ */
+function mergePrRefreshResponse(outcome: RefreshOutcome): { kind: RefreshOutcome['kind']; wait: boolean; detail: string; hint: string } {
+  const retry = 'Retry merge_pr shortly; nothing else is needed.';
+  switch (outcome.kind) {
+    case 'updated':
+      return { kind: outcome.kind, wait: true, detail: 'the branch has been updated from base', hint: retry };
+    case 'in_flight':
+      return { kind: outcome.kind, wait: true, detail: 'another refresh of this PR is already in flight', hint: retry };
+    case 'head_changed':
+      return { kind: outcome.kind, wait: true, detail: `the PR head moved before the refresh (${outcome.reason})`, hint: 'Re-read the PR (get_pr) and retry on the new head.' };
+    case 'up_to_date':
+      return { kind: outcome.kind, wait: true, detail: 'GitHub reports the branch already has every base commit', hint: retry };
+    case 'deferred':
+      return { kind: outcome.kind, wait: true, detail: `updating the branch failed (${outcome.failure}), not a conflict; attempt ${outcome.attempts}`, hint: retry };
+    case 'semantic_deferred':
+      return { kind: outcome.kind, wait: true, detail: `semantic overlap with the base is not verified yet (check ${outcome.rechecks})`, hint: retry };
+    case 'conflict':
+      return { kind: outcome.kind, wait: false, detail: `updating the branch hit a merge conflict (${outcome.reason})`, hint: 'Merge the base into the branch and resolve the conflict, then retry.' };
+    case 'exhausted':
+      return { kind: outcome.kind, wait: false, detail: `updating the branch keeps failing (${outcome.failure ?? 'unknown'}): ${outcome.reason}`, hint: 'A diagnostic was posted. Check the GitHub App access, or update the branch by hand.' };
+    case 'semantic_conflict':
+      return { kind: outcome.kind, wait: false, detail: `the PR and the base edit the same symbols (${outcome.assessment.reason})`, hint: 'Merge the base in and reconcile the named symbols, then retry.' };
+    case 'semantic_unverified':
+      return { kind: outcome.kind, wait: false, detail: `semantic overlap with the base could not be verified (${outcome.reason})`, hint: 'A diagnostic was posted. Review the overlap and merge by hand, or turn the semantic check off.' };
+  }
+}
+
 // PUT /api/github/pr - Merge a pull request
+/**
+ * The `merge_pr` answer for a landing outcome. Only `merged` is a merge; the
+ * two in-flight outcomes are 202 because nothing more is asked of the caller —
+ * the next green on the named head lands the PR.
+ */
+function mergePrLandingResponse(
+  outcome: LandingOutcome,
+  pr: { prNumber: number; prUrl: string | null; tier: string },
+): NextResponse {
+  const prRef = { number: pr.prNumber, url: pr.prUrl };
+  switch (outcome.kind) {
+    case 'merged':
+      return NextResponse.json({
+        ok: true,
+        merged: true,
+        message: 'Pull request merged',
+        landing: outcome,
+        pr: { ...prRef, mergeCommitSha: outcome.sha || null },
+      });
+    case 'updating_branch':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        branchUpdated: true,
+        landing: outcome,
+        message: `The branch was behind its base and has been updated (new head ${outcome.newHeadSha.slice(0, 7)}).`,
+        hint: 'It merges automatically when CI is green on the new head. No further merge_pr call is needed.',
+        pr: prRef,
+      }, { status: 202 });
+    case 'waiting_ci':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        message: `Not mergeable yet: waiting on ${outcome.headSha ? `head ${outcome.headSha.slice(0, 7)}` : 'the PR head'}.`,
+        hint: 'It merges automatically when the pending checks or review finish green. No further merge_pr call is needed.',
+        pr: prRef,
+      }, { status: 202 });
+    case 'needs_fix':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        error: `merge refused: ${outcome.reason}`,
+        message: `merge refused: ${outcome.reason}`,
+        tier: pr.tier,
+        fix: outcome.fix,
+        fixTaskId: outcome.taskId ?? null,
+        hint: outcome.taskId
+          ? `A ${outcome.fix} task (${outcome.taskId}) owns the next step.`
+          : `Needs a ${outcome.fix} before it can land.`,
+        pr: prRef,
+      }, { status: 409 });
+    case 'needs_human':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        error: `merge refused: ${outcome.reason}`,
+        message: `merge refused: ${outcome.reason}`,
+        tier: pr.tier,
+        cause: outcome.cause,
+        hint: outcome.cause === 'human_tier'
+          ? 'Report completion and let the owner merge from the escalation inbox.'
+          : 'A person has to decide this one. Report completion and let the owner merge or fix it.',
+        pr: prRef,
+      }, { status: 403 });
+  }
+}
+
 export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1164,7 +1278,7 @@ export async function PUT(req: NextRequest) {
         workspaceId: worker.workspaceId ?? null,
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         detail: { prNumber, ...(detail ?? {}) },
       });
     };
@@ -1241,7 +1355,7 @@ export async function PUT(req: NextRequest) {
     //                    no matter how green the PR is.
     //   human          — refused, which is what the tier means.
     const force = body.force === true;
-    if (force && account.level !== 'admin') {
+    if (force && !hasTokenRouteAdminAccess(account, req, 'admin')) {
       recordMergeGate('rejected', 'force merge requires an admin token', { force: true });
       return NextResponse.json({
         error: 'force merge requires an admin token',
@@ -1294,6 +1408,40 @@ export async function PUT(req: NextRequest) {
       const policy = resolvePolicy(workspace, mission, task, {
         baseRef: policyPr?.base?.ref ?? null,
       });
+
+      // The landing function decides once the workspace is in `enforce`: tier,
+      // verdict (with carry-forward), rails, and "behind base" as a refresh
+      // with a marker — so a behind PR lands on its next green without a
+      // second merge_pr call, and a stored terminal approve under agent-review
+      // authorises the merge rather than being refused on tier. `shadow`
+      // records what it would do, then the legacy gates below decide.
+      const landingMode = resolveLandingMode(workspace.gitConfig);
+      if (landingMode !== 'off') {
+        const outcome = await landPr({
+          workspaceId: workspace.id,
+          installationId: repo.installation.installationId,
+          repoFullName: repo.fullName,
+          prNumber,
+          eventHeadSha: null,
+          door: 'merge_pr',
+          actor: { kind: 'agent', workerId: worker.id ?? null },
+          mode: landingMode,
+          policy,
+          owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
+          releaseConfig: workspace.releaseConfig ?? null,
+          gitConfig: workspace.gitConfig ?? null,
+          mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+        });
+        if (landingMode === 'enforce') {
+          if (outcome.kind === 'merged') {
+            await db
+              .update(workers)
+              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
+              .where(eq(workers.id, worker.id));
+          }
+          return mergePrLandingResponse(outcome, { prNumber, prUrl: worker.prUrl ?? null, tier: policy.tier });
+        }
+      }
 
       if (policy.tier === 'human') {
         recordMergeGate('rejected', `merge policy tier is 'human' — this PR must be merged by a person`, { tier: policy.tier });
@@ -1350,7 +1498,7 @@ export async function PUT(req: NextRequest) {
         surface: 'PUT /api/github/pr',
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         carryForward: policyPr?.base?.ref
           ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
           : null,
@@ -1386,6 +1534,7 @@ export async function PUT(req: NextRequest) {
           workspaceId: workspace.id,
           taskId: worker.taskId ?? null,
           workerId: worker.id ?? null,
+          gitConfig: workspace.gitConfig ?? null,
         },
       );
       if (!safety.ok) {
@@ -1398,13 +1547,39 @@ export async function PUT(req: NextRequest) {
           // would stop it doing so for good.
           recordMergeGate('rejected', dependencyBotPushRefusal(prNumber), { tier: policy.tier }, GATE_SLUGS.DEPENDENCY_BOT_PR);
         } else if (isBehindBaseRefusal(safety.reason)) {
-          const update = await updateBehindPrBranch({
-            installationId: repo.installation.installationId,
-            repoFullName: repo.fullName,
-            prNumber,
-            headSha,
-          });
-          if (update.updated) {
+          // Same door as every other refresh (lib/base-refresh.ts): the per-PR
+          // lease, failure classification and, opted in, the semantic check
+          // and its enforce-mode hold. This door never dispatches an agent —
+          // a conflict or a semantic finding is reported back to the caller.
+          // A worker with no task has nowhere to keep refresh state. With the
+          // semantic check off there is nothing to hold, so it keeps the old
+          // direct update (pinned to the evaluated head); with it on, it is
+          // refused rather than let past the check.
+          const taskless = !worker.taskId && resolveSemanticRefreshMode(workspace.gitConfig) === 'off'
+            ? await updateBehindPrBranch({
+                installationId: repo.installation.installationId,
+                repoFullName: repo.fullName,
+                prNumber,
+                headSha,
+              })
+            : null;
+          const update: RefreshOutcome | null = taskless
+            ? (taskless.updated ? { kind: 'updated' } : null)
+            : worker.taskId
+            ? await refreshBehindPr({
+                installationId: repo.installation.installationId,
+                repoFullName: repo.fullName,
+                prNumber,
+                headSha,
+                workspaceId: workspace.id,
+                taskId: worker.taskId,
+                workerId: worker.id ?? null,
+                missionId: task?.missionId ?? null,
+                gitConfig: workspace.gitConfig ?? null,
+              })
+            : null;
+          const refreshed = update ? mergePrRefreshResponse(update) : null;
+          if (refreshed?.kind === 'updated') {
             recordMergeGate('deferred', `branch updated from base: ${safety.reason}`, { tier: policy.tier });
             return NextResponse.json({
               error: `${safety.reason} — the branch has been updated from base; CI must re-run on the new head`,
@@ -1412,6 +1587,24 @@ export async function PUT(req: NextRequest) {
               branchUpdated: true,
               hint: 'Wait for CI to go green on the updated head (get_pr), then call merge_pr again.',
             }, { status: 409 });
+          }
+          if (refreshed?.wait) {
+            recordMergeGate('deferred', `${safety.reason} — ${refreshed.detail}`, { tier: policy.tier, refresh: refreshed.kind });
+            return NextResponse.json({
+              error: `${safety.reason} — ${refreshed.detail}`,
+              tier: policy.tier,
+              refresh: refreshed.kind,
+              hint: refreshed.hint,
+            }, { status: 409 });
+          }
+          if (refreshed) {
+            recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason} — ${refreshed.detail}`, { tier: policy.tier, refresh: refreshed.kind });
+            return NextResponse.json({
+              error: `merge policy refused this merge: ${safety.reason} — ${refreshed.detail}`,
+              tier: policy.tier,
+              refresh: refreshed.kind,
+              hint: refreshed.hint,
+            }, { status: 403 });
           }
         }
         recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });
@@ -1448,13 +1641,45 @@ export async function PUT(req: NextRequest) {
       }, { status: 409 });
     }
 
-    const result = await mergePullRequest(
+    // ── Surface merge ordering (conflict-aware-orchestration.md §3) ─────────
+    // Off by default. `force` is the existing explicit override: it proceeds
+    // past an ordering wait but is ledgered as `bypassed`, never silent.
+    const surfaceOrder = await checkSurfaceOrder({
+      workspaceId: workspace.id,
+      installationId: repo.installation.installationId,
+      repoFullName: repo.fullName,
+      prNumber,
+      headSha,
+      gitConfig: workspace.gitConfig ?? null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      door: 'merge_pr',
+      callerOrigin: 'worker',
+      override: !!force,
+    });
+    if (surfaceOrder.blocks) {
+      return NextResponse.json({
+        error: `merge deferred: ${surfaceOrder.reason}`,
+        waitingOnPr: surfaceOrder.counterpartPrNumber,
+        surface: surfaceOrder.surface,
+        hint: 'This PR merges automatically once the earlier PR on the same surface closes. Do not wait for it.',
+      }, { status: 409 });
+    }
+
+    const slotted = await mergeInSurfaceSlot(surfaceOrder, () => mergePullRequest(
       repo.installation.installationId,
       repo.fullName,
       prNumber,
       mergeMethod as 'merge' | 'squash' | 'rebase',
       headSha,
-    );
+    ));
+    if ('refused' in slotted) {
+      return NextResponse.json({
+        error: `merge deferred: ${slotted.refused}`,
+        hint: 'Another PR on the same serialized surface is merging right now; this one is re-evaluated when it closes.',
+      }, { status: 409 });
+    }
+    const result = slotted.result;
 
     if (result.merged) {
       await db
@@ -1577,7 +1802,7 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
@@ -1774,6 +1999,10 @@ export async function GET(req: NextRequest) {
       ? await fetchSplitPrStats(installationId, fullName, prNumber)
       : null;
 
+    // Fix attempts on this PR's chain, with why each ended as it did. A read
+    // failure costs the list, not the PR.
+    const attempts = await loadPrAttempts(worker.taskId).catch(() => []);
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1808,6 +2037,7 @@ export async function GET(req: NextRequest) {
       reviews: reviewSummary,
       ...(comments ? { comments } : {}),
       ...(ciFailures ? { ciFailures } : {}),
+      ...(attempts.length > 0 ? { attempts } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);
