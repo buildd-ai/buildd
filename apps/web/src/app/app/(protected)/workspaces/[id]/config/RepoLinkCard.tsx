@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import RepoPicker from '../../new/RepoPicker';
+import { Select } from '@/components/ui/Select';
 
 interface Installation {
     id: string;
@@ -152,18 +153,16 @@ export function RepoLinkCard({ workspaceId, onLinked }: { workspaceId: string; o
                     {installations.length > 1 && (
                         <label className="block text-xs text-text-muted mb-3">
                             GitHub account
-                            <select
-                                className={`${INPUT} mt-1`}
+                            <Select
+                                className="mt-1"
                                 value={installationId}
-                                onChange={(e) => {
-                                    setInstallationId(e.target.value);
+                                onChange={(v) => {
+                                    setInstallationId(v);
                                     setSelected(null);
                                 }}
-                            >
-                                {installations.map((i) => (
-                                    <option key={i.id} value={i.id}>{i.accountLogin}</option>
-                                ))}
-                            </select>
+                                options={installations.map((i) => ({ value: i.id, label: i.accountLogin }))}
+                                aria-label="GitHub account"
+                            />
                         </label>
                     )}
 
