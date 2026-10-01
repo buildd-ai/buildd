@@ -2,8 +2,11 @@
 status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 # Components 1-4 have shipped (run-once, the image, apps/cloud-runner, the
-# egress handler). The canary (implementation step 6) has not run.
-# Phase 2: warm repos are built (behind WARM_REPOS); resumable runs are proposed.
+# egress handler). The canary (implementation step 6) has not run, and its
+# assertion (cloud-canary-script) points at a script that does not exist yet,
+# so the document stays `partially` until that lands.
+# Phase 2: warm repos (WARM_REPOS) and resumable runs (RESUMABLE_RUNS) are both
+# built, each behind a Worker var that defaults off.
 assertions:
   - id: "runner-run-once"
     type: "symbol"
@@ -31,7 +34,7 @@ assertions:
 ---
 # Cloudflare Agents Runner
 
-**Status:** Partially implemented (Components 1-4; canary pending). [Phase 2](#phase-2-resumable-runs-and-warm-repos): warm repos built behind `WARM_REPOS`; resumable runs proposed.
+**Status:** Partially implemented (Components 1-4 built; the canary, implementation step 6, has not run). [Phase 2](#phase-2-resumable-runs-and-warm-repos): warm repos built behind `WARM_REPOS`, resumable runs built behind `RESUMABLE_RUNS`; both default off.
 **Related:** `apps/runner/src/workers.ts` (`WorkerManager.claimAndStart`), `apps/runner/src/workspace.ts` (`ensureIsolatedClone`), `apps/runner/src/agent-env.ts`, `apps/runner/src/pusher-manager.ts`, `apps/web/src/lib/task-dispatch.ts` (`dispatchNewTask`), `packages/core/db/schema.ts` (`WorkspaceWebhookConfig`), `docs/credentials-architecture.md`
 
 > Revision note: the first draft of this doc (2026-07-07) proposed a
