@@ -109,6 +109,37 @@ describe('GET /api/tasks/[id]/evidence', () => {
     expect(fakeClient.send).not.toHaveBeenCalled();
   });
 
+  it('passes the request to auth, so a scoped token is checked against this route', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', scopes: ['analytics:read'], workspaceIds: null });
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async (_a: string, ws: string) => ws === 'ws-mine');
+    const res = await GET(req(TASK), params(TASK));
+    expect(res.status).toBe(200);
+    const [, request] = mockAuthenticateApiKey.mock.calls[0] as any[];
+    expect(request?.method).toBe('GET');
+    expect(new URL(request.url).pathname).toBe(`/api/tasks/${TASK}/evidence`);
+  });
+
+  it("404s a token restricted to other workspaces, even when its account reaches the task's", async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', scopes: ['analytics:read'], workspaceIds: ['ws-other'] });
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async () => true);
+    const res = await GET(req(TASK, `evidenceId=${EV}`), params(TASK));
+    expect(res.status).toBe(404);
+    expect(mockObjFindFirst).not.toHaveBeenCalled();
+    expect(fakeClient.send).not.toHaveBeenCalled();
+  });
+
+  it('a caller with both a session and a bearer is decided by the account', async () => {
+    // The session user reaches ws-mine; the bearer's account does not.
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', scopes: null, workspaceIds: null });
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async () => false);
+    expect((await GET(req(TASK), params(TASK))).status).toBe(404);
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async (_a: string, ws: string) => ws === 'ws-mine');
+    mockVerifyWorkspaceAccess.mockImplementation(async () => null);
+    expect((await GET(req(TASK), params(TASK))).status).toBe(200);
+  });
+
   it('lists the lineage, scoped to the task and its root chain inside its workspace', async () => {
     mockObjFindMany.mockResolvedValue([obj(), obj({ id: 'x2', taskId: OTHER_TASK, rootTaskId: TASK })]);
     const res = await GET(req(TASK), params(TASK));

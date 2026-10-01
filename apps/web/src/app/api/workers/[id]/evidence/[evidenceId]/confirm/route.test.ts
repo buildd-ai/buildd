@@ -8,6 +8,7 @@ const WORKER = '33333333-3333-4333-8333-333333333333';
 const ACCOUNT = '44444444-4444-4444-8444-444444444444';
 const EVIDENCE = '88888888-8888-4888-8888-888888888888';
 const OTHER_WORKER = '99999999-9999-4999-8999-999999999999';
+const TASK = '55555555-5555-4555-8555-555555555555';
 
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock((_args: any) => null as any);
@@ -40,7 +41,7 @@ function req(apiKey: string | null = 'bld_test_key_value'): NextRequest {
 }
 
 function worker(over: Record<string, unknown> = {}) {
-  return { id: WORKER, accountId: ACCOUNT, workspaceId: WORKSPACE, workspace: { teamId: TEAM }, ...over };
+  return { id: WORKER, accountId: ACCOUNT, workspaceId: WORKSPACE, taskId: TASK, workspace: { teamId: TEAM }, ...over };
 }
 
 function evidence(over: Record<string, unknown> = {}) {
@@ -84,6 +85,26 @@ describe('POST /api/workers/[id]/evidence/[evidenceId]/confirm', () => {
     mockWorkersFindFirst.mockResolvedValue(worker({ accountId: 'someone-else' }));
     expect((await POST(req(), params())).status).toBe(403);
     expect(mockEvidenceFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('passes the request to auth, so a scoped token is checked against this route', async () => {
+    await POST(req(), params());
+    const [, request] = mockAuthenticateApiKey.mock.calls[0] as any[];
+    expect(request?.method).toBe('POST');
+    expect(new URL(request.url).pathname).toBe(`/api/workers/${WORKER}/evidence/${EVIDENCE}/confirm`);
+  });
+
+  it("a per-task token confirms its own worker's evidence, never the same account's worker on another task", async () => {
+    const scoped = (taskId: string) => ({
+      id: ACCOUNT, teamId: TEAM, level: 'worker', taskScope: { taskId, workspaceId: WORKSPACE, expiresAt: Date.now() + 60_000 },
+    });
+    mockAuthenticateApiKey.mockResolvedValue(scoped('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'));
+    expect((await POST(req(), params())).status).toBe(403);
+    expect(mockEvidenceFindFirst).not.toHaveBeenCalled();
+    expect(mockConfirm).not.toHaveBeenCalled();
+    mockAuthenticateApiKey.mockResolvedValue(scoped(TASK));
+    expect((await POST(req(), params())).status).toBe(200);
+    expect(mockConfirm).toHaveBeenCalledTimes(1);
   });
 
   it('returns 403 when the worker team does not match the caller team', async () => {

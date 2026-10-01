@@ -3,7 +3,7 @@ import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { evidenceObjects, workers } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { confirmEvidenceUpload } from '@/lib/evidence-confirm';
 import type { EvidenceObjectRow } from '@/lib/evidence-read';
 
@@ -17,7 +17,8 @@ import type { EvidenceObjectRow } from '@/lib/evidence-read';
  * `pending` and the read routes refuse it.
  *
  * Authorization matches evidence-upload-url: the caller's account owns the
- * worker and shares its team, and the evidence row must be this worker's.
+ * worker and shares its team (a per-task token: the worker on its own task),
+ * and the evidence row must be this worker's.
  *
  * Idempotent: a row that is no longer pending is reported as it stands.
  * Never a 5xx: a bucket that cannot be checked right now is a 424 and the row
@@ -37,7 +38,7 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -45,13 +46,13 @@ export async function POST(
   try {
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, id),
-      columns: { id: true, accountId: true, workspaceId: true },
+      columns: { id: true, accountId: true, workspaceId: true, taskId: true },
       with: { workspace: { columns: { teamId: true } } },
     });
     if (!worker) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    if (!worker.accountId || worker.accountId !== account.id) {
+    if (!worker.accountId || worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     if (!worker.workspaceId || !worker.workspace?.teamId || worker.workspace.teamId !== account.teamId) {
