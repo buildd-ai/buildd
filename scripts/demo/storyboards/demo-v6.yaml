@@ -1,47 +1,42 @@
-# The v4 product demo (scripts/demo/renderer/): calm, one idea per shot.
+# The v6 product demo (scripts/demo/renderer/cuts-v6.ts): v5a (warm dark)
+# polished, shot in both themes (v6a is dark; the site beats come in dark and light). The floating canvas Ask button is hidden on every shot
+# (and recorded as a highlight target, so the renderer can prove it is absent).
 #
-#   bun run demo:shoot scripts/demo/storyboards/demo-v4.yaml --out <dir>
-#   bun run demo:render --shots <dir>/demo-v4 --out <video dir>
-#
-# Beats: ask in chat -> it recalls and drafts -> confirm -> keep a standing rule
-# -> fan-out on the Board -> the fleet at peak -> the question on a phone ->
-# visual review, approved by a person -> the completion record.
-#
-# Keys in {braces} are dataset keys from the story JSON (see multi-currency.yaml).
-# One theme: the directive card's Save is a real write, so a second theme would
-# find it already saved.
+#   bun run demo:shoot scripts/demo/storyboards/demo-v6.yaml --out <dir>
+#   bun run demo:render --shots <dir>/demo-v6 --out <video dir>     # v6a + v6x
 story: ../stories/multi-currency.json
-name: demo-v4
+name: demo-v6
 viewport: { width: 1440, height: 810, scale: 2 }
 viewports: { phone: { width: 390, height: 844, scale: 3 } }
-themes: [dark]
+themes: [dark, light]
+hide: [canvas-ask]
 highlight:
   - chat-composer
   - tool-call-group
   - tool-call-row
   - approval-card
-  - approval-confirm
+  - approval-draft-criteria
+  - kit-approval-edit
+  - kit-approval-confirm
+  - canvas-ask
+  - visual-review-route
   - object-card
-  - chat-pane
   - directive-card
   - directive-save
   - standing-rules
   - standing-rule
   - mission-board
   - board-tile
+  - goal-band
   - home-fleet
   - fleet-slot
-  - respond-question-hero
+  - fleet-runner
+  - home-stat-strip
   - question-option
-  - visual-review-strip
   - visual-review-thumb
-  - visual-review-review-button
   - visual-review-deck
   - deck-looks-right
-  - deck-toast
-  - goal-band
-  - goal-criterion
-  - pr-outcome
+  - mission-completion-record
 steps:
   # 1. The goal, asked in one sentence (typed, never sent).
   - id: s01-ask
@@ -50,32 +45,42 @@ steps:
     type: { into: '[data-testid="chat-composer"] textarea', text: "What would it take to bill customers in their own currency?", frames: 16 }
     hold: 600
 
-  # 2. The whole thread, unclipped: the renderer pans from the read-only tool
-  # rows (one is a recalled decision) down to the approval card and its Confirm.
+  # 2. The thread, unclipped: tool rows tick in, the recall row, the approval.
   - id: s02-thread
     goto: /app/chat/{C1}
     waitFor: [tool-call-group, approval-card]
     fullPage: true
+    highlightText: ["Nothing in flight touches currency."]
     hold: 900
 
-  # 3. Confirmed (t=0): the mission docks beside the chat, and the turn offers
-  # "From now on, keep the public API backward compatible" as a standing rule.
+  # 2b. The spec is the draft card above (Done when, Constraints, Plan), and
+  # you confirm it before any agent starts: a mission's plan then self-approves
+  # (shouldAutoApprovePlan), so this card is the human gate the film shows.
+  # Edit pre-fills the composer with 'Change the draft "…": '; the change is
+  # typed after it (append), never sent.
+  - id: s03b-spec-edit
+    goto: /app/chat/{C1}
+    waitFor: [approval-card, kit-approval-edit]
+    click: kit-approval-edit
+    type: { into: '[data-testid="chat-composer"] textarea', text: "also done when a EUR invoice pays end to end.", frames: 14, append: true }
+    hold: 600
+
+  # 3. Confirmed (t=0). Unclipped too: the rule is Maya's own words, so the
+  # renderer marks them in her bubble before the card comes in below.
   - id: s04-rule-card
     advance: "1:00"
     goto: /app/chat/{C1}
     waitFor: directive-card
-    scrollTo: directive-card
-    scrollAlign: end
-    scrollOffset: 160
+    fullPage: true
+    highlightText: ["From now on, keep the public API backward compatible."]
+    hold: 900
 
-  # 4. One tap saves it to billing-web (a real POST /api/chat/directives).
   - id: s05-rule-saved
     goto: /app/chat/{C1}
     waitFor: directive-save
     click: directive-save
-    scrollTo: directive-card
-    scrollAlign: end
-    scrollOffset: 160
+    fullPage: true
+    reseedPerTheme: true
     hold: 900
 
   - id: s06-rules-settings
@@ -84,7 +89,7 @@ steps:
     scrollTo: standing-rules
     scrollOffset: -120
 
-  # 5. Fan-out: the Board in phase 1, then the fleet at peak.
+  # 4. Fan-out: the Board in phase 1, then the fleet at peak.
   - id: s07-board
     advance: "4:00"
     goto: /app/missions/{M1}
@@ -96,7 +101,7 @@ steps:
     waitFor: home-fleet
     fullPage: true
 
-  # 6. The question, on the phone (w8 waits on Maya 14:28 -> 16:54).
+  # 5. The question, on the phone (w8 waits on Maya 14:28 -> 16:54).
   - id: s09-question
     advance: "14:35"
     goto: /app/tasks/{T8}/respond
@@ -104,8 +109,7 @@ steps:
     waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
     hold: 700
 
-  # 7. Visual review: the auditor's phone + desktop shots on the Board, then
-  # the review deck, where a person agrees.
+  # 6. Visual review: the shots on the Board, then the deck a person agrees in.
   - id: s10-screens
     advance: "25:40"
     goto: /app/missions/{M1}
@@ -123,21 +127,21 @@ steps:
     goto: /app/missions/{M1}
     waitFor: mission-screens-row
     click: [mission-screens-row, deck-looks-right]
+    reseedPerTheme: true
     hold: 1500
 
-  # 8. Done: the completion record.
+  # 7. Done: the completion record.
   - id: s13-complete
     advance: end
     goto: /app/missions/{M1}
-    waitFor: mission-board
+    waitFor: mission-completion-record
 
-  # Last, because answering is a real write: on the demo stack (no runner) it
-  # files a "Continue:" task that would sit on the Board to the end. Going back
-  # to 14:35 re-seeds, so nothing after this sees it.
+  # Last: answering is a real write that files a "Continue:" task.
   - id: s14-answered
     advance: "14:35"
     goto: /app/tasks/{T8}/respond
     viewports: [phone]
     waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
     click: '[data-testid="chat-object-sheet"] [data-testid="question-option"]'
+    reseedPerTheme: true
     hold: 6000
