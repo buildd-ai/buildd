@@ -73,7 +73,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
@@ -2838,7 +2838,11 @@ export async function PATCH(
       // this PATCH's values merged over the row, after the budget check (a
       // budget wall is the more specific diagnosis). A turns-less PATCH
       // auto-increments the row by one, so count that turn here too.
+      // Never for an interactive (claim_task, runner = 'mcp') worker: no runner
+      // streams turns or spend for it, so its zeros say nothing about whether a
+      // session died — judging it by this shape discarded real verdicts.
       const isSilentStartCompletion = status === 'completed' && !shouldAutoRetry && !completionBudgetError &&
+        worker.runner !== INTERACTIVE_WORKER_RUNNER &&
         isSilentStartShape({
           turns: typeof updates.turns === 'number'
             ? updates.turns
