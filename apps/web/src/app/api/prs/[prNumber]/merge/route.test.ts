@@ -89,6 +89,17 @@ mock.module('@/lib/pr-landing', () => ({
   },
 }));
 
+// Surface merge ordering door. Default: ordering off — PASS, merge runs as-is.
+const SURFACE_PASS = { blocks: false as const, slot: null };
+const mockCheckSurfaceOrder = mock(async (_input: any) => SURFACE_PASS as any);
+const mockMergeInSurfaceSlot = mock(async (verdict: any, merge: () => Promise<any>) =>
+  verdict.blocks ? { refused: verdict.reason } : { result: await merge() },
+);
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: mockCheckSurfaceOrder,
+  mergeInSurfaceSlot: mockMergeInSurfaceSlot,
+}));
+
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 
@@ -926,5 +937,84 @@ describe('POST /api/prs/[prNumber]/merge — red CI and the landing function', (
     const data = await res.json();
     expect(data.reviewGateBlocked).toBe(true);
     expect(data.error).toContain('requested changes');
+  });
+});
+
+describe('POST /api/prs/[prNumber]/merge — surface merge ordering', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockReset();
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
+    mockInsertValues.mockReset();
+    mockInsertValues.mockResolvedValue(undefined as never);
+    mockCheckSurfaceOrder.mockReset();
+    mockCheckSurfaceOrder.mockResolvedValue(SURFACE_PASS as any);
+    mockMergeInSurfaceSlot.mockClear();
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  const WAIT = {
+    blocks: true, kind: 'ordering', reason: 'waiting for PR #40 to close first: both change Drizzle migrations on dev',
+    counterpartPrNumber: 40, surface: 'Drizzle migrations',
+  };
+
+  it('an ordering wait returns 409 naming the earlier PR, and never merges', async () => {
+    mockCheckSurfaceOrder.mockResolvedValue(WAIT as any);
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.surfaceOrderBlocked).toBe(true);
+    expect(body.waitingOnPr).toBe(40);
+    expect(body.surface).toBe('Drizzle migrations');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ door: 'dashboard', callerOrigin: 'dashboard', prNumber: 42, headSha: 'head-A' });
+  });
+
+  it('a refused reservation returns 409 and never merges', async () => {
+    mockCheckSurfaceOrder.mockResolvedValue({ blocks: false, slot: { surfaces: ['Drizzle migrations'] } } as any);
+    mockMergeInSurfaceSlot.mockImplementationOnce(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }));
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.surfaceOrderBlocked).toBe(true);
+    expect(body.error).toContain('merging on Drizzle migrations');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('"Merge anyway" overrides the review verdict only — it does not jump the surface order', async () => {
+    mockCheckSurfaceOrder.mockResolvedValue(WAIT as any);
+    const [req, ctx] = makeRequest('42', { override: true });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockCheckSurfaceOrder.mock.calls[0][0].override).toBeFalsy();
+  });
+
+  it('a pass merges inside the slot', async () => {
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(mockMergeInSurfaceSlot).toHaveBeenCalledTimes(1);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
   });
 });

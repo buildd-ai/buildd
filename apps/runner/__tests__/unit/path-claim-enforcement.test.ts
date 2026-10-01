@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { execSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -20,6 +20,7 @@ import {
   parseNameStatusZ,
   sweepWorktreeChanges,
   refreshBaseRef,
+  resolvePrBaseRef,
   resolvePathClaimMode,
   backendEnforcement,
   describeEnforcement,
@@ -82,6 +83,25 @@ describe('normalizeWorktreePath', () => {
     try {
       const real = realpathSync(dir);
       expect(normalizeWorktreePath(join(real, 'x.ts'), dir)).toEqual({ ok: true, path: 'x.ts' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test('a symlink inside the worktree that points outside it is an escape', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pce-link-'));
+    try {
+      const root = join(dir, 'tree');
+      const outside = join(dir, 'outside');
+      mkdirSync(root);
+      mkdirSync(outside);
+      writeFileSync(join(outside, 'secret.ts'), 'x');
+      symlinkSync(outside, join(root, 'link'));
+      mkdirSync(join(root, 'src'));
+      // Existing file through the link, and a new file under the linked dir.
+      expect((normalizeWorktreePath('link/secret.ts', root) as any).reason).toBe('escape');
+      expect((normalizeWorktreePath('link/new-file.ts', root) as any).reason).toBe('escape');
+      // An ordinary new file is still fine.
+      expect(normalizeWorktreePath('src/new.ts', root)).toEqual({ ok: true, path: 'src/new.ts' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -266,5 +286,102 @@ describe('sweepWorktreeChanges (real git)', () => {
     expect(sweep.paths).not.toContain('src/landed-later.ts');
     expect(await refreshBaseRef(work, 'not-a-remote-ref')).toBe(false);
     expect(await refreshBaseRef(work, 'origin/no-such-branch')).toBe(false);
+  });
+});
+
+describe('resolvePrBaseRef', () => {
+  const MISSION = { workingBranch: 'mission/m-1', integrationBranchEnabled: true };
+  const HEAD = 'buildd/task-1';
+  const base = (task: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    resolvePrBaseRef({ task: task as any, head: HEAD, worktreeBase: 'origin/dev', fallbacks: ['dev'], ...extra });
+
+  test('a trunk task: trunk', () => {
+    expect(base({ context: {} })).toBe('origin/dev');
+  });
+  test('a mission task: the integration branch, even with no baseBranch in context', () => {
+    expect(base({ missionId: 'm', mission: MISSION, context: {} })).toBe('origin/mission/m-1');
+  });
+  test('a stacked predecessor named in baseBranch is the base', () => {
+    expect(base({ context: { baseBranch: 'buildd/predecessor' } })).toBe('origin/buildd/predecessor');
+  });
+
+  // Every resume flavour except the reviewer loop writes baseBranch == resumeBranch == the
+  // worker's own branch (ci-retry, conflict-retry, answer-resume, stale-workers requeues).
+  // That value is a continuity marker, never the PR base.
+  for (const flavour of ['ci retry', 'conflict retry', 'answer resume', 'infra requeue']) {
+    test(`${flavour}: {resumeBranch: X, baseBranch: X} is a marker, trunk task -> trunk`, () => {
+      expect(base({ context: { resumeBranch: HEAD, baseBranch: HEAD } }, { worktreeBase: `origin/${HEAD}` })).toBe('origin/dev');
+    });
+    test(`${flavour}: {resumeBranch: X, baseBranch: X} on a mission task -> the integration branch`, () => {
+      expect(base({ missionId: 'm', mission: MISSION, context: { resumeBranch: HEAD, baseBranch: HEAD } }, { worktreeBase: `origin/${HEAD}` })).toBe('origin/mission/m-1');
+    });
+  }
+  test('a marker that names the resume branch is ignored even when the head differs', () => {
+    expect(base({ context: { resumeBranch: 'buildd/old', baseBranch: 'buildd/old' } })).toBe('origin/dev');
+  });
+  test('reviewer-loop retry: resume branch plus the real PR base', () => {
+    expect(base({ context: { resumeBranch: HEAD, baseBranch: 'buildd/predecessor' } })).toBe('origin/buildd/predecessor');
+  });
+  test('a mission task whose integration branch is unknown gets no base, never trunk', () => {
+    // missionId present but no mission fields on the claim
+    expect(base({ missionId: 'm', context: { resumeBranch: HEAD, baseBranch: HEAD } })).toBeUndefined();
+    // integration enabled with no working branch
+    expect(base({ missionId: 'm', mission: { integrationBranchEnabled: true, workingBranch: null }, context: {} })).toBeUndefined();
+  });
+  test('a mission task whose integration branch is missing on the remote gets no base, never trunk', () => {
+    expect(base({ missionId: 'm', mission: MISSION, context: {} }, { worktreeFallback: { candidate: 'mission/m-1', reason: 'missing' } })).toBeUndefined();
+  });
+  test('a direct-strategy mission (no integration branch) is a trunk task', () => {
+    expect(base({ missionId: 'm', mission: { integrationBranchEnabled: false, workingBranch: null }, context: {} })).toBe('origin/dev');
+  });
+  test('a missing stacked predecessor: the trunk the worktree was cut from', () => {
+    expect(base({ context: { baseBranch: 'buildd/gone' } }, { worktreeFallback: { candidate: 'buildd/gone', reason: 'missing' } })).toBe('origin/dev');
+  });
+  test('the mission PR task itself bases on trunk', () => {
+    expect(resolvePrBaseRef({
+      task: { title: 'Ship mission: x', taskClass: 'bookkeeping', missionId: 'm', mission: MISSION, context: {} } as any,
+      head: 'mission/m-1', worktreeBase: 'origin/mission/m-1', fallbacks: ['dev'],
+    })).toBe('origin/dev');
+  });
+});
+
+describe('resumed task sweep (real git)', () => {
+  let tmp: string;
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  test('measured against the PR base, a resume keeps earlier attempts\' files and excludes the mission branch history', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'pce-resume-'));
+    const origin = join(tmp, 'origin.git');
+    const work = join(tmp, 'work');
+    const cfg = '-c user.email=t@example.com -c user.name=t -c commit.gpgsign=false';
+    sh(tmp, `git init -q --bare -b dev ${origin}`);
+    sh(tmp, `git clone -q ${origin} ${work}`);
+    sh(work, 'git checkout -q -b dev');
+    writeFileSync(join(work, 'base.ts'), 'base\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m base && git push -q origin dev`);
+    sh(work, 'git checkout -q -b mission/m-1');
+    writeFileSync(join(work, 'sibling.ts'), 'sibling\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m sibling && git push -q origin mission/m-1`);
+    // Attempt 1 committed a.ts on the resume branch (e.g. a collision checkpoint).
+    sh(work, 'git checkout -q -b buildd/task-1');
+    writeFileSync(join(work, 'a.ts'), 'a\n');
+    sh(work, `git add -A && git ${cfg} commit -q -m attempt-1 && git push -q origin buildd/task-1`);
+    // Attempt 2 resumes from it and edits b.ts.
+    writeFileSync(join(work, 'b.ts'), 'b\n');
+
+    // What a CI retry / conflict retry / answer resume actually writes.
+    const context = { resumeBranch: 'buildd/task-1', baseBranch: 'buildd/task-1' };
+    const prBase = resolvePrBaseRef({
+      task: { missionId: 'm', mission: { workingBranch: 'mission/m-1', integrationBranchEnabled: true }, context },
+      head: 'buildd/task-1', worktreeBase: 'origin/buildd/task-1', fallbacks: ['dev'],
+    });
+    expect(prBase).toBe('origin/mission/m-1');
+    const sweep = sweepWorktreeChanges(work, prBase);
+    expect(sweep.baseResolved).toBe(true);
+    expect(sweep.paths).toEqual(['a.ts', 'b.ts']);
+    expect(sweep.paths).not.toContain('sibling.ts');
+
+    // The bug: measuring against the ref the worktree was cut from loses a.ts.
+    expect(sweepWorktreeChanges(work, 'origin/buildd/task-1').paths).toEqual(['b.ts']);
   });
 });

@@ -1824,7 +1824,11 @@ export interface PathCollisionNotice {
 
 export interface PrScopeRecord {
   prNumber: number;
-  status: 'complete' | 'incomplete' | 'closed' | 'revision_conflict';
+  /**
+   * `live_writer`: the PR owner's worker was live, so its own declaration was
+   * left whole (a remote snapshot cannot see its dirty worktree).
+   */
+  status: 'complete' | 'incomplete' | 'closed' | 'revision_conflict' | 'live_writer';
   reason: string | null;
   headSha: string | null;
   baseSha: string | null;
@@ -1832,6 +1836,8 @@ export interface PrScopeRecord {
   fileCount: number | null;
   /** Paths this reconciliation gave back. */
   dropped: string[];
+  /** Paths an earlier reconciliation dropped that this read found in the diff, put back. */
+  restored?: string[];
   readAt: string;
 }
 

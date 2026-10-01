@@ -60,6 +60,9 @@ const PERSISTED_FIELDS = [
   // Enforce-mode path claims: the collision a deferral was based on, kept with
   // the record so the local history shows why the session ended.
   'pathClaimMode', 'pathCollision',
+  // The refs a checkpoint sweep measures against. Without them a restored
+  // worker sweeps with an empty committed half.
+  'worktreeBaseRef', 'prBaseRef',
 ] as const;
 
 // Bounds to keep files reasonable
@@ -279,6 +282,8 @@ export function loadAllWorkers(): LocalWorker[] {
         output: (data.output as LocalWorker['output']) || [],
         teamState: data.teamState as LocalWorker['teamState'],
         worktreePath: data.worktreePath as string | undefined,
+        worktreeBaseRef: data.worktreeBaseRef as string | undefined,
+        prBaseRef: data.prBaseRef as string | undefined,
         promptSuggestions: data.promptSuggestions as string[] | undefined,
         lastAssistantMessage: data.lastAssistantMessage as string | undefined,
         // Transient defaults
@@ -349,6 +354,8 @@ export function loadWorker(workerId: string): LocalWorker | null {
       output: (data.output as LocalWorker['output']) || [],
       teamState: data.teamState as LocalWorker['teamState'],
       worktreePath: data.worktreePath as string | undefined,
+      worktreeBaseRef: data.worktreeBaseRef as string | undefined,
+      prBaseRef: data.prBaseRef as string | undefined,
       promptSuggestions: data.promptSuggestions as string[] | undefined,
       lastAssistantMessage: data.lastAssistantMessage as string | undefined,
       hasNewActivity: false,

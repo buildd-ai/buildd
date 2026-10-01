@@ -25,6 +25,13 @@
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
+import {
+  resolveTaskPrBase,
+  missionIntegrationBase,
+  isMissionPrTask,
+  type MissionIntegrationFields,
+  type TaskPrBaseTask,
+} from '@buildd/core/mission-integration';
 
 export type PathClaimMode = 'advisory' | 'enforce';
 
@@ -83,14 +90,44 @@ export function normalizeWorktreePath(raw: string, worktreeRoot: string): Normal
   if (!trimmed) return { ok: false, reason: 'empty', raw: String(raw) };
   if (trimmed.startsWith('~')) return { ok: false, reason: 'escape', raw: trimmed };
 
-  const roots = [...new Set([resolve(worktreeRoot), realpathOrSelf(resolve(worktreeRoot))])];
+  const realRoot = realpathOrSelf(resolve(worktreeRoot));
+  const roots = [...new Set([resolve(worktreeRoot), realRoot])];
   const abs = isAbsolute(trimmed) ? resolve(trimmed) : resolve(roots[0], trimmed);
   for (const root of roots) {
     const rel = relative(root, abs);
     if (rel === '') return { ok: false, reason: 'root', raw: trimmed };
-    if (!rel.startsWith('..') && !isAbsolute(rel)) return { ok: true, path: toPosix(rel) };
+    if (!rel.startsWith('..') && !isAbsolute(rel)) {
+      // Lexically inside. A symlink inside the worktree can still point out of
+      // it, so the nearest existing ancestor's realpath must stay inside too.
+      const real = realpathOfNearestExisting(abs, root);
+      if (real && !within(realRoot, real)) return { ok: false, reason: 'escape', raw: trimmed };
+      return { ok: true, path: toPosix(rel) };
+    }
   }
   return { ok: false, reason: 'escape', raw: trimmed };
+}
+
+function within(root: string, p: string): boolean {
+  const rel = relative(root, p);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * realpath of `p`, or of its closest existing ancestor strictly below `root`
+ * (a new file's directory). Null when nothing below the root exists yet: the
+ * root itself is already accounted for.
+ */
+function realpathOfNearestExisting(p: string, root: string): string | null {
+  let cur = p;
+  while (cur !== root && within(root, cur)) {
+    try {
+      if (fs.existsSync(cur)) return realpathOrSelf(cur);
+    } catch { /* try the parent */ }
+    const parent = resolve(cur, '..');
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
 }
 
 /**
@@ -252,6 +289,83 @@ export function sweepWorktreeChanges(worktreePath: string, baseRef: string | nul
   result.paths = [...union].sort();
   if (errors.length > 0) result.error = errors.join('; ');
   return result;
+}
+
+/**
+ * The ref a task's PR is compared against, which is what a checkpoint sweep
+ * must measure the committed half against. It is not the ref the worktree was
+ * cut from: on a resume that is the prior attempt's branch, and
+ * `merge-base(HEAD, resume branch)` drops every file earlier attempts
+ * committed. Their leases were released when they went terminal, so the sweep
+ * would push them without ever re-acquiring them.
+ *
+ * Derived from `resolveTaskPrBase`, the same rule the prompt and `create_pr`
+ * use, so the three cannot disagree. In particular a `context.baseBranch` that
+ * equals the task's own head (or its `resumeBranch`) is the continuity marker
+ * CI retries, conflict retries, answer resumes and infra requeues all write,
+ * never a base; a mission task takes its integration branch from the mission.
+ *
+ * Returns undefined, never trunk, when this is a mission task whose base cannot
+ * be named (mission fields missing from the claim, or the integration branch
+ * missing on the remote): measuring a mission task against trunk would lease
+ * the integration branch's whole history. With no base the sweep reports only
+ * uncommitted changes.
+ */
+export function resolvePrBaseRef(opts: {
+  task: (TaskPrBaseTask & {
+    missionId?: string | null;
+    mission?: MissionIntegrationFields | null;
+    context?: Record<string, unknown> | null;
+  }) | null | undefined;
+  /** The worker's own branch after setup (the resume branch on a resume). */
+  head: string | null | undefined;
+  /** The ref the worktree was actually cut from (setupWorktree's `base`). */
+  worktreeBase: string | null | undefined;
+  /** Trunk-ward fallbacks, most specific first (targetBranch, defaultBranch). */
+  fallbacks: Array<string | null | undefined>;
+  /** setupWorktree's fallback: a candidate base that was missing/diverged. */
+  worktreeFallback?: { candidate: string; reason: 'missing' | 'diverged' } | null;
+}): string | undefined {
+  const task = opts.task ?? {};
+  const ctx = (task.context ?? {}) as Record<string, unknown>;
+  const resume = typeof ctx.resumeBranch === 'string' && ctx.resumeBranch ? ctx.resumeBranch : undefined;
+  // resolveTaskPrBase already ignores baseBranch == head; a baseBranch naming
+  // the resume branch is the same marker even if the head was diverted.
+  const context = resume && ctx.baseBranch === resume
+    ? Object.fromEntries(Object.entries(ctx).filter(([k]) => k !== 'baseBranch'))
+    : ctx;
+  const mission = task.mission ?? null;
+  const missingIntegration = !!opts.worktreeFallback && opts.worktreeFallback.reason === 'missing'
+    && opts.worktreeFallback.candidate === missionIntegrationBase(mission);
+
+  const r = resolveTaskPrBase({
+    mission,
+    task: { title: task.title, taskClass: task.taskClass, context },
+    head: opts.head ?? null,
+    integrationBaseMissing: missingIntegration,
+  });
+  const isMissionPrOwner = isMissionPrTask({ title: task.title, taskClass: task.taskClass });
+  // A mission task whose integration branch cannot be named.
+  const missionBaseUnknown = !isMissionPrOwner && !!task.missionId && (
+    mission == null
+    || (!!mission.integrationBranchEnabled && !missionIntegrationBase(mission))
+    || missingIntegration
+  );
+
+  if (r.base) {
+    // A stacked predecessor that is gone: the worktree (and the PR) fell back to trunk.
+    const fb = opts.worktreeFallback;
+    if (fb && fb.reason === 'missing' && fb.candidate === r.base && r.source !== 'mission_integration') {
+      return opts.worktreeBase || undefined;
+    }
+    return `origin/${r.base}`;
+  }
+  if (missionBaseUnknown) return undefined;
+  for (const f of opts.fallbacks) {
+    const v = f?.trim();
+    if (v) return `origin/${v}`;
+  }
+  return undefined;
 }
 
 /**

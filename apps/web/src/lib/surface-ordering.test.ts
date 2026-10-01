@@ -23,7 +23,9 @@ import {
   openIntentsOnSurfacesWhere,
   ownOpenIntentsWhere,
   reservationTakeoverWhere,
+  reservationLaneWhere,
   intentInsertIfAbsentSql,
+  sameBaseLane,
   type IntentRow,
   type SurfaceOrderingDeps,
   type GuardInput,
@@ -56,9 +58,13 @@ const CONFIG = {
 
 const t0 = new Date('2026-01-01T00:00:00Z').getTime();
 const at = (mins: number) => new Date(t0 + mins * 60_000);
-const row = (prNumber: number | null, surface: string, mins: number, taskId: string | null = `task-${prNumber}`): IntentRow => ({
-  prNumber, surface, createdAt: at(mins), taskId,
+const row = (prNumber: number | null, surface: string, mins: number, taskId: string | null = `task-${prNumber}`, baseRef: string | null = null): IntentRow => ({
+  prNumber, surface, createdAt: at(mins), taskId, baseRef,
 });
+/** A row recorded with its base branch. */
+const on = (baseRef: string, prNumber: number, surface: string, mins: number): IntentRow => row(prNumber, surface, mins, `task-${prNumber}`, baseRef);
+const TRUNK = 'dev';
+const MISSION_BRANCH = 'mission/abcd1234-integration';
 
 // ── Config / matching ────────────────────────────────────────────────────────
 
@@ -207,31 +213,179 @@ describe('predicates', () => {
     expect(q.params).toContain(7);
     expect(q.params).toContain(LOCK);
   });
+
+  it('intent insert records the PR base branch', () => {
+    const q = render(intentInsertIfAbsentSql({ workspaceId: 'ws-1', surface: LOCK, taskId: null, prNumber: 7, branch: 'b', headSha: 'h', baseRef: MISSION_BRANCH }));
+    expect(q.sql).toMatch(/"base_ref"/);
+    expect(q.params).toContain(MISSION_BRANCH);
+  });
+
+  it('a reservation lane is workspace + repo + base branch + surface', () => {
+    const q = render(reservationLaneWhere('ws-1', 'acme/repo', TRUNK, MIGRATIONS));
+    expect(q.sql).toMatch(/"surface_reservations"\."workspace_id" = \$\d/);
+    expect(q.sql).toMatch(/"surface_reservations"\."repo_full_name" = \$\d/);
+    expect(q.sql).toMatch(/"surface_reservations"\."base_ref" = \$\d/);
+    expect(q.sql).toMatch(/"surface_reservations"\."surface" = \$\d/);
+    expect(q.params).toEqual(['ws-1', 'acme/repo', TRUNK, MIGRATIONS]);
+  });
+});
+
+// ── Base-branch lanes (a slot is "the next migration on THIS base") ───────────
+
+describe('base-branch lanes', () => {
+  it('only a recorded, different base rules a contender out', () => {
+    expect(sameBaseLane(TRUNK, { baseRef: TRUNK })).toBe(true);
+    expect(sameBaseLane(TRUNK, { baseRef: MISSION_BRANCH })).toBe(false);
+    expect(sameBaseLane(TRUNK, { baseRef: null })).toBe(true);
+    expect(sameBaseLane(null, { baseRef: MISSION_BRANCH })).toBe(true);
+  });
+
+  it('a mission PR and its own task PR on the integration branch never wait on each other', () => {
+    // The mission PR (integration -> trunk) recorded its intent first, at its first green CI.
+    const rows = [on(TRUNK, 50, MIGRATIONS, 0), on(MISSION_BRANCH, 51, MIGRATIONS, 5)];
+    expect(evaluateSurfaceOrder(51, rows).blockers).toEqual([]);
+    expect(evaluateSurfaceOrder(50, rows).blockers).toEqual([]);
+    // ...and with the task PR first, the mission PR still does not wait on it.
+    const flipped = [on(MISSION_BRANCH, 51, MIGRATIONS, 0), on(TRUNK, 50, MIGRATIONS, 5)];
+    expect(evaluateSurfaceOrder(50, flipped).blockers).toEqual([]);
+  });
+
+  it('a trunk PR does not wait behind a PR that only targets a mission branch', () => {
+    const rows = [on(MISSION_BRANCH, 51, MIGRATIONS, 0), on(TRUNK, 60, MIGRATIONS, 5)];
+    expect(evaluateSurfaceOrder(60, rows).blockers).toEqual([]);
+  });
+
+  it('the mission PR going to trunk still serializes against other trunk PRs', () => {
+    const rows = [on(TRUNK, 50, MIGRATIONS, 0), on(MISSION_BRANCH, 51, MIGRATIONS, 1), on(TRUNK, 60, MIGRATIONS, 5)];
+    expect(evaluateSurfaceOrder(60, rows).blockers.map((b) => b.prNumber)).toEqual([50]);
+    expect(evaluateSurfaceOrder(50, rows).blockers).toEqual([]);
+  });
+
+  it('two task PRs on the same mission branch serialize with each other', () => {
+    const rows = [on(MISSION_BRANCH, 51, MIGRATIONS, 0), on(MISSION_BRANCH, 52, MIGRATIONS, 5), on(TRUNK, 50, MIGRATIONS, 1)];
+    expect(evaluateSurfaceOrder(52, rows).blockers.map((b) => b.prNumber)).toEqual([51]);
+  });
+
+  it('a contender with no recorded base still counts (conservative)', () => {
+    const rows = [row(10, MIGRATIONS, 0), on(TRUNK, 11, MIGRATIONS, 5)];
+    expect(evaluateSurfaceOrder(11, rows).blockers.map((b) => b.prNumber)).toEqual([10]);
+  });
+
+  it('guard: mission PR vs own task PR — the task PR merges, and so does the mission PR', async () => {
+    const rows = [on(TRUNK, 50, MIGRATIONS, 0), on(MISSION_BRANCH, 51, MIGRATIONS, 5)];
+    const task = harness({}, { rows, scope: { status: 'complete', files: ['packages/core/db/schema.ts'], headSha: 'h51', baseSha: 'b', baseRef: MISSION_BRANCH } });
+    const tv = await guardSurfaceOrdering(input({ prNumber: 51, headSha: 'h51' }), task.deps);
+    expect(tv.blocks).toBe(false);
+    if (tv.blocks) throw new Error('unreachable');
+    expect(tv.slot?.baseRef).toBe(MISSION_BRANCH);
+
+    const mission = harness({}, { rows, scope: { status: 'complete', files: ['packages/core/db/schema.ts'], headSha: 'h50', baseSha: 'b', baseRef: TRUNK } });
+    expect((await guardSurfaceOrdering(input({ prNumber: 50, headSha: 'h50' }), mission.deps)).blocks).toBe(false);
+  });
+
+  it('guard: a trunk PR does not wait behind a mission-branch-only PR', async () => {
+    const h = harness({}, { rows: [on(MISSION_BRANCH, 51, MIGRATIONS, 0), on(TRUNK, 11, MIGRATIONS, 5)] });
+    expect((await guardSurfaceOrdering(input(), h.deps)).blocks).toBe(false);
+  });
+
+  it('guard: an unrecorded-base blocker that GitHub says lands elsewhere is dropped, stamped, and ignored by the recheck', async () => {
+    const h = harness({}, { rows: [row(51, MIGRATIONS, 0), on(TRUNK, 11, MIGRATIONS, 5)], prBases: { 51: MISSION_BRANCH } });
+    const v = await guardSurfaceOrdering(input(), h.deps);
+    expect(v.blocks).toBe(false);
+    if (v.blocks) throw new Error('unreachable');
+    expect(h.stamped).toEqual([{ prNumber: 51, baseRef: MISSION_BRANCH }]);
+    expect(v.slot?.ignorePrs).toEqual([51]);
+  });
+
+  it('guard: an unrecorded-base blocker on the same base still defers', async () => {
+    const h = harness({}, { rows: [row(10, MIGRATIONS, 0), on(TRUNK, 11, MIGRATIONS, 5)], prBases: { 10: TRUNK } });
+    const v = await guardSurfaceOrdering(input(), h.deps);
+    expect(v.blocks).toBe(true);
+    expect(h.stamped).toEqual([]);
+  });
+
+  it('guard: without a base ref from GitHub, enforce defers as unverified', async () => {
+    const h = harness({}, { scope: { status: 'complete', files: ['packages/core/db/schema.ts'], headSha: 'head-1', baseSha: 'base-1' } });
+    const v = await guardSurfaceOrdering(input(), h.deps);
+    expect(v.blocks).toBe(true);
+    if (!v.blocks) throw new Error('unreachable');
+    expect(v.kind).toBe('unverified');
+  });
+
+  it('slot: the same surface on two bases is two lanes — both reserve', async () => {
+    const store = slotStore();
+    const h = harness({ ...store, loadOpenIntents: async () => [on(TRUNK, 50, MIGRATIONS, 0), on(MISSION_BRANCH, 51, MIGRATIONS, 5)] });
+    const [a, b] = await Promise.all([
+      acquireMergeSlot(slotReq(50, [MIGRATIONS], TRUNK), h.deps),
+      acquireMergeSlot(slotReq(51, [MIGRATIONS], MISSION_BRANCH), h.deps),
+    ]);
+    expect([a.ok, b.ok]).toEqual([true, true]);
+  });
+
+  it('slot recheck: a PR the guard verified on another base does not refuse the slot', async () => {
+    const store = slotStore();
+    const h = harness({ ...store, loadOpenIntents: async () => [row(51, MIGRATIONS, 0), on(TRUNK, 11, MIGRATIONS, 5)] });
+    expect((await acquireMergeSlot(slotReq(11, [MIGRATIONS], TRUNK, [51]), h.deps)).ok).toBe(true);
+    const store2 = slotStore();
+    const h2 = harness({ ...store2, loadOpenIntents: async () => [row(51, MIGRATIONS, 0), on(TRUNK, 11, MIGRATIONS, 5)] });
+    expect((await acquireMergeSlot(slotReq(11, [MIGRATIONS], TRUNK, []), h2.deps)).ok).toBe(false);
+  });
+
+  it('settle: closing a trunk PR wakes the next trunk contender, not a mission-branch PR ahead of it', async () => {
+    const woke: number[] = [];
+    await settleSurfaceIntentsOnClose({ workspaceId: 'ws-1', prNumber: 10 }, {
+      loadOwnOpenSurfaces: async () => ({ surfaces: [MIGRATIONS], baseRef: TRUNK }),
+      closeIntents: async () => {},
+      releaseReservations: async () => {},
+      loadOpenIntents: async () => [on(MISSION_BRANCH, 51, MIGRATIONS, 1), on(TRUNK, 12, MIGRATIONS, 3)],
+      loadGitConfig: async () => CONFIG,
+      redrive: async (_ws: string, n: number) => { woke.push(n); },
+    });
+    expect(woke).toEqual([12]);
+  });
+
+  it('settle: with the closed PR\'s base unknown, the head of every lane is woken', async () => {
+    const woke: number[] = [];
+    await settleSurfaceIntentsOnClose({ workspaceId: 'ws-1', prNumber: 10 }, {
+      loadOwnOpenSurfaces: async () => ({ surfaces: [MIGRATIONS], baseRef: null }),
+      closeIntents: async () => {},
+      releaseReservations: async () => {},
+      loadOpenIntents: async () => [on(MISSION_BRANCH, 51, MIGRATIONS, 1), on(MISSION_BRANCH, 52, MIGRATIONS, 2), on(TRUNK, 12, MIGRATIONS, 3)],
+      loadGitConfig: async () => CONFIG,
+      redrive: async (_ws: string, n: number) => { woke.push(n); },
+    });
+    expect(woke.sort((a, b) => a - b)).toEqual([12, 51]);
+  });
 });
 
 // ── Guard ────────────────────────────────────────────────────────────────────
 
 type Rec = { gate: string; outcome: string; reason: string; detail?: Record<string, unknown> };
 
-function harness(over: Partial<SurfaceOrderingDeps> = {}, state: { rows?: IntentRow[]; scope?: PrScopeRead; prStates?: Record<number, 'open' | 'merged' | 'closed' | 'error'> } = {}) {
+function harness(
+  over: Partial<SurfaceOrderingDeps> = {},
+  state: { rows?: IntentRow[]; scope?: PrScopeRead; prStates?: Record<number, 'open' | 'merged' | 'closed' | 'error'>; prBases?: Record<number, string> } = {},
+) {
   const recorded: Rec[] = [];
   const settled: number[] = [];
-  const reconciled: Array<{ prNumber: number; surfaces: string[] }> = [];
+  const stamped: Array<{ prNumber: number; baseRef: string }> = [];
+  const reconciled: Array<{ prNumber: number; surfaces: string[]; baseRef?: string | null }> = [];
   let rows = state.rows ?? [];
   const deps: SurfaceOrderingDeps = {
-    readScope: async () => state.scope ?? { status: 'complete', files: ['packages/core/db/schema.ts'], headSha: 'head-1', baseSha: 'base-1' },
+    readScope: async () => state.scope ?? { status: 'complete', files: ['packages/core/db/schema.ts'], headSha: 'head-1', baseSha: 'base-1', baseRef: TRUNK },
     reconcileOwnIntents: async (i) => {
-      reconciled.push({ prNumber: i.prNumber, surfaces: i.actualSurfaces });
+      reconciled.push({ prNumber: i.prNumber, surfaces: i.actualSurfaces, baseRef: i.baseRef });
       if (!rows.some((r) => r.prNumber === i.prNumber)) {
-        rows = [...rows, ...i.actualSurfaces.map((s) => row(i.prNumber, s, 1000))];
+        rows = [...rows, ...i.actualSurfaces.map((s) => row(i.prNumber, s, 1000, `task-${i.prNumber}`, i.baseRef))];
       }
     },
     loadOpenIntents: async () => rows,
     readPrState: async (_repo, n) => {
       const s = state.prStates?.[n] ?? 'open';
       if (s === 'error') throw new Error('GitHub 502');
-      return s;
+      return { state: s, baseRef: state.prBases?.[n] ?? TRUNK };
     },
+    stampBaseRef: async (_ws, prNumber, baseRef) => { stamped.push({ prNumber, baseRef }); },
     settleClosedPr: async (_ws, n) => {
       settled.push(n);
       rows = rows.filter((r) => r.prNumber !== n);
@@ -239,7 +393,7 @@ function harness(over: Partial<SurfaceOrderingDeps> = {}, state: { rows?: Intent
     record: (e) => recorded.push(e as Rec),
     ...over,
   };
-  return { deps, recorded, settled, reconciled, setRows: (r: IntentRow[]) => (rows = r) };
+  return { deps, recorded, settled, reconciled, stamped, setRows: (r: IntentRow[]) => (rows = r) };
 }
 
 const input = (over: Partial<GuardInput> = {}): GuardInput => ({
@@ -285,7 +439,7 @@ describe('guardSurfaceOrdering', () => {
     const h = harness({}, { rows: [] });
     const v = await guardSurfaceOrdering(input(), h.deps);
     expect(v.blocks).toBe(false);
-    expect(h.reconciled).toEqual([{ prNumber: 11, surfaces: [MIGRATIONS] }]);
+    expect(h.reconciled).toEqual([{ prNumber: 11, surfaces: [MIGRATIONS], baseRef: TRUNK }]);
     if (v.blocks) throw new Error('unreachable');
     expect(v.slot?.surfaces).toEqual([MIGRATIONS]);
     expect(v.slot?.headSha).toBe('head-1');
@@ -369,7 +523,7 @@ describe('guardSurfaceOrdering', () => {
 
   it('a cross-surface inversion is reported as a distinct warned row', async () => {
     const h = harness({}, {
-      scope: { status: 'complete', files: ['packages/core/db/schema.ts', 'bun.lock'], headSha: 'head-1', baseSha: 'base-1' },
+      scope: { status: 'complete', files: ['packages/core/db/schema.ts', 'bun.lock'], headSha: 'head-1', baseSha: 'base-1', baseRef: TRUNK },
       rows: [row(10, MIGRATIONS, 0), row(11, MIGRATIONS, 5), row(11, LOCK, 1), row(10, LOCK, 6)],
     });
     const v = await guardSurfaceOrdering(input(), h.deps);
@@ -384,33 +538,36 @@ function slotStore() {
   // A faithful in-memory model of the single-statement CAS: a row is taken only
   // when absent, already this PR's, or (with a reconciled token) that exact
   // expired hold.
+  // Keyed like the unique index: (base branch, surface) within one workspace + repo.
   const rows = new Map<string, { prNumber: number; token: string; expiresAt: number; headSha: string }>();
+  const key = (baseRef: string, surface: string) => `${baseRef}|${surface}`;
   let n = 0;
   return {
     rows,
-    tryReserve: async (r: { surface: string; prNumber: number; headSha: string; ttlMs: number; now: number; takeoverToken?: string | null }) => {
-      const cur = rows.get(r.surface);
+    has: (surface: string, baseRef = TRUNK) => rows.has(key(baseRef, surface)),
+    tryReserve: async (r: { baseRef: string; surface: string; prNumber: number; headSha: string; ttlMs: number; now: number; takeoverToken?: string | null }) => {
+      const cur = rows.get(key(r.baseRef, r.surface));
       const takeover = cur && r.takeoverToken && cur.token === r.takeoverToken && cur.expiresAt < r.now;
       if (cur && cur.prNumber !== r.prNumber && !takeover) {
         return { acquired: false as const, holder: { prNumber: cur.prNumber, expiresAt: new Date(cur.expiresAt), token: cur.token } };
       }
       const token = `tok-${++n}`;
-      rows.set(r.surface, { prNumber: r.prNumber, token, expiresAt: r.now + r.ttlMs, headSha: r.headSha });
+      rows.set(key(r.baseRef, r.surface), { prNumber: r.prNumber, token, expiresAt: r.now + r.ttlMs, headSha: r.headSha });
       return { acquired: true as const, token };
     },
-    readHolder: async (_ws: string, _repo: string, surface: string) => {
-      const cur = rows.get(surface);
+    readHolder: async (_ws: string, _repo: string, baseRef: string, surface: string) => {
+      const cur = rows.get(key(baseRef, surface));
       return cur ? { prNumber: cur.prNumber, expiresAt: new Date(cur.expiresAt), token: cur.token } : null;
     },
-    releaseToken: async (_ws: string, _repo: string, surface: string, token: string) => {
-      if (rows.get(surface)?.token === token) rows.delete(surface);
+    releaseToken: async (_ws: string, _repo: string, baseRef: string, surface: string, token: string) => {
+      if (rows.get(key(baseRef, surface))?.token === token) rows.delete(key(baseRef, surface));
     },
   };
 }
 
-const slotReq = (prNumber: number, surfaces = [MIGRATIONS]) => ({
+const slotReq = (prNumber: number, surfaces = [MIGRATIONS], baseRef = TRUNK, ignorePrs: number[] = []) => ({
   workspaceId: 'ws-1', repoFullName: 'acme/repo', installationId: 1, prNumber, headSha: `head-${prNumber}`, baseSha: 'base-1',
-  surfaces, revision: 'rev', taskId: null, workerId: null, door: 'auto-merge', callerOrigin: 'system' as const, gitConfig: CONFIG,
+  baseRef, ignorePrs, surfaces, revision: 'rev', taskId: null, workerId: null, door: 'auto-merge', callerOrigin: 'system' as const, gitConfig: CONFIG,
 });
 
 describe('acquireMergeSlot', () => {
@@ -488,7 +645,7 @@ describe('acquireMergeSlot', () => {
     await acquireMergeSlot(slotReq(9, [MIGRATIONS]), h.deps);
     const r = await acquireMergeSlot(slotReq(2, [LOCK, MIGRATIONS]), h.deps);
     expect(r.ok).toBe(false);
-    expect(store.rows.has(LOCK)).toBe(false);
+    expect(store.has(LOCK)).toBe(false);
   });
 });
 
@@ -499,7 +656,7 @@ describe('settleSurfaceIntentsOnClose', () => {
     const woke: number[] = [];
     let closed: number | null = null;
     const deps = {
-      loadOwnOpenSurfaces: async () => [MIGRATIONS, LOCK],
+      loadOwnOpenSurfaces: async () => ({ surfaces: [MIGRATIONS, LOCK], baseRef: null }),
       closeIntents: async (_ws: string, n: number) => { closed = n; },
       releaseReservations: async () => {},
       loadOpenIntents: async () => [row(11, MIGRATIONS, 5), row(12, MIGRATIONS, 9), row(11, LOCK, 6), row(13, LOCK, 7)],
@@ -515,7 +672,7 @@ describe('settleSurfaceIntentsOnClose', () => {
     const woke: number[] = [];
     let closed = false;
     await settleSurfaceIntentsOnClose({ workspaceId: 'ws-1', prNumber: 10 }, {
-      loadOwnOpenSurfaces: async () => [MIGRATIONS],
+      loadOwnOpenSurfaces: async () => ({ surfaces: [MIGRATIONS], baseRef: TRUNK }),
       closeIntents: async () => { closed = true; },
       releaseReservations: async () => {},
       loadOpenIntents: async () => [row(11, MIGRATIONS, 5)],
@@ -528,7 +685,7 @@ describe('settleSurfaceIntentsOnClose', () => {
 
   it('a wake failure never throws', async () => {
     await settleSurfaceIntentsOnClose({ workspaceId: 'ws-1', prNumber: 10 }, {
-      loadOwnOpenSurfaces: async () => [MIGRATIONS],
+      loadOwnOpenSurfaces: async () => ({ surfaces: [MIGRATIONS], baseRef: TRUNK }),
       closeIntents: async () => {},
       releaseReservations: async () => {},
       loadOpenIntents: async () => [row(11, MIGRATIONS, 5)],

@@ -36,7 +36,7 @@
 
 import type { MergePolicy } from '@buildd/shared';
 import type { MissionIntegrationFields } from '@buildd/core/mission-integration';
-import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import type { LandingOutcome, LandPrInput } from '@/lib/pr-landing';
 import type { LandingMarker } from '@/lib/pr-landing-marker';
 
@@ -81,6 +81,8 @@ export interface LandingTarget extends PrRef {
   owner: { taskId: string | null; workerId: string | null };
   mission: MissionIntegrationFields | null;
   releaseConfig: WorkspaceReleaseConfig | null;
+  /** The workspace gitConfig, already loaded for the target — so surface ordering does not re-read it. */
+  gitConfig?: WorkspaceGitConfig | null;
 }
 
 /** Why a candidate is not handed to `landPr`: it could not act on it, so asking only writes noise. */
@@ -339,6 +341,7 @@ export async function runLandingSweep(
         owner: target.owner,
         mission: target.mission,
         releaseConfig: target.releaseConfig,
+        ...(target.gitConfig !== undefined ? { gitConfig: target.gitConfig } : {}),
       });
 
       result.processed++;

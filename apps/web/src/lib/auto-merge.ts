@@ -509,7 +509,14 @@ export async function tryAutoMergeWorkerPr(params: {
   // (dispatchConflictRetry). A PR waiting behind an earlier PR on a serialized
   // surface must not be mutated; the earlier PR's close re-drives it. Off by
   // default: no reads unless the workspace opted in.
-  const orderWorkspaceId = worker.workspaceId ?? (worker.taskId ? await resolveWorkspaceId(worker.taskId) : null);
+  // Resolved at most once per call: ordering, the review gate and both conflict
+  // paths all need it, and a caller that passes `worker.workspaceId` costs no read.
+  let workspaceIdRead: Promise<string | null> | null = null;
+  const workspaceIdOnce = () =>
+    (workspaceIdRead ??= worker.workspaceId
+      ? Promise.resolve(worker.workspaceId)
+      : worker.taskId ? resolveWorkspaceId(worker.taskId) : Promise.resolve(null));
+  const orderWorkspaceId = await workspaceIdOnce();
   const surfaceOrder = orderWorkspaceId
     ? await checkSurfaceOrder({
         workspaceId: orderWorkspaceId,
@@ -562,7 +569,7 @@ export async function tryAutoMergeWorkerPr(params: {
 
     // Conflict path: dispatch a same-branch retry rather than asking the human.
     if (classifyMergeFailure(safetyCheck.reason) === 'conflict' && worker.taskId) {
-      const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
+      const workspaceId = await workspaceIdOnce();
       if (workspaceId) {
         const dispatchResult = await dispatchConflictRetry({
           workerId: worker.id,
@@ -625,7 +632,7 @@ export async function tryAutoMergeWorkerPr(params: {
   //
   // No override here by construction: nothing unattended may bypass a verdict.
   // A human override lives on the dashboard route, where a person is present.
-  const reviewWorkspaceId = worker.workspaceId ?? (worker.taskId ? await resolveWorkspaceId(worker.taskId) : null);
+  const reviewWorkspaceId = await workspaceIdOnce();
   if (reviewWorkspaceId) {
     const reviewGate = await guardReviewVerdict({
       workspaceId: reviewWorkspaceId,
@@ -722,7 +729,7 @@ export async function tryAutoMergeWorkerPr(params: {
   });
   // Handle race-condition conflict (PR was clean at eval time but dirty at merge time)
   if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
-    const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
+    const workspaceId = await workspaceIdOnce();
     if (workspaceId) {
       const dispatchResult = await dispatchConflictRetry({
         workerId: worker.id,
