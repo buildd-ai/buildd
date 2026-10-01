@@ -145,6 +145,8 @@ export interface MissionCompletionDecision {
    * where the refusal code is `visual_review_open`.
    */
   visualReviewHold?: VisualReviewHold | null;
+  /** The rendered UI files behind `surface_audit_missing`, so a surface can say how many without parsing `reason`. */
+  surfaceAuditPaths?: string[];
 }
 
 export interface VisualReviewHold {
@@ -580,6 +582,7 @@ export async function canCompleteMission(
       ok: false,
       code: 'surface_audit_missing',
       reason: surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source),
+      surfaceAuditPaths: surfaceGate.uiPaths,
     };
   }
 

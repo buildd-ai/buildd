@@ -31,6 +31,7 @@ export type InferenceCapability =
   | 'mission_summary'
   | 'heartbeat_triage'
   | 'task_category'
+  | 'surface_audit_advice'
   | 'task_role_shadow'
   | 'orchestration_manifest'
   | 'orchestration_claim'
@@ -90,6 +91,13 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Task categories',
     description: 'A decision model picks each task\'s category when it is confident. Never changes a category you set, or a review task.',
     costHint: '~$0.00002 per task',
+  },
+  surface_audit_advice: {
+    id: 'surface_audit_advice',
+    kind: 'built_in',
+    label: 'Visual audit advice',
+    description: 'When you open a mission that changed UI with no visual audit, a decision model suggests running the audit or waiving it. Only a suggestion; you always confirm.',
+    costHint: '~$0.00003 per mission, cached',
   },
   task_role_shadow: {
     id: 'task_role_shadow',

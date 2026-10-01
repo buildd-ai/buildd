@@ -285,6 +285,8 @@ export type WaitingOnDescriptor =
       visualReview?: { cells: number; roundCapOpen: boolean; enforced: boolean };
       /** The mission changed UI and no surface audit passed (`surface_audit_missing`). */
       surfaceAudit?: true;
+      /** With `surfaceAudit`: the changed UI files, for a surface that says how many. */
+      surfaceAuditPaths?: string[];
     }
   /**
    * Everything open is on a known self-resolving condition. Resumes by itself.
@@ -537,6 +539,8 @@ export interface MissionCompletionSummary {
   }>;
   /** The visual review hold, in shadow or enforced (`visual_review_open`). */
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
+  /** The rendered UI files behind `surface_audit_missing`. */
+  surfaceAuditPaths?: string[];
 }
 
 // ─── The situation line ───────────────────────────────────────────────────────
@@ -1296,6 +1300,7 @@ function surfaceAuditFact(input: MissionStateInput): Resolution | null {
       label: 'This mission changed UI and has no visual audit',
       detail: input.completion.reason || null,
       surfaceAudit: true,
+      ...(input.completion.surfaceAuditPaths ? { surfaceAuditPaths: input.completion.surfaceAuditPaths } : {}),
     },
     displayState: 'waiting_decision',
     source: 'canCompleteMission',
