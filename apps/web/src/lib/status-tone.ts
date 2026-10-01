@@ -59,6 +59,7 @@ export function missionStateTone(state: MissionDisplayState): StatusTone {
     case 'review':
     case 'complete': return 'success';
     case 'held':
+    case 'stranded':
     case 'stalled':
     case 'awaiting_verification':
     case 'waiting_decision': return 'warning';

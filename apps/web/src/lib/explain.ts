@@ -27,7 +27,8 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, type DependencyRow } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
+import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
 import { loadDependencyRows } from '@/lib/dependency-rows';
 import { derivePrDisplayState } from '@/lib/pr-presentation';
 import { canCompleteMission } from '@/lib/mission-completion';
@@ -37,7 +38,7 @@ import { deriveMissionStateView, type MissionStateInput, type MissionStateView }
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
-import { missionCardProgress, type MissionCardTaskRow } from '@/lib/mission-card-view';
+import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
@@ -178,6 +179,8 @@ const WORKER_WITH = {
     id: true, status: true, prNumber: true, prUrl: true, branch: true,
     prBaseRef: true, prLifecycleStatus: true, mergedAt: true,
     observedTouches: true, error: true, startedAt: true,
+    // The session heartbeat `deriveLocalStrand` reads, and the PR grace window.
+    updatedAt: true, completedAt: true,
     supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
   },
   orderBy: [desc(workers.startedAt)],
@@ -385,6 +388,19 @@ async function viewForMission(missionId: string): Promise<{
   const loadedById = new Map<string, DependencyRow>(foreignDeps);
   for (const t of loaded) loadedById.set(t.id, t);
   const waitingOnOf = (t: LoadedTask) => (t.status === 'pending' ? unmetDependencyIds(t, loadedById) : []);
+  // The card's own reading of the same rows (`ownerUnmergedPrs`,
+  // `deriveLocalStrand`), so a card and this answer cannot disagree on
+  // "waiting on you to merge" or "stranded".
+  const now = Date.now();
+  const strand = deriveLocalStrand({
+    executor: m.executor ?? null,
+    isHeld: m.isHeld === true,
+    status: String(m.status),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    tasks: loaded as any,
+    dependencies: foreignDeps,
+    now,
+  });
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
   // mission into a `failing` state; reported separately below instead.
@@ -411,7 +427,14 @@ async function viewForMission(missionId: string): Promise<{
     completion,
     wait,
     workState,
-    openTasks: openTasks.map(t => ({ id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t) })),
+    openTasks: openTasks.map(t => ({
+      id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
+      ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
+    })),
+    localStrand: strand
+      ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: String(m.status), workspaceId: (m.workspaceId as string | null) ?? null }) }
+      : null,
+    unmergedPrs: ownerUnmergedPrs(loaded as unknown as MissionCardTaskRow[], now),
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,

@@ -31,6 +31,7 @@ import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { continueOnRunnerBlockedReason } from '@/lib/local-strand';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
 import {
   SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH,
@@ -298,6 +299,13 @@ export async function PATCH(
 
     if (executor !== undefined && executor !== 'runner' && executor !== 'local') {
       return NextResponse.json({ error: 'executor must be "runner" or "local"' }, { status: 400 });
+    }
+
+    // Continue on a runner: the stranded card computes this same refusal at
+    // render time and shows the button disabled with it (lib/local-strand.ts).
+    if (executor === 'runner' && existing.executor === 'local') {
+      const blocked = continueOnRunnerBlockedReason({ status: existing.status, workspaceId: existing.workspaceId ?? null });
+      if (blocked) return NextResponse.json({ error: blocked }, { status: 409 });
     }
 
     if (dependsOnMission !== undefined) {

@@ -37,6 +37,9 @@ import {
   deriveMissionHealth,
   deriveTaskHealthSignal,
   healthToGroup,
+  unmetDependencyIds,
+  unmetDependencyPrs,
+  type DependencyRow,
   type Health,
   type MissionGroup,
   type MissionHealth,
@@ -57,6 +60,7 @@ import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import { deriveCiRedChains } from './ci-red-chain';
+import { continueOnRunnerBlockedReason, deriveLocalStrand, type LocalStrand } from './local-strand';
 
 // ─── Input ────────────────────────────────────────────────────────────────────
 
@@ -120,6 +124,12 @@ export interface MissionCardRow {
   isHeld?: boolean | null;
   /** `missions.executor`: 'local' runs in a person's own session (never HELD). */
   executor?: string | null;
+  /**
+   * `missions.workspaceId`. Read for the "Continue on a runner" refusal
+   * (`continueOnRunnerBlockedReason`); a caller that did not select it gets
+   * the button, and the PATCH route has the last word.
+   */
+  workspaceId?: string | null;
   startAt?: DateLike;
   orchestrationMode?: string | null;
   dependsOnMissionId?: string | null;
@@ -357,6 +367,72 @@ export function summarizeMissionForCard(row: MissionCardRow, opts: { now?: numbe
 }
 
 /**
+ * The task PRs that are the OWNER's to merge, read off the rows: one entry per
+ * PR (a CI-fix attempt adopts its parent's PR, so the same PR sits on several
+ * worker rows, and the webhook stamps the lifecycle on the OWNER row only —
+ * the attempt's copy stays null, "unknown"). The PR's state is read across all
+ * its rows: any row merged/closed → gone; any row in CI or just green → the
+ * platform's move. And a PR whose task has an open attempt — a reviewer queued
+ * or reviewing, a fix being pushed — is the platform's move too: the pulse
+ * already reads that row as queued, never needs-you, and the card's chip must
+ * come from the same predicate as the action the card offers.
+ *
+ * The card and `explain` both read this, so "waiting on you to merge" means
+ * one thing on both.
+ */
+export function ownerUnmergedPrs(
+  tasks: readonly MissionCardTaskRow[],
+  now: number,
+): Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }> {
+  // Every ancestor of an open attempt: a reviewer on a builder-after-review
+  // attempt still holds the original task's PR.
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  const underOpenAttempt = new Set<string>();
+  for (const t of tasks) {
+    if (t.taskClass !== 'attempt' || !OPEN_TASK.has(t.status)) continue;
+    let parent = t.parentTaskId ? byId.get(t.parentTaskId) : undefined;
+    for (let hops = 0; parent && hops < 10; hops++) {
+      underOpenAttempt.add(parent.id);
+      parent = parent.parentTaskId ? byId.get(parent.parentTaskId) : undefined;
+    }
+  }
+
+  const prRows = new Map<string, Array<{ task: MissionCardTaskRow; w: MissionCardWorkerRow }>>();
+  for (const t of tasks) {
+    if (t.status !== 'completed') continue;
+    const w = latestWorker(t.workers);
+    if (!w?.prUrl) continue;
+    const key = w.prNumber != null ? `#${w.prNumber}` : w.prUrl;
+    prRows.set(key, [...(prRows.get(key) ?? []), { task: t, w }]);
+  }
+  return [...prRows.values()].flatMap(rowsOfPr => {
+    if (rowsOfPr.some(({ w }) => w.mergedAt || w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged')) return [];
+    // CI has not reported yet: auto-merge evaluates on the green transition,
+    // so the platform owns the next step, not the owner. Same rule as the
+    // pulse (`deriveFeedTaskState`: checks_running → moving).
+    if (rowsOfPr.some(({ w }) => deriveFeedPrState(w)?.state === 'checks_running')) return [];
+    // Just green: the webhook is merging it (same predicate as the pulse and the reviewer gate).
+    if (rowsOfPr.some(({ w }) => isGreenAutoMergePending(w.prLifecycleStatus, w.updatedAt, now))) return [];
+    // A reviewer or a fix is on it: the platform owes the next step.
+    if (rowsOfPr.some(({ task }) => underOpenAttempt.has(task.id))) return [];
+    // Name the PR by its owner: the row whose lifecycle the webhook writes.
+    const owner = rowsOfPr.find(({ w }) => w.prLifecycleStatus != null) ?? rowsOfPr[0];
+    return [{ taskId: owner.task.id, title: owner.task.title, prNumber: owner.w.prNumber ?? null, prUrl: owner.w.prUrl ?? null }];
+  });
+}
+
+/** `deriveLocalStrand` over a card's loaded rows. Mission-local dependencies only; a foreign one is unknown, not unmet. */
+export function cardLocalStrand(row: MissionCardRow, now: number): LocalStrand | null {
+  return deriveLocalStrand({
+    executor: row.executor ?? null,
+    isHeld: row.isHeld ?? false,
+    status: row.status,
+    tasks: (row.tasks ?? []) as any,
+    now,
+  });
+}
+
+/**
  * The card's `deriveMissionStateView` input, from the loaded row. A card has
  * no completion decision (`canCompleteMission`): the open-task, failed-task and
  * unmerged-PR facts come straight off the task and worker rows.
@@ -379,33 +455,9 @@ function deriveCardState(
         completionAttempted: s.progress >= 100,
       });
   const integrationPr = deriveMissionIntegrationPr({ mission: row as any, tasks: tasks as any });
-  // One PR, one fact. A CI-fix attempt adopts its parent's PR, so the same PR
-  // sits on several worker rows — and the webhook stamps the lifecycle on the
-  // OWNER row only; the attempt's copy stays null ("unknown"). Judged per row,
-  // that stale copy read as "yours to merge" and filed the mission under
-  // NEEDS YOU while Home's action queue (one row per PR) said nothing did.
-  // So the PR's state is read across all its rows: any row merged/closed →
-  // gone; any row in CI or just green → the platform's move.
-  const prRows = new Map<string, Array<{ task: MissionCardTaskRow; w: MissionCardWorkerRow }>>();
-  for (const t of tasks) {
-    if (t.status !== 'completed') continue;
-    const w = latestWorker(t.workers);
-    if (!w?.prUrl) continue;
-    const key = w.prNumber != null ? `#${w.prNumber}` : w.prUrl;
-    prRows.set(key, [...(prRows.get(key) ?? []), { task: t, w }]);
-  }
-  const unmergedPrs = [...prRows.values()].flatMap(rowsOfPr => {
-    if (rowsOfPr.some(({ w }) => w.mergedAt || w.prLifecycleStatus === 'closed' || w.prLifecycleStatus === 'merged')) return [];
-    // CI has not reported yet: auto-merge evaluates on the green transition,
-    // so the platform owns the next step, not the owner. Same rule as the
-    // pulse (`deriveFeedTaskState`: checks_running → moving).
-    if (rowsOfPr.some(({ w }) => deriveFeedPrState(w)?.state === 'checks_running')) return [];
-    // Just green: the webhook is merging it (same predicate as the pulse and the reviewer gate).
-    if (rowsOfPr.some(({ w }) => isGreenAutoMergePending(w.prLifecycleStatus, w.updatedAt, s.now))) return [];
-    // Name the PR by its owner: the row whose lifecycle the webhook writes.
-    const owner = rowsOfPr.find(({ w }) => w.prLifecycleStatus != null) ?? rowsOfPr[0];
-    return [{ taskId: owner.task.id, title: owner.task.title, prNumber: owner.w.prNumber ?? null, prUrl: owner.w.prUrl ?? null }];
-  });
+  const unmergedPrs = ownerUnmergedPrs(tasks, s.now);
+  const byId = new Map<string, DependencyRow>(tasks.map(t => [t.id, t as DependencyRow]));
+  const strand = cardLocalStrand(row, s.now);
   return deriveMissionStateView({
     status: row.status,
     isHeld: row.isHeld ?? false,
@@ -419,9 +471,15 @@ function deriveCardState(
     hasPendingDeliverableWork: s.hasPendingDeliverableWork,
     criteriaGate,
     criteriaItems: (criteriaState?.criteria ?? []) as any,
+    // Same dependency reading as `explain` and the claim gate: a pending row
+    // waiting on an unmet dependency is a wait, not a stall and not an ask.
     openTasks: deliverables
       .filter(t => OPEN_TASK.has(t.status))
-      .map(t => ({ id: t.id, status: t.status, title: t.title })),
+      .map(t => ({
+        id: t.id, status: t.status, title: t.title,
+        ...(t.status === 'pending' ? { waitingOnTaskIds: unmetDependencyIds(t, byId), waitingOnPrs: unmetDependencyPrs(t, byId) } : {}),
+      })),
+    localStrand: strand ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: row.status, workspaceId: row.workspaceId }) } : null,
     failedTasks: deliverables
       .filter(t => t.status === 'failed')
       // No `infra`: it only matters with a completion decision, which a card never has.

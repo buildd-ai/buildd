@@ -7,6 +7,7 @@ import type { VisualReviewModel } from '@buildd/shared';
 import type { MissionBoardModel } from '@/lib/mission-board';
 import type { UnifiedQuestion } from '@/app/app/(protected)/tasks/[id]/question-hero';
 import type { NowState } from '@/app/app/(protected)/tasks/[id]/task-activity';
+import type { StrandCta } from '@/lib/mission-list-card';
 
 export interface MissionObjectView {
   kind: 'mission';
@@ -33,6 +34,11 @@ export interface MissionObjectView {
    * draws deliverables, so realtime filtering must not key on its rows alone.
    */
   taskIds?: string[];
+  /**
+   * A stranded local mission's "Continue on a runner" call (lib/local-strand.ts),
+   * from the same accessor reading as `stateLabel`. Absent or null otherwise.
+   */
+  strand?: StrandCta | null;
   /** workerId → status as built: the baseline a live status change is measured against. */
   workerStatuses?: Record<string, string>;
   /** Server clock at build time. */

@@ -29,6 +29,7 @@ import {
 } from '@/lib/missions-query';
 import { loadHumanSteeringMarksByMission } from '@/lib/mission-steering-notes';
 import { buildMissionListCard, missionsHeadline, type ListMissionRow } from '@/lib/mission-list-card';
+import { applyStrandChoice } from '@/lib/strand-choice-shadow';
 import { loadWorkerProgress } from '@/lib/worker-progress';
 import { loadTeamRoleColors } from '@/lib/role-colors';
 import { SlotMeter } from '@/components/fleet/SlotMeter';
@@ -224,6 +225,13 @@ export default async function MissionsPage({
       lastRunAt: (obj.schedule as any)?.lastRunAt ? String((obj.schedule as any).lastRunAt) : null,
     };
   });
+
+  // Stranded local missions: the decision shadow looks after the response
+  // (lib/strand-choice-shadow.ts). It can only ever order the two buttons.
+  await applyStrandChoice(
+    missionsList.flatMap((m, i) => (m.list.strand ? [{ row: allMissions[i] as MissionCardRow & { teamId?: string | null }, strand: m.list.strand }] : [])),
+    { now, userId: user.id },
+  );
 
   // Sort: unfinished missions first by lastActivityAt desc, then completed.
   missionsList.sort((a, b) => {

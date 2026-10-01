@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-30
+last_verified: 2026-10-01
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -11,6 +11,13 @@ keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, de
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
+  - id: "local-strand"
+    type: "symbol"
+    name: "deriveLocalStrand"
+    path: "apps/web/src/lib/local-strand.ts"
+  - id: "local-strand-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/local-strand.test.ts"
   - id: "claim-task"
     type: "route"
     method: "POST"
@@ -423,6 +430,43 @@ hold:
   `Local`, grouped with running missions, never HELD / "arm to start" and never
   STALLED / "dispatch a worker". A queued task reads "Waiting for a local
   session to claim …", and `/api/cron/queue-stall` does not report it.
+
+- **LX-6**: stranded. A local, unheld mission is *stranded* when it holds a
+  claimable task (pending, every dependency met by the claim gate's own rule,
+  start floor passed) and nothing has touched any of its workers for
+  `LOCAL_SESSION_QUIET_MS` (30 minutes), measured from the later of the last
+  session touch and the moment the oldest claimable task became claimable.
+  `deriveLocalStrand` (`apps/web/src/lib/local-strand.ts`) is the one
+  predicate; the card, the mission page, `explain` and the chat mission object
+  hand its answer to `deriveMissionStateView` as `localStrand`. A stranded
+  mission reads chip `STRANDED`, list status `Stranded`, kind
+  `awaiting_decision` (so it is an ask: NEEDS YOU), headline "Stranded: no
+  local session for Xm. Continue on a runner?". It outranks failures and
+  unmerged PRs, which stay in `outstanding`: a reviewer nobody claims is why
+  the PR sits. Held still wins (LX-3).
+- **LX-7**: "Continue on a runner". The stranded card's primary action flips
+  `executor` to `runner` through the mission PATCH, which re-dispatches the
+  open tasks. `continueOnRunnerBlockedReason` is the refusal: the PATCH returns
+  `409` with it on a local → runner flip of a terminal mission or one with no
+  workspace, and the card computes the same reason at render time and shows the
+  button disabled with it — never hidden. "Keep local" changes nothing and
+  shows the `claim_task {taskId}` hint.
+- **LX-8**: the decision shadow. With the team's `mission_strand_choice`
+  capability on, a decision model picks `continue-on-runner` |
+  `wait-for-local` | `blocked-on-deps` from structured facts only and logs a
+  `[decision-shadow]` line. In `shadow` mode (`STRAND_CHOICE_MODE`) nothing
+  changes; in `gated` mode a confident pick may only reorder the two buttons.
+  It never flips the executor. Each tap is recorded as a `[decision-label]`
+  line by `POST /api/missions/[id]/strand-choice`.
+- **LX-9**: dependency-blocked work is not an ask (any executor). When every
+  open task is waiting on an unmet dependency, the reading is `waiting`, the
+  headline names the blockers ("1 task is waiting on #3319 and #3317 to
+  merge") and the next action is "Nothing to do yet. Unblocks when #3319 and
+  #3317 merge." — never "Dispatch a worker". A task PR with an open attempt (a
+  reviewer queued or reviewing, a fix being pushed) is the platform's move, not
+  an unmerged PR for the owner (`ownerUnmergedPrs`, read by the card and by
+  `explain` alike). A green PR with nobody on it is still the owner's merge,
+  and that merge is the action the card offers.
 
 Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
 pause: it also blocks the interactive claim, so it was never a fit for that.

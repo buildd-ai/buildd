@@ -30,6 +30,8 @@ import Link from 'next/link';
 import type { CausalLink } from '@/lib/explain-types';
 import { situationDetail, type MissionSituation, type WaitingOnDescriptor, type WaitingOnTone } from '@/lib/mission-state-view';
 import { missionTaskHref } from '@/lib/mission-task-href';
+import { strandCtaFor } from '@/lib/mission-list-card';
+import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 
 /**
  * The element the criteria affordance targets: the Verified pill in the
@@ -115,6 +117,9 @@ export function affordanceFor(
     case 'claim_deferral':
       return taskAffordance('Open the deferred task', focus.taskIds[0], ctx.missionId);
     case 'task':
+      // A stranded local mission's action is the executor flip, which the
+      // block renders as its own two-button call (`ContinueOnRunnerCta`).
+      if (focus.stranded) return null;
       // `warning` is the stall reading (nothing live on the mission); `neutral`
       // is open work with agents running, which is not blocking anything.
       return taskAffordance(
@@ -183,6 +188,7 @@ export interface MissionSituationBlockProps {
 
 export default function MissionSituationBlock({ missionId, situation, because, criteriaReachable }: MissionSituationBlockProps) {
   const affordance = affordanceFor(situation.focus, { missionId, criteriaReachable });
+  const strand = strandCtaFor(missionId, { situation });
   // One explanatory line (F2): the blockers, the next action, or the why.
   const detail = situationDetail(situation, because);
 
@@ -226,6 +232,8 @@ export default function MissionSituationBlock({ missionId, situation, because, c
           {detail.more > 0 && <li className="text-text-muted">+{detail.more} more</li>}
         </ul>
       )}
+
+      {strand && <ContinueOnRunnerCta strand={strand} className="mt-2.5" />}
 
       {affordance && (
         <div className="mt-2.5">

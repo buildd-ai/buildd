@@ -9,6 +9,7 @@ import Link from 'next/link';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import PhaseBar from '@/components/missions/PhaseBar';
 import { StatusWord } from '@/components/missions/MissionListCards';
+import ContinueOnRunnerCta from '@/components/missions/ContinueOnRunnerCta';
 import type { MissionCardView } from '@/lib/mission-card-view';
 import { nextRunLabel, shortDuration, type MissionListCardModel } from '@/lib/mission-list-card';
 
@@ -77,6 +78,13 @@ function Row({ view, model, timeZone }: HomeMissionRow & { timeZone?: string | n
           </>
         )}
       </div>
+      {/* Stranded local mission: the one action that moves it, on the row itself. */}
+      {model.strand && (
+        <div className="min-w-0 md:col-span-3">
+          <p className="mb-2 font-mono text-[11.5px] text-text-secondary">{model.sentence}</p>
+          <ContinueOnRunnerCta strand={model.strand} />
+        </div>
+      )}
     </div>
   );
 }

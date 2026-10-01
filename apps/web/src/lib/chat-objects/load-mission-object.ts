@@ -15,6 +15,8 @@ import { getUserTeamIds, getUserWorkspaceIds, verifyWorkspaceAccess } from '@/li
 import { deriveTaskHealthSignal, foreignDependencyIds } from '@/lib/mission-helpers';
 import { loadDependencyRows } from '@/lib/dependency-rows';
 import { deriveMissionStateView } from '@/lib/mission-state-view';
+import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
+import { strandCtaFor } from '@/lib/mission-list-card';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { buildMissionBoard, toBoardTaskInput } from '@/lib/mission-board';
 import { loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
@@ -121,22 +123,33 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
         items: (goalCriteriaState?.criteria ?? []) as any,
         completionAttempted: progress !== undefined && progress >= 100,
       });
-  const { chip } = deriveMissionStateView({
+  const dependencies = await loadDependencyRows(foreignDependencyIds(mission.tasks || []));
+  const strand = deriveLocalStrand({
+    executor: m.executor ?? null,
+    isHeld: m.isHeld === true,
+    status: mission.status,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    tasks: (mission.tasks || []) as any,
+    dependencies,
+    now,
+  });
+  const state = deriveMissionStateView({
     status: mission.status,
     isHeld: m.isHeld === true,
     executor: m.executor ?? null,
     orchestrationMode: (mission.orchestrationMode as string | null) ?? 'auto',
     activeAgents,
-    health: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || [], {
-      dependencies: await loadDependencyRows(foreignDependencyIds(mission.tasks || [])),
-    }),
+    health: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || [], { dependencies }),
     progress,
     dependsOnMissionId: mission.dependsOnMissionId ?? null,
     criteriaGate,
     criteriaEscalatedAt: m.criteriaEscalatedAt ?? null,
     hasPendingDeliverableWork: computeHasPendingDeliverableWork(mission.tasks || []),
+    localStrand: strand
+      ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: mission.status, workspaceId: mission.workspaceId ?? null }) }
+      : null,
   });
-  const stateLabel = chip?.label ?? mission.status;
+  const stateLabel = state.chip?.label ?? mission.status;
 
   return {
     kind: 'mission',
@@ -146,6 +159,7 @@ export async function loadMissionObject(missionId: string, userId: string): Prom
     goal: missionGoalLine(mission.description),
     status: mission.status,
     stateLabel,
+    strand: strandCtaFor(mission.id, state),
     workspaceName: (mission as any).workspace?.name ?? null,
     conversationId: (m.conversationId as string | null | undefined) ?? null,
     board,
