@@ -11,10 +11,13 @@
  *
  *   api.anthropic.com        -> per resolveModelRoute: an Anthropic-compatible proxy such as
  *                               LiteLLM (`Authorization: Bearer <proxy key>` or `x-api-key`),
- *                               or AI Gateway (`cf-aig-authorization: Bearer <gateway token>`)
+ *                               or AI Gateway (`cf-aig-authorization: Bearer <gateway token>`);
+ *                               only MODEL_API_ROUTES, anything else is refused (403)
  *   github.com (git https)   -> `Authorization: Basic x-access-token:<installation token>`
  *   api.github.com, uploads  -> `Authorization: Bearer <installation token>`
  *   codeload.github.com      -> container auth stripped, nothing added
+ *   buildd-snapshots.invalid -> never forwarded: served by the snapshot store (snapshots.ts),
+ *                               and intercepted only with warm repos on
  *   anything else            -> untouched (open egress in phase 1)
  *
  * Design: docs/design/cloudflare-sandbox-runner.md, Components 4.
@@ -26,6 +29,12 @@ export const AI_GATEWAY_HOST = 'gateway.ai.cloudflare.com';
 /** Hosts whose traffic is routed through the egress handler. */
 export const GITHUB_HOSTS = ['github.com', 'api.github.com', 'uploads.github.com', 'codeload.github.com'] as const;
 export const INTERCEPTED_HOSTS: readonly string[] = [ANTHROPIC_HOST, ...GITHUB_HOSTS];
+/**
+ * Mirrors SNAPSHOT_HOST in snapshots.ts (not imported, to keep this file's
+ * imports empty). outbound.test.ts checks they are equal. Not in
+ * INTERCEPTED_HOSTS: the agent intercepts it only when warm repos are on.
+ */
+export const SNAPSHOT_HOST_NAME = 'buildd-snapshots.invalid';
 
 /**
  * Request headers that can carry a credential. All are removed from a
@@ -56,7 +65,7 @@ export interface EgressEnv {
   /**
    * Base URL of an Anthropic-compatible proxy (LiteLLM and similar). The
    * container's path and query are appended, so `https://litellm.example.com`
-   * receives `/v1/messages`. Setting it selects the proxy route over AI Gateway.
+   * receives `/v1/messages`; only MODEL_API_ROUTES are forwarded. Setting it selects the proxy route over AI Gateway.
    */
   MODEL_PROXY_URL?: string;
   /** Secret. The proxy's key (for LiteLLM, a virtual key or the master key). */
@@ -205,15 +214,18 @@ export interface GithubGrant {
   expiresAt: number;
   owner: string;
   repo: string;
+  /** The task's workspace, as buildd knows it. Keys the snapshot store (snapshots.ts). */
+  workspaceId?: string;
 }
 
 // ── Classification ────────────────────────────────────────────────────────────
 
-export type EgressKind = 'anthropic' | 'github' | 'passthrough';
+export type EgressKind = 'anthropic' | 'github' | 'snapshot' | 'passthrough';
 
 export function classifyEgressHost(hostname: string): EgressKind {
   const host = hostname.toLowerCase().replace(/\.$/, '');
   if (host === ANTHROPIC_HOST) return 'anthropic';
+  if (host === SNAPSHOT_HOST_NAME) return 'snapshot';
   if ((GITHUB_HOSTS as readonly string[]).includes(host)) return 'github';
   return 'passthrough';
 }
@@ -222,12 +234,60 @@ export function classifyEgressHost(hostname: string): EgressKind {
 
 export interface OutboundRequestLike {
   url: string;
+  /** The request method. Required for api.anthropic.com: without it the request is refused. */
+  method?: string;
   headers: Headers | Record<string, string>;
+}
+
+/**
+ * The only api.anthropic.com requests forwarded, on every model route: what
+ * Claude Code sends for a run (messages, token counting, model listing).
+ * Anything else is refused with 403 before a credential is added. `:id` is a
+ * single model-id segment (MODEL_ID_SEGMENT_RE).
+ */
+export const MODEL_API_ROUTES = [
+  { method: 'POST', path: '/v1/messages' },
+  { method: 'POST', path: '/v1/messages/count_tokens' },
+  { method: 'GET', path: '/v1/models' },
+  { method: 'GET', path: '/v1/models/:id' },
+] as const;
+
+const MODEL_ID_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** The path exactly as written in the URL string, before any normalisation. */
+function rawPathOf(rawUrl: string): string | null {
+  const m = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#\\]*([^?#]*)/.exec(rawUrl);
+  return m ? (m[1] ?? null) : null;
+}
+
+/**
+ * Whether a request to api.anthropic.com is one of MODEL_API_ROUTES. The path
+ * must already be canonical: the raw path must equal the parsed one (no dot
+ * segments, backslashes or percent-encoding for the parser to rewrite), and
+ * then match a route exactly (no extra or empty segments, case-sensitive).
+ */
+export function modelApiPathAllowed(method: string | undefined, rawUrl: string): boolean {
+  if (!method) return false;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const path = url.pathname;
+  if (rawPathOf(rawUrl) !== path || path.includes('%')) return false;
+  const m = method.toUpperCase();
+  return MODEL_API_ROUTES.some((r) => {
+    if (r.method !== m) return false;
+    if (!r.path.endsWith('/:id')) return r.path === path;
+    const prefix = r.path.slice(0, -':id'.length);
+    return path.startsWith(prefix) && MODEL_ID_SEGMENT_RE.test(path.slice(prefix.length));
+  });
 }
 
 export type EgressDecision =
   | { action: 'passthrough' }
-  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'none' }
+  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none' }
   | { action: 'reject'; status: number; message: string };
 
 export interface RewriteContext {
@@ -310,6 +370,9 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   }
   const kind = classifyEgressHost(url.hostname);
   if (kind === 'passthrough') return { action: 'passthrough' };
+  // Served in the Worker by the snapshot store; forwarding it would send the
+  // container's snapshot bytes to whatever that name resolves to.
+  if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded' };
 
   // Credentialed hosts are HTTPS only: a plaintext request is refused rather
   // than upgraded, so nothing credentialed is ever built from it.
@@ -327,6 +390,10 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   url.password = '';
 
   if (kind === 'anthropic') {
+    // Judged on the original URL string, before anything is added.
+    if (!modelApiPathAllowed(req.method, req.url)) {
+      return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded` };
+    }
     const route = ctx.model;
     if (route.kind === 'unconfigured') {
       return { action: 'reject', status: 503, message: `model egress is not configured: ${route.reason}` };
@@ -434,7 +501,10 @@ export function parseGithubGrant(body: unknown): GithubGrant {
   if (typeof owner !== 'string' || !owner || typeof repo !== 'string' || !repo) {
     throw new Error('github-token response has no repository owner/name');
   }
-  return { token, expiresAt, owner, repo };
+  const ws = (b as { workspaceId?: unknown } | null)?.workspaceId;
+  const grant: GithubGrant = { token, expiresAt, owner, repo };
+  if (typeof ws === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(ws)) grant.workspaceId = ws;
+  return grant;
 }
 
 // ── Server model endpoint cache (lives in the WorkerAgent) ────────────────────

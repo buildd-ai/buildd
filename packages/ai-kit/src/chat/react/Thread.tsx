@@ -103,6 +103,14 @@ export interface ChatThreadProps {
   steps?(message: ChatMessage, streaming: boolean): readonly StepData[];
   /** The thinking panel's summary while it streams (0.9.0). Default "Thinking". */
   thinkingTitle?: ReactNode;
+  /**
+   * Fold a finished turn (0.13.0): its steps and its tool-call runs collapse
+   * under one line, e.g. "Did 6 steps · filed 2 tasks", that unfolds on tap.
+   * Approvals, text, hand-offs and events stay where they are. `summary`
+   * returning null leaves that turn unfolded (nothing to fold). The app holds
+   * which turns are open, so a re-render never springs one shut.
+   */
+  turnFold?: TurnFold;
   /** The person's name, for "Approved by …". */
   viewerName?: string | null;
   /** Shown instead of the list while there are no messages (`<ChatEmpty>`). */
@@ -116,6 +124,15 @@ export interface ChatThreadProps {
   /** Accessible name of the log. */
   label?: string;
   className?: string;
+}
+
+/** How a finished turn folds (`ChatThread turnFold`, 0.13.0). */
+export interface TurnFold {
+  /** The folded line for a settled assistant message, from its steps. Null: nothing to fold. */
+  summary(message: ChatMessage, steps: readonly StepData[]): ReactNode | null;
+  /** Whether the person unfolded it. */
+  isOpen(message: ChatMessage): boolean;
+  onToggle(message: ChatMessage, open: boolean): void;
 }
 
 function defaultText(text: string) {
@@ -136,7 +153,7 @@ function eventOf(m: ChatMessage, type: string): EventData | null {
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
   renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
-  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingTitle,
+  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingTitle, turnFold,
   viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
   const handoffs = useMemo(() => latestHandoffs(messages), [messages]);
@@ -167,7 +184,8 @@ export function ChatThread({
     return node != null && node !== false ? <div className="kit-msg-foot">{node}</div> : null;
   };
 
-  const partsOf = (m: ChatMessage, ctx: ThreadMessageContext): ReactNode[] => {
+  // `folded`: the turn's calls sit under its folded line, so none of them draw.
+  const partsOf = (m: ChatMessage, ctx: ThreadMessageContext, folded = false): ReactNode[] => {
     const out: ReactNode[] = [];
     // Two or more writes in one message are the rows of one card (0.13.0),
     // drawn where the first of them is.
@@ -178,6 +196,7 @@ export function ChatThread({
     let groupAt = 0;
     const flush = () => {
       if (group.length === 0 || !renderToolGroup) return;
+      if (folded) { group = []; return; }
       const node = renderToolGroup(group, m, ctx);
       // A group the app draws as nothing (e.g. while a panel says it) leaves no frame.
       if (node != null && node !== false) out.push(<div key={`${m.id}:g${groupAt}`}>{node}</div>);
@@ -215,6 +234,7 @@ export function ChatThread({
           group.push(p);
           return;
         }
+        if (folded) return;
         const state = toolRowState(p);
         const summary = toolSummary(p);
         const objects = (p.output as { objects?: ObjectRef[] } | undefined)?.objects;
@@ -273,11 +293,15 @@ export function ChatThread({
         const streaming = live && m === lastAssistant && m === messages.at(-1);
         const ctx: ThreadMessageContext = { index, streaming, messages };
         const steps = m.role === 'assistant' ? (stepsOf ? stepsOf(m, streaming) : thinkingSteps(m.parts, streaming)) : [];
+        const foldLine = m.role === 'assistant' && !streaming && turnFold ? turnFold.summary(m, steps) : null;
+        const foldOpen = foldLine != null && turnFold!.isOpen(m);
         return (
-          <div key={m.id} className="kit-msg" data-role={m.role} data-message-id={m.id} data-streaming={streaming || undefined}>
+          <div key={m.id} className="kit-msg" data-role={m.role} data-message-id={m.id} data-streaming={streaming || undefined} data-folded={(foldLine != null && !foldOpen) || undefined}>
             {head(m, ctx)}
-            {m.role === 'assistant' && <ThinkingPanel steps={steps} streaming={streaming} title={thinkingTitle} />}
-            {partsOf(m, ctx)}
+            {m.role === 'assistant' && (foldLine != null
+              ? <ThinkingPanel steps={steps} streaming={false} summary={foldLine} open={foldOpen} onToggle={open => turnFold!.onToggle(m, open)} />
+              : <ThinkingPanel steps={steps} streaming={streaming} title={thinkingTitle} />)}
+            {partsOf(m, ctx, foldLine != null && !foldOpen)}
             {foot(m, ctx)}
           </div>
         );

@@ -1,4 +1,6 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
+import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
@@ -15,11 +17,11 @@ async function authenticateRequest(req: NextRequest) {
     const apiKey = authHeader?.replace('Bearer ', '') || null;
 
     if (apiKey) {
-        const account = await authenticateApiKey(apiKey);
+        const account = await authenticateApiKey(apiKey, req);
         if (account) {
             // Skills management requires admin-level access. Worker/trigger tokens
             // are rejected here; OAuth JWTs are always resolved as admin.
-            if (account.level !== 'admin') {
+            if (!hasTokenRouteAdminAccess(account, req, req.method === 'GET' ? 'tasks:read' : undefined)) {
                 return { type: 'denied' as const };
             }
             return { type: 'api' as const, account };
@@ -133,6 +135,10 @@ export async function PATCH(
             return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
         }
 
+        // Routing text (role-routing.md §2): validated, never truncated.
+        const routing = parseRoutingPatch(body);
+        if (!routing.ok) return NextResponse.json({ error: routing.error }, { status: 400 });
+
         const updates: Record<string, unknown> = { updatedAt: new Date() };
         if (name !== undefined) updates.name = name;
         if (description !== undefined) updates.description = description;
@@ -142,6 +148,7 @@ export async function PATCH(
         }
         if (source !== undefined) updates.source = source;
         if (metadata !== undefined) updates.metadata = metadata;
+        if (routing.patch) updates.metadata = applyRoutingPatch(metadata ?? existing.metadata, routing.patch);
         if (enabled !== undefined) updates.enabled = enabled;
         if (model !== undefined) updates.model = model;
         if (defaultBackend !== undefined) updates.defaultBackend = normalizeBackend(defaultBackend);

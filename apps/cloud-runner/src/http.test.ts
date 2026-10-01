@@ -9,16 +9,17 @@ const TASK_ID = '0f1e2d3c-aaaa-bbbb-cccc-000011112222';
 
 /** A stub namespace: one fake agent per name, recording calls. */
 function stubAgents() {
-  const byName = new Map<string, { dispatches: number; state: RunState }>();
+  const byName = new Map<string, { dispatches: number; state: RunState; requests: unknown[] }>();
   const lookups: string[] = [];
   const get = async (name: string): Promise<AgentHandle> => {
     lookups.push(name);
     let a = byName.get(name);
-    if (!a) { a = { dispatches: 0, state: { ...INITIAL_STATE } }; byName.set(name, a); }
+    if (!a) { a = { dispatches: 0, state: { ...INITIAL_STATE }, requests: [] }; byName.set(name, a); }
     const agent = a;
     return {
-      async dispatch(): Promise<DispatchResult> {
+      async dispatch(request?: unknown): Promise<DispatchResult> {
         agent.dispatches++;
+        agent.requests.push(request);
         if (agent.state.status === 'running') return { accepted: false, reason: 'already_live', attempt: agent.state.attempt, status: 'running' };
         agent.state = { ...agent.state, taskId: name, status: 'running', attempt: agent.state.attempt + 1 };
         return { accepted: true, attempt: agent.state.attempt };
@@ -95,6 +96,30 @@ describe('POST /dispatch', () => {
     expect(res.status).toBe(202);
     expect(await res.json()).toMatchObject({ accepted: false, reason: 'already_live', attempt: 1 });
     expect(agents.byName.size).toBe(1);
+  });
+
+  test('task.resume carries the worker to continue to the task agent', async () => {
+    const agents = stubAgents();
+    const res = await handleRequest(post({ ...payload, event: 'task.resume', workerId: 'worker-9' }), ENV, agents.get);
+    expect(res.status).toBe(202);
+    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ resumeWorkerId: 'worker-9' }]);
+  });
+
+  test('any other event is a plain dispatch, whatever workerId it carries', async () => {
+    const agents = stubAgents();
+    await handleRequest(post({ ...payload, event: 'task.retry', workerId: 'worker-9' }), ENV, agents.get);
+    expect(agents.byName.get(TASK_ID)!.requests).toEqual([{}]);
+  });
+
+  test.each([
+    ['no workerId', { event: 'task.resume' }],
+    ['a path-like workerId', { event: 'task.resume', workerId: '../w' }],
+    ['a numeric workerId', { event: 'task.resume', workerId: 7 }],
+  ])('task.resume with %s -> 400', async (_label, extra) => {
+    const agents = stubAgents();
+    const res = await handleRequest(post({ ...payload, ...extra }), ENV, agents.get);
+    expect(res.status).toBe(400);
+    expect(agents.lookups).toHaveLength(0);
   });
 
   test.each([

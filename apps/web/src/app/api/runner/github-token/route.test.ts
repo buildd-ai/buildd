@@ -97,6 +97,9 @@ describe('POST /api/runner/github-token', () => {
       token: 'ghs_scoped_token',
       expiresAt: '2026-01-01T01:00:00.000Z',
       repository: { owner: 'acme', name: 'widget', fullName: 'acme/widget' },
+      // The cloud runner keys its per-workspace snapshots by this, so the
+      // container can never choose whose snapshot it reads (warm repos).
+      workspaceId: 'ws-1',
     });
     // Repo identity from the github_repos link, not free text.
     expect(mockMint).toHaveBeenCalledWith({ installationId: 99, repoId: 4242, installedPermissions: { contents: 'write' } });
@@ -153,6 +156,15 @@ describe('POST /api/runner/github-token', () => {
     mockGetPermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: false }]);
     expect((await POST(req())).status).toBe(404);
     mockGetPermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    expect((await POST(req())).status).toBe(200);
+  });
+
+  it('a workspace-restricted token is refused outside its workspaces, even on its own team\'s open workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, scopes: ['workers:write'], workspaceIds: ['ws-other'] });
+    mockGetPermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    expect((await POST(req())).status).toBe(404);
+    expect(mockMint).not.toHaveBeenCalled();
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, scopes: ['workers:write'], workspaceIds: ['ws-1'] });
     expect((await POST(req())).status).toBe(200);
   });
 

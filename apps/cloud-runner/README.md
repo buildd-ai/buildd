@@ -19,6 +19,7 @@ Design: [`docs/design/cloudflare-sandbox-runner.md`](../../docs/design/cloudflar
 | `src/supervisor.ts` | One run: start the container, exec, wait, record, stop, crash report. Runtime-free |
 | `src/lifecycle.ts` | Pure decisions: exit code to outcome, dispatch dedupe, container env |
 | `src/run-report.ts` | The per-run report: phase lines, egress counters, assembly, delivery. Runtime-free |
+| `src/snapshots.ts` | The snapshot store behind the egress-intercepted pseudo-host (warm repos). Runtime-free |
 | `src/eval-report.ts`, `src/eval-client.ts`, `scripts/eval-report.ts` | The eval report over many runs (see Measuring runs) |
 
 The runtime-free files are what the Bun tests cover (`bun run test`); they
@@ -72,12 +73,16 @@ it as above).
 | Name | Kind | Required | Notes |
 |---|---|---|---|
 | `DISPATCH_TOKEN` | secret | yes | Must equal the workspace's `webhookConfig.token` |
-| `BUILDD_API_KEY` | secret | yes | Runner API key passed to the container; also used for the crash report |
+| `BUILDD_API_KEY` | secret | yes | Runner API key. Stays in the Worker: it mints a per-task token for each run (`POST /api/runner/task-token`), and only that token goes into the container. Also used for the crash report |
 | `BUILDD_SERVER` | var | yes | No default: the Worker refuses to dispatch without it, because the runner would fall back to production |
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER`, `BUILDD_ONCE_MAX_WAIT_MS` | var | no | Passed through, same meaning as on a long-lived runner |
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
 | `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
+| `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
+| `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
+| `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
@@ -115,6 +120,14 @@ The report is built from an allowlist of typed fields; identifiers that do not
 look like IDs are dropped. It never holds header values, tokens, URLs, request
 or response bodies, or runner output. Egress counters and timings are lost if
 the agent is evicted mid-run (the orphan report has what was persisted).
+
+The `repo` section (report version 2) says how the repo got onto the disk:
+`source` `warm` or `clone`, `fallbackReason` for a clone (`disabled`,
+`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`, and
+`bytes.{clone,restore,fetch,cache,upload}`. `durationsMs.restoreWarm`,
+`durationsMs.fetch` and `durationsMs.warmUpload` time the warm path the way
+`durationsMs.clone` times a clone. All come from the runner's `BUILDD_PHASE=`,
+`BUILDD_METRIC=` and `BUILDD_REPO_SOURCE=` lines (`docs/runner-container.md`).
 
 ### Eval report
 
@@ -156,8 +169,17 @@ Needs Docker. From this directory:
 
 ```bash
 bunx wrangler dev --var DISPATCH_TOKEN:dev --var BUILDD_API_KEY:<key> --var BUILDD_SERVER:<dev server>
-bash scripts/local-smoke.sh     # end-to-end check against an unreachable server
+bash scripts/local-smoke.sh     # end-to-end check against a fake buildd
 ```
+
+R2 works under `wrangler dev` (local simulation); the smoke keeps it in a
+throwaway `--persist-to` directory. The Worker runs on the host and the
+containers on Docker, and both use one `BUILDD_SERVER` (the Worker for the
+model-endpoint lookup, the GitHub grant and run-report delivery). Docker
+Desktop's `host.docker.internal` resolves only inside containers, so the
+smokes reach their fake buildd at the host's primary address instead,
+detected by `scripts/smoke-host.sh`. Set `SMOKE_HOST_ADDR` to override it;
+the smoke stops if this host cannot reach the fake at that address.
 
 The first run builds the image for linux/amd64, which is slow on an arm64 host
 (emulation).
@@ -223,9 +245,11 @@ Prereqs:
     (or pass `--url`)
   - **AI Gateway: Edit**, only if you set an AI Gateway ID
 - A buildd **admin** API key (`BUILDD_API_KEY`), and a **worker**-level runner
-  key for the containers, ideally scoped to the workspace
-  (`BUILDD_RUNNER_API_KEY` or `--runner-key`). They must differ: containers run
-  task code.
+  key for the dispatcher, ideally scoped to the workspace
+  (`BUILDD_RUNNER_API_KEY` or `--runner-key`). They must differ: the Worker
+  keeps the runner key and uses it to mint each container's per-task token.
+  The dispatcher's key does not need the host-runner flag (Settings → Runners →
+  Runner tokens); leave it off.
 
 Save the token once in buildd: **Settings → Runners → Cloudflare** (API token,
 account ID, optional AI Gateway ID). It is stored encrypted as the team-wide
@@ -298,10 +322,11 @@ registers `ctx.container.interceptOutboundHttps(host, ctx.exports.EgressHandler(
 
 | Host | What the handler does |
 |---|---|
-| `api.anthropic.com` | Forwarded per the model route below (AI Gateway, your proxy, or local-only direct), with that route's credential. Unconfigured: `503`, never forwarded with the placeholder |
+| `api.anthropic.com` | Forwarded per the model route below (AI Gateway, your proxy, or local-only direct), with that route's credential. Only `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models` and `GET /v1/models/<id>`, in canonical form; any other path is refused with `403`. Unconfigured: `503`, never forwarded with the placeholder |
 | `github.com` | `/<owner>/<repo>[.git]/...` of the task's repo: `Authorization: Basic base64(x-access-token:<token>)` (git over HTTPS) |
 | `api.github.com`, `uploads.github.com` | `/repos/<owner>/<repo>/...` of the task's repo, and `api.github.com/graphql`: `Authorization: Bearer <token>` |
 | `codeload.github.com`, and any other path on the hosts above | Nothing added |
+| The OTLP collector's origin, when `OTEL_EXPORTER_OTLP_ENDPOINT` is set | `<OTEL_EXPORTER_OTLP_AUTH_HEADER>: <OTEL_EXPORTER_OTLP_AUTH_VALUE>` (see Telemetry) |
 | anything else | Not intercepted (open egress in phase 1) |
 
 For every intercepted host the handler **first deletes** whatever the
@@ -310,6 +335,63 @@ container sent in `authorization`, `proxy-authorization`, `x-api-key`,
 only then adds the Worker's credential. Plain HTTP and non-443 ports to these
 hosts are refused (`403`). Upstream redirects are returned to the container
 (`redirect: 'manual'`), so an injected credential never follows a redirect.
+
+### Warm repos
+
+Design Phase 2, "Warm repos". Off unless `WARM_REPOS=1` and the `SNAPSHOTS`
+binding exist. Then the container gets `BUILDD_WARM_REPO=1` and
+`BUILDD_SNAPSHOT_URL=https://buildd-snapshots.invalid`, and the agent
+intercepts that pseudo-host (HTTPS only) with the same `EgressHandler`. The
+handler never forwards it: it serves `src/snapshots.ts` against the R2
+binding, streaming bodies both ways.
+
+- **Keys are the Worker's.** The workspace comes from buildd: the
+  `/api/runner/github-token` grant (authenticated with the dispatch token)
+  now carries `workspaceId`, and `WorkerAgent.getSnapshotScope` hands it out
+  only while a run is live. The request path names an operation (`GET /warm`,
+  `POST /warm/begin`, `PUT /warm/<generation>/repo`, ...), never a key, and
+  the query string is ignored. No grant (no GitHub App link, token refused):
+  `503`, and the runner clones as usual.
+- **Layout.** `warm/<workspaceId>/<generation>/{repo.bundle,bun-cache.tar,manifest.json}`
+  plus `warm/<workspaceId>/lock`. The kind comes first so a prefix-only R2
+  lifecycle rule can cover it.
+- **Refresh.** One in flight per workspace: `POST /warm/begin` takes the lock
+  with a conditional put (create-only, or replace a lock older than 30
+  minutes), uploads go only to the lock's generation, and `commit` writes the
+  manifest last, so a half-uploaded generation is never visible. Commit keeps
+  the newest two committed generations and deletes the rest.
+- **Retention.** The lifecycle rule `warm/` at 14 days is the backstop
+  (`deploy.ts` adds it; by hand: `wrangler r2 bucket lifecycle add
+  buildd-cloud-runner-snapshots warm-expiry warm/ --expire-days 14`).
+- **Limits.** `content-length` is required on uploads, at most 5 GB (single
+  part). The runner skips the warm path when the snapshot is over a quarter of
+  free disk.
+
+What goes in a snapshot and what the runner refuses to upload:
+`docs/runner-container.md`, "Warm repos".
+
+### Resumable runs
+
+Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
+`SNAPSHOTS` binding exist. The container then gets `BUILDD_ONCE_PARK=1`.
+
+- **Park on a question.** When the worker waits for an answer with no live
+  session, the runner uploads a park bundle (`PUT /park`, stored at
+  `park/<workspaceId>/<workerId>`), calls `POST /api/workers/[id]/park` and
+  exits 4. The agent records `outcome: parked`, sends no crash report and
+  destroys the container.
+- **Resume.** The answer queues on the same worker, and buildd sends
+  `task.resume` with `workerId`. The agent accepts it only when its last
+  attempt parked that worker. It starts a container and execs
+  `buildd-once --resume-worker <id>`, which restores the warm snapshot and then
+  the bundle, re-attaches (`POST /api/workers/[id]/reattach`) and drains the
+  answer into the old transcript.
+- **Orphan park.** A container still running when the agent restarts gets
+  `buildd-once --park-orphan <id>`, and the agent marks the park and resumes it
+  at once.
+- **Bounds.** At most 3 parks per worker. `parkedUntil` is 24 h, or 4 h for a
+  mission task. The lifecycle rule `park/` at 2 days is the storage backstop.
+- **Local smoke.** `bun run smoke:resume` covers both paths: a question and a mid-run agent restart.
 
 ### Model routes
 
@@ -401,12 +483,75 @@ them on the cloud runner.
 
 The smoke also checks the run report: recorded for every run, egress counters
 from the egress step, clone phase lines and `claimedAt` from a fake claim, and
-the artifact POST. The Worker runs on the host with the container's
-`BUILDD_SERVER`, and Docker Desktop's `host.docker.internal` does not resolve on
-the host, so by default the POST fails and the smoke checks it was tried twice
-and recorded as `error`. With `SMOKE_HOST_ADDR=<an address both reach, e.g. the
-host's LAN IP>` it checks `sent` and the fake buildd's receipt.
+the artifact POST: `sent`, and the fake buildd's receipt.
 
 `scripts/local-smoke.sh` checks the rewrite end to end: see its
 "egress rewrite" step. `SMOKE_MODEL_ROUTE=proxy` runs it with a dummy proxy
 configured alongside the gateway and checks that the proxy wins.
+
+## Telemetry
+
+Claude Code in the container can export its own OpenTelemetry to a collector
+you choose. Off unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set; without it the
+container env and the egress rules are exactly what they are otherwise (pinned
+in `src/otel.test.ts` and `src/supervisor.test.ts`). Logic: `src/otel.ts`.
+
+**What is emitted** (Claude Code's
+[monitoring docs](https://code.claude.com/docs/en/monitoring-usage)):
+
+- **Events, as OTLP logs.** `claude_code.tool_decision` (accept/reject and
+  who decided) and `claude_code.tool_result` (`tool_name`, `tool_use_id`,
+  `success`, `duration_ms`, `error_type`, input/result sizes) for every tool
+  call, `claude_code.api_request` (model, tokens, cost, `duration_ms`) and
+  `claude_code.api_error` for every model call, plus `user_prompt`,
+  `assistant_response` (text redacted) and others. Each carries `session.id`,
+  `prompt.id`, `event.timestamp` and `event.sequence` (a per-process counter),
+  so one dispatch's tool calls read in order, with outcomes, by filtering on
+  `buildd.task_id` + `buildd.attempt` and sorting by `event.sequence`.
+- **Metrics**: cost, tokens, sessions, lines changed, commits, PRs.
+- **Traces (beta, opt-in)**: with `OTEL_TRACES_BETA=1`, spans per prompt
+  (`claude_code.interaction` → `llm_request`, `tool` → `tool.execution`). The
+  container also gets a fresh `TRACEPARENT` per dispatch, which Agent SDK
+  sessions adopt as the parent, so all of one dispatch's spans share a trace
+  ID. The parent span itself is never exported.
+
+Every signal carries the resource attributes `buildd.task_id`,
+`buildd.attempt` and, set by the runner once the claim succeeds,
+`buildd.worker_id`.
+
+**Point it at a collector** (Worker vars, then redeploy):
+
+| Name | Kind | Notes |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | var | Base OTLP/HTTP URL, e.g. `https://otel.example.com`; Claude Code appends `/v1/logs`, `/v1/metrics`, `/v1/traces`. `https:` only (plain `http:` only for `localhost`, `127.0.0.1`, `host.docker.internal`), no userinfo, query or fragment, not a model or GitHub host |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | var | `http/protobuf` (default) or `http/json`. `grpc` is refused: the egress handler forwards HTTP requests |
+| `OTEL_EXPORTER_OTLP_AUTH_HEADER` | secret | Header for the collector credential; default `authorization` |
+| `OTEL_EXPORTER_OTLP_AUTH_VALUE` | secret | The full header value, e.g. `Bearer <token>`. Unset: exports go unauthenticated |
+| `OTEL_LOG_TOOL_DETAILS` | var | `1` to include tool arguments (Bash commands, MCP server/tool names, file paths on spans). Default off |
+| `OTEL_TRACES_BETA` | var | `1` for beta span tracing, see above. Default off |
+
+The container gets `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_LOGS_EXPORTER=otlp`,
+`OTEL_METRICS_EXPORTER=otlp`, the endpoint, protocol and
+`OTEL_RESOURCE_ATTRIBUTES`, and never the credential or any
+`OTEL_EXPORTER_OTLP_*HEADERS`. The egress handler intercepts the collector's
+host and, for its exact origin only (scheme, host and port), deletes the
+container's credential headers and the configured one, then adds the Worker's.
+A look-alike host, a subdomain or another port gets nothing; plain http to an
+https collector is refused. An invalid endpoint fails the run before the
+container starts (`usage`) rather than exporting nothing without saying so.
+
+**Privacy.** By default no content leaves: prompts and responses are redacted
+and tool arguments are omitted, leaving tool names, outcomes, durations and
+sizes. `OTEL_LOG_TOOL_DETAILS=1` is the only content opt-in the cloud runner
+passes; it adds commands and arguments, which can include file paths, repo
+names and anything else an agent types into a shell. Claude Code's
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_CONTENT` and `OTEL_LOG_RAW_API_BODIES`
+are never set and are not on the runner's agent env allowlist
+(`apps/runner/src/agent-env.ts`). Claude Code's standard attributes also
+carry the signed-in Claude account's ids and email, when there is a sign-in. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` (set by the image) blocks
+Anthropic-bound telemetry, not export to your collector.
+
+The smoke's egress step checks the container env, a synthetic OTLP POST
+(credential added by fingerprint, container auth stripped, plain http refused)
+and runs a real `claude -p` in the container, whose exports are logged by the
+echoing handler.

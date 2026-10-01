@@ -11,6 +11,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
+import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import {
   ANSWER_PATH_REASONS,
@@ -46,10 +47,10 @@ const MAX_SILENT_START_ATTEMPTS = 3;
 export const HEARTBEAT_STALE_MS = RUNNER_STALE_CUTOFF_MS;
 
 /** 24 hours — how long a standalone worker can sit in waiting_input before being cleaned up */
-const WAITING_INPUT_STALE_MS = 24 * 60 * 60 * 1000;
+const WAITING_INPUT_STALE_MS = PARK_MAX_MS;
 
 /** 4 hours — shorter timeout for mission tasks since missions are time-sensitive */
-const WAITING_INPUT_MISSION_STALE_MS = 4 * 60 * 60 * 1000;
+const WAITING_INPUT_MISSION_STALE_MS = PARK_MISSION_MAX_MS;
 
 /**
  * Decide what to do with a task whose worker just died:
@@ -481,7 +482,7 @@ export function neverStartedTeamScope(accountId: string, idleStaleThreshold: Dat
  * this rule kills workers in any live status, including ones mid-session.
  * Exported so the scope test can assert it was not touched.
  */
-export function heartbeatOrphanScope(accountId: string, heartbeatCutoff: Date) {
+export function heartbeatOrphanScope(accountId: string, heartbeatCutoff: Date, now: Date = new Date()) {
   return and(
     eq(workers.accountId, accountId),
     inArray(workers.status, [...LIVE_WORKER_STATUSES]),
@@ -490,6 +491,10 @@ export function heartbeatOrphanScope(accountId: string, heartbeatCutoff: Date) {
     // ever vouches for it; this rule would read every one as orphaned. Its
     // liveness is MCP activity, judged by the interactive arm of staleWorkerScope.
     runnerWorkerOnly(),
+    // A worker a cloud runner parked has no container and so no heartbeat, by
+    // design. Its park bundle holds it until parked_until; past that the
+    // waiting_input sweep owns it (lib/worker-park.ts).
+    notParkedScope(now),
   );
 }
 
@@ -548,6 +553,9 @@ export function staleWorkerScope(accountId: string, now: Date = new Date()) {
       inArray(workers.status, ['running', 'starting']),
       lt(workers.updatedAt, staleThreshold),
       runnerWorkerOnly(),
+      // A run the cloud agent parked after a restart is `running` with no
+      // container until a new one re-attaches (lib/worker-park.ts).
+      notParkedScope(now),
     ),
     // Plain idle rule. Account-scoped, and NOT narrowed by `started_at IS
     // NULL` — which is precisely why it cannot be widened to the team.
@@ -573,6 +581,7 @@ export function staleWorkerScope(accountId: string, now: Date = new Date()) {
           AND COALESCE(${workers.outputTokens}, 0) = 0
           AND ${workers.updatedAt} < ${silentStartThreshold}`,
       runnerWorkerOnly(),
+      notParkedScope(now),
     ),
     // The one team-scoped arm, strictly narrower than the idle rule above.
     neverStartedTeamScope(accountId, idleStaleThreshold),
@@ -804,7 +813,7 @@ async function failWorkersOfOfflineRunner(accountId: string, now: Date): Promise
   const orphanedByHeartbeat = await db.query.workers.findMany({
     // Account-scoped on purpose — NOT widened to the team. See
     // heartbeatOrphanScope for why widening it is unsafe either way.
-    where: heartbeatOrphanScope(accountId, heartbeatCutoff),
+    where: heartbeatOrphanScope(accountId, heartbeatCutoff, now),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
@@ -1183,6 +1192,9 @@ export async function cleanupUnresumedAnswers(
       .set({
         status: 'superseded',
         pendingInstructions: null,
+        // A parked cloud worker whose resume never acknowledged (restore
+        // failed, or the container never came) ends here too.
+        parkedUntil: null,
         completedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -1284,7 +1296,9 @@ export async function cleanupUnresumedAnswers(
       if (continuation) {
         try {
           const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
-          await dispatchNewTask(continuation, workspace);
+          // The continuation's runner preference (inherited from the parent).
+          const runnerPreference = continuation.runnerPreference ?? (task.runnerPreference as string | undefined) ?? undefined;
+          await dispatchNewTask(continuation, workspace, runnerPreference ? { runnerPreference } : undefined);
         } catch (err) {
           console.error(`[Worker ${worker.id}] Continuation task dispatch failed:`, err);
         }

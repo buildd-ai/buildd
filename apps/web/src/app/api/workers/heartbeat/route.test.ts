@@ -929,3 +929,50 @@ describe('POST /api/workers/heartbeat', () => {
     });
   });
 });
+
+describe('POST /api/workers/heartbeat — per-task token', () => {
+  const SCOPED = { id: 'account-1', maxConcurrentWorkers: 3, level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 } };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({ onConflictDoUpdate: mock(() => Promise.resolve()) })),
+    });
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
+    leaseUpdateCalls = [];
+    leaseRenewedRows = [];
+    leaseUpdateThrows = null;
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+  });
+
+  it("refuses to heartbeat as a long-lived runner of the same account (and read its viewer token)", async () => {
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://host-runner:8766' },
+    }));
+    expect(res.status).toBe(403);
+    expect(mockHeartbeatsFindFirst).not.toHaveBeenCalled();
+    expect(mockHeartbeatsInsert).not.toHaveBeenCalled();
+  });
+
+  it("refuses another task's one-task run record", async () => {
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://box/once/task-2' },
+    }));
+    expect(res.status).toBe(403);
+  });
+
+  it('heartbeats as its own run and renews only its own task\'s workers', async () => {
+    leaseRenewedRows = [{ id: 'w-1' }];
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://box/once/task-1', activeWorkerIds: ['w-1', 'w-other'] },
+    }));
+    expect(res.status).toBe(200);
+    expect(leaseUpdateCalls.length).toBe(1);
+    expect(JSON.stringify(leaseUpdateCalls[0].where)).toContain('"value":"task-1"');
+  });
+});

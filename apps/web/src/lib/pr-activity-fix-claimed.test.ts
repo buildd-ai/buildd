@@ -14,7 +14,7 @@ mock.module('./pr-activity-comment', () => ({
   taskActivityUrl: (id: string) => `https://buildd.dev/app/tasks/${id}`,
 }));
 
-const { fixAttemptOf, announceFixClaimed } = await import('./pr-activity-fix-claimed');
+const { fixAttemptOf, announceFixClaimed, announceFixEnded } = await import('./pr-activity-fix-claimed');
 
 beforeEach(() => {
   workspaceRow = { id: 'ws-1', githubRepo: { fullName: 'o/r', installation: { installationId: 42 } } };
@@ -70,5 +70,37 @@ describe('announceFixClaimed', () => {
   it('never throws — a claim must not fail on a status comment', async () => {
     mockWorkspacesFindFirst.mockImplementationOnce(async () => { throw new Error('db down'); });
     await expect(announceFixClaimed({ id: 't', workspaceId: 'ws-1', ciRetryPrNumber: 7 })).resolves.toBeUndefined();
+  });
+});
+
+describe('announceFixEnded', () => {
+  it('closes a completed fix on the PR comment, same iteration and task link', async () => {
+    await announceFixEnded({
+      id: 'fix-1', workspaceId: 'ws-1', reviewerRetryPrNumber: 2658, context: { iteration: 1, maxIterations: 3 },
+    }, 'completed');
+    expect(mockAppend).toHaveBeenCalledTimes(1);
+    const arg = (mockAppend.mock.calls[0] as unknown as [Record<string, any>])[0];
+    expect(arg).toMatchObject({
+      prNumber: 2658,
+      onlyIfPresent: true,
+      entry: { kind: 'fix_ended', detail: null, iteration: 1, maxIterations: 3, taskUrl: 'https://buildd.dev/app/tasks/fix-1' },
+    });
+  });
+
+  it('records a failed fix as such', async () => {
+    await announceFixEnded({ id: 'fix-2', workspaceId: 'ws-1', ciRetryPrNumber: 7 }, 'failed');
+    const arg = (mockAppend.mock.calls[0] as unknown as [Record<string, any>])[0];
+    expect(arg.entry).toMatchObject({ kind: 'fix_ended', detail: 'failed' });
+  });
+
+  it('does nothing for a task that is not a fix attempt', async () => {
+    await announceFixEnded({ id: 't', workspaceId: 'ws-1' }, 'completed');
+    expect(mockWorkspacesFindFirst).not.toHaveBeenCalled();
+    expect(mockAppend).not.toHaveBeenCalled();
+  });
+
+  it('never throws — a worker update must not fail on a status comment', async () => {
+    mockWorkspacesFindFirst.mockImplementationOnce(async () => { throw new Error('db down'); });
+    await expect(announceFixEnded({ id: 't', workspaceId: 'ws-1', ciRetryPrNumber: 7 }, 'completed')).resolves.toBeUndefined();
   });
 });

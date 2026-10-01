@@ -11,6 +11,7 @@ import { secrets, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { decrypt, getSecretsProvider } from '@buildd/core/secrets';
 import { maskKeyLast4 } from '@buildd/core/inference-keys';
+import type { LookupAll } from '@buildd/core/net/public-address';
 import { resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
@@ -50,6 +51,8 @@ export interface MaskedAgentEndpoint {
 }
 
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
+/** Test seam: DNS for the verification call's public-address check. */
+type VerifyDeps = { fetcher?: Fetcher; lookup?: LookupAll };
 
 /** The model Verify sends: the budget tier, mapped by the endpoint (§4). */
 export const VERIFY_MODEL = TIER_DEFAULTS.budget.model;
@@ -136,7 +139,7 @@ async function recordHealth(id: string, check: { health: EndpointHealth; error: 
  */
 export async function setTeamAgentEndpoint(
   input: { teamId: string; workspaceId?: unknown; endpoint: unknown },
-  deps: { fetcher?: Fetcher } = {},
+  deps: VerifyDeps = {},
 ): Promise<{ ok: true; endpoint: MaskedAgentEndpoint } | { ok: false; status: number; error: string }> {
   let workspaceId: string | null = null;
   if (input.workspaceId !== undefined && input.workspaceId !== null && input.workspaceId !== '') {
@@ -159,9 +162,12 @@ export async function setTeamAgentEndpoint(
   const route = resolveEndpointFromBlob(v.blob, gateway);
   if (!route) return { ok: false, status: 400, error: 'That endpoint routes nothing.' };
 
-  const check = await verifyAgentEndpoint(route, VERIFY_MODEL, { fetcher: deps.fetcher });
+  const check = await verifyAgentEndpoint(route, VERIFY_MODEL, { fetcher: deps.fetcher, lookup: deps.lookup });
   if (check.health === 'revoked') {
     return { ok: false, status: 400, error: `The endpoint rejected this key. ${check.error ?? ''}`.trim() };
+  }
+  if (check.blocked) {
+    return { ok: false, status: 400, error: `This endpoint URL can't be used: ${check.error}.` };
   }
 
   const id = await getSecretsProvider().replaceScoped(serializeAgentEndpoint(v.blob), {
@@ -206,7 +212,7 @@ export async function deleteTeamAgentEndpoint(teamId: string, workspaceId: strin
  */
 export async function verifyAgentEndpointSecret(
   secretId: string,
-  deps: { fetcher?: Fetcher } = {},
+  deps: VerifyDeps = {},
 ): Promise<{ health: EndpointHealth; error: string | null }> {
   const row = await db.query.secrets.findFirst({
     where: eq(secrets.id, secretId),
@@ -217,8 +223,8 @@ export async function verifyAgentEndpointSecret(
   const gateway = blob?.kind === 'gateway' ? await gatewayFor(row.teamId, row.workspaceId) : null;
   const route = blob ? resolveEndpointFromBlob(blob, gateway) : null;
   const check = route
-    ? await verifyAgentEndpoint(route, VERIFY_MODEL, { fetcher: deps.fetcher })
+    ? await verifyAgentEndpoint(route, VERIFY_MODEL, { fetcher: deps.fetcher, lookup: deps.lookup })
     : { health: 'unknown' as const, error: blob ? 'The team gateway this endpoint uses is not connected.' : 'Stored endpoint could not be read.' };
   await recordHealth(row.id, check);
-  return check;
+  return { health: check.health, error: check.error };
 }

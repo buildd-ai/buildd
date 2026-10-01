@@ -17,10 +17,17 @@
  * provider wins (§2.1), so the key would only be exposure.
  *
  * No endpoint row ⇒ no field written and nothing withheld: the claim is
- * exactly what it was before endpoints existed (§7).
+ * exactly what it was before endpoints existed (§7). The same holds for a
+ * runner that does not declare AGENT_ENDPOINT_RUNNER_FEATURE: it would not
+ * apply `modelEndpoint`, so it must keep the credentials the endpoint replaces.
  */
 import type { ClaimModelEndpoint, ClaimTasksResponse } from '@buildd/shared';
-import { resolveAgentModelRoute, type AgentModelDecision } from '@buildd/core/agent-endpoint';
+import { AGENT_ENDPOINT_RUNNER_FEATURE, resolveAgentModelRoute, type AgentModelDecision } from '@buildd/core/agent-endpoint';
+
+/** True when the claim request declares AGENT_ENDPOINT_RUNNER_FEATURE. */
+export function runnerSupportsAgentEndpoint(runnerFeatures: unknown): boolean {
+  return Array.isArray(runnerFeatures) && runnerFeatures.includes(AGENT_ENDPOINT_RUNNER_FEATURE);
+}
 
 type ClaimedTask = { id: string; workspaceId: string };
 
@@ -32,10 +39,11 @@ export async function attachAgentEndpoints(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   accountId: string,
-  opts: { llmProviderOverride: boolean },
+  opts: { llmProviderOverride: boolean; runnerSupportsEndpoint: boolean },
   deps: AgentEndpointDeps = { resolve: resolveAgentModelRoute },
 ): Promise<Set<string>> {
   const won = new Set<string>();
+  if (!opts.runnerSupportsEndpoint) return won;
   if (claimedWorkers.length === 0 || !process.env.ENCRYPTION_KEY) return won;
   for (const cw of claimedWorkers) {
     const task = (claimedTasks.find(t => t.id === cw.taskId) ?? cw.task) as any;

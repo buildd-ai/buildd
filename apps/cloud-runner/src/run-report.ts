@@ -14,7 +14,11 @@
  */
 import type { CrashReport, RunOutcome } from './lifecycle';
 
-export const RUN_REPORT_VERSION = 1;
+/**
+ * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
+ * 3: adds `resume` (a parked run continued in a new container) and the park durations.
+ */
+export const RUN_REPORT_VERSION = 3;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -36,7 +40,12 @@ export function runLabel(taskId: string, attempt: number): string {
 // runner into the Worker bundle). run-report.test.ts asserts they stay equal.
 
 export const PHASE_LINE_PREFIX = 'BUILDD_PHASE=';
-export const RUN_PHASES = ['clone_start', 'clone_end', 'install_start', 'install_end'] as const;
+export const RUN_PHASES = [
+  'clone_start', 'clone_end', 'install_start', 'install_end',
+  'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
+  'warm_upload_start', 'warm_upload_end',
+  'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
 
@@ -50,6 +59,46 @@ export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | 
   if (!RUN_PHASES.includes(phase)) return null;
   const at = Number(m[2]);
   return Number.isSafeInteger(at) && at > 0 ? { phase, at } : null;
+}
+
+export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
+export const RUN_METRICS = [
+  'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
+  'park_bytes', 'resume_layer',
+] as const;
+export type RunMetric = typeof RUN_METRICS[number];
+export type RunnerMetrics = Partial<Record<RunMetric, number>>;
+
+export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
+export const REPO_FALLBACK_REASONS = ['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed'] as const;
+export type RepoFallbackReason = typeof REPO_FALLBACK_REASONS[number];
+export type RepoSourceLine = { source: 'warm' } | { source: 'clone'; reason: RepoFallbackReason };
+
+const METRIC_LINE_RE = /^BUILDD_METRIC=([a-z_]+) (\d{1,16})$/;
+const SOURCE_LINE_RE = /^BUILDD_REPO_SOURCE=(warm|clone [a-z_]+)$/;
+
+/** `{ metric, value }` from a `BUILDD_METRIC=<name> <integer>` line, or null. */
+export function parseMetricLine(line: string): { metric: RunMetric; value: number } | null {
+  const m = METRIC_LINE_RE.exec(line.trim());
+  if (!m) return null;
+  const metric = m[1] as RunMetric;
+  if (!RUN_METRICS.includes(metric)) return null;
+  const value = Number(m[2]);
+  return Number.isSafeInteger(value) ? { metric, value } : null;
+}
+
+/** From a `BUILDD_REPO_SOURCE=warm` or `BUILDD_REPO_SOURCE=clone <reason>` line, or null. */
+export function parseRepoSourceLine(line: string): RepoSourceLine | null {
+  const m = SOURCE_LINE_RE.exec(line.trim());
+  if (!m) return null;
+  if (m[1] === 'warm') return { source: 'warm' };
+  const reason = m[1]!.slice('clone '.length) as RepoFallbackReason;
+  return REPO_FALLBACK_REASONS.includes(reason) ? { source: 'clone', reason } : null;
+}
+
+/** Last value wins. */
+export function recordMetric(metrics: RunnerMetrics | undefined, metric: RunMetric, value: number): RunnerMetrics {
+  return { ...(metrics ?? {}), [metric]: value };
 }
 
 /** First occurrence wins: a second clone or install in the same run is not re-timed. */
@@ -153,6 +202,10 @@ export interface RunTimings {
   exitedAt?: number;
   /** From `BUILDD_PHASE=` lines: the container's clock. */
   runnerPhases?: RunnerPhases;
+  /** From `BUILDD_METRIC=` lines. */
+  runnerMetrics?: RunnerMetrics;
+  /** From the `BUILDD_REPO_SOURCE=` line. */
+  repoSource?: RepoSourceLine;
 }
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
@@ -187,10 +240,37 @@ export interface RunReport {
     toClaim: number | null;
     clone: number | null;
     install: number | null;
+    /** Warm snapshot download + unpack (instead of `clone`). */
+    restoreWarm: number | null;
+    /** The `git fetch` after a warm restore. */
+    fetch: number | null;
+    /** Uploading a new warm generation at the end of the run. */
+    warmUpload: number | null;
+    /** Building and uploading the park bundle. */
+    park: number | null;
+    /** Downloading and applying the park bundle in a resumed run. */
+    restorePark: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
   runnerPhases: RunnerPhases;
+  /**
+   * How the repo got onto the disk. `source` null: the runner printed no
+   * source line (warm repos off, or no clone in this run).
+   */
+  repo: {
+    source: 'warm' | 'clone' | null;
+    fallbackReason: RepoFallbackReason | null;
+    snapshotAgeMs: number | null;
+    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null };
+  };
+  /**
+   * Resumable runs. `resumed`: this attempt continued a parked worker.
+   * `gapMs`: from the end of the parked attempt to this dispatch (the answer
+   * plus the webhook). `layer`: 1 = the transcript resumed, 2 = rebuilt from a
+   * text reconstruction. `parkBytes`: the park bundle this attempt uploaded.
+   */
+  resume: { resumed: boolean; gapMs: number | null; layer: 1 | 2 | null; parkBytes: number | null };
   egress: EgressCounters;
   exitCode: number | null;
   outcome: RunOutcome | null;
@@ -209,11 +289,14 @@ export interface RunReportInput {
   exitCode?: number | null;
   outcome?: RunOutcome;
   crashReport?: CrashReport;
+  resumed?: boolean;
+  /** End of the parked attempt this one resumes (agent clock). */
+  parkedAt?: number;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'crashed'];
+const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
@@ -256,6 +339,14 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     exitedAt: ts(t.exitedAt),
   };
   const phase = (p: RunPhase) => phases[p] ?? null;
+  const metrics = t.runnerMetrics ?? {};
+  const metric = (m: RunMetric): number | null => {
+    const v = metrics[m];
+    return typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : null;
+  };
+  const src = t.repoSource as { source?: unknown; reason?: unknown } | undefined;
+  const source = src?.source === 'warm' || src?.source === 'clone' ? src.source : null;
+  const fallbackReason = source === 'clone' && REPO_FALLBACK_REASONS.includes(src?.reason as RepoFallbackReason) ? src!.reason as RepoFallbackReason : null;
   return {
     kind: RUN_REPORT_KIND,
     version: RUN_REPORT_VERSION,
@@ -271,10 +362,33 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       toClaim: span(timestamps.containerRunningAt, timestamps.claimedAt),
       clone: span(phase('clone_start'), phase('clone_end')),
       install: span(phase('install_start'), phase('install_end')),
+      restoreWarm: span(phase('restore_warm_start'), phase('restore_warm_end')),
+      fetch: span(phase('fetch_start'), phase('fetch_end')),
+      warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
+      park: span(phase('park_start'), phase('park_end')),
+      restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
       toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
       total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
     },
     runnerPhases: phases,
+    repo: {
+      source,
+      fallbackReason,
+      snapshotAgeMs: metric('snapshot_age_ms'),
+      bytes: {
+        clone: metric('clone_bytes'),
+        restore: metric('restore_bytes'),
+        fetch: metric('fetch_bytes'),
+        cache: metric('cache_bytes'),
+        upload: metric('warm_upload_bytes'),
+      },
+    },
+    resume: {
+      resumed: input.resumed === true,
+      gapMs: input.resumed === true ? span(ts(input.parkedAt), timestamps.dispatchReceivedAt) : null,
+      layer: metric('resume_layer') === 1 ? 1 : metric('resume_layer') === 2 ? 2 : null,
+      parkBytes: metric('park_bytes'),
+    },
     egress,
     exitCode: typeof input.exitCode === 'number' && Number.isInteger(input.exitCode) ? input.exitCode : null,
     outcome: input.outcome && OUTCOMES.includes(input.outcome) ? input.outcome : null,

@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { WORKER_LEASE_TTL_MS } from '@buildd/shared';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
 
@@ -21,7 +21,9 @@ import { getLatestVersion } from '@/lib/version-cache';
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) heartbeats only as its own one-task
+  // run and renews only its own task's worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -70,6 +72,12 @@ export async function POST(req: NextRequest) {
 
     if (!localUiUrl) {
       return NextResponse.json({ error: 'localUiUrl is required' }, { status: 400 });
+    }
+
+    // `--once` reports `headless://<host>/once/<taskId>` (apps/runner run-once.ts).
+    // Any other record belongs to a long-lived runner of the same account.
+    if (account.taskScope && !String(localUiUrl).endsWith(`/once/${account.taskScope.taskId}`)) {
+      return NextResponse.json({ error: 'This token can only heartbeat as its own task run.' }, { status: 403 });
     }
 
     // Heartbeat is just a ping - no workspace resolution needed
@@ -175,6 +183,7 @@ export async function POST(req: NextRequest) {
             .where(and(
               inArray(workers.id, ids),
               eq(workers.accountId, account.id),
+              ...(account.taskScope ? [eq(workers.taskId, account.taskScope.taskId)] : []),
               inArray(workers.status, ['running', 'starting', 'waiting_input', 'idle']),
             ))
             .returning({ id: workers.id });

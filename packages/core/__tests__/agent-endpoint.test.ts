@@ -13,6 +13,7 @@ import {
   resolveEndpointFromBlob,
   serializeAgentEndpoint,
   validateAgentEndpointInput,
+  verifyAgentEndpoint,
 } from '../agent-endpoint';
 import { openRouterModelId } from '../openrouter-id';
 
@@ -117,5 +118,51 @@ describe('mapAgentModel (§5)', () => {
       expect(mapAgentModel({ kind, models: { 'claude-sonnet-5': 'team-sonnet' } }, 'claude-sonnet-5')).toBe('team-sonnet');
       expect(mapAgentModel({ kind, models: {} }, 'claude-opus-4-8')).toBe('claude-opus-4-8');
     }
+  });
+});
+
+describe('verifyAgentEndpoint', () => {
+  const route = { kind: 'anthropic-compatible' as const, baseUrl: 'https://llm.example.com', apiKey: 'sk-agent-example', authHeader: 'authorization' as const, models: {} };
+  const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
+
+  it('a public endpoint that accepts the key is healthy; the request is POST /v1/messages with redirect: manual', async () => {
+    let seen: { url: string; init?: RequestInit } | null = null;
+    const r = await verifyAgentEndpoint(route, 'claude-haiku-4-5', { lookup: publicLookup, fetcher: async (url, init) => { seen = { url, init }; return new Response('{}'); } });
+    expect(r).toEqual({ health: 'healthy', error: null });
+    expect(seen!.url).toBe('https://llm.example.com/v1/messages');
+    expect(seen!.init?.redirect).toBe('manual');
+    expect(new Headers(seen!.init?.headers).get('authorization')).toBe('Bearer sk-agent-example');
+  });
+
+  it('errors are a fixed message and a status code, never the reply', async () => {
+    const body = 'secret internal detail sk-agent-example';
+    const revoked = await verifyAgentEndpoint(route, 'm', { lookup: publicLookup, fetcher: async () => new Response(body, { status: 401 }) });
+    expect(revoked).toEqual({ health: 'revoked', error: 'endpoint rejected the key (401)' });
+    const down = await verifyAgentEndpoint(route, 'm', { lookup: publicLookup, fetcher: async () => new Response(body, { status: 502 }) });
+    expect(down).toEqual({ health: 'unknown', error: 'endpoint returned 502' });
+    const net = await verifyAgentEndpoint(route, 'm', { lookup: publicLookup, fetcher: async () => { throw new Error(body); } });
+    expect(net).toEqual({ health: 'unknown', error: 'could not reach the endpoint' });
+  });
+
+  it('private and metadata addresses are refused without a request', async () => {
+    for (const address of ['10.1.2.3', '169.254.169.254', '127.0.0.1', '100.64.1.1', 'fd00::1', '::ffff:169.254.169.254']) {
+      let calls = 0;
+      const r = await verifyAgentEndpoint(route, 'm', {
+        lookup: async () => [{ address: '93.184.216.34', family: 4 }, { address, family: address.includes(':') ? 6 : 4 }],
+        fetcher: async () => { calls++; return new Response('{}'); },
+      });
+      expect(r).toEqual({ health: 'unknown', error: 'the endpoint host is not a public address', blocked: true });
+      expect(calls).toBe(0);
+    }
+  });
+
+  it('a redirect is not followed', async () => {
+    const urls: string[] = [];
+    const r = await verifyAgentEndpoint(route, 'm', {
+      lookup: publicLookup,
+      fetcher: async (url) => { urls.push(url); return new Response(null, { status: 307, headers: { location: 'http://10.0.0.1/' } }); },
+    });
+    expect(r).toEqual({ health: 'unknown', error: 'endpoint answered with a redirect (307), which is not followed', blocked: true });
+    expect(urls).toEqual(['https://llm.example.com/v1/messages']);
   });
 });

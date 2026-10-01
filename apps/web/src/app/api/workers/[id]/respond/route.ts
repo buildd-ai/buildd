@@ -8,12 +8,13 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { dispatchNewTask, dispatchResumedTask } from '@/lib/task-dispatch';
 import {
   appendInstructionHistory,
   enqueuePendingInstruction,
 } from '@/lib/worker-instructions';
 import {
+  isParked,
   evaluateAnswerPath,
   describeAnswerPath,
   buildAnswerDeliveryRecord,
@@ -52,7 +53,7 @@ export async function POST(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
 
   if (!user && !account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -162,6 +163,7 @@ export async function POST(
     supportsInstructionAck: (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true,
     credentialPreflight: preflight.state,
     waitingForType: waitingFor.type ?? null,
+    parkedUntil: (worker as { parkedUntil?: Date | null }).parkedUntil ?? null,
   });
 
   const deliveryRecord = buildAnswerDeliveryRecord({
@@ -269,6 +271,18 @@ async function respondByResume(args: {
     { action: 'message', text: message, timestamp: Date.now() },
   ).catch(() => { /* durable queue is the contract; the push is an accelerator */ });
 
+  // A worker the cloud runner parked has no container to drain the queue:
+  // wake one (task.resume) that re-attaches to this same worker. Best effort;
+  // an answer nobody acknowledges is degraded by cleanupUnresumedAnswers.
+  let resumeDispatched: boolean | undefined;
+  if (isParked(worker.parkedUntil)) {
+    resumeDispatched = await dispatchResumedTask(task ?? { id: worker.taskId, title: '', description: null, workspaceId: worker.workspaceId }, worker.workspace ?? { id: worker.workspaceId }, workerId)
+      .catch((err) => {
+        console.error(`[Worker ${workerId}] task.resume dispatch failed:`, err);
+        return false;
+      });
+  }
+
   await postAnswerNote({
     task,
     workerId,
@@ -278,6 +292,7 @@ async function respondByResume(args: {
   });
 
   return NextResponse.json({
+    ...(resumeDispatched !== undefined ? { resumeDispatched } : {}),
     path: 'resume',
     reasonCode: decision.reasonCode,
     // Same task — the resumed worker continues under it. Callers navigate here.
@@ -447,7 +462,10 @@ async function respondByContinuation(args: {
   // Best-effort: the answer is already recorded, so a failed wake-up must not
   // turn it into an error.
   try {
-    await dispatchNewTask(newTask, worker.workspace ?? { id: worker.workspaceId });
+    // With the continuation's runner preference (inherited from the parent),
+    // so a webhook restricted to other runners does not take it.
+    const runnerPreference = newTask.runnerPreference ?? task?.runnerPreference ?? undefined;
+    await dispatchNewTask(newTask, worker.workspace ?? { id: worker.workspaceId }, runnerPreference ? { runnerPreference } : undefined);
   } catch (err) {
     console.error(`[Worker ${workerId}] Continuation task dispatch failed:`, err);
   }

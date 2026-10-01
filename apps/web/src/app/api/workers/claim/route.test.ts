@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 
 // Mock functions
@@ -213,7 +214,7 @@ mock.module('@buildd/core/db/schema', () => ({
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
 // Default null: no endpoint, so every other test sees today's claim.
 const mockResolveAgentModelRoute = mock(async (_o: any) => null as any);
-mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveAgentModelRoute }));
+mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveAgentModelRoute, AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint' }));
 
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
@@ -438,6 +439,37 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toBe('runner is required');
+  });
+
+  describe('per-task token', () => {
+    const scoped = {
+      id: 'account-1',
+      teamId: 'team-1',
+      maxConcurrentWorkers: 3,
+      type: 'service',
+      level: 'worker',
+      taskScope: { taskId: 'task-own', expiresAt: Date.now() + 60_000 },
+    };
+
+    it('refuses to claim any task but its own', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'cloud', taskId: 'task-other' },
+      }));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('its own task');
+      expect(mockTasksFindMany).not.toHaveBeenCalled();
+    });
+
+    it('is not refused by the scope for its own task', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(scoped);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'cloud', taskId: 'task-own' },
+      }));
+      expect(res.status).not.toBe(403);
+    });
   });
 
   describe('health probes (X-Probe: true) stay out of the gate ledger', () => {
@@ -1377,6 +1409,27 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
+  });
+
+  it('never returns the workspace dispatch token in a claimed task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1', workspaceId: 'ws-1', title: 'T', requiredCapabilities: [],
+        workspace: { id: 'ws-1', gitConfig: null, webhookConfig: { url: 'https://dispatch.example.invalid/dispatch', token: 'dispatch-secret', enabled: true } },
+      },
+    ]);
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text).workers.length).toBe(1);
+    expect(text).not.toContain('dispatch-secret');
   });
 
   // --- Model-routing experiment wiring ---
@@ -2605,6 +2658,30 @@ describe('POST /api/workers/claim', () => {
       });
     });
 
+    it('a per-task token gets no credentials even without declaring the cloud executor', async () => {
+      await withEncryptionKey(async () => {
+        setupTeamWithEveryCredential();
+        mockAuthenticateApiKey.mockResolvedValue({
+          id: 'account-1',
+          teamId: 'team-1',
+          maxConcurrentWorkers: 5,
+          type: 'service',
+          authType: 'api',
+          level: 'worker',
+          dailyCostLimitCents: 10000,
+          currentDailyCostCents: 0,
+          taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+        });
+        const res = await POST(createMockRequest({
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { runner: 'test-runner' },
+        }));
+        const data = await res.json();
+        expect(JSON.stringify(data)).not.toContain('decrypted-secret-value');
+        expect(mockSecretsProviderGet).not.toHaveBeenCalled();
+        });
+      });
+
     describe('agent model endpoint (one ranking, only the winner attached)', () => {
       const endpoint = {
         kind: 'gateway', baseUrl: 'https://litellm.example.com', apiKey: 'sk-endpoint-example',
@@ -2612,10 +2689,11 @@ describe('POST /api/workers/claim', () => {
       };
       afterEach(() => { mockResolveAgentModelRoute.mockReset(); mockResolveAgentModelRoute.mockImplementation(async () => null); });
 
+      // A runner built with endpoint support declares it; see the old-runner case below.
       const claimWith = async (body: Record<string, unknown> = {}) => {
         const res = await POST(createMockRequest({
           headers: { Authorization: 'Bearer bld_test' },
-          body: { runner: 'test-runner', ...body },
+          body: { runner: 'test-runner', runnerFeatures: ['cbm_withhold', 'agent_endpoint'], ...body },
         }));
         return res.json();
       };
@@ -2666,6 +2744,22 @@ describe('POST /api/workers/claim', () => {
           expect(data.workers[0].modelEndpoint).toBeUndefined();
           expect(data.workers[0].serverApiKey).toBeUndefined();
           expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+        });
+      });
+
+      it('a runner that does not declare endpoint support keeps today\'s credentials and gets no endpoint', async () => {
+        await withEncryptionKey(async () => {
+          mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }));
+          for (const runnerFeatures of [undefined, ['cbm_withhold'], 'agent_endpoint']) {
+            setupTeamWithEveryCredential();
+            const data = await claimWith({ runnerFeatures });
+            const w = data.workers[0];
+            expect(w.serverApiKey).toBe('decrypted-secret-value');
+            expect(w.serverOauthToken).toBe('decrypted-secret-value');
+            expect(w.modelEndpoint).toBeUndefined();
+            expect(w.modelEndpointIgnored).toBeUndefined();
+            expect(JSON.stringify(data)).not.toContain('sk-endpoint-example');
+          }
         });
       });
 
@@ -7283,6 +7377,44 @@ describe('explicit taskId claims (organizer workflow)', () => {
     mockAuthenticateApiKey.mockResolvedValue(account('worker'));
     await claim({ runner: 'mcp', forceOverride: true });
     expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+  });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`force is ignored for a scoped ${preset} preset token: lifting claim gates needs the admin scope`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...account('admin'), scopes: [...TOKEN_PRESETS[preset].scopes, 'workers:write'], workspaceIds: null });
+      // Answer the force-target lookup (only reached when force is granted) so
+      // a wrongly granted force would actually lift the gates.
+      mockTasksFindMany.mockImplementation(((opts: any) => Promise.resolve(opts?.limit === 1 && opts?.columns?.workspaceId ? forceTarget() : [])) as any);
+      await claim({ runner: 'mcp', forceOverride: true });
+      expect(probedGates()).toEqual(expect.arrayContaining(['deps', 'missionHeld', 'subject', 'workspaceCap']));
+    });
+  }
+
+  it('force applies for a scoped token holding the admin scope', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account('admin'), scopes: ['admin'], workspaceIds: null });
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    await claim({ runner: 'mcp', forceOverride: true });
+    for (const g of ['deps', 'missionHeld', 'subject', 'workspaceCap']) expect(probedGates()).not.toContain(g);
+  });
+
+  it('a workspace-restricted token never claims outside its workspaces, with or without a taskId', async () => {
+    const restricted = { ...account('worker'), scopes: ['workers:write'], workspaceIds: ['ws-other'] };
+    mockAuthenticateApiKey.mockResolvedValue(restricted);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockTasksFindMany.mockResolvedValue([task()]);
+    const byTask = await (await claim({ runner: 'runner-7' })).json();
+    expect(byTask.workers ?? []).toHaveLength(0);
+    expect(byTask.diagnostics?.reason).toBe('no_workspaces');
+    const poll = await (await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7' } }))).json();
+    expect(poll.workers ?? []).toHaveLength(0);
+    expect(poll.diagnostics?.reason).toBe('no_workspaces');
+  });
+
+  it('a workspace-restricted token still claims inside its workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...account('worker'), scopes: ['workers:write'], workspaceIds: ['ws-1'] });
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    expect(data.workers).toHaveLength(1);
   });
 
   // H1: a canClaim link into another team's workspace grants claiming, not overriding.

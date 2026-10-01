@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { INITIAL_STATE, type RunState } from './lifecycle';
+import { INITIAL_STATE, buildContainerEnv, type RunState } from './lifecycle';
 import { TaskSupervisor, type ContainerPort, type ProcessPort, type SupervisorDeps } from './supervisor';
 
 const TASK_ID = 'task-abc123';
@@ -55,11 +55,13 @@ function fakeContainer() {
     container, calls, starts, execs, exits,
     setStdout(lines: string[]) { stdout = lines; },
     kill() { running = false; died.resolve(); },
+    /** A container left running from before an agent restart. */
+    markRunning() { running = true; died = deferred<void>(); },
     get inactivityMs() { return inactivityMs; },
   };
 }
 
-function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response> } = {}) {
+function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus?: number; fetchThrows?: boolean; initial?: RunState; egressFails?: boolean; mintFails?: boolean; fetchImpl?: (url: string, init: RequestInit) => Promise<Response> } = {}) {
   let state: RunState = opts.initial ?? INITIAL_STATE;
   const fc = fakeContainer();
   const fetches: Array<{ url: string; init: RequestInit }> = [];
@@ -83,6 +85,11 @@ function harness(opts: { config?: Partial<SupervisorDeps['config']>; fetchStatus
     installEgress: async () => {
       fc.calls.push('installEgress');
       if (opts.egressFails) throw new Error('interceptOutboundHttps failed');
+    },
+    mintTaskToken: async () => {
+      fc.calls.push('mintTaskToken');
+      if (opts.mintFails) throw new Error('POST /api/runner/task-token returned 503');
+      return 'bldt_test_task_token';
     },
     fetch: (async (url: string, init: RequestInit) => {
       fetches.push({ url, init });
@@ -128,6 +135,54 @@ describe('dispatch', () => {
     expect(env.BUILDD_EXECUTOR).toBe('cloud');
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
+  });
+
+  test('security: the container holds the per-task token, never the runner key', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    const env = h.fc.starts[0]!.env;
+    expect(env.BUILDD_API_KEY).toBe('bldt_test_task_token');
+    expect(Object.values(env).join('\n')).not.toContain('bld_test_key');
+  });
+
+  test('a failed mint starts no container', async () => {
+    const h = harness({ mintFails: true });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.starts).toHaveLength(0);
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed' });
+    expect(h.state.error).toContain('task-token');
+  });
+
+  test('telemetry: no OTLP endpoint means the container env is exactly buildContainerEnv (pinned)', async () => {
+    const h = harness({ config: { OTEL_LOG_TOOL_DETAILS: '1', OTEL_TRACES_BETA: '1', OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json' } });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    expect(h.fc.starts[0]!.env).toEqual(buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9' }, 'bldt_test_task_token'));
+  });
+
+  test('telemetry: an OTLP endpoint adds the Claude Code vars with this dispatch\'s task and attempt, never auth', async () => {
+    const h = harness({
+      config: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://otel.example.com' },
+      initial: { ...INITIAL_STATE, taskId: TASK_ID, attempt: 2, status: 'exited' },
+    });
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    const env = h.fc.starts[0]!.env;
+    expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1');
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('https://otel.example.com');
+    expect(env.OTEL_RESOURCE_ATTRIBUTES).toBe(`buildd.task_id=${TASK_ID},buildd.attempt=3`);
+    expect(Object.keys(env).filter(k => k.includes('AUTH') || k.endsWith('_HEADERS'))).toEqual([]);
+  });
+
+  test('telemetry: an invalid OTLP endpoint fails the run before start', async () => {
+    const h = harness({ config: { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel.example.com' } });
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.fc.calls).not.toContain('start');
+    expect(h.state.status).toBe('exited');
+    expect(h.state.error).toContain('OTEL_EXPORTER_OTLP_ENDPOINT');
   });
 
   test('starts a container, execs buildd-once for the task, holds keepAlive while it runs', async () => {
@@ -377,6 +432,39 @@ describe('run report', () => {
     expect(body.metadata.report.delivery).toBeUndefined();
   });
 
+  test('warm-repo lines land in the report: source, restore/fetch timings and bytes', async () => {
+    const h = harness();
+    h.fc.setStdout([
+      'BUILDD_WORKER_ID=worker-7',
+      'BUILDD_PHASE=restore_warm_start 1000',
+      'BUILDD_METRIC=restore_bytes 5000',
+      'BUILDD_PHASE=restore_warm_end 1400',
+      'BUILDD_PHASE=fetch_start 1400',
+      'BUILDD_PHASE=fetch_end 1500',
+      'BUILDD_METRIC=fetch_bytes 64',
+      'BUILDD_METRIC=snapshot_age_ms 7200000',
+      'BUILDD_REPO_SOURCE=warm',
+      'BUILDD_METRIC=bogus 1',
+    ]);
+    h.sup.dispatch();
+    await h.until(() => h.state.timings?.repoSource !== undefined);
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    const r = h.state.report!;
+    expect(r.repo).toEqual({ source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, bytes: { clone: null, restore: 5000, fetch: 64, cache: null, upload: null } });
+    expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null });
+  });
+
+  test('a clone fallback is reported with its reason', async () => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-8', 'BUILDD_REPO_SOURCE=clone no_snapshot', 'BUILDD_METRIC=clone_bytes 9000']);
+    h.sup.dispatch();
+    await h.until(() => h.state.timings?.runnerMetrics?.clone_bytes !== undefined);
+    h.fc.exits[0]!.resolve(1);
+    await h.settle();
+    expect(h.state.report!.repo).toMatchObject({ source: 'clone', fallbackReason: 'no_snapshot', bytes: { clone: 9000 } });
+  });
+
   test('a run that never claimed stores its report and posts nothing', async () => {
     const h = harness();
     h.sup.dispatch();
@@ -465,5 +553,174 @@ describe('run report', () => {
     expect(h.state.report).toMatchObject({ attempt: 3, outcome: 'crashed', crashReport: 'sent', workerId: 'w-orphan', delivery: 'sent' });
     expect(h.state.report!.durationsMs.containerStart).toBe(1_000);
     expect(posts(h)).toHaveLength(1);
+  });
+});
+
+describe('resumable runs: park and resume', () => {
+  const failPatches = (h: { fetches: Array<{ url: string; init: RequestInit }> }) =>
+    h.fetches.filter(f => f.init.method === 'PATCH');
+
+  async function parkedHarness(config: Partial<SupervisorDeps['config']> = {}) {
+    const h = harness({ config: { resumableRuns: true, ...config } });
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-p1', 'BUILDD_PARKED=worker-p1']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-p1');
+    h.fc.exits[0]!.resolve(4);
+    await h.settle();
+    return h;
+  }
+
+  test('exit 4 is parked: container destroyed, no crash report, outcome in the report', async () => {
+    const h = await parkedHarness();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'parked', exitCode: 4, workerId: 'worker-p1' });
+    expect(h.state.crashReport).toBeUndefined();
+    expect(failPatches(h)).toHaveLength(0);
+    expect(h.fc.calls.filter(c => c === 'destroy').length).toBeGreaterThanOrEqual(1);
+    expect(h.fc.container.running).toBe(false);
+    expect(h.state.report!.outcome).toBe('parked');
+  });
+
+  test('task.resume for the parked worker starts a new container that continues it', async () => {
+    const h = await parkedHarness();
+    const parkedAt = h.state.endedAt!;
+    h.fc.setStdout([]);
+    const r = h.sup.dispatch({ resumeWorkerId: 'worker-p1' });
+    expect(r).toEqual({ accepted: true, attempt: 2 });
+    await h.until(() => h.fc.execs.length === 2);
+    expect(h.fc.execs[1]).toEqual(['buildd-once', '--resume-worker', 'worker-p1', '--task', TASK_ID]);
+    expect(h.fc.starts).toHaveLength(2);
+    expect(h.state).toMatchObject({ status: 'running', attempt: 2, workerId: 'worker-p1', resumed: true, parkedAt });
+    h.fc.exits[1]!.resolve(0);
+    await h.settle();
+    expect(h.state.report!.resume.resumed).toBe(true);
+    expect(h.state.report!.resume.gapMs).toBeGreaterThanOrEqual(0);
+    expect(h.state.report!.workerId).toBe('worker-p1');
+  });
+
+  test('duplicate task.resume: exactly one run', async () => {
+    const h = await parkedHarness();
+    const a = h.sup.dispatch({ resumeWorkerId: 'worker-p1' });
+    const b = h.sup.dispatch({ resumeWorkerId: 'worker-p1' });
+    expect(a.accepted).toBe(true);
+    expect(b).toMatchObject({ accepted: false, reason: 'already_live' });
+    await h.until(() => h.fc.execs.length === 2);
+    h.fc.exits[1]!.resolve(0);
+    await h.settle();
+    // A late duplicate after the resume finished is not a second resume.
+    expect(h.sup.dispatch({ resumeWorkerId: 'worker-p1' })).toMatchObject({ accepted: false, reason: 'not_parked' });
+    expect(h.fc.starts).toHaveLength(2);
+  });
+
+  test('task.resume naming another worker, or with nothing parked, is ignored', async () => {
+    const h = await parkedHarness();
+    expect(h.sup.dispatch({ resumeWorkerId: 'worker-other' })).toMatchObject({ accepted: false, reason: 'not_parked' });
+    const fresh = harness({ config: { resumableRuns: true } });
+    expect(fresh.sup.dispatch({ resumeWorkerId: 'worker-p1' })).toMatchObject({ accepted: false, reason: 'not_parked' });
+    expect(fresh.fc.starts).toHaveLength(0);
+  });
+
+  test('orphan with resumable runs on and the container still running: park it, then resume it', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    const recovering = h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    expect(h.fc.execs[0]).toEqual(['buildd-once', '--park-orphan', 'w-orph', '--task', TASK_ID]);
+    h.fc.exits[0]!.resolve(4);
+    await recovering;
+    await h.until(() => h.fc.execs.length === 2);
+    expect(h.fc.execs[1]).toEqual(['buildd-once', '--resume-worker', 'w-orph', '--task', TASK_ID]);
+    expect(h.state).toMatchObject({ attempt: 2, resumed: true, workerId: 'w-orph' });
+    expect(failPatches(h)).toHaveLength(0);
+    h.fc.exits[1]!.resolve(0);
+    await h.settle();
+    expect(h.state.reportHistory?.at(-1)?.outcome).toBe('parked');
+  });
+
+  test("the orphan park does not block the agent's start: the egress handler calls back into the agent", async () => {
+    // onStart runs under blockConcurrencyWhile; the park's upload reaches the
+    // snapshot route, which asks this agent for its scope. Awaiting the park
+    // inside onStart deadlocks until the runtime resets the object.
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    let returned = false;
+    const recovering = h.sup.recoverOrphan().then(() => { returned = true; });
+    await h.until(() => h.fc.execs.length === 1);
+    await recovering;
+    expect(returned).toBe(true);
+    expect(h.state.status).toBe('running'); // a duplicate dispatch meanwhile is still ignored
+    expect(h.sup.dispatch()).toMatchObject({ accepted: false, reason: 'already_live' });
+    h.fc.exits[0]!.resolve(4);
+    await h.until(() => h.fc.execs.length === 2);
+  });
+
+  test('after a clean orphan park the agent marks the worker parked on buildd itself', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(4);
+    await h.until(() => h.fc.execs.length === 2);
+    const marks = h.fetches.filter((f) => f.url.endsWith('/api/workers/w-orph/park'));
+    expect(marks).toHaveLength(1);
+    expect(marks[0]!.init.method).toBe('POST');
+    expect((marks[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer bld_test_key');
+  });
+
+  test('an orphan park buildd refuses to mark is crashed, not resumed', async () => {
+    const h = harness({
+      config: { resumableRuns: true },
+      initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 },
+      fetchImpl: async (url) => new Response('{}', { status: url.endsWith('/park') ? 409 : 200 }),
+    });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(4);
+    await h.until(() => h.state.status === 'exited');
+    await h.settle();
+    expect(h.state).toMatchObject({ outcome: 'crashed' });
+    expect(h.fc.execs).toHaveLength(1);
+  });
+
+  test('orphan park re-installs egress first: the restarted agent owns the snapshot route now', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    const recovering = h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    expect(h.fc.calls.slice(0, 2)).toEqual(['installEgress', 'exec']);
+    h.fc.exits[0]!.resolve(1);
+    await recovering;
+  });
+
+  test('orphan park whose egress cannot be installed is crashed as before (no exec)', async () => {
+    const h = harness({ egressFails: true, config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.fc.execs).toHaveLength(0);
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed' });
+  });
+
+  test('orphan park that fails falls back to today: crashed and reported, no resume', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    const recovering = h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    h.fc.exits[0]!.resolve(1);
+    await recovering;
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed', crashReport: 'sent' });
+    expect(h.fc.execs).toHaveLength(1);
+    expect(h.fc.starts).toHaveLength(0);
+  });
+
+  test('orphan without resumable runs, or with the container gone, is crashed as before (no exec)', async () => {
+    for (const resumableRuns of [false, true]) {
+      const h = harness({ config: { resumableRuns }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+      if (!resumableRuns) h.fc.markRunning();
+      await h.sup.recoverOrphan();
+      expect(h.state.outcome).toBe('crashed');
+      expect(h.fc.execs).toHaveLength(0);
+    }
   });
 });

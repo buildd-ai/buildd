@@ -309,6 +309,7 @@ export const CSV_COLUMNS = [
   'task_id', 'attempt', 'worker_id', 'instance_id', 'run_label', 'instance_type', 'outcome', 'exit_code', 'crash_report',
   'dispatch_received_at', 'container_running_at', 'claimed_at', 'first_model_request_at', 'exited_at',
   'container_start_ms', 'to_claim_ms', 'clone_ms', 'install_ms', 'to_first_model_request_ms', 'total_ms',
+  'repo_source', 'repo_fallback_reason', 'restore_warm_ms', 'fetch_ms', 'warm_upload_ms', 'clone_bytes', 'restore_bytes', 'fetch_bytes',
   'model_requests', 'model_response_bytes', 'github_requests', 'github_response_bytes', 'passthrough_requests', 'passthrough_response_bytes',
   'match', 'vcpu_seconds_active', 'memory_peak', 'memory_avg', 'rx_bytes', 'tx_bytes',
   'billed_cpu_seconds', 'billed_memory_byte_seconds', 'billed_disk_byte_seconds', 'est_cost_usd',
@@ -335,6 +336,10 @@ export function rowValues(row: EvalRow): Record<typeof CSV_COLUMNS[number], unkn
     first_model_request_at: iso(t.firstModelRequestAt), exited_at: iso(t.exitedAt),
     container_start_ms: d.containerStart, to_claim_ms: d.toClaim, clone_ms: d.clone, install_ms: d.install,
     to_first_model_request_ms: d.toFirstModelRequest, total_ms: d.total,
+    // Absent on version-1 reports (before warm repos).
+    repo_source: r.repo?.source, repo_fallback_reason: r.repo?.fallbackReason,
+    restore_warm_ms: d.restoreWarm, fetch_ms: d.fetch, warm_upload_ms: d.warmUpload,
+    clone_bytes: r.repo?.bytes.clone, restore_bytes: r.repo?.bytes.restore, fetch_bytes: r.repo?.bytes.fetch,
     model_requests: r.egress.model.requests, model_response_bytes: r.egress.model.responseBytes,
     github_requests: r.egress.github.requests, github_response_bytes: r.egress.github.responseBytes,
     passthrough_requests: r.egress.passthrough.requests, passthrough_response_bytes: r.egress.passthrough.responseBytes,
@@ -360,6 +365,8 @@ export const PHASES: ReadonlyArray<[keyof RunReport['durationsMs'], string]> = [
   ['toClaim', 'container running to claim'],
   ['clone', 'clone'],
   ['install', 'dependency install'],
+  ['restoreWarm', 'warm snapshot restore'],
+  ['fetch', 'fetch after warm restore'],
   ['toFirstModelRequest', 'claim to first model request'],
   ['total', 'dispatch to exit'],
 ];
@@ -391,7 +398,7 @@ export function summaryMarkdown(rows: readonly EvalRow[], window: { since: strin
   out.push('| Phase | n | p50 | p90 |');
   out.push('|---|---|---|---|');
   for (const [key, label] of PHASES) {
-    const s = stats(rows.map(r => r.report.durationsMs[key]).filter((v): v is number => v !== null));
+    const s = stats(rows.map(r => r.report.durationsMs[key]).filter((v): v is number => typeof v === 'number'));
     out.push(`| ${label} | ${s.n} | ${fmtMs(s.p50)} | ${fmtMs(s.p90)} |`);
   }
   out.push('');
@@ -473,8 +480,8 @@ export function parseEvalArgs(argv: readonly string[], now: number): EvalArgs | 
 
 /** The analytics window: from the first dispatch to the last exit, two minutes of slack each side. */
 export function analyticsWindow(reports: readonly RunReport[], since: number, until: number): { start: number; end: number } {
-  const froms = reports.map(r => r.timestamps.dispatchReceivedAt).filter((v): v is number => v !== null);
-  const tos = reports.map(r => r.timestamps.exitedAt ?? r.timestamps.dispatchReceivedAt).filter((v): v is number => v !== null);
+  const froms = reports.map(r => r.timestamps.dispatchReceivedAt).filter((v): v is number => typeof v === 'number');
+  const tos = reports.map(r => r.timestamps.exitedAt ?? r.timestamps.dispatchReceivedAt).filter((v): v is number => typeof v === 'number');
   if (!froms.length || !tos.length) return { start: since, end: until };
   return { start: Math.min(...froms) - SLACK_MS * 2, end: Math.max(...tos) + SLACK_MS * 2 };
 }

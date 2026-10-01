@@ -1,10 +1,13 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse } from 'next/server';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
@@ -76,7 +79,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
-import { attachAgentEndpoints } from './agent-endpoint-injection';
+import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 
@@ -143,7 +146,8 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may claim only its own task.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // Incident-responder health probes hit this route once a minute with an empty
   // body and mark themselves with `X-Probe: true`. They still get the normal
   // 4xx below, but must not land in the gate ledger — every probe otherwise
@@ -180,6 +184,16 @@ export async function POST(req: NextRequest) {
   const body: ClaimTasksInput = await req.json();
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
+  // A per-task token claims its own task and nothing else.
+  if (account.taskScope) {
+    if (taskId && taskId !== account.taskScope.taskId) {
+      return NextResponse.json({ error: 'This token can only claim its own task.' }, { status: 403 });
+    }
+    taskId = account.taskScope.taskId;
+    maxTasks = 1;
+    claimAcrossAccessible = false;
+  }
+
   // Cloud executor (packages/shared/src/executor.ts): a runner inside a cloud
   // container declares `executor: 'cloud'` and gets NO credential material in
   // this response. Explicit, never inferred: an unrecognised value is refused
@@ -187,7 +201,9 @@ export async function POST(req: NextRequest) {
   if (body.executor !== undefined && !isRunnerExecutor(body.executor)) {
     return NextResponse.json({ error: "executor must be 'host' or 'cloud'" }, { status: 400 });
   }
-  const cloudExecutor = body.executor === CLOUD_EXECUTOR;
+  // A per-task token is only ever minted for a cloud container, so its claim
+  // gets the cloud treatment whatever the body declares.
+  const cloudExecutor = body.executor === CLOUD_EXECUTOR || !!account.taskScope;
 
   // A person's interactive MCP session, proven by the marker the MCP routes
   // sign server-side (lib/interactive-session.ts). `runner: 'mcp'` alone is
@@ -206,7 +222,7 @@ export async function POST(req: NextRequest) {
   // the task, the mission budget, scope-undeclared serialization, role/runner
   // routing, provider walls, account limits). Granted below, once the task's
   // team is known.
-  const forceRequested = body.forceOverride === true && !!taskId && account.level === 'admin';
+  const forceRequested = body.forceOverride === true && !!taskId && hasTokenRouteAdminAccess(account, req, 'admin');
   let forceClaim = false;
   // Gates a force claim actually lifted for its task, i.e. the ones that would
   // have excluded or deferred it. SQL-level ones are evaluated after the
@@ -275,7 +291,11 @@ export async function POST(req: NextRequest) {
       // Combine: open workspace IDs + restricted workspaces with permission
       const openIds = openWorkspaces.map((ws) => ws.id);
 
-      return [...new Set([...openIds, ...restrictedIds])];
+      // A workspace-restricted token claims only inside its own list, whatever
+      // the team's open workspaces or canClaim links would otherwise allow.
+      // Every candidate and taskId lookup below is bounded by this list.
+      return [...new Set([...openIds, ...restrictedIds])]
+        .filter((id) => tokenWorkspaceAllowed(account.workspaceIds, id));
     })();
     return claimableWorkspaceIdsMemo;
   };
@@ -2381,7 +2401,10 @@ export async function POST(req: NextRequest) {
   // skip the Anthropic ones for those workers.
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
-    : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, { llmProviderOverride: body.llmProviderOverride === true });
+    : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, {
+        llmProviderOverride: body.llmProviderOverride === true,
+        runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
+      });
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
 
   // Inject active MCP connectors — resolution rules (role connectorRefs ∩ workspace
@@ -2430,7 +2453,10 @@ export async function POST(req: NextRequest) {
   }
 
   return jsonResponse({
-    workers: claimedWorkers,
+    // The workspace dispatch token never leaves in a claim (lib/workspace-dispatch-token.ts).
+    workers: claimedWorkers.map((cw) => (cw.task
+      ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
+      : cw)),
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     ...(accountBudgetExhausted && {
       budgetResetsAt: earliestFutureReset(),

@@ -6,7 +6,9 @@ import {
   LIVE_SERVER_FEATURES,
   isInferenceCapability,
   isInferenceAllowed,
+  normalizeDecisionShadows,
   normalizeFeatureModes,
+  OPT_IN_CAPABILITIES,
   resolveFeatureMode,
 } from '../inference-policy';
 
@@ -18,10 +20,26 @@ import {
  */
 
 describe('isInferenceAllowed', () => {
-  it('allows every capability on a team that never touched a setting', () => {
+  it('allows every non-opt_in capability on a team that never touched a setting', () => {
     for (const c of ALL_INFERENCE_CAPABILITIES) {
-      expect(isInferenceAllowed(c, { featureModes: null })).toBe(true);
+      expect(isInferenceAllowed(c, { featureModes: null })).toBe(INFERENCE_CAPABILITIES[c].kind !== 'opt_in');
     }
+  });
+
+  it('an opt_in capability runs only when the team lists it', () => {
+    expect(OPT_IN_CAPABILITIES).toContain('task_role_shadow');
+    expect(isInferenceAllowed('task_role_shadow', { featureModes: null })).toBe(false);
+    expect(isInferenceAllowed('task_role_shadow', { enabledDecisionShadows: null })).toBe(false);
+    expect(isInferenceAllowed('task_role_shadow', { enabledDecisionShadows: [] })).toBe(false);
+    expect(isInferenceAllowed('task_role_shadow', { enabledDecisionShadows: 'task_role_shadow' })).toBe(false);
+    expect(isInferenceAllowed('task_role_shadow', { enabledDecisionShadows: ['task_role_shadow'] })).toBe(true);
+    // A server-feature override never turns it on.
+    expect(isInferenceAllowed('task_role_shadow', { featureModes: { task_role_shadow: 'server' } })).toBe(false);
+  });
+
+  it('listing an opt_in capability turns on nothing else', () => {
+    const gate = { featureModes: { criteria_grading: 'runner' }, enabledDecisionShadows: ['task_role_shadow'] };
+    expect(isInferenceAllowed('criteria_grading', gate)).toBe(false);
   });
 
   it('never gates the built-in decision calls', () => {
@@ -123,5 +141,19 @@ describe('the capability registry', () => {
     for (const c of ALL_INFERENCE_CAPABILITIES) expect(isInferenceCapability(c)).toBe(true);
     expect(isInferenceCapability('criteria_grading ')).toBe(false);
     expect(isInferenceCapability(null)).toBe(false);
+  });
+});
+
+describe('normalizeDecisionShadows', () => {
+  it('accepts opt_in capability ids, deduped; empty or null stores null', () => {
+    expect(normalizeDecisionShadows(['task_role_shadow', 'task_role_shadow'])).toEqual({ ok: true, value: ['task_role_shadow'] });
+    expect(normalizeDecisionShadows([])).toEqual({ ok: true, value: null });
+    expect(normalizeDecisionShadows(null)).toEqual({ ok: true, value: null });
+  });
+
+  it('rejects unknown and non-opt_in ids instead of dropping them', () => {
+    expect(normalizeDecisionShadows(['task_role_shadw']).ok).toBe(false);
+    expect(normalizeDecisionShadows(['task_category']).ok).toBe(false);
+    expect(normalizeDecisionShadows('task_role_shadow').ok).toBe(false);
   });
 });

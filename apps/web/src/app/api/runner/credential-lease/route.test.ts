@@ -77,7 +77,7 @@ import { POST } from './route';
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 const TEAM_ID = 'team-uuid-0001';
-const ACCOUNT = { id: 'account-1', teamId: TEAM_ID, level: 'admin' as const };
+const ACCOUNT = { id: 'account-1', teamId: TEAM_ID, level: 'admin' as const, hostRunner: true };
 const CREDENTIAL_ID = 'cred-uuid-1234';
 const RUNNER_ID = 'my-runner-host';
 const LEASE_ID = 'lease-uuid-5678';
@@ -251,5 +251,44 @@ describe('POST /api/runner/credential-lease — due-queue publication', () => {
     await POST(makeRequest({ credentialId: CREDENTIAL_ID, runnerId: RUNNER_ID, action: 'release' }));
     expect(mockClearDue.mock.calls.length).toBe(1);
     expect(mockClearDue.mock.calls[0]).toEqual(['lease-expiry', CREDENTIAL_ID]);
+  });
+});
+
+// ── credential custody: only a flagged host runner key ───────────────────────
+
+describe('POST /api/runner/credential-lease — host runner keys only', () => {
+  function requestWithKey(key: string, action = 'acquire'): NextRequest {
+    return new NextRequest('http://localhost/api/runner/credential-lease', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ credentialId: CREDENTIAL_ID, runnerId: RUNNER_ID, action }),
+    });
+  }
+
+  it('refuses a key that is not flagged as a host runner, before touching the credential', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve({ ...ACCOUNT, hostRunner: false }));
+    for (const action of ['acquire', 'heartbeat', 'release']) {
+      const res = await POST(requestWithKey('bld_test', action));
+      expect(res.status).toBe(403);
+      // The runner keys its "how to fix" log line on this code.
+      expect((await res.json()).code).toBe('not_host_runner');
+    }
+    expect(mockSecretsQueryFindFirst).not.toHaveBeenCalled();
+    expect(mockDbExecute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a per-task token even when it resolves to a flagged account', async () => {
+    const res = await POST(requestWithKey('bldt_payload.sig'));
+    expect(res.status).toBe(403);
+    expect(mockDbExecute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a caller carrying a task scope', async () => {
+    mockAuthenticateApiKey.mockImplementation(() =>
+      Promise.resolve({ ...ACCOUNT, taskScope: { taskId: 't-1', expiresAt: Date.now() + 60_000 } }),
+    );
+    const res = await POST(requestWithKey('bld_test'));
+    expect(res.status).toBe(403);
+    expect(mockDbExecute).not.toHaveBeenCalled();
   });
 });

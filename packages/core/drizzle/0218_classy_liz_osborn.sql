@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "host_runner" boolean DEFAULT false NOT NULL;

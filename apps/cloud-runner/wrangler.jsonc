@@ -26,6 +26,18 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkerAgent"] }],
 
+  // Warm-repo snapshots (docs/design/cloudflare-sandbox-runner.md, Phase 2).
+  // Only the Worker reads or writes this bucket (src/snapshots.ts); the
+  // container never gets a credential or a URL for it. Inert until the var
+  // WARM_REPOS=1 is set. Create the bucket and its lifecycle backstop once:
+  //   wrangler r2 bucket create buildd-cloud-runner-snapshots
+  //   wrangler r2 bucket lifecycle add buildd-cloud-runner-snapshots warm-expiry warm/ --expire-days 14
+  //   wrangler r2 bucket lifecycle add buildd-cloud-runner-snapshots park-expiry park/ --expire-days 2
+  // Park bundles (RESUMABLE_RUNS=1) live under park/.
+  // The refresher keeps two generations per workspace; the rule only
+  // catches what it misses (a workspace that stopped running tasks).
+  "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "buildd-cloud-runner-snapshots" }],
+
   // Plain vars. Secrets (wrangler secret put): DISPATCH_TOKEN, BUILDD_API_KEY,
   // AI_GATEWAY_TOKEN, and for local development only ANTHROPIC_DIRECT_API_KEY
   // (used only with the var ALLOW_DIRECT_ANTHROPIC=1; never on a deployed

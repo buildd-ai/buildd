@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
@@ -43,12 +44,12 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = apiKey ? await authenticateApiKey(apiKey) : null;
+  const apiAccount = apiKey ? await authenticateApiKey(apiKey, req) : null;
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'analytics:read')) {
     return NextResponse.json({ error: 'Admin API key required' }, { status: 403 });
   }
 

@@ -54,7 +54,22 @@ billing:
   `budgetExhaustedAt`/`budgetResetsAt`).
 
 `type`: `user | service | action`. `level`: `trigger | worker | admin`. A team
-typically has separate trigger vs. worker accounts. `account_workspaces` is the
+typically has separate trigger vs. worker accounts. New API tokens carry explicit
+named capabilities (`tasks:read`, `tasks:write`, `tasks:admin`, `workers:write`, `workers:admin`, `missions:admin`,
+`analytics:read`, `releases`, `secrets`, `skills:admin`, `workspaces:admin`,
+`schedules:write`, `knowledge:write`, `knowledge:admin`, `admin`) from runner, CI, analytics and admin
+presets. REST authentication and MCP dispatch enforce the same vocabulary;
+optional workspace restrictions never widen team access. Expiry applies on cache
+hits, and successful authentication records last use at most once per minute.
+`scopes = NULL` retains legacy level behavior. A scoped token's stored level is
+derived from its scopes (`admin` only with the `admin` scope). Every in-handler
+gate that legacy tokens pass with `level = admin` requires an explicit admin-tier
+capability from a scoped token, never the route's ordinary scope (force merge and
+force claim need `admin`). Workspace-restricted tokens cannot access team-wide
+credentials or reports lacking real workspace filters, and every surface that
+picks workspaces itself (claim candidates, reach lists, ingest jobs) is bounded
+by the token's list. An unrestricted token is auto-linked to open workspaces
+only; linking a token to a restricted workspace takes a team owner or admin. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
 > **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
@@ -336,8 +351,10 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   runner-spawned agents send model traffic (the team gateway, OpenRouter, or any
   Anthropic-compatible URL). Ranked against the Anthropic key, OAuth seat and
   Claude credential in one precedence: the most specific scope wins, a tie goes
-  to the endpoint, and only the winner is delivered. Host runners get it on the
-  claim (`modelEndpoint`, stripped from cloud claims); the cloud dispatcher
+  to the endpoint, and only the winner is delivered. Host runners that declare
+  the `agent_endpoint` runner feature get it on the claim (`modelEndpoint`,
+  stripped from cloud claims; any other runner keeps today's credentials); the
+  cloud dispatcher, which forwards only the model API paths,
   fetches it from `POST /api/runner/model-endpoint`. A runner's per-machine
   `LLM_PROVIDER` still wins. Endpoint runs are metered.
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
@@ -486,7 +503,7 @@ gates, delays or alters the verdict.
 Four tools exposed (HTTP MCP at `/api/mcp`): **`buildd`** (task + admin actions —
 claim/update/create_pr/merge_pr/create_artifact/complete/get_task/
 send_agent_message/memory_delete/consolidate_knowledge/…; the action set available
-is gated by token level `trigger | worker | admin`, and `merge_pr` is additionally
+is gated by explicit token scopes (legacy tokens use `trigger | worker | admin`), and `merge_pr` is additionally
 gated by the merge policy tier — see §4a), **`recall`** (read knowledge), **`learn`**
 (write knowledge), and **`buildd_memory`** (deprecated — superseded by
 recall/learn in #1944, still routed for compatibility). claude.ai and other MCP

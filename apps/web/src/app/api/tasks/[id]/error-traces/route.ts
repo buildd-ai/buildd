@@ -9,7 +9,8 @@ import { resolveTaskIdForCaller } from '@/lib/resolve-task-id';
 
 // GET /api/tasks/[id]/error-traces?since=<ISO>&limit=<n>
 //
-// Returns error traces across all workers that have run on this task. Useful
+// Returns error traces across all workers that have run on this task, plus the
+// task's `result.evidence` / `result.mismatch` (why it ended as it did). Useful
 // for the task-detail UI (single badge with cumulative count) and for agents
 // retrying a task to see what the previous attempt failed on.
 //
@@ -25,7 +26,7 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -47,7 +48,7 @@ export async function GET(
 
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
-    columns: { id: true, workspaceId: true },
+    columns: { id: true, workspaceId: true, status: true, result: true },
   });
   if (!task || !(await canAccess(task.workspaceId))) {
     return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -69,10 +70,18 @@ export async function GET(
     limit,
   });
 
+  // The compact record written when the task ended (see lib/task-evidence.ts).
+  // Same reach as the traces: it is only read after `canAccess` on the task's
+  // workspace above, so it needs no guard of its own.
+  const result = (task.result ?? null) as { evidence?: unknown; mismatch?: unknown } | null;
+
   return NextResponse.json({
     traces,
     count: traces.length,
     taskId: id,
+    status: task.status ?? null,
+    evidence: result?.evidence ?? null,
+    mismatch: Array.isArray(result?.mismatch) ? result.mismatch : [],
     ...(resolved.resolvedFrom ? { resolvedFrom: resolved.resolvedFrom } : {}),
   });
 }

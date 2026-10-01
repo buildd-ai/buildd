@@ -107,7 +107,7 @@ mock.module('@/lib/worker-deliverables', () => ({
 }));
 
 // cleanupUnresumedAnswers inserts a Continue: task and must wake runners for it.
-const mockDispatchNewTask = mock(async (_task: any, _workspace: any) => {});
+const mockDispatchNewTask = mock(async (_task: any, _workspace: any, _options?: any) => {});
 mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
@@ -2588,6 +2588,9 @@ describe('cleanupUnresumedAnswers', () => {
     const supersede = capturedWorkerUpdates[0];
     expect(supersede.status).toBe('superseded');
     expect(supersede.pendingInstructions).toBeNull();
+    // A cloud-parked worker whose resume never acknowledged is un-parked too,
+    // so nothing can re-attach to the superseded row.
+    expect(supersede.parkedUntil).toBeNull();
 
     expect(mockTasksInsert).toHaveBeenCalled();
   });
@@ -2796,6 +2799,18 @@ describe('cleanupUnresumedAnswers', () => {
       expect(calls.map(([t]) => t.id)).toEqual(['continuation-1', 'continuation-2']);
       expect(calls[0][0].title).toBe('Continue: Pick a database');
       expect(calls[0][1]).toBe(workspace);
+    });
+
+    it("the continuation keeps the parent's runner preference, and dispatch honours it", async () => {
+      const worker = withWorkspace(parkedWithQueuedAnswer());
+      worker.task = { ...worker.task, runnerPreference: 'service' } as any;
+      mockWorkersFindMany.mockReturnValue([worker] as any);
+
+      await cleanupUnresumedAnswers('account-1');
+
+      const [task, , options] = mockDispatchNewTask.mock.calls[0] as any[];
+      expect(task.runnerPreference).toBe('service');
+      expect(options).toEqual({ runnerPreference: 'service' });
     });
 
     it('does not re-dispatch a continuation on a later pass', async () => {

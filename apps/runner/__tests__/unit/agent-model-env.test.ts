@@ -8,7 +8,7 @@
  * server/tenant value. Unset means deleted, not ''.
  */
 import { describe, test, expect } from 'bun:test';
-import { applyModelEnv, endpointSessionModels, type ModelEnvInput } from '../../src/agent-model-env';
+import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, type ModelEnvInput } from '../../src/agent-model-env';
 import type { ClaimModelEndpoint } from '@buildd/shared';
 import type { ProviderConfig } from '../../src/types';
 
@@ -423,5 +423,30 @@ describe('invariant across a matrix, team endpoint included', () => {
       if (llmProvider) expect(Object.values(got.env)).not.toContain(ENDPOINT_KEY);
     }
     expect(cases).toBeGreaterThan(300);
+  });
+});
+
+describe('shouldUseClaudeCredential: the Claude credential never rides along to a team endpoint', () => {
+  const withCred = [{ claudeAccessToken: 'claude-token-value' }, { claudeCredentialId: 'cred-1' }, { claudeAccessToken: 'x', claudeCredentialId: 'cred-1' }];
+
+  test('under a team endpoint the credential is skipped, whatever the claim carried', () => {
+    for (const w of withCred) expect(shouldUseClaudeCredential({ endpoint: 'team' }, w)).toBe(false);
+  });
+
+  test.each(['anthropic', 'trusted', 'custom'] as const)('endpoint %s: used when the claim carries one', (endpoint) => {
+    for (const w of withCred) expect(shouldUseClaudeCredential({ endpoint }, w)).toBe(true);
+    expect(shouldUseClaudeCredential({ endpoint }, {})).toBe(false);
+  });
+
+  test('wired end to end: a claim with a team endpoint and a Claude credential skips the credential', () => {
+    const endpoint: ClaimModelEndpoint = { kind: 'gateway', baseUrl: 'https://litellm.example.com', authToken: 'team-endpoint-key', authHeader: 'authorization', models: {} };
+    const r = applyModelEnv({}, { modelEndpoint: endpoint, isCodexTask: false } as ModelEnvInput);
+    expect(r.endpoint).toBe('team');
+    expect(shouldUseClaudeCredential(r, { claudeAccessToken: 'claude-token-value', claudeCredentialId: 'cred-1' })).toBe(false);
+  });
+
+  test('workers.ts gates the Claude credential block on it', async () => {
+    const src = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
+    expect(src).toContain('if (shouldUseClaudeCredential(modelEnv, worker)) {');
   });
 });

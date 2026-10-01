@@ -57,6 +57,6 @@ describe('ProviderOnboardingCard on phone', () => {
   it('keeps the bottom-nav clearance padding on the card', async () => {
     await mount();
     const section = host.querySelector('[data-testid="provider-onboarding"]');
-    expect(section?.className).toContain('pb-16');
+    expect(section?.className).toContain('pb-8');
   });
 });

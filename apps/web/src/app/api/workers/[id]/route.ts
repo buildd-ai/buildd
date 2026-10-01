@@ -6,6 +6,8 @@ import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -24,6 +26,8 @@ import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
+import { lineageStamp } from '@/lib/attempt-lineage';
+import { persistTaskEvidence } from '@/lib/task-evidence-store';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
 import { completeMissionIfVerified } from '@/lib/mission-completion';
 import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
@@ -51,9 +55,11 @@ import {
   constructFallbackStructuredOutput,
 } from '@/lib/reviewer-prose-fallback';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { BASH_FAILURE_PATTERN, BASH_RECOVERED_PATTERN, BASH_TRACE_EXCERPT_MAX } from '@buildd/core/bash-failure-trace';
 import { approvedAwaitingMergeTitle } from '@/lib/reviewer-evidence';
 import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
+import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
@@ -67,7 +73,7 @@ import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import { dispatchLoopIteration, type LoopDispatchResult } from '@/lib/loop-dispatcher';
 import type { LoopHistoryEntry, TaskHandoff } from '@buildd/shared';
-import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus } from '@buildd/shared';
+import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isSilentStartShape, isUnrecognizedModelError, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
@@ -525,7 +531,8 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may read only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // GET also accepts the dashboard session (the in-app chat reads worker
   // milestones as the signed-in user). PATCH stays worker-key-only. A key,
   // when present, is authoritative.
@@ -549,6 +556,10 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // The workspace row carries the webhook dispatch bearer token; neither a
+  // team member reading a worker nor a cloud container has any use for it.
+  const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
+
   if (!account) {
     // Session: membership of the worker workspace's team, as on the dashboard.
     // Outside it the worker does not exist for this caller.
@@ -556,19 +567,14 @@ export async function GET(
     if (!access) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    // The workspace row carries the webhook dispatch bearer token; a team
-    // member reading a worker has no use for it.
-    const workspace = worker.workspace
-      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
-      : worker.workspace;
-    return NextResponse.json({ ...worker, workspace });
+    return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(worker);
+  return NextResponse.json(account.taskScope ? redacted() : worker);
 }
 
 // PATCH /api/workers/[id] - Update worker status
@@ -580,7 +586,8 @@ export async function PATCH(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may update only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -598,7 +605,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -916,7 +923,12 @@ export async function PATCH(
         taskId: worker.taskId,
         pattern: String(t.pattern).slice(0, 100),
         // Sensitive: drop excerpt prose, keep only pattern/source/ts for structured analysis
-        excerpt: isSensitive ? '' : String(t.excerpt).slice(0, 500),
+        excerpt: isSensitive
+          ? ''
+          : String(t.excerpt).slice(
+              0,
+              t.pattern === BASH_FAILURE_PATTERN || t.pattern === BASH_RECOVERED_PATTERN ? BASH_TRACE_EXCERPT_MAX : 500,
+            ),
         source: typeof t.source === 'string' ? t.source.slice(0, 50) : null,
       }));
     if (rows.length > 0) {
@@ -1194,7 +1206,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug })
+        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -2826,7 +2838,11 @@ export async function PATCH(
       // this PATCH's values merged over the row, after the budget check (a
       // budget wall is the more specific diagnosis). A turns-less PATCH
       // auto-increments the row by one, so count that turn here too.
+      // Never for an interactive (claim_task, runner = 'mcp') worker: no runner
+      // streams turns or spend for it, so its zeros say nothing about whether a
+      // session died — judging it by this shape discarded real verdicts.
       const isSilentStartCompletion = status === 'completed' && !shouldAutoRetry && !completionBudgetError &&
+        worker.runner !== INTERACTIVE_WORKER_RUNNER &&
         isSilentStartShape({
           turns: typeof updates.turns === 'number'
             ? updates.turns
@@ -3314,6 +3330,15 @@ export async function PATCH(
           fireMissionReleaseIfComplete(worker.workspaceId, taskMissionId, worker.taskId, id)
             .catch((err) => console.error(`[Worker ${id}] Mission release check failed:`, err));
         }
+      }
+
+      // Evidence: a compact record of why the task failed, or of the caveat on a
+      // success, so "did it fail, why" is answerable from buildd alone. Skipped
+      // when the task is going back to the queue (no terminal outcome yet).
+      // Awaited — a serverless function may freeze an un-awaited write — and
+      // contained: it never throws.
+      if (!shouldAutoRetry && loopDispatchResult?.kind !== 'requeue') {
+        await persistTaskEvidence(worker.taskId, id, { isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
@@ -3865,6 +3890,17 @@ export async function PATCH(
         ? 'pending_merge' as const
         : 'abandoned' as const;
     await releaseAndNotify(worker.taskId, releaseReason);
+  }
+
+  // A fix attempt (review fix, CI retry) just ended. The claim route wrote
+  // `Fixing` on the PR comment; close it here, or the comment keeps a spinner
+  // on a task that is no longer running. A later red CI result appends its own
+  // entry after this one. Only on the transition into a terminal status.
+  if (isTerminalStatus && worker.taskId && terminalTaskRow[0] && !isTerminalWorkerStatus(worker.status)) {
+    await announceFixEnded(
+      { id: worker.taskId, workspaceId: worker.workspaceId, ...terminalTaskRow[0] },
+      taskCancelledUnderSession ? 'cancelled' : status === 'completed' ? 'completed' : 'failed',
+    );
   }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has
@@ -4894,6 +4930,7 @@ async function handleReviewerOutcomeIfNeeded(
             prNumber,
             prUrl,
             workerBranch,
+            ...lineageStamp(originalTask, [prNumber]),
           },
           pathManifest: originalTask.pathManifest,
           release: 'false',

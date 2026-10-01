@@ -52,7 +52,7 @@ import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
-import { buildAgentBaseEnv } from './agent-env';
+import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -71,7 +71,7 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import { applyModelEnv, endpointSessionModels, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import {
@@ -91,7 +91,7 @@ import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { HUMAN_UI_DENIAL } from './runner-denial';
-import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
+import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
@@ -1306,6 +1306,37 @@ export class WorkerManager {
   /** True while an SDK session for this worker is still live (not yet torn down). */
   hasLiveSession(id: string): boolean {
     return this.sessions.has(id);
+  }
+
+  /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
+  persistWorker(id: string): void {
+    const worker = this.workers.get(id);
+    if (worker) storeSaveWorker(worker);
+  }
+
+  /**
+   * --once --resume-worker: take on ONE worker restored from a park bundle
+   * (docs/design/cloudflare-sandbox-runner.md, Phase 2), the single-worker
+   * form of restoreWorkersFromDisk that singleTask mode skips. A worker
+   * parked on a question keeps `waiting`, so the 10s sync drains its queued
+   * answer into sendMessage → resumeSession. A run parked mid-session after
+   * an agent restart ('orphan') had no question; it is marked interrupted so
+   * the caller's follow-up message resumes it the same way.
+   */
+  adoptParkedWorker(id: string, kind: 'waiting' | 'orphan'): LocalWorker | null {
+    const worker = storeLoadWorker(id);
+    if (!worker) return null;
+    if (!worker.checkpoints) worker.checkpoints = [];
+    if (!worker.subagentTasks) worker.subagentTasks = [];
+    if (worker.subagentTasksObservedCount === undefined) worker.subagentTasksObservedCount = worker.subagentTasks.length;
+    if (kind === 'orphan' || worker.status !== 'waiting') {
+      worker.status = 'error';
+      worker.error = 'Interrupted by a platform restart; resuming';
+    }
+    this.workers.set(id, worker);
+    this.pusherManager.subscribeToWorker(id);
+    this.dirtyWorkers.add(id);
+    return worker;
   }
 
   /**
@@ -2972,6 +3003,8 @@ export class WorkerManager {
       // visible to the agent — capability scoping, not permission prompts.
       // Credentials the agent actually needs are injected explicitly below.
       const cleanEnv = buildAgentBaseEnv();
+      // With OpenTelemetry on, tag the agent's exports with this worker.
+      withWorkerResourceAttribute(cleanEnv, worker.id);
       // Any runner code the agent runs (its tests, from any checkout on this
       // host, including ones that predate the in-repo test-home guard) would
       // otherwise fall back to ~/.buildd, which is THIS runner's live store.
@@ -3234,9 +3267,9 @@ export class WorkerManager {
       // Fallback: use claudeAccessToken from the claim response (always available if a
       // claude_credential exists), which remains valid until the broker has had time to
       // refresh it.
-      // Never alongside a team endpoint: a Claude seat token must not ride
-      // along to a third-party host.
-      if (!teamEndpointApplied && (worker.claudeAccessToken || worker.claudeCredentialId)) {
+      // Never alongside a team endpoint (shouldUseClaudeCredential): a Claude
+      // seat token must not ride along to a third-party host.
+      if (shouldUseClaudeCredential(modelEnv, worker)) {
         let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
         let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
 
@@ -5929,6 +5962,16 @@ export class WorkerManager {
           const traces = scanToolResult(worker.id, text, source, {
             isError: block.is_error === true,
           });
+          // Every non-zero Bash exit, not just the known patterns — so a red
+          // test run or tsc leaves a record. See scanBashResult.
+          if (source === 'Bash') {
+            const bashCommand = (sourceInput as { command?: unknown } | undefined)?.command;
+            traces.push(...scanBashResult(
+              worker.id,
+              { command: typeof bashCommand === 'string' ? bashCommand : undefined, content: text, isError: block.is_error === true },
+              this.secretRedactors.get(worker.id),
+            ));
+          }
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
             const redact = this.secretRedactors.get(worker.id);

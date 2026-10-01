@@ -102,6 +102,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   create_pr: 'work',
   emit_event: 'work',
   upload_artifact: 'work',
+  get_page_source: 'work',
   record_pr_supersession: 'work',
   post_note: 'work',
   suggest_schedule_update: 'work',
@@ -191,6 +192,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'post notes', actions: ['post_note'] },
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
+      { text: 'audit page source', actions: ['get_page_source'] },
       { text: 'open the PR', actions: ['create_pr', 'record_pr_supersession'] },
       { text: 'suggest a schedule change', actions: ['suggest_schedule_update'] },
       { text: 'complete', actions: ['complete_task'] },
@@ -321,6 +323,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   query_events: "a worker's events",
   create_artifact: 'save an artifact (report, analysis, link...)',
   upload_artifact: 'get an upload URL for a file artifact',
+  get_page_source: 'sandbox or preview URL for visual audit',
   record_pr_supersession: 'record that a closed PR was superseded',
   post_note: 'post a note or question to the task feed',
   suggest_schedule_update: 'propose a change to your schedule',
@@ -333,6 +336,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
+  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
 };
 

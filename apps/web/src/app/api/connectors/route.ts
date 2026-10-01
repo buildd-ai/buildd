@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { connectors, connectorShares, secrets, teamMembers } from '@buildd/core/db/schema';
@@ -16,9 +17,9 @@ async function authenticateRequest(req: NextRequest) {
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (account) {
-      if (account.level !== 'admin') return { type: 'denied' as const };
+      if (!hasTokenRouteAdminAccess(account, req)) return { type: 'denied' as const };
       return { type: 'api' as const, account };
     }
   }

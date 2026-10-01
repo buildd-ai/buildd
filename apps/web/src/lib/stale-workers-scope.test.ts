@@ -161,6 +161,30 @@ describe('heartbeatOrphanScope — the boundary deliberately NOT crossed', () =>
   });
 });
 
+/**
+ * Cloud runner park (docs/design/cloudflare-sandbox-runner.md, Phase 2): a
+ * parked worker has no container and so no heartbeat. Without this exemption
+ * a cloud-only account fails every parked worker once its last heartbeat goes
+ * stale, and the answer that would resume it has nothing left to resume.
+ */
+describe('parked workers are exempt from the runner-evidence sweeps while the park is live', () => {
+  const NOW = new Date('2026-09-29T12:00:00.000Z');
+
+  it('heartbeatOrphanScope skips parked_until > now', () => {
+    const q = dialect.sqlToQuery(heartbeatOrphanScope('account-1', THRESHOLD, NOW));
+    const text = q.sql.replace(/\s+/g, ' ').toLowerCase();
+    expect(text).toContain('"workers"."parked_until" is null');
+    expect(text).toContain('"workers"."parked_until" <= $');
+    expect(q.params).toContain(NOW.toISOString());
+  });
+
+  it('staleWorkerScope: the generic and silent-start running arms skip a live park', () => {
+    const q = dialect.sqlToQuery(staleWorkerScope('account-1', NOW));
+    const text = q.sql.replace(/\s+/g, ' ').toLowerCase();
+    expect(text.match(/"workers"\."parked_until" is null/g)?.length).toBe(2);
+  });
+});
+
 describe('heartbeatFreshnessScope — must stay account-keyed', () => {
   it('looks up the heartbeat for one account only', () => {
     const sqlText = render(heartbeatFreshnessScope('account-1', THRESHOLD));
