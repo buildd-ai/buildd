@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- PR landing function with shadow rollout; every merge door now routes through it, with a backstop sweeper that re-drives approved green PRs and a signed one-tap fix flow that pages once per blocked PR (#3287, #3289, #3292)
+- Time-to-land measurement with a stuck-PR count (#3294)
+- Merge gating by serialized change-intent surfaces, serialized per base branch
+- Path claims: confirmed edit claims are enforced and checkpoint changes are swept; acquisition is serialized with selective narrowing
+- Orchestration decision ledger (versioned decisions and labelled outcomes), shadow evaluation of hold-versus-start at claim, creation-manifest prediction, and evidence-gated promotion
+- Scoped API tokens and per-task tokens for cloud containers
+- Missions: completed mission pages lead with a "What shipped" header, authored and stored on completion (#3286)
+- MCP: `list_tasks` `missionId` filter, strict params, and a `get_task` scheduling view (#3284)
+- Role routing text and an opt-in role shadow (#3271)
+- Visual QA against Vercel preview deployments, auto-discovered per commit (#3274)
+- Compact failure/evidence record persisted for every ended task (#3218)
+
+### Changed
+
+- Update `@anthropic-ai/sdk` to ^0.131.0 (#3313)
+
+### Fixed
+
+- Behind PRs are no longer stranded when deferred branch refreshes are re-driven in default mode (#3314)
+- A PR's fix attempt is no longer deferred behind PRs stacked on it (#3309)
+- Semantic refresh holds are keyed to a head so a pushed fix clears them; clean PR refreshes are classified and verified semantic conflicts escalate
+- Merge-order intents record the new base when a PR is retargeted (#3302)
+- Reviewer verdict spelling is normalized and malformed verdicts are rejected for interactive reviewers (#3300)
+- Reviewer verdict and confidence declared in prose are honored (#3267)
+- A red push from a completed fix attempt is retried by CI retry (#3266)
+- Complete task descriptions are exposed through MCP (#3243)
+- Interactive MCP workers are no longer treated as silent-start; `complete_task` reports server overrides (#3283)
+- Admin gates require an explicit capability, and restricted tokens stay within their workspaces
+- Runner keys can no longer reach team credentials; the cloud-runner container receives a per-task token, never the runner key
+- Call-time public address validation for gateway inference (#3260)
+- A UI mission cannot close as shipped without a surface audit or waiver (#3263)
+- Task eyebrow shows role, runner, or what shipped, never "unassigned"
+- Home: provider onboarding card stays compact when actionable work exists (#3254); draft PRs with CI failures are excluded from the action queue
+- No-prod-data check treats zero-padded migration indices as identifiers, and the pre-commit hook diffs against the nearest PR base (#3315, #3303)
+
 ## [0.244.0] - 2026-09-28
 
 ### Added
