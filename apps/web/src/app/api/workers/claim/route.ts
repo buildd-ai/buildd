@@ -88,6 +88,7 @@ import {
   acquireGatedStartPaths,
   gatedStartApplies,
   gatedStartReachable,
+  releaseGatedStartPaths,
   scheduleClaimHoldShadow,
   type ClaimHoldTaskContext,
 } from './hold-start-shadow';
@@ -2051,9 +2052,14 @@ export async function POST(req: NextRequest) {
     // Gated START only (never as shipped): the relaxed overlap's declared
     // paths go through the exclusive primitive, all-or-nothing, before the
     // claim. Any conflict keeps the original path_overlap hold.
-    if (gatedStartPaths && !(await acquireGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, paths: gatedStartPaths }))) {
-      deferTask(task, 'path_overlap', { gatedStart: 'acquire_failed' });
-      continue;
+    let gatedStartLeaseIds: string[] = [];
+    if (gatedStartPaths) {
+      const acquired = await acquireGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, paths: gatedStartPaths });
+      if (!acquired.ok) {
+        deferTask(task, 'path_overlap', { gatedStart: 'acquire_failed' });
+        continue;
+      }
+      gatedStartLeaseIds = acquired.insertedIds;
     }
 
     // Atomic claim: only succeeds if task is still pending (optimistic lock)
@@ -2074,7 +2080,14 @@ export async function POST(req: NextRequest) {
       .where(and(eq(tasks.id, task.id), eq(tasks.status, 'pending')))
       .returning({ id: tasks.id });
 
-    if (updated.length === 0) continue; // Already claimed by another request
+    if (updated.length === 0) {
+      // Already claimed by another request. A gated START that leased paths
+      // for this attempt gives them back unless the winning claim owns them.
+      if (gatedStartLeaseIds.length > 0) {
+        await releaseGatedStartPaths({ workspaceId: task.workspaceId, taskId: task.id, insertedIds: gatedStartLeaseIds });
+      }
+      continue;
+    }
 
     if (experimentDraw) {
       await recordModelRoutingAssignment(experimentDraw, { taskId: task.id, runnerCliVersion: body.environment?.claudeCliVersion, resolvedModel });

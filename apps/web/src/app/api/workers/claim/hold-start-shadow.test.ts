@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { choice, defineDecision, JEV_MODEL } from '@builddai/ai-kit/decide';
 import type { OrchestrationDecisionDeps, OrchestrationDecisionRow } from '@buildd/core/orchestration-decision';
+import { claimHoldIdentity, type PromotionEvidence } from '@buildd/core/orchestration-promotion';
 import {
   ClaimHoldCollector,
   acquireGatedStartPaths,
   gatedStartApplies,
+  gatedStartReachable,
+  releaseGatedStartPaths,
   resetClaimHoldMemos,
   runClaimHoldShadow,
   scheduleClaimHoldShadow,
@@ -51,6 +54,17 @@ const pr = (over: Record<string, unknown> = {}) => ({
 
 const QUESTIONS = { action: choice({ question: 'q' }, { HOLD: 'h', START: 's' }) };
 const GATED = defineDecision({ id: 'buildd.orchestration_claim_hold', promptVersion: 'test-gated', questions: QUESTIONS, mode: 'gated', minConfidence: 0.8 });
+
+/** Synthetic readout evidence for GATED, for both advisory gates. */
+const PROMOTED: PromotionEvidence[] = ['ch1.open_pr_overlap', 'ch1.advisory_manifest'].map(candidatePolicyVersion => ({
+  decisionId: GATED.id,
+  candidatePolicyVersion,
+  measuredFingerprint: claimHoldIdentity(GATED),
+  verdict: 'eligible_for_gated' as const,
+  threshold: 0.8,
+  maxApplyingFraction: 1,
+  readoutRef: 'synthetic',
+}));
 
 function decisionDeps(over: Partial<OrchestrationDecisionDeps> & { rows?: OrchestrationDecisionRow[]; label?: string; model?: string } = {}) {
   const rows = over.rows ?? [];
@@ -234,7 +248,7 @@ describe('runClaimHoldShadow: shadow records, never applies', () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
     const dd = decisionDeps({ model: 'openai/gpt-x' });
-    const h = harness({ decision: GATED, applyingFraction: 1 }, dd);
+    const h = harness({ decision: GATED, applyingFraction: 1, promotions: PROMOTED }, dd);
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ applied: false, status: 'suggested', reason: 'non_jev', model: 'openai/gpt-x' });
   });
@@ -242,9 +256,35 @@ describe('runClaimHoldShadow: shadow records, never applies', () => {
   it('Jev under a reached gated policy with the task in the cohort is the only applied START', async () => {
     const c = new ClaimHoldCollector();
     c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
-    const h = harness({ decision: GATED, applyingFraction: 1 });
+    const h = harness({ decision: GATED, applyingFraction: 1, promotions: PROMOTED });
     await runClaimHoldShadow(c.candidates, h.deps);
     expect(h.rows[0]).toMatchObject({ applied: true, effective: 'START', experimentArm: 'apply', propensity: 1 });
+  });
+
+  it('a requested cohort without readout evidence resolves to zero: recorded, never applied', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    const h = harness({ decision: GATED, applyingFraction: 1 });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ applied: false, effective: 'HOLD', experimentArm: 'observe', applyingFraction: 0, reason: 'not_in_cohort' });
+  });
+
+  it('evidence measured on another definition (fingerprint mismatch) resolves to zero', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    const stale = PROMOTED.map(e => ({ ...e, measuredFingerprint: '000000000000' }));
+    const h = harness({ decision: GATED, applyingFraction: 1, promotions: stale });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ applied: false, applyingFraction: 0 });
+  });
+
+  it('rolling the requested fraction back to zero stops application even with evidence', async () => {
+    const c = new ClaimHoldCollector();
+    c.noteOpenPrOverlap(ctx(), ['apps/web/src/widget.ts'], [pr()], new Map());
+    const h = harness({ decision: GATED, applyingFraction: 0, promotions: PROMOTED });
+    await runClaimHoldShadow(c.candidates, h.deps);
+    expect(h.rows[0]).toMatchObject({ applied: false, applyingFraction: 0, experimentArm: 'observe' });
+    expect(gatedStartReachable({ decision: GATED, applyingFraction: 0, promotions: PROMOTED })).toBe(false);
   });
 
   it('a state-read failure falls back to the rule and is recorded as retrieval_error', async () => {
@@ -363,7 +403,7 @@ describe('gated START', () => {
   it('when reached, it applies only for an applied START on the same state digest', async () => {
     const keys: any[] = [];
     const n = note();
-    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 0.1, findAppliedStart: async (k) => { keys.push(k); return true; }, now: () => Date.parse('2026-09-30T12:00:00Z') };
+    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 0.1, promotions: PROMOTED, findAppliedStart: async (k) => { keys.push(k); return true; }, now: () => Date.parse('2026-09-30T12:00:00Z') };
     expect(await gatedStartApplies(n, deps)).toBe(true);
     expect(keys[0]).toMatchObject({ workspaceId: WS, taskId: TASK, decisionId: GATED.id, fingerprint: GATED.fingerprint, candidateDigest: n.digest });
     expect(keys[0].since.toISOString()).toBe('2026-09-30T11:50:00.000Z');
@@ -371,28 +411,84 @@ describe('gated START', () => {
   });
 
   it('a lookup error holds', async () => {
-    expect(await gatedStartApplies(note(), { decision: GATED, applyingFraction: 1, findAppliedStart: async () => { throw new Error('x'); } })).toBe(false);
+    expect(await gatedStartApplies(note(), { decision: GATED, applyingFraction: 1, promotions: PROMOTED, findAppliedStart: async () => { throw new Error('x'); } })).toBe(false);
+  });
+
+  it('a gated definition with a requested cohort but no evidence stays unreachable: no ledger lookup', async () => {
+    let lookups = 0;
+    const deps: ClaimHoldDeps = { decision: GATED, applyingFraction: 1, findAppliedStart: async () => { lookups++; return true; } };
+    expect(gatedStartReachable(deps)).toBe(false);
+    expect(await gatedStartApplies(note(), deps)).toBe(false);
+    expect(lookups).toBe(0);
   });
 
   it('acquires the declared paths through the exclusive primitive, all-or-nothing', async () => {
     const calls: any[] = [];
     const ok = await acquireGatedStartPaths({ workspaceId: WS, taskId: TASK, paths: ['**', 'apps/web/src/widget.ts'] }, {
-      acquire: async (input) => { calls.push(input); return { kind: 'acquired', inserted: ['apps/web/src/widget.ts'], blocked: [], pathManifest: null, revision: 1 }; },
+      acquire: async (input) => { calls.push(input); return { kind: 'acquired', inserted: ['apps/web/src/widget.ts'], insertedIds: ['lease-1'], blocked: [], pathManifest: null, revision: 1 }; },
     });
-    expect(ok).toBe(true);
+    expect(ok).toEqual({ ok: true, inserted: ['apps/web/src/widget.ts'], insertedIds: ['lease-1'] });
     expect(calls).toEqual([{ workspaceId: WS, taskId: TASK, paths: ['apps/web/src/widget.ts'], declare: true }]);
   });
 
   it('a conflict, a closed task or an error means HOLD', async () => {
     const input = { workspaceId: WS, taskId: TASK, paths: ['a.ts'] };
-    expect(await acquireGatedStartPaths(input, { acquire: async () => ({ kind: 'conflict', conflict: {} as any, blocked: [] }) })).toBe(false);
-    expect(await acquireGatedStartPaths(input, { acquire: async () => ({ kind: 'task_closed' }) })).toBe(false);
-    expect(await acquireGatedStartPaths(input, { acquire: async () => { throw new Error('x'); } })).toBe(false);
+    expect((await acquireGatedStartPaths(input, { acquire: async () => ({ kind: 'conflict', conflict: {} as any, blocked: [] }) })).ok).toBe(false);
+    expect((await acquireGatedStartPaths(input, { acquire: async () => ({ kind: 'task_closed' }) })).ok).toBe(false);
+    expect((await acquireGatedStartPaths(input, { acquire: async () => { throw new Error('x'); } })).ok).toBe(false);
   });
 
   it('a scope-undeclared START acquires nothing up front (observed touches lease later)', async () => {
     let called = false;
-    expect(await acquireGatedStartPaths({ workspaceId: WS, taskId: TASK, paths: ['**'] }, { acquire: async () => { called = true; return { kind: 'task_closed' }; } })).toBe(true);
+    expect(await acquireGatedStartPaths({ workspaceId: WS, taskId: TASK, paths: ['**'] }, { acquire: async () => { called = true; return { kind: 'task_closed' }; } })).toEqual({ ok: true, inserted: [], insertedIds: [] });
     expect(called).toBe(false);
+  });
+
+  describe('releaseGatedStartPaths: a START that lost the atomic claim gives its new leases back', () => {
+    const input = { workspaceId: WS, taskId: TASK, insertedIds: ['lease-1'] };
+    const released = (paths: string[], waiters: Array<{ waitingTaskId: string; blockedPath: string }> = []) => async () => ({
+      kind: 'released' as const,
+      result: { workspaceId: WS, releasedPaths: paths, notifiedWaiters: waiters.map(w => w.waitingTaskId), waiters },
+    });
+
+    it('releases only the rows this attempt inserted, never the task\'s other leases', async () => {
+      const calls: any[] = [];
+      const out = await releaseGatedStartPaths(input, {
+        releaseRows: async (a) => { calls.push(a); return released(['apps/web/src/widget.ts'])(); },
+        releaseReason: async () => 'abandoned',
+        deliver: async () => {},
+      });
+      expect(out).toBe('released');
+      expect(calls).toEqual([{ workspaceId: WS, taskId: TASK, leaseIds: ['lease-1'], keepStatuses: ['assigned', 'in_progress', 'review'] }]);
+    });
+
+    it('keeps them when the winning claim now owns the task (decided under the lock)', async () => {
+      let delivered = 0;
+      const out = await releaseGatedStartPaths(input, { releaseRows: async () => ({ kind: 'kept' }), deliver: async () => { delivered++; } });
+      expect(out).toBe('kept_live_owner');
+      expect(delivered).toBe(0);
+    });
+
+    it('waiters hear the task\'s real release reason, not a blanket "abandoned"', async () => {
+      const seen: any[] = [];
+      const out = await releaseGatedStartPaths(input, {
+        releaseRows: released(['apps/web/src/widget.ts'], [{ waitingTaskId: HOLDER, blockedPath: 'apps/web/src/widget.ts' }]),
+        releaseReason: async (taskId) => { expect(taskId).toBe(TASK); return 'merged'; },
+        deliver: async (taskId, result, reason) => { seen.push({ taskId, reason, waiters: result.notifiedWaiters }); },
+      });
+      expect(out).toBe('released');
+      expect(seen).toEqual([{ taskId: TASK, reason: 'merged', waiters: [HOLDER] }]);
+    });
+
+    it('nothing inserted: nothing to release, no statement', async () => {
+      let calls = 0;
+      const out = await releaseGatedStartPaths({ ...input, insertedIds: [] }, { releaseRows: async () => { calls++; return { kind: 'nothing' }; } });
+      expect(out).toBe('nothing_inserted');
+      expect(calls).toBe(0);
+    });
+
+    it('never throws: a failed release is reported, the reaper is the backstop', async () => {
+      expect(await releaseGatedStartPaths(input, { releaseRows: async () => { throw new Error('db'); } })).toBe('error');
+    });
   });
 });

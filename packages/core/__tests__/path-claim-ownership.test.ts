@@ -46,8 +46,10 @@ function addTask(id: string, over: Partial<TaskRow> = {}) {
   state.tasks.set(id, { id, workspaceId: WS, status: 'in_progress', pathManifest: null, pathDeclaration: null, pathClaimRevision: 0, ...over });
   state.workers.push({ taskId: id, status: 'running', updatedAt: new Date() });
 }
-function addClaim(taskId: string, path: string, workspaceId = WS) {
-  state.claims.push({ id: `c${++seq}`, workspaceId, taskId, path, claimedAt: seq, releasedAt: null });
+function addClaim(taskId: string, path: string, workspaceId = WS): string {
+  const id = `c${++seq}`;
+  state.claims.push({ id, workspaceId, taskId, path, claimedAt: seq, releasedAt: null });
+  return id;
 }
 function addWaiter(blockingTaskId: string, waitingTaskId: string, blockedPath: string, notifiedAt: Date | null = null) {
   state.waiters.push({ id: `w${++seq}`, workspaceId: WS, blockingTaskId, waitingTaskId, blockedPath, registeredAt: new Date(), notifiedAt });
@@ -98,9 +100,10 @@ function runOp(tag: string, a: any): { rows: any[] } {
     const grantable = !ownerOpen ? [] : req.filter(p =>
       !blocked.some(b => b.path === p) && (!a.allOrNothing || blocked.length === 0));
     const inserted: string[] = [];
+    const insertedIds: string[] = [];
     for (const p of grantable) {
       if (state.claims.some(c => c.taskId === a.taskId && !c.releasedAt && norm(c.path) === p)) continue;
-      addClaim(a.taskId, p, a.workspaceId);
+      insertedIds.push(addClaim(a.taskId, p, a.workspaceId));
       inserted.push(p);
     }
     const declared = a.declare && task ? grantable.filter(p => !(task.pathManifest ?? []).includes(p)).sort() : [];
@@ -109,7 +112,7 @@ function runOp(tag: string, a: any): { rows: any[] } {
       if (declared.length) task.pathManifest = [...(task.pathManifest ?? []), ...declared];
       task.pathClaimRevision += 1;
     }
-    return { rows: [{ owner_open: ownerOpen, blocked, inserted, path_manifest: task?.pathManifest ?? null, revision: task?.pathClaimRevision ?? null }] };
+    return { rows: [{ owner_open: ownerOpen, blocked, inserted, inserted_ids: insertedIds, path_manifest: task?.pathManifest ?? null, revision: task?.pathClaimRevision ?? null }] };
   }
   if (tag === 'release') {
     const task = state.tasks.get(a.taskId);
@@ -120,6 +123,22 @@ function runOp(tag: string, a: any): { rows: any[] } {
     for (const w of woken) w.notifiedAt = now;
     return { rows: [{
       workspace_id: rel[0]?.workspaceId ?? woken[0]?.workspaceId ?? null,
+      released_paths: rel.map(c => c.path),
+      waiters: woken.map(w => ({ waitingTaskId: w.waitingTaskId, blockedPath: w.blockedPath })),
+    }] };
+  }
+  if (tag === 'release_rows') {
+    const task = state.tasks.get(a.taskId);
+    const found = !!task && task.workspaceId === a.workspaceId;
+    const kept = found && a.keepStatuses.includes(task!.status);
+    const rel = !found || kept ? [] : state.claims.filter(c =>
+      a.leaseIds.includes(c.id) && c.taskId === a.taskId && c.workspaceId === a.workspaceId && !c.releasedAt);
+    for (const c of rel) c.releasedAt = now;
+    if (task && rel.length) task.pathClaimRevision += 1;
+    const woken = state.waiters.filter(w => w.blockingTaskId === a.taskId && !w.notifiedAt && rel.some(c => norm(c.path) === norm(w.blockedPath)));
+    for (const w of woken) w.notifiedAt = now;
+    return { rows: [{
+      found, kept,
       released_paths: rel.map(c => c.path),
       waiters: woken.map(w => ({ waitingTaskId: w.waitingTaskId, blockedPath: w.blockedPath })),
     }] };
@@ -256,6 +275,7 @@ const {
   acquireObservedPaths,
   narrowPathClaims,
   releaseClaims,
+  releaseLeaseRows,
   findStaleClaimHolderTaskIds,
   registerWaiter,
 } = await import('../path-claim');
@@ -616,6 +636,80 @@ describe('releaseClaims — terminal release', () => {
   });
 });
 
+describe('releaseLeaseRows — give back exactly the rows one acquisition inserted', () => {
+  const KEEP = ['assigned', 'in_progress', 'review'];
+
+  it('acquisition reports the ids of the rows it inserted', async () => {
+    addTask(A, { status: 'pending' });
+    const r = await acquirePathClaims({ workspaceId: WS, taskId: A, paths: ['src/a.ts'], declare: true });
+    expect(r.kind).toBe('acquired');
+    if (r.kind !== 'acquired') return;
+    expect(r.insertedIds).toHaveLength(1);
+    expect(state.claims.find(c => c.id === r.insertedIds[0])?.path).toBe('src/a.ts');
+  });
+
+  it("a concurrent re-acquire's leases survive: only the given rows are released", async () => {
+    addTask(A, { status: 'pending', pathManifest: ['src/a.ts'] });
+    const mine = await acquirePathClaims({ workspaceId: WS, taskId: A, paths: ['src/a.ts'], declare: true });
+    if (mine.kind !== 'acquired') throw new Error('expected acquired');
+    // Another claim attempt for the same task leases a different path meanwhile.
+    const other = await acquirePathClaims({ workspaceId: WS, taskId: A, paths: ['src/b.ts'], declare: true });
+    if (other.kind !== 'acquired') throw new Error('expected acquired');
+
+    const out = await releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: mine.insertedIds, keepStatuses: KEEP });
+    expect(out.kind).toBe('released');
+    expect(active(A)).toEqual(['src/b.ts']);
+    // The declaration is untouched: this is a lease give-back, not a narrowing.
+    expect(state.tasks.get(A)!.pathManifest).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
+  it('a lease re-acquired after an earlier give-back is a new row and survives a repeated give-back', async () => {
+    addTask(A, { status: 'pending' });
+    const first = await acquirePathClaims({ workspaceId: WS, taskId: A, paths: ['src/a.ts'], declare: true });
+    if (first.kind !== 'acquired') throw new Error('expected acquired');
+    await releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: first.insertedIds, keepStatuses: KEEP });
+    const again = await acquirePathClaims({ workspaceId: WS, taskId: A, paths: ['src/a.ts'], declare: true });
+    if (again.kind !== 'acquired') throw new Error('expected acquired');
+    expect(again.insertedIds).not.toEqual(first.insertedIds);
+    await releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: first.insertedIds, keepStatuses: KEEP });
+    expect(active(A)).toEqual(['src/a.ts']);
+  });
+
+  it('keeps the rows when the task is now owned by a live claim (checked inside the locked statement)', async () => {
+    addTask(A, { status: 'pending' });
+    const r = await acquirePathClaims({ workspaceId: WS, taskId: A, paths: ['src/a.ts'], declare: true });
+    if (r.kind !== 'acquired') throw new Error('expected acquired');
+    state.tasks.get(A)!.status = 'assigned';
+    const out = await releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: r.insertedIds, keepStatuses: KEEP });
+    expect(out.kind).toBe('kept');
+    expect(active(A)).toEqual(['src/a.ts']);
+  });
+
+  it('wakes only waiters blocked on a released path, never touches another task or workspace', async () => {
+    addTask(A, { status: 'cancelled' });
+    const mine = addClaim(A, 'src/a.ts');
+    addClaim(A, 'src/b.ts');
+    const foreign = addClaim(B, 'src/c.ts');
+    addTask(B);
+    addTask(C);
+    addWaiter(A, B, 'src/a.ts');
+    addWaiter(A, C, 'src/b.ts');
+    const out = await releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: [mine, foreign], keepStatuses: KEEP });
+    if (out.kind !== 'released') throw new Error('expected released');
+    expect(out.result.releasedPaths).toEqual(['src/a.ts']);
+    expect(out.result.notifiedWaiters).toEqual([B]);
+    expect(active(B)).toEqual(['src/c.ts']);
+    expect((await releaseLeaseRows({ workspaceId: OTHER_WS, taskId: A, leaseIds: [mine], keepStatuses: KEEP })).kind).toBe('not_found');
+  });
+
+  it('no ids: nothing is executed', async () => {
+    addTask(A);
+    sqlLog.length = 0;
+    expect((await releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: [], keepStatuses: KEEP })).kind).toBe('nothing');
+    expect(sqlLog).toHaveLength(0);
+  });
+});
+
 describe('registerWaiter — retries', () => {
   // Regression: the deadlock BFS walked from the waiter, found the very edge
   // being re-registered and reported every retry as a circular wait.
@@ -705,6 +799,19 @@ describe('ownership SQL', () => {
     expect(t).toContain("t.status IN (SELECT jsonb_array_elements_text(a->'openStatuses'))");
     expect(t).toContain('INSERT INTO path_claims');
     expect(t).toContain('path_claim_revision = t.path_claim_revision + 1');
+  });
+
+  it('a lease give-back releases by row id, for this task, and re-checks status under the lock', async () => {
+    addTask(A, { status: 'pending' });
+    const log = await statementsFor(() =>
+      releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: ['c1'], keepStatuses: ['assigned'] }));
+    expect(log.filter(s => s.tag === 'lock').map(s => s.text).join(' ')).toContain("pg_advisory_xact_lock(hashtext('path_claims')");
+    const t = log.find(s => s.tag === 'release_rows')!.text.replace(/\s+/g, ' ');
+    expect(t).toContain("pc.task_id = (a->>'taskId')::uuid");
+    expect(t).toContain("pc.workspace_id = (a->>'workspaceId')::uuid");
+    expect(t).toContain('pc.released_at IS NULL');
+    expect(t).toContain("pc.id::text IN (SELECT jsonb_array_elements_text(a->'leaseIds'))");
+    expect(t).toContain("o.status IN (SELECT jsonb_array_elements_text(a->'keepStatuses'))");
   });
 
   it('narrowing CASes on the revision and only releases this task', async () => {

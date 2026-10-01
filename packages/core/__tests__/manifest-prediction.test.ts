@@ -451,6 +451,52 @@ describe('labelManifestPrediction', () => {
     expect(l.unknownScope).toBe(false);
   });
 
+  it('scores the regex baseline by path overlap: a directory or glob it names covers files under it', () => {
+    const l = labelManifestPrediction({
+      prediction: { ...record(), regexPaths: ['apps/web/src', 'packages/core/**/*.ts', 'docs/'], neighbourUnionPaths: [] },
+      touched: [{ paths: ['apps/web/src/a.ts', 'packages/core/x/y.ts', 'other/z.ts'], landed: false, failed: false }],
+    });
+    if (l.status !== 'observed') throw new Error('expected observed');
+    // Exact matching would score this baseline at zero; overlap credits two of three files.
+    expect(l.baselines.regex.truePositives).toBe(2);
+    expect(l.baselines.regex.recall).toBeCloseTo(2 / 3, 9);
+    // Two of the three regex entries cover something that was touched.
+    expect(l.baselines.regex.precision).toBeCloseTo(2 / 3, 9);
+    expect(l.baselines.regex.omittedPathRate).toBeCloseTo(1 / 3, 9);
+  });
+
+  it('never credits the repo-wide sentinel as a baseline hit', () => {
+    const l = labelManifestPrediction({
+      prediction: { ...record(), regexPaths: ['**'], neighbourUnionPaths: [] },
+      touched: [{ paths: ['a.ts'], landed: false, failed: false }],
+    });
+    if (l.status !== 'observed') throw new Error('expected observed');
+    expect(l.baselines.regex.truePositives).toBe(0);
+    expect(l.baselines.regex.recall).toBe(0);
+  });
+
+  it('grades only non-failed sessions; failed work is reported separately, not as truth', () => {
+    const l = labelManifestPrediction({
+      prediction: { ...record(), regexPaths: [], neighbourUnionPaths: [] },
+      touched: [
+        { paths: ['a.ts'], landed: true, failed: false },
+        { paths: ['a.ts', 'scratch.ts'], landed: false, failed: true },
+      ],
+    });
+    if (l.status !== 'observed') throw new Error('expected observed');
+    expect(l.actual).toEqual(['a.ts']);
+    expect(l.failedWork).toEqual(['scratch.ts']);
+    expect(l.failed).toBe(true);
+  });
+
+  it('a task whose every session failed has no truth: missing, with the failed work kept apart', () => {
+    const l = labelManifestPrediction({
+      prediction: { ...record(), regexPaths: [], neighbourUnionPaths: [] },
+      touched: [{ paths: ['scratch.ts'], landed: false, failed: true }],
+    });
+    expect(l).toEqual({ status: 'missing', reason: 'failed_work_only', failedWork: ['scratch.ts'] });
+  });
+
   it('no terminal observation is missing, not an empty truth', () => {
     const l = labelManifestPrediction({ prediction: { ...record(), regexPaths: [], neighbourUnionPaths: [] }, touched: [] });
     expect(l.status).toBe('missing');

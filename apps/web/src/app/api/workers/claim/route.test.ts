@@ -363,11 +363,13 @@ mock.module('./hold-start-shadow', () => ({
   gatedStartReachable: () => realHoldStart.gatedStartReachable(holdStartTest.deps),
   gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
   acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
+  releaseGatedStartPaths: (i: any) => realHoldStart.releaseGatedStartPaths(i, holdStartTest.deps),
 }));
 
 import { POST } from './route';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
+import { claimHoldIdentity } from '@buildd/core/orchestration-promotion';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -7652,6 +7654,12 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
     minConfidence: 0.8,
   });
 
+  // Synthetic readout evidence for GATED: the promotion guard grants nothing without it.
+  const PROMOTED = ['ch1.open_pr_overlap', 'ch1.advisory_manifest'].map(candidatePolicyVersion => ({
+    decisionId: GATED.id, candidatePolicyVersion, measuredFingerprint: claimHoldIdentity(GATED),
+    verdict: 'eligible_for_gated' as const, threshold: 0.8, maxApplyingFraction: 1, readoutRef: 'synthetic',
+  }));
+
   const rows: any[] = [];
   function holdStartOn(over: Record<string, any> = {}) {
     return {
@@ -7894,8 +7902,9 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
     const gated = (over: Record<string, any> = {}) => holdStartOn({
       decision: GATED,
       applyingFraction: 1,
+      promotions: PROMOTED,
       findAppliedStart: async () => true,
-      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, blocked: [], pathManifest: null, revision: 1 }; },
+      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
       ...over,
     });
     beforeEach(() => { acquired.length = 0; });
@@ -7904,6 +7913,14 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
       const on = await claimWith(gated(), scenarios.openPrAfterWorkerEnded);
       expect(on.body.workers).toHaveLength(1);
       expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    });
+
+    it('without readout evidence the requested cohort is refused: no lookup, the hold stands', async () => {
+      let lookups = 0;
+      const on = await claimWith(gated({ promotions: [], findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(0);
+      expect(lookups).toBe(0);
+      expect(acquired).toHaveLength(0);
     });
 
     it('a failed exclusive acquisition keeps the hold', async () => {

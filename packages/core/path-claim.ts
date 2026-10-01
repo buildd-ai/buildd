@@ -358,7 +358,15 @@ export interface AcquireInput {
 }
 
 export type AcquireResult =
-  | { kind: 'acquired'; inserted: string[]; blocked: BlockedPath[]; pathManifest: string[] | null; revision: number | null }
+  | {
+      kind: 'acquired';
+      inserted: string[];
+      /** Ids of the lease rows this call inserted, parallel to `inserted` (see `releaseLeaseRows`). */
+      insertedIds: string[];
+      blocked: BlockedPath[];
+      pathManifest: string[] | null;
+      revision: number | null;
+    }
   | { kind: 'conflict'; conflict: ClaimConflict; blocked: BlockedPath[] }
   | { kind: 'task_closed' };
 
@@ -421,7 +429,7 @@ export async function acquirePathClaims(input: AcquireInput): Promise<AcquireRes
   const { workspaceId, taskId, declare } = input;
   const paths = normalizeClaimPaths(input.paths);
   if (paths.length === 0) {
-    return { kind: 'acquired', inserted: [], blocked: [], pathManifest: null, revision: null };
+    return { kind: 'acquired', inserted: [], insertedIds: [], blocked: [], pathManifest: null, revision: null };
   }
 
   const { live, discounted } = await readHolders(workspaceId, taskId);
@@ -476,7 +484,7 @@ ins AS (
       AND own.released_at IS NULL
       AND rtrim(own.path, '/') = g.path
   )
-  RETURNING path
+  RETURNING id, path
 ),
 declared AS (
   SELECT g.path FROM grantable g, args, tasks t
@@ -501,7 +509,8 @@ SELECT
   EXISTS (SELECT 1 FROM owner) AS owner_open,
   COALESCE((SELECT jsonb_agg(jsonb_build_object(
     'path', b.path, 'blockingTaskId', b.blocking_task_id, 'blockingPath', b.blocking_path)) FROM blocked b), '[]'::jsonb) AS blocked,
-  COALESCE((SELECT jsonb_agg(i.path) FROM ins i), '[]'::jsonb) AS inserted,
+  COALESCE((SELECT jsonb_agg(i.path ORDER BY i.id) FROM ins i), '[]'::jsonb) AS inserted,
+  COALESCE((SELECT jsonb_agg(i.id::text ORDER BY i.id) FROM ins i), '[]'::jsonb) AS inserted_ids,
   COALESCE((SELECT u.path_manifest FROM upd u),
     (SELECT t.path_manifest FROM tasks t, args WHERE t.id = (a->>'taskId')::uuid)) AS path_manifest,
   COALESCE((SELECT u.path_claim_revision FROM upd u),
@@ -515,6 +524,7 @@ SELECT
   return {
     kind: 'acquired',
     inserted: jsonArray<string>(row.inserted),
+    insertedIds: jsonArray<string>(row.inserted_ids),
     blocked,
     pathManifest: (row.path_manifest as string[] | null) ?? null,
     revision: row.revision == null ? null : Number(row.revision),
@@ -714,6 +724,93 @@ SELECT
     releasedPaths: jsonArray<string>(row.released_paths),
     notifiedWaiters: waiters.map(w => w.waitingTaskId),
     waiters,
+  };
+}
+
+// ── Lease give-back ──────────────────────────────────────────────────────────
+
+export type LeaseRowsRelease =
+  | { kind: 'nothing' }
+  | { kind: 'not_found' }
+  /** The task is now in a `keepStatuses` status: its owner keeps the rows. */
+  | { kind: 'kept' }
+  | { kind: 'released'; result: ReleaseResult };
+
+/**
+ * Release exactly the lease rows one acquisition inserted (`insertedIds`),
+ * for an attempt that acquired and then did not go ahead (a gated START that
+ * lost the atomic claim). Unlike `releaseClaims` it never frees another
+ * attempt's rows for the same task, and unlike `narrowPathClaims` it leaves
+ * the manifest and the declaration alone: this gives a lease back, it does
+ * not change scope.
+ *
+ * The owner's status is re-read inside the locked statement: when it is now
+ * in `keepStatuses` (a winning claim owns the task) nothing is released. Only
+ * waiters blocked on a released path are stamped; delivery is the caller's.
+ */
+export async function releaseLeaseRows(input: {
+  workspaceId: string;
+  taskId: string;
+  leaseIds: string[];
+  keepStatuses: readonly string[];
+}): Promise<LeaseRowsRelease> {
+  const leaseIds = [...new Set(input.leaseIds.filter(id => typeof id === 'string' && id.length > 0))];
+  if (leaseIds.length === 0) return { kind: 'nothing' };
+  const { workspaceId, taskId } = input;
+  const row = await runLocked({ workspaceId }, db.execute(sql`-- path_claims:release_rows
+WITH args AS (SELECT ${JSON.stringify({ workspaceId, taskId, leaseIds, keepStatuses: input.keepStatuses })}::jsonb AS a),
+owner AS (
+  SELECT t.id, t.status FROM tasks t, args
+  WHERE t.id = (a->>'taskId')::uuid
+    AND t.workspace_id = (a->>'workspaceId')::uuid
+),
+keep AS (
+  SELECT o.id FROM owner o, args
+  WHERE o.status IN (SELECT jsonb_array_elements_text(a->'keepStatuses'))
+),
+rel AS (
+  UPDATE path_claims pc SET released_at = now()
+  FROM args
+  WHERE pc.id::text IN (SELECT jsonb_array_elements_text(a->'leaseIds'))
+    AND pc.task_id = (a->>'taskId')::uuid
+    AND pc.workspace_id = (a->>'workspaceId')::uuid
+    AND pc.released_at IS NULL
+    AND EXISTS (SELECT 1 FROM owner)
+    AND NOT EXISTS (SELECT 1 FROM keep)
+  RETURNING pc.path
+),
+bump AS (
+  UPDATE tasks t SET path_claim_revision = t.path_claim_revision + 1
+  FROM args
+  WHERE t.id = (a->>'taskId')::uuid AND EXISTS (SELECT 1 FROM rel)
+  RETURNING t.path_claim_revision
+),
+woken AS (
+  UPDATE path_claim_waiters w SET notified_at = now()
+  FROM args
+  WHERE w.blocking_task_id = (a->>'taskId')::uuid
+    AND w.notified_at IS NULL
+    AND EXISTS (SELECT 1 FROM rel r WHERE rtrim(r.path, '/') = rtrim(w.blocked_path, '/'))
+  RETURNING w.waiting_task_id, w.blocked_path
+)
+SELECT
+  EXISTS (SELECT 1 FROM owner) AS found,
+  EXISTS (SELECT 1 FROM keep) AS kept,
+  COALESCE((SELECT jsonb_agg(r.path) FROM rel r), '[]'::jsonb) AS released_paths,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'waitingTaskId', k.waiting_task_id, 'blockedPath', k.blocked_path)) FROM woken k), '[]'::jsonb) AS waiters`));
+
+  if (!row || !row.found) return { kind: 'not_found' };
+  if (row.kept) return { kind: 'kept' };
+  const waiters = jsonArray<{ waitingTaskId: string; blockedPath: string }>(row.waiters);
+  return {
+    kind: 'released',
+    result: {
+      workspaceId,
+      releasedPaths: jsonArray<string>(row.released_paths),
+      notifiedWaiters: waiters.map(w => w.waitingTaskId),
+      waiters,
+    },
   };
 }
 

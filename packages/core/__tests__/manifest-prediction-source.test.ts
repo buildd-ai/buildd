@@ -253,6 +253,17 @@ describe('predictCreationManifest', () => {
     // The access read happens once, not per pick.
   });
 
+  it('a requested applying fraction without readout evidence is granted as zero (promotion guard)', async () => {
+    const rows: any[] = [];
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess, loadNeighbours: neighbours, call: pickFirst(2) as any,
+      recordPrediction: async () => {}, recordDecision: async (row) => { rows.push(row); },
+      applyingFraction: 1,
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r).toMatchObject({ applyingFraction: 0, experimentArm: 'observe', applied: false });
+  });
+
   it('access is resolved once for all picks', async () => {
     const resolveAccess = mock(async () => okAccess);
     await src.predictCreationManifest(input(), {

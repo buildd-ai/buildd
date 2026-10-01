@@ -25,6 +25,7 @@
  * One overall deadline (5s default) covers access, retrieval and every pick.
  */
 import { and, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm';
+import { FAILED_WORKER_STATUSES } from '@buildd/shared';
 import { db } from './db/client';
 import { orchestrationManifestPredictions, workers } from './db/schema';
 import { buildNamespace } from './knowledge-store/pg-vector-store';
@@ -40,7 +41,9 @@ import {
   type OrchestrationDecisionRow,
 } from './orchestration-decision';
 import type { DecisionAccess } from './decision-client';
+import { manifestPickIdentity, resolveApplyingFraction, type PromotionEvidence } from './orchestration-promotion';
 import {
+  MANIFEST_APPLYING_FRACTION,
   MANIFEST_CANDIDATE_POLICY_VERSION,
   MANIFEST_DECISION_ID,
   MANIFEST_PICK_MODE,
@@ -57,6 +60,9 @@ import {
 } from './manifest-prediction';
 
 const CAPABILITY = 'orchestration_manifest' as const;
+
+/** A session that ended in one of these did failed work (§5a): its touches are not the task's scope. */
+const FAILED_STATUSES: ReadonlySet<string> = new Set<string>(FAILED_WORKER_STATUSES);
 
 /** Neighbour retrieval config: the task-area defaults, diff source, a little wider. Not the experiment's runtime config. */
 export const MANIFEST_NEIGHBOUR_CONFIG: TaskAreaConfig = { ...TASK_AREA_FALLBACK, topK: 10, pathSource: 'diff' };
@@ -209,6 +215,10 @@ export interface CreationManifestDeps {
   cbm?: CbmCandidateAdapter;
   now?: () => number;
   deadlineMs?: number;
+  /** The REQUESTED applying fraction (default `MANIFEST_APPLYING_FRACTION`); the promotion guard grants it. */
+  applyingFraction?: number;
+  /** Default: the committed `ORCHESTRATION_PROMOTIONS` (empty). */
+  promotions?: readonly PromotionEvidence[];
 }
 
 export type ManifestPredictionRow = typeof orchestrationManifestPredictions.$inferInsert;
@@ -333,6 +343,7 @@ export async function predictCreationManifest(
 
     // 3. The bounded repeated Choice, every pick on the shared deadline.
     const cachedAccess = async () => access;
+    const pickIdentity = manifestPickIdentity();
     const description = (input.description ?? '').slice(0, MANIFEST_STATE_DESCRIPTION_CHARS);
     const result = await runRepeatedManifestChoice({
       candidates: candidates.candidates,
@@ -365,7 +376,17 @@ export async function predictCreationManifest(
           note: 'Candidates come from files that similar completed tasks actually changed. New files are never listed.',
         }),
         isValidAnswer: args.isValidAnswer,
-        cohort: { unitId: input.taskId },
+        cohort: {
+          unitId: input.taskId,
+          fraction: resolveApplyingFraction({
+            decision: args.decision,
+            question: MANIFEST_PICK_QUESTION,
+            candidatePolicyVersion: MANIFEST_CANDIDATE_POLICY_VERSION,
+            requestedFraction: deps.applyingFraction ?? MANIFEST_APPLYING_FRACTION,
+            identity: pickIdentity,
+            promotions: deps.promotions,
+          }).fraction,
+        },
         deadlineAt: args.deadlineAt,
         step: args.step,
         deps: {
@@ -440,7 +461,7 @@ export async function loadManifestPredictionLabels(opts: { workspaceId: string; 
   return predictions.map(p => {
     const touched = (labels as Array<{ taskId: string; workerStatus: string; touchedPaths: string[] }>)
       .filter(l => l.taskId === p.taskId)
-      .map(l => ({ paths: l.touchedPaths ?? [], landed: merged.has(p.taskId), failed: l.workerStatus !== 'completed' }));
+      .map(l => ({ paths: l.touchedPaths ?? [], landed: merged.has(p.taskId), failed: FAILED_STATUSES.has(l.workerStatus) }));
     return {
       predictionId: p.id,
       taskId: p.taskId,

@@ -1,6 +1,8 @@
 # Conflict-aware orchestration
 
-**Status:** Accepted — implementation pending; rollout remains evidence-gated.
+**Status:** Partially implemented. §1–§5b are built; §5a and §5b ship **shadow-only with a zero
+applying cohort**. Gated promotion is **blocked pending deployed evidence** (see
+"Rollout status" below). §5c remains deferred.
 **Related:** [Convergence layer](convergence-layer.md), [Change intents](change-intent.md),
 [Path claims](path-claims.md), [Spec-to-build pattern](spec-to-build-pattern.md),
 [Task-area prediction](task-area-prediction.md), [Decision calls](decision-calls.md),
@@ -347,6 +349,73 @@ neighbours only, coverage records `neighbour_diff_only`, and every prediction
 keeps its unknown-scope marker. Gated application is prepared
 (`prepareGatedManifest`) but disabled in code; with CBM unavailable it would
 refuse every prediction on unknown scope anyway.
+
+Step I status: the readout (`packages/core/orchestration-readout.ts`, loader
+`orchestration-readout-source.ts`, command `scripts/orchestration-readout.ts`)
+replays recorded answers through `runDecisionEval` and judges them as §6
+describes. Two grading fixes landed with it. The regex baseline is now scored
+with `pathsOverlap` semantics, so a directory or glob it names counts the files
+under it. Touches from failed sessions are reported as failed work and never
+graded as the task's scope. Both §5a and §5b applying fractions now pass through
+the promotion guard (`packages/core/orchestration-promotion.ts`). A gated START
+that loses the atomic claim gives back exactly the lease rows it inserted, by
+row id, unless the winning claim now owns the task. Its waiters hear the task's
+real release reason.
+
+## Rollout status
+
+Recorded at the end of Step I, qualitatively. Exact figures, when there are any,
+belong in the private readout, never here.
+
+| Section | Shipped behaviour | Rollout |
+| --- | --- | --- |
+| §1 Claim state | Serialized exclusive acquisition, selective narrow, declaration snapshot, terminal release, PR-diff reconciliation of retry scope | On |
+| §2 Declaration and sweeps | Checkpoint sweeps against the resolved PR base; confirmed-conflict edit denial | Sweeps on; denial per-workspace opt-in |
+| §3 Surface ordering | Serialized-surface merge ordering through change intents, per base branch | Per-workspace opt-in |
+| §4 Base refresh | Deterministic refresh classification; verified same-symbol conflicts escalate | On; semantic auto-clearance stays `unknown` until a revision-pinned provider exists |
+| §5–§6 Ledger | Content-free decision and outcome ledger; touch labels persisted at terminal status | On for teams that opt in to the capability |
+| §5a Manifest prediction | Shadow predictions recorded after creation | **Shadow, zero cohort** |
+| §5b Hold/start at claim | Shadow decisions recorded after the claim response | **Shadow, zero cohort** |
+| §6 Readout and promotion | Readout command and promotion guard | **Promotion blocked** |
+
+**Readout verdict: no deployed evidence; promotion blocked.** The §5a/§5b
+capabilities and their tables exist only on the mission branch, so no workspace
+has recorded a labelled shadow decision. The readout returns `insufficient_n`
+for both decisions with no threshold, the committed promotion record
+(`ORCHESTRATION_PROMOTIONS`) is empty, and the promotion guard
+(`resolveApplyingFraction`) therefore grants a zero applying fraction to every
+requested cohort. Shadow is retained. Nothing is `gated`, and `live` is not
+earned: it needs a later successful gated readout.
+
+Two structural limits will hold even after deployment, and the readout reports
+them as reasons rather than hiding them:
+
+- **§5a** grades are bounded by unknown scope. With no revision-pinned candidate
+  source on the server, every prediction keeps its unknown-scope marker, and
+  `prepareGatedManifest` refuses unknown scope. So the readout stays
+  `insufficient_n` until a complete candidate source exists, however many
+  labels accumulate.
+- **§5b** shadow labels only censored holds. A held task never started at
+  decision time, so shadow cannot show that a start would have been safe. The
+  only way to label a start is a small gated **measurement** cohort, and that
+  cohort can only be granted from evidence the shadow cannot produce. Choosing
+  an exploration cohort without outcome evidence is a separate, explicit human
+  decision. It is not covered by this design's evidence gate.
+
+To unblock, in order:
+
+1. Release the mission branch so the ledger, the touch labels and both shadow
+   call sites run in production. Opt the target team in to each capability.
+2. Let labelled decisions accumulate until train, held-out and the later window
+   each clear the readout's sample floor.
+3. Run the readout (`scripts/orchestration-readout.ts`) for the workspace and
+   window. It writes outside the repository; move the output to the private
+   knowledge base.
+4. For a group the readout reports `eligible_for_gated`, a reviewer commits a
+   `PromotionEvidence` entry (decision id, candidate policy, measured identity,
+   threshold, a small cohort ceiling) and moves that definition to `gated` at
+   the measured threshold. The guard refuses any mismatch. Setting the requested
+   fraction back to zero rolls the cohort back.
 
 ## Non-goals
 
