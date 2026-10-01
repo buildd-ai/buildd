@@ -27,6 +27,8 @@ export interface LandingMarker {
   /** Start of the landing clock (ISO). Kept across refreshes. */
   firstApprovedGreenAt: string | null;
   lastOutcome: string;
+  /** When the marker was last written (ISO), stamped by `writeLandingMarker`. The sweeper reads it as the start of the refresh-wait budget. */
+  updatedAt?: string;
   /** Alert dedupe keys (owned by the alerting layer; preserved on every write here). */
   pagedKeys?: string[];
 }
@@ -46,6 +48,7 @@ export function parseLandingMarker(context: unknown, prNumber: number): LandingM
     refreshCount: typeof raw.refreshCount === 'number' && raw.refreshCount >= 0 ? raw.refreshCount : 0,
     firstApprovedGreenAt: typeof raw.firstApprovedGreenAt === 'string' ? raw.firstApprovedGreenAt : null,
     lastOutcome: typeof raw.lastOutcome === 'string' ? raw.lastOutcome : 'updating_branch',
+    ...(typeof raw.updatedAt === 'string' ? { updatedAt: raw.updatedAt } : {}),
     pagedKeys: Array.isArray(raw.pagedKeys) ? raw.pagedKeys.filter((k): k is string => typeof k === 'string') : undefined,
   };
 }
@@ -66,10 +69,10 @@ export async function readLandingMarker(taskId: string, prNumber: number): Promi
  */
 export async function writeLandingMarker(
   taskId: string,
-  marker: Omit<LandingMarker, 'pagedKeys'>,
+  marker: Omit<LandingMarker, 'pagedKeys' | 'updatedAt'>,
   expectedRefreshCount: number,
 ): Promise<boolean> {
-  const json = JSON.stringify(marker);
+  const json = JSON.stringify({ ...marker, updatedAt: new Date().toISOString() });
   const rows = await db
     .update(tasks)
     .set({
