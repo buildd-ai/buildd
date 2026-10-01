@@ -225,6 +225,13 @@ export interface LocalWorker {
    */
   worktreeBaseRef?: string;
   /**
+   * The ref this task's PR is compared against (resolvePrBaseRef). Differs from
+   * `worktreeBaseRef` on a resume, where the worktree is cut from the prior
+   * attempt's branch. Checkpoint sweeps measure against this one; persisted so
+   * a restored worker does not sweep with an empty committed half.
+   */
+  prBaseRef?: string;
+  /**
    * Set when the worker's environment was provisioned but degraded — today only
    * by a dependency install that failed for a non-structural reason (drift,
    * timeout, unknown) on an auto-detected repo, where failing closed on a guess

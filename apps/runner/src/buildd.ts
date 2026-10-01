@@ -361,6 +361,8 @@ export class BuilddClient {
     touchedPaths?: string[];
     /** Path-claim calls that went ahead degraded since the last report (a delta). */
     pathClaimDegraded?: number;
+    /** Pre-push/completion sweep: the server re-offers every path in touchedPaths, not only new ones. */
+    checkpointSweep?: boolean;
     /**
      * Sent with a `Deferred:` failure when enforce-mode path claims found a
      * collision: the colliding path, its holder and the checkpoint written. The

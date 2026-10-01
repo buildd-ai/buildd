@@ -78,15 +78,24 @@ export async function runCheckpointSweep(
   if (!root) return null;
 
   if (deps.refreshBase) {
-    await refreshBaseRef(root, worker.worktreeBaseRef, CHECKPOINT_FETCH_DEADLINE_MS);
+    await refreshBaseRef(root, worker.prBaseRef, CHECKPOINT_FETCH_DEADLINE_MS);
   }
-  const sweep = sweepWorktreeChanges(root, worker.worktreeBaseRef);
+  // The PR base, not the worktree base: on a resume the worktree was cut from
+  // the prior attempt's branch, and measuring against that drops every file
+  // earlier attempts committed (see resolvePrBaseRef).
+  const sweep = sweepWorktreeChanges(root, worker.prBaseRef);
   if (sweep.paths.length === 0) return null;
 
   let response: unknown;
   try {
     const result = await withDeadline(
-      Promise.resolve().then(() => deps.buildd.updateWorker(worker.id, { touchedPaths: sweep.paths })),
+      Promise.resolve().then(() => deps.buildd.updateWorker(worker.id, {
+        touchedPaths: sweep.paths,
+        // Re-offer the whole sweep, not only paths new to the server: a path
+        // observed earlier whose acquisition failed or was lost is otherwise
+        // never offered again, and this is the last chance before it ships.
+        ...(source === 'pre_push' || source === 'completion' ? { checkpointSweep: true } : {}),
+      })),
       deps.deadlineMs ?? CHECKPOINT_SYNC_DEADLINE_MS,
     );
     if (result === TIMED_OUT) {
@@ -126,6 +135,24 @@ function git(cwd: string, args: string[], timeout = 30_000): string {
   }));
 }
 
+/** Identity a checkpoint commit falls back to; same one park.ts uses for its WIP commit. */
+export const CHECKPOINT_FALLBACK_IDENTITY = { name: 'buildd', email: 'checkpoint@buildd.invalid' } as const;
+
+/**
+ * `-c user.name/-c user.email` overrides, only when git has no usable identity
+ * of its own (`git var` uses the same strict check `commit` does). A runner
+ * host with no global git config (CI, a fresh container) would otherwise fail
+ * the checkpoint commit, and the deferral would lose the work it exists to save.
+ * A configured identity, including GIT_AUTHOR_* / GIT_COMMITTER_* env, is kept.
+ */
+export function identityFallbackArgs(cwd: string): string[] {
+  const missing = (v: 'GIT_AUTHOR_IDENT' | 'GIT_COMMITTER_IDENT') => {
+    try { git(cwd, ['var', v], 5_000); return false; } catch { return true; }
+  };
+  if (!missing('GIT_AUTHOR_IDENT') && !missing('GIT_COMMITTER_IDENT')) return [];
+  return ['-c', `user.name=${CHECKPOINT_FALLBACK_IDENTITY.name}`, '-c', `user.email=${CHECKPOINT_FALLBACK_IDENTITY.email}`];
+}
+
 /**
  * Commit everything the worktree holds (gitignore respected) as a checkpoint
  * and, when `push`, push the task branch so a deferred retry on any runner can
@@ -143,6 +170,7 @@ export function writeCollisionCheckpoint(
     if (dirty) {
       git(cwd, ['add', '-A']);
       git(cwd, [
+        ...identityFallbackArgs(cwd),
         '-c', 'commit.gpgsign=false',
         'commit', '--no-verify', '-q', '-m',
         `chore(checkpoint): defer on path collision with task ${shortTaskId(collision.blockingTaskId)}\n\n` +

@@ -90,7 +90,7 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
-import { resolvePathClaimMode, describeEnforcement, type PathCollision } from './path-claim-enforcement';
+import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
 import { HUMAN_UI_DENIAL } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -2126,6 +2126,10 @@ export class WorkerManager {
         // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
         // there could disagree with the ref the worktree really uses.
         worker.worktreeBaseRef = setupResult.base;
+        // The PR's base, which the path-claim sweep measures against. Read
+        // after setup: a fallback to a fresh base has already cleared the
+        // resume fields from the context.
+        worker.prBaseRef = resolvePrBaseRef({ worktreeBase: setupResult.base, defaultBranch, context: fullTask.context });
         // Resume and shared-branch collision recovery can both change the ref.
         // The server must acknowledge this actual branch before the agent starts
         // (see startWithPersistedBranch below), since create_pr derives its head

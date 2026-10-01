@@ -14142,6 +14142,31 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     );
   });
 
+  it('a checkpoint sweep re-offers already-observed paths, so a lost earlier acquisition is retried before ship', async () => {
+    setupBaseWorkerMock();
+    mockWorkersFindFirst.mockResolvedValue({
+      ...baseWorker,
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        touchedPaths: ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+        checkpointSweep: true,
+      },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith(
+      'ws-1',
+      'task-1',
+      ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+    );
+  });
+
   it('a read-only reviewer leases nothing: checking out the PR branch is not an edit', async () => {
     setupBaseWorkerMock();
     mockTasksFindFirst.mockResolvedValue({

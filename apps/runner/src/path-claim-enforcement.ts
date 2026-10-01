@@ -83,14 +83,44 @@ export function normalizeWorktreePath(raw: string, worktreeRoot: string): Normal
   if (!trimmed) return { ok: false, reason: 'empty', raw: String(raw) };
   if (trimmed.startsWith('~')) return { ok: false, reason: 'escape', raw: trimmed };
 
-  const roots = [...new Set([resolve(worktreeRoot), realpathOrSelf(resolve(worktreeRoot))])];
+  const realRoot = realpathOrSelf(resolve(worktreeRoot));
+  const roots = [...new Set([resolve(worktreeRoot), realRoot])];
   const abs = isAbsolute(trimmed) ? resolve(trimmed) : resolve(roots[0], trimmed);
   for (const root of roots) {
     const rel = relative(root, abs);
     if (rel === '') return { ok: false, reason: 'root', raw: trimmed };
-    if (!rel.startsWith('..') && !isAbsolute(rel)) return { ok: true, path: toPosix(rel) };
+    if (!rel.startsWith('..') && !isAbsolute(rel)) {
+      // Lexically inside. A symlink inside the worktree can still point out of
+      // it, so the nearest existing ancestor's realpath must stay inside too.
+      const real = realpathOfNearestExisting(abs, root);
+      if (real && !within(realRoot, real)) return { ok: false, reason: 'escape', raw: trimmed };
+      return { ok: true, path: toPosix(rel) };
+    }
   }
   return { ok: false, reason: 'escape', raw: trimmed };
+}
+
+function within(root: string, p: string): boolean {
+  const rel = relative(root, p);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * realpath of `p`, or of its closest existing ancestor strictly below `root`
+ * (a new file's directory). Null when nothing below the root exists yet: the
+ * root itself is already accounted for.
+ */
+function realpathOfNearestExisting(p: string, root: string): string | null {
+  let cur = p;
+  while (cur !== root && within(root, cur)) {
+    try {
+      if (fs.existsSync(cur)) return realpathOrSelf(cur);
+    } catch { /* try the parent */ }
+    const parent = resolve(cur, '..');
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
 }
 
 /**
@@ -252,6 +282,33 @@ export function sweepWorktreeChanges(worktreePath: string, baseRef: string | nul
   result.paths = [...union].sort();
   if (errors.length > 0) result.error = errors.join('; ');
   return result;
+}
+
+/**
+ * The ref a task's PR is compared against — which is what a checkpoint sweep
+ * must measure the committed half against. Not the ref the worktree was cut
+ * from: on a resume that is the prior attempt's branch (`origin/<resumeBranch>`,
+ * or the local branch when it never got pushed), and `merge-base(HEAD, resume
+ * branch)` drops every file earlier attempts committed. Those attempts' leases
+ * were released when they went terminal, so the sweep would push them without
+ * ever re-acquiring them.
+ *
+ * Resumed: `origin/<context.baseBranch>` (a mission integration branch or a
+ * stacked predecessor), else `origin/<defaultBranch>`. Not resumed: the
+ * resolved worktree base itself, which already reflects any fallback to trunk.
+ */
+export function resolvePrBaseRef(opts: {
+  worktreeBase: string | null | undefined;
+  defaultBranch: string;
+  context?: Record<string, unknown> | null;
+}): string {
+  const { worktreeBase, defaultBranch, context } = opts;
+  const str = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : undefined);
+  const resume = str(context?.resumeBranch);
+  const declared = str(context?.baseBranch);
+  const fromResume = !!resume && (worktreeBase === resume || worktreeBase === `origin/${resume}`);
+  if (worktreeBase && !fromResume) return worktreeBase;
+  return `origin/${declared ?? defaultBranch}`;
 }
 
 /**

@@ -82,6 +82,7 @@ import {
 import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
+import { isDispatchedReview } from '@/lib/read-only-review';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -89,18 +90,6 @@ import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 // <1s). Scoped per-runner so healthy runners keep picking up tasks.
 const CLAIM_COOLDOWN_MS = 60_000;
 
-
-/**
- * A review task the reviewer dispatched: `category: 'review'` plus
- * `context.reviewerFor` naming the reviewed task (the same pair
- * handleReviewerOutcomeIfNeeded requires). Only these skip the mission
- * concurrency cap and pacing gate — the category alone is caller-settable.
- */
-function isDispatchedReview(category: unknown, context: unknown): boolean {
-  if (category !== 'review') return false;
-  const reviewerFor = (context as Record<string, unknown> | null | undefined)?.reviewerFor;
-  return typeof reviewerFor === 'string' && reviewerFor.length > 0;
-}
 
 /**
  * True when the task's declared deliverable is not a code change
