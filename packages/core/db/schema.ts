@@ -434,6 +434,14 @@ export interface WorkspaceGitConfig {
   // 'enforce' defers a PR behind earlier open PRs on a serialized surface and
   // fails closed when intent state cannot be verified.
   surfaceOrdering?: 'off' | 'shadow' | 'enforce' | null;
+  // Semantic check before a clean base refresh (conflict-aware-orchestration.md
+  // §4, apps/web/src/lib/semantic-refresh.ts). Off by default (no extra reads).
+  // 'shadow' records same-symbol / unknown verdicts and refreshes as before;
+  // 'enforce' sends a verified same-symbol edit to a semantic conflict review and
+  // withholds clearance when symbol coverage is unknown (bounded rechecks, then a
+  // diagnostic). No revision-pinned symbol index is reachable server-side yet,
+  // so under 'enforce' a shared-file refresh is never auto-cleared.
+  semanticRefresh?: 'off' | 'shadow' | 'enforce' | null;
 
   // When true, tasks with outputRequirement='pr_required' that do not already declare a
   // loopConfig automatically get loopConfig = { exitCondition: { type: 'pr_checks_green' }, maxLoops: 3 }
