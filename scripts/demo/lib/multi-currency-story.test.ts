@@ -7,10 +7,11 @@
  * audit's required routes.
  */
 import { describe, expect, test } from 'bun:test';
-import { statSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { missionVisualReview, parseQaMeta, VISUAL_AUDITOR_ROLE_SLUG } from '../../../apps/web/src/lib/mission-visual-review';
 import { loadStory, type Entity } from './story';
+import { directiveText, keywordDirective } from '../../../packages/core/chat-directives';
 
 const STORY = join(import.meta.dir, '../stories/multi-currency.json');
 const { story } = loadStory(STORY);
@@ -99,5 +100,18 @@ describe('multi-currency story: a needs-you window for the chat canvas', () => {
     expect(reply).toBeGreaterThan(14 * 60 + 30);
     expect(story.timeline.filter((e) => e.t > ask && e.t < reply && e.worker === 'w8')).toEqual([]);
     expect(workers.find((w) => w.key === 'w8')?.workspaceId).toBe('ws');
+  });
+});
+
+describe('the standing-rule beat is what the product would do', () => {
+  // The raw file: loadStory() resolves entities, the chat block rides along as written.
+  const conv = JSON.parse(readFileSync(STORY, 'utf8')).chat.conversations[0];
+  const said: string = conv.messages.find((m: any) => m.key === 'C1m3').parts[0].text;
+  const card = conv._onConfirm.followUpParts.find((p: any) => p.type === 'data-buildd-directive').data;
+  test("Maya's message trips the keyword rule, so a card is due without Jev", () => {
+    expect(keywordDirective(said)).toBe(true);
+  });
+  test('the card proposes exactly what directiveText() would', () => {
+    expect(card.text).toBe(directiveText(said));
   });
 });

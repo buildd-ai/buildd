@@ -38,6 +38,7 @@ import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-polic
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -1108,6 +1109,76 @@ export async function PATCH(req: NextRequest) {
 }
 
 // PUT /api/github/pr - Merge a pull request
+/**
+ * The `merge_pr` answer for a landing outcome. Only `merged` is a merge; the
+ * two in-flight outcomes are 202 because nothing more is asked of the caller —
+ * the next green on the named head lands the PR.
+ */
+function mergePrLandingResponse(
+  outcome: LandingOutcome,
+  pr: { prNumber: number; prUrl: string | null; tier: string },
+): NextResponse {
+  const prRef = { number: pr.prNumber, url: pr.prUrl };
+  switch (outcome.kind) {
+    case 'merged':
+      return NextResponse.json({
+        ok: true,
+        merged: true,
+        message: 'Pull request merged',
+        landing: outcome,
+        pr: { ...prRef, mergeCommitSha: outcome.sha || null },
+      });
+    case 'updating_branch':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        branchUpdated: true,
+        landing: outcome,
+        message: `The branch was behind its base and has been updated (new head ${outcome.newHeadSha.slice(0, 7)}).`,
+        hint: 'It merges automatically when CI is green on the new head. No further merge_pr call is needed.',
+        pr: prRef,
+      }, { status: 202 });
+    case 'waiting_ci':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        message: `Not mergeable yet: waiting on ${outcome.headSha ? `head ${outcome.headSha.slice(0, 7)}` : 'the PR head'}.`,
+        hint: 'It merges automatically when the pending checks or review finish green. No further merge_pr call is needed.',
+        pr: prRef,
+      }, { status: 202 });
+    case 'needs_fix':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        error: `merge refused: ${outcome.reason}`,
+        message: `merge refused: ${outcome.reason}`,
+        tier: pr.tier,
+        fix: outcome.fix,
+        fixTaskId: outcome.taskId ?? null,
+        hint: outcome.taskId
+          ? `A ${outcome.fix} task (${outcome.taskId}) owns the next step.`
+          : `Needs a ${outcome.fix} before it can land.`,
+        pr: prRef,
+      }, { status: 409 });
+    case 'needs_human':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        error: `merge refused: ${outcome.reason}`,
+        message: `merge refused: ${outcome.reason}`,
+        tier: pr.tier,
+        cause: outcome.cause,
+        hint: outcome.cause === 'human_tier'
+          ? 'Report completion and let the owner merge from the escalation inbox.'
+          : 'A person has to decide this one. Report completion and let the owner merge or fix it.',
+        pr: prRef,
+      }, { status: 403 });
+  }
+}
+
 export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -1301,6 +1372,39 @@ export async function PUT(req: NextRequest) {
       const policy = resolvePolicy(workspace, mission, task, {
         baseRef: policyPr?.base?.ref ?? null,
       });
+
+      // The landing function decides once the workspace is in `enforce`: tier,
+      // verdict (with carry-forward), rails, and "behind base" as a refresh
+      // with a marker — so a behind PR lands on its next green without a
+      // second merge_pr call, and a stored terminal approve under agent-review
+      // authorises the merge rather than being refused on tier. `shadow`
+      // records what it would do, then the legacy gates below decide.
+      const landingMode = resolveLandingMode(workspace.gitConfig);
+      if (landingMode !== 'off') {
+        const outcome = await landPr({
+          workspaceId: workspace.id,
+          installationId: repo.installation.installationId,
+          repoFullName: repo.fullName,
+          prNumber,
+          eventHeadSha: null,
+          door: 'merge_pr',
+          actor: { kind: 'agent', workerId: worker.id ?? null },
+          mode: landingMode,
+          policy,
+          owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
+          releaseConfig: workspace.releaseConfig ?? null,
+          mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+        });
+        if (landingMode === 'enforce') {
+          if (outcome.kind === 'merged') {
+            await db
+              .update(workers)
+              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
+              .where(eq(workers.id, worker.id));
+          }
+          return mergePrLandingResponse(outcome, { prNumber, prUrl: worker.prUrl ?? null, tier: policy.tier });
+        }
+      }
 
       if (policy.tier === 'human') {
         recordMergeGate('rejected', `merge policy tier is 'human' — this PR must be merged by a person`, { tier: policy.tier });
