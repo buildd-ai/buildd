@@ -24,11 +24,24 @@
  *    a head or base that moved in between, a list shorter than GitHub's own
  *    `changed_files`, a closed PR or any read error all leave state untouched
  *    and record why. Missing data is not an empty diff.
- *  - Release a live writer's edits. A task with a live worker keeps every lease
- *    it holds and every path its worker has reported touching; only inherited
- *    manifest entries it has neither leased nor touched are dropped.
- *  - Add scope. Paths in the diff that the manifest lacks are not appended;
- *    this only gives back what the diff proves is not being edited.
+ *  - Narrow a live PR owner. While the task that owns the PR has a live
+ *    worker, its own declaration is the only cover for edits it has not
+ *    committed or leased yet (a Bash or Codex write the runner never saw), and
+ *    a remote PR snapshot cannot see a dirty worktree. It is left whole and
+ *    recorded as `live_writer`; it is narrowed on a later push once its worker
+ *    has ended.
+ *  - Release a live fix attempt's edits. A fix attempt with a live worker keeps
+ *    every lease it holds and every path its worker has reported touching;
+ *    only inherited manifest entries it has neither leased nor touched are
+ *    dropped.
+ *  - Add new scope. Paths in the diff that the manifest never had are not
+ *    appended.
+ *
+ * What it puts back: a path an earlier reconciliation dropped that a later
+ * complete read finds in the diff. A push between the pinned read and the
+ * narrowing, or GitHub's file list lagging behind a push, can drop a path the
+ * new head then changes; reconciliation is the only thing that removed it, so
+ * it is the thing that restores it, under the same revision CAS.
  *
  * A read-only reviewer holds no edit lease at all: whatever it holds (observed
  * touches from checking out the PR branch, typically) is given back regardless
@@ -37,7 +50,7 @@
 import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, type PrScopeRecord } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { pathClaims, tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { narrowPathClaims } from '@buildd/core/path-claim';
 import { pathsOverlap, REPO_WIDE_SENTINEL, stripTrailingSep } from '@buildd/core/path-overlap';
 import { deliverPathReleased } from '@/lib/path-claim-release';
@@ -175,12 +188,18 @@ export interface ScopeHolder {
   heldLeases: string[];
   /** Paths the task's live worker(s) reported touching; null when no worker is live. */
   liveEdits: string[] | null;
+  /** Paths earlier PR-scope reconciliations removed from this task. */
+  priorDrops: string[];
 }
 
 export interface ScopeNarrowPlan {
   drop: string[];
+  /** Earlier PR-scope drops this read shows in the diff, to put back in the manifest. */
+  restore: string[];
   /** Why nothing was dropped when the read was not usable. */
   skipReason: string | null;
+  /** The PR owner's worker is live: its own declaration is not narrowed. */
+  liveWriter: boolean;
 }
 
 const concrete = (paths: string[] | null | undefined) =>
@@ -192,36 +211,88 @@ const unique = (paths: string[]) => [...new Set(paths)];
  * Which of a holder's paths the PR diff proves are not being edited.
  *
  * - reviewer: everything it holds — a read-only review owns no edit scope,
- *   whatever the diff read returned.
- * - unusable read: nothing.
- * - live worker: inherited manifest entries outside the diff that the worker
- *   neither leased nor touched. Leases are never released from a remote
- *   snapshot while someone may have unpushed edits under them.
+ *   whatever the diff read returned. Nothing is restored to it.
+ * - unusable read: nothing either way.
+ * - PR owner with a live worker: nothing dropped (`liveWriter`).
+ * - fix attempt with a live worker: inherited manifest entries outside the
+ *   diff that the worker neither leased nor touched. Leases are never released
+ *   from a remote snapshot while someone may have unpushed edits under them.
  * - otherwise: manifest entries and leases outside the diff.
+ *
+ * And, for any editor on a complete read: earlier PR-scope drops that are in
+ * the diff and that the manifest no longer covers come back (`restore`). An
+ * undeclared (null) manifest was never narrowed, so it has nothing to restore.
  *
  * A directory entry that contains any changed file is kept whole.
  */
 export function planScopeNarrowing(holder: ScopeHolder, read: PrScopeRead): ScopeNarrowPlan {
   const manifest = concrete(holder.pathManifest);
   const leases = concrete(holder.heldLeases);
+  const none = { drop: [] as string[], restore: [] as string[], skipReason: null, liveWriter: false };
 
   if (holder.role === 'reviewer') {
-    return { drop: unique([...leases, ...manifest]), skipReason: null };
+    return { ...none, drop: unique([...leases, ...manifest]) };
   }
   if (read.status !== 'complete') {
-    return {
-      drop: [],
-      skipReason: read.status === 'closed' ? 'pr_closed' : `${read.reason}: ${read.detail}`,
-    };
+    return { ...none, skipReason: read.status === 'closed' ? 'pr_closed' : `${read.reason}: ${read.detail}` };
   }
 
   const inDiff = (p: string) => pathsOverlap([p], read.files);
+  const covered = (p: string) => manifest.some(m => m === p || p.startsWith(`${m}/`));
+  const restore = holder.pathManifest === null
+    ? []
+    : unique(concrete(holder.priorDrops).filter(p => inDiff(p) && !covered(p)));
+
+  if (holder.liveEdits !== null && holder.role === 'pr_owner') {
+    return { ...none, restore, liveWriter: true };
+  }
   if (holder.liveEdits !== null) {
     const protectedPaths = unique([...leases, ...concrete(holder.liveEdits)]);
     const drop = manifest.filter(p => !inDiff(p) && !pathsOverlap([p], protectedPaths));
-    return { drop: unique(drop), skipReason: null };
+    return { ...none, drop: unique(drop), restore };
   }
-  return { drop: unique([...manifest, ...leases].filter(p => !inDiff(p))), skipReason: null };
+  return { ...none, drop: unique([...manifest, ...leases].filter(p => !inDiff(p))), restore };
+}
+
+/**
+ * Paths earlier PR-scope reconciliations took off this task: every recorded
+ * narrowing this surface made, plus the last reconciliation's own record
+ * (narrowings are capped, the record is not).
+ */
+export function priorPrScopeDrops(pathDeclaration: unknown): string[] {
+  const decl = (pathDeclaration ?? {}) as {
+    narrowings?: Array<{ surface?: unknown; dropped?: unknown }>;
+    prScope?: { dropped?: unknown; restored?: unknown };
+  };
+  const strings = (v: unknown) => (Array.isArray(v) ? v.filter((p): p is string => typeof p === 'string') : []);
+  const dropped = [
+    ...(Array.isArray(decl.narrowings) ? decl.narrowings : [])
+      .filter(n => n?.surface === PR_SCOPE_SURFACE)
+      .flatMap(n => strings(n.dropped)),
+    ...strings(decl.prScope?.dropped),
+  ];
+  return unique(dropped);
+}
+
+/**
+ * Put `paths` back on the task's manifest, guarded by the ownership revision
+ * like every other ownership write. Returns the new revision, or null when the
+ * revision moved (someone else changed ownership since the read: keep theirs).
+ */
+async function restoreManifestPaths(input: {
+  workspaceId: string; taskId: string; paths: string[]; expectedRevision: number;
+}): Promise<number | null> {
+  const rows = await db.update(tasks).set({
+    pathManifest: sql`COALESCE(${tasks.pathManifest}, '[]'::jsonb) || ${JSON.stringify(input.paths)}::jsonb`,
+    pathClaimRevision: sql`${tasks.pathClaimRevision} + 1`,
+  }).where(and(
+    eq(tasks.id, input.taskId),
+    eq(tasks.workspaceId, input.workspaceId),
+    eq(tasks.pathClaimRevision, input.expectedRevision),
+    isNotNull(tasks.pathManifest),
+  )).returning({ revision: tasks.pathClaimRevision });
+  const row = rows[0];
+  return row ? Number(row.revision) : null;
 }
 
 // ── DB selection ─────────────────────────────────────────────────────────────
@@ -283,7 +354,10 @@ export interface ReconcileInput {
 
 export interface ReconcileReport {
   read: PrScopeRead['status'] | 'skipped';
-  tasks: Array<{ taskId: string; role: ScopeHolderRole; status: PrScopeRecord['status']; dropped: string[]; reason: string | null }>;
+  tasks: Array<{
+    taskId: string; role: ScopeHolderRole; status: PrScopeRecord['status'];
+    dropped: string[]; restored: string[]; reason: string | null;
+  }>;
 }
 
 export async function reconcilePrBackedScope(input: ReconcileInput): Promise<ReconcileReport> {
@@ -298,7 +372,7 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
   const rows = await db.query.tasks.findMany({
     where: scopeHolderTasksWhere(workspaceId, prNumber, ownerTaskIds),
     columns: {
-      id: true, category: true, context: true, pathManifest: true, pathClaimRevision: true,
+      id: true, category: true, context: true, pathManifest: true, pathDeclaration: true, pathClaimRevision: true,
       conflictRetryPrNumber: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true,
     },
   });
@@ -331,6 +405,7 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
     revision: Number(r.pathClaimRevision ?? 0),
     heldLeases: leasesByTask.get(r.id) ?? [],
     liveEdits: liveByTask.has(r.id) ? liveByTask.get(r.id)! : null,
+    priorDrops: priorPrScopeDrops((r as { pathDeclaration?: unknown }).pathDeclaration),
   }));
 
   const read = await readPinnedPrScope(input.get, input);
@@ -342,8 +417,36 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
     let status: PrScopeRecord['status'] = holder.role === 'reviewer' ? 'complete' : (read.status === 'complete' ? 'complete' : read.status);
     let reason: string | null = holder.role === 'reviewer' ? 'read-only review holds no edit scope' : plan.skipReason;
     let dropped: string[] = [];
+    let restored: string[] = [];
+    let revision = holder.revision;
+    let casLost = false;
 
-    if (plan.drop.length > 0) {
+    if (plan.liveWriter) {
+      status = 'live_writer';
+      reason = 'PR owner has a live worker; its own declaration is not narrowed from a remote snapshot';
+    }
+
+    if (plan.restore.length > 0) {
+      try {
+        const next = await restoreManifestPaths({
+          workspaceId, taskId: holder.taskId, paths: plan.restore, expectedRevision: revision,
+        });
+        if (next === null) {
+          casLost = true;
+          status = 'revision_conflict';
+          reason = `ownership changed during reconciliation (revision ${holder.revision} moved); kept as-is`;
+        } else {
+          restored = plan.restore;
+          revision = next;
+        }
+      } catch (err) {
+        casLost = true;
+        status = 'incomplete';
+        reason = `restore failed: ${String((err as Error)?.message ?? err).slice(0, 200)}`;
+      }
+    }
+
+    if (plan.drop.length > 0 && !casLost) {
       try {
         const result = await narrowPathClaims({
           workspaceId,
@@ -353,7 +456,7 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
           reason: holder.role === 'reviewer'
             ? `read-only review of PR #${prNumber}`
             : `outside PR #${prNumber} diff at ${read.status === 'complete' ? read.headSha.slice(0, 7) : '?'}`,
-          expectedRevision: holder.revision,
+          expectedRevision: revision,
         });
         if (result.kind === 'narrowed') {
           dropped = plan.drop;
@@ -378,6 +481,7 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
       baseSha: read.baseSha,
       fileCount: read.status === 'complete' ? read.files.length : null,
       dropped,
+      ...(restored.length > 0 ? { restored } : {}),
       readAt,
     };
     try {
@@ -385,7 +489,7 @@ export async function reconcilePrBackedScope(input: ReconcileInput): Promise<Rec
     } catch (err) {
       console.warn(`[pr-scope] could not record reconciliation on task ${holder.taskId}:`, err);
     }
-    report.tasks.push({ taskId: holder.taskId, role: holder.role, status, dropped, reason });
+    report.tasks.push({ taskId: holder.taskId, role: holder.role, status, dropped, restored, reason });
   }
 
   return report;
@@ -404,8 +508,9 @@ export async function reconcilePrBackedScopeSafely(input: Omit<ReconcileInput, '
       get: (path) => githubApi(input.installationId, path),
     });
     const narrowed = report.tasks.filter(t => t.dropped.length > 0);
-    if (narrowed.length > 0 || (report.read !== 'complete' && report.read !== 'skipped')) {
-      console.log(`[pr-scope] PR #${input.prNumber}: read=${report.read}, narrowed ${narrowed.length}/${report.tasks.length} task(s)`);
+    const restored = report.tasks.filter(t => t.restored.length > 0);
+    if (narrowed.length > 0 || restored.length > 0 || (report.read !== 'complete' && report.read !== 'skipped')) {
+      console.log(`[pr-scope] PR #${input.prNumber}: read=${report.read}, narrowed ${narrowed.length}/${report.tasks.length} task(s), restored ${restored.length}`);
     }
   } catch (err) {
     console.error(`[pr-scope] reconciliation failed for PR #${input.prNumber}:`, err);
