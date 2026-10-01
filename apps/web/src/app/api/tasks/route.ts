@@ -122,10 +122,29 @@ export async function GET(req: NextRequest) {
     //   ?limit=N&offset=M  — OPT-IN pagination; returns lean row shape + total/pendingCount/hasMore
     // Both workspaceId and status are used by the dependency picker so it stops
     // fetching every workspace's task and filtering client-side (see DependencySelector).
+    //   ?missionId=<uuid>  — only tasks linked to that mission (400 on a malformed id:
+    //     a filter that cannot be applied must never widen the result)
     const requestedWorkspaceId = req.nextUrl.searchParams.get('workspaceId');
     const statusFilter = req.nextUrl.searchParams.get('status');
+    const missionIdFilter = req.nextUrl.searchParams.get('missionId');
     const limitParam = req.nextUrl.searchParams.get('limit');
     const offsetParam = req.nextUrl.searchParams.get('offset');
+
+    // An unrecognised status used to fall through to the unfiltered default
+    // branch, so a typo read as "all tasks" instead of an error.
+    if (statusFilter !== null && statusFilter !== 'active' && !isTerminalTaskStatus(statusFilter)) {
+      return NextResponse.json(
+        { error: `status must be one of: active, ${TERMINAL_TASK_STATUSES.join(', ')} — received "${statusFilter}".` },
+        { status: 400 },
+      );
+    }
+    if (missionIdFilter !== null && !isUuid(missionIdFilter)) {
+      return NextResponse.json(
+        { error: `missionId must be a full mission UUID — received "${missionIdFilter}".` },
+        { status: 400 },
+      );
+    }
+    const missionScope = missionIdFilter ? eq(tasks.missionId, missionIdFilter) : undefined;
 
     // Intersect the requested workspace with the caller's accessible set.
     // If it isn't accessible, workspaceIds becomes empty → returns [] below
@@ -153,6 +172,7 @@ export async function GET(req: NextRequest) {
 
       const where = and(
         inArray(tasks.workspaceId, workspaceIds),
+        missionScope,
         activeOnly
           ? notInArray(tasks.status, terminalStatuses)
           : isTerminalAudit
@@ -232,6 +252,7 @@ export async function GET(req: NextRequest) {
       ? await db.query.tasks.findMany({
           where: and(
             inArray(tasks.workspaceId, workspaceIds),
+            missionScope,
             activeOnly
               ? // Only active (non-terminal) tasks
                 notInArray(tasks.status, terminalStatuses)
