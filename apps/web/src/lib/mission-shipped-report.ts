@@ -29,9 +29,13 @@ import {
   type ShippedRecord,
 } from '@/lib/mission-shipped';
 
-/** PR-file reads per mission, one page of files each, each cut off after a few seconds. */
+/**
+ * PR-file reads per mission, one page of files each, each cut off after a few
+ * seconds. 100 is GitHub's ceiling for `pulls/{n}/files`; a larger value is
+ * silently served as 100, so a full page means there may be more.
+ */
 export const SHIPPED_MAX_PRS = 20;
-export const SHIPPED_PR_FILES_PER_PAGE = 300;
+export const SHIPPED_PR_FILES_PER_PAGE = 100;
 export const SHIPPED_PR_FILES_TIMEOUT_MS = 5000;
 
 export const shippedArtifactKey = (missionId: string) => `mission-shipped-${missionId}`;
@@ -61,7 +65,8 @@ type TaskRow = {
 
 /**
  * Filenames of every merged PR of the mission's deliverable tasks, or null when
- * they cannot all be read (no repo, no PRs recorded, any fetch failing): the
+ * they cannot all be read (no repo, no PRs recorded, any fetch failing, a PR
+ * with more files than one page holds): the
  * caller then falls back to declared manifests rather than guessing from a
  * partial diff.
  */
@@ -98,6 +103,8 @@ async function fetchChangedPaths(
   const paths: string[] = [];
   for (const page of pages) {
     if (!Array.isArray(page)) return null;
+    // A full page may be followed by more: that is a partial diff, not the diff.
+    if (page.length >= SHIPPED_PR_FILES_PER_PAGE) return null;
     for (const f of page) if (typeof f?.filename === 'string') paths.push(f.filename);
   }
   return paths;

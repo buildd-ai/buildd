@@ -16,6 +16,7 @@ import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { isSurfaceAuditTask, surfaceAuditMissingReason } from '@buildd/core/surface-audit';
 import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { after } from 'next/server';
 
 /**
  * The one mission-completion predicate.
@@ -691,7 +692,9 @@ export async function completeMissionIfVerified(
      * The task whose output proposed this completion (the planning task, or the
      * evaluation task). If this call wins the claim, its `shipped` output is
      * what the "What shipped" record is built from. Absent for paths with no
-     * proposing author (dormancy, the criteria evaluator, a heartbeat).
+     * proposing author (dormancy, the criteria evaluator). A heartbeat passes
+     * its task, but its prompt never asks for `shipped`, so it records as
+     * `no_author`.
      */
     authorTaskId?: string;
   },
@@ -781,18 +784,26 @@ export async function completeMissionIfVerified(
   );
 
   // The "What shipped" record (docs/design/mission-shipped-report.md): only the
-  // claim winner writes it, from whichever proposal actually won. Fire-and-forget
-  // like the strip above — it can never un-complete the mission, and the page
-  // falls back to today's rendering when it is absent. Imported on demand so the
-  // GitHub client and screenshot queries stay out of the import graph of a gate
-  // that nearly every mission path loads.
-  import('@/lib/mission-shipped-report')
+  // claim winner writes it, from whichever proposal actually won. Not awaited —
+  // it can never un-complete the mission, and the page falls back to today's
+  // rendering when it is absent. Scheduled with `after()` because it does
+  // several seconds of GitHub reads, and Vercel may freeze a function once the
+  // response is sent; outside a request scope (scripts, crons run as scripts)
+  // `after()` throws and it runs detached. Imported on demand so the GitHub
+  // client and screenshot queries stay out of the import graph of a gate that
+  // nearly every mission path loads.
+  const storeShipped = () => import('@/lib/mission-shipped-report')
     .then(m => m.storeMissionShippedReportSafely(missionId, {
       authorTaskId: opts.authorTaskId ?? null,
       origin: 'auto',
       completedAt,
     }))
     .catch(e => console.error(`[mission-completion] shipped report failed for ${missionId}:`, e));
+  try {
+    after(storeShipped);
+  } catch {
+    void storeShipped();
+  }
 
   const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({

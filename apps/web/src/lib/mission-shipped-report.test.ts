@@ -68,6 +68,7 @@ mock.module('@/lib/mission-repo-workspace', () => ({
 
 import {
   SHIPPED_MAX_PRS,
+  SHIPPED_PR_FILES_PER_PAGE,
   loadShippedHeroPool,
   shippedArtifactKey,
   storeMissionShippedReport,
@@ -146,7 +147,7 @@ describe('storeMissionShippedReport', () => {
     authored({ lede: GOOD_LEDE });
     await storeMissionShippedReport('m1', { authorTaskId: 'a1', origin: 'auto', completedAt });
     expect(stored().changeType).toBe('backend');
-    expect(githubCalls[0]).toBe('/repos/org/repo/pulls/11/files?per_page=300');
+    expect(githubCalls[0]).toBe('/repos/org/repo/pulls/11/files?per_page=100');
   });
 
   it('PR files unavailable: falls back to declared manifests', async () => {
@@ -171,6 +172,54 @@ describe('storeMissionShippedReport', () => {
     await storeMissionShippedReport('m1', { authorTaskId: 'a1', origin: 'auto', completedAt });
     expect(githubCalls).toHaveLength(0);
     expect(stored().changeType).toBe('frontend');
+  });
+
+  it('asks GitHub for no more files per page than it will return (100)', () => {
+    // GitHub caps pulls/{n}/files at 100 per page; asking for more silently gets 100.
+    expect(SHIPPED_PR_FILES_PER_PAGE).toBe(100);
+  });
+
+  it('a PR with a full page of files may have more: not classified from the partial list', async () => {
+    // First page all backend; a UI file could be on page two. The manifest says UI.
+    githubFiles = {
+      11: Array.from({ length: SHIPPED_PR_FILES_PER_PAGE }, (_, i) => ({ filename: `packages/core/f${i}.ts` })),
+    };
+    taskRows = [work('t1', ['apps/web/src/components/Card.tsx'])];
+    authored({ lede: GOOD_LEDE });
+    await storeMissionShippedReport('m1', { authorTaskId: 'a1', origin: 'auto', completedAt });
+    expect(stored().changeType).toBe('frontend');
+  });
+
+  it('a mission with no tasks still stores a record: no change type, no GitHub call', async () => {
+    taskRows = [];
+    workerRows = [];
+    authored({ lede: GOOD_LEDE });
+    const record = await storeMissionShippedReport('m1', { authorTaskId: 'a1', origin: 'auto', completedAt });
+    expect(githubCalls).toHaveLength(0);
+    expect(record).toMatchObject({ changeType: null, lede: GOOD_LEDE, origin: 'author', heroShots: [] });
+    expect(upserts).toHaveLength(1);
+  });
+
+  it('a failed deliverable with no merged PR adds nothing: its declared manifest is not counted', async () => {
+    githubFiles = { 11: new Error('boom') };
+    taskRows = [
+      work('t1', ['packages/core/db/schema.ts']),
+      work('t2', ['apps/web/src/components/Card.tsx'], 'failed'),
+    ];
+    authored({ lede: GOOD_LEDE });
+    await storeMissionShippedReport('m1', { authorTaskId: 'a1', origin: 'auto', completedAt });
+    expect(stored().changeType).toBe('backend');
+  });
+
+  it('re-completion overwrites the one record rather than adding a second', async () => {
+    authored({ lede: GOOD_LEDE });
+    const later = new Date('2026-02-03T00:00:00.000Z');
+    await storeMissionShippedReport('m1', { authorTaskId: 'a1', origin: 'auto', completedAt });
+    await storeMissionShippedReport('m1', { authorTaskId: 'a2', origin: 'auto', completedAt: later });
+    expect(upserts).toHaveLength(2);
+    // Same (workspace, key) both times, so the unique index turns the second into an update.
+    expect(upserts[0].values.key).toBe(upserts[1].values.key);
+    expect(upserts[1].conflict.set.metadata.shipped).toMatchObject({ authorTaskId: 'a2', completedAt: later.toISOString() });
   });
 
   it('reads at most the capped number of PRs', async () => {
