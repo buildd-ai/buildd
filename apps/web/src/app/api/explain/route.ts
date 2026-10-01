@@ -184,7 +184,9 @@ export async function GET(req: NextRequest) {
       }
       // Authorize by teamId (team-level missions) or workspaceId (workspace-scoped missions)
       const hasAccess = teamIds.includes(row.teamId) || (row.workspaceId && teamWsIds.includes(row.workspaceId));
-      if (!hasAccess) {
+      // A workspace-scoped mission inherits its workspace's restriction for keys;
+      // a team-level mission (no workspace) is gated by team alone.
+      if (!hasAccess || (row.workspaceId && !(await reaches(row.workspaceId)))) {
         return NextResponse.json({ error: 'Mission not found or not in your team' }, { status: 404 });
       }
       const result = await explainMission(missionId);

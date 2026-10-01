@@ -698,7 +698,7 @@ async function viewForTask(taskId: string): Promise<{
  * `actor` is who the inline evidence list is audited to. Reach is the caller's
  * job: GET /api/explain has already decided the actor can read the workspace.
  */
-export async function explainTask(taskId: string, actor: EvidenceActor = {}): Promise<ExplainResult | null> {
+export async function explainTask(taskId: string, actor: EvidenceActor): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
   const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
@@ -800,7 +800,7 @@ export async function explainPr(worker: {
   mergedAt: Date | string | null;
   observedTouches: string[] | null;
   createdAt: Date | string | null;
-}, actor: EvidenceActor = {}): Promise<ExplainResult | null> {
+}, actor: EvidenceActor): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
   const loaded = await viewForTask(worker.taskId);
@@ -876,7 +876,7 @@ export async function explainPr(worker: {
  * a mission is already represented by its mission's chain, and listing both
  * would put the same blocker on screen twice.
  */
-export async function explainWorkspace(workspaceId: string, actor: EvidenceActor = {}): Promise<ExplainResult> {
+export async function explainWorkspace(workspaceId: string, actor: EvidenceActor): Promise<ExplainResult> {
   const activeMissions = await db.query.missions.findMany({
     where: and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active')),
     columns: { id: true },
