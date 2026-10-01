@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -35,10 +36,10 @@ export async function POST(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   const hasSessionAuth = !!user;
-  const hasAdminToken = apiAccount?.level === 'admin';
+  const hasAdminToken = hasTokenRouteAdminAccess(apiAccount, req, 'tasks:admin');
 
   if (!hasSessionAuth && !hasAdminToken) {
     return NextResponse.json(

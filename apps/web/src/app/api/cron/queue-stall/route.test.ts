@@ -646,7 +646,10 @@ describe('queue-stall cron — notification and dedupe', () => {
     const payload = mockNotify.mock.calls[0][0] as any;
     expect(payload.app).toBe('alerts');
     expect(payload.message).toContain('dep_failed');
-    expect(payload.message).toContain('Fix the thing');
+    expect(payload.message).toContain('task-1');
+    // The page goes to the operator: ids and the gate only, never tenant text.
+    expect(payload.message).not.toContain('Fix the thing');
+    expect(payload.message).not.toContain('Upstream migration');
 
     expect(taskUpdates).toHaveLength(1);
     expect(taskUpdates[0].values.context.queueStallGate).toBe('dep_failed');

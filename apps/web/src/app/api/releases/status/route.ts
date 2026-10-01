@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -22,10 +23,10 @@ async function resolveAdminTeamIds(req: NextRequest): Promise<string[] | null> {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (!account) return null;
     return getCallerAdminTeamIds({
-      kind: 'account', accountId: account.id, teamId: account.teamId, level: account.level,
+      kind: 'account', accountId: account.id, teamId: account.teamId, level: hasTokenRouteAdminAccess(account, req) ? 'admin' : account.level,
     });
   }
   const user = await getCurrentUser();

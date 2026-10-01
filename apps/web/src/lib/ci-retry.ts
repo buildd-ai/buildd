@@ -9,7 +9,9 @@
  * and dispatched to a connected runner via pusher.
  */
 
+import { isOpenTaskStatus } from '@buildd/shared';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { lineageStamp } from '@/lib/attempt-lineage';
 
 /** Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries. */
 export const DEFAULT_MAX_CI_RETRIES = 3;
@@ -62,6 +64,54 @@ export interface CIRetryTask {
   context: Record<string, unknown>;
 }
 
+/** A fix attempt already filed against a PR — the columns `summarizePrFixAttempts` reads. */
+export interface PrFixAttemptRow {
+  id: string;
+  status: string;
+  creationSource: string | null;
+  outputRequirement?: string | null;
+  ciRetryPrNumber: number | null;
+  context: unknown;
+  createdAt: Date | string;
+}
+
+/**
+ * What the fix attempts already filed for one PR say about the next CI failure.
+ *
+ * - `inFlight`: a fix attempt (CI retry, review fix, conflict fix) that is still
+ *   pending or running. It will push again, so a new CI retry would stack on it.
+ * - `ciRetriesUsed`: agent-authored CI retries the automatic loop has filed
+ *   since the last manual "Fix CI" click (which grants a fresh budget). Foreign
+ *   pushes and drift-diagnose tasks never count.
+ *
+ * The budget is counted from the rows rather than from the owner task's
+ * `context.iteration`: once the PR's root task and its attempts are all
+ * completed, which of them the owner lookup returns is arbitrary, and the root
+ * task never carries an iteration at all.
+ */
+export function summarizePrFixAttempts(
+  rows: PrFixAttemptRow[],
+  prNumber: number,
+): { inFlight: PrFixAttemptRow | null; ciRetriesUsed: number } {
+  const time = (r: PrFixAttemptRow) => new Date(r.createdAt).getTime();
+  const inFlight = rows.find((r) => isOpenTaskStatus(r.status)) ?? null;
+
+  const ciRows = rows.filter((r) => r.ciRetryPrNumber === prNumber);
+  const lastManual = ciRows
+    .filter((r) => r.creationSource === 'dashboard')
+    .reduce((max, r) => Math.max(max, time(r)), Number.NEGATIVE_INFINITY);
+
+  const ciRetriesUsed = ciRows.filter((r) => {
+    if (r.creationSource !== 'webhook') return false;
+    if (r.outputRequirement === 'artifact_required') return false;
+    const ctx = (r.context && typeof r.context === 'object' ? r.context : {}) as Record<string, unknown>;
+    if (ctx.foreign_head_sha === true) return false;
+    return time(r) > lastManual;
+  }).length;
+
+  return { inFlight, ciRetriesUsed };
+}
+
 /**
  * Build a retry task from a CI failure event.
  *
@@ -97,7 +147,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
 
   return {
     title: formatAttemptTitle('builder', originalTask.title, { reason: 'after CI', iteration: displayIteration }),
-    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations, ciFailedJobId ?? null),
+    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations, ciFailedJobId ?? null, worker.prNumber ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
@@ -118,6 +168,8 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
         errorType: 'ci_failure' as const,
         ...(typeof ctx.lastCommitSha === 'string' ? { commitSha: ctx.lastCommitSha } : {}),
       },
+      // Chain identity: the root task and every PR number seen so far.
+      ...lineageStamp(originalTask, [worker.prNumber]),
       // Retry metadata
       iteration: nextIteration,
       maxIterations,
@@ -153,6 +205,7 @@ function buildRetryDescription(
   foreignCommitAuthor?: string,
   isFinalAttempt?: boolean,
   ciFailedJobId?: number | null,
+  prNumber?: number | null,
 ): string {
   // `gh run view <id> --log-failed` returns EMPTY output and exit 0 — it is not
   // a retention problem, the command simply does not produce the failed-step
@@ -177,6 +230,8 @@ gh api --allow-escape-sequences /repos/${repoFullName}/actions/jobs/${ciFailedJo
 \`\`\`${ciRunUrl ? `\nRun: ${ciRunUrl}` : ''}
 `
     : '';
+
+  const prChecksCommand = prNumber ? `gh pr checks ${prNumber}` : 'gh pr checks';
 
   const foreignNote = foreignHeadSha
     ? `> **Note:** This CI failure was triggered by a commit from ${foreignCommitAuthor ? `@${foreignCommitAuthor}` : 'an external contributor'}, not the buildd agent. Your retry budget is **not consumed** by this attempt.\n\n`
@@ -217,6 +272,11 @@ ${logSection}## Instructions
 3. Fix the failing tests/build/lint issues
 4. Run the verification command locally before completing
 5. Push your fixes to the existing branch (the PR will auto-update)
+6. Confirm the PR's own checks are green: \`${prChecksCommand}\`. A local run, or a
+   type check of one file, is not enough: it does not run the checks that gate
+   the merge. Wait for the checks to finish. Report SUCCESS only when every
+   gating check passes. If any check is still red or failing, do not report
+   SUCCESS: say which check and why through \`error\`, or fix it.
 
 ${handoffSection}${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
 }

@@ -18,7 +18,8 @@ every action; below, `buildd action=X` means exactly that call.
 A session that opted in to group tools (`?tools=groups` on the MCP URL) lists
 one tool per area instead: `buildd_work` (your own task: claim, progress,
 notes, artifacts, PR, complete), `buildd_tasks`, `buildd_missions`,
-`buildd_prs`, `buildd_runners` (explain, errors, failures, usage, runners),
+`buildd_prs`, `buildd_analytics` (coverage, path claims, explain, errors, failures, usage, runners),
+`buildd_runners` (connectors, agent steering),
 `buildd_artifacts`, `buildd_schedules`, `buildd_admin`. Each takes the same
 `{ action, params }`, lists its actions with their params, and has action
 `help` (`params={ action }`) for one action's full docs. There,

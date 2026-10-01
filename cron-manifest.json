@@ -143,6 +143,13 @@
       "method": "GET"
     },
     {
+      "$comment": "Redis-gated fast tick for the landing backstop: re-drives approved, green, unmerged buildd PRs through landPr, the same function every landing door calls, so a PR a missed event left parked still merges (docs/design/pr-landing-guarantee.md). Rides the pr-reconcile route as a gated scope because the design chose that over a new route; it shares the installation resolution and GitHub rate limiting. Reads one sorted set (buildd:due:pr-landing) and returns without querying Postgres unless a PR is due, so every 10 minutes costs Redis reads and no extra Neon wake while nothing is waiting. Offset to :05/:15/... so it never fires at the same minute as the :10 merge-state pass, which is the floor: that pass enumerates from Postgres and re-seeds the set, so a lost queue write costs an hour, not the guarantee. Fail-open: with Redis unconfigured or erroring the tick enumerates from Postgres rather than reading idle. Separate cron_runs slug (pr-reconcile:landing). See apps/web/src/lib/cron-due-queue.ts.",
+      "title": "Buildd: PR Landing Backstop (gated)",
+      "path": "/api/cron/pr-reconcile?scope=landing&gate=due",
+      "schedule": "5-55/10 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Full PR reconcile: merge-state plus the dead-zone sweep, which CREATES conflict-resolution tasks and therefore stays daily. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 02:00 into the working day (EST). (was 0 2 * * *)",
       "title": "Buildd: PR Reconcile",
       "path": "/api/cron/pr-reconcile",

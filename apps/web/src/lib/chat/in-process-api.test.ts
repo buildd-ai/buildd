@@ -106,6 +106,7 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
       { id: 't-c', workspaceId: 'ws-other-team', title: 'elsewhere' },
     ] })) },
     { pattern: '/api/tasks/:id', methods: ['GET'], reach: reachOf('/api/tasks/:id'), load: echo((_r, p) => ({ id: p.id, workspaceId: 'ws-ok' })) },
+    { pattern: '/api/tasks/:id/error-traces', methods: ['GET'], reach: reachOf('/api/tasks/:id/error-traces'), load: echo(() => ({ traces: [] })) },
     { pattern: '/api/missions', methods: ['GET', 'POST'], reach: reachOf('/api/missions'), load: echo(() => ({ missions: [
       { id: 'm-a', teamId: 't-1', workspaceId: null },
       { id: 'm-b', teamId: 't-2', workspaceId: null },
@@ -119,6 +120,7 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
   const owners = {
     'task:t-ok': { teamId: 't-1', workspaceId: 'ws-ok' },
     'task:t-sensitive': { teamId: 't-1', workspaceId: 'ws-sensitive' },
+    'task:t-elsewhere': { teamId: 't-2', workspaceId: 'ws-other-team' },
     'mission:m-team': { teamId: 't-1', workspaceId: null },
     'mission:m-other': { teamId: 't-2', workspaceId: null },
     'mission:m-sensitive': { teamId: 't-1', workspaceId: 'ws-sensitive' },
@@ -188,6 +190,24 @@ describe('createInProcessApi — chat reach (the conversation\'s team, standard 
     await expect(api('/api/missions/m-other')).rejects.toThrow('API error: 404');
     await expect(api('/api/missions/m-sensitive')).rejects.toThrow('API error: 404');
     await expect(api('/api/missions/m-mixed')).rejects.toThrow('API error: 404');
+  });
+
+  it('a task\'s error traces are declared for chat and refused for a task outside the conversation team', () => {
+    expect(matchChatRoute('GET', '/api/tasks/abc/error-traces')?.params).toEqual({ id: 'abc' });
+    expect(routesFor(['GET /api/tasks/:id/error-traces']).map(r => r.pattern)).toEqual(['/api/tasks/:id/error-traces']);
+  });
+
+  it('refuses error traces of a task outside reach (sensitive workspace, unknown id)', async () => {
+    const { api } = make();
+    expect(await api('/api/tasks/t-ok/error-traces')).toEqual({ traces: [] });
+    await expect(api('/api/tasks/t-sensitive/error-traces')).rejects.toThrow('API error: 404');
+    await expect(api('/api/tasks/t-unknown/error-traces')).rejects.toThrow('API error: 404');
+  });
+
+  it('refuses a task\'s evidence when the task belongs to another team', async () => {
+    const { api } = make();
+    await expect(api('/api/tasks/t-elsewhere/error-traces')).rejects.toThrow('API error: 404');
+    await expect(api('/api/tasks/t-elsewhere')).rejects.toThrow('API error: 404');
   });
 
   it('refuses a single-object response that names a workspace outside reach', async () => {

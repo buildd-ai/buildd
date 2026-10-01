@@ -138,7 +138,7 @@ describe('POST /api/runner/credential-refresh', () => {
     dbUpdateWheres.length = 0;
 
     // Default: authenticated runner
-    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
     mockEncrypt.mockImplementation((val: string) => `enc:${val}`);
     mockDecrypt.mockImplementation((val: string) => val.replace(/^enc:/, ''));
     mockRecordCredentialAuthFailure.mockResolvedValue({
@@ -689,5 +689,75 @@ describe('POST /api/runner/credential-refresh', () => {
     expect(res.status).toBe(400);
     const data = await res.json();
     expect(data.error).toContain('action');
+  });
+});
+
+// ── credential custody: only a flagged host runner key ───────────────────────
+
+describe('POST /api/runner/credential-refresh — host runner keys only', () => {
+  const LIVE_BLOB = 'enc:{"access_token":"at-live","refresh_token":"rt-live"}';
+
+  function reqWithKey(key: string, body: Record<string, unknown>): NextRequest {
+    return new NextRequest('http://localhost:3000/api/runner/credential-refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(body),
+    });
+  }
+
+  beforeEach(() => {
+    mockDbFindFirst.mockReset();
+    mockDbLeaseFindFirst.mockReset();
+    mockDbUpdateReturning.mockReset();
+    // Everything a caller would need to get a token back: the credential is the
+    // team's, the lock is free, and the caller holds the lease.
+    mockDbFindFirst.mockResolvedValue({ id: 'secret-1', teamId: 'team-1', encryptedValue: LIVE_BLOB, healthStatus: 'healthy', rotationStartedAt: null, tokenExpiresAt: null });
+    mockDbLeaseFindFirst.mockResolvedValue({ id: 'lease-uuid-1' });
+    mockDbUpdateReturning.mockResolvedValue([{ encryptedValue: LIVE_BLOB, tokenExpiresAt: null }]);
+  });
+
+  const ACTIONS: Array<Record<string, unknown>> = [
+    { action: 'lock' },
+    { action: 'bootstrap', runnerId: 'runner-host-1' },
+    { action: 'commit', accessToken: 'a', refreshToken: 'r' },
+    { action: 'release' },
+    { action: 'revoke' },
+  ];
+
+  it('refuses every action for a key not flagged as a host runner, and returns no token', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', hostRunner: false });
+    for (const extra of ACTIONS) {
+      const res = await POST(reqWithKey('bld_test_key', { ...BASE, ...extra }));
+      expect(res.status).toBe(403);
+      const text = await res.text();
+      expect(text).not.toContain('rt-live');
+      expect(text).not.toContain('at-live');
+    }
+    expect(mockDbFindFirst).not.toHaveBeenCalled();
+    expect(mockDbLeaseFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('refuses a per-task token for bootstrap even when it resolves to a flagged account holding the lease', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    const res = await POST(reqWithKey('bldt_payload.sig', { ...BASE, action: 'bootstrap', runnerId: 'runner-host-1' }));
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain('rt-live');
+  });
+
+  it('refuses a caller carrying a task scope', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true,
+      taskScope: { taskId: 't-1', expiresAt: Date.now() + 60_000 },
+    });
+    const res = await POST(reqWithKey('bld_test_key', { ...BASE, action: 'lock' }));
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain('rt-live');
+  });
+
+  it('still serves a flagged host runner key', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', hostRunner: true });
+    const res = await POST(reqWithKey('bld_test_key', { ...BASE, action: 'bootstrap', runnerId: 'runner-host-1' }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).refreshToken).toBe('rt-live');
   });
 });

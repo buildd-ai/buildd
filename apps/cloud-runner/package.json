@@ -9,6 +9,7 @@
     "deploy": "wrangler deploy",
     "type-check": "bunx tsc --noEmit",
     "smoke": "bash scripts/local-smoke.sh",
+    "smoke:resume": "bash scripts/local-smoke-resume.sh",
     "e2e:local": "bash scripts/local-e2e.sh",
     "deploy:buildd": "bun scripts/deploy.ts"
   },

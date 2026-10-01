@@ -426,6 +426,7 @@ describe('secret channel coverage', () => {
         mcpSecrets: { X: `seed-${field}` },
         roleEnvSecrets: { X: `seed-${field}` },
         codexCredential: { accessToken: `seed-${field}`, expiresAt: null },
+        modelEndpoint: { kind: 'gateway', baseUrl: 'https://proxy.example', authToken: `seed-${field}`, authHeader: 'authorization', models: {} },
       };
       const worker = { [field]: seeded[field] ?? `seed-${field}` };
       const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);

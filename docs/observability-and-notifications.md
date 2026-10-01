@@ -45,11 +45,15 @@ Fire-and-forget env-based send, for platform-health alerts only. Every call
 site is pinned, with its reason, in `lib/notify-routing-invariant.test.ts`; a
 new one fails that test until it is classified. Today: cron health
 (`lib/cron-run.ts`), the cross-tenant watchdogs (`cron/mission-invariants`,
-`cron/queue-stall`, overdue check-in crons), the project health watcher, the
-release pipeline, and GitHub installation sync.
+`cron/queue-stall`, overdue check-in crons), and GitHub installation sync.
+The queue-stall and overdue check-in pages name ids and the gate only, never a
+tenant's titles, workspace names or gate detail.
 
 Anything about one team's tasks, PRs, missions, budget or credentials is a
-tenant alert and goes through the tenant plane below.
+tenant alert and goes through the tenant plane below. That includes the project
+health watcher and release pipeline failures: watched projects and
+`releaseConfig` are team-admin settings, so those alerts go to the owning
+workspace's team (`notifyTeamOf`, event `needsAttention`), not the operator.
 
 ### 2. `reportOps()` — `packages/core/report-ops.ts` (PR #910)
 Drop-in for **swallowed catch blocks** so internal errors don't die silently in Vercel logs. Lives in `@buildd/core` so the runner can call it too. This is **the foundation** — see [Ops alerting design](#ops-alerting-design-the-foundation) for the full spec.
@@ -117,7 +121,7 @@ Every swallowed failure gets a severity. `[notifyTeam]` / `[health-watcher]` row
 | `workers/[id]/route.ts:646` (after split) | error | one catch masks telemetry + notifications + dependency resolution |
 | triage / artifact lookups | warning | degraded, not broken |
 | credential expired (per task) | error | task blocked until re-auth · `[notifyTeam]` |
-| CI red on release PR / Vercel prod down | critical | deploy pipeline broken · `[health-watcher]` |
+| CI red on release PR / Vercel prod down | critical | deploy pipeline broken · `[health-watcher]` (team channel of the project's workspace) |
 | **★ consecutive runner failures** | **critical** | **"all tasks failing" detector — NEW** |
 
 ### Systemic-failure detector (★ new)

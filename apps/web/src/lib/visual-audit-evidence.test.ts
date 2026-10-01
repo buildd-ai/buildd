@@ -53,6 +53,12 @@ describe('parseQaMeta', () => {
     expect(parseQaMeta(null)).toBeNull();
     expect(parseQaMeta({ qa: { ...qa('/x', 'mobile'), route: 'no-slash' } })).toBeNull();
   });
+  it('reads the page source a shot came from, and ignores an unknown one', () => {
+    expect(parseQaMeta({ qa: qa('/x', 'mobile', { source: 'vercel-preview' }) })?.source).toBe('vercel-preview');
+    expect(parseQaMeta({ qa: qa('/x', 'mobile', { source: 'sandbox' }) })?.source).toBe('sandbox');
+    expect(parseQaMeta({ qa: qa('/x', 'mobile', { source: 'netlify' }) })?.source).toBeUndefined();
+    expect(parseQaMeta({ qa: qa('/x', 'mobile') })?.source).toBeUndefined();
+  });
 });
 
 describe('evaluateVisualAuditEvidence', () => {

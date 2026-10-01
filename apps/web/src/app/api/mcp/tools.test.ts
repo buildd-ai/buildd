@@ -6,11 +6,11 @@
  * previously only reachable through a full HTTP request and had no coverage.
  */
 
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, test } from 'bun:test';
 import { allActions } from '@buildd/core/mcp-tools';
 import { actionHelp, MCP_TOOL_GROUPS, mcpGroupOf, mcpGroupToolName } from '@buildd/core/mcp-tool-groups';
 import {
-  actionsForLevel, groupActionsForLevel, listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall,
+  requiredScopeForMcpTool, actionsForLevel, groupActionsForLevel, listMcpTools, mcpServerInstructions, mcpToolSurfaceFor, routeGroupToolCall,
   type McpAccountLevel,
 } from './tools';
 
@@ -198,7 +198,7 @@ describe('listMcpTools — group tools', () => {
     const m = params('buildd_missions');
     expect(m.autoSurfaceAudit?.type).toBe('boolean');
     expect(m.workspaceId?.description).toMatch(/awaiting your review/);
-    expect(params('buildd_runners').workspaceId?.description?.toLowerCase()).toContain('browser');
+    expect(params('buildd_analytics').workspaceId?.description?.toLowerCase()).toContain('browser');
     for (const n of ['taskId', 'status', 'workspaceId']) expect(params('buildd_tasks')[n], n).toBeDefined();
     // Worker level sees only the discrepancy ledger, so no mission fields.
     const w = (groupTools('worker').find(t => t.name === 'buildd_missions')!.inputSchema.properties.params as unknown as { properties?: P }).properties ?? {};
@@ -308,7 +308,7 @@ describe('routeGroupToolCall', () => {
   });
 
   it('help without an action lists the group', () => {
-    const r = routeGroupToolCall('runners', { action: 'help' }, 'worker');
+    const r = routeGroupToolCall('analytics', { action: 'help' }, 'worker');
     expect(r.kind === 'reply' && !r.isError && r.text.includes('explain')).toBe(true);
   });
 
@@ -375,4 +375,47 @@ describe('surface choice and instructions', () => {
     expect(mcpServerInstructions('admin', 'legacy').startsWith('Buildd is a task coordination system for AI coding agents. Tools: `buildd` (task actions)')).toBe(true);
     expect(mcpServerInstructions('admin', 'legacy')).toContain('gates which `buildd` actions you can call');
   });
+});
+
+describe('explicit scope advertisement', () => {
+  it('advertises analytics to trigger tokens and hides unrelated capabilities', () => {
+    const listed = tools({ accountLevel: 'trigger', isSensitive: false, surface: 'groups', scopes: ['analytics:read'] });
+    expect(listed.map(t => t.name)).toContain('buildd_analytics');
+    expect(listed.map(t => t.name)).not.toContain('buildd_tasks');
+    expect(listed.map(t => t.name)).not.toContain('learn');
+    expect(actionsForLevel('trigger', ['analytics:read'])).toContain('get_usage_stats');
+  });
+  it('does not advertise admin privileges to a restricted admin-level token', () => {
+    const listed = tools({ accountLevel: 'admin', isSensitive: false, surface: 'groups', scopes: ['tasks:read'] });
+    expect(actionsForLevel('admin', ['tasks:read'])).not.toContain('manage_secrets');
+    expect(actionsForLevel('admin', ['tasks:read'])).not.toContain('register_skill');
+    expect(listed.map(t => t.name)).toContain('recall');
+    expect(listed.map(t => t.name)).not.toContain('learn');
+    expect(listed.map(t => t.name)).not.toContain('check_path_claim');
+  });
+  it('advertises knowledge writes independently from reads', () => {
+    const listed = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups', scopes: ['knowledge:write'] });
+    expect(listed.map(t => t.name)).toContain('learn');
+    expect(listed.map(t => t.name)).not.toContain('recall');
+  });
+});
+
+test('scoped group dispatch advertises and helps on mission reads', () => {
+  expect(actionsForLevel('worker', ['tasks:read'])).toContain('manage_missions');
+  const reply = routeGroupToolCall('analytics', { action: 'help', params: { action: 'get_usage_stats' } }, 'trigger', ['analytics:read']);
+  expect(reply.kind).toBe('reply');
+  if (reply.kind === 'reply') expect(reply.isError).toBe(false);
+});
+
+test('standalone knowledge scopes cannot be bypassed with a help action', () => {
+  expect(requiredScopeForMcpTool('recall', { action: 'help' })).toBe('tasks:read');
+  expect(requiredScopeForMcpTool('learn', { action: 'help' })).toBe('knowledge:write');
+  expect(requiredScopeForMcpTool('buildd_missions', { action: 'manage_missions', params: { action: 'list' } })).toBe('tasks:read');
+  expect(requiredScopeForMcpTool('buildd', { action: 'manage_secrets', params: { action: 'list' } })).toBe('secrets');
+});
+
+it('scoped sessions describe capabilities instead of legacy levels', () => {
+  const instructions = mcpServerInstructions('worker','groups',['analytics:read']);
+  expect(instructions).toContain('**Token scopes:** analytics:read');
+  expect(instructions).not.toContain('**Token level:**');
 });

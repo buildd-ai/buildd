@@ -22,7 +22,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   let authorized = false;
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (account) authorized = await verifyAccountWorkspaceAccess(account.id, row.workspaceId, 'canCreate');
   } else {
     const user = await getCurrentUser();

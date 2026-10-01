@@ -41,6 +41,33 @@ describe('LoopStatusChip', () => {
   });
 });
 
+describe('LoopStatusChip on narrow viewports', () => {
+  // The chip is shrink-0 beside the task title in Activity rows; the full
+  // "LOOPING · attempt X/Y" label left the title a few characters at 320px.
+  it('shows a compact label below md and keeps the full text for assistive tech', () => {
+    const html = renderToStaticMarkup(
+      <LoopStatusChip loopIteration={1} maxLoops={5} loopState="running" />,
+    );
+    expect(html).toMatch(/<span[^>]*class="[^"]*md:hidden[^"]*"[^>]*aria-hidden="true"[^>]*>LOOP 2\/5<\/span>/);
+    expect(html).toMatch(/<span[^>]*class="[^"]*hidden md:inline[^"]*"[^>]*aria-hidden="true"[^>]*>LOOPING · attempt 2\/5<\/span>/);
+    expect(html).toMatch(/<span class="sr-only">LOOPING · attempt 2\/5<\/span>/);
+  });
+
+  it('drops the deferred resume time from the compact label but keeps it at md+', () => {
+    const html = renderToStaticMarkup(
+      <LoopStatusChip
+        loopIteration={1}
+        maxLoops={5}
+        loopState="condition_unmet"
+        startAt="2099-01-01T00:00:00.000Z"
+      />,
+    );
+    const compact = html.match(/<span[^>]*md:hidden[^>]*>([^<]*)<\/span>/)?.[1];
+    expect(compact).toBe('LOOP 2/5');
+    expect(html).toMatch(/hidden md:inline[^>]*>[^<]*<span[^>]*> · resumes/);
+  });
+});
+
 describe('LoopHistory', () => {
   it('renders the empty loop state', () => {
     const html = renderToStaticMarkup(<LoopHistory entries={[]} loopState="running" maxLoops={5} />);

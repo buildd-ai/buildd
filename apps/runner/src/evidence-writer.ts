@@ -88,6 +88,9 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   // Resolved connector descriptors; credential values arrive via mcpSecrets.
   mcpConnectors: 'not_secret',
   codexCredential: 'secret',
+  // Team agent model endpoint: authToken is a credential the agent env carries.
+  modelEndpoint: 'secret',
+  modelEndpointIgnored: 'not_secret',
   roleConfig: 'not_secret',
   roleInstructions: 'not_secret',
   roleEnvSecrets: 'secret',
@@ -109,6 +112,7 @@ export interface WorkerSecretChannels {
     apiKey?: string;
     [k: string]: unknown;
   };
+  modelEndpoint?: { authToken?: string; [k: string]: unknown };
 }
 
 /**
@@ -131,6 +135,7 @@ export function buildWorkerSecretValues(
     { label: 'codexRefreshToken', value: cx?.refreshToken },
     { label: 'codexIdToken', value: cx?.idToken },
     { label: 'codexApiKey', value: cx?.apiKey },
+    { label: 'modelEndpointAuthToken', value: worker.modelEndpoint?.authToken },
   ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
 }
 

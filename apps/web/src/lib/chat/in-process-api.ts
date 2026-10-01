@@ -54,6 +54,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
     reach: { unpinned: 'lists the caller\'s tasks; every row carries its workspaceId and is filtered', requireBody: ['workspaceId'], ...ROWS },
   },
   { pattern: '/api/tasks/:id', methods: ['GET', 'PATCH'], load: () => import('@/app/api/tasks/[id]/route'), reach: byTask },
+  { pattern: '/api/tasks/:id/error-traces', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/error-traces/route'), reach: byTask },
   { pattern: '/api/tasks/:id/messages', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/messages/route'), reach: byTask },
   // evidenceId travels as a query param: OwnedKind has no evidence member, and the route checks it belongs to :id.
   { pattern: '/api/tasks/:id/evidence', methods: ['GET'], load: () => import('@/app/api/tasks/[id]/evidence/route'), reach: byTask },

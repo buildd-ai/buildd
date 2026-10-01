@@ -264,3 +264,27 @@ worktree from trunk instead (`describeWorktreeFallback`, `@buildd/core/mission-b
 | 67 | `mission-integration-branch.ts:ensureIntegrationBaseForTaskPr` | `mission_branch_unresolved` | warned | create_pr found the branch absent and re-cut it from trunk (`fallback: recut_from_trunk`) |
 | 68 | `mission-integration-branch.ts:ensureIntegrationBaseForTaskPr` | `mission_branch_unresolved` | stranded | branch absent and not creatable; task PR opened against trunk (`fallback: trunk_pr_base`) |
 | 69 | `missions/route.ts` POST, `missions/[id]/route.ts` PATCH, `mission-run.ts:runMission`, `tasks/route.ts` POST | `mission_branch_unresolved` | stranded | ensure failed at mission create / opt-in / organizer pass / first task filed (`fallback: none`) |
+
+### PR landing function (`lib/pr-landing.ts:landPr`)
+
+The one decide-and-act function for a PR that may be ready to merge. Every
+non-`merged` outcome (`updating_branch`, `waiting_ci`, `needs_fix`,
+`needs_human`) writes exactly one row whose `detail.landingOutcome` is the typed
+outcome, with `detail.prNumber` and `detail.headSha`. Shadow mode records the
+same decision as `warned` with `detail.shadowOutcome` and acts on nothing. A
+merge writes an `accepted` row carrying `detail.timeToLandMs`.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 70 | `pr-landing.ts:landPr` | `pr_landing` | deferred / rejected / warned / accepted | the landing decision; `deferred` = a wait with an owner (branch update in flight, checks pending, fix queued), `rejected` = a human is needed, `warned` = shadow, `accepted` = merged |
+
+### Coordination telemetry additions
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| `apps/web/src/lib/change-intent.ts:postConflictNote` | `change_intent` | warned | One delivered conflict warning note per affected task, including both sides; task/workspace/mission attribution and overlapping surfaces are retained. |
+| `apps/web/src/lib/path-claim-check.ts:checkPathClaim` | `path_claim` | accepted | Each successful call, including an already-held-path no-op; excluded from friction rankings and bypass rates. |
+
+`get_manifest_coverage` and `get_path_claim_stats` read aggregate REST metrics.
+Use `get_failure_analytics` with `family=gate` and
+`errorPrefix="Change intent conflict"` to count delivered change-intent warnings.

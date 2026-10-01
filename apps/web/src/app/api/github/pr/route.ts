@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
@@ -14,6 +15,7 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -31,10 +33,12 @@ import { escalateConflictExhaustion, evaluateAutoMergeSafety, isBehindBaseRefusa
 import { updateBehindPrBranch } from '@/lib/pr-branch-update';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fetchSplitPrStats } from '@/lib/supersession-check';
+import { loadPrAttempts } from '@/lib/pr-attempts';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -176,7 +180,8 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may open a PR only for its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -216,6 +221,9 @@ export async function POST(req: NextRequest) {
     // Team membership OR being the account that runs the worker — see
     // canActOnWorkerPr for why neither check alone is enough.
     if (!(await canActOnWorkerPr(account, worker))) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+    if (account.taskScope && (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -1031,7 +1039,7 @@ export async function PATCH(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1101,11 +1109,81 @@ export async function PATCH(req: NextRequest) {
 }
 
 // PUT /api/github/pr - Merge a pull request
+/**
+ * The `merge_pr` answer for a landing outcome. Only `merged` is a merge; the
+ * two in-flight outcomes are 202 because nothing more is asked of the caller —
+ * the next green on the named head lands the PR.
+ */
+function mergePrLandingResponse(
+  outcome: LandingOutcome,
+  pr: { prNumber: number; prUrl: string | null; tier: string },
+): NextResponse {
+  const prRef = { number: pr.prNumber, url: pr.prUrl };
+  switch (outcome.kind) {
+    case 'merged':
+      return NextResponse.json({
+        ok: true,
+        merged: true,
+        message: 'Pull request merged',
+        landing: outcome,
+        pr: { ...prRef, mergeCommitSha: outcome.sha || null },
+      });
+    case 'updating_branch':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        branchUpdated: true,
+        landing: outcome,
+        message: `The branch was behind its base and has been updated (new head ${outcome.newHeadSha.slice(0, 7)}).`,
+        hint: 'It merges automatically when CI is green on the new head. No further merge_pr call is needed.',
+        pr: prRef,
+      }, { status: 202 });
+    case 'waiting_ci':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        message: `Not mergeable yet: waiting on ${outcome.headSha ? `head ${outcome.headSha.slice(0, 7)}` : 'the PR head'}.`,
+        hint: 'It merges automatically when the pending checks or review finish green. No further merge_pr call is needed.',
+        pr: prRef,
+      }, { status: 202 });
+    case 'needs_fix':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        error: `merge refused: ${outcome.reason}`,
+        message: `merge refused: ${outcome.reason}`,
+        tier: pr.tier,
+        fix: outcome.fix,
+        fixTaskId: outcome.taskId ?? null,
+        hint: outcome.taskId
+          ? `A ${outcome.fix} task (${outcome.taskId}) owns the next step.`
+          : `Needs a ${outcome.fix} before it can land.`,
+        pr: prRef,
+      }, { status: 409 });
+    case 'needs_human':
+      return NextResponse.json({
+        ok: false,
+        merged: false,
+        landing: outcome,
+        error: `merge refused: ${outcome.reason}`,
+        message: `merge refused: ${outcome.reason}`,
+        tier: pr.tier,
+        cause: outcome.cause,
+        hint: outcome.cause === 'human_tier'
+          ? 'Report completion and let the owner merge from the escalation inbox.'
+          : 'A person has to decide this one. Report completion and let the owner merge or fix it.',
+        pr: prRef,
+      }, { status: 403 });
+  }
+}
+
 export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1164,7 +1242,7 @@ export async function PUT(req: NextRequest) {
         workspaceId: worker.workspaceId ?? null,
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         detail: { prNumber, ...(detail ?? {}) },
       });
     };
@@ -1241,7 +1319,7 @@ export async function PUT(req: NextRequest) {
     //                    no matter how green the PR is.
     //   human          — refused, which is what the tier means.
     const force = body.force === true;
-    if (force && account.level !== 'admin') {
+    if (force && !hasTokenRouteAdminAccess(account, req, 'admin')) {
       recordMergeGate('rejected', 'force merge requires an admin token', { force: true });
       return NextResponse.json({
         error: 'force merge requires an admin token',
@@ -1294,6 +1372,39 @@ export async function PUT(req: NextRequest) {
       const policy = resolvePolicy(workspace, mission, task, {
         baseRef: policyPr?.base?.ref ?? null,
       });
+
+      // The landing function decides once the workspace is in `enforce`: tier,
+      // verdict (with carry-forward), rails, and "behind base" as a refresh
+      // with a marker — so a behind PR lands on its next green without a
+      // second merge_pr call, and a stored terminal approve under agent-review
+      // authorises the merge rather than being refused on tier. `shadow`
+      // records what it would do, then the legacy gates below decide.
+      const landingMode = resolveLandingMode(workspace.gitConfig);
+      if (landingMode !== 'off') {
+        const outcome = await landPr({
+          workspaceId: workspace.id,
+          installationId: repo.installation.installationId,
+          repoFullName: repo.fullName,
+          prNumber,
+          eventHeadSha: null,
+          door: 'merge_pr',
+          actor: { kind: 'agent', workerId: worker.id ?? null },
+          mode: landingMode,
+          policy,
+          owner: { taskId: worker.taskId ?? null, workerId: worker.id ?? null },
+          releaseConfig: workspace.releaseConfig ?? null,
+          mergeMethod: mergeMethod as 'merge' | 'squash' | 'rebase',
+        });
+        if (landingMode === 'enforce') {
+          if (outcome.kind === 'merged') {
+            await db
+              .update(workers)
+              .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
+              .where(eq(workers.id, worker.id));
+          }
+          return mergePrLandingResponse(outcome, { prNumber, prUrl: worker.prUrl ?? null, tier: policy.tier });
+        }
+      }
 
       if (policy.tier === 'human') {
         recordMergeGate('rejected', `merge policy tier is 'human' — this PR must be merged by a person`, { tier: policy.tier });
@@ -1350,7 +1461,7 @@ export async function PUT(req: NextRequest) {
         surface: 'PUT /api/github/pr',
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         carryForward: policyPr?.base?.ref
           ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
           : null,
@@ -1577,7 +1688,7 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
@@ -1589,6 +1700,7 @@ export async function GET(req: NextRequest) {
     const prNumberParam = searchParams.get('prNumber');
     const workspaceIdParam = searchParams.get('workspaceId');
     const includeComments = searchParams.get('includeComments') === 'true';
+    const includeCiFailures = searchParams.get('includeCiFailures') === 'true';
 
     if (!workerId && !prNumberParam) {
       return NextResponse.json({ error: 'workerId or prNumber required' }, { status: 400 });
@@ -1712,6 +1824,23 @@ export async function GET(req: NextRequest) {
       failedChecks: failedChecks(checkRuns),
     };
 
+    // Opt-in: why each failing check failed, from its job log. Imported lazily
+    // so the default request never loads the log reader, and a failure here
+    // costs the excerpts, not the PR.
+    let ciFailures: Array<{ name: string; conclusion: string; url: string | null; step: string | null; excerpt: string | null }> | null = null;
+    if (includeCiFailures) {
+      const failing = ciSummary.failedChecks;
+      ciFailures = failing.map(f => ({ ...f, step: null, excerpt: null }));
+      if (failing.length > 0) {
+        try {
+          const { fetchCiFailureExcerpts } = await import('@/lib/ci-failure-excerpts');
+          ciFailures = await fetchCiFailureExcerpts(installationId, fullName, failing);
+        } catch (err) {
+          console.warn(`Could not read CI failure logs for ${fullName}#${prNumber}:`, err);
+        }
+      }
+    }
+
     // Summarise reviews — count only the latest actionable review per user.
     // Skip COMMENTED (comment-only submits) so a follow-up comment after an
     // approval doesn't overwrite the approval in the Map.
@@ -1756,6 +1885,10 @@ export async function GET(req: NextRequest) {
       ? await fetchSplitPrStats(installationId, fullName, prNumber)
       : null;
 
+    // Fix attempts on this PR's chain, with why each ended as it did. A read
+    // failure costs the list, not the PR.
+    const attempts = await loadPrAttempts(worker.taskId).catch(() => []);
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1789,6 +1922,8 @@ export async function GET(req: NextRequest) {
       checks: ciSummary,
       reviews: reviewSummary,
       ...(comments ? { comments } : {}),
+      ...(ciFailures ? { ciFailures } : {}),
+      ...(attempts.length > 0 ? { attempts } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);

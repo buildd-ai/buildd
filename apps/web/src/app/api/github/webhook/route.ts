@@ -1,4 +1,4 @@
-import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
+import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
@@ -7,10 +7,10 @@ import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePull
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
-import { buildCIRetryTask } from '@/lib/ci-retry';
+import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
 import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import {
-  checkPrIsDraft,
+  fetchPrRetryGate,
   fetchCIFailureLogs,
   fetchCommitAuthor,
   isBuilddWorkerCommit,
@@ -80,6 +80,7 @@ import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
+import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
@@ -562,6 +563,33 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           continue;
         }
 
+        // The landing function (lib/pr-landing.ts) owns this decision once the
+        // workspace is in `enforce`: carry-forward, the verdict, the rails and
+        // "behind base" as a refresh with a marker, on the LIVE head. A green
+        // for a head that is no longer live is a no-op inside it. In `shadow`
+        // it only records what it would have done, before the legacy path
+        // below acts on the same state.
+        const landingMode = resolveLandingMode(workspace.gitConfig);
+        if (landingMode !== 'off') {
+          const outcome = await landPr({
+            workspaceId: workspace.id,
+            installationId: installation.id,
+            repoFullName: repository.full_name,
+            prNumber: pr.number,
+            eventHeadSha: headSha,
+            door: 'check_suite',
+            actor: { kind: 'system' },
+            mode: landingMode,
+            policy,
+            owner: { taskId: worker.taskId ?? null, workerId: worker.id },
+            releaseConfig: workspace.releaseConfig ?? null,
+          });
+          if (landingMode === 'enforce') {
+            console.log(`[pr-landing] check_suite ${repository.full_name}#${pr.number}@${headSha}: ${outcome.kind}`);
+            continue;
+          }
+        }
+
         if (policy.tier === 'agent-review') {
           // Reviewer was dispatched when the PR was opened; it normally merges
           // on approve. But that merge is bounded to quarantined branches (see
@@ -576,6 +604,8 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           // An approval made before a rebase/base-merge still covers this head
           // when the PR diff is unchanged. The synchronize handler records that
           // too; repeating it here covers a lost push webhook.
+          // Legacy path only (shadow/off): under `enforce` landPr runs this
+          // carry-forward itself, before its verdict gate.
           if (pr.base?.ref) {
             await carryForwardApprovalIfUnchanged({
               installationId: installation.id,
@@ -776,10 +806,10 @@ async function handlePullRequestEvent(event: {
     }
   }
 
-  // Track PR lifecycle status on open/reopen/synchronize events
+  // Track PR lifecycle status and draft state on open/reopen/synchronize events
   if (
     !pr.merged &&
-    (action === 'opened' || action === 'reopened' || action === 'ready_for_review' || action === 'synchronize')
+    (action === 'opened' || action === 'reopened' || action === 'ready_for_review' || action === 'synchronize' || action === 'converted_to_draft')
   ) {
     // A PR under an active request-changes retry loop can have more than one
     // worker row stamped with the same (prNumber, prUrl) — the original
@@ -806,6 +836,8 @@ async function handlePullRequestEvent(event: {
       } else {
         lifecycleUpdate.prLifecycleStatus = 'pr_open';
       }
+      // Track PR draft status from webhook payload
+      lifecycleUpdate.prIsDraft = pr.draft ?? null;
 
       await db
         .update(workers)
@@ -1585,10 +1617,13 @@ async function reportMissionGateRetarget(opts: {
  *
  * Guard rails:
  * - Only acts on PRs created by a buildd worker.
- * - Skips draft PRs (not ready for CI feedback).
+ * - Skips draft, merged and closed PRs, and owners that failed or were cancelled.
+ *   A completed owner still gets the retry: its PR is open and red.
+ * - Never stacks on a fix attempt for the same PR that is still pending/running.
  * - Dedupes structurally by workspace + PR + failed head SHA.
- * - Honors gitConfig.maxCiRetries (default 3; 0 disables). On exhaustion, marks
- *   the original task failed and notifies the mission instead of looping.
+ * - Honors gitConfig.maxCiRetries (default 3; 0 disables), counted from the CI
+ *   retries already filed for the PR. On exhaustion, marks the owner task
+ *   failed and notifies the mission instead of looping.
  */
 async function handleCheckSuiteFailure(
   checkSuite: GitHubCheckSuiteEvent['check_suite'],
@@ -1689,23 +1724,33 @@ async function handleCheckSuiteFailure(
         continue;
       }
 
-      // Terminal tasks (completed/failed/cancelled) must not spawn retry children —
-      // the PR is orphaned from the agent's perspective. Surface CI failures to the
-      // mission feed instead so a human can act (AC-5). An adopted PR's task is
-      // ALWAYS stamped 'completed' as bookkeeping (the PR already exists, so it
-      // must not be claimable as pending work) — that stamp says nothing about
-      // whether an agent is "done" with it, so this guard does not apply.
-      if (isTerminalTaskStatus(task.status) && !isAdoptedPrTask(task)) {
+      // A failed or cancelled owner must not spawn retry children: failed is what
+      // the exhaustion path below sets, and cancelled is a human stopping the
+      // work. Surface the failure to the mission feed instead (AC-5).
+      //
+      // 'completed' is NOT a stop. Workers call complete_task right after they
+      // push, so a PR's root task and every review/conflict/CI fix attempt on it
+      // are 'completed' by the time CI reports. A completed task whose PR is
+      // open and red has not finished its job. What actually ends the loop is
+      // checked below: a merged/closed PR, an in-flight fix, the budget.
+      const ownerStopped = task.status === 'failed' || task.status === 'cancelled';
+      if (ownerStopped && !isAdoptedPrTask(task)) {
         if (task.missionId) {
           await notifyMissionPrReady(task.missionId, {
-            title: 'CI failing on completed task PR',
+            title: `CI failing on ${task.status} task PR`,
             prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
             prNumber: pr.number,
             headSha: checkSuite.head_sha,
             reason: 'ci_failed',
-            message: `${task.title} — CI failed on the completed task's PR. Needs a human.`,
+            message: `${task.title} — CI failed on the ${task.status} task's PR. Needs a human.`,
           });
         }
+        continue;
+      }
+
+      // A late failure on a PR that already landed or was closed is not ours to fix.
+      if (isTerminalPrLifecycle(worker.prLifecycleStatus)) {
+        console.log(`Skipping CI retry for PR #${pr.number} on ${repository.full_name}: PR is ${worker.prLifecycleStatus}`);
         continue;
       }
 
@@ -1717,10 +1762,44 @@ async function handleCheckSuiteFailure(
         continue;
       }
 
-      // Guard: skip draft PRs — not ready for CI feedback.
-      const isDraft = await checkPrIsDraft(installationId, repository.full_name, pr.number);
-      if (isDraft) {
+      // Guard: skip draft PRs (not ready for CI feedback) and merged/closed ones
+      // (the lifecycle column above can lag the webhook that closed the PR).
+      const prGate = await fetchPrRetryGate(installationId, repository.full_name, pr.number);
+      if (prGate.draft) {
         console.log(`Skipping CI retry for draft PR #${pr.number} on ${repository.full_name}`);
+        continue;
+      }
+      if (prGate.closed) {
+        console.log(`Skipping CI retry for ${prGate.merged ? 'merged' : 'closed'} PR #${pr.number} on ${repository.full_name}`);
+        continue;
+      }
+
+      // Every fix attempt filed for this PR: one in flight means another push
+      // is coming, so a retry now would stack on it; the rest are the budget.
+      const fixAttempts = await db
+        .select({
+          id: tasks.id,
+          status: tasks.status,
+          creationSource: tasks.creationSource,
+          outputRequirement: tasks.outputRequirement,
+          ciRetryPrNumber: tasks.ciRetryPrNumber,
+          context: tasks.context,
+          createdAt: tasks.createdAt,
+        })
+        .from(tasks)
+        .where(and(
+          eq(tasks.workspaceId, task.workspaceId),
+          or(
+            eq(tasks.ciRetryPrNumber, pr.number),
+            eq(tasks.reviewerRetryPrNumber, pr.number),
+            eq(tasks.conflictRetryPrNumber, pr.number),
+          ),
+        ));
+      const { inFlight, ciRetriesUsed } = summarizePrFixAttempts(fixAttempts, pr.number);
+      if (inFlight) {
+        console.log(
+          `Skipping CI retry for PR #${pr.number} on ${repository.full_name}: fix attempt ${inFlight.id} is still ${inFlight.status}`,
+        );
         continue;
       }
 
@@ -1814,8 +1893,14 @@ async function handleCheckSuiteFailure(
         );
       }
 
-      const taskCtx = (task.context as Record<string, unknown>) || {};
-      const currentIteration = typeof taskCtx.iteration === 'number' ? taskCtx.iteration : 0;
+      // The owner's own counter is only trustworthy while it is the live
+      // attempt; the filed retries are the floor either way.
+      const ownerCtx = (task.context as Record<string, unknown>) || {};
+      const currentIteration = Math.max(
+        typeof ownerCtx.iteration === 'number' ? ownerCtx.iteration : 0,
+        ciRetriesUsed,
+      );
+      const taskCtx = { ...ownerCtx, iteration: currentIteration };
 
       const retryTask = buildCIRetryTask({
         originalTask: {
@@ -2687,8 +2772,7 @@ async function handleReleasePrCiSuccess(
         })
         .where(eq(tasks.id, task.id));
 
-      notifyOperator({
-        app: 'alerts',
+      void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
         title: `Release merge failed — ${repoFullName}#${prNumber}`,
         message: errMsg,
         priority: 1,
@@ -2741,8 +2825,7 @@ async function handleReleasePrCiFailure(
         })
         .where(eq(tasks.id, task.id));
 
-      notifyOperator({
-        app: 'alerts',
+      void notifyTeamOf({ taskId: task.id }, 'needsAttention', {
         title: `Release CI failed — ${repoFullName}#${pr.number}`,
         message: `CI is red on release PR #${pr.number}. Prod has NOT shipped.`,
         priority: 1,
@@ -2876,8 +2959,7 @@ async function handleWorkflowRunEvent(event: {
   );
 
   if (!succeeded) {
-    notifyOperator({
-      app: 'alerts',
+    void notifyTeamOf({ taskId: matchingTask.id }, 'needsAttention', {
       title: `Release workflow failed — ${run.name}`,
       message: `Conclusion: ${run.conclusion ?? 'unknown'}. Prod has NOT shipped. Check the run for details.`,
       url: run.html_url,

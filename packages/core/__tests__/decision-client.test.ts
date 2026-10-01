@@ -705,4 +705,5 @@ describe('decisionCall with a team decision model', () => {
     const fetcher = mock(async (url: string) => { expect(url).toBe(DECISIONS_URL); return jsonResponse(OK_BODY); });
     expect((await decisionCall(params({ fetcher }))).ok).toBe(true);
   });
+
 });

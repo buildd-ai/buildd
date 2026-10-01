@@ -21,7 +21,7 @@ async function loadAndAuthorize(req: NextRequest, projectId: string): Promise<
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (account) {
       const ok = await verifyAccountWorkspaceAccess(account.id, row.workspaceId, 'canCreate');
       if (!ok) return { ok: false, status: 401, error: 'Unauthorized' };

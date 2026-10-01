@@ -1,0 +1,1 @@
+ALTER TABLE "workers" ADD COLUMN "parked_until" timestamp with time zone;

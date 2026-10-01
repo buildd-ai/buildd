@@ -29,7 +29,8 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: async () => null }));
-mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (k: string | null) => (k ? { id: 'acct-1' } : null) }));
+let caller: Record<string, unknown> = { id: 'acct-1' };
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (k: string | null) => (k ? caller : null) }));
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: async () => true,
   verifyAccountWorkspaceAccess: async () => true,
@@ -44,7 +45,7 @@ mock.module('@/lib/memory-helper', () => ({
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
-const { GET } = await import('./route');
+const { GET, POST } = await import('./route');
 
 const own = (over: Partial<Ws> = {}): Ws => ({
   id: 'ws-1', teamId: 'team-1', repo: 'https://github.com/acme/widgets', name: 'widgets', dataClass: 'standard', ...over,
@@ -59,6 +60,7 @@ beforeEach(() => {
   batch.mockClear();
   wsRow = own();
   teamRows = [wsRow];
+  caller = { id: 'acct-1' };
   process.env.NODE_ENV = 'production';
 });
 afterAll(() => { process.env.NODE_ENV = originalNodeEnv; });
@@ -84,5 +86,28 @@ describe('GET /api/workspaces/[id]/memory: project scope', () => {
     const res = await GET(req('query=fix&limit=5'), { params });
     expect(res.status).toBe(200);
     expect(search.mock.calls[0][0].project).toBe('acme/widgets');
+  });
+});
+
+describe('per-task token: its own task\'s workspace only', () => {
+  const scoped = (workspaceId: string) => ({
+    id: 'acct-1', level: 'worker', taskScope: { taskId: 'task-1', workspaceId, expiresAt: Date.now() + 60_000 },
+  });
+  const post = () => POST(new NextRequest('http://localhost:3000/api/workspaces/ws-1/memory', {
+    method: 'POST',
+    headers: new Headers({ authorization: 'Bearer bld_test', 'content-type': 'application/json' }),
+    body: JSON.stringify({ type: 'gotcha', title: 't', content: 'c' }),
+  }), { params });
+
+  it('reads its own workspace', async () => {
+    caller = scoped('ws-1');
+    expect((await GET(req('query=fix&limit=5'), { params })).status).toBe(200);
+  });
+
+  it('cannot read or write another workspace of the team', async () => {
+    caller = scoped('ws-other');
+    expect((await GET(req('query=fix&limit=5'), { params })).status).toBe(404);
+    expect((await post()).status).toBe(404);
+    expect(search).not.toHaveBeenCalled();
   });
 });

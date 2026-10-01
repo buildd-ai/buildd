@@ -16,7 +16,9 @@ const mockTasksFindMany = mock(async (args: Row) => {
   // The parentTaskId query (attempts) is distinguishable by its where marker.
   const where = args?.where ?? {};
   if (where.field === 'parentTaskId') {
-    return taskRows.filter(t => t.parentTaskId === where.value);
+    return where.type === 'inArray'
+      ? taskRows.filter(t => (where.value as string[]).includes(t.parentTaskId))
+      : taskRows.filter(t => t.parentTaskId === where.value);
   }
   if (where.field === 'id' && where.type === 'inArray') {
     return taskRows.filter(t => (where.value as string[]).includes(t.id));
@@ -646,6 +648,23 @@ describe('explainPr — a dirty mission PR', () => {
     expect(answer.because.map(l => l.claim).join('\n')).not.toContain('merged into `dev` after');
   });
 
+  it('carries the owning task\'s gate history so a stalled PR shows why', async () => {
+    gateEventRows = [
+      {
+        taskId: 'task-mission-pr',
+        gate: 'merge_base_freshness',
+        outcome: 'rejected',
+        reason: 'behind_base',
+        occurredAt: new Date('2026-01-03T00:00:00.000Z'),
+        detail: null,
+      },
+    ];
+    const answer = (await explainPr(subject))!.subjects[0];
+    expect(answer.gateHistory).toHaveLength(1);
+    expect(answer.gateHistory[0].gate).toBe('merge_base_freshness');
+    expect(answer.derivedFrom.gateHistory).toBe('gate_events.taskId');
+  });
+
   it('refuses a PR with no task attached rather than inventing a subject', async () => {
     expect(await explainPr({ ...subject, taskId: null })).toBeNull();
   });
@@ -744,5 +763,79 @@ describe('explainWorkspace', () => {
     expect(openIdx).toBeLessThan(closedIdx);
     expect(result.subjects[openIdx].waitingOn?.kind).toBe('merge');
     expect(result.subjects[closedIdx].waitingOn?.kind).toBe('pr_closed_unmerged');
+  });
+});
+
+// ─── Fix-attempt lineage ──────────────────────────────────────────────────────
+
+describe('explain — fix-attempt lineage', () => {
+  // T opened PR 10. Its CI fix could not resume the branch and opened PR 11 on
+  // a new branch; that attempt was itself fixed by a third task.
+  const evidence = {
+    errorClass: 'test_failure',
+    keyLines: ['(fail) billing > rounds up', 'error: expected 2 received 3', 'line 3', 'line 4'],
+    diff: { files: 0, added: 0, removed: 0 },
+    links: {},
+    keyLinesSource: 'traces',
+    capturedAt: '2026-01-02T00:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    taskRows = [
+      task({
+        id: 'root', title: 'Fix rounding', status: 'completed', missionId: null,
+        workers: [worker({ id: 'w-root', prNumber: 10, prLifecycleStatus: 'ci_failed' })],
+      }),
+      task({
+        id: 'fix-1', title: '[CI] Fix rounding', taskClass: 'attempt', parentTaskId: 'root', status: 'failed', missionId: null,
+        createdAt: new Date('2026-01-02T00:00:00.000Z'),
+        result: { error: 'boom', evidence, mismatch: [{ kind: 'last_command_failed', detail: 'bun run test exited 1' }] },
+        context: { rootTaskId: 'root', lineagePrNumbers: [10] },
+        workers: [worker({ id: 'w-fix-1', prNumber: 11, prLifecycleStatus: 'ci_failed' })],
+      }),
+      task({
+        id: 'fix-2', title: '[CI] Fix rounding #2', taskClass: 'attempt', parentTaskId: 'fix-1', status: 'completed', missionId: null,
+        createdAt: new Date('2026-01-03T00:00:00.000Z'),
+        workers: [worker({ id: 'w-fix-2', prNumber: 11 })],
+      }),
+    ];
+  });
+
+  const prSubject = (over: Record<string, unknown> = {}) => ({
+    id: 'w-fix-1', taskId: 'fix-1', workspaceId: 'ws-1', prNumber: 11, prUrl: null, branch: 'b',
+    prBaseRef: 'dev', prLifecycleStatus: 'ci_failed', conflictDetectedAt: null, prOpenedBaseSha: null,
+    mergedAt: null, observedTouches: null, createdAt: new Date('2026-01-02T00:00:00.000Z'), ...over,
+  });
+
+  it('explain on the new-branch PR returns the predecessor PR and every attempt with its outcome', async () => {
+    const answer = (await explainPr(prSubject()))!.subjects[0];
+    expect(answer.history.map(h => h.taskId)).toEqual(['root']);
+    const root = answer.history[0];
+    expect(root.prNumber).toBe(10);
+    expect(root.attempts.map(a => a.taskId)).toEqual(['fix-1']);
+    const fix1 = root.attempts[0];
+    expect(fix1.prNumber).toBe(11);
+    expect(fix1.status).toBe('failed');
+    expect(fix1.attempts.map(a => a.taskId)).toEqual(['fix-2']);
+  });
+
+  it('carries each attempt\'s errorClass, first key lines and mismatch', async () => {
+    const fix1 = (await explainPr(prSubject()))!.subjects[0].history[0].attempts[0];
+    expect(fix1.evidence?.errorClass).toBe('test_failure');
+    expect(fix1.evidence?.keyLines).toEqual(['(fail) billing > rounds up', 'error: expected 2 received 3', 'line 3']);
+    expect(fix1.mismatch?.[0].kind).toBe('last_command_failed');
+  });
+
+  it('answers the same history from the root task and from a nested attempt', async () => {
+    const fromRoot = (await explainTask('root'))!.subjects[0].history;
+    const fromNested = (await explainTask('fix-2'))!.subjects[0].history;
+    expect(fromNested).toEqual(fromRoot);
+    expect(fromRoot[0].attempts[0].attempts[0].taskId).toBe('fix-2');
+  });
+
+  it('omits evidence and mismatch on a clean attempt', async () => {
+    const fix2 = (await explainTask('root'))!.subjects[0].history[0].attempts[0].attempts[0];
+    expect('evidence' in fix2).toBe(false);
+    expect('mismatch' in fix2).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, workspaces } from '@buildd/core/db/schema';
@@ -28,9 +29,9 @@ async function resolveAuth(
   }
 
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (account) {
-    if (requireAdmin && account.level !== 'admin') return null;
+    if (requireAdmin && !hasTokenRouteAdminAccess(account, req)) return null;
     const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
     if (hasAccess) return { accountId: account.id };
   }

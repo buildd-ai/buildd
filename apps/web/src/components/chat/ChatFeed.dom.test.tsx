@@ -64,6 +64,13 @@ const q = (sel: string) => container.querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => [...container.querySelectorAll(sel)] as HTMLElement[];
 /** A Thinking panel row's visible label (the kit adds a screen-reader state after it). */
 const stepText = (li: HTMLElement) => li.querySelector('.kit-step-mark + span')?.textContent?.trim();
+/** Tap every finished turn's folded line open (happy-dom fires `toggle` when `open` flips). */
+async function unfold() {
+  for (const d of qa('[data-testid="kit-thinking"][data-settled]') as HTMLDetailsElement[]) {
+    if (d.open) continue;
+    await act(async () => { d.open = true; });
+  }
+}
 
 // One card per turn, a row per write (docs/design/chat-write-approval-v2.md).
 describe('approval rows', () => {
@@ -219,7 +226,7 @@ describe('approval card', () => {
   // discarded something they never saw.
   it('a write held back by a mission draft\'s card is "not proposed yet", never "discarded"', async () => {
     await render(fixtures.chatFixture('capped').messages as Msgs, 'confirmed');
-    const capped = q('[data-testid="approval-card"]')!;
+    const capped = q('[data-testid="approval-card"][data-state="skipped"]')!;
     expect(capped.dataset.state).toBe('skipped');
     expect(capped.querySelector('.kit-card-title')?.textContent).toBe('New task');
     expect(capped.textContent).toContain('not proposed yet · another card is up');
@@ -273,6 +280,7 @@ describe('approval card: a previewed change is the kit card', () => {
 describe('tool rows', () => {
   it('consecutive read calls group under one header, and a row expands to raw input and output', async () => {
     await render(fixtures.chatFixture('propose').messages as Msgs);
+    await unfold();
     const group = q('[data-testid="tool-call-group"]');
     expect(group?.textContent).toContain('3 tool calls');
     expect(group?.textContent).toContain('read-only');
@@ -291,6 +299,7 @@ describe('tool rows', () => {
       call('c2', 'create_task', { title: 'Fix checkout' }, { data: {}, objects: [], summary: 'filed', allowed: true }),
       { type: 'text', text: 'Done.' },
     ] }] as unknown as Msgs);
+    await unfold();
     const group = q('[data-testid="tool-call-group"]')!;
     expect(group.classList.contains('kit-toolcalls')).toBe(true);
     // A write in the run: not read-only.
@@ -327,15 +336,41 @@ describe('tool rows', () => {
     expect(qa('.kit-step').map(stepText)).toEqual(['Read a task', 'Thinking it through']);
   });
 
-  it('a settled turn shows no panel', async () => {
-    await act(async () => {
-      root.render(<ChatFeed messages={fixtures.chatFixture('streaming').messages as Msgs} agent={fixtures.ORGANIZER} status="ready" />);
-    });
-    expect(qa('.kit-step')).toHaveLength(0);
+  it('a settled turn folds its steps and tool rows under one line, and unfolds on tap', async () => {
+    await render(fixtures.chatFixture('streaming').messages as Msgs);
+    const fold = q('[data-testid="kit-thinking"][data-settled]') as HTMLDetailsElement;
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector('[data-testid="kit-thinking-summary"]')?.textContent).toBe('Did 2 steps');
+    expect(q('[data-testid="tool-call-row"]')).toBeNull();
+    // The answer stays out in the open.
+    expect(q('[data-testid="feed-text"]')?.textContent).toContain('Nothing in flight touches currency');
+    await unfold();
+    expect(qa('.kit-step').map(stepText)).toEqual(['Looked over the missions', 'Searching what buildd remembers']);
+    expect(qa('[data-testid="tool-call-row"]').length).toBeGreaterThan(0);
+    // Folding again hides the rows.
+    await act(async () => { fold.open = false; });
+    expect(q('[data-testid="tool-call-row"]')).toBeNull();
+  });
+
+  it('the folded line says what the turn filed', async () => {
+    const msgs = [{ id: 'a', role: 'assistant', parts: [
+      { type: 'tool-manage_missions', toolCallId: 'c1', state: 'output-available', input: { action: 'list' }, output: { data: [], objects: [] } },
+      { type: 'tool-create_task', toolCallId: 'c2', state: 'output-available', input: { title: 'A' }, output: { data: {}, objects: [{ kind: 'task', id: 't1', fallbackText: 'A' }] } },
+      { type: 'tool-create_task', toolCallId: 'c3', state: 'output-available', input: { title: 'B' }, output: { data: {}, objects: [{ kind: 'task', id: 't2', fallbackText: 'B' }] } },
+      { type: 'text', text: 'Filed both.' },
+    ] }] as unknown as Msgs;
+    await render(msgs);
+    expect(q('[data-testid="kit-thinking-summary"]')?.textContent).toBe('Did 3 steps · filed 2 tasks');
+  });
+
+  it('a plain answer has nothing to fold', async () => {
+    await render([{ id: 'a', role: 'assistant', parts: [{ type: 'text', text: 'Hi.' }] }] as unknown as Msgs);
+    expect(q('[data-testid="kit-thinking"]')).toBeNull();
   });
 
   it('a call still in flight reads as running', async () => {
     await render(fixtures.chatFixture('streaming').messages as Msgs);
+    await unfold();
     expect(qa('[data-testid="tool-call-row"]').some(r => r.dataset.state === 'running')).toBe(true);
   });
 });
@@ -496,6 +531,7 @@ describe('a fired watch', () => {
     expect(notices[2].querySelector('p.font-voice')?.textContent).toBe('CI failed on #421.');
 
     // The watch's own tool row is square too (v3 foreground), not a pill.
+    await unfold();
     const rows = qa('[data-testid="tool-call-row"], [data-testid="tool-call-group"]');
     expect(rows.length).toBeGreaterThan(0);
     for (const r of rows) expect(r.className).not.toMatch(/rounded/);

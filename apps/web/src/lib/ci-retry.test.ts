@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildCIRetryTask } from './ci-retry';
+import { buildCIRetryTask, summarizePrFixAttempts } from './ci-retry';
 
 const baseParams = {
   originalTask: {
@@ -29,6 +29,19 @@ describe('buildCIRetryTask', () => {
     expect(t!.context.prNumber).toBe(42);
     // failureContext is now a structured object, not a bare string
     expect((t!.context.failureContext as any).summary).toBe('Job "test" failed');
+  });
+
+  it('stamps the chain root and PR number, and carries them through a second retry', () => {
+    const first = buildCIRetryTask(baseParams);
+    expect(first!.context.rootTaskId).toBe('t1');
+    expect(first!.context.lineagePrNumbers).toEqual([42]);
+    const second = buildCIRetryTask({
+      ...baseParams,
+      originalTask: { ...baseParams.originalTask, id: 't2', title: first!.title, context: first!.context },
+      worker: { id: 'w2', branch: 'buildd/new-branch', prNumber: 57 },
+    });
+    expect(second!.context.rootTaskId).toBe('t1');
+    expect(second!.context.lineagePrNumbers).toEqual([42, 57]);
   });
 
   it('does not double-prefix the title on subsequent retries', () => {
@@ -270,5 +283,67 @@ describe('final-attempt handoff request', () => {
       workspaceMaxCiRetries: 1,
     }));
     expect(task!.description).toContain('nextSuggestion');
+  });
+});
+
+describe('green means the PR\'s checks, not the local run', () => {
+  // A local single-file type check passed while the PR's gating checks stayed
+  // red, and the attempt reported SUCCESS anyway.
+  const make = (iteration: number) => buildCIRetryTask({
+    originalTask: {
+      id: 'task-1', title: 'Some work', description: 'd', workspaceId: 'ws-1',
+      context: { iteration, maxIterations: 3 }, missionId: 'mis-1',
+    },
+    worker: { id: 'w-1', branch: 'feat/x', prNumber: 3206 },
+    failureContext: 'tsc failed',
+    repoFullName: 'org/repo',
+  } as Parameters<typeof buildCIRetryTask>[0])!;
+
+  for (const iteration of [0, 1, 2]) {
+    it(`attempt ${iteration + 1}: says to confirm gh pr checks is green on the PR before reporting success`, () => {
+      const d = make(iteration).description;
+      expect(d).toContain('gh pr checks 3206');
+      expect(d).toMatch(/SUCCESS/);
+      expect(d).toMatch(/still (red|failing)/i);
+    });
+  }
+
+  it('does not let a passing local check stand in for the PR\'s checks', () => {
+    expect(make(0).description).toMatch(/local run[\s\S]*is not enough/i);
+  });
+});
+
+describe('summarizePrFixAttempts', () => {
+  const row = (over: Record<string, unknown>) => ({
+    id: 'r', status: 'completed', creationSource: 'webhook', outputRequirement: null,
+    ciRetryPrNumber: 42, context: {}, createdAt: '2026-01-01T00:00:00Z', ...over,
+  });
+
+  it('reports a pending or running fix attempt as in flight', () => {
+    expect(summarizePrFixAttempts([row({ id: 'a', status: 'pending' })], 42).inFlight?.id).toBe('a');
+    expect(summarizePrFixAttempts([row({ id: 'b', status: 'in_progress', ciRetryPrNumber: null })], 42).inFlight?.id).toBe('b');
+    expect(summarizePrFixAttempts([row({ status: 'completed' }), row({ status: 'failed' })], 42).inFlight).toBeNull();
+  });
+
+  it('counts only agent-authored automatic CI retries', () => {
+    const { ciRetriesUsed } = summarizePrFixAttempts([
+      row({ id: '1' }),
+      row({ id: '2', status: 'failed' }),
+      row({ id: 'foreign', context: { foreign_head_sha: true } }),
+      row({ id: 'drift', outputRequirement: 'artifact_required' }),
+      row({ id: 'review-fix', ciRetryPrNumber: null }),
+      row({ id: 'other-pr', ciRetryPrNumber: 7 }),
+    ], 42);
+    expect(ciRetriesUsed).toBe(2);
+  });
+
+  it('a manual Fix CI click starts a fresh budget', () => {
+    const { ciRetriesUsed } = summarizePrFixAttempts([
+      row({ id: '1', createdAt: '2026-01-01T00:00:00Z' }),
+      row({ id: '2', createdAt: '2026-01-01T01:00:00Z' }),
+      row({ id: 'manual', creationSource: 'dashboard', createdAt: '2026-01-01T02:00:00Z' }),
+      row({ id: '3', createdAt: '2026-01-01T03:00:00Z' }),
+    ], 42);
+    expect(ciRetriesUsed).toBe(1);
   });
 });

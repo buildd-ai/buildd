@@ -165,7 +165,7 @@ async function resolveEffectivePolicy(
 }
 
 export async function POST(req: NextRequest) {
-  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null);
+  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
   if (!account) return bad('Invalid API key', 401);
 
   let body: Record<string, unknown>;
@@ -429,7 +429,7 @@ export async function POST(req: NextRequest) {
 // just `teamId` when given; anything outside 404s. A key, when present, is
 // authoritative and `teamId` is ignored.
 export async function GET(req: NextRequest) {
-  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null);
+  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) return bad('Invalid API key', 401);
 

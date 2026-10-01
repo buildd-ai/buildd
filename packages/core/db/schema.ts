@@ -80,6 +80,11 @@ export const teams = pgTable('teams', {
   // absent feature = the default, which follows the billing model (a team key
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
+  // The `opt_in` decision capabilities this team turned on (e.g.
+  // 'task_role_shadow'). NULL or absent = off; there is no default, so adding
+  // an opt_in capability never switches it on for anyone. See
+  // packages/core/inference-policy.ts.
+  enabledDecisionShadows: text('enabled_decision_shadows').array(),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -174,6 +179,11 @@ export const accounts = pgTable('accounts', {
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   apiKeyPrefix: text('api_key_prefix'),
+  // NULL preserves legacy levels; an empty list grants no capabilities.
+  scopes: jsonb('scopes').$type<string[]>(),
+  workspaceIds: jsonb('workspace_ids').$type<string[]>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
 
   // Authentication type
@@ -210,6 +220,12 @@ export const accounts = pgTable('accounts', {
   // the app's own provider-key limit is the hard ceiling
   // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
+
+  // A long-lived host runner key, flagged explicitly by a team owner/admin.
+  // Only such a key may use the credential lease / refresh routes or list the
+  // team's secrets (lib/credential-custody.ts); any other key gets team
+  // credentials only as handed to it at claim time.
+  hostRunner: boolean('host_runner').default(false).notNull(),
 
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
@@ -310,6 +326,11 @@ export interface WorkspaceGitConfig {
   // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
+
+  // Where the visual auditor's pages come from: 'sandbox' (absent = today's
+  // in-worker boot), 'vercel-preview', or 'auto'. Read only through
+  // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
+  visualQa?: import('../visual-qa-page-source').VisualQaConfig;
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached
@@ -427,6 +448,13 @@ export interface WorkspaceGitConfig {
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
+
+  // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
+  // docs/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
+  // paths only. `shadow` (absent = shadow): the landing decision is computed and
+  // recorded on the gate ledger beside the legacy action, which still runs.
+  // `enforce`: doors act on the landing outcome.
+  landing?: { mode?: 'off' | 'shadow' | 'enforce' };
 
   // Supersession precheck: ratio threshold for the drift-ratio detector.
   // When live GitHub PR stats are ≥ this multiple larger than recorded stats,
@@ -602,8 +630,9 @@ export interface WorkspaceWebhookConfig {
   // Absent = the legacy set, new and unblocked tasks only. Retries, approved-plan
   // children and deferred-start re-dispatches reach a webhook only when listed here;
   // otherwise they wake runners over Pusher. A listed config also has runnerPreference
-  // applied to unblocked dispatches.
-  events?: Array<'task.created' | 'task.unblocked' | 'task.retry'>;
+  // applied to unblocked dispatches. 'task.resume' (cloud runner park → answer)
+  // is only ever sent to a webhook that lists it.
+  events?: Array<'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume'>;
   // The same column also carries POST /api/webhooks/ingest's keys (webhookSecret,
   // labelFilter, ...). PATCH /api/workspaces/[id] merges onto the stored object, so
   // setting or clearing the dispatch keys above leaves those untouched.
@@ -1626,6 +1655,9 @@ export const workers = pgTable('workers', {
   // NEVER be read as "trunk" — unknown has to degrade to the existing gate,
   // because guessing wrong here silently deletes a human review gate.
   prBaseRef: text('pr_base_ref'),
+  // Whether the PR is in draft status. Kept live by GitHub webhook events.
+  // null = no PR yet or status unknown (pre-migration workers).
+  prIsDraft: boolean('pr_is_draft'),
   // Supersession edge (task fcaf83d5): this worker's PR closed without merging,
   // but its diff landed anyway under a DIFFERENT, merged PR — e.g. a mission
   // integration branch got deleted out from under an open PR (#2355) and the
@@ -1686,6 +1718,13 @@ export const workers = pgTable('workers', {
   // copy and then the queued copy, duplicating the message. Drop this column once
   // no pre-ack runner can check in.
   supportsInstructionAck: boolean('supports_instruction_ack').default(false).notNull(),
+  // Cloud runner (docs/design/cloudflare-sandbox-runner.md, Phase 2 "Resumable
+  // runs"): set when a --once runner parked this worker — uploaded its branch,
+  // uncommitted work and transcript, then let its container go — and cleared
+  // by POST /api/workers/[id]/reattach or on expiry. While it is in the future
+  // the worker counts as holding its transcript (answer-resume.ts G2) and is
+  // exempt from the offline-runner sweep. NULL for every other runner.
+  parkedUntil: timestamp('parked_until', { withTimezone: true }),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   // What the agent actually sent on a completion the outputRequirement gate
@@ -2751,7 +2790,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'evidence_storage_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -4463,7 +4502,7 @@ export const gateEvents = pgTable('gate_events', {
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
-  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded'>(),
+  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded' | 'accepted'>(),
   // normalizeErrorSignature() of the caller-facing message — the SAME
   // normalizer get_failure_analytics clusters worker errors with, so a family
   // whose message embeds a branch name or an id collapses to one row here too.

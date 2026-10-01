@@ -262,10 +262,10 @@ export default async function MissionsPage({
           {maxSeats > 0 && (
             <span
               data-testid="missions-slots"
-              className="flex min-h-9 items-center gap-2 border border-border-default px-2.5 font-mono text-[12px] text-text-secondary"
+              className="flex min-h-9 shrink-0 items-center gap-2 whitespace-nowrap border border-border-default px-2.5 font-mono text-[12px] text-text-secondary"
               title={`${activeSeats} of ${maxSeats} concurrent worker slots in use`}
             >
-              <SlotMeter live={activeSeats} max={maxSeats} />
+              <SlotMeter live={activeSeats} max={maxSeats} maxSquares={8} />
               {activeSeats}/{maxSeats} slots
             </span>
           )}

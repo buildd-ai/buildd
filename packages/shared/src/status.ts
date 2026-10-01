@@ -33,11 +33,17 @@ export const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'] as co
 export type TerminalTaskStatus = (typeof TERMINAL_TASK_STATUSES)[number];
 
 /**
+ * Task statuses where no agent has started running the task yet: queued or
+ * dispatched but not in progress. Safe to re-dispatch.
+ */
+export const UNCLAIMED_TASK_STATUSES = ['pending', 'assigned'] as const;
+
+/**
  * Task statuses a task may be deleted from (DELETE /api/tasks/[id] without
  * `force`, and the dashboard's delete button). Everything except one an agent
  * is actively running.
  */
-export const DELETABLE_TASK_STATUSES = ['pending', 'assigned', ...TERMINAL_TASK_STATUSES] as const;
+export const DELETABLE_TASK_STATUSES = [...UNCLAIMED_TASK_STATUSES, ...TERMINAL_TASK_STATUSES] as const;
 
 // ─── Workers ──────────────────────────────────────────────────────────────────
 
@@ -58,6 +64,14 @@ export type WorkerStatusValue = (typeof WORKER_STATUSES)[number];
  */
 export const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'] as const;
 export type LiveWorkerStatus = (typeof LIVE_WORKER_STATUSES)[number];
+
+/**
+ * Live statuses a cloud --once runner may park a worker in (docs/design/
+ * cloudflare-sandbox-runner.md, Phase 2): a question (`waiting_input`), or a
+ * run the agent parked after its own restart (`running`). The park and
+ * re-attach routes both scope their UPDATE to these.
+ */
+export const PARKABLE_WORKER_STATUSES = ['waiting_input', 'running'] as const satisfies readonly LiveWorkerStatus[];
 
 /**
  * Worker statuses from which no further live update is legal. `superseded`

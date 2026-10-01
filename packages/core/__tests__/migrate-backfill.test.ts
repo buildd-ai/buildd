@@ -325,6 +325,8 @@ describe('assertion coverage over the real migration corpus', () => {
     // never ran, so it stays unverifiable: a backfill refuses it loudly.
     // 10: *_chat_directives_per_user_cap is a function + trigger (the standing
     // rule cap under concurrent saves). DbShape has no triggers or functions.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(10);
+    // 11: *_backfill_host_runner is a pure data fix (UPDATE accounts); its
+    // column comes from the generated migration before it.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(11);
   });
 });

@@ -62,6 +62,8 @@ const {
   INFERENCE_KEY_PURPOSE,
 } = await import('../inference-client');
 
+const { createPublicGatewayFetcher } = await import('../net/fetch-public-gateway');
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}) {
@@ -330,6 +332,7 @@ describe('inferenceCall — provider routing', () => {
 // ── LiteLLM gateway fallback ──────────────────────────────────────────────────
 
 describe('inferenceCall through the team LiteLLM gateway', () => {
+  const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
   const gatewayRow = () => secretRow({
     id: 's-gw', label: 'litellm',
     encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://litellm.example.test/v1' })}`,
@@ -341,8 +344,9 @@ describe('inferenceCall through the team LiteLLM gateway', () => {
   it('serves the tier model as provider/model when the provider has no key', async () => {
     secretRows = [gatewayRow()];
     const calls: Array<{ url: string; init: any }> = [];
-    const fetcher = mock((url: string, init: any) => { calls.push({ url, init }); return Promise.resolve(chatReply('{"verdicts":[]}')); }) as any;
-    const res = await inferenceCall(baseParams({ fetcher }));
+    const fetcherMock = mock((url: string, init: any) => { calls.push({ url, init }); return Promise.resolve(chatReply('{"verdicts":[]}')); }) as any;
+    const gatewayFetcher = createPublicGatewayFetcher({ lookup: publicLookup as any, fetcher: fetcherMock });
+    const res = await inferenceCall(baseParams({ gatewayFetcher }));
     expect(res.ok).toBe(true);
     expect(calls[0].url).toBe('https://litellm.example.test/v1/chat/completions');
     expect(calls[0].init.headers.authorization).toBe('Bearer sk-lite');
@@ -361,11 +365,37 @@ describe('inferenceCall through the team LiteLLM gateway', () => {
   it('serves an OpenAI tier only through the gateway', async () => {
     tierEntry = { provider: 'openai', model: 'gpt-5.6-terra', source: 'team' };
     secretRows = [gatewayRow()];
-    const fetcher = mock(() => Promise.resolve(chatReply('{"verdicts":[]}'))) as any;
-    expect((await inferenceCall(baseParams({ fetcher }))).ok).toBe(true);
+    const fetcherMock = mock(() => Promise.resolve(chatReply('{"verdicts":[]}'))) as any;
+    const gatewayFetcher = createPublicGatewayFetcher({ lookup: publicLookup as any, fetcher: fetcherMock });
+    expect((await inferenceCall(baseParams({ gatewayFetcher }))).ok).toBe(true);
     secretRows = [];
-    const res = await inferenceCall(baseParams({ fetcher }));
+    const res = await inferenceCall(baseParams({ fetcher: fetcherMock }));
     expect(!res.ok && res.error).toEqual({ kind: 'unsupported_provider', provider: 'openai' });
+  });
+
+  it('refuses to call a gateway that resolves to a private address', async () => {
+    secretRows = [{
+      ...gatewayRow(),
+      encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://private.example.test/v1' })}`,
+    }];
+    // Even though the hostname looks valid at save time, if it resolves to a private
+    // address at call time (e.g. due to DNS hijacking), the call is refused.
+    const privateAddrLookup = async () => [{ address: '192.168.1.1', family: 4 }];
+    const gatewayFetcher = createPublicGatewayFetcher({ lookup: privateAddrLookup as any });
+    const res = await inferenceCall(baseParams({ gatewayFetcher }));
+    expect(!res.ok && res.error).toEqual({ kind: 'transport', message: expect.stringContaining('not a public address') });
+  });
+
+  it('refuses a redirect response from the gateway', async () => {
+    secretRows = [gatewayRow()];
+    const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
+    const fetcher = mock(async (_url: string, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual');
+      return new Response(null, { status: 302, headers: { location: 'https://evil.example.com/' } });
+    }) as any;
+    const gatewayFetcher = createPublicGatewayFetcher({ lookup: publicLookup as any, fetcher });
+    const res = await inferenceCall(baseParams({ gatewayFetcher }));
+    expect(!res.ok && res.error).toEqual({ kind: 'transport', message: expect.stringContaining('redirect') });
   });
 });
 

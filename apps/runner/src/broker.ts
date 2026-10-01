@@ -16,6 +16,7 @@
 import { hostname } from 'os';
 import { existsSync, unlinkSync, writeFileSync } from 'fs';
 import { runnerRefreshCredential } from './credential-refresh';
+import { hostRunnerRefusalHint } from './host-runner-refusal';
 
 const HEARTBEAT_INTERVAL_MS = 60 * 1_000;      // 60 s — well inside the 5-min lease TTL
 const REFRESH_CHECK_INTERVAL_MS = 2 * 60 * 1_000; // 2 min
@@ -252,7 +253,7 @@ class CredentialBroker {
       if (!res.ok) {
         const hint = res.status === 401
           ? ' — control-plane rejected the runner API key (check config.json apiKey)'
-          : '';
+          : await hostRunnerRefusalHint(res, this.baseUrl);
         console.warn(`[broker] acquire failed for ${secretId}: HTTP ${res.status}${hint}`);
         return;
       }
@@ -286,7 +287,7 @@ class CredentialBroker {
         body: JSON.stringify({ secretId, purpose, action: 'bootstrap', runnerId: this.runnerId }),
       });
       if (!res.ok) {
-        console.warn(`[broker] bootstrap failed for ${secretId}: HTTP ${res.status}`);
+        console.warn(`[broker] bootstrap failed for ${secretId}: HTTP ${res.status}${await hostRunnerRefusalHint(res, this.baseUrl)}`);
         return;
       }
       const data = await res.json() as {
@@ -320,7 +321,7 @@ class CredentialBroker {
           console.warn(`[broker] lease stolen for ${secretId} — removing from managed set`);
           this.managed.delete(secretId);
         } else if (!res.ok) {
-          console.warn(`[broker] heartbeat failed for ${secretId}: HTTP ${res.status}`);
+          console.warn(`[broker] heartbeat failed for ${secretId}: HTTP ${res.status}${await hostRunnerRefusalHint(res, this.baseUrl)}`);
         }
       } catch (err) {
         console.warn(`[broker] network error heartbeating ${secretId}:`, err instanceof Error ? err.message : String(err));

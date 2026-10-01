@@ -39,6 +39,22 @@ mock.module('@/lib/spec-recheck', () => ({
   }),
 }));
 
+const LANDING_ZERO = {
+  source: 'floor', enumerated: 0, processed: 0, merged: 0, updatingBranch: 0, waitingCi: 0,
+  needsFix: 0, needsHuman: 0, skipped: {}, headMoved: 0, errors: 0, deferred: 0, truncated: false,
+};
+const mockLandingSweep = mock((_opts: { source: string }) => Promise.resolve<any>(LANDING_ZERO));
+mock.module('@/lib/pr-landing-sweep-deps', () => ({ sweepLandingPrs: mockLandingSweep }));
+
+let dueCount: number | null = 0;
+mock.module('@/lib/redis', () => ({
+  countDue: async () => dueCount,
+  reseedDue: async () => {},
+  markDue: async () => {},
+  clearDue: async () => {},
+  listDue: async () => [],
+}));
+
 // This file used to import the real db. withCronRun's run-history insert was
 // then unmocked, so every run with a live DATABASE_URL loaded (a checkout's
 // apps/web/.env.local) wrote this file's fake "DB unavailable" / "GitHub
@@ -75,6 +91,9 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockDeferredDispatch.mockResolvedValue({ dispatched: 0, failed: 0 });
     mockReconcile.mockResolvedValue(ZERO);
     mockDeadZone.mockResolvedValue({ total: 0, sparked: 0, exhausted: 0, skipped: 0 });
+    mockLandingSweep.mockReset();
+    mockLandingSweep.mockResolvedValue(LANDING_ZERO);
+    dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
   });
 
@@ -268,5 +287,88 @@ describe('GET /api/cron/pr-reconcile', () => {
     const body = await res.json();
     expect(body.reconcile.stamped).toBe(2);
     expect(body.deferredDispatch.error).toContain('dispatch query failed');
+  });
+
+  // ── Landing backstop ───────────────────────────────────────────────────────
+  //
+  // Two ticks drive one function. The hourly pass is the FLOOR (enumerates from
+  // Postgres, re-seeds the queue); `scope=landing&gate=due` is the fast tick that
+  // costs only Redis reads when nothing is due.
+
+  describe('landing backstop', () => {
+    const GATED = '?scope=landing&gate=due';
+
+    it('a gated tick with nothing due returns before any sweep or query', async () => {
+      dueCount = 0;
+      const res = await GET(makeRequest('test-secret', GATED));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, scope: 'landing', gated: true, reason: 'nothing_due' });
+      expect(mockLandingSweep).not.toHaveBeenCalled();
+      expect(mockReconcile).not.toHaveBeenCalled();
+      expect(dbTouches).toEqual([]);
+    });
+
+    it('a gated tick with work due runs only the landing sweep, from the due queue', async () => {
+      dueCount = 2;
+      mockLandingSweep.mockResolvedValue({ ...LANDING_ZERO, source: 'due', processed: 2, merged: 1 });
+      const res = await GET(makeRequest('test-secret', GATED));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.scope).toBe('landing');
+      expect(body.landing.merged).toBe(1);
+      expect(mockLandingSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'due' }]);
+      expect(mockReconcile).not.toHaveBeenCalled();
+      expect(mockDeadZone).not.toHaveBeenCalled();
+      expect(mockMissionPrSweep).not.toHaveBeenCalled();
+      expect(mockDeferredDispatch).not.toHaveBeenCalled();
+    });
+
+    it('fails open when Redis cannot answer: enumerates from Postgres instead of the unreadable queue', async () => {
+      dueCount = null;
+      await GET(makeRequest('test-secret', GATED));
+      expect(mockLandingSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'floor' }]);
+    });
+
+    it('scope=landing without the gate is its own floor tick', async () => {
+      await GET(makeRequest('test-secret', '?scope=landing'));
+      expect(mockLandingSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'floor' }]);
+      expect(mockReconcile).not.toHaveBeenCalled();
+    });
+
+    it('a landing-scope sweep that throws is a failed run, not a silent skip', async () => {
+      dueCount = 1;
+      mockLandingSweep.mockRejectedValue(new Error('landing blew up'));
+      const res = await GET(makeRequest('test-secret', GATED));
+      expect(res.status).toBe(500);
+      expect((await res.json()).error).toContain('landing blew up');
+    });
+
+    it('the hourly merge-state pass runs the floor sweep and reports it', async () => {
+      mockLandingSweep.mockResolvedValue({ ...LANDING_ZERO, processed: 3, merged: 1, errors: 1 });
+      const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+      expect(res.status).toBe(200);
+      expect(mockLandingSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'floor' }]);
+      expect((await res.json()).landing).toMatchObject({ merged: 1, errors: 1 });
+    });
+
+    it('the full pass runs the floor sweep too', async () => {
+      await GET(makeRequest('test-secret'));
+      expect(mockLandingSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'floor' }]);
+    });
+
+    it('a landing sweep failure does not discard merge-state healing', async () => {
+      mockReconcile.mockResolvedValue({ total: 4, stamped: 2, closed: 0, skipped: 2, errors: 0 });
+      mockLandingSweep.mockRejectedValue(new Error('landing query failed'));
+      const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.reconcile.stamped).toBe(2);
+      expect(body.landing.error).toContain('landing query failed');
+    });
+
+    it('still requires the cron secret on the gated scope', async () => {
+      expect((await GET(makeRequest(undefined, GATED))).status).toBe(401);
+      expect(mockLandingSweep).not.toHaveBeenCalled();
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 // --- Mocks ---
@@ -105,6 +106,24 @@ describe('POST /api/tasks/bulk', () => {
     const res = await POST(req);
 
     expect(res.status).toBe(401);
+  });
+
+  for (const preset of ['ci', 'runner'] as const) {
+    it(`refuses a scoped ${preset} preset token: bulk changes need tasks:admin`, async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker', scopes: TOKEN_PRESETS[preset].scopes, workspaceIds: null });
+      const res = await POST(createMockRequest({ action: 'cancel' }, { Authorization: 'Bearer bld_test' }));
+      expect(res.status).toBe(401);
+    });
+  }
+
+  it('accepts a scoped token holding tasks:admin', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker', scopes: ['tasks:admin'], workspaceIds: null });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+    const res = await POST(createMockRequest({ action: 'cancel' }, { Authorization: 'Bearer bld_test' }));
+    expect(res.status).toBe(200);
   });
 
   it('returns 400 when action is missing', async () => {

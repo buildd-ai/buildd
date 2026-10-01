@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   // Dual auth: API key or session
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   const user = apiAccount ? null : await getCurrentUser();
 
   if (!apiAccount && !user) {
