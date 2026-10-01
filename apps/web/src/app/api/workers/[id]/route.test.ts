@@ -11158,6 +11158,80 @@ describe('PATCH /api/workers/[id]', () => {
         expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result?.errorType).toBe('infra_stalled');
       });
     });
+
+    // The CLI rejecting the id itself is a config fault, not a transient: the
+    // same runner rejects the same id on every attempt, so a requeue only
+    // burns sessions, and as a CI-fix attempt it also burned the PR's budget.
+    describe('unrecognized model id (config failure)', () => {
+      const STDERR_LINE = '[claude-code:unrecognized_model] {"model":"claude-sonnet-5-5","query_source":"sdk"}';
+
+      function setupIdRejection(context: Record<string, unknown>) {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            workerSetCalls.push(updates);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+          taskId: 'task-1', pendingInstructions: null,
+        });
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context });
+        return { taskSetCalls, workerSetCalls };
+      }
+
+      it('does not even take a mission task\'s one automatic retry', async () => {
+        const { taskSetCalls } = setupIdRejection({});
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: 'mission-1', outputRequirement: 'none', context: {} });
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: STDERR_LINE },
+        }), { params: mockParams });
+
+        expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+        const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+        expect(failing?.context?.retryCount).toBeUndefined();
+        expect(failing?.context?.modelRejection?.model).toBe('claude-sonnet-5-5');
+      });
+
+      for (const [label, body] of [
+        ['from the error text', { status: 'failed', error: STDERR_LINE }],
+        ['from the runner flag when the error is only the process exit', {
+          status: 'failed', error: 'Claude Code process exited with code 1', unrecognizedModel: true, rejectedModel: 'claude-sonnet-5-5',
+        }],
+      ] as const) {
+        it(`fails the task once, uncharged, naming the id (${label})`, async () => {
+          const { taskSetCalls, workerSetCalls } = setupIdRejection({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          expect(workerSetCalls.find((u: any) => u.exitCause)?.exitCause).toBe('infra_failure');
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+          expect(failing).toBeDefined();
+          expect(failing.result.errorType).toBe('unrecognized_model');
+          expect(failing.result.rejectedModel).toBe('claude-sonnet-5-5');
+          expect(failing.result.error).toContain('claude-sonnet-5-5');
+          expect(failing.context.modelRejection.model).toBe('claude-sonnet-5-5');
+          expect(failing.context.retryCount).toBeUndefined();
+          expect(failing.context.infraRetryCount).toBeUndefined();
+        });
+      }
+    });
   });
 
   // ── Visual auditor: an audit that errors must hold its mission ──────────────
