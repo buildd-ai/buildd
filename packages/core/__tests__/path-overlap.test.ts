@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   pathsOverlap,
   findBlockingPr,
+  findStackedPrs,
   isAdvisoryManifest,
   declaresNoScope,
   hasConcretePathManifest,
@@ -144,6 +145,37 @@ describe('intersectPaths', () => {
 
   it('deduplicates repeated entries on the left', () => {
     expect(intersectPaths(['a/b.ts', 'a/b.ts'], ['a/b.ts'])).toEqual(['a/b.ts']);
+  });
+});
+
+describe('findStackedPrs', () => {
+  const c = { prNumber: 3293, branch: 'step-c', prBaseRef: 'mission/x' };
+  const d = { prNumber: 3295, branch: 'step-d', prBaseRef: 'step-c' };
+  const e = { prNumber: 3296, branch: 'step-e', prBaseRef: 'step-d' };
+  const sibling = { prNumber: 3297, branch: 'sibling', prBaseRef: 'mission/x' };
+
+  it('returns PRs based directly on an own branch', () => {
+    expect([...findStackedPrs(['step-c'], [c, d, sibling])]).toEqual([d]);
+  });
+
+  it('follows the stack transitively regardless of list order', () => {
+    expect(findStackedPrs(['step-c'], [e, sibling, d, c])).toEqual(new Set([d, e]));
+  });
+
+  it('does not return the own PR, siblings on the shared base, or PRs below it', () => {
+    const stacked = findStackedPrs(['step-d'], [c, d, e, sibling]);
+    expect(stacked).toEqual(new Set([e]));
+  });
+
+  it('returns nothing without own branches or base refs', () => {
+    expect(findStackedPrs([], [c, d]).size).toBe(0);
+    expect(findStackedPrs(['step-c'], [{ prNumber: 1, branch: 'b', prBaseRef: null }]).size).toBe(0);
+  });
+
+  it('terminates on a base-ref cycle', () => {
+    const a = { branch: 'a', prBaseRef: 'b' };
+    const b = { branch: 'b', prBaseRef: 'a' };
+    expect(findStackedPrs(['a'], [a, b])).toEqual(new Set([a, b]));
   });
 });
 

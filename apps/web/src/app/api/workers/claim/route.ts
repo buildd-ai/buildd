@@ -39,7 +39,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { findBlockingPr, findStackedPrs, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -1200,6 +1200,8 @@ export async function POST(req: NextRequest) {
     pathManifest: string[] | null;
     prNumber: number | null;
     prUrl: string | null;
+    branch: string | null;
+    prBaseRef: string | null;
   }>>();
   const openPrWorkspaceIds = [...new Set(filteredTasks.map(t => t.workspaceId))];
   if (openPrWorkspaceIds.length > 0) {
@@ -1210,7 +1212,7 @@ export async function POST(req: NextRequest) {
         isNull(workers.mergedAt),
         inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
       ),
-      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, prLifecycleStatus: true, status: true, updatedAt: true },
+      columns: { workspaceId: true, taskId: true, prNumber: true, prUrl: true, branch: true, prBaseRef: true, prLifecycleStatus: true, status: true, updatedAt: true },
     });
     // Exclude closed/abandoned PRs — a closed PR should not block sibling tasks
     // from claiming (it was abandoned, not merged; treating it as open would
@@ -1233,7 +1235,7 @@ export async function POST(req: NextRequest) {
 
       for (const w of activeOpenPrWorkers) {
         const manifest = w.taskId ? (prTaskManifestMap.get(w.taskId) ?? null) : null;
-        const entry = { taskId: w.taskId, pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl };
+        const entry = { taskId: w.taskId, pathManifest: manifest, prNumber: w.prNumber, prUrl: w.prUrl, branch: w.branch ?? null, prBaseRef: w.prBaseRef ?? null };
         const list = openPrTasksByWorkspace.get(w.workspaceId) ?? [];
         list.push(entry);
         openPrTasksByWorkspace.set(w.workspaceId, list);
@@ -1434,6 +1436,11 @@ export async function POST(req: NextRequest) {
     // claimability is safe even off a title-derived anchor, since (unlike the
     // liveness gate) getting it wrong here never makes a task mortal — worst
     // case it still blocks on any *other* overlapping PR below.
+    //
+    // Each of those exemptions also covers PRs stacked on the exempt PR (base
+    // ref = its branch, transitively). In a stacked mission chain Step D is
+    // based on Step C's branch, so D's diff carries all of C's files; a review
+    // fix for C deferred behind D on every round, overlapping only C's own work.
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
@@ -1443,10 +1450,13 @@ export async function POST(req: NextRequest) {
       const ownSubjectPrNumber = (task as any).subjectKind === 'pull_request'
         ? ((task as any).subjectPrNumber as number | null | undefined)
         : null;
-      const filterOpenPrTasks = openPrTasks.filter(pr =>
-        pr.taskId !== task.id
-        && (!ownRetryPrNumber || pr.prNumber !== ownRetryPrNumber)
-        && (!ownSubjectPrNumber || pr.prNumber !== ownSubjectPrNumber));
+      const isOwnPr = (pr: typeof openPrTasks[number]) =>
+        pr.taskId === task.id
+        || (!!ownRetryPrNumber && pr.prNumber === ownRetryPrNumber)
+        || (!!ownSubjectPrNumber && pr.prNumber === ownSubjectPrNumber);
+      const ownPrs = openPrTasks.filter(isOwnPr);
+      const stackedOnOwn = findStackedPrs(ownPrs.map(pr => pr.branch).filter((b): b is string => !!b), openPrTasks);
+      const filterOpenPrTasks = openPrTasks.filter(pr => !isOwnPr(pr) && !stackedOnOwn.has(pr));
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
