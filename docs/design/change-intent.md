@@ -158,6 +158,29 @@ without both, no merge door reads anything new.
   bounded TTL and reconciled against GitHub before reuse.
 - Closing a PR (webhook or the reconcile sweep, which also catches a lost close
   event) closes its intents and re-drives the next waiting PR. No session waits.
+- Retargeting a PR (the `pull_request` `edited` webhook carrying
+  `changes.base`, including GitHub's own retarget to trunk when a mission
+  branch is deleted) moves that PR's open intents to the new `base_ref`. The
+  row update runs in every mode: it only keeps a recorded fact true and costs
+  one indexed write on a rare event. Under `enforce` it also re-drives the
+  head of the old lane (the PR left it) and of the new lane (the PR may now
+  head it). Without this, other PRs on the new base did not see the
+  retargeted PR until its own guard ran. Reservations always used the live
+  base, so two PRs could still never merge at the same moment, but they could
+  land in the wrong order.
+- **Known gap: intents are not scoped by repository.** `change_intents` has
+  no repo column, so in a workspace backed by more than one repository, PRs
+  in different repos that share a serialized surface label are treated as
+  contenders against each other. Two different repos can also have PRs with
+  the same number, and those rows look like one PR. Reservations
+  (`surface_reservations`) do include the repo, so this can over-serialize
+  across repos (a PR waits on another repo's PR) but cannot make two merges
+  run in the same lane at once. The fix is a `repo_full_name` column on
+  `change_intents` that the create_pr / guard writers fill and every intent
+  predicate filters on. That needs a migration, so it is left for its own
+  change. Deriving the repo from the PR URL does not work for intent rows:
+  they carry no URL, and a row whose task is gone (`task_id` set null) has
+  nothing to join through.
 - Warnings stay `change_intent` / `warned` (`detail.advisory`); ordering waits
   are the separate `surface_ordering` gate. The migration-slot reservation and
   collision checks (§5, the merge-time migration inspector) remain as backstops.

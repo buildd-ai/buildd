@@ -20,6 +20,7 @@ import {
   guardSurfaceOrdering,
   acquireMergeSlot,
   settleSurfaceIntentsOnClose,
+  retargetSurfaceIntents,
   openIntentsOnSurfacesWhere,
   ownOpenIntentsWhere,
   reservationTakeoverWhere,
@@ -692,6 +693,111 @@ describe('settleSurfaceIntentsOnClose', () => {
       loadGitConfig: async () => CONFIG,
       redrive: async () => { throw new Error('boom'); },
     });
+  });
+});
+
+describe('retargetSurfaceIntents (a PR whose base moved after its intents were recorded)', () => {
+  function retargetHarness(over: Record<string, unknown> = {}, initial: IntentRow[] = []) {
+    let rows = initial;
+    const woke: number[] = [];
+    const moved: Array<{ ws: string; prNumber: number; toBase: string }> = [];
+    const deps = {
+      retargetOwnIntents: async (ws: string, prNumber: number, toBase: string) => {
+        moved.push({ ws, prNumber, toBase });
+        const own = rows.filter((r) => r.prNumber === prNumber);
+        rows = rows.map((r) => (r.prNumber === prNumber ? { ...r, baseRef: toBase } : r));
+        return [...new Set(own.map((r) => r.surface))];
+      },
+      loadOpenIntents: async () => rows,
+      loadGitConfig: async () => CONFIG,
+      redrive: async (_ws: string, n: number) => { woke.push(n); },
+      ...over,
+    };
+    return { deps, woke, moved, rows: () => rows };
+  }
+
+  it('moves the PR\'s open intents to its new base, so a trunk PR now sees it as a blocker', async () => {
+    // Mission branch deleted on merge; GitHub retargets task PR #51 to trunk.
+    const h = retargetHarness({}, [on(MISSION_BRANCH, 51, MIGRATIONS, 1), on(TRUNK, 12, MIGRATIONS, 3)]);
+    // Before: trunk PR #12 is first in its lane; #51's stale base hides it.
+    expect(evaluateSurfaceOrder(12, h.rows(), { baseRef: TRUNK }).blockers).toEqual([]);
+    await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: MISSION_BRANCH, toBase: TRUNK }, h.deps);
+    expect(h.moved).toEqual([{ ws: 'ws-1', prNumber: 51, toBase: TRUNK }]);
+    expect(evaluateSurfaceOrder(12, h.rows(), { baseRef: TRUNK }).blockers.map((b) => b.prNumber)).toEqual([51]);
+  });
+
+  it('wakes the head of both the old and the new lane', async () => {
+    const h = retargetHarness({}, [
+      on(MISSION_BRANCH, 50, MIGRATIONS, 0),
+      on(MISSION_BRANCH, 51, MIGRATIONS, 1),
+      on(MISSION_BRANCH, 52, MIGRATIONS, 2),
+      on(TRUNK, 12, MIGRATIONS, 3),
+    ]);
+    // #50 leaves the mission lane for trunk: #51 now heads the mission lane, #50 heads trunk.
+    const { woke } = await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 50, fromBase: MISSION_BRANCH, toBase: TRUNK }, h.deps);
+    expect(woke.sort((a, b) => a - b)).toEqual([50, 51]);
+  });
+
+  it('records the new base even with ordering off, but wakes nobody', async () => {
+    const h = retargetHarness({ loadGitConfig: async () => ({}) as WorkspaceGitConfig }, [on(MISSION_BRANCH, 51, MIGRATIONS, 1), on(TRUNK, 12, MIGRATIONS, 3)]);
+    const { woke } = await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: MISSION_BRANCH, toBase: TRUNK }, h.deps);
+    expect(h.moved).toHaveLength(1);
+    expect(woke).toEqual([]);
+    expect(h.woke).toEqual([]);
+  });
+
+  it('only wakes on serialized surfaces the PR holds', async () => {
+    const h = retargetHarness({}, [on(MISSION_BRANCH, 51, 'docs', 1), on(TRUNK, 12, 'docs', 3)]);
+    const { woke } = await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: MISSION_BRANCH, toBase: TRUNK }, h.deps);
+    expect(h.moved).toHaveLength(1);
+    expect(woke).toEqual([]);
+  });
+
+  it('is a no-op when the base did not actually change', async () => {
+    const h = retargetHarness({}, [on(TRUNK, 51, MIGRATIONS, 1)]);
+    const { woke } = await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: TRUNK, toBase: TRUNK }, h.deps);
+    expect(h.moved).toEqual([]);
+    expect(woke).toEqual([]);
+  });
+
+  it('a PR with no open intents wakes nobody', async () => {
+    const h = retargetHarness({}, [on(TRUNK, 12, MIGRATIONS, 3)]);
+    const { woke } = await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: MISSION_BRANCH, toBase: TRUNK }, h.deps);
+    expect(h.moved).toHaveLength(1);
+    expect(woke).toEqual([]);
+  });
+
+  it('never throws: a failed update or wake is logged', async () => {
+    await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: MISSION_BRANCH, toBase: TRUNK }, {
+      retargetOwnIntents: async () => { throw new Error('db down'); },
+    });
+    const h = retargetHarness({ redrive: async () => { throw new Error('boom'); } }, [on(MISSION_BRANCH, 51, MIGRATIONS, 1)]);
+    const { woke } = await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: MISSION_BRANCH, toBase: TRUNK }, h.deps);
+    expect(woke).toEqual([]);
+  });
+
+  it('the default update writes only this PR\'s open intents in this workspace', async () => {
+    const { db } = await import('@buildd/core/db');
+    const captured: { set?: unknown; where?: unknown } = {};
+    (db as unknown as Record<string, unknown>).update = () => ({
+      set: (v: unknown) => {
+        captured.set = v;
+        return { where: (w: unknown) => { captured.where = w; return { returning: async () => [{ surface: MIGRATIONS }] }; } };
+      },
+    });
+    try {
+      await retargetSurfaceIntents({ workspaceId: 'ws-1', prNumber: 51, fromBase: MISSION_BRANCH, toBase: TRUNK }, {
+        loadOpenIntents: async () => [],
+        loadGitConfig: async () => CONFIG,
+        redrive: async () => {},
+      });
+    } finally {
+      delete (db as unknown as Record<string, unknown>).update;
+    }
+    expect(captured.set).toEqual({ baseRef: TRUNK });
+    const q = render(captured.where as Parameters<PgDialect['sqlToQuery']>[0]);
+    expect(q.sql).toBe('("change_intents"."workspace_id" = $1 and "change_intents"."pr_number" = $2 and "change_intents"."closed_at" is null)');
+    expect(q.params).toEqual(['ws-1', 51]);
   });
 });
 

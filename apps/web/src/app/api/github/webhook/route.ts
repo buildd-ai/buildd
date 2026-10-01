@@ -743,6 +743,9 @@ async function handlePullRequestEvent(event: {
       // cannot return 400 at anyone, so the enforcement form of "refused" here
       // is putting the base back. Reporting is what is left when it cannot.
       const retargetMissionId: string | null = retargetCandidate?.task?.missionId ?? null;
+      // Where the PR's base ends up after this event — the observed ref, or the
+      // integration branch when the guard below puts it back.
+      let settledBaseRef = observedBaseRef;
       if (rebased.length > 0 && retargetMissionId && retargetCandidate?.task && !isMissionPrTask(retargetCandidate.task) && !pr.merged) {
         const task = retargetCandidate.task;
         const mission = await db.query.missions.findFirst({
@@ -770,6 +773,7 @@ async function handlePullRequestEvent(event: {
                 },
               );
               restored = true;
+              settledBaseRef = integrationBase;
               await db
                 .update(workers)
                 .set({ prBaseRef: integrationBase, updatedAt: new Date() })
@@ -799,6 +803,29 @@ async function handlePullRequestEvent(event: {
             toBase: observedBaseRef,
             restored,
           });
+        }
+      }
+
+      // A retarget leaves the PR's change-intent rows naming the OLD base, so
+      // surface ordering on the new base cannot see it as a contender and the
+      // old lane keeps waiting on it. Move its open intents to where the PR now
+      // lands and re-wake the head of both lanes (the wake only under ordering
+      // `enforce`; the row update is cheap and always true). Workspace comes from
+      // the repo-scoped worker that owns this PR. Never throws; network work in after().
+      const retargetFrom = event.changes?.base?.ref?.from;
+      const intentWorkspaceId = retargetCandidate?.workspaceId;
+      if (
+        action === 'edited' && typeof retargetFrom === 'string' && retargetFrom
+        && retargetFrom !== settledBaseRef && !pr.merged && intentWorkspaceId
+      ) {
+        const toBase = settledBaseRef;
+        const retargetIntents = () => import('@/lib/surface-ordering')
+          .then((m) => m.retargetSurfaceIntents({ workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase }))
+          .then(() => {}, (e) => console.error(`[webhook] surface intent retarget failed for PR #${pr.number}:`, e));
+        try {
+          after(retargetIntents);
+        } catch {
+          await retargetIntents();
         }
       }
     } catch (err) {
