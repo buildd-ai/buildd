@@ -94,10 +94,14 @@ export async function fetchRunnerFleet(workspaceId: string): Promise<RunnerFleet
 /**
  * Format runner fleet status for display in a gate refusal.
  */
-export function formatFleetStatus(fleet: RunnerFleetStatus | null): string {
+export function formatFleetStatus(fleet: RunnerFleetStatus | null, roleSlug?: string | null): string {
   if (!fleet) return '';
   if (fleet.count === 0) {
-    return 'No runners online. The task starts when a runner connects.';
+    let msg = 'No runners online. The task starts when a runner connects.';
+    if (roleSlug === 'visual-auditor') {
+      msg += ' This role requires a browser-capable runner.';
+    }
+    return msg;
   }
   let msg = `${fleet.count} runner${fleet.count !== 1 ? 's' : ''} online`;
   if (fleet.lastSeenSecs !== null) {
@@ -107,5 +111,8 @@ export function formatFleetStatus(fleet: RunnerFleetStatus | null): string {
     msg += `, last seen ${ago}`;
   }
   msg += '. If the runner is mid-task, it claims this task on its next poll.';
+  if (roleSlug === 'visual-auditor') {
+    msg += ' This role requires a browser-capable runner.';
+  }
   return msg;
 }

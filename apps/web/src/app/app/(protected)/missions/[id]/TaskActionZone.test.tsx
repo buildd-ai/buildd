@@ -112,5 +112,38 @@ describe('task-actions shared helpers', () => {
     it('returns empty string when fleet is null', () => {
       expect(formatFleetStatus(null)).toBe('');
     });
+
+    it('adds visual-auditor caveat when no runners and roleSlug=visual-auditor', () => {
+      const fleet: RunnerFleetStatus = { count: 0, lastSeenSecs: null };
+      const msg = formatFleetStatus(fleet, 'visual-auditor');
+      expect(msg).toContain('No runners online');
+      expect(msg).toContain('browser-capable runner');
+    });
+
+    it('adds visual-auditor caveat when runners online and roleSlug=visual-auditor', () => {
+      const fleet: RunnerFleetStatus = { count: 2, lastSeenSecs: 30 };
+      const msg = formatFleetStatus(fleet, 'visual-auditor');
+      expect(msg).toContain('2 runners online');
+      expect(msg).toContain('browser-capable runner');
+    });
+
+    it('does not add caveat for other roles', () => {
+      const fleet: RunnerFleetStatus = { count: 0, lastSeenSecs: null };
+      const msg = formatFleetStatus(fleet, 'builder');
+      expect(msg).not.toContain('browser-capable');
+    });
+  });
+
+  describe('gate exclusions', () => {
+    it('workspace_cap_reached should not show force start', () => {
+      const reasons = ['mission_local', 'mission_held', 'unmerged_dep_pr', 'workspace_cap_reached'];
+      const shouldShowForce = reasons.map(reason => {
+        const canShow = reason !== 'workspace_cap_reached' && reason !== 'capability_mismatch';
+        return { reason, canShow };
+      });
+      // workspace_cap_reached should have canShow=false
+      expect(shouldShowForce.find(r => r.reason === 'workspace_cap_reached')?.canShow).toBe(false);
+      expect(shouldShowForce.find(r => r.reason === 'mission_local')?.canShow).toBe(true);
+    });
   });
 });

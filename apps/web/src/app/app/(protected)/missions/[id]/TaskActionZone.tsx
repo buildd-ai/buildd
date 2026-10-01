@@ -35,6 +35,7 @@ export interface TaskActionZoneProps {
   worker: { id: string; waitingFor: { prompt: string; options?: string[] } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
+  roleSlug?: string | null;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -48,6 +49,7 @@ export default function TaskActionZone({
   lastError,
   worker,
   historyHref,
+  roleSlug,
   onChanged,
 }: TaskActionZoneProps) {
   const [acting, setActing] = useState(false);
@@ -56,14 +58,14 @@ export default function TaskActionZone({
   const [runnerFleet, setRunnerFleet] = useState<RunnerFleetStatus | null>(null);
 
   useEffect(() => {
-    if (gateRefusal?.blockClass !== 'capability') {
+    if (gateRefusal && gateRefusal.blockClass !== 'capability' && workspaceId) {
       fetchRunnerFleet(workspaceId).then(fleet => {
         setRunnerFleet(fleet);
       });
     }
   }, [gateRefusal, workspaceId]);
 
-  const runAction = useCallback(async (path: string, payload?: Record<string, unknown>) => {
+  const runAction = useCallback(async (path: string, payload?: Record<string, unknown>, options?: { capExempt?: boolean }) => {
     setActing(true);
     setActionError(null);
     setGateRefusal(null);
@@ -71,7 +73,10 @@ export default function TaskActionZone({
       const res = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload ?? {}),
+        body: JSON.stringify({
+          ...(payload ?? {}),
+          ...(options?.capExempt ? { capExempt: true } : {}),
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -184,7 +189,7 @@ export default function TaskActionZone({
       )}
 
       {/* Gate refusal with force option */}
-      {gateRefusal && gateRefusal.canForce && gateRefusal.blockClass !== 'capability' && (
+      {gateRefusal && gateRefusal.canForce && gateRefusal.blockClass !== 'capability' && gateRefusal.gateReason !== 'workspace_cap_reached' && (
         <div className="space-y-3 border border-status-warning p-4">
           <div>
             <p className="font-mono text-[12px] font-medium text-status-warning mb-1">
@@ -195,7 +200,7 @@ export default function TaskActionZone({
             </p>
             {runnerFleet && (
               <p className="font-mono text-[11px] text-text-muted mt-2 p-2 bg-surface-3 rounded border border-border-default">
-                {formatFleetStatus(runnerFleet)}
+                {formatFleetStatus(runnerFleet, roleSlug)}
               </p>
             )}
           </div>

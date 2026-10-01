@@ -302,6 +302,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         lastError={data.lastError}
         worker={w ? { id: w.id, waitingFor: w.waitingFor } : null}
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
+        roleSlug={data.roleSlug}
         onChanged={onChanged}
       />
 

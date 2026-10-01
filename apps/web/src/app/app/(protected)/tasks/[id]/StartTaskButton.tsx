@@ -7,6 +7,7 @@ import { subscribeToChannel, unsubscribeFromChannel, getSubscribedChannel, CHANN
 import Spinner from '@/components/Spinner';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
+import { fetchRunnerFleet, type RunnerFleetStatus } from '@/lib/task-actions';
 
 interface Props {
   taskId: string;
@@ -66,7 +67,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
   const [status, setStatus] = useState<StartStatus>('idle');
   const [error, setError] = useState('');
-  const [runnerFleet, setRunnerFleet] = useState<{ count: number; lastSeenSecs: number | null } | null>(null);
+  const [runnerFleet, setRunnerFleet] = useState<RunnerFleetStatus | null>(null);
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [blockingDeps, setBlockingDeps] = useState<Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>>([]);
   const [deferredStartAt, setDeferredStartAt] = useState<string | null>(null);
@@ -119,24 +120,9 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     };
   }, [releaseChannel]);
 
-  const fetchRunnerFleet = useCallback(async () => {
-    try {
-      const res = await fetch('/api/workers/active');
-      if (!res.ok) return;
-      const data = await res.json();
-      const uis: Array<{ lastUpdated: string; workspaceIds: string[] }> = data.activeLocalUis || [];
-      const relevant = uis.filter(u => u.workspaceIds?.includes(workspaceId));
-      const now = Date.now();
-      const lastSeenMs = relevant.length > 0
-        ? Math.min(...relevant.map(u => now - new Date(u.lastUpdated).getTime()))
-        : null;
-      setRunnerFleet({
-        count: relevant.length,
-        lastSeenSecs: lastSeenMs !== null ? Math.floor(lastSeenMs / 1000) : null,
-      });
-    } catch {
-      // best-effort — fleet info is non-critical
-    }
+  const fetchRunnerFleetImpl = useCallback(async () => {
+    const fleet = await fetchRunnerFleet(workspaceId);
+    setRunnerFleet(fleet);
   }, [workspaceId]);
 
   const pollTaskStatus = useCallback(async (startTime: number, targetLocalUiUrl: string) => {
@@ -148,7 +134,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       }
       // Not a failure: manualStartAt + priority boost mean the task is at the
       // front of the claim queue. Show queued state with fleet liveness.
-      fetchRunnerFleet();
+      fetchRunnerFleetImpl();
       setStatus('queued');
       return;
     }
@@ -191,7 +177,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     } catch {
       // Ignore polling errors — countdown/timeout still runs above
     }
-  }, [taskId, fetchRunnerFleet]);
+  }, [taskId, fetchRunnerFleetImpl]);
 
   const handleStart = async (forceOverride = false, capExempt = false) => {
     setLoading(true);
