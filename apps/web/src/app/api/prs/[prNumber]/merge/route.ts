@@ -16,6 +16,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { mergePullRequest, githubApi } from '@/lib/github';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -507,6 +508,34 @@ export async function POST(
         detail: { prNumber, headSha: liveHeadSha, failingChecks: failing, override },
       });
       return NextResponse.json({ error: `Merge refused: ${reason}`, ciFailing: failing }, { status: 409 });
+    }
+  }
+
+  // ── Post-refresh semantic hold (base-refresh.ts) ───────────────────────
+  // Every merge door consults it (docs/specs/base-refresh-classification.md).
+  // Under semanticRefresh `enforce`, a refresh that merged in base commits the
+  // semantic verdict never saw holds the PR until they are re-verified. With
+  // the check off it returns at once with no read, so the default path costs
+  // nothing. `override` is the review-verdict override only; a person who
+  // wants past a hold merges on GitHub or calls merge_pr with `force`.
+  // Before surface ordering, so a held PR never reserves a merge slot.
+  {
+    const hold = await checkBaseRefreshHold({
+      installationId,
+      repoFullName,
+      prNumber,
+      headSha: liveHeadSha,
+      taskId: worker.taskId ?? null,
+      workspaceId: worker.workspaceId,
+      workerId: worker.id,
+      missionId: (worker.task as { missionId?: string | null } | null)?.missionId ?? null,
+      gitConfig: workspace.gitConfig ?? null,
+    });
+    if (hold.blocks) {
+      return NextResponse.json(
+        { error: `Merge held: ${hold.reason}`, semanticHold: true, needsPerson: hold.needsPerson },
+        { status: 409 },
+      );
     }
   }
 

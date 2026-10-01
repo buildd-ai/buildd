@@ -147,6 +147,11 @@ export interface BaseRefreshState {
   pendingBaseVerify?: PendingBaseVerify | null;
   /** Identifies the refresh holding the lease, so only it releases the lease. */
   leaseId?: string | null;
+  /**
+   * Times the deferred-refresh re-drive (lib/refresh-redrive.ts) re-entered the
+   * merge door for this head. Bounded; a new head starts at zero.
+   */
+  redrives?: number;
   rev: number;
 }
 
@@ -225,6 +230,9 @@ async function writeStateToDb(taskId: string, priorRev: number, next: BaseRefres
     .returning({ id: tasks.id });
   return !!won;
 }
+
+/** The DB-bound CAS write, for the deferred-refresh re-drive (lib/refresh-redrive.ts). */
+export const writeBaseRefreshState = writeStateToDb;
 
 const DIAGNOSTIC_TITLE: Record<DiagnosticInput['kind'], (pr: number) => string> = {
   refresh_failed: (pr) => `PR #${pr} — could not refresh from base`,

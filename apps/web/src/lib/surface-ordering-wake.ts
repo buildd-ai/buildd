@@ -20,7 +20,11 @@ import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdF
 
 const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
 
-export async function redriveSurfaceWaiter(workspaceId: string, prNumber: number): Promise<string> {
+/**
+ * The open buildd worker behind a PR and where its repo lives, or why there is
+ * none. Shared with the deferred-refresh re-drive (lib/refresh-redrive.ts).
+ */
+export async function resolveOpenWorkerPr(workspaceId: string, prNumber: number) {
   const worker = await db.query.workers.findFirst({
     where: and(
       eq(workers.workspaceId, workspaceId),
@@ -31,23 +35,39 @@ export async function redriveSurfaceWaiter(workspaceId: string, prNumber: number
     orderBy: desc(workers.createdAt),
     columns: { id: true, taskId: true, prUrl: true, prBaseRef: true, workspaceId: true },
   });
-  if (!worker) return 'no_open_worker';
+  if (!worker) return { skip: 'no_open_worker' as const };
 
   const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), with: WORKSPACE_INSTALLATION_WITH });
-  if (!workspace) return 'no_workspace';
+  if (!workspace) return { skip: 'no_workspace' as const };
 
   const identity = pickWorkspaceRepoIdentity(workspace);
   const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: identity.fullName });
-  if (!repo) return 'no_repo';
+  if (!repo) return { skip: 'no_repo' as const };
   const installationId =
     (repo === identity.fullName ? identity.installationId : null)
     ?? (await installationIdForRepo(repo).catch(() => null))
     ?? identity.installationId;
-  if (!installationId) return 'no_installation';
+  if (!installationId) return { skip: 'no_installation' as const };
+  return { skip: null, worker, workspace, repo, installationId };
+}
+
+export async function redriveSurfaceWaiter(
+  workspaceId: string,
+  prNumber: number,
+  /**
+   * expectHeadSha: re-drive only this head. A different live head has events
+   * of its own, so the caller's reason to re-drive is gone (`head_moved`).
+   */
+  opts: { expectHeadSha?: string } = {},
+): Promise<string> {
+  const resolved = await resolveOpenWorkerPr(workspaceId, prNumber);
+  if (resolved.skip) return resolved.skip;
+  const { worker, workspace, repo, installationId } = resolved;
 
   const pr = await githubApi(installationId, `/repos/${repo}/pulls/${prNumber}`);
   const headSha: string | null = typeof pr?.head?.sha === 'string' ? pr.head.sha : null;
   if (!headSha || pr?.state !== 'open' || pr?.merged === true || pr?.draft === true) return 'not_open';
+  if (opts.expectHeadSha && headSha !== opts.expectHeadSha) return 'head_moved';
 
   const task = worker.taskId
     ? await db.query.tasks.findFirst({
