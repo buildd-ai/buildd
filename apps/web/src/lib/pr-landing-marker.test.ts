@@ -57,6 +57,13 @@ describe('parseLandingMarker', () => {
     expect(parseLandingMarker(ctx, 42)).toBeNull();
   });
 
+  it('carries updatedAt when stored as a string and omits it otherwise', () => {
+    const at = '2030-01-01T00:30:00.000Z';
+    expect(parseLandingMarker({ landing: { ...stored, updatedAt: at } }, 42)?.updatedAt).toBe(at);
+    expect(parseLandingMarker({ landing: stored }, 42)).not.toHaveProperty('updatedAt');
+    expect(parseLandingMarker({ landing: { ...stored, updatedAt: 5 } }, 42)).not.toHaveProperty('updatedAt');
+  });
+
   it('defaults malformed optional fields instead of throwing', () => {
     const m = parseLandingMarker({ landing: { prNumber: 42, pendingHeadSha: 'h', refreshCount: -1, baseShaAtUpdate: 5 } }, 42);
     expect(m).toMatchObject({ refreshCount: 0, baseShaAtUpdate: null, firstApprovedGreenAt: null, lastOutcome: 'updating_branch' });
@@ -87,6 +94,17 @@ describe('marker storage', () => {
     await writeLandingMarker('t1', marker, 0);
     const json = captured[0].vals.context.values.find((v: unknown) => typeof v === 'string' && v.startsWith('{'));
     expect(JSON.parse(json)).not.toHaveProperty('pagedKeys');
+  });
+
+  it('write stamps updatedAt so the sweeper can age the refresh wait', async () => {
+    const { pagedKeys: _p, ...marker } = stored;
+    updateReturns = [[{ id: 't1' }]];
+    const before = Date.now();
+    await writeLandingMarker('t1', marker, 0);
+    const json = captured[0].vals.context.values.find((v: unknown) => typeof v === 'string' && v.startsWith('{'));
+    const at = Date.parse(JSON.parse(json).updatedAt);
+    expect(at).toBeGreaterThanOrEqual(before);
+    expect(at).toBeLessThanOrEqual(Date.now());
   });
 
   it('clear issues an update', async () => {
