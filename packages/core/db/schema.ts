@@ -4546,3 +4546,103 @@ export type NewWorkerTerminalRecord = typeof workerTerminalRecords.$inferInsert;
 
 export type CronRun = typeof cronRuns.$inferSelect;
 export type NewCronRun = typeof cronRuns.$inferInsert;
+
+// ── Orchestration decision / outcome ledger ──────────────────────────────────
+//
+// docs/design/conflict-aware-orchestration.md §5–§6. One row per look by an
+// orchestration decision (creation-time scope prediction, claim-time
+// hold/start), written by packages/core/orchestration-decision.ts. Content-free:
+// ids, versions, the definition fingerprint, a candidate-set digest, opaque
+// labels (anything else is stored hashed) and numbers. The readout groups by
+// (decision_id, fingerprint, candidate_policy_version, model, experiment_arm).
+// Written best-effort after the decision; a failed insert costs a row, never
+// the caller's request. Only workspace/team are FKs that cascade: the task row
+// may be deleted while its decision history stays useful as a censored label.
+export const orchestrationDecisions = pgTable('orchestration_decisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id'),
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  // The outcome-join keys, when the decision was about a PR.
+  prNumber: integer('pr_number'),
+  headSha: text('head_sha'),
+  baseRef: text('base_ref'),
+  baseSha: text('base_sha'),
+  // The inference capability that gated spend (orchestration_manifest | orchestration_claim).
+  capability: text('capability').notNull(),
+  // defineDecision identity: namespaced id, `promptVersion|model|engine-N`, 12-hex fingerprint.
+  decisionId: text('decision_id').notNull(),
+  decisionVersion: text('decision_version').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  question: text('question').notNull(),
+  // Pick index within a repeated choice (§5a); 0 for a single question.
+  step: integer('step').notNull().default(0),
+  // The kit policy for the question at the time: shadow | gated | live, and its threshold.
+  mode: text('mode').notNull().$type<'shadow' | 'gated' | 'live'>(),
+  minConfidence: real('min_confidence'),
+  // The model that actually answered (a team may route to a non-Jev model; it never applies).
+  model: text('model'),
+  candidatePolicyVersion: text('candidate_policy_version').notNull(),
+  candidateDigest: text('candidate_digest').notNull(),
+  candidateCount: integer('candidate_count').notNull(),
+  candidateTruncated: boolean('candidate_truncated').notNull().default(false),
+  ruleVerdict: text('rule_verdict'),
+  suggested: text('suggested'),
+  confidence: real('confidence'),
+  effective: text('effective'),
+  applied: boolean('applied').notNull().default(false),
+  status: text('status').notNull().$type<'applied' | 'suggested' | 'fallback'>(),
+  // fallback: capability_disabled | missing_key | retrieval_error | no_candidates | deadline | invalid | error
+  // suggested: shadow | below_threshold | non_jev | not_in_cohort
+  reason: text('reason'),
+  errorKind: text('error_kind'),
+  latencyMs: integer('latency_ms').notNull(),
+  retrievalMs: integer('retrieval_ms'),
+  inputTokens: integer('input_tokens'),
+  outputTokens: integer('output_tokens'),
+  costUsd: real('cost_usd'),
+  // Applying-cohort assignment, recorded at draw time (never reconstructed).
+  experimentArm: text('experiment_arm').notNull().$type<'apply' | 'observe'>(),
+  propensity: real('propensity').notNull(),
+  applyingFraction: real('applying_fraction').notNull(),
+  // The kit's content-free DecisionReceipt (model, usage, latency, attempts).
+  receipt: jsonb('receipt').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceCreatedIdx: index('orchestration_decisions_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  decisionGroupIdx: index('orchestration_decisions_group_idx').on(t.decisionId, t.fingerprint, t.experimentArm),
+  taskIdx: index('orchestration_decisions_task_idx').on(t.taskId),
+}));
+
+export type OrchestrationDecision = typeof orchestrationDecisions.$inferSelect;
+export type NewOrchestrationDecision = typeof orchestrationDecisions.$inferInsert;
+
+// The final touched-file label for a decided task, one row per worker session,
+// written at terminal worker status BEFORE workers.observed_touches is cleared
+// (apps/web/src/app/api/workers/[id]/route.ts). Only for tasks that have an
+// orchestration_decisions row, so it grows with the decisions, not with every
+// worker. An empty array is a real observation (the session edited nothing);
+// a missing row is a missing label. `truncated` = the observation hit the
+// observed_touches cap and may be partial.
+export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  // The worker's terminal status: completed | failed | error.
+  workerStatus: text('worker_status').notNull(),
+  touchedPaths: jsonb('touched_paths').$type<string[]>().notNull(),
+  truncated: boolean('truncated').notNull().default(false),
+  prNumber: integer('pr_number'),
+  headSha: text('head_sha'),
+  baseRef: text('base_ref'),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskWorkerIdx: uniqueIndex('orchestration_touch_labels_task_worker_idx').on(t.taskId, t.workerId),
+  workspaceTaskIdx: index('orchestration_touch_labels_workspace_task_idx').on(t.workspaceId, t.taskId),
+}));
+
+export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
+export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;

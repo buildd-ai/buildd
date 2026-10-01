@@ -221,6 +221,9 @@ DELETE FROM notification_deliveries;
 DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
+-- Orchestration decision ledger: touch labels carry file paths.
+DELETE FROM orchestration_touch_labels;
+DELETE FROM orchestration_decisions;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,
