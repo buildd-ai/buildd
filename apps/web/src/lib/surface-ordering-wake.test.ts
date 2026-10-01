@@ -126,4 +126,10 @@ describe('redriveSurfaceWaiter', () => {
       gitConfig: workspace.gitConfig,
     });
   });
+
+  it('with expectHeadSha, a moved head is not re-driven', async () => {
+    expect(await redriveSurfaceWaiter('ws-1', 12, { expectHeadSha: 'older-head' })).toBe('head_moved');
+    expect(mockTryAutoMerge).not.toHaveBeenCalled();
+    expect(await redriveSurfaceWaiter('ws-1', 12, { expectHeadSha: 'head-12' })).toBe('merged');
+  });
 });
