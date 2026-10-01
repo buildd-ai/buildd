@@ -2,7 +2,7 @@
 title: BYO Evidence Storage
 status: draft
 owner: max
-last_verified: 2026-09-30
+last_verified: 2026-10-01
 summary: Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 domain: knowledge
 surfaces: [apps/runner/src/session-diagnostics.ts, apps/web/src/app/api/workers/[id]/session-upload-url/route.ts, apps/web/src/lib/storage-keys.ts, apps/web/src/lib/chat/registry.ts]
@@ -129,6 +129,15 @@ backend raises a health alert.
 Surfaces: Settings → Storage (admin), MCP `manage_evidence_backends` (admin
 token), and chat read-only status.
 
+**Access to the list.** A workspace-scoped backend names a bucket and endpoint
+(never credentials), so it is shown only to a caller who can reach that
+workspace: a session viewer must be a member of the workspace's team, an API
+account must be open-mode and on the same team or explicitly linked to the
+workspace (`verifyAccountWorkspaceAccess`; restricted mode means linked accounts
+only). Team-default rows are visible to every team member. The same check gates
+`GET`, `PATCH`, `DELETE` and `verify` on a single row, which answer 404 for an
+unreachable workspace-scoped backend rather than confirming it exists.
+
 ## What gets written
 
 | kind | writer | trigger | notes |
@@ -170,7 +179,9 @@ for indexing at upload stays skipped after it is settled.
   (`apps/runner/src/evidence-writer.ts`): `BUILDD_API_KEY`, `worker.mcpSecrets`,
   `worker.roleEnvSecrets`, and the agent-backend credentials the claim delivers
   (`serverApiKey`, `serverOauthToken`, `claudeAccessToken`, `codexCredential`
-  tokens). It does exact-value matching (including JSON-escaped forms) plus the
+  tokens), plus the team agent model endpoint's `authToken`
+  (`worker.modelEndpoint.authToken`, labelled `modelEndpointAuthToken`; the
+  rest of `modelEndpoint` is not secret). It does exact-value matching (including JSON-escaped forms) plus the
   generic credential patterns on free text. Evidence uses the same instance.
   `evidence-writer.test.ts` parses the claim payload type and fails when a field
   is not classified in `CLAIM_FIELD_SECRET_CLASSIFICATION`, or when a field
@@ -281,18 +292,35 @@ never raw URLs.
      id travels as a query parameter and the route, not the guard, checks it
      against `:id`. A route with a `:evidenceId` path segment would fail
      `routeReachProblems`.
-- `get_task`, `get_pr` and `explain` include the object list (kind, bytes,
-  first key lines) inline.
+- `get_task`, `get_pr` and `explain` include the task's object list inline
+  (id, kind, bytes, upload state; newest first, capped at 20, covering the task
+  and its root task's runs). The list is best-effort: a lookup failure returns
+  an empty list rather than failing the read (invariant 5). **Pointers only:**
+  the objects' key lines are not repeated here because the compact error
+  evidence already carries them (`result.evidence`, printed by `get_task`), and
+  reading bucket bodies for a list view would put a network round trip on every
+  task read. The text is fetched with `read_evidence`.
 - The task page gets an **Evidence** tab: object list, tail viewer with grep,
   and a short-lived presigned GET for download (UI only, never chat).
 
 ## Failure behaviour
 
-- Bucket unreachable or upload fails: the task continues, `upload_state = failed`,
-  the compact PG record is still written, one retry is queued, health shows the
-  backend `failing`.
-- Byte cap hit: the writer keeps head and tail, drops the middle, and marks the
-  manifest `complete = false`.
+- Bucket unreachable or upload fails: the task continues and the compact PG
+  record is still written. The runner writer retries **once, in process**, after
+  a short delay (reusing the signed URL when it got one); a second failure ends
+  the object `failed` and is not retried further. This is a retry inside the
+  writer, not a queued job. A single failed upload does not mark the backend
+  `failing`; that status comes from verification (the save-time and daily probe)
+  and raises the health alert.
+- Byte cap hit: the writer keeps head and tail (about a quarter head, the rest
+  tail, cut on line boundaries), drops the middle, and inserts a marker line
+  stating how many bytes were omitted. If the gzipped body is still over the cap
+  (incompressible output) it shrinks the kept text and re-gzips, up to four
+  passes, and skips the object only if that still does not fit. The same applies
+  to the session-end test report. Truncation is logged as `evidence_truncated`.
+  **The manifest `complete = false` flag is not implemented yet:** manifests
+  arrive with build item 7 (P2), so until then the in-body marker is the only
+  record that an object is partial.
 - Credential rotation: update the secret, re-verify. Objects the new credential
   cannot read are marked `unreadable`, never silently lost.
 
@@ -470,7 +498,8 @@ corpus").
   range; 64 KB cap with `truncated` and cursor; object must belong to `:id`);
   MCP `read_evidence` at worker level; chat registry and `CHAT_ROUTES` entries
   (reach `byTask`; `requireQuery: ['workspaceId']` for the PR lookup); object
-  list inlined into `get_task`, `get_pr` and `explain`.
+  list (id, kind, bytes, state; pointers only, no key lines) inlined into
+  `get_task`, `get_pr` and `explain`.
 - **Paths:** `apps/web/src/app/api/tasks/[id]/evidence/route.ts` (new),
   `apps/web/src/app/api/evidence/route.ts` (new), `packages/core/mcp-tools.ts`,
   `packages/core/mcp-tool-groups.ts`, `apps/web/src/lib/chat/registry.ts`,

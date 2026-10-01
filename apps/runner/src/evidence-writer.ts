@@ -36,6 +36,8 @@ export interface EvidenceUploadRequest {
   sizeBytes: number;
 }
 
+type SignedUpload = { uploadUrl: string; key: string; evidenceId?: string };
+
 export interface EvidenceUploadDeps {
   /**
    * Ask the coordination API for a presigned PUT. `null` = the server declined
@@ -55,16 +57,27 @@ export interface EvidenceUploadDeps {
   confirmEvidenceUpload?: (workerId: string, evidenceId: string) => Promise<unknown>;
   put?: (url: string, body: Uint8Array, contentType: string, contentLength: number) => Promise<boolean>;
   log?: typeof sessionLog;
+  /** Pause before the one retry of a failed upload (default 2 s; tests pass 0). */
+  retryDelayMs?: number;
 }
 
 /** Session-cwd-relative paths checked, in order, for a test report at session end. */
 export const TEST_REPORT_PATHS = ['.test-report.log'] as const;
 
-/** Ceiling on the gzipped body. Larger bodies are skipped, not truncated mid-stream. */
+/** Ceiling on the gzipped body. A longer text is cut to head and tail until it fits. */
 export const MAX_EVIDENCE_GZ_BYTES = 8 * 1024 * 1024; // 8 MiB
 
-/** Ceiling on raw text read/redacted. Longer inputs keep their TAIL (where failures are). */
+/** Ceiling on raw text read/redacted. A longer input keeps its head and tail. */
 export const MAX_EVIDENCE_RAW_BYTES = 32 * 1024 * 1024; // 32 MiB
+
+/** Share of a truncated text's budget given to the head; the rest is tail, where failures usually are. */
+const HEAD_SHARE = 0.25;
+
+/** Pause before the single retry of a failed upload. */
+const RETRY_DELAY_MS = 2000;
+
+/** Attempts to shrink an incompressible text under the gzip ceiling before giving up. */
+const MAX_SHRINK_PASSES = 4;
 
 const CONTENT_TYPE = 'application/gzip';
 
@@ -154,11 +167,59 @@ async function defaultPut(url: string, body: Uint8Array, contentType: string, co
   return res.ok;
 }
 
-function tail(text: string, maxBytes: number): string {
-  if (Buffer.byteLength(text) <= maxBytes) return text;
-  const buf = Buffer.from(text);
-  return buf.subarray(buf.length - maxBytes).toString('utf8');
+export interface HeadTail {
+  text: string;
+  omittedBytes: number;
 }
+
+/**
+ * Keep the head and the tail of `text` within `maxBytes` and drop the middle,
+ * leaving a one-line marker where it was. Cuts land on line boundaries when
+ * there is one nearby, so a credential on its own line is never sliced in half
+ * (the redactor matches whole values).
+ */
+export function headAndTail(text: string, maxBytes: number): HeadTail {
+  const buf = Buffer.from(text, 'utf8');
+  if (buf.length <= maxBytes) return { text, omittedBytes: 0 };
+  const budget = Math.max(0, maxBytes - 128); // room for the marker
+  let headEnd = Math.floor(budget * HEAD_SHARE);
+  let tailStart = buf.length - (budget - headEnd);
+  const lastNl = buf.lastIndexOf(0x0a, headEnd);
+  if (lastNl > 0) headEnd = lastNl + 1;
+  const nextNl = buf.indexOf(0x0a, tailStart);
+  if (nextNl !== -1 && nextNl + 1 < buf.length) tailStart = nextNl + 1;
+  const omittedBytes = Math.max(0, tailStart - headEnd);
+  const marker = `\n[... ${omittedBytes} bytes omitted by the buildd evidence writer (size cap) ...]\n`;
+  return {
+    text: buf.subarray(0, headEnd).toString('utf8') + marker + buf.subarray(tailStart).toString('utf8'),
+    omittedBytes,
+  };
+}
+
+/** Read a file whole when it fits, else its head and tail (line-aligned) with a marker for the gap. */
+function readHeadAndTail(fd: number, size: number, maxBytes: number): string {
+  if (size <= maxBytes) {
+    const buf = Buffer.alloc(size);
+    fs.readSync(fd, buf, 0, size, 0);
+    return buf.toString('utf8');
+  }
+  const budget = maxBytes - 256;
+  const headLen = Math.floor(budget * HEAD_SHARE);
+  const tailLen = budget - headLen;
+  const head = Buffer.alloc(headLen);
+  const tail = Buffer.alloc(tailLen);
+  fs.readSync(fd, head, 0, headLen, 0);
+  fs.readSync(fd, tail, 0, tailLen, size - tailLen);
+  const lastNl = head.lastIndexOf(0x0a);
+  const headEnd = lastNl > 0 ? lastNl + 1 : head.length;
+  const nextNl = tail.indexOf(0x0a);
+  const tailStart = nextNl !== -1 && nextNl + 1 < tail.length ? nextNl + 1 : 0;
+  const omitted = size - headEnd - (tail.length - tailStart);
+  const marker = `\n[... ${omitted} bytes omitted by the buildd evidence writer (size cap) ...]\n`;
+  return head.subarray(0, headEnd).toString('utf8') + marker + tail.subarray(tailStart).toString('utf8');
+}
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 export interface EvidenceWriterOptions {
   workerId: string;
@@ -198,15 +259,14 @@ export class EvidenceWriter {
         if (!fs.existsSync(path)) continue;
         const st = fs.statSync(path);
         if (!st.isFile() || st.size === 0) continue;
-        const len = Math.min(st.size, MAX_EVIDENCE_RAW_BYTES);
-        const buf = Buffer.alloc(len);
         const fd = fs.openSync(path, 'r');
+        let text: string;
         try {
-          fs.readSync(fd, buf, 0, len, st.size - len);
+          text = readHeadAndTail(fd, st.size, MAX_EVIDENCE_RAW_BYTES);
         } finally {
           fs.closeSync(fd);
         }
-        return await this.write('test_report', buf.toString('utf8'));
+        return await this.write('test_report', text);
       }
       return 'skipped';
     } catch (err) {
@@ -240,31 +300,75 @@ export class EvidenceWriter {
     const { workerId, taskId, deps } = this.opts;
     const log = deps.log ?? sessionLog;
     try {
-      // Redact FIRST — no unredacted body exists past this line.
-      const redacted = this.opts.redact(tail(raw, MAX_EVIDENCE_RAW_BYTES));
-      const body = new Uint8Array(gzipSync(Buffer.from(redacted, 'utf8')));
+      // Cut, then redact the cut text: no unredacted body exists past this
+      // line, and cuts fall on line boundaries so the redactor sees whole values.
+      const capped = headAndTail(raw, MAX_EVIDENCE_RAW_BYTES);
+      let omittedBytes = capped.omittedBytes;
+      let text = this.opts.redact(capped.text);
+      let body = new Uint8Array(gzipSync(Buffer.from(text, 'utf8')));
+      // Incompressible text can still be over the ceiling: shrink by the overshoot.
+      for (let pass = 0; pass < MAX_SHRINK_PASSES && body.byteLength > MAX_EVIDENCE_GZ_BYTES; pass++) {
+        const budget = Math.floor(Buffer.byteLength(text) * (MAX_EVIDENCE_GZ_BYTES / body.byteLength) * 0.9);
+        const shrunk = headAndTail(text, budget);
+        omittedBytes += shrunk.omittedBytes;
+        text = shrunk.text;
+        body = new Uint8Array(gzipSync(Buffer.from(text, 'utf8')));
+      }
       const sizeBytes = body.byteLength;
       if (sizeBytes <= 0 || sizeBytes > MAX_EVIDENCE_GZ_BYTES) {
         log(workerId, 'info', 'evidence_skipped', `kind=${kind} seq=${seq} bytes=${sizeBytes} over cap`, taskId);
         return 'skipped';
       }
+      if (omittedBytes > 0) {
+        log(workerId, 'info', 'evidence_truncated', `kind=${kind} seq=${seq} omitted=${omittedBytes} (head and tail kept)`, taskId);
+      }
       if (typeof deps.requestEvidenceUploadUrl !== 'function') return 'skipped';
-      const signed = await deps.requestEvidenceUploadUrl(workerId, { kind, seq, sizeBytes });
-      if (!signed?.uploadUrl) {
+
+      let attempt = await this.uploadOnce(kind, seq, body, sizeBytes);
+      if (attempt.state === 'failed') {
+        // One retry, reusing the presigned URL when we have one (valid 15 min).
+        await sleep(deps.retryDelayMs ?? RETRY_DELAY_MS);
+        attempt = await this.uploadOnce(kind, seq, body, sizeBytes, attempt.signed);
+      }
+      if (attempt.state === 'declined') {
         log(workerId, 'info', 'evidence_declined', `kind=${kind} seq=${seq}`, taskId);
         return 'skipped';
       }
-      const ok = await (deps.put ?? defaultPut)(signed.uploadUrl, body, CONTENT_TYPE, sizeBytes);
-      if (!ok) {
-        log(workerId, 'warn', 'evidence_upload_failed', `kind=${kind} seq=${seq} put rejected`, taskId);
-        return 'failed';
-      }
-      log(workerId, 'info', 'evidence_upload', `kind=${kind} seq=${seq} key=${signed.key} bytes=${sizeBytes}`, taskId);
-      await this.confirm(kind, seq, signed.evidenceId);
+      if (attempt.state === 'failed') return 'failed';
+      log(workerId, 'info', 'evidence_upload', `kind=${kind} seq=${seq} key=${attempt.signed!.key} bytes=${sizeBytes}`, taskId);
+      await this.confirm(kind, seq, attempt.signed!.evidenceId);
       return 'uploaded';
     } catch (err) {
       this.warn(kind, err, seq);
       return 'failed';
+    }
+  }
+
+  /** One request-URL-then-PUT attempt. A thrown error or a rejected PUT is `failed`; a null URL is `declined`. */
+  private async uploadOnce(
+    kind: EvidenceKind,
+    seq: number,
+    body: Uint8Array,
+    sizeBytes: number,
+    signedIn?: SignedUpload,
+  ): Promise<{ state: 'ok' | 'declined' | 'failed'; signed?: SignedUpload }> {
+    const { workerId, taskId, deps } = this.opts;
+    let signed = signedIn;
+    try {
+      if (!signed) {
+        const res = await deps.requestEvidenceUploadUrl!(workerId, { kind, seq, sizeBytes });
+        if (!res?.uploadUrl) return { state: 'declined' };
+        signed = res;
+      }
+      const ok = await (deps.put ?? defaultPut)(signed.uploadUrl, body, CONTENT_TYPE, sizeBytes);
+      if (!ok) {
+        (deps.log ?? sessionLog)(workerId, 'warn', 'evidence_upload_failed', `kind=${kind} seq=${seq} put rejected`, taskId);
+        return { state: 'failed', signed };
+      }
+      return { state: 'ok', signed };
+    } catch (err) {
+      this.warn(kind, err, seq);
+      return { state: 'failed', signed };
     }
   }
 

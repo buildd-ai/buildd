@@ -23,6 +23,7 @@
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
+import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-inline';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
@@ -466,6 +467,7 @@ function answerFrom(
   history: HistoryNode[],
   because: ExplainAnswer['because'],
   gateHistory: GateHistoryEntry[] = [],
+  evidenceObjects: InlineEvidenceObject[] = [],
 ): ExplainAnswer {
   return {
     subject,
@@ -479,6 +481,7 @@ function answerFrom(
     history,
     nextAction: view.nextAction,
     gateHistory,
+    ...(evidenceObjects.length > 0 ? { evidenceObjects } : {}),
     derivedFrom: {
       state: view.derivedFrom.kind,
       waitingOn: view.derivedFrom.waitingOn,
@@ -707,7 +710,8 @@ export async function explainTask(taskId: string): Promise<ExplainResult | null>
 
   const because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
   const gateHistory = await loadGateHistory(taskId);
-  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory)] };
+  const evidenceObjects = workspaceId ? await loadInlineEvidence(workspaceId, taskId) : [];
+  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────
@@ -850,7 +854,8 @@ export async function explainPr(worker: {
   // A PR ships through its task, so its gate ledger (merge_base_freshness
   // rejections, review_verdict deferrals) is the task's.
   const gateHistory = await loadGateHistory(worker.taskId);
-  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory)] };
+  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId);
+  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -37,6 +38,9 @@ const {
   buildWorkerSecretValues,
   CLAIM_FIELD_SECRET_CLASSIFICATION,
   TEST_REPORT_PATHS,
+  MAX_EVIDENCE_GZ_BYTES,
+  MAX_EVIDENCE_RAW_BYTES,
+  headAndTail,
 } = await import('../../src/evidence-writer');
 
 const WORKER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -63,6 +67,7 @@ function makeDeps(overrides: Record<string, any> = {}) {
       puts.push({ url, body, contentType, contentLength });
       return true;
     },
+    retryDelayMs: 0,
     ...overrides,
   };
   return { deps, puts, requests };
@@ -212,6 +217,120 @@ describe('command_output evidence (AC-2)', () => {
     writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
     expect(await writer.drain()).toEqual(['failed']);
     expect(puts).toHaveLength(0);
+  });
+});
+
+describe('failed uploads retry once', () => {
+  test('a rejected PUT is retried once against the same URL and then lands', async () => {
+    let calls = 0;
+    const attempts: string[] = [];
+    const { deps, requests } = makeDeps({
+      put: async (url: string) => { calls++; attempts.push(url); return calls > 1; },
+    });
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await writer.drain()).toEqual(['uploaded']);
+    expect(requests).toHaveLength(1);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toBe(attempts[1]);
+  });
+
+  test('two rejected PUTs end failed after exactly two attempts', async () => {
+    let calls = 0;
+    const { deps } = makeDeps({ put: async () => { calls++; return false; } });
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await writer.drain()).toEqual(['failed']);
+    expect(calls).toBe(2);
+  });
+
+  test('a signer that throws once is retried and the object lands', async () => {
+    let signed = 0;
+    const { deps, puts } = makeDeps({
+      requestEvidenceUploadUrl: async (_w: string, req: { kind: string; seq: number }) => {
+        if (signed++ === 0) throw new Error('network blip');
+        return { uploadUrl: `https://bucket.example/put/${req.kind}/${req.seq}`, key: 'k' };
+      },
+    });
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await writer.drain()).toEqual(['uploaded']);
+    expect(signed).toBe(2);
+    expect(puts).toHaveLength(1);
+  });
+
+  test('a declined URL is not retried', async () => {
+    let signed = 0;
+    const { deps } = makeDeps({ requestEvidenceUploadUrl: async () => { signed++; return null; } });
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text: 'boom' });
+    expect(await writer.drain()).toEqual(['skipped']);
+    expect(signed).toBe(1);
+  });
+});
+
+describe('size cap keeps head and tail', () => {
+  test('headAndTail leaves a short text alone', () => {
+    expect(headAndTail('short', 1000)).toEqual({ text: 'short', omittedBytes: 0 });
+  });
+
+  test('headAndTail drops the middle on line boundaries and says how much', () => {
+    const lines = Array.from({ length: 2000 }, (_, i) => `line-${String(i).padStart(4, '0')}`);
+    const out = headAndTail(lines.join('\n'), 4000);
+    expect(Buffer.byteLength(out.text)).toBeLessThanOrEqual(4000);
+    expect(out.text.startsWith('line-0000\n')).toBe(true);
+    expect(out.text.endsWith('line-1999')).toBe(true);
+    expect(out.text).not.toContain('line-1000');
+    expect(out.text).toContain(`[... ${out.omittedBytes} bytes omitted`);
+    // No half lines at the seams.
+    for (const l of out.text.split('\n')) expect(l === '' || l.startsWith('line-') || l.startsWith('[...')).toBe(true);
+  });
+
+  test('raw input over the ceiling keeps the first and last lines, not just the tail', async () => {
+    const filler = 'x'.repeat(98) + '\n';
+    const text = `HEAD-MARK first line\n${filler.repeat(Math.ceil((MAX_EVIDENCE_RAW_BYTES + 1024 * 1024) / filler.length))}TAIL-MARK last line`;
+    const { deps, puts } = makeDeps();
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text });
+    expect(await writer.drain()).toEqual(['uploaded']);
+    const stored = gunzipText(puts[0].body);
+    expect(stored).toContain('HEAD-MARK first line');
+    expect(stored).toContain('TAIL-MARK last line');
+    expect(stored).toContain('bytes omitted by the buildd evidence writer');
+    expect(logged.some(l => l.event === 'evidence_truncated')).toBe(true);
+  });
+
+  test('an incompressible text over the gzip ceiling is shrunk to fit, not skipped', async () => {
+    const b64 = randomBytes(12 * 1024 * 1024).toString('base64').replace(/(.{76})/g, '$1\n');
+    const text = `HEAD-MARK\n${b64}\nTAIL-MARK`;
+    const { deps, puts } = makeDeps();
+    const writer = makeWriter(deps);
+    writer.onToolResult({ source: 'Bash', isError: true, text });
+    expect(await writer.drain()).toEqual(['uploaded']);
+    expect(puts[0].body.byteLength).toBeLessThanOrEqual(MAX_EVIDENCE_GZ_BYTES);
+    const stored = gunzipText(puts[0].body);
+    expect(stored).toContain('HEAD-MARK');
+    expect(stored).toContain('TAIL-MARK');
+  });
+
+  test('an oversized test report keeps its head and tail too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'evidence-writer-'));
+    try {
+      const filler = 'y'.repeat(98) + '\n';
+      writeFileSync(
+        join(dir, '.test-report.log'),
+        `REPORT-HEAD\n${filler.repeat(Math.ceil((MAX_EVIDENCE_RAW_BYTES + 1024 * 1024) / filler.length))}REPORT-TAIL\n`,
+      );
+      const { deps, puts } = makeDeps();
+      const writer = makeWriter(deps);
+      expect(await writer.writeTestReport(dir)).toBe('uploaded');
+      const stored = gunzipText(puts[0].body);
+      expect(stored).toContain('REPORT-HEAD');
+      expect(stored).toContain('REPORT-TAIL');
+      expect(stored).toContain('bytes omitted by the buildd evidence writer');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
