@@ -26,8 +26,10 @@ export const MISSION_BOARD_VISUAL_FIXTURE_STATE = 'mission-board-visual';
 export const MISSION_LIST_EXECUTOR_FIXTURE_STATE = 'mission-list-executor';
 /** The mission Settings sheet's check-ins and organizer runs (MissionCheckInsFixture.tsx). */
 export const MISSION_CHECK_INS_FIXTURE_STATE = 'mission-check-ins';
+/** The task page's Evidence files section in each state (TaskEvidenceFilesFixture.tsx). */
+export const TASK_EVIDENCE_FIXTURE_STATE = 'task-evidence';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

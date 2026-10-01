@@ -13,11 +13,13 @@ import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
+import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import {
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
+    TASK_EVIDENCE_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -52,6 +54,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {
         return <MissionListExecutorFixture />;
+    }
+
+    if (state === TASK_EVIDENCE_FIXTURE_STATE) {
+        return <TaskEvidenceFilesFixture />;
     }
 
     if (state === MISSION_CHECK_INS_FIXTURE_STATE) {

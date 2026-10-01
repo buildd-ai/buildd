@@ -22,12 +22,13 @@
 import { Readable } from 'stream';
 import { createGunzip } from 'zlib';
 import { GetObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '@buildd/core/config';
 import { db } from '@buildd/core/db';
-import { evidenceBackends, type evidenceObjects } from '@buildd/core/db/schema';
+import { evidenceBackends, evidenceObjects } from '@buildd/core/db/schema';
 import { createSecretRedactor } from '@buildd/core/redaction';
 import type { EvidenceKind, EvidenceObjectSummary, EvidenceReadResult } from '@buildd/shared';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, or } from 'drizzle-orm';
 import { getEvidenceS3Client } from './evidence-backend';
 import { getDefaultStorageClient } from './storage';
 
@@ -477,6 +478,109 @@ export async function openEvidenceObject(row: EvidenceObjectRow, deps: OpenDeps 
   return decodeEvidenceBody(body as AsyncIterable<Uint8Array>);
 }
 
+// ── Task lineage ───────────────────────────────────────────────────────────
+
+/** The task an evidence list, read or download is scoped to, after the caller's access to its workspace was checked. */
+export interface EvidenceTaskScope {
+  id: string;
+  workspaceId: string;
+}
+
+/** Objects written for the task and, for a root task, for its whole retry chain. */
+export function taskEvidenceLineage(taskId: string) {
+  return or(eq(evidenceObjects.taskId, taskId), eq(evidenceObjects.rootTaskId, taskId));
+}
+
+/** Checked again on the row itself: the query predicate is the scope, this is the proof. */
+export function evidenceBelongsToTask(
+  row: Pick<EvidenceObjectRow, 'workspaceId' | 'taskId' | 'rootTaskId'>,
+  task: EvidenceTaskScope,
+): boolean {
+  return row.workspaceId === task.workspaceId && (row.taskId === task.id || row.rootTaskId === task.id);
+}
+
+/** A task's evidence objects, newest first. */
+export async function listTaskEvidenceObjects(
+  task: EvidenceTaskScope,
+  opts: { kind?: EvidenceKind; limit?: number } = {},
+): Promise<EvidenceObjectRow[]> {
+  const rows = (await db.query.evidenceObjects.findMany({
+    where: and(
+      eq(evidenceObjects.workspaceId, task.workspaceId),
+      taskEvidenceLineage(task.id),
+      ...(opts.kind ? [eq(evidenceObjects.kind, opts.kind)] : []),
+    ),
+    orderBy: [desc(evidenceObjects.createdAt)],
+    limit: opts.limit ?? 200,
+  })) as EvidenceObjectRow[];
+  return rows.filter(r => evidenceBelongsToTask(r, task));
+}
+
+/** One object of the task's lineage, or null when it is not the task's. */
+export async function findTaskEvidenceObject(task: EvidenceTaskScope, evidenceId: string): Promise<EvidenceObjectRow | null> {
+  const row = (await db.query.evidenceObjects.findFirst({
+    where: and(
+      eq(evidenceObjects.id, evidenceId),
+      eq(evidenceObjects.workspaceId, task.workspaceId),
+      taskEvidenceLineage(task.id),
+    ),
+  })) as EvidenceObjectRow | undefined;
+  return row && row.id === evidenceId && evidenceBelongsToTask(row, task) ? row : null;
+}
+
+// ── Download (dashboard only) ──────────────────────────────────────────────
+
+/**
+ * A download link is minted per click and lives this long. Only the dashboard
+ * download route mints one; no chat tool, MCP action or read route returns it.
+ */
+export const EVIDENCE_DOWNLOAD_EXPIRY_SECONDS = 5 * 60;
+
+export interface EvidenceDownloadLink {
+  url: string;
+  expiresAt: string;
+  filename: string;
+}
+
+export interface DownloadDeps extends OpenDeps {
+  now?: () => number;
+}
+
+/** The name the browser saves: kind plus the key's last segment, reduced to safe characters. */
+export function evidenceDownloadFilename(row: Pick<EvidenceObjectRow, 'objectKey' | 'kind' | 'id'>): string {
+  const base = (row.objectKey.split('/').pop() ?? '').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
+  return base && !/^\.+$/.test(base) ? `${row.kind}-${base}` : `${row.kind}-${row.id.slice(0, 8)}.gz`;
+}
+
+/**
+ * A presigned GET for one stored object, on the backend the row was written to
+ * (its `backend_id`), valid for EVIDENCE_DOWNLOAD_EXPIRY_SECONDS. The body is
+ * the object as stored: redacted when it was written, usually gzipped.
+ */
+export async function generateEvidenceDownloadUrl(row: EvidenceObjectRow, deps: DownloadDeps = {}): Promise<EvidenceDownloadLink> {
+  if (row.uploadState !== 'stored') {
+    throw new EvidenceReadError(`this evidence object cannot be downloaded (upload state: ${row.uploadState})`, 409);
+  }
+  let client = deps.client;
+  let bucket = deps.bucket;
+  if (!client || !bucket) {
+    ({ client, bucket } = await evidenceObjectLocation(row));
+  }
+  const filename = evidenceDownloadFilename(row);
+  const issuedAt = (deps.now ?? Date.now)();
+  let url: string;
+  try {
+    url = await getSignedUrl(client as S3Client, new GetObjectCommand({
+      Bucket: bucket,
+      Key: row.objectKey,
+      ResponseContentDisposition: `attachment; filename="${filename}"`,
+    }), { expiresIn: EVIDENCE_DOWNLOAD_EXPIRY_SECONDS });
+  } catch (err) {
+    throw new EvidenceReadError(`could not sign a download link: ${err instanceof Error ? err.message : 'unknown error'}`.slice(0, 300), 502);
+  }
+  return { url, filename, expiresAt: new Date(issuedAt + EVIDENCE_DOWNLOAD_EXPIRY_SECONDS * 1000).toISOString() };
+}
+
 // ── Wire shape and audit ───────────────────────────────────────────────────
 
 const iso = (d: Date | string | null | undefined): string | null => (d ? new Date(d).toISOString() : null);
@@ -500,8 +604,8 @@ export function toEvidenceObjectSummary(row: EvidenceObjectRow): EvidenceObjectS
 }
 
 export interface EvidenceReadAudit {
-  surface: 'GET /api/tasks/:id/evidence' | 'GET /api/evidence';
-  op: 'list' | 'read';
+  surface: 'GET /api/tasks/:id/evidence' | 'GET /api/evidence' | 'GET /api/evidence/download';
+  op: 'list' | 'read' | 'download';
   workspaceId: string;
   taskId?: string | null;
   prNumber?: number | null;
