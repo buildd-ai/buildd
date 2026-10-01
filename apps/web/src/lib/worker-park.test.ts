@@ -80,3 +80,20 @@ describe('notParkedScope: what the sweeps exempt', () => {
     expect(r.params).toContain(NOW.toISOString());
   });
 });
+
+describe('task-scoped callers (per-task token): confined to their own task', () => {
+  const TASK = '66666666-6666-4666-8666-666666666666';
+
+  it('adds a task_id predicate to all three when a task is given', () => {
+    for (const r of [render(parkWhere(WORKER, ACCOUNT, TASK)), render(unparkWhere(WORKER, ACCOUNT, TASK)), render(reattachWhere(WORKER, ACCOUNT, NOW, TASK))]) {
+      expect(r.sql).toContain('"workers"."task_id" = $');
+      expect(r.params).toContain(TASK);
+    }
+  });
+
+  it('adds nothing for an account key', () => {
+    for (const r of [render(parkWhere(WORKER, ACCOUNT)), render(unparkWhere(WORKER, ACCOUNT)), render(reattachWhere(WORKER, ACCOUNT, NOW))]) {
+      expect(r.sql).not.toContain('task_id');
+    }
+  });
+});

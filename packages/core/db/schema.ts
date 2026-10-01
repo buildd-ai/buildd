@@ -80,6 +80,11 @@ export const teams = pgTable('teams', {
   // absent feature = the default, which follows the billing model (a team key
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
+  // The `opt_in` decision capabilities this team turned on (e.g.
+  // 'task_role_shadow'). NULL or absent = off; there is no default, so adding
+  // an opt_in capability never switches it on for anyone. See
+  // packages/core/inference-policy.ts.
+  enabledDecisionShadows: text('enabled_decision_shadows').array(),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -174,6 +179,11 @@ export const accounts = pgTable('accounts', {
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   apiKeyPrefix: text('api_key_prefix'),
+  // NULL preserves legacy levels; an empty list grants no capabilities.
+  scopes: jsonb('scopes').$type<string[]>(),
+  workspaceIds: jsonb('workspace_ids').$type<string[]>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
 
   // Authentication type
@@ -210,6 +220,12 @@ export const accounts = pgTable('accounts', {
   // the app's own provider-key limit is the hard ceiling
   // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
+
+  // A long-lived host runner key, flagged explicitly by a team owner/admin.
+  // Only such a key may use the credential lease / refresh routes or list the
+  // team's secrets (lib/credential-custody.ts); any other key gets team
+  // credentials only as handed to it at claim time.
+  hostRunner: boolean('host_runner').default(false).notNull(),
 
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
@@ -310,6 +326,11 @@ export interface WorkspaceGitConfig {
   // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
+
+  // Where the visual auditor's pages come from: 'sandbox' (absent = today's
+  // in-worker boot), 'vercel-preview', or 'auto'. Read only through
+  // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
+  visualQa?: import('../visual-qa-page-source').VisualQaConfig;
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached

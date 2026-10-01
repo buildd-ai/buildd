@@ -100,6 +100,72 @@ If it is wrong for a given app, because the app can't boot outside its host or h
 dev-auth path, the auditor can see nothing. That failure has to be loud. See "Boot
 failure" below: it must never become a silent pass.
 
+### Page source
+
+The crux above stays buildd's answer: buildd runs no per-PR previews, so its default is
+the sandbox. A workspace that *does* deploy a Vercel preview for every commit has a better
+page source already standing, with no boot, no seed and no data URL. Where the pages come
+from is therefore a **per-workspace choice**, `gitConfig.visualQa.pageSource`:
+
+| Mode | Pages come from | When nothing is there |
+|---|---|---|
+| `sandbox` (default) | the app booted in the worker, as above | boot failure (below) |
+| `vercel-preview` | the preview deployed for the commit | `preview_unavailable`: loud, never a pass |
+| `auto` | the preview when one is READY, else the sandbox | falls back, and records why |
+
+**Discovery needs no Vercel credential.** Vercel's GitHub integration posts a GitHub
+deployment for every preview, with a deployment status whose `environment_url` is the
+preview URL. Buildd reads the commit's deployments (`environment` matching
+`visualQa.previewEnvironment`, default `Preview`) and their newest status with the
+workspace's GitHub App token, server-side. `success` gives the URL. `pending`,
+`queued` or `in_progress` is polled until a bounded wait runs out (`previewWaitSeconds`,
+default 600, measured from the deployment's creation, so it holds across calls); then it
+is `timeout`. `failure` or `error` is `failed`. No deployment at all is `none`. The
+auditor asks through the `get_page_source` MCP action, which long-polls at most 45s a
+call; a `pending` answer means call again. The commit is the trunk head the auditor checked
+out, or a builder PR's head (`prNumber`) when trunk deploys to Production rather than
+Preview.
+
+The resolution is a pure function (`packages/core/visual-qa-page-source.ts`) over two
+injected reads (list deployments, list statuses), so ready, pending-then-ready, timeout
+and none are all unit-tested without GitHub.
+
+**Two auth walls, reported separately.** A preview sits behind two walls, and each has
+its own config and its own failure message. Neither is ever a visual finding:
+
+1. *Vercel deployment protection.* The owner creates a Protection Bypass for Automation
+   secret in Vercel, stores it with `manage_secrets` (`purpose: role_env_secret`) and maps
+   it in `gitConfig.envMapping` as `VERCEL_AUTOMATION_BYPASS_SECRET`. Claim-time env
+   injection delivers it; `capture.ts` sends it as `x-vercel-protection-bypass`. A
+   redirect to `vercel.com/login` or `vercel.com/sso-api`, or a 401 carrying Vercel's
+   authentication page, is classified `protection_bypass_missing`.
+2. *The app's own login.* Preferred: (a) a **preview-only auth bypass** the project owns,
+   the same shape as buildd's `dev-auto-login`: an env var set only in the Vercel Preview
+   environment that makes the app sign in a fixed test user. Buildd never holds it.
+   Otherwise (b) a Playwright `storageState` JSON stored as a secret and mapped as
+   `VISUAL_QA_STORAGE_STATE`; `capture.ts` writes it to a 0600 temp file and never logs it.
+   A same-origin landing on a sign-in path (`visualQa.signInPaths`, default `/login`,
+   `/signin`, `/sign-in`, `/auth`, `/api/auth/signin`) that the route did not ask for is
+   classified `app_auth_not_configured`.
+
+`capture.ts` records a `configError` on the capture and exits non-zero after the loop, so
+a wall is as loud as a boot failure. The auditor handles all three (`preview_unavailable`,
+`protection_bypass_missing`, `app_auth_not_configured`) the way it handles a boot failure:
+it parks with `AskUserQuestion`, naming the fix, and never uploads the wall as a shot.
+
+**Recorded on every shot.** `metadata.qa.source` is `sandbox` or `vercel-preview`, so a
+reviewer knows which build and data a shot came from.
+
+**Guidance for new projects.** `detectPreviewReadiness` (same module) is a pure function
+from repo and GitHub signals (recent deployment environments, a probe of the preview's
+response, the workspace's secret labels and `envMapping`, the env names the repo
+declares) to `{ previewsDetected, previewProtected, protectionBypassConfigured,
+appAuthStrategy, recommendedPageSource, recommendation }`. The workspace onboarding
+mission's readiness report calls it; this design ships the function, not that UI.
+
+**Guardrails carry over unchanged:** GETs only, no form submits, at most 40 shots, and
+no secret or storage-state content in any log, artifact or question.
+
 ### 1. Routing: a dedicated role, gated on the runner's browser
 
 - **Add a `visual-auditor` default role** in `default-roles.ts`. A `reviewer` role
@@ -278,9 +344,9 @@ tried on a second, non-Next app before it's called generic.
 - **Pixel-diff baselines.** Stored screenshots compared pixel by pixel measure the
   fixture, not the product. They churn on font loading and first-compile timing, and get
   re-blessed wholesale. Every run is judged fresh, with no baselines.
-- **Browsing deployed previews** through deployment protection and app OAuth. A
-  preview-only credentials provider plus the bypass header could be a later opt-in for
-  issues that only happen in production.
+- **Automating a real OAuth login** on a preview. Previews are an opt-in page source
+  (see "Page source"), but only through the bypass header plus a preview-only auth
+  bypass or a stored session, never by driving a provider's login form.
 - **Pre-merge review inside missions.** The audit runs after merge, by construction of
   the deps-gate.
 - **Hosted browser services, and native or mobile apps.**

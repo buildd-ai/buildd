@@ -11,7 +11,7 @@ import { fetchCoordinationStats } from '@/lib/coordination-stats-query';
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  const account = token ? await authenticateApiKey(token) : null;
+  const account = token ? await authenticateApiKey(token, req) : null;
   if (!user && !account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const params = new URL(req.url).searchParams;
   const window = params.get('window') ?? '7d';

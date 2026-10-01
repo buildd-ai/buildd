@@ -114,6 +114,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   create_pr: 'write',
   emit_event: 'write',
   upload_artifact: 'write',
+  get_page_source: 'read',
   record_pr_supersession: 'write',
   post_note: 'write',
   suggest_schedule_update: 'write',

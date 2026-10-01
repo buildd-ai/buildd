@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount && process.env.NODE_ENV !== 'development') {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
