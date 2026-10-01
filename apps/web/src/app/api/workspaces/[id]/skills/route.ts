@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
 import { createHash } from 'crypto';
@@ -18,11 +19,11 @@ async function authenticateRequest(req: NextRequest) {
     const apiKey = authHeader?.replace('Bearer ', '') || null;
 
     if (apiKey) {
-        const account = await authenticateApiKey(apiKey);
+        const account = await authenticateApiKey(apiKey, req);
         if (account) {
             // Skills management requires admin-level access. Worker/trigger tokens
             // are rejected here; OAuth JWTs are always resolved as admin.
-            if (account.level !== 'admin') {
+            if (!hasTokenRouteAdminAccess(account, req, req.method === 'GET' ? 'tasks:read' : undefined)) {
                 return { type: 'denied' as const };
             }
             return { type: 'api' as const, account };

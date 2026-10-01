@@ -156,9 +156,12 @@ the container API, which is the Sandbox SDK pattern.
   `getAgentByName(env.WorkerAgent, taskId)`. The name is the task ID, so a
   duplicate webhook reaches the same agent, and the agent ignores it while a
   run is live.
-- `WorkerAgent` starts the container, runs `buildd --once --task <id>` with a
-  minimal env (server URL, a runner API key scoped to the workspace, and the
-  gateway base URL), and holds `keepAliveWhile` for the life of the process.
+- `WorkerAgent` mints a per-task token for its task
+  (`POST /api/runner/task-token`, with the dispatcher's runner key), starts
+  the container, runs `buildd --once --task <id>` with a minimal env (server
+  URL, that per-task token, and the gateway base URL), and holds
+  `keepAliveWhile` for the life of the process. The runner key stays in the
+  Worker and never enters the container.
   It sets the container inactivity timeout above the longest expected silent
   tool call.
 - When the process exits, the agent records the outcome in its state and
@@ -206,6 +209,8 @@ the container API, which is the Sandbox SDK pattern.
   then falls back to Pusher.
 - A way to get a per-task GitHub installation token to the dispatcher (see
   Open questions).
+- Per-task runner tokens (`POST /api/runner/task-token`, resolved open
+  question 3).
 
 ### Opt-in and defaults
 
@@ -260,9 +265,16 @@ setting in the dashboard.
 2. **Container limits for long tasks.** Instance size, disk and maximum run
    duration against multi-hour tasks and large monorepo clones. *Lean: route
    only tasks expected to be short in phase 1, and measure before widening.*
-3. **Runner API key for the container.** A workspace-scoped key per dispatcher
-   is simplest. A per-task short-lived token is better. *Lean: workspace-scoped
-   for the canary, and track per-task tokens as a follow-up.*
+3. **Runner API key for the container.** *Resolved: a per-task token, required
+   before the canary.* The dispatcher Worker holds the runner key and, at
+   dispatch, mints a short-lived token bound to its account and the one task
+   (`POST /api/runner/task-token`, `apps/web/src/lib/task-token.ts`). The
+   container gets only that token. It is accepted for the task's own claim, a
+   read of that task, and its own worker's read, PATCH, heartbeat, MCP,
+   artifact and PR calls; every other route refuses it, including the credential lease /
+   refresh routes and the secrets list, which accept only keys a team
+   owner/admin has flagged as long-lived host runners. The dispatcher's key
+   does not need that flag.
 4. **Clone cost.** A fresh clone per task may dominate short tasks. *Lean:
    measure in the canary before building a snapshot cache* (Phase 2, warm
    repos).

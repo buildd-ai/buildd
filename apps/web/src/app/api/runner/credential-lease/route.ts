@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { credentialLeases, secrets } from '@buildd/core/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { refuseCredentialCustody } from '@/lib/credential-custody';
 import { markDue, clearDue } from '@/lib/redis';
 import { LEASE_DUE_QUEUE } from '@/lib/lease-due-queue';
 
@@ -12,10 +13,12 @@ const LEASE_TTL_SECONDS = 5 * 60; // 5 minutes
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') ?? null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+  const refused = refuseCredentialCustody(apiKey, account);
+  if (refused) return refused;
 
   const body = await req.json() as {
     credentialId?: string;

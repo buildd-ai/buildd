@@ -512,6 +512,36 @@ describe('dispatchConflictRetry', () => {
     });
   });
 
+  describe('humanInitiated (a person tapped the page action)', () => {
+    it('files a fresh retry even though automatic conflict resolution is off for the workspace', async () => {
+      mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, gitConfig: { autoResolveMergeConflicts: false } });
+
+      expect(await dispatchConflictRetry(BASE_PARAMS)).toEqual({ dispatched: false, disabled: true });
+
+      const result = await dispatchConflictRetry({ ...BASE_PARAMS, humanInitiated: true });
+      expect(result.dispatched).toBe(true);
+      expect(result.disabled).toBeUndefined();
+    });
+
+    it('gets a fresh budget on top of the attempts already spent, where the automatic loop stays exhausted', async () => {
+      mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, context: { conflictIteration: 3, maxConflictIterations: 3 } });
+
+      const auto = await dispatchConflictRetry(BASE_PARAMS);
+      expect(auto).toMatchObject({ dispatched: false, exhausted: true });
+
+      const human = await dispatchConflictRetry({ ...BASE_PARAMS, humanInitiated: true });
+      expect(human.dispatched).toBe(true);
+      expect(capturedInsertValues.context.conflictIteration).toBe(4);
+      expect(capturedInsertValues.context.maxConflictIterations).toBe(6);
+    });
+
+    it('still will not file a second retry while one is live', async () => {
+      mockLiveConflictRetryProbe.mockResolvedValue({ id: 'live-retry', conflictRetryHeadSha: 'sha-older' });
+      const result = await dispatchConflictRetry({ ...BASE_PARAMS, humanInitiated: true });
+      expect(result).toMatchObject({ dispatched: false, inFlightTaskId: 'live-retry' });
+    });
+  });
+
   it('never uses the branch-update shortcut for a real conflict', async () => {
     mockUpdateBehindPrBranch.mockClear();
     const result = await dispatchConflictRetry(BASE_PARAMS);

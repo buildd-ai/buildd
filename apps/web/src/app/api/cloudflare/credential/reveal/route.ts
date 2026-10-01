@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { decodeCloudflareValue, findCloudflareSecret } from '@/lib/cloudflare-credential';
@@ -19,15 +20,19 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
  *   get 403.
  * - The key's own team only; there is no teamId parameter.
  * - POST and `no-store`, so the value is never cached or put in a URL.
+ * - Not gated on `accounts.hostRunner`: this serves a deploy key, not a runner,
+ *   and flagging a deploy key would also grant it lease/refresh (INV-7a in
+ *   docs/specs/credential-refresh-lifecycle.md). A per-task token is refused
+ *   by the `bld_` check.
  */
 export async function POST(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
   if (!apiKey || !apiKey.startsWith('bld_')) {
     return NextResponse.json({ error: 'An admin API key (bld_…) is required' }, { status: 401, headers: NO_STORE });
   }
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE });
-  if (account.level !== 'admin') {
+  if (!hasTokenRouteAdminAccess(account, req)) {
     return NextResponse.json({ error: 'Requires an admin-level API key' }, { status: 403, headers: NO_STORE });
   }
 

@@ -37,7 +37,7 @@ async function authenticate(req: NextRequest): Promise<Auth | null> {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   return user || apiAccount ? { user, apiAccount } : null;
 }
 

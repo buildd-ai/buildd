@@ -12,6 +12,7 @@
  *   viewports: { phone: { width: 390, height: 844, scale: 3 } }   # optional; phone is built in
  *   themes: [dark, light]
  *   as: u_member                          # optional: sign in as this story user (default: the first); env DEMO_AS overrides
+ *   hide: [canvas-ask]                  # optional: testids/selectors hidden (display:none) on every shot
  *   highlight: [goal-band, board-tile]  # optional: boxes recorded on EVERY shot where present (silent when absent)
  *   steps:
  *     - id: mission-mid-flight
@@ -33,7 +34,8 @@
  *       reseedPerTheme: true          # optional: re-seed + replay to this step's t before each theme, for steps
  *                                     # whose click writes (a saved rule, an answer) so every theme sees it fresh
  *       type: { into: 'textarea', text: "…", frames: 24 }   # optional: type into a field (never sent), one
- *                                     # still per frame as <step>-type-NN[-viewport]-<theme>.png (00 = empty), before the shot
+ *                                     # still per frame as <step>-type-NN[-viewport]-<theme>.png (00 = empty), before the shot;
+ *                                     # `append: true` types after what the page pre-filled (00 = that prefix)
  *
  * Output: <out>/<story>/<step>-<theme>.png (desktop) or <step>-<viewport>-<theme>.png,
  * .webm for record steps, and <out>/<story>/manifest.json with captions, element
@@ -52,7 +54,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
-import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, textBoxes, typingPrefixes, type Viewport, type ViewportSpec } from './lib/storyboard';
+import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, textBoxes, typedValues, hideCss, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
   id: string;
@@ -71,7 +73,7 @@ type Step = {
   shot?: boolean;
   reducedMotion?: boolean;
   record?: { ms?: number; advanceTo?: string | number; ticks?: number; theme?: 'dark' | 'light'; viewport?: string };
-  type?: { into: string; text: string; frames?: number };
+  type?: { into: string; text: string; frames?: number; append?: boolean };
   highlightText?: string[];
   reseedPerTheme?: boolean;
 };
@@ -83,6 +85,7 @@ type Storyboard = {
   themes?: Array<'dark' | 'light'>;
   as?: string;
   highlight?: string[];
+  hide?: string[];
   /** Default for every step's `reducedMotion`. */
   reducedMotion?: boolean;
   steps: Step[];
@@ -182,7 +185,7 @@ async function main() {
     await page.emulateMedia({ reducedMotion: reducedMotionFor(step, board) });
     const url = DEMO.baseUrl + fill(step.goto ?? new URL(page.url()).pathname, state.ids);
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
-    await page.addStyleTag({ content: HIDE_CSS });
+    await page.addStyleTag({ content: HIDE_CSS + hideCss(board.hide) });
     const missing: string[] = [];
     for (const w of [step.waitFor ?? []].flat()) {
       try {
@@ -314,10 +317,12 @@ async function main() {
         if (step.type) {
           // Typed a prefix at a time (fill, so each frame is exact), never submitted.
           // Frame 00 is the empty field, so the take starts before the first key.
+          // `append` keeps what the page pre-filled (a draft card's Edit writes a prefix).
           const field = page.locator(sel(step.type.into)).first();
+          const base = step.type.append ? await field.inputValue() : '';
           const frames: string[] = [];
-          for (const [i, n] of [0, ...typingPrefixes(step.type.text, step.type.frames ?? 24)].entries()) {
-            await field.fill(step.type.text.slice(0, n));
+          for (const [i, value] of typedValues(base, step.type.text, step.type.frames ?? 24).entries()) {
+            await field.fill(value);
             await page.waitForTimeout(60);
             const file = captureFile(`${step.id}-type-${String(i).padStart(2, '0')}`, vpName, theme);
             await page.screenshot({ path: join(outDir, file), animations: 'disabled' });

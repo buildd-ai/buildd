@@ -356,6 +356,13 @@ export interface DispatchConflictRetryParams {
    * also has a behind-base refusal for the same dispatch).
    */
   migrationCollision?: MigrationCollision;
+  /**
+   * A person chose this fix (the landing-alert tap). Like `apply-recommendation`
+   * and `retry-ci`, a deliberate human action is not declined for a disabled
+   * workspace flag or an exhausted automatic budget: it gets a fresh budget on
+   * top of the attempts already spent.
+   */
+  humanInitiated?: boolean;
 }
 
 export interface DispatchConflictRetryResult {
@@ -404,7 +411,7 @@ export async function dispatchConflictRetry(
     return { dispatched: false };
   }
 
-  if (!isAutoResolveMergeConflictsEnabled(workspace.gitConfig)) {
+  if (!params.humanInitiated && !isAutoResolveMergeConflictsEnabled(workspace.gitConfig)) {
     return { dispatched: false, disabled: true };
   }
 
@@ -588,6 +595,14 @@ export async function dispatchConflictRetry(
     repoFullName,
     prRepoUrl,
     migrationCollision,
+    ...(params.humanInitiated
+      ? {
+          maxConflictIterations:
+            (typeof (task.context as Record<string, unknown> | null)?.conflictIteration === 'number'
+              ? ((task.context as Record<string, unknown>).conflictIteration as number)
+              : 0) + DEFAULT_MAX_CONFLICT_ITERATIONS,
+        }
+      : {}),
   });
 
   if (!retryTask) {

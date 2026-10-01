@@ -1,3 +1,4 @@
+import { hasTokenScope, requiredScopeForAction } from './token-scopes';
 /**
  * Shared MCP tool handlers for Buildd.
  *
@@ -158,6 +159,8 @@ export interface ActionContext {
   surface?: 'chat';
   getWorkspaceId: () => Promise<string | null>;
   getLevel: () => Promise<'trigger' | 'worker' | 'admin'>;
+  /** null/undefined retains legacy level permissions; [] grants no capabilities. */
+  getScopes?: () => Promise<readonly string[] | null | undefined>;
   appBaseUrl?: string;
   // Optional KnowledgeStore wiring for best-effort auto-indexing of agent work
   // product (completed tasks, PRs, artifacts, approved plans). Mirrored writes
@@ -1517,14 +1520,25 @@ export async function handleBuilddAction(
   params: Record<string, unknown>,
   ctx: ActionContext,
 ): Promise<ToolResult> {
-  // Check trigger-level restrictions before processing
-  const levelErr = await requireWorkerLevel(ctx, action);
-  if (levelErr) return levelErr;
-
-  // Admin-only pre-flight: returns structured 403 for non-admin tokens so agents
-  // can distinguish privilege gaps from expired/invalid auth (401 vs 403).
-  const adminErr = await requireAdminLevel(ctx, action);
-  if (adminErr) return adminErr;
+  const tokenScopes = await ctx.getScopes?.();
+  if (tokenScopes != null) {
+    const requiredScope = requiredScopeForAction(action, params);
+    if (requiredScope && !hasTokenScope(tokenScopes, requiredScope)) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: JSON.stringify({
+          error: 'forbidden', requiredScope,
+          reason: `action '${action}' requires scope '${requiredScope}'`,
+        }) }],
+      };
+    }
+  } else {
+    // Existing tokens keep their level-based permissions.
+    const levelErr = await requireWorkerLevel(ctx, action);
+    if (levelErr) return levelErr;
+    const adminErr = await requireAdminLevel(ctx, action);
+    if (adminErr) return adminErr;
+  }
 
   // claim_task is the first lifecycle call agents are instructed to make, but
   // hosted agents can arrive with a worker already assigned in their MCP URL.
@@ -2088,6 +2102,18 @@ export async function handleBuilddAction(
           return errorResult(`**Cannot complete task:** ${errMsg}\n\nIf you created a PR using \`gh pr create\`, use \`create_pr\` instead so Buildd can track it.`);
         }
         throw err;
+      }
+
+      // The route answers 200 with the row it actually wrote, which is not the
+      // `completed` this call asked for when a server-side guard (review or
+      // planning contract) overrode it. Report that, not a success: a caller
+      // that is told "completed" will not retry the verdict that was dropped.
+      if (result?.status === 'failed' || result?.status === 'error') {
+        return errorResult(
+          `**Task NOT recorded as completed.** The server marked this worker ${result.status}` +
+          `${result.error ? `: ${result.error}` : '.'}\n\n` +
+          'Nothing you reported was applied. Check the task with get_task — it may have been requeued for another attempt — and fix what the message above names before reporting again.',
+        );
       }
 
       // Surface effort metrics from the completed worker
@@ -5636,7 +5662,7 @@ export async function handleBuilddAction(
       if (!op || !ops.includes(op)) {
         throw new Error(`action must be one of: ${ops.join(', ')}`);
       }
-      if ((EXPERIMENT_WRITE_OPS as readonly string[]).includes(op)) {
+      if (tokenScopes == null && (EXPERIMENT_WRITE_OPS as readonly string[]).includes(op)) {
         const level = await ctx.getLevel();
         if (level !== 'admin') {
           return forbiddenResult(`manage_experiments action '${op}' requires admin token level`, level, 'admin');

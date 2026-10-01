@@ -441,6 +441,17 @@ mock.module('@/lib/auto-merge', () => ({
   escalateReviewContractFailure: mockEscalateReviewContractFailure,
 }));
 
+// The landing function — its decisions are covered in lib/pr-landing.test.ts;
+// here only the approve door's wiring is asserted. Mode resolution is the real rule.
+const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'abc123' }));
+mock.module('@/lib/pr-landing', () => ({
+  landPr: mockLandPr,
+  resolveLandingMode: (gitConfig: any) => {
+    const mode = gitConfig?.landing?.mode;
+    return mode === 'off' || mode === 'shadow' || mode === 'enforce' ? mode : 'shadow';
+  },
+}));
+
 // Own the merge-policy resolution for this file. Other test files (e.g.
 // github/webhook) globally mock '@/lib/merge-policy' with a stubbed resolvePolicy
 // that ignores our inputs and never resets (bun mock.module is global +
@@ -715,6 +726,37 @@ describe('GET /api/workers/[id]', () => {
     expect(data.error).toBe('Forbidden');
   });
 
+  it("returns 403 when a per-task token reads the same account's worker on another task", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', taskId: 'task-2' });
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('serves a per-task token its own worker without the dispatch token', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      status: 'running',
+      workspace: { id: 'ws-1', webhookConfig: { url: 'https://dispatch.example', token: 'dispatch-secret' } },
+    });
+
+    const res = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_test' } }), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('dispatch-secret');
+    expect(JSON.parse(text).status).toBe('running');
+  });
+
   it('returns worker when authenticated and authorized', async () => {
     const mockWorker = {
       id: 'worker-1',
@@ -928,6 +970,55 @@ describe('PATCH /api/workers/[id]', () => {
     const res = await PATCH(req, { params: mockParams });
 
     expect(res.status).toBe(403);
+  });
+
+  it("returns 403 when a per-task token updates the same account's worker on another task", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      level: 'worker',
+      taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-2',
+      status: 'running',
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('lets a per-task token past auth for its own worker', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      level: 'worker',
+      taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    // Reaches the handler proper: the terminal-state guard, not the auth guard.
+    expect(res.status).toBe(409);
   });
 
   it('returns 409 when worker is already completed and update is not reactivation', async () => {
@@ -7314,6 +7405,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockInsertConflictDoNothingResult = 'row';
       mockTryAutoMergeWorkerPr.mockReset();
       mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false });
+      mockLandPr.mockReset();
+      mockLandPr.mockImplementation(async () => ({ kind: 'waiting_ci', headSha: 'abc123' }));
       mockEscalateReviewerExhaustion.mockReset();
       mockEscalateReviewerExhaustion.mockResolvedValue(undefined);
       mockEscalateReviewContractFailure.mockReset();
@@ -7598,6 +7691,92 @@ describe('PATCH /api/workers/[id]', () => {
 
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // ── The landing function (gitConfig.landing.mode) ────────────────────────
+    describe('approve: one landing call (landing.mode=enforce)', () => {
+      function enforceWorkspace(mergePolicy: Record<string, unknown> = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 } }) {
+        mockWorkspacesFindFirst.mockResolvedValue({
+          id: 'ws-1',
+          gitConfig: { mergePolicy, landing: { mode: 'enforce' }, targetBranch: 'dev', defaultBranch: 'dev' },
+          releaseConfig: null,
+        });
+      }
+
+      it('approving a PR that is behind dev: ONE landing call, which refreshes once; no second attempt, no conflict-fix task', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace();
+        mockLandPr.mockImplementation(async () => ({ kind: 'updating_branch', newHeadSha: 'refreshed-head' }));
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0]).toMatchObject({
+          workspaceId: 'ws-1', installationId: 5000, repoFullName: 'org/repo', prNumber: 42,
+          door: 'approve', mode: 'enforce', policy: { tier: 'agent-review' },
+          owner: { taskId: 'original-task-1', workerId: 'original-worker' },
+        });
+        // The live head is evaluated, not the SHA the reviewer read.
+        expect(mockLandPr.mock.calls[0]![0].eventHeadSha).toBeNull();
+        expect((mockLandPr.mock.calls[0]![0] as any).bound.protectedBranches).toContain('dev');
+        // Neither legacy attempt runs, so there is no stale-head update-branch
+        // refusal to misread as a conflict, and no fix task is filed.
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      });
+
+      it('approve-after-green: the single landing call is the merge', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace();
+        mockLandPr.mockImplementation(async () => ({ kind: 'merged', sha: 'abc123' }));
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(await mockLandPr.mock.results[0]!.value).toEqual({ kind: 'merged', sha: 'abc123' });
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+
+      it('approve-only gate still stops before the landing call', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-only' } });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+
+      it('a server escalation never reaches the landing call', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace();
+        mockEnforceServerSideEscalation.mockImplementation(() => ({ verdict: 'escalate', overrideReason: 'touches auth' }));
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).not.toHaveBeenCalled();
+      });
+
+      it('shadow (the default): landPr observes, the legacy attempts still act', async () => {
+        setupReviewerTaskCompletion('approve');
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0].mode).toBe('shadow');
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('off: legacy attempts only', async () => {
+        setupReviewerTaskCompletion('approve');
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { landing: { mode: 'off' } } });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).not.toHaveBeenCalled();
         expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
       });
     });
@@ -8486,6 +8665,91 @@ describe('PATCH /api/workers/[id]', () => {
       expect(overridden.exitCause).toBe('silent_start');
       expect(overridden.error).toBe(SILENT_START_ERROR);
       expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+    });
+
+    // An interactive (claim_task, runner = 'mcp') worker has no runner turns or
+    // spend to count: turns/tokens/cost stay 0 for its whole life. That zero is
+    // not evidence a session died, so a reviewer completing through complete_task
+    // must be judged like any other completion — here the prose verdict is
+    // extracted — and never booked as a silent start and requeued with a startAt.
+    describe('interactive (runner = mcp) worker is not judged by the silent-start shape', () => {
+      function setupInteractiveReviewer() {
+        setupReviewerTaskCompletion('approve');
+        // setup queued a one-shot first row; drop it so this worker is the one PATCHed.
+        mockWorkersFindFirst.mockReset();
+        mockWorkersFindFirst
+          .mockResolvedValueOnce({
+            id: 'worker-1',
+            accountId: 'account-1',
+            status: 'running',
+            workspaceId: 'ws-1',
+            taskId: 'reviewer-task-1',
+            runner: 'mcp',
+            turns: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: '0',
+            pendingInstructions: null,
+          })
+          .mockResolvedValue({
+            id: 'original-worker',
+            workspaceId: 'ws-1',
+            taskId: 'original-task-1',
+            prNumber: 42,
+          });
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSetCalls.push(u);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        return { taskSetCalls, workerSetCalls };
+      }
+
+      it('prose verdict with zero turns/spend is extracted and completes, not requeued as silent_start', async () => {
+        const { taskSetCalls, workerSetCalls } = setupInteractiveReviewer();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(taskSetCalls.some((u: any) => u.status === 'pending')).toBe(false);
+        expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(true);
+        expect(workerSetCalls.some((u: any) => u.exitCause === 'silent_start')).toBe(false);
+        expect(workerSetCalls.some((u: any) => u.error === SILENT_START_ERROR)).toBe(false);
+      });
+
+      it('no verdict at all is a review-contract violation (code_failure), never silent_start', async () => {
+        const { taskSetCalls, workerSetCalls } = setupInteractiveReviewer();
+
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed', summary: 'The code looks reasonable to me.' },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+        expect(overridden).toBeDefined();
+        expect(overridden.exitCause).toBe('code_failure');
+        expect(overridden.error).not.toBe(SILENT_START_ERROR);
+        // Requeued on the contract-retry budget, with the infra backoff untouched.
+        const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+        expect((requeue?.context as any)?.reviewContractRetryCount).toBe(1);
+        expect((requeue?.context as any)?.infraRetryCount).toBeUndefined();
+        expect(requeue?.startAt).toBeUndefined();
+      });
     });
 
     it('structuredOutput without a verdict key: also treated as a contract violation', async () => {

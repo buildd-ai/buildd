@@ -1,5 +1,5 @@
 {
-  "id": "06adc2a6-b0bd-4db1-9f1d-88972f7d14bd",
+  "id": "1244004e-7ca3-4510-8fe4-4344994d7b65",
   "prevId": "94b9dcb1-e798-4abe-addb-387d859c15ee",
   "version": "7",
   "dialect": "postgresql",
@@ -214,6 +214,13 @@
           "type": "numeric(10, 2)",
           "primaryKey": false,
           "notNull": false
+        },
+        "host_runner": {
+          "name": "host_runner",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "max_concurrent_workers": {
           "name": "max_concurrent_workers",
@@ -11441,19 +11448,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "path_declaration": {
-          "name": "path_declaration",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "path_claim_revision": {
-          "name": "path_claim_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         },
         "required_connectors": {
           "name": "required_connectors",

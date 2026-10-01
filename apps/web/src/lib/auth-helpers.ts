@@ -109,7 +109,7 @@ export async function getRequestPrincipal(req: NextRequest): Promise<RequestPrin
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) return null;
 
   return {

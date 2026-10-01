@@ -526,6 +526,18 @@ const mockSchedulePrScopeReconcile = mock((_input: any) => {});
 mock.module('@/lib/pr-scope-reconcile-trigger', () => ({
   schedulePrScopeReconcile: mockSchedulePrScopeReconcile,
 }));
+// The landing function — its decisions are covered in lib/pr-landing.test.ts;
+// here only the door's wiring is asserted. Mode resolution is the real rule.
+const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'abc123' }));
+mock.module('@/lib/pr-landing', () => ({
+  landPr: mockLandPr,
+  resolveLandingMode: (gitConfig: any) => {
+    const mode = gitConfig?.landing?.mode;
+    return mode === 'off' || mode === 'shadow' || mode === 'enforce' ? mode : 'shadow';
+  },
+}));
+const mockCarryForwardApproval = mock(async (_p: any): Promise<any> => ({ carried: false, reason: 'test' }));
+mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForwardApproval }));
 
 // Import handler AFTER mocks
 import { POST } from './route';
@@ -662,6 +674,9 @@ function resetAll() {
   mockPreflightEscalationCheck.mockReset();
   mockTryDispatchMigrationCollisionRetry.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
+  mockLandPr.mockReset();
+  mockLandPr.mockImplementation(async () => ({ kind: 'waiting_ci', headSha: 'abc123' }));
+  mockCarryForwardApproval.mockClear();
   mockDispatchWorkflowRelease.mockReset();
   // mockReset() drops the implementation, so the passthrough is reinstalled.
   mockRecordAndDispatchRelease.mockReset();
@@ -2131,6 +2146,114 @@ describe('POST /api/github/webhook', () => {
       expect(callArgs).not.toHaveProperty('gitConfig');
     });
 
+    describe('landing function (gitConfig.landing.mode)', () => {
+      const approved = {
+        state: 'approved', terminal: true, reviewTaskId: 't-review', adoptedTaskId: 't1',
+        verdict: 'approve', confidence: 0.96, summary: 'clean', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any;
+      const green = (sha = 'abc123') => createWebhookRequest('check_suite', makeCheckSuitePayload({
+        check_suite: {
+          conclusion: 'success',
+          head_sha: sha,
+          pull_requests: [{ number: 42, head: { sha, ref: 'buildd/task-1-fix-bug' }, base: { sha: 'def456', ref: 'dev' } }],
+        },
+      }));
+      const enforce = (tier: 'auto-threshold' | 'agent-review') => {
+        withSuccessWorkerPr();
+        mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { landing: { mode: 'enforce' } }, releaseConfig: null }]);
+        mockResolvePolicy.mockReturnValue(
+          tier === 'agent-review'
+            ? { tier, agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 } }
+            : { tier, threshold: { maxLines: 800, denyPaths: [] } },
+        );
+        mockReadPrReviewStatus.mockResolvedValue(approved);
+      };
+
+      it.each(['auto-threshold', 'agent-review'] as const)('enforce, %s: one landPr call on the event SHA, no legacy merge, no ad-hoc carry-forward', async (tier) => {
+        enforce(tier);
+        mockLandPr.mockImplementation(async () => ({ kind: 'merged', sha: 'abc123' }));
+
+        const res = await POST(green());
+
+        expect(res.status).toBe(200);
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0]).toMatchObject({
+          workspaceId: 'ws1', installationId: 5000, repoFullName: 'test-org/test-repo', prNumber: 42,
+          eventHeadSha: 'abc123', door: 'check_suite', actor: { kind: 'system' }, mode: 'enforce',
+          policy: { tier }, owner: { taskId: 't1', workerId: 'w1' },
+        });
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        expect(mockCarryForwardApproval).not.toHaveBeenCalled();
+      });
+
+      it('enforce: a green on the pending-marker SHA hands that SHA to landPr, which lands it', async () => {
+        enforce('agent-review');
+        mockLandPr.mockImplementation(async (input: any) =>
+          input.eventHeadSha === 'marker-sha' ? { kind: 'merged', sha: 'marker-sha' } : { kind: 'waiting_ci', headSha: 'marker-sha' });
+
+        await POST(green('marker-sha'));
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0].eventHeadSha).toBe('marker-sha');
+        expect(await mockLandPr.mock.results[0]!.value).toEqual({ kind: 'merged', sha: 'marker-sha' });
+      });
+
+      it('enforce: a green on a stale SHA goes to landPr as-is and nothing else acts on it', async () => {
+        enforce('auto-threshold');
+        mockLandPr.mockImplementation(async () => ({ kind: 'waiting_ci', headSha: 'live-head' }));
+
+        await POST(green('stale-sha'));
+
+        expect(mockLandPr.mock.calls[0]![0].eventHeadSha).toBe('stale-sha');
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+
+      it('replay: approval, base-merge push in the same minute, then green → the webhook lands the pushed head', async () => {
+        // The approve door refreshed the branch and left a marker on `pushed-head`;
+        // the green that follows is the event that lands it.
+        enforce('agent-review');
+        mockLandPr.mockImplementation(async (input: any) => ({ kind: 'merged', sha: input.eventHeadSha }));
+
+        await POST(green('pushed-head'));
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0]).toMatchObject({ door: 'check_suite', eventHeadSha: 'pushed-head', mode: 'enforce' });
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+
+      it('shadow (the default): landPr observes, then the legacy path still merges', async () => {
+        withSuccessWorkerPr();
+
+        await POST(green());
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0].mode).toBe('shadow');
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('off: legacy path only', async () => {
+        withSuccessWorkerPr();
+        mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { landing: { mode: 'off' } } }]);
+
+        await POST(green());
+
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('human tier never reaches landPr from the webhook (the tier is the human queue)', async () => {
+        withSuccessWorkerPr({ taskRequiresReview: true });
+        mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', gitConfig: { landing: { mode: 'enforce' } } }]);
+
+        await POST(green());
+
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+    });
+
     it('passes task and mission context to resolvePolicy', async () => {
       withSuccessWorkerPr({
         taskRequiresReview: false,
@@ -3198,6 +3321,40 @@ describe('POST /api/github/webhook', () => {
 
       const openUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
       expect(openUpdate).toBeDefined();
+      expect((openUpdate!.setValues as any).prIsDraft).toBe(false);
+    });
+
+    it.each([
+      ['converted_to_draft', true],
+      ['ready_for_review', false],
+    ] as const)('records prIsDraft on %s', async (action, draft) => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-draft',
+        workspaceId: 'ws1',
+        taskId: 'task-draft',
+        prNumber: 43,
+      });
+      mockWorkspacesFindMany.mockReturnValue([]);
+
+      const payload = {
+        action,
+        pull_request: {
+          number: 43,
+          merged: false,
+          draft,
+          head: { ref: 'buildd/abc-draft', sha: 'sha-43' },
+          html_url: 'https://github.com/test-org/test-repo/pull/43',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const lifecycleUpdate = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'pr_open');
+      expect(lifecycleUpdate).toBeDefined();
+      expect((lifecycleUpdate!.setValues as any).prIsDraft).toBe(draft);
     });
 
     it('sets prLifecycleStatus=merged (and mergedAt) when PR is merged', async () => {

@@ -253,6 +253,11 @@ export interface EscalationRawItem {
    */
   prLifecycleVerifiedAt?: Date | null;
   /**
+   * Whether the PR is in draft status. Draft PRs with CI failures do not
+   * produce actionable BLOCKED cards.
+   */
+  prIsDraft?: boolean | null;
+  /**
    * Set only for a mission's own integration PR (the "Ship mission: ..."
    * bookkeeping task) when `guardMissionPrMerge` currently refuses to merge
    * it — the reason names the blocking task/PR. Re-derived live by the
@@ -950,6 +955,10 @@ export function buildActionQueue(
   // Escalation items carry task links, workspace context, and merge buttons — add first
   for (const item of escalationInbox) {
     if (item.prLifecycleStatus === 'unresolvable') continue;
+    // Draft PRs with CI failures are not actionable by the human — the owner
+    // should mark ready_for_review first. Skip them entirely so they don't clutter
+    // the Needs You queue.
+    if (item.prIsDraft && item.ciGate?.kind === 'blocked') continue;
     const key = item.prUrl ?? `task:${item.taskId}`;
     // BLOCKED: conflict-resolution retries exhausted — human must decide.
     // RESOLVING: conflict retry is live — agent is handling it, not the human.

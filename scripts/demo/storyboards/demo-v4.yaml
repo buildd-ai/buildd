@@ -59,7 +59,7 @@ steps:
     hold: 900
 
   # 3. Confirmed (t=0): the mission docks beside the chat, and the turn offers
-  # "Keep the public API backward compatible" as a standing rule.
+  # "From now on, keep the public API backward compatible" as a standing rule.
   - id: s04-rule-card
     advance: "1:00"
     goto: /app/chat/{C1}
