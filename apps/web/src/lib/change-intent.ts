@@ -87,6 +87,8 @@ interface RecordIntentsInput {
   prNumber: number;
   branch: string;
   headSha?: string | null;
+  /** The PR's base branch; surface ordering compares only same-base contenders. */
+  baseRef?: string | null;
   matchedSurfaces: string[];
 }
 
@@ -95,7 +97,7 @@ interface RecordIntentsInput {
  * for this task+surface combination).
  */
 export async function recordChangeIntents(input: RecordIntentsInput): Promise<void> {
-  const { workspaceId, taskId, prNumber, branch, headSha, matchedSurfaces } = input;
+  const { workspaceId, taskId, prNumber, branch, headSha, baseRef, matchedSurfaces } = input;
   if (!matchedSurfaces.length) return;
 
   const rows = matchedSurfaces.map((surface) => ({
@@ -105,6 +107,7 @@ export async function recordChangeIntents(input: RecordIntentsInput): Promise<vo
     prNumber,
     branch,
     headSha: headSha ?? null,
+    baseRef: baseRef ?? null,
   }));
 
   // One open row per (workspace, PR, surface). The table has no unique key for
@@ -152,9 +155,10 @@ export function conflictingIntentsWhere(
  */
 export function intentInsertIfAbsentSql(i: {
   workspaceId: string; surface: string; taskId: string | null; prNumber: number; branch: string | null; headSha: string | null;
+  baseRef?: string | null;
 }): SQL {
-  return sql`INSERT INTO "change_intents" ("workspace_id", "surface", "task_id", "pr_number", "branch", "head_sha")
-    SELECT ${i.workspaceId}::uuid, ${i.surface}, ${i.taskId}::uuid, ${i.prNumber}::int, ${i.branch}, ${i.headSha}
+  return sql`INSERT INTO "change_intents" ("workspace_id", "surface", "task_id", "pr_number", "branch", "head_sha", "base_ref")
+    SELECT ${i.workspaceId}::uuid, ${i.surface}, ${i.taskId}::uuid, ${i.prNumber}::int, ${i.branch}, ${i.headSha}, ${i.baseRef ?? null}
     WHERE NOT EXISTS (
       SELECT 1 FROM "change_intents" ci
       WHERE ci.workspace_id = ${i.workspaceId}::uuid AND ci.pr_number = ${i.prNumber}::int

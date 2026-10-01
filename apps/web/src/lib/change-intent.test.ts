@@ -245,6 +245,6 @@ describe('intentInsertIfAbsentSql', () => {
     expect(q.sql).toMatch(/^INSERT INTO "change_intents"/);
     expect(q.sql).toMatch(/WHERE NOT EXISTS/);
     expect(q.sql).toMatch(/ci\.workspace_id = \$\d+::uuid AND ci\.pr_number = \$\d+::int\s+AND ci\.surface = \$\d+ AND ci\.closed_at IS NULL/);
-    expect(q.params).toEqual(['ws-1', 'lockfile', null, 7, 'b', 'h', 'ws-1', 7, 'lockfile']);
+    expect(q.params).toEqual(['ws-1', 'lockfile', null, 7, 'b', 'h', null, 'ws-1', 7, 'lockfile']);
   });
 });

@@ -4145,6 +4145,10 @@ export const changeIntents = pgTable('change_intents', {
   prNumber: integer('pr_number'),
   branch: text('branch'),
   headSha: text('head_sha'),
+  // The PR's base branch (GitHub `base.ref`). Surface ordering compares only
+  // contenders landing on the same base; NULL = not yet known (treated as a
+  // possible same-base contender until a live read says otherwise).
+  baseRef: text('base_ref'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   closedAt: timestamp('closed_at', { withTimezone: true }),
 }, (t) => ({
@@ -4162,8 +4166,8 @@ export const changeIntentsRelations = relations(changeIntents, ({ one }) => ({
 export type ChangeIntent = typeof changeIntents.$inferSelect;
 export type NewChangeIntent = typeof changeIntents.$inferInsert;
 
-// Surface merge reservations — at most one PR per (workspace, repo, serialized
-// surface) is between "ordering passed" and "merge returned". Acquired with one
+// Surface merge reservations — at most one PR per (workspace, repo, base branch,
+// serialized surface) is between "ordering passed" and "merge returned". Acquired with one
 // INSERT ... ON CONFLICT DO UPDATE ... WHERE (expired OR same PR) compare-and-set;
 // released by token on success, failure or bounded expiry. GitHub cannot share a
 // DB transaction, so an expired holder is reconciled against GitHub before reuse.
@@ -4172,6 +4176,8 @@ export const surfaceReservations = pgTable('surface_reservations', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   repoFullName: text('repo_full_name').notNull(),
+  // The base branch the PR lands on: two PRs only contend for a slot on the same base.
+  baseRef: text('base_ref').notNull(),
   surface: text('surface').notNull(),
   prNumber: integer('pr_number').notNull(),
   headSha: text('head_sha').notNull(),
@@ -4180,7 +4186,7 @@ export const surfaceReservations = pgTable('surface_reservations', {
   reservedAt: timestamp('reserved_at', { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 }, (t) => ({
-  surfaceUnique: uniqueIndex('surface_reservations_surface_idx').on(t.workspaceId, t.repoFullName, t.surface),
+  surfaceUnique: uniqueIndex('surface_reservations_surface_idx').on(t.workspaceId, t.repoFullName, t.baseRef, t.surface),
 }));
 
 export type SurfaceReservation = typeof surfaceReservations.$inferSelect;

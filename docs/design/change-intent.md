@@ -142,12 +142,19 @@ without both, no merge door reads anything new.
 - Every merge door (unattended auto-merge, the landing function, the dashboard
   merge, `merge_pr`) asks the same guard before any branch mutation: a PR waits
   while an earlier open PR (by earliest open intent, then PR number) shares a
-  serialized surface. Surfaces come from the PR's pinned actual diff; an
-  unreadable diff or intent state defers in `enforce`.
+  serialized surface **and lands on the same base branch**. Surfaces come from
+  the PR's pinned actual diff; an unreadable diff or intent state defers in
+  `enforce`.
+- Contention is per (repository, base branch): a mission integration PR never
+  waits on, or holds up, its own task PRs that target the integration branch,
+  and a trunk PR never waits on a PR that only targets a mission branch. The
+  mission PR still serializes against other trunk PRs when it goes to trunk.
+  Intent rows record the PR's base (`base_ref`); a row with none counts until
+  a live read says the PR lands elsewhere.
 - Intent rows are now deduplicated per (workspace, PR, surface) with a guarded
   insert; a task-less row still counts as a contender.
-- The merge itself runs inside a per-surface reservation (`surface_reservations`,
-  one atomic compare-and-set), released on success or failure, expiring after a
+- The merge itself runs inside a per-surface, per-base reservation
+  (`surface_reservations`, one atomic compare-and-set), released on success or failure, expiring after a
   bounded TTL and reconciled against GitHub before reuse.
 - Closing a PR (webhook or the reconcile sweep, which also catches a lost close
   event) closes its intents and re-drives the next waiting PR. No session waits.

@@ -128,6 +128,18 @@ describe('readPinnedPrScope', () => {
     expect(read.status === 'incomplete' && read.reason).toBe('base_moved');
   });
 
+  it('carries the base branch name on a complete read (surface ordering lanes by it)', async () => {
+    const gh = scripted({ prs: [pr({ base: { sha: 'base1bbbbbbb', ref: 'dev' } }), pr({ base: { sha: 'base1bbbbbbb', ref: 'dev' } })], pages: [files(2)] });
+    const read = await readPinnedPrScope(gh.get, { repoFullName: REPO, prNumber: PR });
+    expect(read.status === 'complete' && read.baseRef).toBe('dev');
+  });
+
+  it('refuses a read whose PR was retargeted mid-read', async () => {
+    const gh = scripted({ prs: [pr({ base: { sha: 'base1bbbbbbb', ref: 'mission/x' } }), pr({ base: { sha: 'base1bbbbbbb', ref: 'dev' } })], pages: [files(2)] });
+    const read = await readPinnedPrScope(gh.get, { repoFullName: REPO, prNumber: PR });
+    expect(read.status === 'incomplete' && read.reason).toBe('base_moved');
+  });
+
   it('refuses a head other than the one the caller saw', async () => {
     const gh = scripted({ prs: [pr()], pages: [files(2)] });
     const read = await readPinnedPrScope(gh.get, { repoFullName: REPO, prNumber: PR, expectedHeadSha: 'otherheadsha' });

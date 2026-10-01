@@ -17,6 +17,12 @@
  *   3. load every open intent on the PR's serialized surfaces and group them per
  *      PR — one contender per PR, however many rows (same-PR dedupe), NULL task
  *      ids included (they are still PRs), rows with no PR provisional and inert;
+ *      only PRs landing on the SAME base branch contend (a slot is "the next
+ *      migration on trunk", not "on any branch"): a mission integration PR never
+ *      waits on, or holds up, its own task PRs that target the integration
+ *      branch, and a trunk PR never waits on a PR that targets only a mission
+ *      branch. A contender whose base is not yet recorded counts until its live
+ *      read says it lands elsewhere;
  *   4. order contenders by a single global key (earliest open intent, then PR
  *      number), so the wait graph is acyclic by construction: two PRs can never
  *      wait on each other, and a PR never waits on itself. A per-surface order
@@ -65,6 +71,8 @@ export interface IntentRow {
   taskId: string | null;
   surface: string;
   createdAt: Date;
+  /** The PR's base branch; null = not recorded yet. */
+  baseRef?: string | null;
 }
 
 export interface Contender {
@@ -75,6 +83,8 @@ export interface Contender {
   surfaces: string[];
   /** Per-surface earliest intent, ms — used only to report inversions. */
   surfaceAt: Record<string, number>;
+  /** The base branch this PR lands on; null = unknown (a possible same-base contender). */
+  baseRef: string | null;
 }
 
 export function groupContenders(rows: IntentRow[]): Contender[] {
@@ -82,9 +92,10 @@ export function groupContenders(rows: IntentRow[]): Contender[] {
   for (const r of rows) {
     if (r.prNumber === null || r.prNumber === undefined) continue; // provisional: cannot merge
     const at = new Date(r.createdAt).getTime();
-    const c = byPr.get(r.prNumber) ?? { prNumber: r.prNumber, taskId: r.taskId ?? null, createdAt: at, surfaces: [], surfaceAt: {} };
+    const c = byPr.get(r.prNumber) ?? { prNumber: r.prNumber, taskId: r.taskId ?? null, createdAt: at, surfaces: [], surfaceAt: {}, baseRef: null };
     c.createdAt = Math.min(c.createdAt, at);
     if (!c.taskId && r.taskId) c.taskId = r.taskId;
+    if (!c.baseRef && r.baseRef) c.baseRef = r.baseRef;
     if (!c.surfaces.includes(r.surface)) c.surfaces.push(r.surface);
     c.surfaceAt[r.surface] = Math.min(c.surfaceAt[r.surface] ?? Infinity, at);
     byPr.set(r.prNumber, c);
@@ -106,14 +117,35 @@ export interface OrderEvaluation {
 }
 
 /**
- * Which open PRs must close before `prNumber` may merge. A PR whose own rows
- * are missing (its intent write failed) is ordered last — conservative.
+ * Whether contender `c` can take the same slot as a PR landing on `baseRef`.
+ * Only a recorded, different base rules a contender out; an unknown base on
+ * either side stays in (conservative: a spurious wait is reconciled by the live
+ * read, a missed one lets two PRs take one migration slot).
  */
-export function evaluateSurfaceOrder(prNumber: number, rows: IntentRow[]): OrderEvaluation {
-  const contenders = groupContenders(rows);
+export function sameBaseLane(baseRef: string | null | undefined, c: Pick<Contender, 'baseRef'>): boolean {
+  return !baseRef || !c.baseRef || c.baseRef === baseRef;
+}
+
+export interface EvaluateOptions {
+  /** The base branch this PR lands on (the diff read's `base.ref`). Overrides its own rows. */
+  baseRef?: string | null;
+  /** PRs already verified live to land on a different base (their rows may not say so yet). */
+  ignorePrs?: number[];
+}
+
+/**
+ * Which open PRs must close before `prNumber` may merge. A PR whose own rows
+ * are missing (its intent write failed) is ordered last — conservative. Only
+ * PRs on the same base branch contend (`sameBaseLane`).
+ */
+export function evaluateSurfaceOrder(prNumber: number, rowsIn: IntentRow[], opts: EvaluateOptions = {}): OrderEvaluation {
+  const ignore = new Set(opts.ignorePrs ?? []);
+  const grouped = groupContenders(rowsIn.filter((r) => r.prNumber === null || !ignore.has(r.prNumber)));
+  const ownBase = opts.baseRef ?? grouped.find((c) => c.prNumber === prNumber)?.baseRef ?? null;
+  const contenders = grouped.filter((c) => c.prNumber === prNumber || sameBaseLane(ownBase, c));
   const self = contenders.find((c) => c.prNumber === prNumber) ?? null;
   const selfKey = self ?? { prNumber, createdAt: Number.POSITIVE_INFINITY };
-  const selfSurfaces = new Set(self?.surfaces ?? rows.map((r) => r.surface));
+  const selfSurfaces = new Set(self?.surfaces ?? rowsIn.map((r) => r.surface));
   const blockers: OrderEvaluation['blockers'] = [];
   const inversions: OrderEvaluation['inversions'] = [];
   for (const c of contenders) {
@@ -172,12 +204,16 @@ import { intentInsertIfAbsentSql } from '@/lib/change-intent';
 // ── Deps ─────────────────────────────────────────────────────────────────────
 
 export type PrLiveState = 'open' | 'merged' | 'closed';
+/** A contender's live GitHub state, plus the base branch it currently targets (null if GitHub omitted it). */
+export interface PrLive { state: PrLiveState; baseRef: string | null }
 
 export interface ReconcileOwnIntentsInput {
   workspaceId: string;
   prNumber: number;
   taskId: string | null;
   headSha: string;
+  /** The PR's base branch from the same pinned read; stamped on every open row. */
+  baseRef: string | null;
   /** Serialized surfaces the actual diff touches. */
   actualSurfaces: string[];
   /** Every configured serialized surface — own rows on one of these not in the diff are closed. */
@@ -189,6 +225,8 @@ export interface ReservationHolder { prNumber: number; expiresAt: Date; token: s
 export interface ReserveAttempt {
   workspaceId: string;
   repoFullName: string;
+  /** Reservations are per base branch: two PRs only contend for one slot on the same base. */
+  baseRef: string;
   surface: string;
   prNumber: number;
   headSha: string;
@@ -203,14 +241,16 @@ export interface SurfaceOrderingDeps {
   readScope: (installationId: number, repoFullName: string, prNumber: number, expectedHeadSha: string | null) => Promise<PrScopeRead>;
   reconcileOwnIntents: (input: ReconcileOwnIntentsInput) => Promise<void>;
   loadOpenIntents: (workspaceId: string, surfaces: string[]) => Promise<IntentRow[]>;
-  readPrState: (repoFullName: string, prNumber: number, installationId: number) => Promise<PrLiveState>;
+  readPrState: (repoFullName: string, prNumber: number, installationId: number) => Promise<PrLive>;
+  /** Record a contender's live base on its open rows (best-effort; ordering does not depend on it succeeding). */
+  stampBaseRef?: (workspaceId: string, prNumber: number, baseRef: string) => Promise<void>;
   /** Settle a PR found closed; `exceptPr` (the PR being evaluated) is never re-driven from inside its own decision. */
   settleClosedPr: (workspaceId: string, prNumber: number, exceptPr?: number) => Promise<void>;
   record: (event: RecordGateEventInput) => void;
   // Reservation store (acquireMergeSlot only).
   tryReserve?: (r: ReserveAttempt) => Promise<{ acquired: true; token: string } | { acquired: false; holder: ReservationHolder | null }>;
-  readHolder?: (workspaceId: string, repoFullName: string, surface: string) => Promise<ReservationHolder | null>;
-  releaseToken?: (workspaceId: string, repoFullName: string, surface: string, token: string) => Promise<void>;
+  readHolder?: (workspaceId: string, repoFullName: string, baseRef: string, surface: string) => Promise<ReservationHolder | null>;
+  releaseToken?: (workspaceId: string, repoFullName: string, baseRef: string, surface: string, token: string) => Promise<void>;
   now?: () => number;
 }
 
@@ -248,6 +288,10 @@ export interface MergeSlotRequest {
   prNumber: number;
   headSha: string;
   baseSha: string | null;
+  /** The base branch the PR lands on — the reservation lane. */
+  baseRef: string;
+  /** Contenders the guard verified live to land on another base; the recheck ignores them too. */
+  ignorePrs: number[];
   surfaces: string[];
   revision: string;
   taskId: string | null;
@@ -280,6 +324,7 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
   const quiet = input.observeOnly === true;
   let headSha = input.headSha;
   let baseSha: string | null = null;
+  let baseRef: string | null = null;
 
   const record = (outcome: RecordGateEventInput['outcome'], reason: string, detail: Record<string, unknown>) => {
     if (quiet) return;
@@ -293,7 +338,7 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
         taskId: input.taskId,
         workerId: input.workerId,
         callerOrigin: input.callerOrigin,
-        detail: { prNumber: input.prNumber, headSha, baseSha, repoFullName: input.repoFullName, door: input.door, mode, ...detail },
+        detail: { prNumber: input.prNumber, headSha, baseSha, baseRef, repoFullName: input.repoFullName, door: input.door, mode, ...detail },
       });
     } catch (err) {
       console.warn('[surface-ordering] ledger write failed:', errMessage(err));
@@ -330,6 +375,7 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
   }
   headSha = scope.headSha;
   baseSha = scope.baseSha;
+  baseRef = scope.baseRef ?? null;
   const surfaces = resolveSerializedSurfaces(scope.files, input.gitConfig);
 
   // 2. Refresh this PR's intents from the diff (also closes dropped serialized surfaces).
@@ -340,6 +386,7 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
         prNumber: input.prNumber,
         taskId: input.taskId,
         headSha,
+        baseRef,
         actualSurfaces: surfaces,
         serializedSurfaces: defs.map((d) => d.label),
       });
@@ -348,6 +395,11 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
     }
   }
   if (surfaces.length === 0) return { blocks: false, slot: null };
+  // Ordering is per base branch; without the base we cannot tell whose slot this is.
+  if (!baseRef) {
+    return refuse('unverified', "could not tell which branch this PR lands on (GitHub returned no base ref)", null, surfaces[0]);
+  }
+  const ownBase = baseRef;
 
   // 3–4. Open intents → ordered contenders.
   let rows: IntentRow[];
@@ -356,7 +408,7 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
   } catch (err) {
     return refuse('unverified', `could not read open change intents: ${errMessage(err)}`, null, surfaces[0]);
   }
-  const order = evaluateSurfaceOrder(input.prNumber, rows);
+  const order = evaluateSurfaceOrder(input.prNumber, rows, { baseRef: ownBase });
   if (order.inversions.length > 0) {
     record('warned', 'surface order differs across surfaces; the global order decides', {
       kind: 'cross_surface_cycle',
@@ -365,20 +417,31 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
     });
   }
 
-  // 5. Live state of each earlier contender: reconcile missed closes.
+  // 5. Live state of each earlier contender: reconcile missed closes, and drop
+  // one whose base was not recorded but in fact lands on another branch.
   const remaining: OrderEvaluation['blockers'] = [];
+  const otherBase: number[] = [];
   for (const [i, b] of order.blockers.entries()) {
     if (i >= MAX_BLOCKER_READS) {
       remaining.push(b);
       continue;
     }
-    let state: PrLiveState;
+    let live: PrLive;
     try {
-      state = await deps.readPrState(input.repoFullName, b.prNumber, input.installationId);
+      live = await deps.readPrState(input.repoFullName, b.prNumber, input.installationId);
     } catch (err) {
       return refuse('unverified', `could not verify whether PR #${b.prNumber} is still open: ${errMessage(err)}`, b.prNumber, b.surfaces[0] ?? null);
     }
-    if (state === 'open') {
+    if (live.state === 'open') {
+      if (live.baseRef && live.baseRef !== ownBase) {
+        otherBase.push(b.prNumber);
+        if (!quiet && deps.stampBaseRef) {
+          await deps.stampBaseRef(input.workspaceId, b.prNumber, live.baseRef).catch((err) =>
+            console.warn(`[surface-ordering] recording PR #${b.prNumber}'s base failed:`, errMessage(err)),
+          );
+        }
+        continue;
+      }
       remaining.push(b);
       continue;
     }
@@ -393,7 +456,7 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
     const first = remaining[0];
     return refuse(
       'ordering',
-      `waiting for PR #${first.prNumber} to close first: both change ${first.surfaces.join(', ')}`,
+      `waiting for PR #${first.prNumber} to close first: both change ${first.surfaces.join(', ')} on ${ownBase}`,
       first.prNumber,
       first.surfaces[0] ?? null,
       { waitingOn: remaining.map((b) => b.prNumber), revision: order.revision },
@@ -410,6 +473,8 @@ export async function guardSurfaceOrdering(input: GuardInput, depsIn?: Partial<S
       prNumber: input.prNumber,
       headSha,
       baseSha,
+      baseRef: ownBase,
+      ignorePrs: otherBase,
       surfaces,
       revision: order.revision,
       taskId: input.taskId,
@@ -439,7 +504,7 @@ export async function acquireMergeSlot(req: MergeSlotRequest | null, depsIn?: Pa
   const held: Array<{ surface: string; token: string }> = [];
   const release = async () => {
     for (const h of held.splice(0)) {
-      await deps.releaseToken!(req.workspaceId, req.repoFullName, h.surface, h.token).catch((err) =>
+      await deps.releaseToken!(req.workspaceId, req.repoFullName, req.baseRef, h.surface, h.token).catch((err) =>
         console.warn(`[surface-ordering] release of ${h.surface} for PR #${req.prNumber} failed (expires on its own):`, errMessage(err)),
       );
     }
@@ -455,7 +520,7 @@ export async function acquireMergeSlot(req: MergeSlotRequest | null, depsIn?: Pa
         taskId: req.taskId,
         workerId: req.workerId,
         callerOrigin: req.callerOrigin,
-        detail: { prNumber: req.prNumber, headSha: req.headSha, baseSha: req.baseSha, repoFullName: req.repoFullName, door: req.door, revision: req.revision, ...detail },
+        detail: { prNumber: req.prNumber, headSha: req.headSha, baseSha: req.baseSha, baseRef: req.baseRef, repoFullName: req.repoFullName, door: req.door, revision: req.revision, ...detail },
       });
     } catch { /* ledger is never what fails a merge */ }
   };
@@ -468,14 +533,14 @@ export async function acquireMergeSlot(req: MergeSlotRequest | null, depsIn?: Pa
   try {
     for (const surface of [...req.surfaces].sort()) {
       const res = await deps.tryReserve!({
-        workspaceId: req.workspaceId, repoFullName: req.repoFullName, surface, prNumber: req.prNumber,
+        workspaceId: req.workspaceId, repoFullName: req.repoFullName, baseRef: req.baseRef, surface, prNumber: req.prNumber,
         headSha: req.headSha, baseSha: req.baseSha, ttlMs: SURFACE_RESERVATION_TTL_MS, now: now(),
       });
       if (res.acquired) {
         held.push({ surface, token: res.token });
         continue;
       }
-      const holder = res.holder ?? (await deps.readHolder!(req.workspaceId, req.repoFullName, surface));
+      const holder = res.holder ?? (await deps.readHolder!(req.workspaceId, req.repoFullName, req.baseRef, surface));
       if (!holder || holder.expiresAt.getTime() >= now()) {
         return refuse(`PR #${holder?.prNumber ?? '?'} is merging on ${surface} right now`, { kind: 'reserved', surface, counterpartPrNumber: holder?.prNumber ?? null });
       }
@@ -483,13 +548,13 @@ export async function acquireMergeSlot(req: MergeSlotRequest | null, depsIn?: Pa
       // so ask GitHub what happened to the holder before reusing the slot.
       let state: PrLiveState;
       try {
-        state = await deps.readPrState(req.repoFullName, holder.prNumber, req.installationId);
+        state = (await deps.readPrState(req.repoFullName, holder.prNumber, req.installationId)).state;
       } catch (err) {
         return refuse(`could not verify the expired reservation of PR #${holder.prNumber} on ${surface}: ${errMessage(err)}`, { kind: 'unverified', surface, counterpartPrNumber: holder.prNumber });
       }
       if (state !== 'open') await deps.settleClosedPr(req.workspaceId, holder.prNumber, req.prNumber).catch(() => {});
       const retry = await deps.tryReserve!({
-        workspaceId: req.workspaceId, repoFullName: req.repoFullName, surface, prNumber: req.prNumber,
+        workspaceId: req.workspaceId, repoFullName: req.repoFullName, baseRef: req.baseRef, surface, prNumber: req.prNumber,
         headSha: req.headSha, baseSha: req.baseSha, ttlMs: SURFACE_RESERVATION_TTL_MS, now: now(),
         takeoverToken: holder.token,
       });
@@ -501,7 +566,7 @@ export async function acquireMergeSlot(req: MergeSlotRequest | null, depsIn?: Pa
 
     // Recheck immediately before the merge: the order may have changed since the guard read it.
     const rows = await deps.loadOpenIntents(req.workspaceId, req.surfaces);
-    const order = evaluateSurfaceOrder(req.prNumber, rows);
+    const order = evaluateSurfaceOrder(req.prNumber, rows, { baseRef: req.baseRef, ignorePrs: req.ignorePrs });
     if (order.blockers.length > 0) {
       const b = order.blockers[0];
       return refuse(`PR #${b.prNumber} is now ahead on ${b.surfaces.join(', ')}`, { kind: 'ordering', surface: b.surfaces[0] ?? null, counterpartPrNumber: b.prNumber, recheck: true });
@@ -532,7 +597,8 @@ export async function withMergeSlot<T>(
 // ── Close → settle + wake ────────────────────────────────────────────────────
 
 export interface SettleDeps {
-  loadOwnOpenSurfaces: (workspaceId: string, prNumber: number) => Promise<string[]>;
+  /** The closing PR's open surfaces and the base branch its rows record (null = unknown). */
+  loadOwnOpenSurfaces: (workspaceId: string, prNumber: number) => Promise<{ surfaces: string[]; baseRef: string | null }>;
   closeIntents: (workspaceId: string, prNumber: number) => Promise<void>;
   releaseReservations: (workspaceId: string, prNumber: number) => Promise<void>;
   loadOpenIntents: (workspaceId: string, surfaces: string[]) => Promise<IntentRow[]>;
@@ -544,7 +610,8 @@ export interface SettleDeps {
 /**
  * A PR merged or closed (webhook, reconcile sweep, or a guard that found the
  * close was missed): its intents close, its reservations go, and the next
- * contender on each surface it held is re-driven. Never throws.
+ * contender on each surface it held is re-driven — the next one landing on the
+ * same base branch; with that base unknown, the next one on each base. Never throws.
  */
 export async function settleSurfaceIntentsOnClose(
   input: { workspaceId: string; prNumber: number; exceptPr?: number },
@@ -553,8 +620,11 @@ export async function settleSurfaceIntentsOnClose(
   const deps = { ...defaultSettleDeps(), ...depsIn } as SettleDeps;
   const { workspaceId, prNumber } = input;
   let held: string[] = [];
+  let closedBase: string | null = null;
   try {
-    held = await deps.loadOwnOpenSurfaces(workspaceId, prNumber);
+    const own = await deps.loadOwnOpenSurfaces(workspaceId, prNumber);
+    held = own.surfaces;
+    closedBase = own.baseRef;
   } catch (err) {
     console.warn(`[surface-ordering] could not read PR #${prNumber}'s surfaces before closing:`, errMessage(err));
   }
@@ -576,8 +646,13 @@ export async function settleSurfaceIntentsOnClose(
     const contenders = groupContenders(await deps.loadOpenIntents(workspaceId, surfaces)).filter((c) => c.prNumber !== prNumber);
     const next = new Set<number>();
     for (const s of surfaces) {
-      const head = contenders.find((c) => c.surfaces.includes(s));
-      if (head && head.prNumber !== input.exceptPr) next.add(head.prNumber);
+      const onSurface = contenders.filter((c) => c.surfaces.includes(s));
+      // Only the closed PR's lane moved. Unknown base: wake the head of every lane.
+      const lanes = closedBase ? [closedBase] : [...new Set(onSurface.map((c) => c.baseRef))];
+      for (const lane of lanes) {
+        const head = onSurface.find((c) => (lane ? sameBaseLane(lane, c) : c.baseRef === null));
+        if (head && head.prNumber !== input.exceptPr) next.add(head.prNumber);
+      }
     }
     const woke: number[] = [];
     for (const n of next) {
@@ -608,10 +683,14 @@ function defaultDeps(): SurfaceOrderingDeps {
     async readPrState(repoFullName, prNumber, installationId) {
       const { githubApi } = await import('@/lib/github');
       const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-      if (pr?.merged === true || typeof pr?.merged_at === 'string') return 'merged';
-      if (pr?.state === 'closed') return 'closed';
-      if (pr?.state === 'open') return 'open';
+      const baseRef = typeof pr?.base?.ref === 'string' && pr.base.ref ? pr.base.ref : null;
+      if (pr?.merged === true || typeof pr?.merged_at === 'string') return { state: 'merged', baseRef };
+      if (pr?.state === 'closed') return { state: 'closed', baseRef };
+      if (pr?.state === 'open') return { state: 'open', baseRef };
       throw new Error(`unrecognised PR state ${String(pr?.state)}`);
+    },
+    async stampBaseRef(workspaceId, prNumber, baseRef) {
+      await db.update(changeIntents).set({ baseRef }).where(ownOpenIntentsWhere(workspaceId, prNumber));
     },
     settleClosedPr: (workspaceId, prNumber, exceptPr) => settleSurfaceIntentsOnClose({ workspaceId, prNumber, exceptPr }).then(() => {}),
     record: (event) => {
@@ -634,8 +713,11 @@ function defaultDeps(): SurfaceOrderingDeps {
 function defaultSettleDeps(): SettleDeps {
   return {
     async loadOwnOpenSurfaces(workspaceId, prNumber) {
-      const rows = await db.select({ surface: changeIntents.surface }).from(changeIntents).where(ownOpenIntentsWhere(workspaceId, prNumber));
-      return [...new Set(rows.map((r) => r.surface))];
+      const rows = await db
+        .select({ surface: changeIntents.surface, baseRef: changeIntents.baseRef })
+        .from(changeIntents)
+        .where(ownOpenIntentsWhere(workspaceId, prNumber));
+      return { surfaces: [...new Set(rows.map((r) => r.surface))], baseRef: rows.find((r) => r.baseRef)?.baseRef ?? null };
     },
     async closeIntents(workspaceId, prNumber) {
       await db.update(changeIntents).set({ closedAt: new Date() }).where(ownOpenIntentsWhere(workspaceId, prNumber));
@@ -658,15 +740,16 @@ function defaultSettleDeps(): SettleDeps {
 async function loadOpenIntentsDb(workspaceId: string, surfaces: string[]): Promise<IntentRow[]> {
   if (surfaces.length === 0) return [];
   return db
-    .select({ prNumber: changeIntents.prNumber, taskId: changeIntents.taskId, surface: changeIntents.surface, createdAt: changeIntents.createdAt })
+    .select({ prNumber: changeIntents.prNumber, taskId: changeIntents.taskId, surface: changeIntents.surface, createdAt: changeIntents.createdAt, baseRef: changeIntents.baseRef })
     .from(changeIntents)
     .where(openIntentsOnSurfacesWhere(workspaceId, surfaces));
 }
 
 async function reconcileOwnIntentsDb(i: ReconcileOwnIntentsInput): Promise<void> {
   const own = ownOpenIntentsWhere(i.workspaceId, i.prNumber);
-  // Same-PR head update: every open row of this PR now describes this head.
-  await db.update(changeIntents).set({ headSha: i.headSha }).where(own);
+  // Same-PR head update: every open row of this PR now describes this head (and
+  // its current base — a retargeted PR moves lanes with its next read).
+  await db.update(changeIntents).set(i.baseRef ? { headSha: i.headSha, baseRef: i.baseRef } : { headSha: i.headSha }).where(own);
   // The diff is authoritative over the declaration for serialized surfaces.
   const dropped = i.serializedSurfaces.filter((s) => !i.actualSurfaces.includes(s));
   if (dropped.length > 0) {
@@ -674,7 +757,7 @@ async function reconcileOwnIntentsDb(i: ReconcileOwnIntentsInput): Promise<void>
   }
   for (const surface of i.actualSurfaces) {
     await db.execute(intentInsertIfAbsentSql({
-      workspaceId: i.workspaceId, surface, taskId: i.taskId, prNumber: i.prNumber, branch: null, headSha: i.headSha,
+      workspaceId: i.workspaceId, surface, taskId: i.taskId, prNumber: i.prNumber, branch: null, headSha: i.headSha, baseRef: i.baseRef,
     }));
   }
 }
@@ -686,6 +769,7 @@ async function tryReserveDb(r: ReserveAttempt) {
     .values({
       workspaceId: r.workspaceId,
       repoFullName: r.repoFullName,
+      baseRef: r.baseRef,
       surface: r.surface,
       prNumber: r.prNumber,
       headSha: r.headSha,
@@ -695,7 +779,7 @@ async function tryReserveDb(r: ReserveAttempt) {
       expiresAt: new Date(r.now + r.ttlMs),
     })
     .onConflictDoUpdate({
-      target: [surfaceReservations.workspaceId, surfaceReservations.repoFullName, surfaceReservations.surface],
+      target: [surfaceReservations.workspaceId, surfaceReservations.repoFullName, surfaceReservations.baseRef, surfaceReservations.surface],
       set: {
         prNumber: sql`excluded.pr_number`,
         headSha: sql`excluded.head_sha`,
@@ -711,22 +795,26 @@ async function tryReserveDb(r: ReserveAttempt) {
   return { acquired: false as const, holder: null };
 }
 
-async function readHolderDb(workspaceId: string, repoFullName: string, surface: string) {
+export function reservationLaneWhere(workspaceId: string, repoFullName: string, baseRef: string, surface: string): SQL {
+  return and(
+    eq(surfaceReservations.workspaceId, workspaceId),
+    eq(surfaceReservations.repoFullName, repoFullName),
+    eq(surfaceReservations.baseRef, baseRef),
+    eq(surfaceReservations.surface, surface),
+  )!;
+}
+
+async function readHolderDb(workspaceId: string, repoFullName: string, baseRef: string, surface: string) {
   const [row] = await db
     .select({ prNumber: surfaceReservations.prNumber, expiresAt: surfaceReservations.expiresAt, token: surfaceReservations.token })
     .from(surfaceReservations)
-    .where(and(eq(surfaceReservations.workspaceId, workspaceId), eq(surfaceReservations.repoFullName, repoFullName), eq(surfaceReservations.surface, surface)))
+    .where(reservationLaneWhere(workspaceId, repoFullName, baseRef, surface))
     .limit(1);
   return row ?? null;
 }
 
-async function releaseTokenDb(workspaceId: string, repoFullName: string, surface: string, token: string) {
+async function releaseTokenDb(workspaceId: string, repoFullName: string, baseRef: string, surface: string, token: string) {
   await db
     .delete(surfaceReservations)
-    .where(and(
-      eq(surfaceReservations.workspaceId, workspaceId),
-      eq(surfaceReservations.repoFullName, repoFullName),
-      eq(surfaceReservations.surface, surface),
-      eq(surfaceReservations.token, token),
-    ));
+    .where(and(reservationLaneWhere(workspaceId, repoFullName, baseRef, surface), eq(surfaceReservations.token, token)));
 }

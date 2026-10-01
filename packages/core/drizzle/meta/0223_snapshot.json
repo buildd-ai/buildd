@@ -1,5 +1,5 @@
 {
-  "id": "6a575550-0ff3-4a6e-a44f-df7c4d2236fc",
+  "id": "07b9d269-b6fc-4c2e-a32f-dafc01bb866a",
   "prevId": "1b93ea51-c3fa-49f1-a6fb-9ddf2353d1a9",
   "version": "7",
   "dialect": "postgresql",
@@ -1399,6 +1399,12 @@
         },
         "head_sha": {
           "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "base_ref": {
+          "name": "base_ref",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -10200,6 +10206,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "base_ref": {
+          "name": "base_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "surface": {
           "name": "surface",
           "type": "text",
@@ -10256,6 +10268,12 @@
             },
             {
               "expression": "repo_full_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "base_ref",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

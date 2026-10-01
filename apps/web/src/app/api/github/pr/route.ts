@@ -962,6 +962,7 @@ export async function POST(req: NextRequest) {
           prNumber: prData.number,
           branch: head,
           headSha: prData.head?.sha ?? null,
+          baseRef: typeof prData.base?.ref === 'string' && prData.base.ref ? prData.base.ref : effectiveBase ?? null,
           matchedSurfaces,
         });
 

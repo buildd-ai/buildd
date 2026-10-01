@@ -2280,6 +2280,18 @@ describe('tryAutoMergeWorkerPr — surface ordering gate', () => {
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('without a passed workspace id, the task\'s workspace is read once for the whole call', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
+    mockFindFirst = mock((opts: any) => (opts?.columns?.workspaceId && Object.keys(opts.columns).length === 1 ? { workspaceId: 'ws-1' } : null) as any);
+    await call({ worker: { id: 'worker-1', taskId: 'task-1' } });
+    const workspaceReads = mockFindFirst.mock.calls.filter(([opts]: any[]) => opts?.columns?.workspaceId && Object.keys(opts.columns).length === 1);
+    expect(workspaceReads).toHaveLength(1);
+    expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws-1' });
+  });
+
   it('default (gate passes, no slot): merges exactly as before', async () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })

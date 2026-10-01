@@ -154,6 +154,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
         owner: { taskId: worker.taskId, workerId: worker.id },
         mission,
         releaseConfig: workspace.releaseConfig ?? null,
+        gitConfig: workspace.gitConfig ?? null,
       };
       return { ok: true, target };
     },
