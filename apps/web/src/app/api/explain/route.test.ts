@@ -141,6 +141,30 @@ describe('GET /api/explain — scoping', () => {
     expect(mockExplainMission).not.toHaveBeenCalled();
   });
 
+  it('404s a workspace-scoped mission when the key has no access to its workspace', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: WS, teamId: 'team-1' }));
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async () => false);
+    const res = await GET(req(`missionId=${MISSION}`));
+    expect(res.status).toBe(404);
+    expect(mockVerifyAccountWorkspaceAccess).toHaveBeenCalledWith('acct-1', WS);
+    expect(mockExplainMission).not.toHaveBeenCalled();
+  });
+
+  it('explains a workspace-scoped mission when the key is linked to its workspace', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: WS, teamId: 'team-1' }));
+    const res = await GET(req(`missionId=${MISSION}`));
+    expect(res.status).toBe(200);
+    expect(mockExplainMission).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not consult the account predicate for a team-level mission', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: null, teamId: 'team-1' }));
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async () => false);
+    const res = await GET(req(`missionId=${MISSION}`));
+    expect(res.status).toBe(200);
+    expect(mockVerifyAccountWorkspaceAccess).not.toHaveBeenCalled();
+  });
+
   it('explains a team-level mission (workspaceId NULL, teamId matches)', async () => {
     mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: null, teamId: 'team-1' }));
     mockExplainMission.mockImplementation(async () => ({ scope: 'mission', subjects: [{ state: 'active' }] }));
@@ -285,6 +309,14 @@ describe('GET /api/explain — dashboard session', () => {
     const res = await GET(sessionReq(`taskId=${TASK}`));
     expect(res.status).toBe(404);
     expect(mockExplainTask).not.toHaveBeenCalled();
+  });
+
+  it('explains a workspace-scoped mission via session without consulting the account predicate', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: WS, teamId: 'team-1' }));
+    mockVerifyAccountWorkspaceAccess.mockImplementation(async () => false);
+    const res = await GET(sessionReq(`missionId=${MISSION}`));
+    expect(res.status).toBe(200);
+    expect(mockVerifyAccountWorkspaceAccess).not.toHaveBeenCalled();
   });
 
   it('explains a team-level mission via session', async () => {
