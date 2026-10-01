@@ -259,10 +259,10 @@ export function mcpGroupPurpose(group: McpToolGroup, actions: readonly string[])
 
 /** One short line per action. The long form is `help`. */
 export const ACTION_SUMMARY: Record<BuilddAction, string> = {
-  manage_missions: 'list, create, edit, arm or delete missions; link tasks; evaluate criteria',
+  manage_missions: 'list, create, edit, arm, delete missions; link tasks; criteria',
   manage_initiatives: 'initiatives: containers above missions',
   link_tracker: 'link a mission to a Linear project or issue',
-  get_visual_review: "visual QA per screen, shot links; workspaceId alone: missions awaiting your review",
+  get_visual_review: "per-screen visual QA and shots; workspaceId alone: missions awaiting review",
   list_discrepancies: 'spec vs code discrepancy rows',
   get_discrepancy: 'one discrepancy with its evidence',
   adjudicate_discrepancy: 'accept a discrepancy or flip its direction',
@@ -282,7 +282,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_failure_analytics: 'failure patterns; error= finds a known one',
   get_budget_forecast: 'session pressure and budget burn',
   get_usage_stats: 'token, cost and turn stats',
-  get_manifest_coverage: 'manifest coverage by workspace, mission, kind',
+  get_manifest_coverage: 'manifest coverage by scope and kind',
   get_path_claim_stats: 'path-claim outcome counts',
   list_connectors: 'mounted connectors and their health',
   list_runners: 'slots, branch, build, heartbeat',
@@ -318,7 +318,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   manage_model_tiers: 'model per tier',
   manage_evidence_backends: 'evidence buckets',
   manage_secrets: 'encrypted MCP credential secrets',
-  consolidate_knowledge: 'find duplicate or decayed knowledge; archive',
+  consolidate_knowledge: 'find duplicate or stale knowledge; archive',
   memory_delete: 'permanently delete a memory',
   claim_task: 'claim your assignment, the next, or a named pending task',
   update_progress: 'report progress; returns messages for you',
