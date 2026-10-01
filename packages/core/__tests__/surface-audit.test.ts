@@ -8,6 +8,8 @@ import {
   isSurfaceAuditTask,
   isSurfaceFixTask,
   isUiSurfacePath,
+  isRenderedSurfaceChange,
+  surfaceAuditMissingReason,
   planSurfaceFixFollowUp,
   surfaceAuditRound,
   surfaceAuditTitle,
@@ -275,5 +277,38 @@ describe('buildSurfaceAuditDescription — later rounds', () => {
   it('a round-1 description does not mention rounds', () => {
     const desc = buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [], requiredRoutes: [] });
     expect(desc).not.toContain('Round ');
+  });
+});
+
+describe('isRenderedSurfaceChange', () => {
+  it('matches UI source files', () => {
+    expect(isRenderedSurfaceChange('apps/web/src/components/Card.tsx')).toBe(true);
+    expect(isRenderedSurfaceChange('apps/web/src/app/app/(protected)/team/page.tsx')).toBe(true);
+  });
+
+  it('ignores API routes, tests, stories, snapshots and docs', () => {
+    expect(isRenderedSurfaceChange('apps/web/src/app/api/tasks/route.ts')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/components/Card.test.tsx')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/components/Card.stories.tsx')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/components/__tests__/x.tsx')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/app/notes.md')).toBe(false);
+  });
+
+  it('ignores files outside the UI directories', () => {
+    expect(isRenderedSurfaceChange('packages/core/db/schema.ts')).toBe(false);
+  });
+});
+
+describe('surfaceAuditMissingReason', () => {
+  it('names the files, the evidence, and both ways out', () => {
+    const r = surfaceAuditMissingReason(['a/one.tsx', 'a/two.tsx'], 'diff');
+    expect(r).toContain('its merged PRs changed a/one.tsx, a/two.tsx');
+    expect(r).toContain('[surface audit]');
+    expect(r).toContain('surfaceAuditWaiver');
+  });
+
+  it('caps the list and says how many more', () => {
+    const r = surfaceAuditMissingReason(['1', '2', '3', '4', '5'], 'manifest');
+    expect(r).toContain('its tasks declare 1, 2, 3 and 2 more');
   });
 });
