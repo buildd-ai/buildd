@@ -17,6 +17,7 @@ import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskCategorize } from '@/lib/task-category-decision';
 import { scheduleTaskRoleShadow } from '@/lib/task-role-decision';
+import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
@@ -1482,6 +1483,36 @@ export async function POST(req: NextRequest) {
         }, after);
       } catch (err) {
         console.error('[task-create] role shadow scheduling failed (non-fatal):', err);
+      }
+    }
+
+    // The creation-manifest shadow (lib/task-manifest-prediction.ts, design
+    // §5a): which files the decision model would declare for a missing-scope
+    // task. Opt-in per team, after the response, record only — the manifest,
+    // dependsOn and every rejection above are already final. Explicit (or
+    // deterministically inferred) concrete manifests win, so none is scheduled.
+    if (
+      intake.outcome.action !== 'attached'
+      && (task.taskClass ?? 'work') === 'work'
+      && targetWorkspace.teamId
+      && !hasConcretePathManifest(task.pathManifest ?? null)
+    ) {
+      try {
+        const taskContext = (task.context ?? null) as Record<string, unknown> | null;
+        scheduleCreationManifestShadow({
+          taskId: task.id,
+          teamId: targetWorkspace.teamId,
+          workspaceId,
+          missionId: task.missionId ?? null,
+          accountId: creatorContext.createdByAccountId ?? null,
+          title: task.title,
+          description: task.description ?? null,
+          createdAt: task.createdAt instanceof Date ? task.createdAt : new Date(),
+          callerManifest: task.pathManifest ?? null,
+          baseRef: typeof taskContext?.baseBranch === 'string' ? taskContext.baseBranch : null,
+        }, after);
+      } catch (err) {
+        console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);
       }
     }
 

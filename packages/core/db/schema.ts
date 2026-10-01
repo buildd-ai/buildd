@@ -4646,3 +4646,51 @@ export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
 
 export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
 export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;
+
+// Creation-time manifest predictions (docs/design/conflict-aware-orchestration.md
+// §5a, packages/core/manifest-prediction.ts). One row per task per candidate
+// policy, written in shadow AFTER the creation response for teams that opted in
+// to `orchestration_manifest`. Each pick also writes a content-free
+// orchestration_decisions row; THIS row holds what those rows cannot: the
+// ranked candidate files (so a pick's opaque label maps back to a file), each
+// pick's dynamic-definition fingerprint and offered-index map, the selection,
+// truncation/unknown-scope markers, candidate coverage and the same-task
+// baselines. It never feeds tasks.path_manifest or dependsOn.
+export const orchestrationManifestPredictions = pgTable('orchestration_manifest_predictions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  decisionId: text('decision_id').notNull(),
+  promptVersion: text('prompt_version').notNull(),
+  candidatePolicyVersion: text('candidate_policy_version').notNull(),
+  mode: text('mode').notNull().$type<'shadow' | 'gated' | 'live'>(),
+  // The leakage cutoff: neighbours/diffs must predate the task's creation.
+  taskCreatedAt: timestamp('task_created_at', { withTimezone: true }).notNull(),
+  candidates: jsonb('candidates').$type<string[]>().notNull(),
+  candidateSources: jsonb('candidate_sources').$type<string[]>().notNull(),
+  candidateCount: integer('candidate_count').notNull(),
+  candidateTruncated: boolean('candidate_truncated').notNull().default(false),
+  candidateOmitted: integer('candidate_omitted').notNull().default(0),
+  // { source, neighbours, neighboursUsed, excludedFuture, cbm, revision, revisionPinned, ... }
+  coverage: jsonb('coverage').$type<Record<string, unknown>>().notNull(),
+  // [{ step, fingerprint, decisionVersion, offered: number[], suggested, path, confidence, status, reason, applied }]
+  picks: jsonb('picks').$type<Array<Record<string, unknown>>>().notNull(),
+  selected: jsonb('selected').$type<string[]>().notNull(),
+  // done | exhausted | pick_cap | deadline | fallback | no_candidates | invalid | missing_key | retrieval_deadline
+  stopReason: text('stop_reason').notNull(),
+  complete: boolean('complete').notNull().default(false),
+  unknownScope: boolean('unknown_scope').notNull().default(true),
+  allApplied: boolean('all_applied').notNull().default(false),
+  pickCap: integer('pick_cap').notNull(),
+  regexPaths: jsonb('regex_paths').$type<string[]>().notNull(),
+  neighbourUnionPaths: jsonb('neighbour_union_paths').$type<string[]>().notNull(),
+  latencyMs: integer('latency_ms').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskPolicyIdx: uniqueIndex('orchestration_manifest_predictions_task_policy_idx').on(t.taskId, t.candidatePolicyVersion),
+  workspaceCreatedIdx: index('orchestration_manifest_predictions_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
+export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
