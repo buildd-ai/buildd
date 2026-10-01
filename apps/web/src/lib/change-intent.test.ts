@@ -190,3 +190,61 @@ describe('resolveAnchorInjections', () => {
     expect(pathsOverlap(fullA, fullB)).toBe(true);
   });
 });
+
+// ─── Schema-only trigger + NULL-safe exclusion (conflict-aware-orchestration §3) ─
+
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { conflictingIntentsWhere, intentInsertIfAbsentSql } from './change-intent';
+
+const NS_CONFIG = {
+  sequenceNamespaces: [{
+    dir: 'packages/core/drizzle',
+    anchorFile: 'packages/core/drizzle/meta/_journal.json',
+    label: 'Drizzle migrations',
+    triggers: ['packages/core/db/schema.ts'],
+  }],
+} as unknown as WorkspaceGitConfig;
+
+describe('resolveAnchorInjections — schema triggers', () => {
+  test('a schema-only manifest gets the namespace anchor', () => {
+    expect(resolveAnchorInjections(['packages/core/db/schema.ts'], NS_CONFIG)).toEqual(['packages/core/drizzle/meta/_journal.json']);
+  });
+
+  test('a manifest directory containing the trigger gets the anchor', () => {
+    expect(resolveAnchorInjections(['packages/core/db'], NS_CONFIG)).toEqual(['packages/core/drizzle/meta/_journal.json']);
+  });
+
+  test('no trigger configured: schema-only manifest gets nothing (unchanged default)', () => {
+    const cfg = { sequenceNamespaces: [{ dir: 'packages/core/drizzle', anchorFile: 'packages/core/drizzle/meta/_journal.json', label: 'm' }] } as unknown as WorkspaceGitConfig;
+    expect(resolveAnchorInjections(['packages/core/db/schema.ts'], cfg)).toEqual([]);
+  });
+
+  test('unrelated manifest gets nothing', () => {
+    expect(resolveAnchorInjections(['apps/web/src/a.ts'], NS_CONFIG)).toEqual([]);
+  });
+});
+
+describe('conflictingIntentsWhere', () => {
+  const dialect = new PgDialect();
+  test('excluding a task keeps rows whose task id is NULL (SQL <> drops NULL)', () => {
+    const q = dialect.sqlToQuery(conflictingIntentsWhere('ws-1', ['s'], 'task-1'));
+    expect(q.sql).toContain('"change_intents"."workspace_id" = $1');
+    expect(q.sql).toContain('"change_intents"."closed_at" is null');
+    expect(q.sql).toMatch(/\("change_intents"\."task_id" is null or "change_intents"\."task_id" <> \$\d\)/);
+  });
+
+  test('no exclusion: no task predicate at all', () => {
+    const q = dialect.sqlToQuery(conflictingIntentsWhere('ws-1', ['s'], null));
+    expect(q.sql).not.toContain('task_id');
+  });
+});
+
+describe('intentInsertIfAbsentSql', () => {
+  test('one statement, guarded by NOT EXISTS on an open row for the same workspace, PR and surface', () => {
+    const q = new PgDialect().sqlToQuery(intentInsertIfAbsentSql({ workspaceId: 'ws-1', surface: 'lockfile', taskId: null, prNumber: 7, branch: 'b', headSha: 'h' }));
+    expect(q.sql).toMatch(/^INSERT INTO "change_intents"/);
+    expect(q.sql).toMatch(/WHERE NOT EXISTS/);
+    expect(q.sql).toMatch(/ci\.workspace_id = \$\d+::uuid AND ci\.pr_number = \$\d+::int\s+AND ci\.surface = \$\d+ AND ci\.closed_at IS NULL/);
+    expect(q.params).toEqual(['ws-1', 'lockfile', null, 7, 'b', 'h', null, 'ws-1', 7, 'lockfile']);
+  });
+});

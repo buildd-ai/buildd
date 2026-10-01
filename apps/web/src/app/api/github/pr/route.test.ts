@@ -191,6 +191,18 @@ mock.module('@/lib/pr-landing', () => ({
   },
 }));
 
+// Surface merge ordering door. Default: ordering off (PASS, merge runs as-is),
+// which is what the real door does for a workspace that has not opted in.
+const SURFACE_PASS = { blocks: false as const, slot: null };
+const mockCheckSurfaceOrder = mock(async (_input: any) => SURFACE_PASS as any);
+const mockMergeInSurfaceSlot = mock(async (verdict: any, merge: () => Promise<any>) =>
+  verdict.blocks ? { refused: verdict.reason } : { result: await merge() },
+);
+mock.module('@/lib/surface-ordering-door', () => ({
+  checkSurfaceOrder: mockCheckSurfaceOrder,
+  mergeInSurfaceSlot: mockMergeInSurfaceSlot,
+}));
+
 // Import handler AFTER mocks
 const mockCloseAncestorRetryPrs = mock(async (_opts: any) => [] as any[]);
 mock.module('@/lib/retry-pr-supersession', () => ({ closeAncestorRetryPrs: mockCloseAncestorRetryPrs }));
@@ -4091,6 +4103,67 @@ describe('PUT /api/github/pr', () => {
 
       expect(res.status).toBe(409);
       expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('surface merge ordering (merge_pr door)', () => {
+    function plainWorker(level?: string) {
+      mockAuthenticateApiKey.mockResolvedValue(level ? { ...ACCOUNT, level } : ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: null,
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    }
+    const put = (body: Record<string, unknown> = {}) => PUT(createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, ...body },
+    }));
+
+    beforeEach(() => {
+      mockCheckSurfaceOrder.mockReset();
+      mockCheckSurfaceOrder.mockResolvedValue(SURFACE_PASS as any);
+      mockMergeInSurfaceSlot.mockClear();
+    });
+
+    it('an ordering wait returns 409 naming the earlier PR, and never merges', async () => {
+      plainWorker();
+      mockCheckSurfaceOrder.mockResolvedValue({
+        blocks: true, kind: 'ordering', reason: 'waiting for PR #40 to close first: both change Drizzle migrations on dev',
+        counterpartPrNumber: 40, surface: 'Drizzle migrations',
+      } as any);
+      const res = await put();
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.error).toContain('PR #40');
+      expect(data.waitingOnPr).toBe(40);
+      expect(data.surface).toBe('Drizzle migrations');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+      expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ door: 'merge_pr', prNumber: 42, override: false });
+    });
+
+    it('a refused reservation returns 409 and never merges', async () => {
+      plainWorker();
+      mockCheckSurfaceOrder.mockResolvedValue({ blocks: false, slot: { surfaces: ['Drizzle migrations'] } } as any);
+      mockMergeInSurfaceSlot.mockImplementationOnce(async () => ({ refused: 'PR #40 is merging on Drizzle migrations right now' }));
+      const res = await put();
+      expect(res.status).toBe(409);
+      expect((await res.json()).error).toContain('merging on Drizzle migrations');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('admin force is passed to the guard as an explicit override and the merge goes through', async () => {
+      // The guard turns an override into a `bypassed` ledger row and a pass
+      // (surface-ordering.test.ts, "an explicit override proceeds but is
+      // ledgered as bypassed"); this door's job is to say so, not to skip it.
+      plainWorker('admin');
+      const res = await put({ force: true });
+      expect(res.status).toBe(200);
+      expect(mockCheckSurfaceOrder).toHaveBeenCalledTimes(1);
+      expect(mockCheckSurfaceOrder.mock.calls[0][0]).toMatchObject({ door: 'merge_pr', override: true });
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
     });
   });
 

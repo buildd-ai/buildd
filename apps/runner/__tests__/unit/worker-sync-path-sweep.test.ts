@@ -136,3 +136,26 @@ describe('sync sweep', () => {
     expect(worker.pathCollision).toBeUndefined();
   });
 });
+
+describe('degraded declaration counter (conflict-aware-orchestration.md §3)', () => {
+  test('reports new degraded path-claim calls once, as a delta', async () => {
+    const worker = makeWorker({ pathClaimDegraded: 3 });
+    const { sync } = makeSync(worker);
+    await sync.syncWorkerToServer(worker);
+    expect(payloads[0].pathClaimDegraded).toBe(3);
+    await sync.syncWorkerToServer(worker);
+    expect(payloads[1].pathClaimDegraded).toBeUndefined();
+    worker.pathClaimDegraded = 5;
+    await sync.syncWorkerToServer(worker);
+    expect(payloads[2].pathClaimDegraded).toBe(2);
+  });
+
+  test('a failed sync re-reports the same delta next time', async () => {
+    const worker = makeWorker({ pathClaimDegraded: 2 });
+    const { sync } = makeSync(worker);
+    updateWorker.mockImplementationOnce(async () => { throw new Error('offline'); });
+    await sync.syncWorkerToServer(worker).catch(() => {});
+    await sync.syncWorkerToServer(worker);
+    expect(payloads.at(-1).pathClaimDegraded).toBe(2);
+  });
+});

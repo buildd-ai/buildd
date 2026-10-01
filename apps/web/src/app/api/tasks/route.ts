@@ -24,6 +24,7 @@ import { listReachableWorkspaceIds, resolveWorkspaceAccess } from '@/lib/workspa
 import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { resolveAnchorInjections } from '@/lib/change-intent';
+import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -727,10 +728,12 @@ export async function POST(req: NextRequest) {
     // Drizzle migrations dir), auto-append the anchorFile so the overlap check
     // below can serialise on _journal.json — not on the individual migration filename,
     // which would be invisible because distinct filenames share the integer index.
+    let anchorInjectedCount = 0;
     if (pathManifest && pathManifest.length > 0) {
       const injections = resolveAnchorInjections(pathManifest, targetWorkspace.gitConfig ?? undefined);
       if (injections.length > 0) {
         pathManifest = [...pathManifest, ...injections];
+        anchorInjectedCount = injections.length;
       }
     }
 
@@ -1357,6 +1360,19 @@ export async function POST(req: NextRequest) {
         throw error;
       }
       if (!created) throw new Error('task_insert_failed');
+      // Manifest provenance denominator (conflict-aware-orchestration.md §3):
+      // one row per created task, including the ones filed with no manifest.
+      recordPathDeclaration({
+        result: 'succeeded',
+        provenance: 'creation',
+        surface: 'POST /api/tasks',
+        workspaceId,
+        missionId: missionId ?? null,
+        taskId: created.id,
+        callerOrigin: gateCaller,
+        pathCount: pathManifest?.length ?? 0,
+        detail: { shape: manifestShape(pathManifest), anchorInjected: anchorInjectedCount, inferredDependsOn: inferredDependsOn.length },
+      });
       return created;
     };
 

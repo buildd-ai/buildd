@@ -589,6 +589,8 @@ mock.module('@buildd/core/path-claim', () => ({
 
 const mockRecordPathCollisionDeferral = mock(async (_input: any) => true);
 mock.module('@/lib/path-collision-deferral', () => ({ recordPathCollisionDeferral: mockRecordPathCollisionDeferral }));
+const mockRecordPathDeclaration = mock((_input: any) => {});
+mock.module('@/lib/path-declaration-ledger', () => ({ recordPathDeclaration: mockRecordPathDeclaration }));
 
 const mockSchedulePrScopeReconcile = mock((_input: any) => {});
 mock.module('@/lib/pr-scope-reconcile-trigger', () => ({ schedulePrScopeReconcile: mockSchedulePrScopeReconcile }));
@@ -14262,6 +14264,51 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     } finally {
       observedBlocked = [];
     }
+  });
+
+  // ── Declaration denominators (conflict-aware-orchestration.md §3) ─────────
+  it('counts an observed declaration: succeeded when leased, denied when a holder blocks it', async () => {
+    setupBaseWorkerMock();
+    mockRecordPathDeclaration.mockClear();
+    const send = async () => PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    }), { params: mockParams });
+    await send();
+    expect(mockRecordPathDeclaration.mock.calls.at(-1)?.[0]).toMatchObject({ result: 'succeeded', provenance: 'observed', pathCount: 1 });
+
+    setupBaseWorkerMock();
+    observedBlocked = [{ path: 'apps/web/src/lib/foo.ts', blockingTaskId: 'task-9', blockingPath: 'apps/web/src/lib' }];
+    try {
+      await send();
+      expect(mockRecordPathDeclaration.mock.calls.at(-1)?.[0]).toMatchObject({ result: 'denied', provenance: 'observed' });
+    } finally {
+      observedBlocked = [];
+    }
+  });
+
+  it('counts degraded hook declarations the runner reports', async () => {
+    setupBaseWorkerMock();
+    mockRecordPathDeclaration.mockClear();
+    await PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', pathClaimDegraded: 3 },
+    }), { params: mockParams });
+    const degraded = mockRecordPathDeclaration.mock.calls.map((c) => c[0]).find((e: any) => e.result === 'degraded');
+    expect(degraded).toMatchObject({ provenance: 'hook', pathCount: 3, callerOrigin: 'worker' });
+  });
+
+  it('ignores a malformed degraded count', async () => {
+    setupBaseWorkerMock();
+    mockRecordPathDeclaration.mockClear();
+    await PATCH(createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', pathClaimDegraded: 'lots' },
+    }), { params: mockParams });
+    expect(mockRecordPathDeclaration.mock.calls.some((c: any) => c[0].result === 'degraded')).toBe(false);
   });
 
   it('no held path: no pathCollisions field', async () => {

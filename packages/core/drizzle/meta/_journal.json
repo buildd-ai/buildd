@@ -1520,6 +1520,13 @@
       "when": 1790821787978,
       "tag": "0222_bizarre_tombstone",
       "breakpoints": true
+    },
+    {
+      "idx": 223,
+      "version": "7",
+      "when": 1790824358352,
+      "tag": "0223_glossy_the_enforcers",
+      "breakpoints": true
     }
   ]
 }

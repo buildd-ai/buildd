@@ -210,6 +210,13 @@ describe('runLandingSweep — drives landPr, nothing else', () => {
     expect(res.processed).toBe(1);
   });
 
+  it('passes the target\'s already-loaded gitConfig to landPr (no extra workspace read for surface ordering)', async () => {
+    addPr(1, merged(), 'abc');
+    const gitConfig = { surfaceOrdering: 'enforce' } as any;
+    await runLandingSweep({ source: 'floor' }, makeDeps({ resolveTarget: async (r) => ({ ok: true, target: { ...target(r), gitConfig } }) }));
+    expect(calls.land[0].gitConfig).toBe(gitConfig);
+  });
+
   it('tallies every outcome kind', async () => {
     addPr(1, merged());
     addPr(2, { kind: 'updating_branch', newHeadSha: 'h' });

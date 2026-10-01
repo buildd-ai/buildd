@@ -72,13 +72,17 @@ export type PrScopeIncompleteReason =
   | 'base_moved';
 
 export type PrScopeRead =
-  | { status: 'complete'; files: string[]; headSha: string; baseSha: string }
+  | {
+      status: 'complete'; files: string[]; headSha: string; baseSha: string;
+      /** The base branch name (GitHub `base.ref`), when GitHub returned one. */
+      baseRef?: string;
+    }
   | { status: 'incomplete'; reason: PrScopeIncompleteReason; detail: string; headSha: string | null; baseSha: string | null }
   | { status: 'closed'; merged: boolean; headSha: string | null; baseSha: string | null };
 
 export type GithubGet = (path: string) => Promise<unknown>;
 
-interface PrHead { state: string; merged: boolean; headSha: string; baseSha: string; changedFiles: number | null }
+interface PrHead { state: string; merged: boolean; headSha: string; baseSha: string; baseRef: string | null; changedFiles: number | null }
 
 function parsePr(raw: unknown): PrHead | null {
   const pr = raw as Record<string, any> | null;
@@ -90,6 +94,7 @@ function parsePr(raw: unknown): PrHead | null {
     merged: pr?.merged === true || typeof pr?.merged_at === 'string',
     headSha,
     baseSha,
+    baseRef: typeof pr?.base?.ref === 'string' && pr.base.ref ? pr.base.ref : null,
     changedFiles: typeof pr?.changed_files === 'number' ? pr.changed_files : null,
   };
 }
@@ -168,11 +173,17 @@ export async function readPinnedPrScope(
   if (after.headSha !== before.headSha) {
     return incomplete('head_moved', `head moved ${before.headSha.slice(0, 7)} -> ${after.headSha.slice(0, 7)} during the read`, after);
   }
+  if (after.baseRef !== before.baseRef) {
+    return incomplete('base_moved', `PR was retargeted ${before.baseRef ?? '?'} -> ${after.baseRef ?? '?'} during the read`, after);
+  }
   if (after.baseSha !== before.baseSha) {
     return incomplete('base_moved', `base moved ${before.baseSha.slice(0, 7)} -> ${after.baseSha.slice(0, 7)} during the read`, after);
   }
 
-  return { status: 'complete', files: [...files].sort(), headSha: before.headSha, baseSha: before.baseSha };
+  return {
+    status: 'complete', files: [...files].sort(), headSha: before.headSha, baseSha: before.baseSha,
+    ...(before.baseRef ? { baseRef: before.baseRef } : {}),
+  };
 }
 
 // ── Planning (pure) ──────────────────────────────────────────────────────────

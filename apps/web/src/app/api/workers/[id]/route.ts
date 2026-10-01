@@ -85,6 +85,7 @@ import { isReadOnlyReview } from '@/lib/read-only-review';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { acquireObservedPaths } from '@buildd/core/path-claim';
 import { recordPathCollisionDeferral } from '@/lib/path-collision-deferral';
+import { recordPathDeclaration } from '@/lib/path-declaration-ledger';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
@@ -824,6 +825,9 @@ export async function PATCH(
     // Enforce-mode path claims: the checkpoint collision a `Deferred:` failure
     // is based on (lib/path-collision-deferral.ts). Ignored on anything else.
     pathCollision: reportedPathCollision,
+    // Path-claim calls the runner let through degraded since its last report
+    // (a delta) — the declaration denominator, conflict-aware-orchestration.md §3.
+    pathClaimDegraded: reportedPathClaimDegraded,
     // Set by the runner's startup reconciliation (worker-sync.ts
     // restoreWorkersFromDisk) when it finds a local session whose process died
     // without ever reporting a terminal status — never sent by a live session.
@@ -4070,6 +4074,12 @@ export async function PATCH(
       if (leased.length > 0) {
         console.log(`[path-claim] auto-lease: worker ${id} holds ${leased.length} observed path(s) for task ${worker.taskId}`);
       }
+      // Declaration denominators (conflict-aware-orchestration.md §3).
+      recordPathDeclaration({
+        result: blocked.length > 0 ? 'denied' : 'succeeded', provenance: 'observed', surface: 'PATCH /api/workers/[id]',
+        workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: id, callerOrigin: 'worker',
+        pathCount: newlyObservedPaths.length, detail: { leased: leased.length, blocked: blocked.length },
+      });
       if (blocked.length > 0) {
         const holderIds = [...new Set(blocked.map(b => b.blockingTaskId))];
         const holders = await db.query.tasks.findMany({
@@ -4087,6 +4097,17 @@ export async function PATCH(
     } catch (err) {
       console.error(`[path-claim] auto-lease failed for worker ${id}:`, err);
     }
+  }
+
+  if (
+    typeof reportedPathClaimDegraded === 'number' && Number.isInteger(reportedPathClaimDegraded)
+    && reportedPathClaimDegraded > 0 && reportedPathClaimDegraded <= 10_000 && worker.taskId
+  ) {
+    recordPathDeclaration({
+      result: 'degraded', provenance: 'hook', surface: 'PATCH /api/workers/[id]',
+      workspaceId: worker.workspaceId ?? null, taskId: worker.taskId, workerId: id, callerOrigin: 'worker',
+      pathCount: reportedPathClaimDegraded,
+    });
   }
 
   // Worker self-classification (Rule K2-15/K2-16).
@@ -4878,6 +4899,7 @@ async function handleReviewerOutcomeIfNeeded(
           owner: { taskId: originalWorker.taskId ?? null, workerId: originalWorker.id },
           bound: approveBound,
           releaseConfig: workspace.releaseConfig ?? null,
+          gitConfig: workspace.gitConfig ?? null,
         });
         if (landingMode === 'enforce') {
           console.log(`[reviewer] approve for PR #${prNumber}: landing outcome ${outcome.kind}`);
@@ -4893,6 +4915,7 @@ async function handleReviewerOutcomeIfNeeded(
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
         policy: approvePolicy!,
         bound: approveBound,
+        surfaceOrderingConfig: workspace.gitConfig ?? null,
       });
 
       // The bound above only ever authorises landing in a quarantined mission
@@ -4919,6 +4942,7 @@ async function handleReviewerOutcomeIfNeeded(
           headSha,
           worker: { id: originalWorker.id, taskId: originalWorker.taskId },
           policy: approvePolicy,
+          surfaceOrderingConfig: workspace.gitConfig ?? null,
         });
         if (!selfMergeResult.merged) {
           console.log(
