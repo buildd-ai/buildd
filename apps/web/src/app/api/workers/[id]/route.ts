@@ -39,6 +39,7 @@ import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
+import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
@@ -4747,6 +4748,48 @@ async function handleReviewerOutcomeIfNeeded(
         workspaceId,
       });
 
+      // This merge is authorised by a MODEL verdict, so it is bounded by the
+      // branch it lands in: a quarantined mission integration branch, never
+      // the workspace's trunk. Keyed off the PR's real base ref inside
+      // evaluateAutoMergeSafety — not off a workspace-level flag, so a
+      // workspace whose task PRs still target dev cannot inherit unattended
+      // merges by accident.
+      const approveBound = {
+        protectedBranches: protectedBaseBranches({
+          gitConfig: workspace.gitConfig,
+          releaseConfig: workspace.releaseConfig,
+        }),
+      };
+
+      // ONE landing call replaces the two attempts below once the workspace is
+      // in `enforce`. It evaluates the LIVE head (eventHeadSha null), not the
+      // SHA the reviewer read: if the branch moved since, carry-forward decides
+      // whether this approval still covers it, and a behind PR is refreshed
+      // once with a marker — there is no second attempt against a superseded
+      // head to misread its update-branch refusal as a conflict. The bound's
+      // fallback to the unbounded self-merge rule is a branch inside landPr.
+      const landingMode = resolveLandingMode(workspace.gitConfig);
+      if (landingMode !== 'off') {
+        const outcome = await landPr({
+          workspaceId,
+          installationId,
+          repoFullName,
+          prNumber,
+          eventHeadSha: null,
+          door: 'approve',
+          actor: { kind: 'system' },
+          mode: landingMode,
+          policy: approvePolicy!,
+          owner: { taskId: originalWorker.taskId ?? null, workerId: originalWorker.id },
+          bound: approveBound,
+          releaseConfig: workspace.releaseConfig ?? null,
+        });
+        if (landingMode === 'enforce') {
+          console.log(`[reviewer] approve for PR #${prNumber}: landing outcome ${outcome.kind}`);
+          break;
+        }
+      }
+
       const boundMergeResult = await tryAutoMergeWorkerPr({
         installationId,
         repoFullName,
@@ -4754,18 +4797,7 @@ async function handleReviewerOutcomeIfNeeded(
         headSha,
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
         policy: approvePolicy!,
-        // This merge is authorised by a MODEL verdict, so it is bounded by the
-        // branch it lands in: a quarantined mission integration branch, never
-        // the workspace's trunk. Keyed off the PR's real base ref inside
-        // evaluateAutoMergeSafety — not off a workspace-level flag, so a
-        // workspace whose task PRs still target dev cannot inherit unattended
-        // merges by accident.
-        bound: {
-          protectedBranches: protectedBaseBranches({
-            gitConfig: workspace.gitConfig,
-            releaseConfig: workspace.releaseConfig,
-          }),
-        },
+        bound: approveBound,
       });
 
       // The bound above only ever authorises landing in a quarantined mission

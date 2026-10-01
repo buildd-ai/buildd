@@ -324,6 +324,11 @@ describe('landPr — merge', () => {
     expect(event.detail.timeToLandMs).toBe(20 * 60 * 1000);
   });
 
+  it('merges with the caller-chosen method (merge_pr), squash by default', async () => {
+    await land({ door: 'merge_pr', mergeMethod: 'rebase' });
+    expect(mockMergePullRequest.mock.calls[0]![3]).toBe('rebase');
+  });
+
   it('is a no-op on a PR that already merged', async () => {
     gh.state = 'closed';
     gh.merged = true;

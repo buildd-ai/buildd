@@ -441,6 +441,17 @@ mock.module('@/lib/auto-merge', () => ({
   escalateReviewContractFailure: mockEscalateReviewContractFailure,
 }));
 
+// The landing function — its decisions are covered in lib/pr-landing.test.ts;
+// here only the approve door's wiring is asserted. Mode resolution is the real rule.
+const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'abc123' }));
+mock.module('@/lib/pr-landing', () => ({
+  landPr: mockLandPr,
+  resolveLandingMode: (gitConfig: any) => {
+    const mode = gitConfig?.landing?.mode;
+    return mode === 'off' || mode === 'shadow' || mode === 'enforce' ? mode : 'shadow';
+  },
+}));
+
 // Own the merge-policy resolution for this file. Other test files (e.g.
 // github/webhook) globally mock '@/lib/merge-policy' with a stubbed resolvePolicy
 // that ignores our inputs and never resets (bun mock.module is global +
@@ -7391,6 +7402,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockInsertConflictDoNothingResult = 'row';
       mockTryAutoMergeWorkerPr.mockReset();
       mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false });
+      mockLandPr.mockReset();
+      mockLandPr.mockImplementation(async () => ({ kind: 'waiting_ci', headSha: 'abc123' }));
       mockEscalateReviewerExhaustion.mockReset();
       mockEscalateReviewerExhaustion.mockResolvedValue(undefined);
       mockEscalateReviewContractFailure.mockReset();
@@ -7675,6 +7688,92 @@ describe('PATCH /api/workers/[id]', () => {
 
         await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
 
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // ── The landing function (gitConfig.landing.mode) ────────────────────────
+    describe('approve: one landing call (landing.mode=enforce)', () => {
+      function enforceWorkspace(mergePolicy: Record<string, unknown> = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 } }) {
+        mockWorkspacesFindFirst.mockResolvedValue({
+          id: 'ws-1',
+          gitConfig: { mergePolicy, landing: { mode: 'enforce' }, targetBranch: 'dev', defaultBranch: 'dev' },
+          releaseConfig: null,
+        });
+      }
+
+      it('approving a PR that is behind dev: ONE landing call, which refreshes once; no second attempt, no conflict-fix task', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace();
+        mockLandPr.mockImplementation(async () => ({ kind: 'updating_branch', newHeadSha: 'refreshed-head' }));
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0]).toMatchObject({
+          workspaceId: 'ws-1', installationId: 5000, repoFullName: 'org/repo', prNumber: 42,
+          door: 'approve', mode: 'enforce', policy: { tier: 'agent-review' },
+          owner: { taskId: 'original-task-1', workerId: 'original-worker' },
+        });
+        // The live head is evaluated, not the SHA the reviewer read.
+        expect(mockLandPr.mock.calls[0]![0].eventHeadSha).toBeNull();
+        expect((mockLandPr.mock.calls[0]![0] as any).bound.protectedBranches).toContain('dev');
+        // Neither legacy attempt runs, so there is no stale-head update-branch
+        // refusal to misread as a conflict, and no fix task is filed.
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      });
+
+      it('approve-after-green: the single landing call is the merge', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace();
+        mockLandPr.mockImplementation(async () => ({ kind: 'merged', sha: 'abc123' }));
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(await mockLandPr.mock.results[0]!.value).toEqual({ kind: 'merged', sha: 'abc123' });
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+
+      it('approve-only gate still stops before the landing call', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-only' } });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).not.toHaveBeenCalled();
+        expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+      });
+
+      it('a server escalation never reaches the landing call', async () => {
+        setupReviewerTaskCompletion('approve');
+        enforceWorkspace();
+        mockEnforceServerSideEscalation.mockImplementation(() => ({ verdict: 'escalate', overrideReason: 'touches auth' }));
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).not.toHaveBeenCalled();
+      });
+
+      it('shadow (the default): landPr observes, the legacy attempts still act', async () => {
+        setupReviewerTaskCompletion('approve');
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).toHaveBeenCalledTimes(1);
+        expect(mockLandPr.mock.calls[0]![0].mode).toBe('shadow');
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('off: legacy attempts only', async () => {
+        setupReviewerTaskCompletion('approve');
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { landing: { mode: 'off' } } });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockLandPr).not.toHaveBeenCalled();
         expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
       });
     });

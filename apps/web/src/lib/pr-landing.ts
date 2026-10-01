@@ -140,6 +140,8 @@ export interface LandPrInput {
   bound?: ModelApproveBound;
   mission?: MissionIntegrationFields | null;
   releaseConfig?: WorkspaceReleaseConfig | null;
+  /** How GitHub combines the PR. Default squash; `merge_pr` lets the caller choose. */
+  mergeMethod?: 'merge' | 'squash' | 'rebase';
 }
 
 export interface FixDispatchInput {
@@ -611,7 +613,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps): Promise<Land
 
   if (!act) return done({ kind: 'merged', sha: liveHead }, 'every rail passed; this PR would merge now');
 
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHead);
+  const result = await mergePullRequest(installationId, repoFullName, prNumber, input.mergeMethod ?? 'squash', liveHead);
   if (result.merged) return landed(liveHead, mergingTask);
 
   const message = result.message || 'the merge call failed';
