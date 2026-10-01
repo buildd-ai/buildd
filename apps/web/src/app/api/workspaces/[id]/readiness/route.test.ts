@@ -134,6 +134,15 @@ describe('GET /api/workspaces/[id]/readiness', () => {
       expect(res.status).toBe(200);
     });
 
+    it('authenticates the API key against this request, so scoped tokens get their route check', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
+      await get({ Authorization: 'Bearer bld_test' });
+      const call = mockAuthenticateApiKey.mock.calls[0] as any[];
+      expect(call[0]).toBe('bld_test');
+      expect(call[1]?.url).toContain('/api/workspaces/ws-1/readiness');
+    });
+
     it('404 for an API key of another team', async () => {
       mockGetCurrentUser.mockResolvedValue(null);
       mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-2', teamId: 'team-2', level: 'admin' });
@@ -225,6 +234,16 @@ describe('GET /api/workspaces/[id]/readiness', () => {
       githubRoutes({ treeError: new Error('GitHub API error: 500 boom') });
       const res = await get();
       expect(res.status).toBe(502);
+    });
+
+    it("reads the repo's own default branch when gitConfig does not name one", async () => {
+      mockWorkspacesFindFirst.mockResolvedValue(
+        workspace({ gitConfig: {}, githubRepo: { ...repo, defaultBranch: 'master' } }),
+      );
+      const res = await get();
+      expect(res.status).toBe(200);
+      const treeCall = mockGithubApi.mock.calls.find((c) => String(c[1]).includes('/git/trees/'));
+      expect(String(treeCall?.[1])).toContain('/git/trees/master?');
     });
 
     it('applies owner waivers from gitConfig.onboarding', async () => {

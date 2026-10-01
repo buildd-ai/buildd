@@ -65,7 +65,7 @@ export interface ReadinessWorkspace {
   gitConfig: WorkspaceGitConfig | null;
   configStatus: 'unconfigured' | 'admin_confirmed';
   releaseConfig: WorkspaceReleaseConfig | null;
-  githubRepo: { fullName: string; installation: { installationId: number } | null } | null;
+  githubRepo: { fullName: string; defaultBranch?: string | null; installation: { installationId: number } | null } | null;
 }
 
 /** A 409 from the git trees API is GitHub's answer for a repository with no commits. */
@@ -155,7 +155,7 @@ export async function gatherReadinessInput(workspace: ReadinessWorkspace): Promi
 
   const { installationId } = installation;
   const repo = workspace.githubRepo.fullName;
-  const branch = gitConfig?.defaultBranch ?? 'main';
+  const branch = gitConfig?.defaultBranch || workspace.githubRepo.defaultBranch || 'main';
 
   const [{ blobs, truncated }, hasMissions] = await Promise.all([
     fetchTree(installationId, repo, branch),

@@ -27,7 +27,7 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
   const user = await getCurrentUser();
 
   if (!apiAccount && !user) {
@@ -70,6 +70,7 @@ export async function GET(
       githubRepo: workspace.githubRepo
         ? {
             fullName: workspace.githubRepo.fullName,
+            defaultBranch: workspace.githubRepo.defaultBranch ?? null,
             installation: workspace.githubRepo.installation
               ? { installationId: workspace.githubRepo.installation.installationId }
               : null,
