@@ -154,6 +154,47 @@ describe('extractVerdictFromProse', () => {
   });
 });
 
+describe('extractVerdictFromProse — declared verdict and confidence', () => {
+  it('honors a leading "verdict (confidence)" declaration over keyword scanning', () => {
+    const prose =
+      'request-changes (0.97): raw task title is appended after redaction and reaches embedder. ' +
+      'Fix: redact after the title is appended; regression test: title with a secret never reaches the embedder. ' +
+      'Nothing here needs escalation to a human.';
+    const result = extractVerdictFromProse(prose);
+    expect(result.verdict).toBe('request-changes');
+    expect(result.confidence).toBe(0.97);
+  });
+
+  it('accepts a "Verdict:" prefix and a spaced verdict word', () => {
+    const result = extractVerdictFromProse('Verdict: request changes (0.9) - see feedback. Please escalate nothing.');
+    expect(result.verdict).toBe('request-changes');
+    expect(result.confidence).toBe(0.9);
+  });
+
+  it('keeps a declared low confidence low', () => {
+    const result = extractVerdictFromProse('escalate (0.4): unsure who owns this');
+    expect(result.verdict).toBe('escalate');
+    expect(result.confidence).toBe(0.4);
+  });
+
+  it('never lets a prose-declared approve clear the confidence gate', () => {
+    const result = extractVerdictFromProse('approve (0.99): looks fine');
+    expect(result.verdict).toBe('approve');
+    expect(result.confidence).toBeLessThan(0.6);
+  });
+
+  it('ignores an out-of-range declared confidence and falls back to keyword scanning', () => {
+    const result = extractVerdictFromProse('request-changes (97): bad');
+    expect(result.verdict).toBe('request-changes');
+    expect(result.confidence).toBeLessThan(0.6);
+  });
+
+  it('only reads the declaration from the start of the prose', () => {
+    const result = extractVerdictFromProse('I thought about it. request-changes (0.97) is what a careless model would say; I approve.');
+    expect(result.confidence).toBeLessThan(0.6);
+  });
+});
+
 describe('constructFallbackStructuredOutput', () => {
   it('constructs output from successful extraction', () => {
     const prose = 'This code looks good and is approved for merge.';

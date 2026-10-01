@@ -1,7 +1,8 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, initiatives } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
+import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -25,10 +26,11 @@ import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabe
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -54,13 +56,13 @@ export async function GET(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, 'tasks:read')) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
@@ -194,13 +196,13 @@ export async function PATCH(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
@@ -672,6 +674,54 @@ export async function PATCH(
       .where(eq(missions.id, id))
       .returning();
 
+    // When executor changes from 'local' to 'runner', re-dispatch pending/assigned
+    // tasks so runners can claim them. Tasks created under executor='local' are
+    // blocked from runner claims by the missionNotLocal() gate — they need an
+    // explicit dispatch via TASK_ASSIGNED when the executor changes.
+    if (executor === 'runner' && existing.executor === 'local' && updated && existing.workspaceId) {
+      try {
+        const ws = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, existing.workspaceId),
+          columns: { id: true, name: true, repo: true },
+        }).catch(() => null);
+
+        const missionTasks = await db.query.tasks.findMany({
+          where: and(
+            eq(tasks.missionId, id),
+            inArray(tasks.status, UNCLAIMED_TASK_STATUSES),
+          ),
+          columns: {
+            id: true,
+            title: true,
+            description: true,
+            workspaceId: true,
+            mode: true,
+            priority: true,
+            missionId: true,
+            backend: true,
+          },
+        }).catch(() => []);
+
+        for (const task of missionTasks) {
+          await dispatchUnblockedTask(
+            {
+              id: task.id,
+              title: task.title,
+              description: task.description,
+              workspaceId: task.workspaceId,
+              mode: task.mode,
+              priority: task.priority,
+              missionId: task.missionId,
+              backend: task.backend,
+            },
+            ws || { id: existing.workspaceId },
+          ).catch(e => console.error(`[missions/patch] Failed to dispatch task ${task.id}:`, e));
+        }
+      } catch (e) {
+        console.error(`[missions/patch] Failed to re-dispatch tasks after executor change:`, e);
+      }
+    }
+
     // Rule P-1's write side (docs/design/mission-flight-strip.md): a person may
     // always override completion, so this explicit path is a second writer
     // alongside `completeMissionIfVerified` — both fire on the same transition
@@ -876,13 +926,13 @@ export async function DELETE(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req)) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 

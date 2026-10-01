@@ -100,6 +100,8 @@ export const MCP_SYSTEM_PROMPT = 'You are an assistant with access to buildd, a 
  */
 export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   get_usage_stats: 'read',
+  get_manifest_coverage: 'read',
+  get_path_claim_stats: 'read',
   merge_pr: 'write',
   close_pr: 'write',
   request_pr_review: 'write',
@@ -112,6 +114,7 @@ export const MCP_ONLY_CLASS: Partial<Record<BuilddAction, 'read' | 'write'>> = {
   create_pr: 'write',
   emit_event: 'write',
   upload_artifact: 'write',
+  get_page_source: 'read',
   record_pr_supersession: 'write',
   post_note: 'write',
   suggest_schedule_update: 'write',

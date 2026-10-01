@@ -356,6 +356,7 @@ In order, load-bearing piece first. Each numbered item is one PR.
 3. **Role routing fields (§2).** `metadata.routing` read/write, `register_skill`/`update_skill` params, `DefaultRole` fields, and the backfill script (run manually).
 4. **`opt_in` capability kind and `task_role_shadow` (§6(a)).** Candidate builder (§3), question and state builders (§5), shadow module, telemetry. Unit tests: candidate filters (one per filter, positive and negative), dynamic question shape, state never includes `context`, the silent-by-default paths, never writes.
 5. **Operator step (§6(b)).** Label, benchmark and pick thresholds for both shadows together.
+   **Landed** (steps 3 and 4): `apps/web/src/lib/role-routing.ts` (validation, `metadata.routing` read/write, `when_to_use:` frontmatter), `whenToUse`/`notFor` on the role and skill write routes, `register_skill`/`update_skill` and the role settings page, `scripts/backfill-role-routing.ts`; the `opt_in` kind with `teams.enabledDecisionShadows` (settable through `PATCH /api/teams/[id]`); `apps/web/src/lib/task-role-decision.ts`, scheduled from `POST /api/tasks`. The §3.2 claimability filter is the conservative one (explicit slugs excluded).
 6. **`task_role_apply` (§6(c)).** Guarded write, `context.roleInferred`, claim route ignores the inferred role's model (§4.1), preview line (§4.2 part 2), usage-stats split (§6(d)).
 
 ## Open decisions for Max

@@ -4,7 +4,7 @@
  *
  *   bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…]
  *       [--rotate] [--remove] [--dry-run] [--server <buildd url>] [--worker-server <url>]
- *       [--url <worker base url>] [--print-token]
+ *       [--url <worker base url>] [--print-token] [--model-proxy-url <url>]
  *
  * Env:
  *   BUILDD_API_KEY         admin-level buildd API key (reads the workspace, sets its webhook,
@@ -17,13 +17,17 @@
  *                          is fetched with the admin key
  *   DISPATCH_TOKEN         optional; the existing token, to point another workspace at a
  *                          Worker that is already deployed
+ *   MODEL_PROXY_URL        optional (--model-proxy-url wins); route model traffic through an
+ *                          Anthropic-compatible proxy such as LiteLLM instead of AI Gateway
+ *   MODEL_PROXY_KEY        the proxy's key; required with a new proxy URL. Never printed
+ *   MODEL_PROXY_AUTH_HEADER  optional; authorization (default, Bearer) or x-api-key
  *
  * The decisions live in src/deploy-plan.ts (tested); this file only observes
  * and executes. Re-running is safe: see planDeploy for what changes when.
  */
 import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { describePlan, planDeploy, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
+import { SNAPSHOT_BUCKET, describePlan, planDeploy, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
 
 const APP_DIR = join(dirname(new URL(import.meta.url).pathname), '..');
 const WORKER_NAME = 'buildd-cloud-runner';
@@ -39,11 +43,12 @@ interface Args {
   server?: string;
   workerServer?: string;
   url?: string;
+  modelProxyUrl?: string;
 }
 
 function parseArgs(argv: string[]): Args {
   const a: Args = { rotate: false, remove: false, dryRun: false, printToken: false };
-  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url']);
+  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url', '--model-proxy-url']);
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (takesValue.has(k)) {
@@ -54,6 +59,7 @@ function parseArgs(argv: string[]): Args {
       if (k === '--server') a.server = v;
       if (k === '--worker-server') a.workerServer = v;
       if (k === '--url') a.url = v;
+      if (k === '--model-proxy-url') a.modelProxyUrl = v;
     } else if (k === '--rotate') a.rotate = true;
     else if (k === '--remove') a.remove = true;
     else if (k === '--dry-run') a.dryRun = true;
@@ -69,7 +75,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 function readUsage(): string {
-  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token]';
+  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>]';
 }
 
 function die(msg: string): never {
@@ -128,6 +134,7 @@ function wranglerEnv(cf: { apiToken: string; accountId: string }): Record<string
   // The runner key and admin key are for this script, not wrangler.
   delete env.BUILDD_API_KEY;
   delete env.BUILDD_RUNNER_API_KEY;
+  delete env.MODEL_PROXY_KEY;
   return env;
 }
 
@@ -196,6 +203,11 @@ async function main() {
     runnerApiKey: runnerKey,
     providedDispatchToken: process.env.DISPATCH_TOKEN || undefined,
     generatedDispatchToken: randomBytes(32).toString('base64url'),
+    modelProxy: {
+      url: args.modelProxyUrl ?? process.env.MODEL_PROXY_URL,
+      key: process.env.MODEL_PROXY_KEY,
+      authHeader: process.env.MODEL_PROXY_AUTH_HEADER,
+    },
   });
 
   console.log(`${args.dryRun ? 'plan (dry run, nothing changed)' : 'plan'}:`);
@@ -213,6 +225,16 @@ async function main() {
 
 async function execute(step: DeployStep, ctx: { server: string; adminKey: string; env: Record<string, string> | null }) {
   switch (step.kind) {
+    case 'ensure_snapshot_bucket': {
+      console.log(`→ ensure R2 bucket ${SNAPSHOT_BUCKET.name}`);
+      const created = await wrangler(['r2', 'bucket', 'create', SNAPSHOT_BUCKET.name], ctx.env!);
+      if (created.code !== 0 && !/already exists|already own/i.test(created.out)) die(`wrangler r2 bucket create failed:\n${created.out}`);
+      for (const rule of SNAPSHOT_BUCKET.lifecycle) {
+        const r = await wrangler(['r2', 'bucket', 'lifecycle', 'add', SNAPSHOT_BUCKET.name, rule.id, rule.prefix, '--expire-days', String(rule.expireDays), '--force'], ctx.env!);
+        if (r.code !== 0 && !/already exists/i.test(r.out)) console.log(`  lifecycle rule ${rule.id} not set (set it by hand): ${r.out.trim().split('\n').at(-1)}`);
+      }
+      return;
+    }
     case 'wrangler_deploy': {
       console.log('→ wrangler deploy (builds the container image; slow the first time)');
       const r = await wrangler(['deploy'], ctx.env!);

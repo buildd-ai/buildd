@@ -1,3 +1,4 @@
+import { hasTokenScope, requiredScopeForAction, type TokenScope } from '@buildd/core/token-scopes';
 /**
  * Tool descriptors advertised by the remote MCP server (ListTools).
  *
@@ -44,6 +45,7 @@ import {
   actionsOfGroup,
   derivedSignature,
   mcpGroupOf,
+  mcpGroupOfToolName,
   mcpGroupToolName,
   mcpGroupParamsSchema,
   type McpToolGroup,
@@ -57,6 +59,7 @@ export type McpToolSurface = 'groups' | 'legacy';
 
 export interface ListMcpToolsOptions {
   accountLevel: McpAccountLevel;
+  scopes?: readonly string[] | null;
   /** Workspace data class is `sensitive` (fail-closed when unknown). */
   isSensitive: boolean;
   /** Default `legacy`. */
@@ -75,7 +78,13 @@ export function mcpToolSurfaceFor(opts: { toolsParam?: string | null; workerPara
 }
 
 /** Actions exposed in the `buildd` tool schema for a given token level. */
-export function actionsForLevel(accountLevel: McpAccountLevel): string[] {
+export function actionsForLevel(accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
+  if (scopes != null) return allActionsList.filter(action => {
+    const required = requiredScopeForAction(action);
+    return (required != null && hasTokenScope(scopes, required)) ||
+      (action === 'manage_experiments' && hasTokenScope(scopes, 'analytics:read')) ||
+      (['manage_missions', 'manage_initiatives', 'manage_workspaces'].includes(action) && hasTokenScope(scopes, 'tasks:read'));
+  });
   return accountLevel === 'admin'
     ? [...allActionsList]
     : accountLevel === 'trigger'
@@ -86,15 +95,15 @@ export function actionsForLevel(accountLevel: McpAccountLevel): string[] {
 export const HELP_ACTION = 'help';
 
 /** The actions of `group` the level may call, in allActions order. */
-export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel): string[] {
-  const allowed = new Set(actionsForLevel(accountLevel));
+export function groupActionsForLevel(group: McpToolGroup, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
+  const allowed = new Set(actionsForLevel(accountLevel, scopes));
   return actionsOfGroup(group).filter(a => allowed.has(a));
 }
 
 
 /** The group actions whose own sub-action selector (params.action) takes `value`. */
-function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: McpAccountLevel): string[] {
-  return groupActionsForLevel(group, accountLevel).filter(a => {
+function actionsWithSubAction(group: McpToolGroup, value: string, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): string[] {
+  return groupActionsForLevel(group, accountLevel, scopes).filter(a => {
     const m = (derivedSignature(a) ?? '').match(/\baction: ([a-z_|]+)/);
     return !!m && m[1].split('|').includes(value);
   });
@@ -109,7 +118,7 @@ export function groupToolDefinition(group: McpToolGroup, actions: readonly strin
     name: mcpGroupToolName(group),
     description: `${mcpGroupPurpose(group, actions)}\n${lines.join('\n')}`,
     annotations: {
-      readOnlyHint: false,
+      readOnlyHint: group === 'analytics',
       destructiveHint: false,
       openWorldHint: true,
     },
@@ -139,7 +148,7 @@ export type GroupToolCall =
  * tool does. Level gating of the dispatched action stays where it is for
  * `buildd` (handleBuilddAction), so both tools refuse exactly alike.
  */
-export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel): GroupToolCall {
+export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unknown> | undefined, accountLevel: McpAccountLevel, scopes?: readonly string[] | null): GroupToolCall {
   const tool = mcpGroupToolName(group);
   const action = typeof args?.action === 'string' ? args.action : '';
   // A model sometimes flattens a call ({action, title, ...}); with no params
@@ -149,13 +158,13 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 
   if (action === HELP_ACTION) {
     const target = typeof params.action === 'string' ? params.action : '';
-    const inGroup = groupActionsForLevel(group, accountLevel);
+    const inGroup = groupActionsForLevel(group, accountLevel, scopes);
     if (!target) {
       return { kind: 'reply', isError: false, text: `${tool} actions: ${inGroup.join(', ')}. Call ${tool} with action "help" and params {"action": "<name>"} for one action's full docs.` };
     }
     const help = actionHelp(target);
     if (!help) return { kind: 'reply', isError: true, text: `Unknown action "${target}".` };
-    if (!actionsForLevel(accountLevel).includes(target)) {
+    if (!actionsForLevel(accountLevel, scopes).includes(target)) {
       return { kind: 'reply', isError: true, text: `"${target}" is not available at your token level (${accountLevel}).` };
     }
     const home = mcpGroupOf(target)!;
@@ -164,14 +173,14 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 
   const home = mcpGroupOf(action);
   if (!home) {
-    const owners = actionsWithSubAction(group, action, accountLevel);
+    const owners = actionsWithSubAction(group, action, accountLevel, scopes);
     if (owners.length > 0) {
       return { kind: 'reply', isError: true, text: `"${action}" is a sub-action: call ${tool} with action "${owners[0]}" and params.action "${action}".` };
     }
-    return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel).join(', ')}, ${HELP_ACTION}.` };
+    return { kind: 'reply', isError: true, text: `Unknown action "${action}" for ${tool}. Its actions: ${groupActionsForLevel(group, accountLevel, scopes).join(', ')}, ${HELP_ACTION}.` };
   }
   if (home !== group) {
-    if (!actionsForLevel(accountLevel).includes(action)) {
+    if (!actionsForLevel(accountLevel, scopes).includes(action)) {
       return { kind: 'reply', isError: true, text: `"${action}" is not available at your token level (${accountLevel}).` };
     }
     return { kind: 'reply', isError: true, text: `"${action}" is a ${mcpGroupToolName(home)} action: call ${mcpGroupToolName(home)} with action "${action}".` };
@@ -180,14 +189,14 @@ export function routeGroupToolCall(group: McpToolGroup, args: Record<string, unk
 }
 
 /** The server `instructions` block sent on initialize. */
-export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'legacy'): string {
+export function mcpServerInstructions(accountLevel: McpAccountLevel, surface: McpToolSurface = 'legacy', scopes?: readonly string[] | null): string {
   const tools = surface === 'groups'
-    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
+    ? `Tools: one per area, \`buildd_<group>\` (${MCP_TOOL_GROUPS.filter(g => groupActionsForLevel(g, accountLevel, scopes).length > 0).join(', ')}); \`recall\` (read knowledge), \`learn\` (write knowledge). A group tool takes {action, params}; its description lists each action with its params (\`?\` = optional). Action \`help\` with params {action} returns one action's full docs. workspaceId accepts a UUID, a repo name or owner/repo. Prompts that say \`buildd action=X\` mean: call X on the group tool that lists it. \`buildd_memory\` is deprecated.`
     : `Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.`;
   const gated = surface === 'groups' ? 'which actions you can call' : 'which `buildd` actions you can call';
   return `Buildd is a task coordination system for AI coding agents. ${tools}
 
-**Token level:** ${accountLevel} — gates ${gated} (trigger ⊂ worker ⊂ admin). A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
+${scopes != null ? `**Token scopes:** ${scopes.join(', ') || 'none'} — explicit capabilities replace legacy level permissions.` : `**Token level:** ${accountLevel} — gates ${gated} (trigger ⊂ worker ⊂ admin).`} A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
 
 **Before your first task action**, load the buildd-mcp-consumer skill for the full workflow (claim → progress → PR → artifact → learn → complete), the blocked-vs-question rule, friction reporting, and branch strategy. No skill installed? Read the \`buildd://workspace/skills\` resource for the same content, or ask a human to install it.`;
 }
@@ -220,20 +229,22 @@ function legacyBuilddTool(filteredActions: string[]): object {
   };
 }
 
-export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy' }: ListMcpToolsOptions): object[] {
+export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy', scopes }: ListMcpToolsOptions): object[] {
   const tools: object[] = surface === 'legacy'
-    ? [legacyBuilddTool(actionsForLevel(accountLevel))]
+    ? [legacyBuilddTool(actionsForLevel(accountLevel, scopes))]
     : MCP_TOOL_GROUPS
-      .map(g => [g, groupActionsForLevel(g, accountLevel)] as const)
+      .map(g => [g, groupActionsForLevel(g, accountLevel, scopes)] as const)
       .filter(([, actions]) => actions.length > 0)
       .map(([g, actions]) => groupToolDefinition(g, actions));
 
   // check_path_claim is available to worker and admin tokens (not trigger-only tokens).
   // Trigger tokens don't run agent work so they never need mid-task path expansion.
-  if (accountLevel === 'worker' || accountLevel === 'admin') {
+  if (scopes != null ? hasTokenScope(scopes, 'workers:write') : accountLevel === 'worker' || accountLevel === 'admin') {
     tools.push({
       name: "check_path_claim",
-      description: `Mid-task path-claim check. Call this when you discover you need to touch a file outside your declared pathManifest.
+      description: surface === 'groups'
+        ? 'Claim paths discovered mid-task (worker context required). Unclaimed paths extend pathManifest atomically. A conflict returns blockingTaskId: report blocked to add a dependency. deadlock=true includes the cycle and recovery guidance: cancel/retry, escalate to the blocking owner, or serialize the mission. Do not edit blocked paths.'
+        : `Mid-task path-claim check. Call this when you discover you need to touch a file outside your declared pathManifest.
 
 If the path is unclaimed by any active sibling task, your task's pathManifest is atomically extended and you can proceed.
 If the path is already claimed by a sibling task, you receive blockingTaskId and must report blocked so a dependsOn edge can be added.
@@ -251,7 +262,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           paths: {
             type: "array" as const,
             items: { type: "string" as const },
-            description: "File paths (or directory prefixes) you need to claim. Non-empty array of strings.",
+            description: "Non-empty paths or directory prefixes to claim.",
           },
         },
         required: ["paths"],
@@ -260,10 +271,12 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
   }
 
   // send_worker_message is available to worker and admin tokens (not trigger-only tokens).
-  if (accountLevel === 'worker' || accountLevel === 'admin') {
+  if (scopes != null ? hasTokenScope(scopes, 'workers:write') : accountLevel === 'worker' || accountLevel === 'admin') {
     tools.push({
       name: "send_worker_message",
-      description: `Send a structured message to another active task worker in the same workspace.
+      description: surface === 'groups'
+        ? 'Message an active sibling task in your workspace; sender comes from worker context. Delivered on its next update_progress. Use path_blocked_on_you, question or answer. Terminal recipient returns delivered=false. Limits: body 2 KB, 5/min/recipient, hopCount <5.'
+        : `Send a structured message to another active task worker in the same workspace.
 
 Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).
 
@@ -298,7 +311,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           },
           hopCount: {
             type: "number" as const,
-            description: "Hop count for forwarded messages (0-based). Omit for new messages. Messages with hopCount >= 5 are dropped to prevent loops.",
+            description: "Forwarded hop count (default 0); >=5 dropped.",
           },
         },
         required: ["recipientTaskId", "type", "body"],
@@ -341,5 +354,35 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
     );
   }
 
-  return tools;
+  if (scopes == null) return tools;
+  return tools.flatMap(tool => {
+    const descriptor = tool as { name: string; inputSchema?: { properties: Record<string, any> }; description?: string };
+    if (descriptor.name === 'recall' && !hasTokenScope(scopes, 'tasks:read')) return [];
+    if (descriptor.name === 'learn' && !hasTokenScope(scopes, 'knowledge:write')) return [];
+    if (descriptor.name === 'buildd_memory') {
+      const actions = memoryActions.filter(action => hasTokenScope(scopes, action === 'save' || action === 'update' ? 'knowledge:write' : 'tasks:read'));
+      if (!actions.length) return [];
+      return [{ ...descriptor, description: `Legacy knowledge tool. Actions: ${actions.join(', ')}`, inputSchema: {
+        ...descriptor.inputSchema, properties: { ...descriptor.inputSchema!.properties,
+          action: { type: 'string', enum: actions }, params: { type: 'object', description: buildMemoryDescription(actions) },
+        },
+      } }];
+    }
+    return [tool];
+  });
+}
+
+
+/** Capability of the actual tool; unrelated arguments cannot change standalone permissions. */
+export function requiredScopeForMcpTool(name: string, args?: Record<string, unknown>): TokenScope | null {
+  if (name === 'recall') return 'tasks:read';
+  if (name === 'learn') return 'knowledge:write';
+  if (name === 'check_path_claim' || name === 'send_worker_message') return 'workers:write';
+  const action = typeof args?.action === 'string' ? args.action : '';
+  if (name === 'buildd_memory') return ['context', 'search', 'get', 'query_knowledge'].includes(action) ? 'tasks:read' : 'knowledge:write';
+  if (name !== 'buildd' && !mcpGroupOfToolName(name)) return null;
+  const params = args?.params && typeof args.params === 'object'
+    ? args.params as Record<string, unknown>
+    : Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => key !== 'action' && key !== 'params'));
+  return requiredScopeForAction(action, params);
 }

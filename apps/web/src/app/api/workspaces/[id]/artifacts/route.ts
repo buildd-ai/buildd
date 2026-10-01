@@ -1,7 +1,8 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { artifacts } from '@buildd/core/db/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, like, gte, lt } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -14,7 +15,7 @@ async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (account) return { type: 'api' as const, account };
 
   if (process.env.NODE_ENV !== 'development') {
@@ -25,6 +26,12 @@ async function authenticateRequest(req: NextRequest) {
   }
 
   return null;
+}
+
+function parseTime(raw: string | null): Date | null | 'invalid' {
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? 'invalid' : d;
 }
 
 // GET /api/workspaces/[id]/artifacts - Query artifacts by workspace
@@ -56,6 +63,16 @@ export async function GET(
   if (missionId && !isUuid(missionId)) {
     return NextResponse.json({ error: `Invalid missionId: expected a UUID, got "${missionId}". Pass the full UUID.` }, { status: 400 });
   }
+  // `keyPrefix` + `since`/`before` (on updatedAt) list a keyed family of
+  // artifacts over a window and page through it: results are newest first, so
+  // the next page is `before=<oldest updatedAt seen>`. Used by the cloud
+  // runner's eval report for `cloud-run-report:<workerId>`.
+  const keyPrefix = url.searchParams.get('keyPrefix');
+  const since = parseTime(url.searchParams.get('since'));
+  const before = parseTime(url.searchParams.get('before'));
+  if (since === 'invalid' || before === 'invalid') {
+    return NextResponse.json({ error: 'since and before must be ISO 8601 timestamps' }, { status: 400 });
+  }
   // `review=true` narrows to artifacts deliberately produced for a human to
   // read, using the same rule as the dashboard — see `@/lib/artifact-scope`.
   // Applied in SQL, not after the fact, so `limit` counts matching rows.
@@ -67,6 +84,9 @@ export async function GET(
   if (missionId) conditions.push(eq(artifacts.missionId, missionId));
   if (key) conditions.push(eq(artifacts.key, key));
   if (type) conditions.push(eq(artifacts.type, type));
+  if (keyPrefix) conditions.push(like(artifacts.key, `${keyPrefix.replace(/[\\%_]/g, c => `\\${c}`)}%`));
+  if (since) conditions.push(gte(artifacts.updatedAt, since));
+  if (before) conditions.push(lt(artifacts.updatedAt, before));
   if (reviewOnly) conditions.push(reviewArtifactScope());
 
   const results = await db.query.artifacts.findMany({
@@ -110,12 +130,12 @@ export async function POST(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey);
+  const apiAccount = await authenticateApiKey(apiKey, req);
 
   if (!apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  if (apiAccount.level !== 'admin') {
+  if (!hasTokenRouteAdminAccess(apiAccount, req)) {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 

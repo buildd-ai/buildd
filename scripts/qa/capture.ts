@@ -28,7 +28,17 @@
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
+ *   VISUAL_QA_STORAGE_STATE         — the same storageState as JSON text (a workspace secret mapped
+ *                                     through gitConfig.envMapping). Written to a 0600 temp file,
+ *                                     never logged.
  *   VERCEL_AUTOMATION_BYPASS_SECRET — sets the x-vercel-protection-bypass header on every request
+ *   QA_PAGE_SOURCE                  — "sandbox" (default) or "vercel-preview", from get_page_source.
+ *                                     Recorded on every capture as `source`. With vercel-preview the
+ *                                     buildd-only dev login is skipped and auth walls are classified:
+ *                                     a Vercel login wall is `protection_bypass_missing`, an uninvited
+ *                                     sign-in page `app_auth_not_configured`. Either is a config error,
+ *                                     not a shot, and exits 3 after the loop.
+ *   QA_SIGN_IN_PATHS                — comma-separated app sign-in paths (default: /login,/signin,…)
  *   QA_NO_LOGIN                     — skip the dev-auto-login POST (dev server bypasses auth already)
  *   QA_KEEP_DEV_OVERLAY             — keep the Next.js dev error overlay in shots (default: hide it)
  *   QA_VIEWPORT                     — "mobile" (390x844 touch phone), "desktop", or WIDTHxHEIGHT (default: 1280x900)
@@ -36,9 +46,15 @@
 
 import { chromium } from 'playwright';
 import type { BrowserContextOptions } from 'playwright';
-import { readFileSync, mkdirSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, mkdirSync, writeFileSync, existsSync, mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { resolveViewport } from './viewport';
+import {
+  classifyPageLoad,
+  CONFIG_ERROR_MESSAGES,
+  type CaptureConfigError,
+} from '../../packages/core/visual-qa-page-source';
 
 // Validate QA_VIEWPORT before anything else runs (no browser launched yet, no
 // swallow handlers registered yet) so a typo fails fast with a clear message
@@ -55,6 +71,29 @@ try {
 }
 console.log(`[capture] viewport ${contextOptions.viewport?.width}x${contextOptions.viewport?.height}${contextOptions.isMobile ? ' (mobile, touch)' : ''}`);
 
+// Page source and a storage state from a secret, validated before the first
+// await for the same reason as QA_VIEWPORT above. The storage state's content
+// is never printed, not even in the error.
+const PAGE_SOURCE = process.env.QA_PAGE_SOURCE?.trim() || 'sandbox';
+if (PAGE_SOURCE !== 'sandbox' && PAGE_SOURCE !== 'vercel-preview') {
+  console.error(`[capture] QA_PAGE_SOURCE must be "sandbox" or "vercel-preview"`);
+  process.exit(1);
+}
+const IS_PREVIEW = PAGE_SOURCE === 'vercel-preview';
+const SIGN_IN_PATHS = (process.env.QA_SIGN_IN_PATHS ?? '').split(',').map((p) => p.trim()).filter((p) => p.startsWith('/'));
+let storageStateFromSecret = '';
+if (process.env.VISUAL_QA_STORAGE_STATE) {
+  try {
+    JSON.parse(process.env.VISUAL_QA_STORAGE_STATE);
+  } catch {
+    console.error('[capture] VISUAL_QA_STORAGE_STATE is not valid JSON (content not shown)');
+    process.exit(1);
+  }
+  storageStateFromSecret = join(mkdtempSync(join(tmpdir(), 'qa-state-')), 'state.json');
+  writeFileSync(storageStateFromSecret, process.env.VISUAL_QA_STORAGE_STATE, { mode: 0o600 });
+}
+console.log(`[capture] source ${PAGE_SOURCE}`);
+
 // Playwright 1.61 can throw unhandled errors from internal cookie/URL handling when
 // a response URL is relative. Suppress these non-fatal background exceptions so the
 // process exits cleanly with the captures it managed to collect.
@@ -70,7 +109,7 @@ const BASE_URL = process.env.QA_BASE_URL ?? 'http://localhost:3000';
 const OUTPUT_DIR = process.env.QA_OUTPUT ?? '/tmp/qa';
 const MANIFEST_PATH = process.env.QA_MANIFEST ?? 'apps/web/src/qa/visual-qa-routes.json';
 
-const STORAGE_STATE_PATH = process.env.VISUAL_QA_STORAGE_STATE_PATH ?? '';
+const STORAGE_STATE_PATH = process.env.VISUAL_QA_STORAGE_STATE_PATH || storageStateFromSecret;
 const BYPASS_SECRET = process.env.VERCEL_AUTOMATION_BYPASS_SECRET ?? '';
 
 // Known dynamic-segment resolvers: manifest path → env var holding a real ID.
@@ -118,10 +157,18 @@ if (adHoc.length > 0) {
 }
 
 // --- Browser + context ---
-const browser = await chromium.launch({
-  headless: true,
-  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-});
+// A rejected top-level await lands in the swallow handlers above and the
+// process exits 0 with nothing captured: a silent pass. No browser is fatal.
+let browser: Awaited<ReturnType<typeof chromium.launch>>;
+try {
+  browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  });
+} catch (err) {
+  console.error(`[capture] browser did not launch: ${(err as Error).message.split('\n')[0]}`);
+  process.exit(1);
+}
 
 if (BYPASS_SECRET) {
   // Bypass Vercel preview protection on every request (nav + page.request).
@@ -129,7 +176,7 @@ if (BYPASS_SECRET) {
 }
 if (STORAGE_STATE_PATH && existsSync(STORAGE_STATE_PATH)) {
   contextOptions.storageState = STORAGE_STATE_PATH;
-  console.log(`[capture] using storage state from ${STORAGE_STATE_PATH}`);
+  console.log(storageStateFromSecret ? '[capture] using storage state from VISUAL_QA_STORAGE_STATE' : `[capture] using storage state from ${STORAGE_STATE_PATH}`);
 }
 
 const context = await browser.newContext(contextOptions);
@@ -154,8 +201,10 @@ page.on('console', (msg) => {
 // QA_NO_LOGIN skips the login POST entirely — used by shoot.sh, because a
 // NODE_ENV=development server bypasses auth server-side (see auth-helpers.ts) and
 // the POST just adds a slow, flaky CSRF round-trip.
+// A preview is some other app: buildd's dev login and its /app/home check do
+// not apply. Its auth walls are classified per route below instead.
 let authenticated = Boolean(contextOptions.storageState);
-if (!authenticated && !process.env.QA_NO_LOGIN) {
+if (!authenticated && !process.env.QA_NO_LOGIN && !IS_PREVIEW) {
   try {
     // Fetch CSRF token first
     const csrfResp = await page.request.get(`${BASE_URL}/api/auth/csrf`);
@@ -183,7 +232,7 @@ if (!authenticated && !process.env.QA_NO_LOGIN) {
 }
 
 // Verify auth by navigating to home and checking we didn't land on a login page
-try {
+if (!IS_PREVIEW) try {
   await page.goto(`${BASE_URL}/app/home`, { waitUntil: 'networkidle', timeout: 30_000 });
   const finalUrl = page.url();
   authenticated =
@@ -204,6 +253,11 @@ type Capture = {
   a11yFile?: string;
   redirected?: boolean;
   devOverlay?: boolean;
+  /** sandbox | vercel-preview: copy into the shot's metadata.qa.source. */
+  source: string;
+  /** An auth wall, not a page: no screenshot was taken. */
+  configError?: CaptureConfigError;
+  configErrorMessage?: string;
   skipped?: boolean;
   skipReason?: string;
   error?: string;
@@ -215,6 +269,7 @@ const captures: Capture[] = [];
 for (const route of routes) {
   if (route.skipReason) {
     captures.push({
+      source: PAGE_SOURCE,
       id: route.id,
       path: route.path,
       url: `${BASE_URL}${route.path}`,
@@ -230,7 +285,34 @@ for (const route of routes) {
   console.log(`[capture] GET   ${route.id} → ${url}`);
 
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+    const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+
+    if (IS_PREVIEW) {
+      const status = response?.status() ?? null;
+      const wall = classifyPageLoad({
+        requestedUrl: url,
+        finalUrl: page.url(),
+        status,
+        bodyText: status === 401 || status === 403 ? (await page.content()).slice(0, 5000) : null,
+        signInPaths: SIGN_IN_PATHS,
+      });
+      if (wall.kind === 'config_error') {
+        captures.push({
+          source: PAGE_SOURCE,
+          id: route.id,
+          path: route.path,
+          url,
+          finalUrl: new URL(page.url()).origin + new URL(page.url()).pathname,
+          configError: wall.error,
+          configErrorMessage: wall.message,
+          capturedAt: new Date().toISOString(),
+        });
+        console.error(`[capture] WALL  ${route.id}: ${wall.error}`);
+        // Every route sits behind deployment protection: stop at the first.
+        if (wall.error === 'protection_bypass_missing') break;
+        continue;
+      }
+    }
 
     // The Next.js dev error/build overlay renders in a <nextjs-portal> element and
     // obscures the real UI. Detect it (so the error signal is recorded, not lost),
@@ -276,6 +358,7 @@ for (const route of routes) {
 
     const finalUrl = page.url();
     captures.push({
+      source: PAGE_SOURCE,
       id: route.id,
       path: route.path,
       url,
@@ -290,6 +373,7 @@ for (const route of routes) {
   } catch (err) {
     console.error(`[capture] FAIL  ${route.id}: ${(err as Error).message}`);
     captures.push({
+      source: PAGE_SOURCE,
       id: route.id,
       path: route.path,
       url,
@@ -302,3 +386,11 @@ for (const route of routes) {
 writeFileSync(join(OUTPUT_DIR, 'captures.json'), JSON.stringify(captures, null, 2));
 await browser.close();
 console.log(`[capture] done — ${captures.length} routes → ${OUTPUT_DIR}`);
+
+// An auth wall is a configuration problem, never a visual finding, and never a
+// pass: fail loudly with the fix, like a boot failure.
+const walls = [...new Set(captures.map((c) => c.configError).filter((e): e is CaptureConfigError => !!e))];
+if (walls.length > 0) {
+  for (const w of walls) console.error(`[capture] CONFIG ERROR ${w}: ${CONFIG_ERROR_MESSAGES[w]}`);
+  process.exit(3);
+}

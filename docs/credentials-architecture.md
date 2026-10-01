@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
@@ -100,6 +100,17 @@ Personal rows are excluded from `SecretsProvider.list()`, so no team-wide list o
 delete path reaches them. They're managed through `/api/inference-keys` (personal
 scope for any member, team scope for owners/admins), which returns only the last
 four characters and health, never plaintext.
+
+### Agent model endpoint
+
+`purpose = 'agent_endpoint'`, team-wide or one workspace (never account or
+personal). Encrypted JSON: `{ "kind": "gateway" }` (a reference to the team's
+LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
+"anthropic-compatible", "baseUrl", "apiKey", "authHeader", "models"? }`.
+`resolveAgentModelRoute` in `packages/core/agent-endpoint.ts` ranks it against
+`anthropic_api_key` / `oauth_token` / `claude_credential`: workspace > account >
+team, a tie to the endpoint, only the winner delivered. The key policy does not
+bind it. Design: `docs/design/agent-model-endpoint.md`.
 
 ## Multi-field credentials (Codex)
 

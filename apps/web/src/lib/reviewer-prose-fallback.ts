@@ -115,6 +115,39 @@ function findVerdictMatches(
   return filtered;
 }
 
+const PROSE_APPROVE_CONFIDENCE_CAP = 0.55;
+
+const DECLARED_VERDICT = /^\s*(?:\*\*)?(?:verdict\s*[:=-]\s*)?(approve|request[- ]changes|escalate)(?:\*\*)?\s*\(\s*(?:confidence\s*[:=]?\s*)?(\d*\.?\d+)\s*\)/i;
+
+/**
+ * A reviewer that writes its verdict as `request-changes (0.97): ...` has
+ * stated both the verdict and its confidence. That is not a guess from
+ * keywords, so it is taken as written: keyword scanning would otherwise pick
+ * whichever verdict word happens to come last, and cap the confidence under
+ * the gate so a finding the reviewer was sure of is escalated to a human.
+ * Only the very start of the prose counts, and only a confidence in [0, 1].
+ *
+ * An `approve` keeps the conservative cap: it posts a GitHub APPROVE and can
+ * merge, so a verdict that never went through the structured contract must not
+ * clear the confidence gate. A wrongly escalated or requested-changes verdict
+ * costs a human look or a bounded retry; a wrong approve costs a bad merge.
+ */
+function parseDeclaredVerdict(prose: string): ProseVerdictExtraction | null {
+  const m = DECLARED_VERDICT.exec(prose);
+  if (!m) return null;
+  const confidence = Number(m[2]);
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) return null;
+  const verdict = m[1].toLowerCase().startsWith('request')
+    ? 'request-changes'
+    : (m[1].toLowerCase() as 'approve' | 'escalate');
+  const capped = verdict === 'approve' ? Math.min(confidence, PROSE_APPROVE_CONFIDENCE_CAP) : confidence;
+  return {
+    verdict,
+    confidence: capped,
+    reason: `read declared '${verdict}' (confidence ${capped.toFixed(2)}) from the start of the prose`,
+  };
+}
+
 /**
  * Extract verdict from prose text.
  *
@@ -134,6 +167,9 @@ export function extractVerdictFromProse(prose: string | unknown): ProseVerdictEx
   if (typeof prose !== 'string' || prose.length === 0) {
     return { verdict: null, confidence: null, reason: 'prose is not a non-empty string' };
   }
+
+  const declared = parseDeclaredVerdict(prose);
+  if (declared) return declared;
 
   // Find all matches for each verdict type
   const escalateMatches = findVerdictMatches(prose, VERDICT_PATTERNS.escalate).map(m => ({
@@ -226,7 +262,7 @@ export function extractVerdictFromProse(prose: string | unknown): ProseVerdictEx
  *
  * Creates a minimal valid ReviewerTaskOutput with:
  * - verdict: extracted from prose
- * - confidence: 0.5 (moderate, since inferred)
+ * - confidence: as extracted (0.5-ish when inferred; as declared when the prose opens with `verdict (0.xx)`)
  * - summary: extracted from prose (first 500 chars)
  */
 export function constructFallbackStructuredOutput(

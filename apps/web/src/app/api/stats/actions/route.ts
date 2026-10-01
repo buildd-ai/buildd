@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = apiKey ? await authenticateApiKey(apiKey) : null;
+  const apiAccount = apiKey ? await authenticateApiKey(apiKey, req) : null;
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

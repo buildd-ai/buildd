@@ -25,6 +25,7 @@ import { detectInstallPlans, resolveManifest, MANIFEST_PATH } from './env-verify
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 import { describePrimaryCloneDrift } from './worktree-confinement';
 import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
+import { emitPhase } from './phase-lines';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -219,6 +220,23 @@ async function installWorkspaceDeps(
     return { status: 'skipped', reason: 'non-bun-toolchain' };
   }
 
+  // Phase markers for the cloud runner's run report (phase-lines.ts; printed
+  // only in a cloud container). Only the runner's own bun install is timed:
+  // a declared manifest's install runs in the provision gate instead.
+  emitPhase('install_start');
+  try {
+    return await runBunInstalls(worktreePath, workerId, bunPlans, installEnv);
+  } finally {
+    emitPhase('install_end');
+  }
+}
+
+async function runBunInstalls(
+  worktreePath: string,
+  workerId: string,
+  bunPlans: ReturnType<typeof detectInstallPlans>,
+  installEnv?: Record<string, string>,
+): Promise<InstallOutcome> {
   const dirs: string[] = [];
   let usedUnfrozen = false;
 

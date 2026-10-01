@@ -261,6 +261,12 @@ describe('buildConflictRetryTask', () => {
     expect(result!.title).toBe('[builder · after conflict #1] feat: add dark mode');
   });
 
+  it('stamps the chain root and PR numbers into the context', () => {
+    const result = buildConflictRetryTask(makeInput());
+    expect(result!.context.rootTaskId).toBe('task-abc');
+    expect(result!.context.lineagePrNumbers).toEqual([42]);
+  });
+
   it('sets branch continuity fields in context', () => {
     const result = buildConflictRetryTask(makeInput());
     expect(result!.context.baseBranch).toBe('feat/dark-mode');
@@ -533,6 +539,23 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.description).toContain('migration-number collision with open PR #100');
     expect(capturedInsertValues.conflictRetryPrNumber).toBe(99);
     expect(capturedInsertValues.conflictRetryHeadSha).toBe('sha-abc123');
+  });
+
+  it('does not make a collision repair depend on the task or PR it repairs', async () => {
+    const pathManifest = ['packages/core/drizzle'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'task-id', pathManifest },
+      { id: 'same-pr-attempt', pathManifest, subjectPrNumber: 99 },
+      { id: 'same-pr-conflict', pathManifest, conflictRetryPrNumber: 99 },
+      { id: 'unrelated-sibling', pathManifest, subjectPrNumber: 80 },
+    ]);
+    const result = await dispatchConflictRetry({
+      ...BASE_PARAMS,
+      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 80 },
+    });
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['unrelated-sibling']);
   });
 
   it('populates dependsOn when a sibling task has an overlapping pathManifest', async () => {

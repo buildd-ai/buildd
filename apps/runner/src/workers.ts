@@ -52,7 +52,7 @@ import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
-import { buildAgentBaseEnv } from './agent-env';
+import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -71,7 +71,9 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import type { WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
+import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -89,7 +91,7 @@ import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { HUMAN_UI_DENIAL } from './runner-denial';
-import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
+import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
@@ -467,6 +469,27 @@ export interface ResolvedMcpConnector {
   mintApiUrl?: string;
   audience?: string;
   tokenEndpoint?: string;
+}
+
+/**
+ * Explicitly opt grouped consumers in even with worker context. Legacy roles
+ * retain their surface; legacy calls remain callable in mixed skill sessions.
+ */
+export function buildWorkerMcpUrl(
+  server: string,
+  workspaceId: string,
+  workerId: string,
+  roleSlug?: string | null,
+  agents?: Record<string, { tools: string[] }>,
+): string {
+  const url = new URL(`${server}/api/mcp`);
+  url.searchParams.set('workspace', workspaceId);
+  url.searchParams.set('worker', workerId);
+  const needsGroups = roleSlug === 'analyst' || Object.values(agents ?? {}).some(
+    agent => agent.tools.some(tool => tool.startsWith('mcp__buildd__buildd_')),
+  );
+  if (needsGroups) url.searchParams.set('tools', 'groups');
+  return url.toString();
 }
 
 type SdkMcpServerEntry =
@@ -1285,6 +1308,37 @@ export class WorkerManager {
     return this.sessions.has(id);
   }
 
+  /** --once park: write this worker's record to disk now, so the park bundle carries its latest state. */
+  persistWorker(id: string): void {
+    const worker = this.workers.get(id);
+    if (worker) storeSaveWorker(worker);
+  }
+
+  /**
+   * --once --resume-worker: take on ONE worker restored from a park bundle
+   * (docs/design/cloudflare-sandbox-runner.md, Phase 2), the single-worker
+   * form of restoreWorkersFromDisk that singleTask mode skips. A worker
+   * parked on a question keeps `waiting`, so the 10s sync drains its queued
+   * answer into sendMessage → resumeSession. A run parked mid-session after
+   * an agent restart ('orphan') had no question; it is marked interrupted so
+   * the caller's follow-up message resumes it the same way.
+   */
+  adoptParkedWorker(id: string, kind: 'waiting' | 'orphan'): LocalWorker | null {
+    const worker = storeLoadWorker(id);
+    if (!worker) return null;
+    if (!worker.checkpoints) worker.checkpoints = [];
+    if (!worker.subagentTasks) worker.subagentTasks = [];
+    if (worker.subagentTasksObservedCount === undefined) worker.subagentTasksObservedCount = worker.subagentTasks.length;
+    if (kind === 'orphan' || worker.status !== 'waiting') {
+      worker.status = 'error';
+      worker.error = 'Interrupted by a platform restart; resuming';
+    }
+    this.workers.set(id, worker);
+    this.pusherManager.subscribeToWorker(id);
+    this.dirtyWorkers.add(id);
+    return worker;
+  }
+
   /**
    * Route this manager's server mutations through an outbox, so a PATCH that
    * hits a 5xx or a network fault is queued for replay instead of lost. Used by
@@ -1766,7 +1820,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1808,7 +1862,9 @@ export class WorkerManager {
     // particular claim but a valid one was delivered recently).
     let serverApiKey = fromClaim.serverApiKey;
     let serverOauthToken = fromClaim.serverOauthToken;
-    if (!serverApiKey && !serverOauthToken) {
+    // A team agent model endpoint won the claim's ranking: it is the only model
+    // credential for this worker, so no cached Anthropic credential is reused.
+    if (!serverApiKey && !serverOauthToken && !claimedWorker.modelEndpoint) {
       const cached = this.credCache.get(teamKey);
       if (cached) {
         serverApiKey = cached.apiKey;
@@ -1894,6 +1950,11 @@ export class WorkerManager {
     if (serverOauthToken) {
       worker.serverOauthToken = serverOauthToken;
     }
+    if (claimedWorker.modelEndpoint) {
+      worker.modelEndpoint = claimedWorker.modelEndpoint;
+      console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
+    }
+    if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
     if (claimedWorker.claudeAccessToken) {
       worker.claudeAccessToken = claimedWorker.claudeAccessToken;
       worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
@@ -2942,6 +3003,8 @@ export class WorkerManager {
       // visible to the agent — capability scoping, not permission prompts.
       // Credentials the agent actually needs are injected explicitly below.
       const cleanEnv = buildAgentBaseEnv();
+      // With OpenTelemetry on, tag the agent's exports with this worker.
+      withWorkerResourceAttribute(cleanEnv, worker.id);
       // Any runner code the agent runs (its tests, from any checkout on this
       // host, including ones that predate the in-repo test-home guard) would
       // otherwise fall back to ~/.buildd, which is THIS runner's live store.
@@ -2985,60 +3048,57 @@ export class WorkerManager {
       // resolveCbmOutcome asks cannot be answered by inspecting that map.
       let codexCbmMounted = false;
 
-      // Codex tasks run against OpenAI, not Anthropic. Strip any inherited
-      // ANTHROPIC_API_KEY from the runner's own process.env so it can't leak
-      // into the Codex CLI subprocess (which uses Claude Code internally and
-      // would try — and potentially fail — to authenticate with Anthropic).
-      if (isCodexTask) {
-        delete cleanEnv.ANTHROPIC_API_KEY;
-      }
-
-      // Inject LLM provider config into environment (for OpenRouter, etc.)
-      // The Claude Agent SDK reads ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN
-      if (this.config.llmProvider?.provider === 'openrouter') {
-        cleanEnv.ANTHROPIC_BASE_URL = this.config.llmProvider.baseUrl || 'https://openrouter.ai/api';
-        cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey || '';
-        cleanEnv.ANTHROPIC_API_KEY = '';  // Must be empty for OpenRouter
-        console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
-      } else if (this.config.llmProvider?.baseUrl) {
-        // Custom provider with base URL
-        cleanEnv.ANTHROPIC_BASE_URL = this.config.llmProvider.baseUrl;
-        if (this.config.llmProvider.apiKey) {
-          cleanEnv.ANTHROPIC_AUTH_TOKEN = this.config.llmProvider.apiKey;
-          cleanEnv.ANTHROPIC_API_KEY = '';
-        }
-      }
-
-      // Inject server-managed API key (delivered inline during claim).
-      // Skipped for Codex tasks — they use OpenAI credentials, not Anthropic.
-      if (!isCodexTask && worker.serverApiKey && !cleanEnv.ANTHROPIC_API_KEY) {
-        cleanEnv.ANTHROPIC_API_KEY = worker.serverApiKey;
-        console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
-      }
-
-      // Inject server-managed OAuth token (delivered inline during claim).
-      // Skipped for Codex tasks: CLAUDE_CODE_OAUTH_TOKEN is not needed and can
-      // cause spurious Claude auth failures if the token is expired/revoked —
-      // the Codex CLI uses Claude Code internally and would attempt a refresh.
-      if (!isCodexTask && worker.serverOauthToken && !cleanEnv.CLAUDE_CODE_OAUTH_TOKEN) {
-        cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = worker.serverOauthToken;
-        console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
-      }
-
-      // Inject tenant OAuth token from task context (Dispatch multi-tenant mode)
-      // Tenants authenticate via their Anthropic subscription (OAuth).
-      // Decrypted at runtime using the shared TENANT_MASTER_KEY so costs go to the tenant's subscription.
+      // Model auth: provider config, server-managed Anthropic credentials and
+      // the tenant OAuth token (Dispatch multi-tenant mode). See
+      // agent-model-env.ts — server/tenant Anthropic credentials are only given
+      // to an agent whose model traffic goes to Anthropic. Codex tasks run
+      // against OpenAI, so an inherited ANTHROPIC_API_KEY is stripped and no
+      // server-managed Anthropic credential is injected for them.
+      // Tenant tokens are decrypted at runtime using the shared TENANT_MASTER_KEY
+      // so costs go to the tenant's subscription.
       const tenantCtx = extractTenantContext(task.context as Record<string, unknown>);
+      let tenantOauthToken: string | undefined;
       if (tenantCtx?.encryptedOauthToken && process.env.TENANT_MASTER_KEY) {
         try {
-          const tenantOauthToken = decryptTenantSecret(tenantCtx.encryptedOauthToken);
-          cleanEnv.CLAUDE_CODE_OAUTH_TOKEN = tenantOauthToken;
-          console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
-          this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
+          tenantOauthToken = decryptTenantSecret(tenantCtx.encryptedOauthToken);
         } catch (err) {
           console.error(`[Worker ${worker.id}] Failed to decrypt tenant OAuth token:`, err);
           this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
         }
+      }
+      const modelEnv = applyModelEnv(cleanEnv, {
+        llmProvider: this.config.llmProvider,
+        serverApiKey: worker.serverApiKey,
+        serverOauthToken: worker.serverOauthToken,
+        tenantOauthToken,
+        isCodexTask,
+        trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
+        modelEndpoint: worker.modelEndpoint,
+        teamEndpointWithheld: worker.modelEndpointIgnored,
+        budgetModel: TIER_DEFAULTS.budget.model,
+      });
+      const teamEndpointApplied = modelEnv.endpoint === 'team';
+      if (teamEndpointApplied) {
+        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no Anthropic credential given to the agent`);
+      }
+      if (modelEnv.teamEndpointIgnored) {
+        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's LLM_PROVIDER (per-machine config) takes priority`);
+      }
+      if (this.config.llmProvider?.provider === 'openrouter') {
+        console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
+      }
+      if (modelEnv.injected.includes('serverApiKey')) {
+        console.log(`[Worker ${worker.id}] Injected server-managed ANTHROPIC_API_KEY`);
+      }
+      if (modelEnv.injected.includes('serverOauthToken')) {
+        console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
+      }
+      if (modelEnv.injected.includes('tenantOauthToken') && tenantCtx) {
+        console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
+        this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
+      }
+      if (modelEnv.withheld.length > 0) {
+        console.log(`[Worker ${worker.id}] Custom model endpoint (${modelEnv.baseUrlOrigin || 'unparseable ANTHROPIC_BASE_URL'}): server-managed Anthropic credentials not given to the agent (${modelEnv.withheld.join(', ')}). Set ${TRUSTED_MODEL_BASE_URL_ENV} to that origin only if it forwards to Anthropic.`);
       }
 
       // Build a separate expansion env for resolving ${VAR} references in .mcp.json
@@ -3207,7 +3267,9 @@ export class WorkerManager {
       // Fallback: use claudeAccessToken from the claim response (always available if a
       // claude_credential exists), which remains valid until the broker has had time to
       // refresh it.
-      if (worker.claudeAccessToken || worker.claudeCredentialId) {
+      // Never alongside a team endpoint (shouldUseClaudeCredential): a Claude
+      // seat token must not ride along to a third-party host.
+      if (shouldUseClaudeCredential(modelEnv, worker)) {
         let claudeTokenForSession: string | undefined = worker.claudeAccessToken;
         let claudeTokenExpiry: Date | null = worker.claudeTokenExpiresAt ?? null;
 
@@ -3817,8 +3879,12 @@ export class WorkerManager {
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: invocationSessionId,
         cwd,
-        model: sessionModel,
-        ...(fallbackModel ? { fallbackModel } : {}),
+        // Through a team endpoint the wire name may be an alias (§5); the
+        // native id stays what is recorded and priced.
+        ...(() => {
+          const wire = endpointSessionModels(teamEndpointApplied ? worker.modelEndpoint : undefined, { model: sessionModel, fallbackModel });
+          return { model: wire.model, ...(wire.fallbackModel ? { fallbackModel: wire.fallbackModel } : {}) };
+        })(),
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
         ...(!isCodexTask && workerBwrapArgv
           ? {
@@ -3897,7 +3963,7 @@ export class WorkerManager {
       queryOptions.mcpServers = {
         buildd: {
           type: 'http',
-          url: `${this.config.builddServer}/api/mcp?workspace=${encodeURIComponent(task.workspaceId)}&worker=${encodeURIComponent(worker.id)}`,
+          url: buildWorkerMcpUrl(this.config.builddServer, task.workspaceId, worker.id, task.roleSlug, agents),
           headers: {
             Authorization: `Bearer ${this.config.apiKey}`,
           },
@@ -5896,6 +5962,16 @@ export class WorkerManager {
           const traces = scanToolResult(worker.id, text, source, {
             isError: block.is_error === true,
           });
+          // Every non-zero Bash exit, not just the known patterns — so a red
+          // test run or tsc leaves a record. See scanBashResult.
+          if (source === 'Bash') {
+            const bashCommand = (sourceInput as { command?: unknown } | undefined)?.command;
+            traces.push(...scanBashResult(
+              worker.id,
+              { command: typeof bashCommand === 'string' ? bashCommand : undefined, content: text, isError: block.is_error === true },
+              this.secretRedactors.get(worker.id),
+            ));
+          }
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
             const redact = this.secretRedactors.get(worker.id);

@@ -39,7 +39,7 @@ export async function authorizePlatformAdmin(req: NextRequest): Promise<Authoriz
     return { response: NextResponse.json({ error: 'Requires a platform admin API key' }, { status: 401 }) };
   }
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return { response: NextResponse.json({ error: 'Requires a platform admin API key' }, { status: 401 }) };
   }

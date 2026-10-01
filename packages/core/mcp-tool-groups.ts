@@ -52,6 +52,8 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_failure_analytics: 'workers',
   get_budget_forecast: 'workers',
   get_usage_stats: 'workers',
+  get_manifest_coverage: 'workers',
+  get_path_claim_stats: 'workers',
   list_connectors: 'workers',
   list_runners: 'workers',
   // PRs, reviews, releases
@@ -100,12 +102,13 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   create_pr: 'work',
   emit_event: 'work',
   upload_artifact: 'work',
+  get_page_source: 'work',
   record_pr_supersession: 'work',
   post_note: 'work',
   suggest_schedule_update: 'work',
 };
 
-export const MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'artifacts', 'schedules', 'admin'] as const;
+export const MCP_TOOL_GROUPS = ['missions', 'tasks', 'work', 'prs', 'runners', 'analytics', 'artifacts', 'schedules', 'admin'] as const;
 export type McpToolGroup = (typeof MCP_TOOL_GROUPS)[number];
 
 const AREA_TO_MCP_GROUP: Record<ActionArea, McpToolGroup | null> = {
@@ -123,6 +126,14 @@ const AREA_TO_MCP_GROUP: Record<ActionArea, McpToolGroup | null> = {
 
 /** MCP homes that differ from the chat area. */
 const MCP_GROUP_OVERRIDES: Partial<Record<BuilddAction, McpToolGroup>> = {
+  explain: 'analytics',
+  get_error_traces: 'analytics',
+  get_failure_analytics: 'analytics',
+  get_budget_forecast: 'analytics',
+  get_usage_stats: 'analytics',
+  list_runners: 'analytics',
+  get_manifest_coverage: 'analytics',
+  get_path_claim_stats: 'analytics',
   create_artifact: 'work',
   query_events: 'work',
   spec_compare: 'missions',
@@ -181,6 +192,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'post notes', actions: ['post_note'] },
       { text: 'record events', actions: ['emit_event', 'query_events'] },
       { text: 'write artifacts', actions: ['create_artifact', 'upload_artifact'] },
+      { text: 'audit page source', actions: ['get_page_source'] },
       { text: 'open the PR', actions: ['create_pr', 'record_pr_supersession'] },
       { text: 'suggest a schedule change', actions: ['suggest_schedule_update'] },
       { text: 'complete', actions: ['complete_task'] },
@@ -193,12 +205,18 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
   },
-  runners: {
+  analytics: {
     parts: [
+      { text: 'manifest coverage and path-claim outcomes', actions: ['get_manifest_coverage', 'get_path_claim_stats'] },
       { text: 'why something is stuck', actions: ['explain'] },
       { text: 'errors and failure patterns', actions: ['get_error_traces', 'get_failure_analytics'] },
       { text: 'budget and usage', actions: ['get_budget_forecast', 'get_usage_stats'] },
-      { text: 'runners and connectors', actions: ['list_runners', 'list_connectors'] },
+      { text: 'runner health', actions: ['list_runners'] },
+    ],
+  },
+  runners: {
+    parts: [
+      { text: 'connector health', actions: ['list_connectors'] },
       { text: 'message a running agent', actions: ['send_agent_message'] },
     ],
   },
@@ -248,7 +266,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   promote_discrepancy: 'turn a spec_ahead discrepancy into a mission',
   spec_compare: 'code vs docs evidence for one feature',
   list_tasks: 'list tasks: active by default, a terminal status lists history',
-  get_task: 'one task: fields, loop state, workers, artifacts',
+  get_task: 'task details',
   get_task_messages: "a task's instruction history",
   create_task: 'file a task',
   update_task: 'edit, reprioritise or cancel a task',
@@ -261,6 +279,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_failure_analytics: 'worker failure patterns; error= finds a known one',
   get_budget_forecast: 'session pressure and budget burn',
   get_usage_stats: 'token, cost and turn stats',
+  get_manifest_coverage: 'concrete vs wildcard or missing manifests, by workspace, mission and kind',
+  get_path_claim_stats: 'check_path_claim call counts and claimed, blocked or deadlock outcomes',
   list_connectors: 'mounted connectors and their health',
   list_runners: 'runners: slots, branch, build, heartbeat',
   get_pr: 'PR state, CI, reviews, body',
@@ -303,6 +323,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   query_events: "a worker's events",
   create_artifact: 'save an artifact (report, analysis, link...)',
   upload_artifact: 'get an upload URL for a file artifact',
+  get_page_source: 'sandbox or preview URL for visual audit',
   record_pr_supersession: 'record that a closed PR was superseded',
   post_note: 'post a note or question to the task feed',
   suggest_schedule_update: 'propose a change to your schedule',
@@ -315,6 +336,8 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
  */
 const SIGNATURE_OVERRIDES: Partial<Record<BuilddAction, string>> = {
   create_task: '{title, description, kind, workspaceId?, missionId?, priority?, roleSlug?, dependsOn?, pathManifest?, baseBranch?, outputRequirement?, label?, category?, startAt?, startIn?, verificationCommand?, loopUntilMerged?, tier?, backend?, …}',
+  register_skill: '{name, content, slug?, workspaceId?, description?, isRole?, model?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
+  update_skill: '{slug, workspaceId?, name?, description?, content?, model?, enabled?, allowedTools?, connectorRefs?, defaultBackend?, whenToUse?, notFor?, …}',
   manage_missions: '{action, missionId?|title?, query?, workspaceId?, status?, autoSurfaceAudit?, goalCriteria?, description?, limit?, taskId?, …}',
 };
 
@@ -460,20 +483,29 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('taskId', str, [{ text: 'Task UUID', actions: ['get_task', 'update_task', 'get_task_messages', 'approve_plan', 'reject_plan', 'correct_task_result'] }]),
     param('workspaceId', str, [{ text: WS, actions: ['list_tasks', 'create_task'] }]),
     param('status', str, [
-      { text: 'list_tasks: active (default)|completed|failed|cancelled', actions: ['list_tasks'] },
-      { text: 'update_task: pending|completed|failed|cancelled (cancelled stops its worker)', actions: ['update_task'] },
+      { text: 'List: active (default)|completed|failed|cancelled', actions: ['list_tasks'] },
+      { text: 'Update: pending|completed|failed|cancelled (stops worker)', actions: ['update_task'] },
     ]),
-    param('limit', num, [{ text: 'list_tasks: page size (default 5, max 50)', actions: ['list_tasks'] }]),
-    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts'] } }, [{ text: 'get_task: default both', actions: ['get_task'] }]),
+    param('limit', num, [{ text: 'Default 5, max 50', actions: ['list_tasks'] }]),
+    param('include', { type: 'array', items: { type: 'string', enum: ['workers', 'artifacts'] } }, [{ text: 'Default both', actions: ['get_task'] }]),
+    param('fullDescription', bool, [{ text: 'Full text', actions: ['get_task'] }]),
     param('title', str, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
     param('priority', num, [{ text: 'create/update', actions: ['create_task', 'update_task'] }]),
   ],
-  runners: [
+  analytics: [
     param('workspaceId', str, [
-      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'list_connectors', 'get_failure_analytics'] },
+      { text: WS, actions: ['list_runners', 'explain', 'get_error_traces', 'get_budget_forecast', 'get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats'] },
       { text: 'list_runners with it: leads with whether a browser-capable runner is online', actions: ['list_runners'] },
     ]),
-    param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces', 'send_agent_message'] }]),
+    param('taskId', str, [{ text: 'Task UUID', actions: ['explain', 'get_error_traces'] }]),
+    param('missionId', str, [{ text: 'Mission UUID', actions: ['explain', 'get_manifest_coverage', 'get_path_claim_stats'] }]),
+    param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Observation window (default 7d)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats'] }]),
+    param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger, including changeIntent warnings', actions: ['get_failure_analytics'] }]),
+    param('errorPrefix', str, [{ text: 'Literal reason/signature prefix', actions: ['get_failure_analytics'] }]),
+  ],
+  runners: [
+    param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
+    param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [
     param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'get_pr_review', 'request_pr_review'] }]),
