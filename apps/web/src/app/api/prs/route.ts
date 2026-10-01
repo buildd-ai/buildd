@@ -17,7 +17,7 @@ import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/li
  */
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  const apiAccount = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null);
+  const apiAccount = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null, req);
   const user = apiAccount ? null : await getCurrentUser();
   if (!apiAccount && !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 

@@ -6,6 +6,8 @@ import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -529,7 +531,8 @@ export async function GET(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may read only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   // GET also accepts the dashboard session (the in-app chat reads worker
   // milestones as the signed-in user). PATCH stays worker-key-only. A key,
   // when present, is authoritative.
@@ -553,6 +556,10 @@ export async function GET(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
+  // The workspace row carries the webhook dispatch bearer token; neither a
+  // team member reading a worker nor a cloud container has any use for it.
+  const redacted = () => ({ ...worker, workspace: withoutDispatchToken(worker.workspace) });
+
   if (!account) {
     // Session: membership of the worker workspace's team, as on the dashboard.
     // Outside it the worker does not exist for this caller.
@@ -560,19 +567,14 @@ export async function GET(
     if (!access) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
-    // The workspace row carries the webhook dispatch bearer token; a team
-    // member reading a worker has no use for it.
-    const workspace = worker.workspace
-      ? { ...worker.workspace, webhookConfig: worker.workspace.webhookConfig ? { ...worker.workspace.webhookConfig, token: undefined } : null }
-      : worker.workspace;
-    return NextResponse.json({ ...worker, workspace });
+    return NextResponse.json(redacted());
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  return NextResponse.json(worker);
+  return NextResponse.json(account.taskScope ? redacted() : worker);
 }
 
 // PATCH /api/workers/[id] - Update worker status
@@ -584,7 +586,8 @@ export async function PATCH(
 
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may update only its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -602,7 +605,7 @@ export async function PATCH(
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }
 
-  if (worker.accountId !== account.id) {
+  if (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 

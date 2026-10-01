@@ -29,7 +29,7 @@ const MAX_CANDIDATES = 50;
 
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null);
+  const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }

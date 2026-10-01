@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   let accessibleWsIds: string[] | null = null;
 
   if (apiKey) {
-    const account = await authenticateApiKey(apiKey);
+    const account = await authenticateApiKey(apiKey, req);
     if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     // API key auth: caller must supply workspaceIds
   } else {

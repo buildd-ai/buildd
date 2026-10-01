@@ -1,3 +1,4 @@
+import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
@@ -14,6 +15,7 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { getTeamWorkspaceIds, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -177,7 +179,8 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  // A per-task token (cloud container) may open a PR only for its own worker.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -217,6 +220,9 @@ export async function POST(req: NextRequest) {
     // Team membership OR being the account that runs the worker — see
     // canActOnWorkerPr for why neither check alone is enough.
     if (!(await canActOnWorkerPr(account, worker))) {
+      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+    if (account.taskScope && (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
@@ -1032,7 +1038,7 @@ export async function PATCH(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1106,7 +1112,7 @@ export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1165,7 +1171,7 @@ export async function PUT(req: NextRequest) {
         workspaceId: worker.workspaceId ?? null,
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         detail: { prNumber, ...(detail ?? {}) },
       });
     };
@@ -1242,7 +1248,7 @@ export async function PUT(req: NextRequest) {
     //                    no matter how green the PR is.
     //   human          — refused, which is what the tier means.
     const force = body.force === true;
-    if (force && account.level !== 'admin') {
+    if (force && !hasTokenRouteAdminAccess(account, req, 'admin')) {
       recordMergeGate('rejected', 'force merge requires an admin token', { force: true });
       return NextResponse.json({
         error: 'force merge requires an admin token',
@@ -1351,7 +1357,7 @@ export async function PUT(req: NextRequest) {
         surface: 'PUT /api/github/pr',
         taskId: worker.taskId ?? null,
         workerId: worker.id ?? null,
-        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        callerOrigin: hasTokenRouteAdminAccess(account, req, 'admin') ? 'api' : 'worker',
         carryForward: policyPr?.base?.ref
           ? { installationId: repo.installation.installationId, repoFullName: repo.fullName, baseRef: policyPr.base.ref }
           : null,
@@ -1578,7 +1584,7 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });

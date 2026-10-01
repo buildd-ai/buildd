@@ -179,6 +179,11 @@ export const accounts = pgTable('accounts', {
   name: text('name').notNull(),
   apiKey: text('api_key').notNull().unique(),
   apiKeyPrefix: text('api_key_prefix'),
+  // NULL preserves legacy levels; an empty list grants no capabilities.
+  scopes: jsonb('scopes').$type<string[]>(),
+  workspaceIds: jsonb('workspace_ids').$type<string[]>(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
   githubId: text('github_id'),
 
   // Authentication type
@@ -215,6 +220,12 @@ export const accounts = pgTable('accounts', {
   // the app's own provider-key limit is the hard ceiling
   // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
+
+  // A long-lived host runner key, flagged explicitly by a team owner/admin.
+  // Only such a key may use the credential lease / refresh routes or list the
+  // team's secrets (lib/credential-custody.ts); any other key gets team
+  // credentials only as handed to it at claim time.
+  hostRunner: boolean('host_runner').default(false).notNull(),
 
   // Common
   maxConcurrentWorkers: integer('max_concurrent_workers').default(3).notNull(),
