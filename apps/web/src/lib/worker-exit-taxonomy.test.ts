@@ -6,7 +6,9 @@ import {
   isBookkeepingExit,
   isConcurrencyConflictError,
   isSilentStartShape,
+  isModelIdRejectedError,
   isUnrecognizedModelError,
+  rejectedModelId,
   INTERACTIVE_ABANDONED_ERROR,
   NEVER_STARTED_ERROR,
   SILENT_START_ERROR,
@@ -312,6 +314,51 @@ describe('unrecognized model (CLI version gate)', () => {
   it('books it as infra_failure, which does not consume a retry', () => {
     const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, unrecognizedModel: true });
     expect(cause).toBe('infra_failure');
+    expect(consumesRetryAttempt(cause)).toBe(false);
+  });
+});
+
+// The CLI's other model rejection: it does not know the id at all. It is
+// written to stderr, not thrown, so the reported error is often just the
+// process exit and the marker is all there is to go on.
+describe('unrecognized model id (CLI rejects the id itself)', () => {
+  const STDERR_LINE = '[claude-code:unrecognized_model] {"model":"claude-sonnet-5-5","query_source":"sdk"}';
+
+  it('recognises the stderr marker and names the rejected id', () => {
+    expect(isModelIdRejectedError(STDERR_LINE)).toBe(true);
+    expect(isUnrecognizedModelError(STDERR_LINE)).toBe(true);
+    expect(rejectedModelId(STDERR_LINE)).toBe('claude-sonnet-5-5');
+  });
+
+  it('finds the marker inside a longer error', () => {
+    const wrapped = `Claude Code process exited with code 1\n${STDERR_LINE}`;
+    expect(isModelIdRejectedError(wrapped)).toBe(true);
+    expect(rejectedModelId(wrapped)).toBe('claude-sonnet-5-5');
+  });
+
+  it('has no id to name when the payload is missing or malformed', () => {
+    expect(isModelIdRejectedError('[claude-code:unrecognized_model]')).toBe(true);
+    expect(rejectedModelId('[claude-code:unrecognized_model]')).toBeNull();
+    expect(rejectedModelId('[claude-code:unrecognized_model] {not json')).toBeNull();
+    expect(rejectedModelId('[claude-code:unrecognized_model] {"model":42}')).toBeNull();
+    expect(rejectedModelId('something else')).toBeNull();
+    expect(rejectedModelId(null)).toBeNull();
+  });
+
+  it('is not triggered by the version-gate text, which is a different failure', () => {
+    const gate = 'Claude Code 2.1.0 does not support this model; version 2.2.0 or newer is required.';
+    expect(isUnrecognizedModelError(gate)).toBe(true);
+    expect(isModelIdRejectedError(gate)).toBe(false);
+  });
+
+  it('does not match prose that merely mentions the words', () => {
+    expect(isModelIdRejectedError('unrecognized model flag')).toBe(false);
+    expect(isModelIdRejectedError('')).toBe(false);
+    expect(isModelIdRejectedError(undefined)).toBe(false);
+  });
+
+  it('books it as infra_failure, which does not consume a retry', () => {
+    const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, unrecognizedModel: true });
     expect(consumesRetryAttempt(cause)).toBe(false);
   });
 });

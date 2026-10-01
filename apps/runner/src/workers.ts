@@ -2484,7 +2484,13 @@ export class WorkerManager {
     spanPayload: Record<string, unknown>,
     closingTurnOutcome: 'declined' | `skipped:${string}`,
   ): Promise<void> {
-    const errMsg = error instanceof Error ? error.message : 'Unknown error';
+    // The CLI's model-id rejection is only ever on stderr; the thrown error is
+    // just the exit code. Name the id so the failure says what to fix.
+    const modelRejection = stderrCollector.unrecognizedModel;
+    const rawErrMsg = error instanceof Error ? error.message : 'Unknown error';
+    const errMsg = modelRejection
+      ? `[claude-code:unrecognized_model] ${JSON.stringify({ model: modelRejection.model })} — this runner's Claude Code does not recognise the model id (${rawErrMsg})`
+      : rawErrMsg;
     const errStack = error instanceof Error ? error.stack : undefined;
     console.error(`Worker ${worker.id} error:`, error);
     sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
@@ -2537,6 +2543,10 @@ export class WorkerManager {
       ...(isBudgetError && { budgetExhausted: true }),
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+      ...(modelRejection && {
+        unrecognizedModel: true,
+        ...(modelRejection.model ? { rejectedModel: modelRejection.model } : {}),
+      }),
       ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
       resultMeta: {
         ...(provisionFailure ? { provisionFailure } : {}),
