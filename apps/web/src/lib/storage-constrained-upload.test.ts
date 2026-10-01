@@ -52,6 +52,12 @@ describe('generateConstrainedUploadUrl', () => {
     expect(new URL(url).pathname).toContain(KEY);
   });
 
+  it('carries no precomputed body checksum', async () => {
+    const url = await generateConstrainedUploadUrl(KEY, 'application/x-ndjson', 10);
+    const names = [...new URL(url).searchParams.keys()].map((k) => k.toLowerCase());
+    expect(names.filter((k) => k.startsWith('x-amz-checksum') || k === 'x-amz-sdk-checksum-algorithm')).toEqual([]);
+  });
+
   it('expires — the signature is short-lived', async () => {
     const url = await generateConstrainedUploadUrl(KEY, 'application/x-ndjson', 10);
     expect(Number(new URL(url).searchParams.get('X-Amz-Expires'))).toBeLessThanOrEqual(600);

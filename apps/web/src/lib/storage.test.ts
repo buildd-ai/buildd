@@ -55,4 +55,12 @@ describe('generateSizedUploadUrl', () => {
     const url = await generateSizedUploadUrl(key, 'application/pdf', 10);
     expect(Number(query(url, 'X-Amz-Expires'))).toBeLessThanOrEqual(600);
   });
+
+  // The SDK's default checksum mode signs the CRC32 of an EMPTY body into the
+  // query; S3 rejects the real body against it.
+  it('carries no precomputed body checksum', async () => {
+    const url = await generateSizedUploadUrl(key, 'application/pdf', 10);
+    const names = [...new URL(url).searchParams.keys()].map((k) => k.toLowerCase());
+    expect(names.filter((k) => k.startsWith('x-amz-checksum') || k === 'x-amz-sdk-checksum-algorithm')).toEqual([]);
+  });
 });
