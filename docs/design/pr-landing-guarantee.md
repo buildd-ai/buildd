@@ -530,10 +530,23 @@ set issues no DB query; `countDue` `null` falls through to the query.
 new key; the signed URL rejects a replayed nonce, an expired token, a token for
 another workspace, and a live head that moved (re-evaluates instead).
 
-**Metric**: record `landing.firstApprovedGreenAt` → merge time as a
-`time_to_land` gate-ledger detail on the `merged` event, and expose p50/p90
-through `get_failure_analytics family=gate` so a regression is visible
-without a new panel.
+**Metric** (shipped): every merge through `landPr` writes its `accepted` gate
+row with `detail.timeToLandMs` — the wait from "approved AND green" to merge.
+The start is the earlier of the marker's `firstApprovedGreenAt` (set when a
+refresh began the wait) and a derived clock: the later of the newest review
+round's completion and the newest check run's `completed_at`. A landing with
+no derivable start carries `detail.timeToLandUnmeasured` instead of a zero.
+Every non-merged row also carries `detail.approvedGreenAt` once the PR is
+approved and green, which is what "stuck" is measured from.
+
+`get_failure_analytics family=gate` (and `GET /api/health/failures?family=gate`,
+under `landing`) reports p50/p90/max over measured landings, the unmeasured
+count, and how many PRs are past the 30-minute target right now: the PRs whose
+newest landing row is approved-and-green older than the threshold, minus any
+whose worker already merged or closed. Computed in
+`apps/web/src/lib/pr-landing-metrics.ts` from the ledger — no new table, no new
+panel. Limit: only merges that go through `landPr` are measured, so a merge
+done directly on GitHub is invisible to it.
 
 ### K. Rollout and rollback
 
@@ -556,6 +569,17 @@ Flag `gitConfig.landing.mode`: `off` (default — today's code paths, unchanged)
 
 The retained paths are removed one release after `enforce` has been the
 default with no rollback.
+
+**Status of the default.** `resolveLandingMode` returns `shadow` when the flag
+is unset, and the default has deliberately not been moved to `enforce`: that
+step is gated on the shadow review above, which needs shadow rows to compare,
+and shadow rows only exist once the landing function is deployed. To flip it:
+release, let shadow run on one workspace for a week, list every disagreement
+between the shadow outcome and what the legacy path did, and stop if any is a
+would-have-merged-past-red-CI or would-have-carried-a-diff-changing-push case.
+Only then set `gitConfig.landing.mode: 'enforce'` per workspace, and change the
+default in `resolveLandingMode` after a clean period. The rollback switch is
+unchanged: set the mode back to `shadow` or `off`.
 
 ### Safety properties
 

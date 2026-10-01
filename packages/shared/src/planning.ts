@@ -21,6 +21,7 @@
 // app, so the boundaries cannot drift apart again.
 
 import type { GoalCriterion } from './types';
+import { shippedOutputSchema, type ShippedOutput } from './shipped';
 
 /**
  * A single step in an orchestrator plan. Superset of the fields the agent can
@@ -78,6 +79,8 @@ export interface PlanningStructuredOutput {
   questions?: PlanQuestion[];
   /** Mission-level completion gates the agent proposes — see manage_missions goalCriteria. */
   goalCriteria?: GoalCriterion[];
+  /** Owner-facing "what shipped" answer, filled alongside missionComplete. */
+  shipped?: ShippedOutput;
 }
 
 /**
@@ -205,6 +208,7 @@ export const planningOutputSchema = {
         required: ['ref', 'question'],
       },
     },
+    shipped: shippedOutputSchema,
     goalCriteria: {
       type: 'array',
       description:

@@ -27,6 +27,12 @@ describe('mission board visual fixture', () => {
     expect(parseMissionBoardVisualParams(new URLSearchParams('phase=no_browser_runner&layout=task'))).toMatchObject({ phase: 'no_browser_runner', layout: 'task' });
   });
 
+  it('parses the What shipped header variant, only for a completed mission', () => {
+    expect(parseMissionBoardVisualParams(new URLSearchParams('phase=reviewed&complete=1&shipped=noshots')).shipped).toBe('noshots');
+    expect(parseMissionBoardVisualParams(new URLSearchParams('phase=reviewed&shipped=lede')).shipped).toBeNull();
+    expect(parseMissionBoardVisualParams(new URLSearchParams('complete=1&shipped=nope')).shipped).toBeNull();
+  });
+
   it('every linked state puts the audit on the board, under its own id', () => {
     for (const l of missionBoardVisualLinks()) {
       const p = parseMissionBoardVisualParams(new URLSearchParams(l.href.slice(1)));

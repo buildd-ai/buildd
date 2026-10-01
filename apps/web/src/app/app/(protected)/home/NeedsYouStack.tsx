@@ -36,6 +36,11 @@ export function shippedDurationFacts(m: Pick<HomeShippedMission, 'activeMs' | 'd
   return d.showOpen ? [[d.work, 'of work'], [d.open, 'open']] : [[d.work, 'of work']];
 }
 
+/** "Learn more" lands on the mission page's What shipped header. */
+export function shippedSummaryHref(href: string): string {
+  return href.includes('#') ? href : `${href}#what-shipped`;
+}
+
 function ShippedCard({ m, timeZone }: { m: HomeShippedMission; timeZone?: string | null }) {
   // What happened, not a CI tally: "0 auto-fixes" is not an outcome.
   const screens = m.screens && m.screens.shots > 0 ? m.screens : null;
@@ -70,7 +75,7 @@ function ShippedCard({ m, timeZone }: { m: HomeShippedMission; timeZone?: string
           </div>
         ))}
       </dl>
-      <Link href={m.href} className="mt-3.5 inline-flex min-h-11 items-center border-2 border-border-strong px-3.5 font-mono text-[12.5px] font-semibold text-text-primary hover:bg-surface-3 md:min-h-9">
+      <Link href={shippedSummaryHref(m.href)} className="mt-3.5 inline-flex min-h-11 items-center border-2 border-border-strong px-3.5 font-mono text-[12.5px] font-semibold text-text-primary hover:bg-surface-3 md:min-h-9">
         Read summary
       </Link>
     </article>

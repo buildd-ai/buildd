@@ -679,6 +679,32 @@ describe('deriveMissionStateView — visual review', () => {
   });
 });
 
+describe('deriveMissionStateView — surface audit missing', () => {
+  const refusal = {
+    ok: false as const,
+    code: 'surface_audit_missing' as const,
+    reason: 'This mission changed UI but no surface audit has passed.',
+  };
+
+  it('is an owner decision that says to audit or waive', () => {
+    const view = deriveMissionStateView({ ...base, completion: refusal });
+    expect(view.kind).toBe('awaiting_decision');
+    const w = gated(view);
+    expect(w.kind).toBe('human_decision');
+    expect(w.label).toBe('This mission changed UI and has no visual audit');
+    expect(w.tone).toBe('warning');
+    expect(view.derivedFrom.kind).toBe('canCompleteMission');
+    expect(view.nextAction).toContain('[surface audit]');
+    expect(view.nextAction).toContain('surfaceAuditWaiver');
+  });
+
+  it('still shows while a worker is running', () => {
+    const view = deriveMissionStateView({ ...base, activeAgents: 1, completion: refusal });
+    expect(view.kind).toBe('running');
+    expect(view.outstanding.some(f => f.kind === 'human_decision')).toBe(true);
+  });
+});
+
 // ─── executor='local' (task 09ed6675) ────────────────────────────────────────
 describe('deriveMissionStateView — local executor', () => {
   const open = [{ id: 't1', status: 'pending', title: 'Build it' }, { id: 't2', status: 'pending', title: 'Test it' }];

@@ -13,6 +13,8 @@ import { buildDeliverySteps } from '@/lib/mission-delivery';
 import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionLanes from '@/app/app/(protected)/missions/[id]/MissionLanes';
 import MissionFeedLayout from '@/app/app/(protected)/missions/[id]/MissionFeedLayout';
+import MissionShippedHeader from '@/app/app/(protected)/missions/[id]/MissionShippedHeader';
+import { buildShippedHeaderView, type ShippedHeaderView } from '@/lib/mission-shipped-header';
 import MissionScreensRow from '@/app/app/(protected)/missions/[id]/MissionScreensRow';
 import MissionVisualReviewSetting from '@/app/app/(protected)/missions/[id]/MissionVisualReviewSetting';
 import { MissionVisualReviewProvider } from '@/app/app/(protected)/missions/[id]/MissionVisualReview';
@@ -44,6 +46,29 @@ function visualStepOf(model: VisualReviewModel) {
     visual: { shots: s.shots, ok: s.ok, issues: s.issues, unsure: s.unsure, ...(s.bootFailed ? { bootFailed: true } : {}) },
     visualPhase: model,
   }).find(st => st.key === 'visual') ?? null;
+}
+
+const SHIPPED_COMPLETED_AT = '2026-01-10T14:00:00.000Z';
+
+/** Illustrative What shipped records, one per header variant. */
+function shippedFixtureView(variant: NonNullable<MissionBoardVisualParams['shipped']>, visual: VisualReviewModel): ShippedHeaderView | null {
+  const shotOf = (viewport: 'mobile' | 'desktop') => visual.cells.find(c => c.viewport === viewport);
+  const heroShots = [shotOf('mobile'), shotOf('desktop')].flatMap(c => c ? [{
+    artifactId: c.current.shot.id, route: c.route, viewport: c.viewport, verdict: 'ok' as const,
+  }] : []);
+  const record = {
+    version: 1 as const,
+    lede: 'On a phone, the example screen now opens on what needs you instead of a setup card. Checked at phone and desktop width.',
+    changeType: 'frontend' as const,
+    heroShots,
+    offPlan: variant === 'lede' ? ['One planned cleanup was dropped.'] : [],
+    authorTaskId: 'fixture-author',
+    origin: 'author' as const,
+    completedAt: SHIPPED_COMPLETED_AT,
+  };
+  if (variant === 'noshots') return buildShippedHeaderView({ ...record, heroShots: [] }, SHIPPED_COMPLETED_AT);
+  if (variant === 'mechanical') return buildShippedHeaderView({ ...record, lede: null, origin: 'no_author', offPlan: [] }, SHIPPED_COMPLETED_AT);
+  return buildShippedHeaderView(record, SHIPPED_COMPLETED_AT);
 }
 
 function View({ params }: { params: MissionBoardVisualParams }) {
@@ -81,6 +106,10 @@ function View({ params }: { params: MissionBoardVisualParams }) {
 
       <main className="mx-auto max-w-[1400px] px-4 py-2 md:px-8">
         <MissionVisualReviewProvider missionId={visual.missionId} visual={visual} transport={transport}>
+          {params.shipped && (() => {
+            const view = shippedFixtureView(params.shipped, visual);
+            return view ? <MissionShippedHeader missionId={visual.missionId} view={view} /> : null;
+          })()}
           {params.layout === 'task' ? (
             // The audit task's own surfaces (display only: the task views post
             // to the live routes, so do not click their actions here).
@@ -99,7 +128,7 @@ function View({ params }: { params: MissionBoardVisualParams }) {
           ) : params.layout === 'feed' ? (
             <MissionFeedLayout model={board} completionText={null} timeZone="UTC" visual={visual} {...link} />
           ) : (
-            <MissionBoard model={board} completionText={params.complete ? 'Shipped the example screens and checked them on a phone and a desktop.' : null} visual={visual} {...link} />
+            <MissionBoard model={board} completionText={params.complete && !(params.shipped === 'lede' || params.shipped === 'noshots') ? 'Shipped the example screens and checked them on a phone and a desktop.' : null} visual={visual} {...link} />
           )}
           <div data-testid="mission-board-footer" className="mt-10">
             <MissionScreensRow missionId={visual.missionId} step={visualStepOf(visual)} />

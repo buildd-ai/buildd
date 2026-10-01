@@ -34,6 +34,28 @@ describe('parseReviewerOutput', () => {
     if (!res.ok) expect(res.reason).toContain('verdict');
   });
 
+  it('normalizes case and separator variants to the canonical verdict', () => {
+    for (const variant of ['request_changes', 'requestChanges', 'REQUEST-CHANGES', 'Request Changes', ' request-changes ']) {
+      const res = parseReviewerOutput({ ...valid, verdict: variant });
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.output.verdict).toBe('request-changes');
+    }
+    const upper = parseReviewerOutput({ ...valid, verdict: 'APPROVE' });
+    expect(upper.ok && upper.output.verdict).toBe('approve');
+  });
+
+  it('does not mutate the caller payload when normalizing', () => {
+    const raw = { ...valid, verdict: 'request_changes' };
+    parseReviewerOutput(raw);
+    expect(raw.verdict).toBe('request_changes');
+  });
+
+  it('still rejects a different word, and names the allowed values', () => {
+    const res = parseReviewerOutput({ ...valid, verdict: 'reject' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain('"request-changes"');
+  });
+
   it('rejects a missing verdict or a non-object payload', () => {
     expect(parseReviewerOutput({ confidence: 0.9, summary: 's' }).ok).toBe(false);
     expect(parseReviewerOutput(null).ok).toBe(false);
