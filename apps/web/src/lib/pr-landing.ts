@@ -55,6 +55,7 @@ import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import type { LandingAlertInput } from '@/lib/pr-landing-alert';
+import type { StaleApprovalReReviewInput, StaleApprovalReReviewResult } from '@/lib/stale-approval-re-review';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import {
   readLandingMarker,
@@ -174,7 +175,15 @@ export interface LandPrDeps {
    * doors; until one of them hands it over, an unwired dispatcher yields a
    * `needs_fix` with no `taskId` and a ledger row saying so.
    */
-  dispatchFix?: (input: FixDispatchInput) => Promise<{ taskId?: string } | null>;
+  dispatchFix?: (input: FixDispatchInput) => Promise<{ taskId?: string; /** Nothing was filed, and why. */ skipped?: string } | null>;
+  /**
+   * Sends a reviewer for a stale approval (the diff changed after the approve,
+   * so carry-forward could not keep it). Used for the `re_review` fix of a
+   * `stale_approval` block when no `dispatchFix` is wired. Defaults to the
+   * shared dispatcher in stale-approval-re-review.ts, which the legacy
+   * auto-merge door also calls; single-flight per PR + head.
+   */
+  dispatchStaleApprovalReReview?: (input: StaleApprovalReReviewInput) => Promise<StaleApprovalReReviewResult>;
   escalateConflictExhaustion?: (taskId: string, repoFullName: string, prNumber: number, headSha: string) => Promise<void>;
   /** The live reviewer-retry (author fixing a finding) task for this PR, if any. */
   findLiveReviewerRetry?: (workspaceId: string, prNumber: number) => Promise<string | null>;
@@ -494,21 +503,54 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     });
   };
 
-  const needsFix = async (fix: Exclude<FixKind, 'conflict'>, reason: string): Promise<LandingOutcome> => {
+  const needsFix = async (
+    fix: Exclude<FixKind, 'conflict'>,
+    reason: string,
+    dispatch: LandPrDeps['dispatchFix'] = deps.dispatchFix,
+  ): Promise<LandingOutcome> => {
     let taskId: string | undefined;
     let dispatched = false;
-    if (act && deps.dispatchFix) {
+    let fixSkipped: string | null = null;
+    if (act && dispatch) {
       try {
-        const res = await deps.dispatchFix({
+        const res = await dispatch({
           kind: fix, workspaceId, installationId, repoFullName, prNumber, headSha: headSha ?? '', owner, reason,
         });
         taskId = res?.taskId;
         dispatched = !!res;
+        if (res?.skipped) {
+          dispatched = false;
+          fixSkipped = res.skipped;
+        }
       } catch (err) {
         return human('merge_failed', `could not file the ${fix} fix: ${errMessage(err)}`);
       }
     }
-    return done({ kind: 'needs_fix', fix, reason, ...(taskId ? { taskId } : {}) }, reason, { fix, fixDispatched: dispatched });
+    return done(
+      { kind: 'needs_fix', fix, reason, ...(taskId ? { taskId } : {}) },
+      reason,
+      { fix, fixDispatched: dispatched, ...(fixSkipped ? { fixSkipped } : {}) },
+    );
+  };
+
+  // A stale approval's fix is a reviewer for the live head, through the same
+  // dispatcher the legacy auto-merge door uses (resolveReReviewPlan + the
+  // reviewer-task dedupe). Already-reviewing names that reviewer as the owner.
+  const staleApprovalReReview: NonNullable<LandPrDeps['dispatchFix']> = async (fi) => {
+    const send = deps.dispatchStaleApprovalReReview
+      ?? (await import('@/lib/stale-approval-re-review')).dispatchStaleApprovalReReview;
+    const res = await send({
+      workspaceId: fi.workspaceId,
+      installationId: fi.installationId,
+      repoFullName: fi.repoFullName,
+      prNumber: fi.prNumber,
+      headSha: fi.headSha,
+      baseRef,
+      taskId: fi.owner.taskId,
+      workerId: fi.owner.workerId,
+      policy,
+    });
+    return res.outcome === 'skipped' ? { skipped: res.reason } : { taskId: res.reviewTaskId };
   };
 
   const readMarker = async () => {
@@ -656,7 +698,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     } else {
       const extra = { reviewKind: gate.kind ?? null, reviewState: gate.state ?? null, reviewTaskId: gate.reviewTaskId ?? null, clearedBy: gate.clearedBy ?? null };
       if (gate.kind === 'in_flight') return waiting(reason, extra);
-      if (gate.kind === 'stale_approval') return needsFix('re_review', reason);
+      if (gate.kind === 'stale_approval') return needsFix('re_review', reason, deps.dispatchFix ?? staleApprovalReReview);
       const live = await findLiveRetry(workspaceId, prNumber).catch(() => null);
       if (live) {
         return done({ kind: 'needs_fix', fix: 're_review', reason, taskId: live }, reason, { ...extra, fix: 're_review', fixDispatched: false });

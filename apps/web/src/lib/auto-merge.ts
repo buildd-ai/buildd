@@ -37,6 +37,8 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import { checkBaseRefreshHold } from '@/lib/base-refresh';
+import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
+import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
@@ -620,7 +622,11 @@ export async function tryAutoMergeWorkerPr(params: {
           await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
           return { merged: false, reason: safetyCheck.reason };
         } else {
-          // Duplicate dedup hit — already handling it
+          // Nothing was filed. Say why on the ledger, and page a person for the
+          // outcomes no later event clears on its own.
+          await recordUnfiledRefreshOutcome(dispatchResult, {
+            workspaceId, taskId: worker.taskId, workerId: worker.id, repoFullName, prNumber, headSha, refusal: safetyCheck.reason,
+          });
           return { merged: false, reason: safetyCheck.reason };
         }
       }
@@ -674,6 +680,21 @@ export async function tryAutoMergeWorkerPr(params: {
     if (reviewGate.blocks) {
       const reason = `${reviewGate.reason}. ${reviewGate.clearedBy}`;
       console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+      // Carry-forward could not keep the approval (the diff changed): send a
+      // reviewer for this head rather than waiting for a person to ask.
+      const reReview = reviewGate.kind === 'stale_approval'
+        ? await dispatchStaleApprovalReReview({
+            workspaceId: reviewWorkspaceId,
+            installationId,
+            repoFullName,
+            prNumber,
+            headSha,
+            baseRef: observed.baseRef ?? null,
+            taskId: worker.taskId ?? null,
+            workerId: worker.id ?? null,
+            policy,
+          })
+        : null;
       fireGateEvent({
         gate: GATE_SLUGS.REVIEW_VERDICT,
         surface: 'auto-merge',
@@ -689,6 +710,13 @@ export async function tryAutoMergeWorkerPr(params: {
           reviewState: reviewGate.state ?? null,
           reviewKind: reviewGate.kind ?? null,
           reviewTaskId: reviewGate.reviewTaskId ?? null,
+          ...(reReview
+            ? {
+                reReview: reReview.outcome,
+                ...('reviewTaskId' in reReview ? { reReviewTaskId: reReview.reviewTaskId } : {}),
+                ...('reason' in reReview ? { reReviewSkipped: reReview.reason } : {}),
+              }
+            : {}),
         },
       });
       return { merged: false, reason };
@@ -771,10 +799,103 @@ export async function tryAutoMergeWorkerPr(params: {
         // Supersession detected — escalateSupersession already fired inside dispatch
       } else if (dispatchResult.exhausted && worker.taskId) {
         await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
+      } else if (!dispatchResult.dispatched && !dispatchResult.disabled) {
+        await recordUnfiledRefreshOutcome(dispatchResult, {
+          workspaceId, taskId: worker.taskId, workerId: worker.id, repoFullName, prNumber, headSha, refusal: result.message ?? '',
+        });
       }
     }
   }
   return { merged: false, reason: result.message };
+}
+
+/**
+ * The branch-refresh outcomes `dispatchConflictRetry` returns without filing
+ * anything, each with its own ledger reason. `page` names the landing cause a
+ * person is paged with — the same page `landPr` raises (pr-landing.ts
+ * `mapRetry`) — for the two that no later event clears on its own.
+ */
+export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
+  refreshOutcome: string;
+  reason: string;
+  page: 'refresh_failed' | 'semantic_unverified' | null;
+} {
+  if (res.refreshExhausted) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict; retries are used up`,
+      page: 'refresh_failed',
+    };
+  }
+  if (res.semanticUnverified) {
+    return {
+      refreshOutcome: 'semantic_unverified',
+      reason: 'the PR and the base change the same files and their symbol overlap could not be verified',
+      page: 'semantic_unverified',
+    };
+  }
+  if (res.inFlightTaskId) {
+    return { refreshOutcome: 'conflict_retry_in_flight', reason: `a conflict retry is already working this PR (task ${res.inFlightTaskId.slice(0, 8)})`, page: null };
+  }
+  if (res.dependencyBot) {
+    return { refreshOutcome: 'dependency_bot', reason: 'this is a dependency-bot PR; its own rebase owns the branch', page: null };
+  }
+  if (res.headChanged) return { refreshOutcome: 'head_changed', reason: 'the PR head moved before the refresh; the new head re-evaluates', page: null };
+  if (res.refreshInFlight) return { refreshOutcome: 'refresh_in_flight', reason: 'another refresh of this PR is in flight', page: null };
+  if (res.refreshDeferred) {
+    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry`, page: null };
+  }
+  if (res.semanticDeferred) return { refreshOutcome: 'semantic_deferred', reason: 'semantic overlap with the base is not yet verified; will recheck', page: null };
+  if (res.alreadyUpToDate) return { refreshOutcome: 'already_up_to_date', reason: 'the branch already has every base commit', page: null };
+  if (res.baseRewritten) return { refreshOutcome: 'base_rewritten', reason: 'the base branch was rewritten after this PR opened', page: null };
+  return { refreshOutcome: 'dedup', reason: 'a conflict retry for this PR head was already filed', page: null };
+}
+
+/** Ledger row (and, for the two terminal outcomes, a page) for a refresh that filed nothing. Never throws. */
+async function recordUnfiledRefreshOutcome(
+  res: DispatchConflictRetryResult,
+  ctx: { workspaceId: string; taskId: string; workerId: string; repoFullName: string; prNumber: number; headSha: string; refusal: string },
+): Promise<void> {
+  const { refreshOutcome, reason, page } = describeUnfiledRefreshOutcome(res);
+  console.log(`[auto-merge] ${ctx.repoFullName}#${ctx.prNumber}: refresh filed nothing (${refreshOutcome}) — ${reason}`);
+  try {
+    fireGateEvent({
+      gate: GATE_SLUGS.AUTO_MERGE,
+      surface: 'auto-merge',
+      outcome: page ? 'stranded' : 'deferred',
+      reason,
+      workspaceId: ctx.workspaceId,
+      taskId: ctx.taskId,
+      workerId: ctx.workerId,
+      callerOrigin: 'system',
+      detail: {
+        prNumber: ctx.prNumber,
+        headSha: ctx.headSha,
+        repoFullName: ctx.repoFullName,
+        refreshOutcome,
+        refusal: ctx.refusal,
+        ...(res.inFlightTaskId ? { inFlightTaskId: res.inFlightTaskId } : {}),
+        ...(res.refreshFailure ? { refreshFailure: res.refreshFailure } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn('[auto-merge] gate event write failed:', err instanceof Error ? err.message : String(err));
+  }
+  if (!page) return;
+  try {
+    const { raiseLandingAlert } = await import('@/lib/pr-landing-alert-deps');
+    await raiseLandingAlert({
+      workspaceId: ctx.workspaceId,
+      prNumber: ctx.prNumber,
+      headSha: ctx.headSha,
+      repoFullName: ctx.repoFullName,
+      prTitle: null,
+      taskId: ctx.taskId,
+      outcome: { kind: 'needs_human', cause: page, reason },
+    });
+  } catch (err) {
+    console.warn(`[auto-merge] landing page failed for PR #${ctx.prNumber}:`, err instanceof Error ? err.message : String(err));
+  }
 }
 
 /**

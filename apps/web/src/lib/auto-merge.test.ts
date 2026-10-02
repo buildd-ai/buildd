@@ -84,10 +84,24 @@ mock.module('@/lib/migration-inspector', () => ({
   inspectPullRequestMigrations: mockInspectPullRequestMigrations,
 }));
 
+// Configurable per test: the unfiled-refresh-outcome describe drives a conflict.
+let mockClassifyMergeFailure = mock((_reason: string) => 'retryable');
+let mockDispatchConflictRetry = mock(async (_p: any) => ({ dispatched: false }) as any);
 mock.module('@/lib/conflict-retry', () => ({
-  classifyMergeFailure: mock(() => 'retryable'),
-  dispatchConflictRetry: mock(() => Promise.resolve({ dispatched: false })),
+  classifyMergeFailure: (reason: string) => mockClassifyMergeFailure(reason),
+  dispatchConflictRetry: (p: any) => mockDispatchConflictRetry(p),
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
+}));
+
+// The stale-approval re-review dispatcher (its own logic is tested in
+// stale-approval-re-review.test.ts) and the landing page (pr-landing-alert).
+const mockDispatchStaleApprovalReReview = mock(async (_input: any) => ({ outcome: 'dispatched', reviewTaskId: 'review-new', plan: 'delta' }) as any);
+mock.module('@/lib/stale-approval-re-review', () => ({
+  dispatchStaleApprovalReReview: (input: any) => mockDispatchStaleApprovalReReview(input),
+}));
+const mockRaiseLandingAlert = mock(async (_input: any) => {});
+mock.module('@/lib/pr-landing-alert-deps', () => ({
+  raiseLandingAlert: (input: any) => mockRaiseLandingAlert(input),
 }));
 
 // The review-verdict gate reads the reviewer task through `readPrReviewStatus`;
@@ -2371,5 +2385,143 @@ describe('tryAutoMergeWorkerPr — passes the workspace gitConfig to the semanti
     expect(result.reason).toContain('semantic hold');
     expect(mockMergePullRequest).not.toHaveBeenCalled();
     expect(mockCheckBaseRefreshHold).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'task-1', gitConfig }));
+  });
+});
+
+describe('tryAutoMergeWorkerPr — a stale approval dispatches a re-review', () => {
+  const GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const greenPr = () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'feature' }, base: { ref: 'dev' } })
+      .mockResolvedValueOnce({ behind_by: 0 });
+  };
+  const stale = {
+    blocks: true,
+    kind: 'stale_approval',
+    state: 'approved',
+    reviewTaskId: 'review-1',
+    reason: "the reviewer's approval was made against an earlier commit",
+    clearedBy: 'Request a re-review of the new commit.',
+  };
+  const run = () => tryAutoMergeWorkerPr({
+    installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head-sha',
+    worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+    policy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } as MergePolicy,
+  });
+  const reviewGateCalls = () => mockFireGateEvent.mock.calls.map((c: any[]) => c[0]).filter((c: any) => c.gate === 'review_verdict');
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+    mockTasksFindMany = mock(() => [] as any[]);
+    mockWorkersFindMany = mock(() => [] as any[]);
+    mockGuardReviewVerdict.mockReset();
+    mockFireGateEvent.mockReset();
+    mockDispatchStaleApprovalReReview.mockClear();
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }) as any);
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
+    mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: false }) as any);
+  });
+
+  it('sends a reviewer for the new head when carry-forward could not keep the approval', async () => {
+    greenPr();
+    mockGuardReviewVerdict.mockResolvedValue(stale);
+    const res = await run();
+    expect(res.merged).toBe(false);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(mockDispatchStaleApprovalReReview).toHaveBeenCalledTimes(1);
+    expect(mockDispatchStaleApprovalReReview.mock.calls[0][0]).toMatchObject({
+      workspaceId: 'ws-1', installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-sha', baseRef: 'dev', taskId: 'task-1', workerId: 'worker-1',
+    });
+    const [row] = reviewGateCalls();
+    expect(row.detail).toMatchObject({ reviewKind: 'stale_approval', reReview: 'dispatched', reReviewTaskId: 'review-new' });
+  });
+
+  it('does not send a reviewer for any other review block', async () => {
+    greenPr();
+    mockGuardReviewVerdict.mockResolvedValue({ ...stale, kind: 'changes_requested', state: 'changes_requested' });
+    await run();
+    expect(mockDispatchStaleApprovalReReview).not.toHaveBeenCalled();
+  });
+});
+
+describe('tryAutoMergeWorkerPr — refresh outcomes that file nothing are recorded', () => {
+  const GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const dirtyPr = () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha', ref: 'feature' }, base: { ref: 'dev' } });
+  };
+  const run = () => tryAutoMergeWorkerPr({
+    installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42, headSha: 'head-sha',
+    worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+    policy: autoThresholdPolicy,
+  });
+  const refreshRows = () =>
+    mockFireGateEvent.mock.calls.map((c: any[]) => c[0]).filter((c: any) => c.detail?.refreshOutcome);
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+    mockFireGateEvent.mockReset();
+    mockRaiseLandingAlert.mockClear();
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }) as any);
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
+    mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: false }) as any);
+    mockClassifyMergeFailure = mock((reason: string) => (/dirty/.test(reason) ? 'conflict' : 'retryable'));
+  });
+
+  const cases: Array<[string, any, string | null]> = [
+    ['refresh_exhausted', { dispatched: false, refreshExhausted: true, refreshFailure: 'rate_limited' }, 'refresh_failed'],
+    ['semantic_unverified', { dispatched: false, semanticUnverified: true }, 'semantic_unverified'],
+    ['conflict_retry_in_flight', { dispatched: false, inFlightTaskId: 'retry-1' }, null],
+    ['dependency_bot', { dispatched: false, dependencyBot: true }, null],
+  ];
+
+  for (const [outcome, res, cause] of cases) {
+    it(`${outcome}: writes a gate row${cause ? ' and pages a person' : ''}`, async () => {
+      dirtyPr();
+      mockDispatchConflictRetry = mock(async () => res);
+      const result = await run();
+      expect(result.merged).toBe(false);
+      const rows = refreshRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        gate: 'auto_merge', surface: 'auto-merge', workspaceId: 'ws-1', taskId: 'task-1',
+        outcome: cause ? 'stranded' : 'deferred',
+        detail: { prNumber: 42, headSha: 'head-sha', refreshOutcome: outcome },
+      });
+      if (cause) {
+        expect(mockRaiseLandingAlert).toHaveBeenCalledTimes(1);
+        expect(mockRaiseLandingAlert.mock.calls[0][0]).toMatchObject({
+          workspaceId: 'ws-1', prNumber: 42, headSha: 'head-sha', taskId: 'task-1',
+          outcome: { kind: 'needs_human', cause },
+        });
+      } else {
+        expect(mockRaiseLandingAlert).not.toHaveBeenCalled();
+      }
+    });
+  }
+
+  it('gives each of the four a distinct reason', async () => {
+    const reasons = new Set<string>();
+    for (const [, res] of cases) {
+      mockFireGateEvent.mockReset();
+      dirtyPr();
+      mockDispatchConflictRetry = mock(async () => res);
+      await run();
+      reasons.add(refreshRows()[0].reason);
+    }
+    expect(reasons.size).toBe(4);
   });
 });
