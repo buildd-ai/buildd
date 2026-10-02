@@ -52,7 +52,7 @@ describe('resolveExperimentViewer — session', () => {
     mockResolveActiveTeamId.mockResolvedValue('team-a');
     mockMemberFindFirst.mockResolvedValue({ role });
     const r = await resolveExperimentViewer(req({ cookie: 'team-a' }), null);
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: role as any, userId: 'u-1' } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: role as any, userId: 'u-1', accountId: null } });
     expect(mockResolveActiveTeamId).toHaveBeenCalledWith('u-1', 'team-a');
   });
 
@@ -70,7 +70,7 @@ describe('resolveExperimentViewer — session', () => {
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-b', role: 'member' });
     mockMemberFindFirst.mockResolvedValue({ role: 'admin' });
     const r = await resolveExperimentViewer(req(), 'ws-1');
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-b', role: 'admin', userId: 'u-1' } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-b', role: 'admin', userId: 'u-1', accountId: null } });
   });
 
   it('workspaceId the user cannot reach → 404', async () => {
@@ -85,7 +85,7 @@ describe('resolveExperimentViewer — API key', () => {
   it('admin-level key acts as admin on its own team', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct', teamId: 'team-a', level: 'admin' });
     const r = await resolveExperimentViewer(req({ bearer: 'bld_x' }), null);
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'admin', userId: null } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'admin', userId: null, accountId: 'acct' } });
   });
 
   it.each(['worker', 'trigger'])('%s-level key acts as member', async (level) => {
@@ -110,6 +110,6 @@ describe('resolveExperimentViewer — API key', () => {
     mockVerifyJwt.mockResolvedValue({ sub: 'u-9' });
     mockMemberFindFirst.mockResolvedValue({ role: 'member' });
     const r = await resolveExperimentViewer(req({ bearer: 'aaa.bbb.ccc' }), null);
-    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: 'u-9' } });
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: 'u-9', accountId: 'acct' } });
   });
 });

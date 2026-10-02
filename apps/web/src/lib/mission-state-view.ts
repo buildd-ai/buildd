@@ -99,6 +99,7 @@ import { getMissionStateChip } from './mission-helpers';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import type { CiRedChain } from './ci-red-chain';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
+import { quietLabel } from './local-strand';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -110,6 +111,7 @@ export type MissionStateSource =
   | 'mission.status'
   | 'mission.startMode'
   | 'mission.executor'
+  | 'deriveLocalStrand'
   | 'mission.criteriaEscalatedAt'
   | 'workers.live'
   | 'deriveTaskHealthSignal'
@@ -173,6 +175,18 @@ export type WaitingOnDescriptor =
        * are the session's to claim, so "dispatch a worker" is the wrong advice.
        */
       local?: true;
+      /**
+       * The local mission is stranded (`deriveLocalStrand`): claimable work and
+       * no session touch for `quietMs`. The action is "Continue on a runner";
+       * `flipBlockedReason` is why that flip would be refused, when it would.
+       */
+      stranded?: { quietMs: number; flipBlockedReason: string | null };
+      /**
+       * Every open row is waiting on its dependencies: the open PRs it waits to
+       * merge, and how many dependencies are still unfinished (no PR yet).
+       * Nothing here is the owner's to do.
+       */
+      blockedBy?: { prNumbers: number[]; unfinished: number };
     }
   /** A deliverable failed. `infra` distinguishes "failed on infrastructure" from "failed on its merits". */
   | { kind: 'task_failed'; tone: WaitingOnTone; label: string; infra: boolean; taskIds: string[]; titles: string[] }
@@ -285,6 +299,8 @@ export type WaitingOnDescriptor =
       visualReview?: { cells: number; roundCapOpen: boolean; enforced: boolean };
       /** The mission changed UI and no surface audit passed (`surface_audit_missing`). */
       surfaceAudit?: true;
+      /** With `surfaceAudit`: the changed UI files, for a surface that says how many. */
+      surfaceAuditPaths?: string[];
     }
   /**
    * Everything open is on a known self-resolving condition. Resumes by itself.
@@ -463,8 +479,27 @@ export interface MissionStateInput {
    * Open deliverable rows, for naming which tasks are holding.
    * `waitingOnTaskIds`: unmet `dependsOn` entries of a pending row. Such a row
    * cannot be claimed, so it is never named as the blocker — its dependency is.
+   * `waitingOnPrs`: for those dependencies that finished their work, the open
+   * PR each is waiting to merge (dependency task id → PR number).
    */
-  openTasks?: Array<{ id: string; status: string; title?: string | null; waitingOnTaskIds?: string[] }>;
+  openTasks?: Array<{
+    id: string;
+    status: string;
+    title?: string | null;
+    waitingOnTaskIds?: string[];
+    waitingOnPrs?: Record<string, number>;
+  }>;
+  /**
+   * From `deriveLocalStrand` (lib/local-strand.ts), plus the refusal the
+   * executor flip would meet (`continueOnRunnerBlockedReason`). Read only on a
+   * local, unheld mission, and only when `stranded`.
+   */
+  localStrand?: {
+    stranded: boolean;
+    quietMs: number;
+    claimableTaskIds: string[];
+    flipBlockedReason: string | null;
+  } | null;
   /** Failed deliverable rows, for naming which tasks failed. */
   failedTasks?: Array<{ id: string; title?: string | null; infra?: boolean }>;
   /**
@@ -537,6 +572,8 @@ export interface MissionCompletionSummary {
   }>;
   /** The visual review hold, in shadow or enforced (`visual_review_open`). */
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
+  /** The rendered UI files behind `surface_audit_missing`. */
+  surfaceAuditPaths?: string[];
 }
 
 // ─── The situation line ───────────────────────────────────────────────────────
@@ -725,6 +762,18 @@ function resolve(input: MissionStateInput): Resolution {
     };
   }
 
+  // 4½. A local mission is stranded: claimable work, and no session has
+  //     touched the mission for `LOCAL_SESSION_QUIET_MS` (lib/local-strand.ts).
+  //     Nothing will ever claim it — runners never auto-claim a local task —
+  //     so this is the owner's call, and it outranks the rules below: a
+  //     failure or an unmerged PR on a stranded mission is waiting on the same
+  //     missing session (a reviewer nobody claims is why the PR sits). Those
+  //     facts stay in `outstanding`. Above rule 5 because the predicate already
+  //     judged liveness by heartbeat: a worker row still marked live whose
+  //     session went quiet is not a session.
+  const strand = strandFact(input);
+  if (strand) return strand;
+
   // 5. A live worker is observable ground truth. Everything below this line is
   //    an inference about a mission where nothing is currently executing.
   //    A local mission's live worker is the session's own claim: LOCAL, same tone.
@@ -844,6 +893,28 @@ function resolve(input: MissionStateInput): Resolution {
 /** The mission's tasks are run from a person's local session. */
 function isLocal(input: MissionStateInput): boolean {
   return input.executor === 'local';
+}
+
+/** Rule 4½ — a local mission nothing will ever claim from. */
+function strandFact(input: MissionStateInput): Resolution | null {
+  const s = input.localStrand;
+  if (!isLocal(input) || input.isHeld || !s?.stranded || s.claimableTaskIds.length === 0) return null;
+  const n = s.claimableTaskIds.length;
+  return {
+    kind: 'awaiting_decision',
+    waitingOn: {
+      kind: 'task',
+      tone: 'warning',
+      label: `Stranded: ${n === 1 ? '1 claimable task' : `${n} claimable tasks`} and no local session for ${quietLabel(s.quietMs)}`,
+      count: n,
+      taskIds: s.claimableTaskIds,
+      byStatus: { pending: n },
+      local: true,
+      stranded: { quietMs: s.quietMs, flipBlockedReason: s.flipBlockedReason },
+    },
+    displayState: 'stranded',
+    source: 'deriveLocalStrand',
+  };
 }
 
 // ─── Fact builders ────────────────────────────────────────────────────────────
@@ -1146,9 +1217,13 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   const { completion } = input;
   const openTasks = input.openTasks ?? [];
   const pendingCount = completion?.pendingDeliverables ?? openTasks.length;
+  // Every open row waiting on its dependencies is a fact whatever the health
+  // signal says (it reads NOMINAL for exactly this case), so a card with no
+  // completion decision names the wait the same way `explain` does.
+  const allDepBlocked = openTasks.length > 0 && openTasks.every(t => (t.waitingOnTaskIds?.length ?? 0) > 0);
   const qualifies = live
     ? pendingCount > 0
-    : input.health === 'STALLED' || (completion?.code === 'pending_deliverables' && pendingCount > 0);
+    : allDepBlocked || input.health === 'STALLED' || (completion?.code === 'pending_deliverables' && pendingCount > 0);
   if (!qualifies) return null;
 
   const byStatus = completion?.pendingByStatus
@@ -1166,6 +1241,10 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
   const depOnly = !live && openTasks.length > 0 && claimable.length === 0;
   if (depOnly) {
     const depIds = [...new Set(openTasks.flatMap(t => t.waitingOnTaskIds ?? []))];
+    const prByDep = new Map<string, number>();
+    for (const t of openTasks) for (const [dep, pr] of Object.entries(t.waitingOnPrs ?? {})) prByDep.set(dep, pr);
+    const prNumbers = [...new Set(depIds.map(id => prByDep.get(id)).filter((n): n is number => typeof n === 'number'))];
+    const unfinished = depIds.filter(id => !prByDep.has(id)).length;
     return {
       kind: 'waiting',
       waitingOn: {
@@ -1175,6 +1254,7 @@ function openTaskFact(input: MissionStateInput, live: boolean): Resolution | nul
         count: pendingCount,
         taskIds: depIds,
         byStatus,
+        blockedBy: { prNumbers, unfinished },
       },
       displayState: 'active',
       source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
@@ -1296,6 +1376,7 @@ function surfaceAuditFact(input: MissionStateInput): Resolution | null {
       label: 'This mission changed UI and has no visual audit',
       detail: input.completion.reason || null,
       surfaceAudit: true,
+      ...(input.completion.surfaceAuditPaths ? { surfaceAuditPaths: input.completion.surfaceAuditPaths } : {}),
     },
     displayState: 'waiting_decision',
     source: 'canCompleteMission',
@@ -1503,6 +1584,12 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
         const fix = fixLabel(d.attempt).toLowerCase();
         return d.attempt.claimed ? `waiting on ${fix} (in progress)` : `waiting on ${fix} (queued, no worker yet)`;
       }
+      if (d.stranded) {
+        return `stranded: no local session for ${quietLabel(d.stranded.quietMs)}. Continue on a runner?`;
+      }
+      if (d.blockedBy) {
+        return `${d.count === 1 ? '1 task is' : `${d.count} tasks are`} waiting on ${unblocksWhen(d.blockedBy, 'phrase')}`;
+      }
       return d.count === 1 ? '1 task is still open' : `${d.count} tasks are still open`;
     case 'task_failed':
       return d.infra
@@ -1633,7 +1720,7 @@ function deriveSituation(
     ? isLocal(input)
       ? localWaiting ? `${localLead(input)}.` : `${localLead(input)}. ${capitalize(phrase)}.`
       : `Running (${countAgents(input.activeAgents)}). ${capitalize(phrase)}.`
-    : `${capitalize(phrase)}.`;
+    : /[.?!]$/.test(phrase) ? capitalize(phrase) : `${capitalize(phrase)}.`;
 
   return {
     headline,
@@ -1668,6 +1755,29 @@ function localLead(input: MissionStateInput): string {
   return 'Running in a local session';
 }
 
+/** "#3319 and #3317", "#1, #2 and #3". */
+function listPrs(prs: readonly number[]): string {
+  const refs = prs.map(n => `#${n}`);
+  return refs.length <= 1 ? refs.join('') : `${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
+}
+
+/**
+ * What a dependency-blocked task is waiting on, as a phrase.
+ * `phrase`: "#3319 and #3317 to merge" · `action`: "#3319 and #3317 merge".
+ */
+function unblocksWhen(b: { prNumbers: number[]; unfinished: number }, form: 'phrase' | 'action'): string {
+  const parts: string[] = [];
+  if (b.prNumbers.length > 0) {
+    const verb = form === 'phrase' ? 'to merge' : b.prNumbers.length === 1 && b.unfinished > 0 ? 'merges' : 'merge';
+    parts.push(`${listPrs(b.prNumbers)} ${verb}`);
+  }
+  if (b.unfinished > 0) {
+    const tasks = b.unfinished === 1 ? '1 upstream task' : `${b.unfinished} upstream tasks`;
+    parts.push(form === 'phrase' ? `${tasks} to finish` : `${tasks} ${b.unfinished === 1 ? 'finishes' : 'finish'}`);
+  }
+  return parts.length > 0 ? parts.join(' and ') : 'its dependencies';
+}
+
 function countAgents(n: number): string {
   return n === 1 ? '1 agent' : `${n} agents`;
 }
@@ -1686,6 +1796,14 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
         return waitingOn.attempt.claimed
           ? 'Nothing to do yet. The reviewer runs again after the fix pushes.'
           : 'Nothing to do yet. The fix is queued for the next free worker; cancel it if you no longer want the work.';
+      }
+      if (waitingOn.stranded) {
+        return waitingOn.stranded.flipBlockedReason
+          ? `Can't continue on a runner: ${waitingOn.stranded.flipBlockedReason} Claim the open task(s) from a local session with claim_task {taskId}, or cancel them if you no longer want the work.`
+          : 'Continue on a runner: switch the mission to runners and its open task(s) are dispatched to them. Or keep it local and claim them from a session with claim_task {taskId}.';
+      }
+      if (waitingOn.blockedBy) {
+        return `Nothing to do yet. Unblocks when ${unblocksWhen(waitingOn.blockedBy, 'action')}.`;
       }
       if (waitingOn.local) {
         return 'Nothing to dispatch: this mission runs in a local session. Claim the open task(s) from it with claim_task {taskId}, or cancel them if you no longer want the work.';

@@ -4,7 +4,7 @@
  * square corners, 2px rules, hard offset shadows, the orange accent, flat
  * fills; no gradients, no blur. Bundled into the stage.
  */
-import { doneIn, fleetRows, phoneChosen, screenChecks, splitAt, splitHeadline, typedChars, type Motion } from './motion-model';
+import { doneIn, fleetRows, phoneChosen, screenChecks, splitAt, splitHeadline, typedChars, verifyAt, type Motion } from './motion-model';
 
 export type MotionPalette = { bg: string; surface: string; text: string; muted: string; rule: string; shadow: string; track: string };
 
@@ -28,8 +28,64 @@ function label(layer: HTMLElement, P: MotionPalette, text: string) {
 
 const card = (P: MotionPalette, shadow = 8): Partial<CSSStyleDeclaration> => ({ background: P.surface, border: `2px solid ${P.rule}`, boxShadow: `${shadow}px ${shadow}px 0 0 ${P.shadow}` });
 
-export function buildMotion(m: Motion, layer: HTMLElement, P: MotionPalette): (local: number) => void {
+/** A square check box: an outline that fills green and draws its check as `c` goes 0 to 1. */
+function checkBox(parent: HTMLElement, P: MotionPalette, size: number) {
+  const box = el('div', { position: 'relative', width: `${size}px`, height: `${size}px`, flex: '0 0 auto', border: `3px solid ${P.rule}`, background: 'transparent' }, parent);
+  const fill = el('div', { position: 'absolute', inset: '0', background: OK, opacity: '0' }, box);
+  // Two square-ended strokes, not a glyph (Plex Mono's check reads as a "V").
+  const mark = el('div', { position: 'absolute', left: `${size * 0.3}px`, top: `${size * 0.1}px`, width: `${size * 0.26}px`, height: `${size * 0.5}px`, borderRight: `${Math.round(size * 0.12)}px solid #ffffff`, borderBottom: `${Math.round(size * 0.12)}px solid #ffffff`, transform: 'rotate(45deg) scale(0.6)', opacity: '0' }, box);
+  return (c: number) => {
+    fill.style.opacity = String(c);
+    mark.style.opacity = String(c);
+    mark.style.transform = `rotate(45deg) scale(${0.6 + 0.4 * c})`;
+  };
+}
+
+/**
+ * The hero (motion-model `verify`): the checks, the agents' bars, then Done.
+ * Desktop puts the checks left and the bars right, and Done takes the bars'
+ * place; the 4:5 phone frame stacks the checks over the bars.
+ */
+function buildVerify(m: Extract<Motion, { kind: 'verify' }>, root: HTMLElement, P: MotionPalette, frame: { width: number; height: number }) {
+  const tall = frame.height > frame.width;
+  const L = tall
+    ? { pad: 56, top: 64, head: 22, rowH: 118, rowTop: 128, box: 54, font: 38, gap: 26, barsTop: 650, barsW: 608, barH: 28, barGap: 18, done: 104, doneTop: 640 }
+    // Desktop: the four rows (3 * 150 + 70 tall) sit centred in the frame, the label above them.
+    : { pad: 160, top: 216, head: 22, rowH: 150, rowTop: 280, box: 70, font: 54, gap: 36, barsTop: 0, barsW: 600, barH: 44, barGap: 0, done: 168, doneTop: 280 + (520 - 168) / 2 };
+  const head = el('div', { position: 'absolute', left: `${L.pad}px`, top: `${L.top}px`, display: 'flex', alignItems: 'center', gap: '14px', fontSize: `${L.head}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted }, root);
+  el('span', { width: '12px', height: '12px', background: ACCENT }, head);
+  el('span', {}, head, m.label.toUpperCase());
+  const ticks = m.checks.map((text, i) => {
+    const row = el('div', { position: 'absolute', left: `${L.pad}px`, top: `${L.rowTop + i * L.rowH}px`, height: `${L.box}px`, display: 'flex', alignItems: 'center', gap: `${L.gap}px`, fontSize: `${L.font}px`, fontWeight: '600', whiteSpace: 'nowrap' }, root);
+    const set = checkBox(row, P, L.box);
+    const word = el('span', { opacity: '0.55' }, row, text);
+    return (c: number) => { set(c); word.style.opacity = String(0.55 + 0.45 * c); };
+  });
+  // The bars: one per agent, each lined up with its check on desktop, stacked under the list on a phone.
+  const barsX = tall ? L.pad : frame.width - L.pad - L.barsW;
+  const barsBox = el('div', { position: 'absolute', left: '0', top: '0', right: '0', bottom: '0' }, root);
+  const fills = m.checks.map((_, i) => {
+    const y = tall ? L.barsTop + i * (L.barH + L.barGap) : L.rowTop + i * L.rowH + (L.box - L.barH) / 2;
+    const track = el('div', { position: 'absolute', left: `${barsX}px`, top: `${y}px`, width: `${L.barsW}px`, height: `${L.barH}px`, background: P.track }, barsBox);
+    return el('div', { position: 'absolute', left: '0', top: '0', bottom: '0', width: '0', background: m.colors[i % m.colors.length] }, track);
+  });
+  const done = el('div', { position: 'absolute', left: `${barsX}px`, top: `${L.doneTop}px`, display: 'flex', alignItems: 'center', gap: `${Math.round(L.done * 0.22)}px`, fontSize: `${L.done}px`, fontWeight: '600', letterSpacing: '-0.02em', opacity: '0' }, root);
+  el('span', { width: `${Math.round(L.done * 0.28)}px`, height: `${Math.round(L.done * 0.28)}px`, background: ACCENT }, done);
+  el('span', {}, done, 'Done.');
+  return (t: number) => {
+    const v = verifyAt(m, t);
+    v.checks.forEach((c, i) => ticks[i](c));
+    fills.forEach((f, i) => { f.style.width = `${(v.bars[i] * 100).toFixed(2)}%`; });
+    // Done takes the bars' place: they leave entirely, so nothing shows through it.
+    barsBox.style.opacity = String(1 - v.done);
+    done.style.opacity = String(v.done);
+    done.style.transform = `translateY(${20 * (1 - v.done)}px)`;
+  };
+}
+
+export function buildMotion(m: Motion, layer: HTMLElement, P: MotionPalette, frame = { width: 1920, height: 1080 }): (local: number) => void {
   const root = el('div', { position: 'absolute', inset: '0', fontFamily: MONO, color: P.text }, layer);
+  if (m.kind === 'verify') return buildVerify(m, root, P, frame);
   label(root, P, m.label);
 
   if (m.kind === 'type') {

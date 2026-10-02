@@ -18,8 +18,9 @@ assertions:
 
 **Status**: Reference spec — build against this, confirm parity when done
 **Primary target**: the **web dashboard** (`apps/web/`), responsive — desktop + mobile. The native iOS app (`docs/plans/ios-app-mvp.md`) shares this system; web has far more surface area.
-**Direction**: brutalist/editorial — IBM Plex Mono, warm paper + ink, **single copper accent (`#c8956a`, buildd brand)**, square corners, hard offset shadows, corner-bracket panels.
+**Direction**: brutalist/editorial — IBM Plex Mono, warm paper + ink, single orange accent, square corners, hard offset shadows, corner-bracket panels.
 **Intensity**: **Evolution** — restyle tokens + shared primitives (cascades to all ~40 web pages); stay pragmatic in dense tables/forms/markdown where rounding or softer treatment aids legibility. Not a mono-everything maximalist rebuild.
+**Tokens, type scale, primitives**: [`design-system.md`](design-system.md) — the one design reference. This doc is the **mobile layout spec** (screens, sections, measurements, data mapping); it no longer carries a token table.
 **Code source of truth (web)**: `apps/web/src/app/globals.css` CSS variables. The Pencil tokens mirror them.
 **Canonical artboards** (`buildd-mobile.pen`): `Brutalist — Web Dashboard (desktop)` `c18a1`, `Brutalist — Missions Feed` `CZXce` (mobile), `Brutalist — Mission Detail` `pBOF7` (mobile).
 
@@ -29,7 +30,7 @@ assertions:
 
 Three artifacts stay in sync; each built screen is checked against all three:
 
-1. **This spec + `globals.css`** — the written rules (tokens, measurements, behavior). For web, `globals.css` CSS variables are the executable source of truth; this doc explains intent.
+1. **This spec + [`design-system.md`](design-system.md) + `globals.css`** — the written rules (measurements and behavior here; tokens in design-system.md). For web, `globals.css` CSS variables are the executable source of truth; the docs explain intent.
 2. **Pencil component kit** — reusable `C/*` modules rendered canonically on the **`DESIGN SYSTEM`** board (node `n56H3V`) in `buildd-mobile.pen`. The visual reference you diff a built component against. Editing a module (or a token) propagates to every artboard that instances it.
 3. **Page artboards** — screens assembled *from* the kit, at the relevant widths: desktop (`c18a1`) and mobile (`CZXce`, `pBOF7`). The same kit drives both.
 
@@ -53,50 +54,12 @@ Pages are pure composition of these — see Mission Detail (`pBOF7`), which is b
 
 ## 1. Design tokens
 
-### Color (three families only: ink, paper, copper)
-
-Accent is **copper** — buildd's existing brand accent (`globals.css` `--primary`/`--accent` `#c8956a`). The brutalist treatment is square corners + hard shadows + mono, *not* a new accent color. Token names below are the spec/`globals.css` names; the Pencil file uses legacy `m-teal*` variable names for the copper accent (values are copper — a naming wart, not a second color).
-
-| Token (spec / globals.css) | Hex | Use |
-|-------|-----|-----|
-| `ink` (`--text-primary` night-on-light contexts use `#2a2520`) | `#101216` | text, borders, dark header bg, solid chips, hard shadow |
-| `ink-soft` | `#3a414c` | secondary body text |
-| `ink-faint` (`--text-muted`) | `#6b7280` | meta, captions, inactive |
-| `paper` (`--surface-1` light) | `#f4f3ee` | app background (warm off-white) |
-| `card` (`--card` light) | `#ffffff` | card / panel / table surfaces |
-| `hair` (`--border`) | `#d9d8d0` | internal hairlines, progress track, muted borders |
-| `accent` (`--primary` / `--accent`) | `#f4811f` | the single accent — section numbers, accent bars, progress fill, active state. **Classic Apple rainbow orange** — replaces the brand's old washed-out `#c8956a`. |
-| `accent-deep` (`--accent-text`) | `#b5450c` | accent text on light (task IDs, %, links) — burnt-orange, readable contrast |
-| `accent-tint` (`--accent-soft` flattened) | `#fde7d2` | accent chip fill |
-| `accent-border` | `#f6c79a` | accent hairline |
-| `eyebrow` | `#b59a86` | eyebrow on dark header (warm grey) |
-| `sub` | `#c4bbb0` | subtitle on dark header |
-| `meta` / `meta-b` | `#9a9088` / `#d8cfc4` | meta key / value on dark header |
-| `rule` | `#2e2a26` | hairline on dark header |
-
-Status colors (keep the existing `globals.css` set — `--status-success #5ec495`, `--status-warning #e0b35a`, `--status-error #d4736a`, `--status-info #7aacca`) for non-accent semantic states. Discipline: **no second decorative accent, no gradients, no soft shadows, no blur.** Color carries meaning (running, accent, done) — never decoration.
-
-### Type — IBM Plex Mono (one family, everywhere)
-
-| Role | Size / Weight | Tracking / Line-height | Notes |
-|------|---------------|------------------------|-------|
-| Display (masthead title) | 30 / 700 | -0.3 letter | UPPERCASE |
-| Section heading | 14 / 600 | +0.4 letter | UPPERCASE |
-| Card title | 14 / 600 | — | line-height 1.35, sentence case |
-| Body / agent question | 13 / 400 | — | line-height 1.45 |
-| Subtitle (on ink) | 12.5 / 400 | — | line-height 1.5 |
-| Task ID | 12.5 / 700 | — | `accent-deep` |
-| Meta / row label | 11–11.5 / 400 | +0.3–0.5 letter | `ink-faint` |
-| Micro / chip | 10 / 600 | +0.6 letter | UPPERCASE |
-| Tab label | 10 / 400–600 | +0.3 letter | sentence case |
+**Colour, type, borders, radius and shadows: see [`design-system.md`](design-system.md) §2 (tokens, read from `globals.css`) and §3 (type scale).** The token table that used to live here disagreed with the shipped code (a `#101216` ink, a `#f4f3ee` paper, 1.5px borders, a copper/teal accent); those disagreements are recorded in design-system §2.9. Older names used in §2–§5 below map as: `ink` → `--text-primary` / `--border-strong`, `ink-soft` → `--text-secondary`, `ink-faint` → `--text-muted`, `paper` → `--surface-1`, `card` → `--card`, `hair` → `--border`, `teal` / `accent` → `--accent`, `teal-deep` / `accent-deep` → `--accent-text`, `teal-tint` → `--accent-soft`.
 
 > The status bar (`9:41`, signal/wifi/battery) is the one exception — system rendering is fine. Everything app-owned is IBM Plex Mono.
 
-### Geometry
+### Layout measurements (mobile)
 
-- **Corner radius: 0.** Nothing is rounded. Square corners are the brand.
-- **Borders: 1.5px** solid `ink`, inner alignment. Hairlines: 1px `hair`.
-- **Hard shadow** (the brutalist drop): solid fill, `blur: 0`, `spread: 0`, offset **(x:5, y:5)**, color `ink`. On the primary action button only, offset (3,3) color `accent`. Never a blurred/alpha shadow.
 - **Screen width**: 393pt. **Content side padding**: 20pt. **Masthead/status side padding**: 24pt.
 - **Spacing**: section-to-section 26; header-to-list 14–16; card-to-card 18; intra-card 10.
 
@@ -183,7 +146,7 @@ Role → chip/meta label uses `tasks.roleSlug` (`BUILDER` / `ORGANIZER` / `RESEA
 - **Corner brackets**: draw with a `Path`/`Shape` (two strokes per corner) or four small bracket views in an `overlay`. Keep them outside the panel bounds (−2) — don't clip.
 - **Square corners**: never apply `cornerRadius`. Default many SwiftUI controls round — override.
 - **Accent bar**: a 5pt `teal` rectangle as a leading border (`HStack` or leading overlay), not a full re-stroke.
-- **Tokens**: put the table in §1 into one `BuilddTheme` (Color + Font + spacing constants). No raw hex in views.
+- **Tokens**: put the tables in [`design-system.md`](design-system.md) §2 into one `BuilddTheme` (Color + Font + spacing constants). No raw hex in views.
 - **Accessibility**: ship Dynamic Type (scale the mono sizes), ensure ink-on-paper and white-on-ink meet contrast (they do); teal-deep `#0a655d` is the readable teal for text on light — never use `teal` `#0e8f84` for small text on paper.
 - **Optional**: a true dotted offset shadow (the turbopuffer look) is available as `dotgrid.glsl` in the repo root if a future hero card uses a fixed height; the default everywhere is the solid hard shadow.
 
@@ -192,9 +155,9 @@ Role → chip/meta label uses `tasks.roleSlug` (`BUILDER` / `ORGANIZER` / `RESEA
 ## 5. Acceptance checklist (confirm build against this)
 
 **Tokens & type**
-- [ ] All surfaces use the §1 palette; zero off-palette hex in code.
+- [ ] All surfaces use the [`design-system.md`](design-system.md) §2 tokens; zero off-palette hex in code.
 - [ ] IBM Plex Mono renders on every app-owned label (not system mono).
-- [ ] No rounded corners anywhere; all borders 1.5px ink / 1px hair.
+- [ ] No rounded corners anywhere; borders per design-system §2.7 (2px frames, 1px hairlines).
 - [ ] Every shadow is a hard solid offset (blur 0); the primary button shadow is teal (3,3), all others ink (5,5).
 
 **Masthead**

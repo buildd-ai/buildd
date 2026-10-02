@@ -3,6 +3,7 @@ import { PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '@buildd/core/config';
 import { assertNormalizedObjectKey } from './storage-keys';
+import { presignPutObject } from './presign-put';
 
 let _client: S3Client | null = null;
 
@@ -20,6 +21,9 @@ function getClient(): S3Client {
   }
   return _client;
 }
+
+/** The env-configured client, for the `buildd_default` evidence backend. */
+export const getDefaultStorageClient = getClient;
 
 export function isStorageConfigured(): boolean {
   return !!(config.storageEndpoint && config.storageAccessKey && config.storageSecretKey);
@@ -45,14 +49,12 @@ export async function generateSizedUploadUrl(
     throw new Error('contentLength must be a positive integer');
   }
 
-  const client = getClient();
-  const command = new PutObjectCommand({
+  return presignPutObject(getClient(), {
     Bucket: config.storageBucket,
     Key: key,
     ContentType: contentType,
     ContentLength: contentLength,
-  });
-  return getSignedUrl(client, command, {
+  }, {
     expiresIn: 600, // 10 min
     // Explicit so the binding does not depend on the SDK's default choice of
     // which headers to sign.
@@ -77,14 +79,12 @@ export async function generateConstrainedUploadUrl(
   contentType: string,
   contentLength: number,
 ): Promise<string> {
-  const client = getClient();
-  const command = new PutObjectCommand({
+  return presignPutObject(getClient(), {
     Bucket: config.storageBucket,
     Key: key,
     ContentType: contentType,
     ContentLength: contentLength,
-  });
-  return getSignedUrl(client, command, {
+  }, {
     expiresIn: 600, // 10 min
     signableHeaders: new Set(['content-length', 'content-type']),
   });

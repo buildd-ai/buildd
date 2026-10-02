@@ -30,6 +30,13 @@ describe('SETTINGS_NAV', () => {
     expect(connections.slice(0, 2)).toEqual(['runners', 'providers']);
   });
 
+  it('lists Storage under Connections, linked to its own page', () => {
+    const connections = SETTINGS_NAV.find((g) => g.label === 'Connections')!.items;
+    const storage = connections.find((i) => i.id === 'storage');
+    expect(storage?.href).toBe('/app/settings/storage');
+    expect(settingsItemFor('/app/settings/storage')?.id).toBe('storage');
+  });
+
   it('has unique ids and hrefs', () => {
     expect(new Set(SETTINGS_ITEMS.map((i) => i.id)).size).toBe(SETTINGS_ITEMS.length);
     expect(new Set(SETTINGS_ITEMS.map((i) => i.href)).size).toBe(SETTINGS_ITEMS.length);

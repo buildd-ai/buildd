@@ -49,7 +49,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-28
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-30
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-10-01
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
 ### releases (4)
@@ -122,8 +122,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 
-## Draft (2)
+## Draft (3)
 
+- [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-01
+  Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Workspace Onboarding](./workspace-onboarding.md) · @max — verified 2026-10-02

@@ -23,11 +23,14 @@
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
+import { loadInlineEvidence, type InlineEvidenceObject } from '@/lib/evidence-inline';
+import type { EvidenceActor } from '@/lib/evidence-audit';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, type DependencyRow } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, foreignDependencyIds, unmetDependencyIds, unmetDependencyPrs, type DependencyRow } from '@/lib/mission-helpers';
+import { continueOnRunnerBlockedReason, deriveLocalStrand } from '@/lib/local-strand';
 import { loadDependencyRows } from '@/lib/dependency-rows';
 import { derivePrDisplayState } from '@/lib/pr-presentation';
 import { canCompleteMission } from '@/lib/mission-completion';
@@ -37,7 +40,7 @@ import { deriveMissionStateView, type MissionStateInput, type MissionStateView }
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
-import { missionCardProgress, type MissionCardTaskRow } from '@/lib/mission-card-view';
+import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
@@ -178,6 +181,8 @@ const WORKER_WITH = {
     id: true, status: true, prNumber: true, prUrl: true, branch: true,
     prBaseRef: true, prLifecycleStatus: true, mergedAt: true,
     observedTouches: true, error: true, startedAt: true,
+    // The session heartbeat `deriveLocalStrand` reads, and the PR grace window.
+    updatedAt: true, completedAt: true,
     supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
   },
   orderBy: [desc(workers.startedAt)],
@@ -385,6 +390,19 @@ async function viewForMission(missionId: string): Promise<{
   const loadedById = new Map<string, DependencyRow>(foreignDeps);
   for (const t of loaded) loadedById.set(t.id, t);
   const waitingOnOf = (t: LoadedTask) => (t.status === 'pending' ? unmetDependencyIds(t, loadedById) : []);
+  // The card's own reading of the same rows (`ownerUnmergedPrs`,
+  // `deriveLocalStrand`), so a card and this answer cannot disagree on
+  // "waiting on you to merge" or "stranded".
+  const now = Date.now();
+  const strand = deriveLocalStrand({
+    executor: m.executor ?? null,
+    isHeld: m.isHeld === true,
+    status: String(m.status),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    tasks: loaded as any,
+    dependencies: foreignDeps,
+    now,
+  });
   // Superseded failures shipped their deliverable under a different task/PR —
   // see mission-task-superseded.ts. Excluded here so they never drive the
   // mission into a `failing` state; reported separately below instead.
@@ -411,7 +429,14 @@ async function viewForMission(missionId: string): Promise<{
     completion,
     wait,
     workState,
-    openTasks: openTasks.map(t => ({ id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t) })),
+    openTasks: openTasks.map(t => ({
+      id: t.id, status: t.status, title: t.title, waitingOnTaskIds: waitingOnOf(t),
+      ...(t.status === 'pending' ? { waitingOnPrs: unmetDependencyPrs(t, loadedById) } : {}),
+    })),
+    localStrand: strand
+      ? { ...strand, flipBlockedReason: continueOnRunnerBlockedReason({ status: String(m.status), workspaceId: (m.workspaceId as string | null) ?? null }) }
+      : null,
+    unmergedPrs: ownerUnmergedPrs(loaded as unknown as MissionCardTaskRow[], now),
     failedTasks: failedTasks.map(t => ({
       id: t.id,
       title: t.title,
@@ -466,6 +491,7 @@ function answerFrom(
   history: HistoryNode[],
   because: ExplainAnswer['because'],
   gateHistory: GateHistoryEntry[] = [],
+  evidenceObjects: InlineEvidenceObject[] = [],
 ): ExplainAnswer {
   return {
     subject,
@@ -479,6 +505,7 @@ function answerFrom(
     history,
     nextAction: view.nextAction,
     gateHistory,
+    ...(evidenceObjects.length > 0 ? { evidenceObjects } : {}),
     derivedFrom: {
       state: view.derivedFrom.kind,
       waitingOn: view.derivedFrom.waitingOn,
@@ -690,7 +717,11 @@ async function viewForTask(taskId: string): Promise<{
   };
 }
 
-export async function explainTask(taskId: string): Promise<ExplainResult | null> {
+/**
+ * `actor` is who the inline evidence list is audited to. Reach is the caller's
+ * job: GET /api/explain has already decided the actor can read the workspace.
+ */
+export async function explainTask(taskId: string, actor: EvidenceActor): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
   const { view, task, lineage, answerExtras, workspaceId, missionId } = loaded;
@@ -707,7 +738,10 @@ export async function explainTask(taskId: string): Promise<ExplainResult | null>
 
   const because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
   const gateHistory = await loadGateHistory(taskId);
-  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory)] };
+  const evidenceObjects = workspaceId
+    ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
+    : [];
+  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────
@@ -789,7 +823,7 @@ export async function explainPr(worker: {
   mergedAt: Date | string | null;
   observedTouches: string[] | null;
   createdAt: Date | string | null;
-}): Promise<ExplainResult | null> {
+}, actor: EvidenceActor): Promise<ExplainResult | null> {
   if (!worker.taskId || worker.prNumber == null) return null;
 
   const loaded = await viewForTask(worker.taskId);
@@ -850,7 +884,8 @@ export async function explainPr(worker: {
   // A PR ships through its task, so its gate ledger (merge_base_freshness
   // rejections, review_verdict deferrals) is the task's.
   const gateHistory = await loadGateHistory(worker.taskId);
-  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory)] };
+  const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId, { surface: 'explain', actor });
+  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────
@@ -864,7 +899,7 @@ export async function explainPr(worker: {
  * a mission is already represented by its mission's chain, and listing both
  * would put the same blocker on screen twice.
  */
-export async function explainWorkspace(workspaceId: string): Promise<ExplainResult> {
+export async function explainWorkspace(workspaceId: string, actor: EvidenceActor): Promise<ExplainResult> {
   const activeMissions = await db.query.missions.findMany({
     where: and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active')),
     columns: { id: true },
@@ -895,7 +930,7 @@ export async function explainWorkspace(workspaceId: string): Promise<ExplainResu
     ...missionLessIds.map(id => ({ kind: 'task' as const, id })),
   ];
   const results = await mapWithConcurrency(fanoutItems, WORKSPACE_FANOUT_CONCURRENCY, item =>
-    item.kind === 'mission' ? explainMission(item.id) : explainTask(item.id),
+    item.kind === 'mission' ? explainMission(item.id) : explainTask(item.id, actor),
   );
   const answers: ExplainAnswer[] = results.flatMap(r => (r?.subjects[0] ? [r.subjects[0]] : []));
 

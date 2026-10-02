@@ -698,6 +698,13 @@ describe('deriveMissionStateView — surface audit missing', () => {
     expect(view.nextAction).toContain('surfaceAuditWaiver');
   });
 
+  it('carries the changed UI files to the surface that renders the decision', () => {
+    const paths = ['apps/web/src/components/Card.tsx', 'apps/web/src/components/Nav.tsx'];
+    const w = gated(deriveMissionStateView({ ...base, completion: { ...refusal, surfaceAuditPaths: paths } }));
+    expect(w).toMatchObject({ kind: 'human_decision', surfaceAudit: true, surfaceAuditPaths: paths });
+    expect(gated(deriveMissionStateView({ ...base, completion: refusal }))).not.toHaveProperty('surfaceAuditPaths');
+  });
+
   it('still shows while a worker is running', () => {
     const view = deriveMissionStateView({ ...base, activeAgents: 1, completion: refusal });
     expect(view.kind).toBe('running');

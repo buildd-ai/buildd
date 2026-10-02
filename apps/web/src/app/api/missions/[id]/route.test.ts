@@ -1589,6 +1589,38 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(dispatchUnblockedTaskCalls[0].workspace.id).toBe(WS_ID);
   });
 
+  // The stranded card's "Continue on a runner" renders disabled with this same
+  // reason (`continueOnRunnerBlockedReason`), so the tap is never offered and
+  // then refused.
+  it('refuses local → runner with 409 and the reason when the mission has no workspace', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Local Mission', workspaceId: null, executor: 'local', status: 'active', scheduleId: null, priority: 0,
+    });
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/no workspace/);
+    expect(updatedSetData).toBeNull();
+    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+  });
+
+  it('refuses local → runner on a completed mission', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Local Mission', workspaceId: WS_ID, executor: 'local', status: 'completed', scheduleId: null, priority: 0,
+    });
+    const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ executor: 'runner' }),
+    });
+    const res = await PATCH(req, { params: makeParams(MID) });
+    expect(res.status).toBe(409);
+    expect(updatedSetData).toBeNull();
+  });
+
   it('does not re-dispatch when executor is unchanged', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: MID,

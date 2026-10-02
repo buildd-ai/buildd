@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, missions, missionNotes } from '@buildd/core/db/schema';
+import { tasks, missions, missionNotes, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray, isNull, like } from 'drizzle-orm';
 import {
   MAX_SURFACE_AUDIT_ROUNDS,
@@ -18,6 +18,7 @@ import {
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
+import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
 export interface EnsureSurfaceAuditParams {
@@ -170,6 +171,73 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
       console.error('[mission-surface-audit] dispatch failed:', err),
     );
   }
+}
+
+export type RequestSurfaceAuditResult =
+  | { ok: true; created: boolean; taskId: string; status: string }
+  | { ok: false; reason: 'mission_not_found' | 'mission_closed' | 'no_workspace' };
+
+const finishedWithoutLooking = (status: string) => status === 'failed' || status === 'cancelled';
+
+/**
+ * A person asked for the mission's visual audit (the decision sheet's "Run
+ * visual audit"). Idempotent: an audit that is open or finished is returned,
+ * never duplicated; only a failed or cancelled one is replaced. The audit is
+ * scoped to the files the mission actually changed (the completion gate's
+ * diff read), because declared manifests are often the advisory wildcard.
+ */
+export async function requestMissionSurfaceAudit(missionId: string): Promise<RequestSurfaceAuditResult> {
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, missionId),
+    columns: { id: true, title: true, status: true, workspaceId: true, autoSurfaceAudit: true },
+  });
+  if (!mission) return { ok: false, reason: 'mission_not_found' };
+  if (mission.status === 'completed' || mission.status === 'archived') return { ok: false, reason: 'mission_closed' };
+  if (!mission.workspaceId) return { ok: false, reason: 'no_workspace' };
+
+  const audits = await db.query.tasks.findMany({
+    where: and(eq(tasks.missionId, missionId), like(tasks.title, `${SURFACE_AUDIT_TITLE_PREFIX}%`)),
+    columns: { id: true, status: true },
+    orderBy: [desc(tasks.createdAt)],
+  });
+  const live = audits.find(a => !finishedWithoutLooking(a.status));
+  if (live) return { ok: true, created: false, taskId: live.id, status: live.status };
+
+  const [targetWorkspace, missionTasks] = await Promise.all([
+    db.query.workspaces.findFirst({ where: eq(workspaces.id, mission.workspaceId) }),
+    loadSurfaceAuditGateTasks(missionId),
+  ]);
+  if (!targetWorkspace) return { ok: false, reason: 'no_workspace' };
+
+  const builders = missionTasks.filter(t =>
+    t.taskClass === 'work' && !isSurfaceAuditTask(t.title ?? '') && !finishedWithoutLooking(t.status));
+  const gate = await evaluateSurfaceAuditGate(mission, missionTasks).catch(() => null);
+  const scopedPaths = Array.from(new Set([
+    ...(gate?.required ? gate.uiPaths : []),
+    ...builders.flatMap(t => (Array.isArray(t.pathManifest) ? t.pathManifest : [])).filter(p => p !== '**'),
+  ]));
+
+  const [auditTask] = await db.insert(tasks).values({
+    workspaceId: mission.workspaceId,
+    missionId,
+    title: surfaceAuditTitle(mission.title),
+    description: buildSurfaceAuditDescription({
+      missionTitle: mission.title,
+      scopedPaths,
+      requiredRoutes: visualQaRequiredRoutes(scopedPaths),
+    }),
+    taskClass: 'work',
+    kind: 'observation',
+    dependsOn: builders.map(t => t.id),
+    outputRequirement: 'artifact_required',
+    context: { surfaceAuditTrigger: 'auto' },
+    roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
+  }).returning();
+
+  await dispatchNewTask(auditTask, targetWorkspace, {}).catch(err =>
+    console.error('[mission-surface-audit] dispatch failed:', err),
+  );
+  return { ok: true, created: true, taskId: auditTask.id, status: auditTask.status };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

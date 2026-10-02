@@ -95,3 +95,50 @@ describe('LineageChain step text wraps at path boundaries only', () => {
     expect(html).not.toContain('overflow-wrap:anywhere');
   });
 });
+
+// The completed task page's "What shipped" header owns the one action; the PR
+// card beneath it must not offer a second, side-by-side one.
+describe('PrCard under the What shipped header', () => {
+  it('hides its own action when the header carries it', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', outcome: outcome([{ add: 1, rem: 0, files: 1 }]), hideAction: true });
+    expect(html).not.toContain('data-testid="pr-outcome-action"');
+  });
+  it('stacks the summary above the action below md', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', outcome: outcome([{ add: 1, rem: 0, files: 1 }]) });
+    expect(html).toContain('flex flex-col md:flex-row');
+  });
+});
+
+describe('Checks by commit on a phone', () => {
+  const pass = (name: string) => ({ name, status: 'completed', conclusion: 'success', detailsUrl: null });
+  const withCommits = (commits: PrOutcome['commits']) => ({ ...outcome([{ add: 1, rem: 0, files: 1 }]), commits });
+
+  it('collapses an all-green attempt to one row and keeps the desktop chips', () => {
+    const html = render({
+      prLifecycleStatus: 'ci_green',
+      outcome: withCommits([{ attempt: 1, sha: '69786bc', state: 'passed', failure: null, runs: Array.from({ length: 9 }, (_, i) => pass(`check ${i}`)) }]),
+    });
+    expect(html).toContain('data-testid="pr-commit-checks-mobile"');
+    expect(html).toContain('Attempt 1</span> · <span class="text-text-primary">69786bc</span>');
+    expect(html).toContain('✓ 9 checks passed');
+    expect(html).toContain('data-open="false"');
+    // Collapsed: no mobile rows mounted; the desktop list is untouched.
+    expect(html).not.toContain('data-testid="pr-check-row"');
+    expect(html).toContain('data-testid="pr-commit-checks"');
+  });
+
+  it('opens a failed attempt as full-width rows, failure first, linking its log', () => {
+    const html = render({
+      prLifecycleStatus: 'ci_failed',
+      outcome: withCommits([{
+        attempt: 1, sha: '69786bc', state: 'failed', failure: null,
+        runs: [pass('lint'), { name: 'unit', status: 'completed', conclusion: 'failure', detailsUrl: 'https://ci/unit' }],
+      }]),
+    });
+    expect(html).toContain('data-open="true"');
+    const rows = [...html.matchAll(/data-testid="pr-check-row" data-outcome="(\w+)"/g)].map(m => m[1]);
+    expect(rows).toEqual(['failed', 'passed']);
+    expect(html).toContain('href="https://ci/unit"');
+    expect(html).toContain('min-h-11');
+  });
+});

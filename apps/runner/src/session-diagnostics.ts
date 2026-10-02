@@ -59,6 +59,22 @@ export const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024; // 8 MiB
 
 const STEERING_CRASH_MARKER = '--session-id can only be used with';
 
+/**
+ * The CLI does not know the model id it was asked for. It writes this line to
+ * stderr and exits, so the thrown error is usually only the exit code and the
+ * rejected id exists nowhere else.
+ */
+export function parseUnrecognizedModelStderr(text: string): { model: string | null } | null {
+  const m = (text ?? '').match(/\[claude-code:unrecognized_model\]\s*(\{[^\n]*\})?/i);
+  if (!m) return null;
+  try {
+    const model = m[1] ? (JSON.parse(m[1]) as { model?: unknown }).model : null;
+    return { model: typeof model === 'string' && model ? model : null };
+  } catch {
+    return { model: null };
+  }
+}
+
 // ─── 1. Stderr capture ───────────────────────────────────────────────────────
 
 /**
@@ -135,6 +151,11 @@ export class SessionStderrCollector {
    */
   get isSteeringDeliveryCrash(): boolean {
     return this.text().includes(STEERING_CRASH_MARKER);
+  }
+
+  /** The CLI rejected the session's model id; null when no such line arrived. */
+  get unrecognizedModel(): { model: string | null } | null {
+    return parseUnrecognizedModelStderr(this.text());
   }
 
   /** True when stderr has arrived that no error trace has carried yet. */

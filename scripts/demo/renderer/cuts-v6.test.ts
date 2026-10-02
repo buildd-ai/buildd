@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import type { Stills } from './cuts';
-import { mergeShotlists, publishDir, seamlessLoopFilter, siteFiles } from './render';
+import { crfLadder, mergeShotlists, publishDir, seamlessLoopFilter, siteFiles, wantsCut } from './render';
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
 import { shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
-import { fleetRows, motionCues, splitAt, typedChars } from './motion-model';
+import { fleetRows, motionCues, splitAt, typedChars, verifyAt } from './motion-model';
 
 const R = (x: number, y: number, w: number, h: number): Rect => ({ x, y, w, h });
 // Board-shaped tiles: three columns (5, 5, 2), like the real Board.
@@ -79,9 +79,10 @@ describe('v6a', () => {
     board.burst = { ...board.burst!, mode: 'radial' };
     expect(fanoutEscapes({ ...bad, shots: bad.shots.map((s) => (s.id === 'board' ? { ...board, burst: { ...board.burst!, mode: 'column' as const, scaleFrom: 0.3 } } : s)) }).length).toBeGreaterThan(0);
   });
+  // Synthesizing the whole ~57s film takes about 5s, so it gets its own timeout.
   test('the soundtrack is soft: nothing below 150 Hz, and tiles tick instead of ringing', () => {
     expect(lowEnergyShare(synthesize(soundCues(film), cutDuration(film)))).toBeLessThan(0.005);
-  });
+  }, 20_000);
   test('spec: the drafted criteria are lit, then the change is typed after the Edit prefill', () => {
     const ids = film.shots.map((x) => x.id);
     expect(ids.slice(0, 5)).toEqual(['ask', 'reads', 'criteria', 'edit', 'confirm']);
@@ -146,9 +147,7 @@ describe('v6x', () => {
     expect(cues.filter((c) => c.type === 'chime')).toHaveLength(1);
     expect(lowEnergyShare(synthesize(soundCues(film), cutDuration(film)))).toBeLessThan(0.005);
   });
-  test('a 16s hero loop', () => {
-    expect(cutDuration(v6xHero(fake))).toBe(16);
-  });
+
 });
 
 test('askButtonShots flags a step where the Ask button was visible, and passes when hidden', () => {
@@ -173,6 +172,17 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
     const used = LOOKS[0].beats.flatMap((c) => c.shots.map((s) => s.id));
     expect(new Set(used).size).toBe(used.length);
     expect(film.shots.map((s) => s.id).filter((id) => !used.includes(id)).sort()).toEqual(['ask', 'reads']);
+  });
+  test('the spec poster is a frame with the criteria list lit, not the typing', () => {
+    for (const look of LOOKS) {
+      const spec = look.beats.find((c) => c.name.startsWith('beat-spec'))!;
+      const crit = spec.shots[0];
+      expect(crit.id).toBe('criteria');
+      const lit = crit.spot!.find((k) => k.rects.includes(BOXES['approval-draft-criteria'][0]))!;
+      const next = crit.spot!.find((k) => k.at > lit.at)!;
+      expect(spec.poster).toBeGreaterThan(lit.at + 0.4);
+      expect(spec.poster).toBeLessThan(next.at);
+    }
   });
   test('spec is the criteria then the edit; plan is Confirm then the Board', () => {
     const by = Object.fromEntries(LOOKS[0].beats.map((c) => [c.name, c.shots.map((s) => s.id)]));
@@ -218,13 +228,70 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
   });
 });
 
-test('the hero poster is a frame from the fleet, not the empty first frame', () => {
-  for (const h of [v6xHero(fake), v6xHero(fake, 'light')]) {
-    const starts = shotStartsOf(h);
-    const i = h.shots.findIndex((x) => x.id === 'fleet');
-    expect(h.poster).toBeGreaterThan(starts[i]);
-    expect(h.poster).toBeLessThan(starts[i] + h.shots[i].dur);
-  }
+describe('hero: agents say they are done, buildd checks', () => {
+  const LOOKS = [
+    { h: v6xHero(fake), frame: [1920, 1080], theme: 'dark', name: 'hero' },
+    { h: v6xHero(fake, 'light'), frame: [1920, 1080], theme: 'light', name: 'hero' },
+    { h: v6xHero(fake, 'dark', { mobile: true }), frame: [720, 900], theme: 'dark', name: 'hero-mobile' },
+    { h: v6xHero(fake, 'light', { mobile: true }), frame: [720, 900], theme: 'light', name: 'hero-mobile' },
+  ] as const;
+  test('one abstract shot, 12-16s, looping, no typed sentence, named by size', () => {
+    for (const { h, frame, theme, name } of LOOKS) {
+      expect(h.name).toBe(name);
+      expect([h.width, h.height]).toEqual([...frame]);
+      expect(h.theme).toBe(theme);
+      expect(h.loop).toBe(true);
+      expect(cutDuration(h)).toBeGreaterThanOrEqual(12);
+      expect(cutDuration(h)).toBeLessThanOrEqual(16);
+      expect(h.shots).toHaveLength(1);
+      expect(h.shots[0].motion!.kind).toBe('verify');
+    }
+  });
+  test('the poster is the finished state: every check ticked and Done showing', () => {
+    for (const { h } of LOOKS) {
+      const v = verifyAt(h.shots[0].motion as any, h.poster!);
+      expect(v.checks.every((c) => c === 1)).toBe(true);
+      expect(v.done).toBe(1);
+    }
+  });
+});
+
+describe('verifyAt', () => {
+  const m = v6xHero(fake).shots[0].motion as any;
+  const dur = v6xHero(fake).shots[0].dur;
+  test('starts empty: no bar filled, no check, no Done', () => {
+    const v = verifyAt(m, 0);
+    expect(v.bars.every((b) => b === 0)).toBe(true);
+    expect(v.checks.every((c) => c === 0)).toBe(true);
+    expect(v.done).toBe(0);
+  });
+  test('a check only ticks once its agent says done (its bar is full), and in order', () => {
+    const tickAt = m.checks.map((_: string, i: number) => {
+      for (let t = 0; t <= dur; t += 0.02) if (verifyAt(m, t).checks[i] > 0) return t;
+      return Infinity;
+    });
+    for (let i = 0; i < tickAt.length; i++) {
+      expect(verifyAt(m, tickAt[i]).bars[i]).toBe(1);
+      if (i) expect(tickAt[i]).toBeGreaterThan(tickAt[i - 1]);
+    }
+    for (let t = 0; t <= dur; t += 0.05) {
+      const v = verifyAt(m, t);
+      if (v.done > 0) expect(v.checks.every((c) => c > 0.99) || t > m.resetAt).toBe(true);
+    }
+  });
+  test('seamless: the last frame is the first', () => {
+    const a = verifyAt(m, 0), b = verifyAt(m, dur);
+    expect(b).toEqual(a);
+  });
+  test('sounds: one soft pluck per check and one finish', () => {
+    const cues = motionCues(m);
+    expect(cues.filter((c) => c.type === 'pluck')).toHaveLength(m.checks.length);
+    expect(cues.filter((c) => c.type === 'chime')).toHaveLength(1);
+  });
+  test('very little text: four short checks', () => {
+    expect(m.checks).toHaveLength(4);
+    for (const c of m.checks) expect(c.length).toBeLessThanOrEqual(26);
+  });
 });
 
 test('v6x hero comes in both themes', () => {
@@ -243,10 +310,22 @@ describe('seamlessLoopFilter', () => {
 
 test('siteFiles: the exact names the site codes against', () => {
   const names = siteFiles().map(([, to]) => to).sort();
-  const clips = [...BEATS.flatMap((b) => [b, `${b}-mobile`, `${b}-light`, `${b}-light-mobile`]), 'hero', 'hero-light'];
+  const clips = [...BEATS.flatMap((b) => [b, `${b}-mobile`, `${b}-light`, `${b}-light-mobile`]), 'hero', 'hero-mobile', 'hero-light', 'hero-light-mobile'];
   // The film with sound is one mp4 (the dialog needs one source) plus its poster.
   const want = [...clips.flatMap((b) => [`${b}.webm`, `${b}.mp4`, `${b}-poster.jpg`]), 'full.mp4', 'full-poster.jpg'].sort();
   expect(names).toEqual(want);
+});
+
+test('wantsCut: --only hero takes the phone crop too, and nothing else by prefix', () => {
+  expect(wantsCut(['hero'], 'hero')).toBe(true);
+  expect(wantsCut(['hero'], 'hero-mobile')).toBe(true);
+  expect(wantsCut(['full'], 'hero')).toBe(false);
+  expect(wantsCut(['beats'], 'beat-spec-mobile')).toBe(true);
+  expect(wantsCut(['hero'], 'beat-spec')).toBe(false);
+});
+
+test('crfLadder: steps up from the start in twos, to a ceiling', () => {
+  expect(crfLadder(24, 30)).toEqual([24, 26, 28, 30]);
 });
 
 describe('publishDir: the site set is swapped in whole, never half-written', () => {

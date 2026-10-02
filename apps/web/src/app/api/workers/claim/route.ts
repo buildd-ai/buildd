@@ -3,7 +3,7 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import { NextRequest, NextResponse } from 'next/server';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
-import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
+import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
 import { CLOUD_EXECUTOR, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
@@ -34,6 +34,12 @@ import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSea
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
 import { readModelPin } from '@buildd/core/model-pin';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
+import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
+import {
+  checkDispatchModel, guardDispatchModel, describeDispatchModelRejection, tierForModelId,
+  DISPATCH_MODEL_REJECTED_PATTERN,
+  type DispatchModelRejection, type DispatchModelSource,
+} from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
@@ -1940,6 +1946,26 @@ export async function POST(req: NextRequest) {
     let resolvedModel: string;
     let resolvedTierMeta: { tier: string; provider: string; source?: string } | undefined;
     let poolDraw: AgentPoolDraw | null = null;
+    // Where `resolvedModel` came from, and the tier entry a rejected model falls
+    // back to. The catalog is read once per claim (cached in-process and in
+    // system_cache); empty means unknown and the guard fails open.
+    let modelSource: DispatchModelSource = 'pin';
+    let tierEntryModel: { model: string; source: DispatchModelSource } | null = null;
+    let guardTier: RegistryTier = tierForModelId(routingDecision.model);
+    const modelRejections: Omit<DispatchModelRejection, 'fallback'>[] = [];
+    const runnerCliVersion = body.environment?.claudeCliVersion;
+    const dispatchCatalog = await getCachedOpenRouterCatalog();
+    // A challenger or treatment the runner cannot launch is not served; the
+    // incumbent is. Same fallback accounting as a CLI-floor miss, plus a record
+    // of the id so a bad arm cannot go on silently losing its draws.
+    const clientCanServe = (source: DispatchModelSource) => (m: string): boolean => {
+      if (!checkModelClientCapability(m, runnerCliVersion).ok) return false;
+      const verdict = checkDispatchModel(m, dispatchCatalog);
+      if (!verdict.ok) modelRejections.push({ rejected: m, reason: verdict.reason, source });
+      return verdict.ok;
+    };
+    const tierModelSource = (s: string | undefined): DispatchModelSource =>
+      s === 'catalog' ? 'tier_catalog' : s === 'default' ? 'tier_default' : 'tier_row';
 
     if (routingDecision.reason === 'explicit_override') {
       resolvedModel = routingDecision.model;
@@ -1948,6 +1974,7 @@ export async function POST(req: NextRequest) {
       // premium-plus role floor (above the router's opus ceiling), then the
       // router alias.
       const derivedTier = taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
+      guardTier = derivedTier;
 
       if (taskTeamId) {
         const entry = await resolveTierEntry(
@@ -1955,19 +1982,22 @@ export async function POST(req: NextRequest) {
           taskTeamId,
           task.workspaceId,
           'agent',
-          body.environment?.claudeCliVersion,
+          runnerCliVersion,
         );
         resolvedModel = entry.model;
         resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+        modelSource = tierModelSource(entry.source);
+        tierEntryModel = { model: entry.model, source: modelSource };
         if (experimentDraw) {
           const treatment = await applyModelRoutingTreatment(experimentDraw, {
             controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
             resolveTier: (t) => resolveTierEntry(t, taskTeamId, task.workspaceId, 'agent'),
-            clientCanServe: (m) => checkModelClientCapability(m, body.environment?.claudeCliVersion).ok,
+            clientCanServe: clientCanServe('routing_experiment'),
           });
           if (treatment) {
             resolvedModel = treatment.model;
             resolvedTierMeta = { tier: treatment.tier, provider: treatment.provider, source: treatment.source };
+            modelSource = 'routing_experiment';
           }
         }
         // Tier model pool (docs/design/tier-model-pools.md). Null, and a no-op,
@@ -1983,17 +2013,62 @@ export async function POST(req: NextRequest) {
         if (poolDraw) {
           const served = applyAgentPoolArm(poolDraw, {
             incumbentModel: entry.model, backend: task.backend,
-            clientCanServe: (m) => checkModelClientCapability(m, body.environment?.claudeCliVersion).ok,
+            clientCanServe: clientCanServe('tier_pool_arm'),
           });
           if (served) {
             resolvedModel = served.model;
             resolvedTierMeta = { tier: derivedTier, provider: served.provider, source: 'pool' };
+            modelSource = 'tier_pool_arm';
           }
         }
       } else {
         // No team — fall back to router alias (resolver would fail without teamId)
         resolvedModel = routingDecision.model;
+        modelSource = 'router_alias';
       }
+    }
+
+    // Last line of defence: whatever source produced the id, do not launch a
+    // worker with one the runner's Claude Code will reject at startup. That
+    // worker dies before doing anything, its slot is released and the task goes
+    // back to pending, so the runner looks idle while the queue is stranded.
+    // Serve the tier entry (the workspace/team default) if it is itself fine,
+    // else the tier's code-level default, and leave an error trace naming the
+    // rejected id and where it came from.
+    {
+      let fallbacks = tierEntryModel ? [tierEntryModel] : [];
+      if (!tierEntryModel && taskTeamId && !checkDispatchModel(resolvedModel, dispatchCatalog).ok) {
+        // A rejected pin: fall back to the workspace default for its family.
+        const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
+        fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
+        resolvedTierMeta = { tier: guardTier, provider: entry.provider, source: entry.source };
+      }
+      const guarded = guardDispatchModel({
+        resolved: resolvedModel,
+        source: modelSource,
+        tier: guardTier,
+        fallbacks,
+        catalog: dispatchCatalog,
+      });
+      if (guarded.rejection) {
+        modelRejections.push({ rejected: guarded.rejection.rejected, reason: guarded.rejection.reason, source: guarded.rejection.source });
+        for (const draw of [experimentDraw, poolDraw]) {
+          if (draw && draw.assignedModel === guarded.rejection.rejected) {
+            draw.served = false;
+            draw.assignedModel = guarded.model;
+            draw.eligibility = { ...draw.eligibility, fallback: 'model_unrecognized' };
+          }
+        }
+        resolvedModel = guarded.model;
+        modelSource = guarded.source;
+        if (resolvedTierMeta) {
+          resolvedTierMeta = { ...resolvedTierMeta, source: guarded.source === 'tier_default' ? 'default' : resolvedTierMeta.source };
+        }
+      }
+    }
+    const claimModelRejections: DispatchModelRejection[] = modelRejections.map((r) => ({ ...r, fallback: resolvedModel }));
+    for (const r of claimModelRejections) {
+      console.warn(`[claim] task ${task.id}: ${describeDispatchModelRejection(r)}`);
     }
 
     // Refuse a task whose resolved model needs a newer Claude Code client than
@@ -2248,6 +2323,23 @@ export async function POST(req: NextRequest) {
         };
       }
       break;
+    }
+
+    // The queue was spared a doomed launch; leave the record of what was refused.
+    // One stable pattern + excerpt per (id, source, reason) so repeats dedupe.
+    // Best-effort: a trace failure must not undo a claim that already succeeded.
+    if (claimModelRejections.length > 0) {
+      try {
+        await db.insert(workerErrorTraces).values(claimModelRejections.map((r) => ({
+          workerId: worker.id,
+          taskId: task.id,
+          pattern: DISPATCH_MODEL_REJECTED_PATTERN,
+          excerpt: describeDispatchModelRejection(r).slice(0, 500),
+          source: 'claim',
+        })));
+      } catch (err) {
+        console.warn(`[claim] failed to record dispatch model rejection for task ${task.id}:`, err);
+      }
     }
 
     claimedWorkers.push({
