@@ -1,6 +1,45 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "readiness-compute"
+    type: "symbol"
+    name: "computeReadiness"
+    path: "packages/core/workspace-readiness.ts"
+  - id: "readiness-route"
+    type: "route"
+    method: "GET"
+    path: "/api/workspaces/[id]/readiness"
+    file: "apps/web/src/app/api/workspaces/[id]/readiness/route.ts"
+  - id: "scaffold-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/onboarding/scaffold"
+    file: "apps/web/src/app/api/workspaces/[id]/onboarding/scaffold/route.ts"
+  - id: "spec-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/onboarding/spec"
+    file: "apps/web/src/app/api/workspaces/[id]/onboarding/spec/route.ts"
+  - id: "scaffold-planner"
+    type: "symbol"
+    name: "planScaffold"
+    path: "packages/core/onboarding-scaffold.ts"
+  - id: "spec-author"
+    type: "symbol"
+    name: "authorSpec"
+    path: "packages/core/onboarding-spec.ts"
+  - id: "interview-definition"
+    type: "symbol"
+    name: "ONBOARDING_INTERVIEW"
+    path: "packages/shared/src/onboarding-interview.ts"
+  - id: "readiness-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/workspace-readiness.test.ts"
+---
 # Workspace Onboarding: make any repo buildd-ready
 
-**Status:** Proposed
+**Status:** Implemented. The contract now lives in `docs/specs/workspace-onboarding.md`; this document keeps the rationale and the rejected alternatives.
 **Related:** `apps/web/src/app/api/workspaces/[id]/policy-init/route.ts`, `apps/web/src/lib/workspace-policy.ts`, `packages/core/spec-conformance-detect.ts`, `packages/core/spec-conformance.ts`, `apps/runner/src/env-verify.ts`, `.buildd/env.yaml`, `docs/specs/SPEC-FORMAT.md`, `docs/design/DESIGN-FORMAT.md`, `docs/design/spec-conformance.md`, `docs/design/merge-policy.md`, `docs/design/release-handoff-workflow.md`, `docs/design/buildd-mcp-consumer-skill.md`, `docs/design/visual-qa-auditor.md`, `docs/specs/team-workspace-mission-onboarding.md`, `.claude/skills/buildd-mcp-consumer/SKILL.md`, `.claude/skills/visual-review/SKILL.md`
 
 ---
