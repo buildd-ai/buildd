@@ -124,6 +124,14 @@ export async function POST(
   } catch (error) {
     console.error('Create repo error:', error);
     const message = error instanceof Error ? error.message : 'Failed to create repository';
+    if (/resource not accessible by integration/i.test(message)) {
+      // Creating a repo needs the App's Administration: write (org) or
+      // Administration: write on the user account — separate from contents/PR scopes.
+      return NextResponse.json({
+        error: message,
+        hint: 'Creating a repository requires the GitHub App to have the Administration: write permission. Update the App permissions at github.com/settings/apps and have org admins re-accept, or use `gh repo create` from the CLI and then link it with manage_workspaces action=update repoUrl=<url>.',
+      }, { status: 403 });
+    }
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
