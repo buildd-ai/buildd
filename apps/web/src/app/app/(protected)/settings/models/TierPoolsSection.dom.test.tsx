@@ -74,6 +74,19 @@ describe('TierPoolsSection', () => {
     expect(row.querySelector('[data-testid="pool-mode"]')!.textContent).toBe('split');
   });
 
+  it('gives the model id its own line, apart from the route chip, with the full id as a title', async () => {
+    await mount();
+    const arm = host.querySelector('[data-testid="pool-row-chat-standard"] [data-testid="pool-arm"]')!;
+    const model = arm.querySelector('[data-testid="pool-model"]')!;
+    expect(model.textContent).toBe('claude-sonnet-5');
+    expect(model.getAttribute('title')).toBe('claude-sonnet-5');
+    expect(model.className).toContain('truncate');
+    // The chip and the base marker sit on a separate line, so they never squeeze the id.
+    const meta = arm.querySelector('[data-testid="pool-arm-meta"]')!;
+    expect(meta.contains(model)).toBe(false);
+    expect(meta.textContent).toContain('base');
+  });
+
   it('premium-plus is pinned with no way to add a model', async () => {
     await mount();
     const row = host.querySelector('[data-testid="pool-row-agent-premium-plus"]')!;
