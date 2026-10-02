@@ -427,6 +427,25 @@ notification text) follows the same rules as a PR lede:
 - **iOS `Theme.swift`.** Lean: copy §2 into it on the next iOS task, rather than
   keeping a second table in the plan doc.
 
+## Design drift check
+
+**`bun run design:check`** runs in CI (after `specs:check`) to prevent reintroduction of design debt.
+The check is a **ratchet**: it compares the current count of violations to a baseline recorded in
+`scripts/.design-drift-baseline.json` and fails only when a count goes UP, so existing debt does
+not block CI. The check flags five categories:
+
+1. **Arbitrary font sizes** (`text-[<n>px]`): Use one of the type-scale roles instead (§3).
+2. **Raw hex colors** in `className` / `style`: Use design tokens (§2).
+3. **`rounded-full` usage**: Corners are square per §2.7.
+4. **Hand-rolled `fixed inset-0` sheets**: Use `Sheet` or `BottomSheet` from `components/ui/`.
+5. **Local `StatusBadge` definitions**: Consolidate on `components/StatusBadge.tsx` or use `Chip`.
+
+When the check runs, it prints the offending file:line and the design-system.md section to consult.
+(The check excludes `components/ui/**` and `FlightStrip.tsx`, and looks only at `apps/web/src/`.)
+
+To increase the baseline (e.g., when reverting a large feature), run `bun run design:check` locally
+and commit the updated `.design-drift-baseline.json`.
+
 ## Non-goals
 
 - No colour, radius or shadow changes; every token is documented as shipped.
