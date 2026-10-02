@@ -110,6 +110,7 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   roleEnvMissing: 'not_secret',
   skillBundles: 'not_secret',
   cbmExperiment: 'not_secret',
+  questionGate: 'not_secret',
 };
 
 export interface WorkerSecretChannels {

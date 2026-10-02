@@ -859,6 +859,36 @@ export interface WaitingForOption {
   label: string;
   description?: string;
   recommended?: boolean;
+  /**
+   * What choosing this option leads to, in one line (question brief). Absent
+   * on older questions; renderers fall back to `description`.
+   */
+  consequence?: string;
+}
+
+/**
+ * Where a question was asked from, filled in by the runner from facts it has
+ * (never by the agent): the task, its branch, the file last edited.
+ */
+export interface QuestionWhere {
+  taskTitle?: string;
+  branch?: string;
+  file?: string;
+}
+
+/** Claim-time marker for the question-gate experiment (see ClaimTasksResponse). */
+export interface QuestionGateMarker {
+  experimentId: string;
+  policyVersion: number;
+  arm: 'control' | 'treatment';
+  /** Pushbacks per worker before a question is sent as-is. */
+  maxPushbacks: number;
+}
+
+/** The agent's recommended default for a question, and why (one line). */
+export interface QuestionRecommendation {
+  label: string;
+  reason?: string;
 }
 
 export interface WaitingFor {
@@ -872,6 +902,16 @@ export interface WaitingFor {
    * rather than accepted silently.
    */
   contractViolation?: boolean;
+  /**
+   * Question brief (module header: packages/core/question-brief.ts): at most two
+   * sentences saying which task this is and exactly what is being decided.
+   * Optional; questions without it still render.
+   */
+  context?: string;
+  /** The agent's recommended option and why. */
+  recommended?: QuestionRecommendation;
+  /** Deterministic origin facts the runner adds. */
+  where?: QuestionWhere;
 }
 
 /** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */
@@ -1542,6 +1582,12 @@ export interface ClaimTasksResponse {
      * no mount, no steering, every CBM tool denied.
      */
     cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
+    /**
+     * Set when the team runs a `question_gate` experiment and the runner sent
+     * the `question_gate` feature. The runner then routes AskUserQuestion
+     * through POST /api/workers/[id]/question-check before parking.
+     */
+    questionGate?: QuestionGateMarker;
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
     /** Decrypted server-managed OAuth token (inline) */
@@ -2849,7 +2895,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage';
+export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage' | 'question_gate';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
