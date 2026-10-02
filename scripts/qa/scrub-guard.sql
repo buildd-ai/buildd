@@ -62,7 +62,8 @@ BEGIN
     ('memories', 'title', '^Memory [0-9]+: [a-z ]*$'),
     ('memories', 'content', lorem),
     ('experiments', 'title', '^Experiment [0-9]+: [a-z ]*$'),
-    ('connectors', 'name', '^Connector [0-9]+$')
+    ('connectors', 'name', '^Connector [0-9]+$'),
+    ('worker_heartbeats', 'local_ui_url', '^http://qa-[0-9a-f]{32}\.localhost:8766$')
   ) AS v(t, c, p) LOOP
     EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I WHERE %I IS NOT NULL AND %I::text !~ $1)', r.t, r.c, r.c)
       INTO hit USING r.p;
