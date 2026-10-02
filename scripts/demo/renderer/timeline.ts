@@ -83,6 +83,12 @@ export type Shot = {
   caption?: string | Array<{ at: number; text: string; to?: number }>;
   camera?: CamKey[];
   taps?: Tap[];
+  /**
+   * Embedded artifacts in the still (fractions): screenshots under review, an
+   * invoice page. A picture of a page: demo:review exempts their text from the
+   * size floor. Recorded per frame with the lit target (stage __regions).
+   */
+  artifacts?: Rect[];
   /** Seconds into the shot where a key tick sounds (typing). */
   keys?: number[];
   /** Seconds into the shot for the completion chime. */

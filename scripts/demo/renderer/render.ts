@@ -26,6 +26,7 @@
  * `--site <dir>` then publishes the site set there under fixed names: <beat>[-mobile][-light].*,
  * hero[-light].* (v6x loop), full.mp4 (v6a with sound, capped at 8MB), and manifest.json.
  * It builds a sibling dir and swaps it in (publishDir), so a killed run never wipes the last set.
+ * `--regions` records where each cut's lit target and artifacts sit (into shotlist.json) without encoding.
  * `--review` then runs `demo:review` on the published set (pixel checks + judge; non-zero on a high finding).
  * `--stills t1,t2` writes still-<cut>-<t>.png at those times instead of encoding.
  */
@@ -242,10 +243,19 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
         if (!loaded.fonts) console.warn('[render] IBM Plex Mono not available; captions fall back to Menlo');
         const duration = cutDuration(cut);
         const starts = shotStarts(cut);
-        shotlist.cuts.push({
+        const entry: any = {
           name: cut.name, duration, fps: cut.fps, loop: !!cut.loop, fade: cut.fade,
           shots: cut.shots.map((s, i) => ({ id: s.id, start: +starts[i].toFixed(2), dur: s.dur, caption: cut.captions === false ? null : s.caption ?? null })),
-        });
+        };
+        shotlist.cuts.push(entry);
+        // Where the lit target and the artifacts sit, every 0.25s of cut time (demo:review's legibility rules).
+        const regions: any[] = [];
+        for (let t = 0; t < duration; t += 0.25) {
+          await page.evaluate((tt) => window.__render(tt), t);
+          regions.push({ t: +t.toFixed(2), ...(await page.evaluate(() => window.__regions())) });
+        }
+        entry.regions = regions;
+        if (process.argv.includes('--regions')) { await page.close(); continue; }
         const still = async (t: number, file: string) => {
           await page.evaluate((tt) => window.__render(tt), t);
           await page.screenshot({ path: join(outDir, file) });
@@ -432,7 +442,7 @@ function assembleSite(outRoot: string, site: string) {
         shotlists.set(dir, existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')).cuts ?? [] : []);
       }
       const c = shotlists.get(dir)!.find((x: any) => x.name === cut);
-      return c ? { name: cut, loop: !!c.loop, fade: c.fade ?? 0.8, fps: c.fps, shots: c.shots.map((x: any) => ({ id: x.id, start: x.start, dur: x.dur })) } : undefined;
+      return c ? { name: cut, loop: !!c.loop, fade: c.fade ?? 0.8, fps: c.fps, shots: c.shots.map((x: any) => ({ id: x.id, start: x.start, dur: x.dur })), regions: c.regions ?? [] } : undefined;
     };
     const manifest = clips.map((beat) => {
       const webm = join(tmp, `${beat}.webm`);

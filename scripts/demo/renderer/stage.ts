@@ -286,7 +286,11 @@ function poseFleet(b: Built, local: number) {
   b.fleet!.count.textContent = String(f.live);
 }
 
-function pose(cut: Cut, b: Built, local: number, opacity: number) {
+type Px = [x: number, y: number, w: number, h: number];
+type Regions = { target: Px[]; artifacts: Px[] };
+let lastRegions: Regions = { target: [], artifacts: [] };
+
+function pose(cut: Cut, b: Built, local: number, opacity: number): Regions {
   const { shot } = b;
   b.layer.style.opacity = String(opacity);
   b.layer.style.display = opacity > 0 ? 'block' : 'none';
@@ -325,6 +329,10 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
     b.motion(local);
     toFrame = (x, y) => ({ x: x * cut.width, y: y * cut.height });
   }
+  // Where the lit target and the artifacts land in the frame, for demo:review.
+  const px = (r: Rect): Px => { const a = toFrame(r.x, r.y), z = toFrame(r.x + r.w, r.y + r.h); return [Math.round(a.x), Math.round(a.y), Math.round(z.x - a.x), Math.round(z.y - a.y)]; };
+  const lit = spotAt(shot.spot, local);
+  const regions: Regions = { target: lit.dim > 0 ? lit.rects.map(px) : [], artifacts: (shot.artifacts ?? []).map(px) };
   const last = !cut.loop && b === built[built.length - 1];
   const caps = captionsAt(shot, local, last ? cut.fade + 60 : cut.fade);
   b.chips.forEach((c, i) => {
@@ -353,10 +361,11 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
   } else {
     b.tap.style.opacity = '0';
   }
+  return regions;
 }
 
 declare global {
-  interface Window { __load: (cut: Cut) => Promise<{ fonts: boolean; duration: number }>; __render: (t: number) => Promise<void> }
+  interface Window { __load: (cut: Cut) => Promise<{ fonts: boolean; duration: number }>; __render: (t: number) => Promise<void>; __regions: () => Regions }
 }
 
 let built: Built[] = [];
@@ -398,6 +407,8 @@ window.__load = async (cut: Cut) => {
   return { fonts, duration: cutDuration(cut) };
 };
 
+window.__regions = () => lastRegions;
+
 window.__render = async (t: number) => {
   if (!current) return;
   const layers = layersAt(current, t);
@@ -406,11 +417,13 @@ window.__render = async (t: number) => {
   const keep = new Set([...on.keys()].flatMap((i) => [i, (i + 1) % built.length]));
   for (const [i, b] of built.entries()) if (!keep.has(i)) release(b);
   for (const i of keep) await ensure(built[i]);
+  let best = -1;
   built.forEach((b, i) => {
     const l = on.get(i);
     if (!l) { b.layer.style.opacity = '0'; b.layer.style.display = 'none'; return; }
     b.layer.style.zIndex = String(l.z + 1);
-    pose(current!, b, l.local, l.opacity);
+    const r = pose(current!, b, l.local, l.opacity);
+    if (l.opacity > best) { best = l.opacity; lastRegions = r; }
   });
   if (curtain) curtain.style.opacity = String(fadeOutAt(current, t));
 };

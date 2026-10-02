@@ -130,25 +130,38 @@ export function fontPx(w: Word): number {
  * Font size at the size the page shows the clip. Only words OCR read well
  * count, and only lit ones at full severity: dimmed context is meant to recede.
  */
-export const GLYPH = { high: 7, medium: 9, minConf: 70 };
-const isWord = (t: string) => (t.match(/[A-Za-z0-9]/g) ?? []).length >= 2;
-export function legibility(words: Word[], o: { sourceWidth: number; displayWidth: number; sourceHeight?: number; lit?: Set<Word> }): Finding[] {
+export const GLYPH = { high: 7, medium: 9, minConf: 80, minChars: 3 };
+export type Box = { x: number; y: number; w: number; h: number };
+const isWord = (t: string, min = 2) => (t.match(/[A-Za-z0-9]/g) ?? []).length >= min;
+const inside = (w: Word, bs: Box[] | undefined) => !!bs?.some((b) => { const cx = w.x + w.w / 2, cy = w.y + w.h / 2; return cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h; });
+
+/**
+ * Font size at the size the page shows the clip, by what the text is for:
+ * - the lit target (the renderer's spotlight rects for that moment) is what a
+ *   visitor must read: too small is high;
+ * - other lit text: medium; dimmed context: low;
+ * - text inside an artifact (a screenshot under review, an invoice page) is
+ *   a picture of a page: exempt.
+ * Tokens under 3 characters or read under 80 confidence are OCR fragments.
+ */
+export function legibility(words: Word[], o: { sourceWidth: number; displayWidth: number; sourceHeight?: number; lit?: Set<Word>; target?: Box[]; artifacts?: Box[] }): Finding[] {
   const k = o.displayWidth / o.sourceWidth;
   // A word the frame edge cuts is part of the crop, not a size: the judge looks at clipping.
   const cut = (w: Word) => w.x <= 2 || w.x + w.w >= o.sourceWidth - 2 || w.y <= 2 || (o.sourceHeight !== undefined && w.y + w.h >= o.sourceHeight - 2);
   const small = words
-    .filter((w) => w.conf >= GLYPH.minConf && isWord(w.text) && !cut(w))
+    .filter((w) => w.conf >= GLYPH.minConf && isWord(w.text, GLYPH.minChars) && !cut(w) && !inside(w, o.artifacts))
     .map((w) => ({ w, px: fontPx(w) * k }))
     .filter((x) => x.px < GLYPH.medium)
     .sort((a, b) => a.px - b.px);
-  const lit = o.lit ? small.filter((x) => o.lit!.has(x.w)) : small;
-  const ctx = o.lit ? small.filter((x) => !o.lit!.has(x.w)) : [];
+  const target = small.filter((x) => inside(x.w, o.target));
+  const rest = small.filter((x) => !inside(x.w, o.target));
+  const lit = o.lit ? rest.filter((x) => o.lit!.has(x.w)) : rest;
+  const ctx = o.lit ? rest.filter((x) => !o.lit!.has(x.w)) : [];
   const out: Finding[] = [];
   const list = (xs: typeof small) => xs.slice(0, 5).map((x) => `"${x.w.text}" ${x.px.toFixed(1)}px`).join(', ') + (xs.length > 5 ? ` (+${xs.length - 5})` : '');
-  if (lit.length) {
-    const b = lit[0].w;
-    out.push({ severity: lit[0].px < GLYPH.high ? 'high' : 'medium', check: 'legibility', issue: `lit text set under ${GLYPH.medium}px at ${o.displayWidth}px wide: ${list(lit)}`, box: { x: b.x, y: b.y, w: b.w, h: b.h } });
-  }
+  const at = (x: (typeof small)[number]) => ({ x: x.w.x, y: x.w.y, w: x.w.w, h: x.w.h });
+  if (target.length) out.push({ severity: target[0].px < GLYPH.high ? 'high' : 'medium', check: 'legibility', issue: `the lit target is set under ${GLYPH.medium}px at ${o.displayWidth}px wide: ${list(target)}`, box: at(target[0]) });
+  if (lit.length) out.push({ severity: 'medium', check: 'legibility', issue: `lit text set under ${GLYPH.medium}px at ${o.displayWidth}px wide: ${list(lit)}`, box: at(lit[0]) });
   // Dimmed context is meant to recede; small is fine there, so it is only noted.
   if (ctx.length) out.push({ severity: 'low', check: 'legibility', issue: `dimmed context under ${GLYPH.medium}px: ${list(ctx)}` });
   return out;
@@ -328,7 +341,7 @@ export function exitCode(findings: Array<{ severity: Severity; accepted?: string
 export type AcceptRule = { clip: string; check: string; match: string; reason: string };
 export function applyAccepted<T extends Finding>(findings: T[], rules: AcceptRule[]): T[] {
   return findings.map((f) => {
-    if (f.check === 'judge') return f;
+    if (f.check.startsWith('judge')) return f;
     const r = rules.find((x) => x.check === f.check && new RegExp(x.clip).test(f.clip ?? '') && new RegExp(x.match).test(f.issue));
     return r ? { ...f, accepted: r.reason } : f;
   });

@@ -116,10 +116,11 @@ describe('legibility: glyph height at display size', () => {
   const words = [W('Invoices', 10, 10, 120, 22), W('tiny', 10, 40, 30, 9)];
   test('scales source px to display px and flags readable-meant text that falls under the floor', () => {
     // 1280 source shown at 700: "Invoices" 22px box (an ascender word, ~23px font) -> 12.6px ok; "tiny" 9px box -> ~6px font, too small.
+    // With no target from the renderer, small lit text is medium (high is for the lit target).
     const f = legibility(words, { sourceWidth: 1280, displayWidth: 700 });
     expect(f).toHaveLength(1);
     expect(f[0].issue).toContain('tiny');
-    expect(f[0].severity).toBe('high');
+    expect(f[0].severity).toBe('medium');
   });
   test('a word the frame edge cuts ("lling" of "billing") is a crop, not a font size: skipped', () => {
     expect(legibility([W('lling', 0, 300, 40, 9)], { sourceWidth: 1280, displayWidth: 700, sourceHeight: 720 })).toEqual([]);
@@ -144,6 +145,26 @@ describe('litWords: which words the spotlight lights (the rest is dimmed context
   test('legibility: small lit text is high; small dimmed context is only low', () => {
     const f = legibility([W('lit', 10, 10, 30, 9), W('ctx', 10, 40, 30, 9)], { sourceWidth: 1280, displayWidth: 700, lit: new Set([]) });
     expect(f.every((x) => x.severity === 'low')).toBe(true);
+  });
+});
+
+describe('legibility against the lit target and artifacts (regions from the renderer)', () => {
+  const box = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
+  const target = [box(0, 0, 400, 100)], artifacts = [box(0, 200, 400, 200)];
+  const o = { sourceWidth: 1280, displayWidth: 700, target, artifacts };
+  test('the lit target too small is high', () => {
+    expect(legibility([W('Looks', 20, 20, 60, 9)], o)[0].severity).toBe('high');
+  });
+  test('other lit text too small is only medium', () => {
+    const w = W('subtitle', 20, 150, 60, 9);
+    expect(legibility([w], { ...o, lit: new Set([w]) }).map((f) => f.severity)).toEqual(['medium']);
+  });
+  test('text inside an artifact (a screenshot under review) is exempt', () => {
+    const w = W('3.763,97', 20, 250, 60, 9);
+    expect(legibility([w], { ...o, lit: new Set([w]) })).toEqual([]);
+  });
+  test('OCR fragments (under 3 characters, or under 80 confidence) are not text', () => {
+    expect(legibility([W('be', 20, 20, 10, 3), W('ho', 40, 20, 10, 3), W('cents', 60, 20, 40, 4, 72)], o)).toEqual([]);
   });
 });
 
@@ -226,9 +247,9 @@ describe('numberContradictions', () => {
   test('a bare head is not compared when the frame also qualifies it (OCR dropped "JUDGED" from "SCREENS YOU JUDGED 2")', () => {
     expect(numberContradictions([{ t: 3, text: '6 screens reviewed · SCREENS REVIEWED 6 · SCREENS YOU 2 · SCREENS 6' }])).toEqual([]);
   });
-  test('legibility for lit text keeps its severity', () => {
+  test('legibility: the lit target is high, from the renderer\'s regions', () => {
     const w = W('tiny', 10, 40, 30, 9);
-    expect(legibility([w], { sourceWidth: 1280, displayWidth: 700, lit: new Set([w]) })[0].severity).toBe('high');
+    expect(legibility([w], { sourceWidth: 1280, displayWidth: 700, lit: new Set([w]), target: [{ x: 0, y: 0, w: 100, h: 100 }] })[0].severity).toBe('high');
   });
   test('consistent numbers pass', () => {
     expect(numberContradictions([{ t: 1, text: 'LANDED 13 of 13 · 4/4 criteria' }])).toEqual([]);

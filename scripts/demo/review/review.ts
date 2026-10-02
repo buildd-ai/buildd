@@ -29,7 +29,7 @@ import {
 const arg = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 const flag = (name: string) => process.argv.includes(`--${name}`);
 const MENLO = '/System/Library/Fonts/Menlo.ttc';
-const PROMPT_VERSION = 'v4';
+const PROMPT_VERSION = 'v5';
 
 function sh(cmd: string[], opts: { stdout?: 'pipe' } = {}): { out: Buffer; err: string; code: number } {
   const r = Bun.spawnSync(cmd, { stdout: 'pipe', stderr: 'pipe', ...opts });
@@ -127,13 +127,17 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
     // Crossfades blend two layers by design: overlap checks skip them (the judge sees those frames).
     const blending = meta.crossfades.some((c) => Math.abs(c - t) < 0.45);
     const lit = litWords(words, px);
+    // The renderer's regions for this moment: the lit target (must read) and artifacts (exempt).
+    const ct = meta.folded ? t + (cut?.fade ?? 0.8) : t;
+    const reg = (cut?.regions ?? []).reduce((a: any, r: any) => (!a || Math.abs(r.t - ct) < Math.abs(a.t - ct) ? r : a), undefined);
+    const boxes = (xs: number[][] | undefined) => (xs ?? []).map(([x, y, w, h]) => ({ x, y, w, h }));
     // Display type over a shape is a motion-piece failure (the hero's Done over its bars); UI crops always have neighbours.
     const motion = name.startsWith('hero');
     const layered = blending ? [] : [...collisions(words), ...(motion ? textOverShape(words, { ...px, displayWidth: display }) : [])];
     // Transitions dip through the ground, so the frame at a dip's midpoint is empty by design.
     const dipping = meta.crossfades.some((c) => Math.abs(c - t) < 0.3);
     const floor = inFadeOut(t, p.duration, meta.loop) || dipping ? null : contrastFloor(luma, theme);
-    for (const f of [floor, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit }), ...layered]) if (f) findings.push({ ...f, t });
+    for (const f of [floor, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit, target: reg ? boxes(reg.target) : undefined, artifacts: boxes(reg?.artifacts) }), ...layered]) if (f) findings.push({ ...f, t });
     // Numbers only from words OCR read confidently: a misread checkbox row ("000006") is not a claim.
     const sure = words.filter((w) => w.conf >= 90);
     const lines = new Map<number, Word[]>();
@@ -189,7 +193,8 @@ Judge:
 - Is the key element readable at ${c.display}px wide?
 
 Severity: "high" = a visitor would notice a defect, or a false or contradictory claim; "medium" = noticeably rough; "low" = a nitpick.
-Reply with ONLY one JSON object and nothing else: {"findings":[{"t":<seconds or null>,"severity":"high"|"medium"|"low","issue":"<one sentence>"}]}. An empty list if it is clean.`;
+Tag each finding with a kind: "headline" (the clip does not show what the headline claims), "overlap" (text over text, or text over a shape), "numbers" (numbers that disagree), "clipped", "transition", "readability" or "other".
+Reply with ONLY one JSON object and nothing else: {"findings":[{"t":<seconds or null>,"severity":"high"|"medium"|"low","kind":"<kind>","issue":"<one sentence>"}]}. An empty list if it is clean.`;
 }
 
 async function judge(c: ClipReport, copy: Copy | undefined, out: string): Promise<Judge> {
@@ -226,7 +231,12 @@ async function judge(c: ClipReport, copy: Copy | undefined, out: string): Promis
     };
     const text = String(j.result ?? '');
     const body = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
-    res.findings = (body.findings ?? []).map((f: any) => ({ clip: c.name, t: typeof f.t === 'number' ? f.t : undefined, severity: (['high', 'medium', 'low'].includes(f.severity) ? f.severity : 'medium') as Severity, check: 'judge', issue: String(f.issue) }));
+    // High is kept for the clip not showing its headline, overlaps and contradictory numbers; the rest is capped at medium.
+    const HIGH_KINDS = new Set(['headline', 'overlap', 'numbers']);
+    res.findings = (body.findings ?? []).map((f: any) => {
+      const sev = (['high', 'medium', 'low'].includes(f.severity) ? f.severity : 'medium') as Severity;
+      return { clip: c.name, t: typeof f.t === 'number' ? f.t : undefined, severity: sev === 'high' && !HIGH_KINDS.has(f.kind) ? 'medium' : sev, check: `judge:${f.kind ?? 'other'}`, issue: String(f.issue) };
+    });
   } catch (e) {
     res.error = `judge output unreadable (exit ${r.code}): ${(r.err || r.out).slice(0, 300)}`;
   }

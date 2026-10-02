@@ -362,6 +362,16 @@ test('a tap on a control outlines the control instead of stamping a square over 
   expect(t.rect).toEqual(R(0.4, 0.45, 0.2, 0.1));
 });
 
+test('the screenshots under review are marked as artifacts (their text is a picture of a page)', () => {
+  const film = v6aFilm(fake);
+  expect(film.shots.find((x) => x.id === 'screens')!.artifacts!.length).toBeGreaterThan(0);
+  const review = film.shots.find((x) => x.id === 'review')!;
+  expect(review.artifacts!.length).toBe(1);
+  // The verdict buttons are not part of the artifact.
+  const a = review.artifacts![0], btn = BOXES['deck-looks-right'][0];
+  expect(a.y + a.h).toBeLessThanOrEqual(btn.y);
+});
+
 describe('dip transitions: two dense screens never share a frame', () => {
   const two = { fade: 0.8, shots: [{ dur: 4 }, { dur: 4 }] as any, dip: true };
   test('between shots: the outgoing shot is gone before the incoming one appears', () => {

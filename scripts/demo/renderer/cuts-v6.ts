@@ -250,8 +250,9 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
   }
 
   const routes = s.boxes('s10-screens', 'visual-review-route');
+  const thumbs = s.boxes('s10-screens', 'visual-review-thumb');
   const screens: Shot = {
-    id: 'screens', layout: 'screen', dur: 4, images: [s.img('s10-screens')],
+    id: 'screens', layout: 'screen', dur: 4, images: [s.img('s10-screens')], artifacts: thumbs,
     caption: 'It screenshots its own change, phone and desktop.',
     spot: [key(0.3, [routes[0], ghost(routes[0])]), key(2.0, [routes[0], routes[1]])],
     // A held frame on both routes; only the light moves.
@@ -275,6 +276,8 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
       : [{ at: 0, cx: 0.5, cy: 0.5, zoom: 0.8 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 0.815 }],
     taps: [press(2.8, btn)],
     controls: [btn],
+    // The screenshot in the deck (everything above its verdict bar) is a picture of a page.
+    artifacts: [{ x: deck.x, y: deck.y, w: deck.w, h: Math.max(0, btn.y - 0.03 - deck.y) }],
   };
   if (o.beat) review.spot = [key(0.3, [verdict]), { ...key(1.6, [btn]), cross: true }, key(3.2, [btn], 0)];
 
