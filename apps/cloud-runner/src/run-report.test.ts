@@ -15,6 +15,8 @@ import {
   countResponseBytes,
   deliverRunReport,
   egressClassForKind,
+  emptyEgressDetail,
+  applyEgressDetail,
   emptyEgressCounters,
   isEgressEvent,
   parsePhaseLine,
@@ -181,6 +183,37 @@ const FULL: RunReportInput = {
   outcome: 'done',
 };
 
+describe('egress detail: why requests failed, never what they were', () => {
+  test('reject reasons and upstream error statuses are counted per class', () => {
+    const d = emptyEgressDetail();
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 1, rejected: true, reason: 'path' });
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 2, rejected: true, reason: 'path' });
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 3, rejected: true, reason: 'unconfigured' });
+    applyEgressDetail(d, { type: 'status', cls: 'model', status: 403 });
+    applyEgressDetail(d, { type: 'status', cls: 'model', status: 400 });
+    applyEgressDetail(d, { type: 'status', cls: 'model', status: 200 });
+    applyEgressDetail(d, { type: 'request', cls: 'github', at: 4 });
+    expect(d.model).toEqual({ rejectReasons: { path: 2, unconfigured: 1 }, errorStatuses: { '400': 1, '403': 1 } });
+    expect(d.github).toEqual({ rejectReasons: {}, errorStatuses: {} });
+  });
+
+  test('a status event is a valid egress event; an unknown reason is not counted', () => {
+    expect(isEgressEvent({ type: 'status', cls: 'model', status: 403 })).toBe(true);
+    expect(isEgressEvent({ type: 'status', cls: 'model', status: 'x' })).toBe(false);
+    const d = emptyEgressDetail();
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 1, rejected: true, reason: 'nope' as never });
+    expect(d.model.rejectReasons).toEqual({ other: 1 });
+  });
+
+  test('the report carries the detail, bounded to known reasons and 4xx/5xx codes', () => {
+    const r = assembleRunReport({ ...FULL, egressDetail: {
+      model: { rejectReasons: { path: 3, bogus: 9 } as never, errorStatuses: { '403': 2, '200': 5, 'abc': 1 } },
+    } as never });
+    expect(r.egressDetail.model).toEqual({ rejectReasons: { path: 3 }, errorStatuses: { '403': 2 } });
+    expect(r.egressDetail.github).toEqual({ rejectReasons: {}, errorStatuses: {} });
+  });
+});
+
 describe('assembleRunReport', () => {
   test('timestamps, derived durations, ids, counters and outcome', () => {
     const r = assembleRunReport(FULL);
@@ -250,7 +283,7 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'exitCode', 'instanceType', 'kind',
+      'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
       'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
   });

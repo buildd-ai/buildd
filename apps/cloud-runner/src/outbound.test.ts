@@ -844,3 +844,14 @@ describe('endpointRejectedKey: only a 401 means the key is bad', () => {
     expect(endpointRejectedKey(200)).toBe(false);
   });
 });
+
+describe('reject decisions name a reason (counted in the run report, no URL)', () => {
+  test('path, plain http, port, unconfigured', () => {
+    const route = resolveModelRoute({}, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    const r = (url: string, method = 'POST', model: ModelRoute = route) => rewriteOutbound({ url, method, headers: new Headers() }, { model });
+    expect(r('https://api.anthropic.com/api/event_logging/batch')).toMatchObject({ action: 'reject', reason: 'path' });
+    expect(r('http://api.anthropic.com/v1/messages')).toMatchObject({ action: 'reject', reason: 'plain_http' });
+    expect(r('https://api.anthropic.com:8443/v1/messages')).toMatchObject({ action: 'reject', reason: 'port' });
+    expect(r('https://api.anthropic.com/v1/messages', 'POST', resolveModelRoute({}))).toMatchObject({ action: 'reject', reason: 'unconfigured' });
+  });
+});

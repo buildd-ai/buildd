@@ -64,7 +64,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     );
     if (decision.action === 'passthrough') return this.counted('passthrough', at, fetch(request));
     if (decision.action === 'reject') {
-      this.record({ type: 'request', cls, at, rejected: true });
+      this.record({ type: 'request', cls, at, rejected: true, reason: decision.reason });
       return new Response(`${decision.message}\n`, { status: decision.status });
     }
     if (this.env.EGRESS_DEBUG_ECHO === '1') {
@@ -102,7 +102,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
   /** An OTLP export: counted as passthrough in the run report (it is not model or GitHub traffic). */
   private async forwardOtlp(request: Request, decision: NonNullable<ReturnType<typeof rewriteOtlp>>, at: number): Promise<Response> {
     if (decision.action === 'reject') {
-      this.record({ type: 'request', cls: 'passthrough', at, rejected: true });
+      this.record({ type: 'request', cls: 'passthrough', at, rejected: true, reason: decision.reason });
       return new Response(`${decision.message}\n`, { status: decision.status });
     }
     if (decision.action !== 'forward') return this.counted('passthrough', at, fetch(request));
@@ -126,7 +126,9 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
    */
   private async counted(cls: EgressClass, at: number, response: Promise<Response>): Promise<Response> {
     this.record({ type: 'request', cls, at });
-    return countResponseBytes(await response, (bytes) => this.record({ type: 'bytes', cls, bytes }));
+    const res = await response;
+    if (res.status >= 400) this.record({ type: 'status', cls, status: res.status });
+    return countResponseBytes(res, (bytes) => this.record({ type: 'bytes', cls, bytes }));
   }
 
   /** Fire-and-forget: the report is best effort and must never slow a request. */

@@ -143,17 +143,72 @@ export function egressClassForKind(kind: 'anthropic' | 'github' | 'passthrough')
   return kind === 'anthropic' ? 'model' : kind;
 }
 
-/** The only shape the handler sends the agent. No URL, no headers. */
+/** Why the handler refused a request. Mirrors outbound.ts RejectReason. */
+export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'other'] as const;
+export type RejectReason = typeof REJECT_REASONS[number];
+
+/**
+ * The only shape the handler sends the agent. No URL, no headers: a refusal
+ * carries only its reason, and an upstream answer only its status code.
+ */
 export type EgressEvent =
-  | { type: 'request'; cls: EgressClass; at: number; rejected?: boolean }
-  | { type: 'bytes'; cls: EgressClass; bytes: number };
+  | { type: 'request'; cls: EgressClass; at: number; rejected?: boolean; reason?: RejectReason }
+  | { type: 'bytes'; cls: EgressClass; bytes: number }
+  | { type: 'status'; cls: EgressClass; status: number };
 
 export function isEgressEvent(v: unknown): v is EgressEvent {
   const e = v as Record<string, unknown> | null;
   if (!e || !isEgressClass(e.cls)) return false;
   if (e.type === 'request') return typeof e.at === 'number' && Number.isFinite(e.at);
   if (e.type === 'bytes') return typeof e.bytes === 'number' && Number.isFinite(e.bytes) && e.bytes >= 0;
+  if (e.type === 'status') return typeof e.status === 'number' && Number.isInteger(e.status);
   return false;
+}
+
+/** Per class: refusals by reason, and upstream 4xx/5xx answers by code. Counts only. */
+export interface EgressClassDetail {
+  rejectReasons: Partial<Record<RejectReason, number>>;
+  errorStatuses: Record<string, number>;
+}
+export type EgressDetail = Record<EgressClass, EgressClassDetail>;
+
+export function emptyEgressDetail(): EgressDetail {
+  return {
+    model: { rejectReasons: {}, errorStatuses: {} },
+    github: { rejectReasons: {}, errorStatuses: {} },
+    passthrough: { rejectReasons: {}, errorStatuses: {} },
+  };
+}
+
+const MAX_STATUS_KEYS = 20;
+const isErrorStatus = (code: number) => Number.isInteger(code) && code >= 400 && code <= 599;
+
+export function applyEgressDetail(detail: EgressDetail, e: EgressEvent): void {
+  const d = detail[e.cls];
+  if (e.type === 'request' && e.rejected) {
+    const reason: RejectReason = REJECT_REASONS.includes(e.reason as RejectReason) ? e.reason as RejectReason : 'other';
+    d.rejectReasons[reason] = (d.rejectReasons[reason] ?? 0) + 1;
+  } else if (e.type === 'status' && isErrorStatus(e.status)) {
+    const key = String(e.status);
+    if (key in d.errorStatuses || Object.keys(d.errorStatuses).length < MAX_STATUS_KEYS) {
+      d.errorStatuses[key] = (d.errorStatuses[key] ?? 0) + 1;
+    }
+  }
+}
+
+function normalizeEgressDetail(input: unknown): EgressDetail {
+  const out = emptyEgressDetail();
+  const src = (input ?? {}) as Partial<Record<EgressClass, { rejectReasons?: unknown; errorStatuses?: unknown }>>;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : 0);
+  for (const cls of EGRESS_CLASSES) {
+    const reasons = (src[cls]?.rejectReasons ?? {}) as Record<string, unknown>;
+    for (const r of REJECT_REASONS) if (n(reasons[r])) out[cls].rejectReasons[r] = n(reasons[r]);
+    const statuses = (src[cls]?.errorStatuses ?? {}) as Record<string, unknown>;
+    for (const [k, v] of Object.entries(statuses).slice(0, MAX_STATUS_KEYS)) {
+      if (/^\d{3}$/.test(k) && isErrorStatus(Number(k)) && n(v)) out[cls].errorStatuses[k] = n(v);
+    }
+  }
+  return out;
 }
 
 export function applyEgressEvent(counters: EgressCounters, e: EgressEvent): void {
@@ -161,7 +216,7 @@ export function applyEgressEvent(counters: EgressCounters, e: EgressEvent): void
   if (e.type === 'request') {
     c.requests += 1;
     if (e.rejected) c.rejected += 1;
-  } else {
+  } else if (e.type === 'bytes') {
     c.responseBytes += Math.floor(e.bytes);
   }
 }
@@ -272,6 +327,8 @@ export interface RunReport {
    */
   resume: { resumed: boolean; gapMs: number | null; layer: 1 | 2 | null; parkBytes: number | null };
   egress: EgressCounters;
+  /** Why requests failed: refusal reasons and upstream error codes, per class. */
+  egressDetail: EgressDetail;
   exitCode: number | null;
   outcome: RunOutcome | null;
   crashReport: CrashReport | null;
@@ -286,6 +343,7 @@ export interface RunReportInput {
   dispatchReceivedAt?: number;
   timings?: RunTimings;
   egress?: EgressCounters;
+  egressDetail?: EgressDetail;
   exitCode?: number | null;
   outcome?: RunOutcome;
   crashReport?: CrashReport;
@@ -390,6 +448,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       parkBytes: metric('park_bytes'),
     },
     egress,
+    egressDetail: normalizeEgressDetail(input.egressDetail),
     exitCode: typeof input.exitCode === 'number' && Number.isInteger(input.exitCode) ? input.exitCode : null,
     outcome: input.outcome && OUTCOMES.includes(input.outcome) ? input.outcome : null,
     crashReport: input.crashReport && CRASH_REPORTS.includes(input.crashReport) ? input.crashReport : null,

@@ -295,6 +295,9 @@ export function modelApiPathAllowed(method: string | undefined, rawUrl: string):
   });
 }
 
+/** Why a request was refused (run-report.ts REJECT_REASONS). */
+export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'unparseable' | 'other';
+
 export type EgressDecision =
   | { action: 'passthrough' }
   | {
@@ -302,7 +305,7 @@ export type EgressDecision =
       /** Set for a message request to a team endpoint with a model mapping: the egress handler rewrites the body's `model`. */
       mapModel?: (id: string) => string;
     }
-  | { action: 'reject'; status: number; message: string };
+  | { action: 'reject'; status: number; message: string; reason: RejectReason };
 
 export interface RewriteContext {
   model: ModelRoute;
@@ -380,21 +383,21 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   try {
     url = new URL(req.url);
   } catch {
-    return { action: 'reject', status: 400, message: 'unparseable request URL' };
+    return { action: 'reject', status: 400, message: 'unparseable request URL', reason: 'unparseable' };
   }
   const kind = classifyEgressHost(url.hostname);
   if (kind === 'passthrough') return { action: 'passthrough' };
   // Served in the Worker by the snapshot store; forwarding it would send the
   // container's snapshot bytes to whatever that name resolves to.
-  if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded' };
+  if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded', reason: 'other' };
 
   // Credentialed hosts are HTTPS only: a plaintext request is refused rather
   // than upgraded, so nothing credentialed is ever built from it.
   if (url.protocol !== 'https:') {
-    return { action: 'reject', status: 403, message: `${url.hostname} is reachable only over HTTPS` };
+    return { action: 'reject', status: 403, message: `${url.hostname} is reachable only over HTTPS`, reason: 'plain_http' };
   }
   if (url.port && url.port !== '443') {
-    return { action: 'reject', status: 403, message: `${url.hostname}: only port 443 is allowed` };
+    return { action: 'reject', status: 403, message: `${url.hostname}: only port 443 is allowed`, reason: 'port' };
   }
 
   const headers = stripContainerCredentials(req.headers);
@@ -406,11 +409,11 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   if (kind === 'anthropic') {
     // Judged on the original URL string, before anything is added.
     if (!modelApiPathAllowed(req.method, req.url)) {
-      return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded` };
+      return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded`, reason: 'path' };
     }
     const route = ctx.model;
     if (route.kind === 'unconfigured') {
-      return { action: 'reject', status: 503, message: `model egress is not configured: ${route.reason}` };
+      return { action: 'reject', status: 503, message: `model egress is not configured: ${route.reason}`, reason: 'unconfigured' };
     }
     if (route.kind === 'direct') {
       headers.set('x-api-key', route.apiKey);
