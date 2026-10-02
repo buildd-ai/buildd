@@ -348,6 +348,14 @@ export interface LocalWorker {
   cbmSeedBaseMismatch?: { wanted: string; found: string };
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
+  /**
+   * CBM search injection metrics (cbm-injection.ts). Counts and labels only.
+   * Set at session start for Claude workers with CBM enforced (and Codex
+   * workers with CBM active, as unsupported_backend); refreshed from the live
+   * injector when resultMeta is built. Separate from cbmToolCounts on purpose:
+   * the runner's own graph queries are not agent CBM calls (CBM-17/18).
+   */
+  cbmInjection?: import('@buildd/core/cbm-injection').CbmInjectionMetrics;
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
   // Superset of the CBM counters above — flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
@@ -478,6 +486,8 @@ export interface CbmMetrics {
   readCount: number;
   grepCount: number;
   globCount: number;
+  /** CBM search injection (cbm-search-injection.md). Absent when it never ran for this session. */
+  injection?: import('@buildd/core/cbm-injection').CbmInjectionMetrics;
 }
 
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError

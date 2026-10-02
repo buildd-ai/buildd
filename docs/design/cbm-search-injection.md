@@ -160,7 +160,9 @@ wrong summary is indistinguishable from a right one in the agent's context.
    ```
 
    At most eight entries; the rest is a count (`… and 4 more`). `inject_impact`
-   adds the hop distance (`caller, 2 hops`).
+   adds the hop distance (`caller, 2 hops`). A caller's line is where the
+   calling function starts: the graph records which function calls the symbol,
+   not the call's own line, so that is the most precise location it can give.
 
 ### Limits (the safety property)
 
