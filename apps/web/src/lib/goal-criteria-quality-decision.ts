@@ -142,6 +142,8 @@ export interface GoalQualityFacts {
   criteria: readonly GoalCriterion[];
   /** PATCH: the criteria stored before the write. Byte-identical ones are not re-graded. */
   stored?: unknown;
+  /** Logged; defaults to `GOAL_QUALITY_MODE`. */
+  mode?: 'shadow' | 'surface';
 }
 
 export interface IndexedCriterion {
@@ -423,7 +425,7 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
       v: `${GOAL_QUALITY_PROMPT_VERSION}|${res.model}`,
       rubric: rubric.version,
       mission,
-      mode: GOAL_QUALITY_MODE,
+      mode: facts.mode ?? GOAL_QUALITY_MODE,
       graded: graded.length,
       weak: verdict?.weakCount ?? null,
       invalid: verdict ? undefined : true,
@@ -497,4 +499,68 @@ export function goalQualityWarnings(
       mode: ctx.mode ?? GOAL_QUALITY_MODE,
     },
   }));
+}
+
+/** Fixed, like the warned reason. */
+export const GOAL_QUALITY_BYPASSED_REASON = 'goal criterion graded weak was kept as written (advisory)';
+
+/** A prior `goal_criteria_quality` row for the mission, as the ledger read returns it. */
+export interface GoalQualityLedgerRow {
+  outcome: string;
+  detail: unknown;
+}
+
+function fingerprintIn(detail: unknown): string | null {
+  const fp = (detail as { fingerprint?: unknown } | null)?.fingerprint;
+  return typeof fp === 'string' ? fp : null;
+}
+
+/**
+ * One `bypassed` row per criterion in this write whose fingerprint has a
+ * `warned` row for the mission and no `bypassed` row yet. Deterministic, no
+ * model call, so it runs whether or not the capability is on. Matching is by
+ * `criterionFingerprint`, never array position: a criterion that moved is the
+ * same criterion, and one that changed is not. Pure; the caller fires them.
+ */
+export function goalQualityBypasses(
+  criteria: readonly GoalCriterion[],
+  prior: readonly GoalQualityLedgerRow[],
+  ctx: {
+    missionId: string;
+    workspaceId: string | null;
+    surface: 'POST /api/missions' | 'PATCH /api/missions/[id]';
+    callerOrigin?: GateCallerOrigin | null;
+  },
+): RecordGateEventInput[] {
+  const warned = new Map<string, Record<string, unknown>>();
+  const done = new Set<string>();
+  for (const row of prior) {
+    const fp = fingerprintIn(row.detail);
+    if (!fp) continue;
+    if (row.outcome === 'warned' && !warned.has(fp)) warned.set(fp, row.detail as Record<string, unknown>);
+    if (row.outcome === 'bypassed') done.add(fp);
+  }
+  const rows: RecordGateEventInput[] = [];
+  for (const criterion of criteria) {
+    const fp = criterionFingerprint(criterion);
+    const warning = warned.get(fp);
+    if (!warning || done.has(fp)) continue;
+    done.add(fp);
+    rows.push({
+      gate: GATE_SLUGS.GOAL_CRITERIA_QUALITY,
+      surface: ctx.surface,
+      outcome: 'bypassed',
+      reason: GOAL_QUALITY_BYPASSED_REASON,
+      missionId: ctx.missionId,
+      workspaceId: ctx.workspaceId,
+      callerOrigin: ctx.callerOrigin ?? null,
+      detail: {
+        fingerprint: fp,
+        type: criterion.type,
+        mode: warning.mode ?? null,
+        promptVersion: warning.promptVersion ?? null,
+      },
+    });
+  }
+  return rows;
 }
