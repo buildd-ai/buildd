@@ -9,7 +9,8 @@ import {
   computeUsageStats,
   describeScan,
   parseWindowMs,
-  UNASSIGNED_ROLE,
+  parseRoleGroupKey,
+  INFERRED_ROLE_SUFFIX,
   USAGE_WINDOWS,
   type GroupDimension,
 } from '@/lib/usage-stats';
@@ -178,7 +179,9 @@ async function groupLabels(
   if (groupBy === 'executor') return EXECUTOR_LABELS;
   if (groupBy === 'creationSource') return {};
 
-  const slugs = keys.filter(k => k !== UNASSIGNED_ROLE);
+  // A routed role's group is `<slug> · inferred`; look the slug up and keep the suffix.
+  const parsed = keys.map(k => ({ key: k, ...parseRoleGroupKey(k) }));
+  const slugs = [...new Set(parsed.map(p => p.roleSlug).filter((s): s is string => !!s))];
   if (slugs.length === 0) return {};
   const skills = await db.query.workspaceSkills.findMany({
     where: and(
@@ -188,7 +191,10 @@ async function groupLabels(
     ),
     columns: { slug: true, name: true },
   });
-  return Object.fromEntries((skills as any[]).map(s => [s.slug, s.name]));
+  const nameBySlug = new Map((skills as any[]).map(s => [s.slug as string, s.name as string]));
+  return Object.fromEntries(parsed
+    .filter(p => p.roleSlug && nameBySlug.has(p.roleSlug))
+    .map(p => [p.key, `${nameBySlug.get(p.roleSlug!)}${p.roleSource === 'inferred' ? INFERRED_ROLE_SUFFIX : ''}`]));
 }
 
 function emptyResponse(window: string, windowStart: Date, groupBy: GroupDimension) {

@@ -100,6 +100,13 @@ describe('get_usage_stats', () => {
     expect(out).toMatch(/75% success/);
   });
 
+  it('shows time-to-claim on a role group when the endpoint reports it', async () => {
+    const g = { ...statsPayload.groups[0], key: 'builder · inferred', label: 'Builder · inferred', claimLatencyMs: { kind: 'value', value: { mean: 50_000, median: 42_000, p90: 180_000, max: 300_000 } } };
+    mockApi.mockResolvedValueOnce({ ...statsPayload, groups: [g] });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx());
+    expect(res.content[0].text).toMatch(/Builder · inferred: 8 task\(s\).*claimed in 42s median \/ 3m p90/);
+  });
+
   it('states tool coverage so counts are not read as exact', async () => {
     mockApi.mockResolvedValueOnce(statsPayload);
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', {}, ctx());

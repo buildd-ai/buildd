@@ -23,6 +23,7 @@ const OVERRIDE: Record<PolicyKey, number> = {
   maxConflictIterations: 13,
   autoMergeGreenGraceMs: 14_000,
   maxCiRetries: 15,
+  taskRoleMinConfidencePct: 93,
 };
 
 const KEYS = Object.keys(POLICY_DEFAULTS) as PolicyKey[];
