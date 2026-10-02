@@ -26,6 +26,7 @@
  * `--site <dir>` then publishes the site set there under fixed names: <beat>[-mobile][-light].*,
  * hero[-light].* (v6x loop), full.mp4 (v6a with sound, capped at 8MB), and manifest.json.
  * It builds a sibling dir and swaps it in (publishDir), so a killed run never wipes the last set.
+ * `--review` then runs `demo:review` on the published set (pixel checks + judge; non-zero on a high finding).
  * `--stills t1,t2` writes still-<cut>-<t>.png at those times instead of encoding.
  */
 import { chromium } from 'playwright';
@@ -241,7 +242,7 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
         const duration = cutDuration(cut);
         const starts = shotStarts(cut);
         shotlist.cuts.push({
-          name: cut.name, duration, fps: cut.fps, loop: !!cut.loop,
+          name: cut.name, duration, fps: cut.fps, loop: !!cut.loop, fade: cut.fade,
           shots: cut.shots.map((s, i) => ({ id: s.id, start: +starts[i].toFixed(2), dur: s.dur, caption: cut.captions === false ? null : s.caption ?? null })),
         });
         const still = async (t: number, file: string) => {
@@ -327,6 +328,11 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
   }
   const site = arg('site');
   if (site) assembleSite(outRoot, resolve(site));
+  // Optional: review the published clips' pixels (scripts/demo/review). Exits non-zero on a high finding.
+  if (site && process.argv.includes('--review')) {
+    const r = Bun.spawnSync(['bun', 'run', join(import.meta.dir, '../review/review.ts'), '--clips', resolve(site)], { stdout: 'inherit', stderr: 'inherit' });
+    if (r.exitCode !== 0) { console.error('[render] demo:review found high-severity issues'); process.exit(r.exitCode ?? 1); }
+  }
   console.log(`[render] done → ${outRoot}`);
 }
 
@@ -350,6 +356,13 @@ export function siteFiles(): Array<[from: string, to: string]> {
 /** `--only` names: a cut name (`hero` also takes `hero-mobile`), or `beats` for every beat. */
 export function wantsCut(only: string[], name: string): boolean {
   return only.includes(name) || (only.includes('beats') && name.startsWith('beat-')) || (only.includes('hero') && name === 'hero-mobile');
+}
+
+/** A rendered file (`<dir>/<prefix>[-<cut>].mp4`) back to its family dir and cut name; the bare prefix is the full film. */
+export function clipSource(from: string): { dir: string; cut: string } {
+  const [dir, file] = from.split('/');
+  const m = file.replace(/\.mp4$/, '').match(/^buildd-demo-v\d+[a-z]+(?:-(.+))?$/);
+  return { dir, cut: m?.[1] ?? 'full' };
 }
 
 /** CRFs to try, from `start` up to `max` in steps of 2. */
@@ -407,11 +420,25 @@ function assembleSite(outRoot: string, site: string) {
     for (const [from, to] of siteFiles()) copyFileSync(join(outRoot, from), join(tmp, to));
     capMp4(join(tmp, 'full.mp4'), FULL_MAX_BYTES);
     const clips = siteFiles().map(([, to]) => to).filter((f) => f.endsWith('.mp4')).map((f) => f.slice(0, -4));
+    // Each clip carries its cut's shots, so `demo:review` can find the crossfades from the site set alone.
+    const shotlists = new Map<string, any[]>();
+    const cutOf = (to: string) => {
+      const from = siteFiles().find(([, t]) => t === to)?.[0];
+      if (!from) return undefined;
+      const { dir, cut } = clipSource(from);
+      if (!shotlists.has(dir)) {
+        const f = join(outRoot, dir, 'shotlist.json');
+        shotlists.set(dir, existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')).cuts ?? [] : []);
+      }
+      const c = shotlists.get(dir)!.find((x: any) => x.name === cut);
+      return c ? { name: cut, loop: !!c.loop, fade: c.fade ?? 0.8, fps: c.fps, shots: c.shots.map((x: any) => ({ id: x.id, start: x.start, dur: x.dur })) } : undefined;
+    };
     const manifest = clips.map((beat) => {
       const webm = join(tmp, `${beat}.webm`);
       return {
         beat, durationSec: +probe(join(tmp, `${beat}.mp4`)).toFixed(2), size: size(join(tmp, `${beat}.mp4`)),
         bytes: statSync(join(tmp, `${beat}.mp4`)).size, ...(existsSync(webm) ? { webmBytes: statSync(webm).size } : {}),
+        cut: cutOf(`${beat}.mp4`),
       };
     });
     writeFileSync(join(tmp, 'manifest.json'), JSON.stringify(manifest, null, 2));

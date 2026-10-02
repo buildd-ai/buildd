@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { Stills } from './cuts';
-import { crfLadder, mergeShotlists, publishDir, seamlessLoopFilter, siteFiles, wantsCut } from './render';
+import { clipSource, crfLadder, mergeShotlists, publishDir, seamlessLoopFilter, siteFiles, wantsCut } from './render';
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -184,6 +184,20 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
       expect(spec.poster).toBeLessThan(next.at);
     }
   });
+  test('done holds the goal band, large enough to read at page size, from the first frame to the last (so the loop has no seam)', () => {
+    for (const look of LOOKS) {
+      const done = look.beats.find((c) => c.name.startsWith('beat-done'))!.shots[0];
+      const css = done.images[0].width / 2;
+      const zooms = done.camera!.map((k) => (look.frame[0] / css) * k.zoom);
+      for (const z of zooms) expect(z).toBeGreaterThanOrEqual((look.frame[0] < 1000 ? 1.8 : 2) - 1e-6);
+      // The lit band itself is never cut by the frame edge.
+      const band = BOXES['goal-band'][0];
+      for (const z of zooms) expect(band.w * css * 1.0 * z).toBeLessThanOrEqual(look.frame[0] + 1e-6);
+      const cs = done.camera!.map((k) => [k.cx, k.cy]);
+      for (const c of cs) { expect(c[0]).toBeCloseTo(cs[0][0], 2); expect(c[1]).toBeCloseTo(cs[0][1], 2); }
+      expect(done.spot!.every((k) => k.rects.length === 1)).toBe(true);
+    }
+  });
   test('spec is the criteria then the edit; plan is Confirm then the Board', () => {
     const by = Object.fromEntries(LOOKS[0].beats.map((c) => [c.name, c.shots.map((s) => s.id)]));
     expect(by['beat-spec']).toEqual(['criteria', 'edit']);
@@ -279,6 +293,15 @@ describe('verifyAt', () => {
       if (v.done > 0) expect(v.checks.every((c) => c > 0.99) || t > m.resetAt).toBe(true);
     }
   });
+  test('Done never shares a frame with the bars: they leave before it comes, and come back after it goes', () => {
+    for (let t = 0; t <= dur + 1e-9; t += 0.02) {
+      const v = verifyAt(m, t);
+      expect(v.done > 0 && v.barsShown > 0).toBe(false);
+    }
+    // Both are fully there at some point: bars while the agents work, Done at the end.
+    expect(verifyAt(m, 5).barsShown).toBe(1);
+    expect(verifyAt(m, 10).done).toBe(1);
+  });
   test('seamless: the last frame is the first', () => {
     const a = verifyAt(m, 0), b = verifyAt(m, dur);
     expect(b).toEqual(a);
@@ -322,6 +345,12 @@ test('wantsCut: --only hero takes the phone crop too, and nothing else by prefix
   expect(wantsCut(['full'], 'hero')).toBe(false);
   expect(wantsCut(['beats'], 'beat-spec-mobile')).toBe(true);
   expect(wantsCut(['hero'], 'beat-spec')).toBe(false);
+});
+
+test('clipSource: a site file back to its family dir and cut name (for the shotlist)', () => {
+  expect(clipSource('a/buildd-demo-v6a-beat-spec-mobile.mp4')).toEqual({ dir: 'a', cut: 'beat-spec-mobile' });
+  expect(clipSource('l/buildd-demo-v6l-hero-mobile.mp4')).toEqual({ dir: 'l', cut: 'hero-mobile' });
+  expect(clipSource('a/buildd-demo-v6a.mp4')).toEqual({ dir: 'a', cut: 'full' });
 });
 
 test('crfLadder: steps up from the start in twos, to a ceiling', () => {

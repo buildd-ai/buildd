@@ -259,6 +259,19 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     camera: [at(f('s13-complete', union([band, rec]), 1.1), 0), at(f('s13-complete', union([band, rec]), 1.06), 1)],
     chime: 0.9,
   };
+  if (o.beat) {
+    // A beat holds the goal band alone, large enough to read at page size: the
+    // "4/4 criteria" is what its headline claims. One wide crop on band and
+    // record left the band's text ~5px tall at 700px wide, and a pan between
+    // the two smeared at the loop seam (demo:review caught both).
+    const img = s.img('s13-complete');
+    // As large as reads well, but never wider than the frame: on a phone the band's full width sets the zoom.
+    const css = img.width / 2;
+    const fits = o.frame.width / (band.w * css * 1.07);
+    const big = (pad: number, t: number) => aim({ ...o, minPx: Math.min(2.2, fits) }, img, band, pad, t);
+    done.spot = [key(0.3, [band])];
+    done.camera = [big(1.1, 0), big(1.07, 1)];
+  }
 
   return [ask, reads, criteria, editing, confirming, rule, rules, board, fleet, question, screens, review, done];
 }
