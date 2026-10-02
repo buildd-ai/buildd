@@ -7,7 +7,7 @@
  * `/api/inference-keys`; the wire types are `@buildd/shared` (chat.ts). Values
  * never reach the browser: a key arrives as `last4` + health. Resolution order
  * (user → workspace → team) is `resolveInferenceKey` in
- * `@buildd/core/inference-keys`. See docs/design/agent-chat.md → Credentials.
+ * `@buildd/core/inference-keys`. See knowledge-base: buildd/design/agent-chat.md → Credentials.
  */
 import {
   CHAT_PROVIDERS,

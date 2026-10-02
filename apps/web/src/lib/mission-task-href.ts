@@ -1,6 +1,6 @@
 /**
  * The ONE way to link to a mission-owned task
- * (docs/design/mission-feed-mobile-continuity.md, "Interaction, URL and scroll model").
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "Interaction, URL and scroll model").
  *
  * - `sheet`: `/app/missions/X?from=…&task=Y` — the mission renders with the task
  *   sheet open over it, so the list behind never loses its place.

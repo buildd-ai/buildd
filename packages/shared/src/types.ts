@@ -1764,7 +1764,7 @@ export interface LoopHistoryEntry {
  * conformance checks and audits can compare the two. First write wins:
  * `declared` is set at creation, or on the first runtime mutation for a task
  * created before this column existed. See
- * docs/design/conflict-aware-orchestration.md §1.
+ * knowledge-base: buildd/design/conflict-aware-orchestration.md §1.
  */
 export interface PathDeclaration {
   declared: string[] | null;
@@ -2762,7 +2762,7 @@ export interface GateAnalytics {
 
 /**
  * How long approved-and-green PRs wait before they land, from the `pr_landing`
- * gate events (docs/design/pr-landing-guarantee.md §J). A regression shows up
+ * gate events (knowledge-base: buildd/design/pr-landing-guarantee.md §J). A regression shows up
  * here before anyone files a friction report.
  */
 export interface LandingMetrics {

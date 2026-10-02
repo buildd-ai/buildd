@@ -1,6 +1,6 @@
 /**
  * The server half of an enforce-mode path-collision deferral
- * (docs/design/conflict-aware-orchestration.md §2).
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §2).
  *
  * A runner in enforce mode that finds, at a checkpoint, that a path its task
  * already changed is held by another live task stops the session, saves a

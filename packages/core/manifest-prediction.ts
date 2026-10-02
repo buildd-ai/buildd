@@ -1,6 +1,6 @@
 /**
  * Creation-time manifest prediction — the pure half
- * (docs/design/conflict-aware-orchestration.md §5a).
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §5a).
  *
  * A separate, explicitly opted-in DECLARATION policy. It is not the advisory
  * task-area retrieval experiment (`./task-area-prediction.ts`), which stays

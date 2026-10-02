@@ -1382,7 +1382,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Hold/start at claim (docs/design/conflict-aware-orchestration.md §5b).
+  // Hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
   // The collector only remembers advisory deferrals that pass every
   // deterministic rail (no I/O); the decisions run after the response. The
   // gated START path is unreachable as shipped (shadow definition, zero
@@ -2000,7 +2000,7 @@ export async function POST(req: NextRequest) {
             modelSource = 'routing_experiment';
           }
         }
-        // Tier model pool (docs/design/tier-model-pools.md). Null, and a no-op,
+        // Tier model pool (knowledge-base: buildd/design/tier-model-pools.md). Null, and a no-op,
         // unless the team has a split pool on this tier and the task is
         // eligible. A task in the model-routing experiment serves the
         // incumbent: one experiment per unit. Never throws, never defers.

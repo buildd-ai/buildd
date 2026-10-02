@@ -956,7 +956,7 @@ export default function CondensedTimeline({
       )}
 
       {/* md and up only. Below md the mission page renders MissionFeedList —
-          the one mobile list (docs/design/mission-feed-mobile-continuity.md);
+          the one mobile list (knowledge-base: buildd/design/mission-feed-mobile-continuity.md);
           the mobile rail this used to render beside it is retired. */}
       <div className="hidden md:block">
         <TimelineView

@@ -2,7 +2,7 @@
 
 /**
  * The one mission card, on Home and the missions list
- * (docs/design/mission-feed-mobile-continuity.md, W1, addendum D7).
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W1, addendum D7).
  *
  * Renders a `MissionCardView` and nothing else — the chip, the sentence, the
  * pulse and the primary line were all decided by `buildMissionCardView`, so

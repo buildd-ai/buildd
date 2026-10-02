@@ -2,7 +2,7 @@
 
 /**
  * TaskActionZone: the one decision a task's phase needs, done in place
- * (docs/design/mission-feed-mobile-continuity.md W4/W6). Answer when it asks,
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W4/W6). Answer when it asks,
  * retry (or switch backend) when it failed, run now when it is queued, and say
  * why when it is blocked. Shared by the task sheet and — from slice S6 — the
  * full task page, so the two can never disagree about what a state offers.

@@ -1,5 +1,5 @@
 /**
- * Subscriptions and the delivery ledger (docs/design/subscriptions-and-notifications.md).
+ * Subscriptions and the delivery ledger (knowledge-base: buildd/design/subscriptions-and-notifications.md).
  *
  * This module owns the two tables. Nothing here sends anything: emitters call
  * `recordEvent`, which writes ledger rows; delivery (chat, Pushover, inbox)
@@ -471,7 +471,7 @@ export interface ConversationRecordRow extends UndeliveredRow {
 
 export function listUnpostedForConversationSql(owner: { userId: string }, conversationId: string, limit: number): SQL {
   // The record every chat watch leaves in its origin conversation, whichever
-  // route delivered it (docs/design/subscriptions-and-notifications.md, Delivery
+  // route delivered it (knowledge-base: buildd/design/subscriptions-and-notifications.md, Delivery
   // routing step 3). A row qualifies while it has no event message there yet
   // (lib/chat/watch-delivery.ts posts it with the row id as the message id):
   //   - pending, or already delivered by another route (Pushover while away);

@@ -4,7 +4,7 @@
  * The composer: the message, the workspace the turn's tools default to, the
  * tools control (per-group "Ask first" / "Allow") and the tier switch. The
  * switch picks a tier for the conversation, never a model: the tier → model
- * mapping stays the team admin's (docs/design/agent-chat.md, "Models: tiers").
+ * mapping stays the team admin's (knowledge-base: buildd/design/agent-chat.md, "Models: tiers").
  *
  * The box, Enter / Shift+Enter, Send becoming Stop and the toolbar slots are
  * the kit's `ChatComposer` (@builddai/ai-kit/chat/react). buildd fills the
@@ -102,7 +102,7 @@ const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer
 
   return (
     // A full-bleed slab on a phone, a square box on desktop: no radius
-    // anywhere in the foreground (docs/design/chat-canvas.md). The 2px top
+    // anywhere in the foreground (knowledge-base: buildd/design/chat-canvas.md). The 2px top
     // rule turns copper while something needs the viewer; while a turn
     // streams a blue segment sweeps along it, the surface's one glow.
     <div data-testid="chat-composer" data-mood={mood ?? undefined}>

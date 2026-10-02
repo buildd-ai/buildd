@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Owns the mission page's task sheet (docs/design/mission-feed-mobile-continuity.md,
+ * Owns the mission page's task sheet (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * "Crux", W4/W5, "Interaction, URL and scroll model").
  *
  * - `?task=Y` is the sheet's state. It is written ONLY with native history

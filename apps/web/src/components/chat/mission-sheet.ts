@@ -1,5 +1,5 @@
 /**
- * The mission sheet (the summoned canvas over a mission, docs/design/chat-canvas.md
+ * The mission sheet (the summoned canvas over a mission, knowledge-base: buildd/design/chat-canvas.md
  * "Mission sheet"): what its context card says and which questions it offers.
  * Pure: everything is read from the mission's live board, nothing invented.
  *

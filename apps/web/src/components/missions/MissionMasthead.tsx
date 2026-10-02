@@ -3,7 +3,7 @@
 /**
  * MissionMasthead: title, one state chip, the situation sentence, the pulse and
  * a counts caption — one object carried from the Home card to the detail
- * header to the task sheet (docs/design/mission-feed-mobile-continuity.md,
+ * header to the task sheet (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * "The shared object", W1–W4, W6).
  *
  * It renders what the accessors produced and phrases nothing itself:

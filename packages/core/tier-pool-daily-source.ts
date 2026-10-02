@@ -1,5 +1,5 @@
 /**
- * The stores half of the daily tier pool step (docs/design/tier-weights.md §3c,
+ * The stores half of the daily tier pool step (knowledge-base: buildd/design/tier-weights.md §3c,
  * §4, §5). Called hourly by `/api/cron/tier-pools`.
  *
  * - After 03:00 UTC, each team with an explore pool refreshes its OpenRouter

@@ -1,6 +1,6 @@
 /**
  * The PR landing function — one decide-and-act answer to "what happens to this
- * PR now?", for every door that can land one (docs/design/pr-landing-guarantee.md).
+ * PR now?", for every door that can land one (knowledge-base: buildd/design/pr-landing-guarantee.md).
  *
  * It composes the existing pieces instead of restating them: the safety rails
  * (`evaluateAutoMergeSafety`), the verdict gate with carry-forward

@@ -2,7 +2,7 @@
 
 /**
  * TaskSheet: a mission task opened over the mission, which never unmounts
- * behind it (docs/design/mission-feed-mobile-continuity.md W4/W5, "Desktop
+ * behind it (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W4/W5, "Desktop
  * adaptation").
  *
  * It renders in the shared `SideSheet`, so Records, Notes or goal criteria

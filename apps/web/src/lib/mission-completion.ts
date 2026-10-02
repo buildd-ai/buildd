@@ -786,7 +786,7 @@ export async function completeMissionIfVerified(
     console.error(`[mission-completion] flight-strip cache compute failed for ${missionId}:`, e)
   );
 
-  // The "What shipped" record (docs/design/mission-shipped-report.md): only the
+  // The "What shipped" record (knowledge-base: buildd/design/mission-shipped-report.md): only the
   // claim winner writes it, from whichever proposal actually won. Not awaited —
   // it can never un-complete the mission, and the page falls back to today's
   // rendering when it is absent. Scheduled with `after()` because it does

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Settings → Model tiers → the pools (docs/design/tier-model-pools.md §9).
+ * Settings → Model tiers → the pools (knowledge-base: buildd/design/tier-model-pools.md §9).
  * Two tables, Agent runs and Chat and quick calls. Each tier row lists its
  * models with traffic share, win rate, mistake mix and cost per 1k. An admin
  * adds a model, types shares, pins or unpins, and removes a model; every one

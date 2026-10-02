@@ -1,5 +1,5 @@
 /**
- * What sits beside the chat when no object is docked (docs/design/agent-chat.md,
+ * What sits beside the chat when no object is docked (knowledge-base: buildd/design/agent-chat.md,
  * "Who sees what first"): a member gets what needs them and their missions; an
  * operator gets the fleet. The chat column is the same for both.
  *

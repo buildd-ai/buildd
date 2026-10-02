@@ -5,7 +5,7 @@
  *
  * Storage is plain `secrets` rows (purpose `inference_key`, label = provider),
  * resolved at call time by `resolveInferenceKey` in @buildd/core/inference-keys.
- * See docs/design/agent-chat.md → Credentials.
+ * See knowledge-base: buildd/design/agent-chat.md → Credentials.
  */
 
 import { db } from '@buildd/core/db';

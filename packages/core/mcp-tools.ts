@@ -1081,7 +1081,7 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
   if (params.defaultBackend === 'claude' || params.defaultBackend === 'codex' || params.defaultBackend === null) {
     body.defaultBackend = params.defaultBackend;
   }
-  // Routing text (docs/design/role-routing.md §2); the API validates the limits.
+  // Routing text (knowledge-base: buildd/design/role-routing.md §2); the API validates the limits.
   if (params.whenToUse !== undefined) body.whenToUse = params.whenToUse;
   if (params.notFor !== undefined) body.notFor = params.notFor;
   return body;

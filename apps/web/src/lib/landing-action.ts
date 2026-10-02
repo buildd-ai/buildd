@@ -1,5 +1,5 @@
 /**
- * What a tap on the landing page does (docs/design/pr-landing-guarantee.md §H).
+ * What a tap on the landing page does (knowledge-base: buildd/design/pr-landing-guarantee.md §H).
  *
  * The signed link only selects an action; the route that calls this has already
  * required a signed-in member of the PR's workspace. Here: verify the token,
