@@ -78,6 +78,9 @@ const LANDING = {
 const mockGetLandingMetrics = mock(() => Promise.resolve(LANDING as any));
 mock.module('@/lib/pr-landing-metrics', () => ({ getLandingMetrics: mockGetLandingMetrics }));
 
+const mockGetStalledIngestReport = mock(async (_ws: string[]) => null as any);
+mock.module('@/lib/knowledge-ingest-stalls', () => ({ getStalledIngestReport: mockGetStalledIngestReport }));
+
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 mock.module('@buildd/core/db', () => ({
@@ -185,6 +188,26 @@ describe('GET /api/health/failures', () => {
     mockWorkspacesFindFirst.mockResolvedValue({ id: VALID_UUID, teamId: 'other-team' });
     const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${VALID_UUID}`));
     expect(res.status).toBe(404);
+  });
+
+  it('omits stalledIngest when no ingest job is stuck', async () => {
+    mockGetStalledIngestReport.mockResolvedValueOnce(null);
+    const body = await (await GET(makeRequest(URL_BASE))).json();
+    expect(body.stalledIngest).toBeUndefined();
+  });
+
+  it('names stalled full ingest jobs in the overview, scoped to the caller workspaces', async () => {
+    mockGetStalledIngestReport.mockClear();
+    const report = {
+      stalled: 1,
+      inFallback: 0,
+      oldestAgeMs: 3_600_000,
+      jobs: [{ id: 'j1', workspaceId: VALID_UUID, repo: 'o/r', state: 'stalled', ageMs: 3_600_000, attempts: 0 }],
+    };
+    mockGetStalledIngestReport.mockResolvedValueOnce(report);
+    const body = await (await GET(makeRequest(URL_BASE))).json();
+    expect(body.stalledIngest).toEqual(report);
+    expect(mockGetStalledIngestReport.mock.calls[0][0]).toEqual([VALID_UUID]);
   });
 
   it('defaults to the 7d window when none is given', async () => {

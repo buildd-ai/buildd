@@ -55,6 +55,12 @@ export interface FullIngestApiClient {
   pushFiles(jobId: string, files: IngestFileEntry[]): Promise<IngestBatchStats>;
   completeJob(jobId: string, result: FullIngestCompletion): Promise<void>;
   /**
+   * Hand a claimed job back to the queue without running it, recording why
+   * (e.g. this runner's checkout cannot fetch the repo). The job stays eligible
+   * for another runner or the serverless fallback. Optional for older servers.
+   */
+  releaseJob?(jobId: string, reason: string): Promise<void>;
+  /**
    * Persist a precise code graph (SCIP) ADDITIVELY alongside the ast-grep
    * edges built during file ingest — stream B2b. Optional: clients/servers that
    * don't yet support graph persistence simply omit it, and the SCIP layer
@@ -72,10 +78,59 @@ export interface RepoReader {
   resolvedSha?: string | null;
 }
 
-// Batch caps sized for serverless request limits (Vercel bodies cap ~4.5 MB;
-// stay well under so base64/JSON overhead never matters).
-export const MAX_BATCH_FILES = 40;
-export const MAX_BATCH_BYTES = 1_500_000;
+// Batch caps sized for the server's TIME budget, not just its body limit. The
+// files route chunks and embeds every byte it is sent before answering, so a
+// 1.5 MB batch of large markdown outran the client timeout even though it fit
+// the ~4.5 MB body cap. A batch that still times out (or gets a 5xx) is halved
+// and retried — see pushBatchAdaptive.
+export const MAX_BATCH_FILES = 16;
+export const MAX_BATCH_BYTES = 300_000;
+
+/**
+ * Whether a failed batch push is worth retrying smaller: a client-side timeout
+ * or any 5xx from the ingest API. A 4xx (job no longer running, bad request)
+ * means retrying cannot help.
+ */
+export function isRetryableBatchError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+  if (/timed out/i.test(err.message)) return true;
+  return /ingest API error 5\d\d\b/.test(err.message);
+}
+
+interface AdaptivePushTotals {
+  filesIngested: number;
+  chunksUpserted: number;
+  filesSkipped: number;
+  skippedUnchanged: number;
+  batchRetries: number;
+}
+
+/**
+ * Push one batch; on a retryable failure split it in half and push each half,
+ * recursively, down to a single file. A single file that still fails fails the
+ * job with the original error.
+ */
+async function pushBatchAdaptive(
+  api: FullIngestApiClient,
+  jobId: string,
+  batch: IngestFileEntry[],
+  totals: AdaptivePushTotals,
+): Promise<void> {
+  try {
+    const res = await api.pushFiles(jobId, batch);
+    totals.filesIngested += res.filesIngested;
+    totals.chunksUpserted += res.chunksUpserted;
+    totals.filesSkipped += res.filesSkipped;
+    totals.skippedUnchanged += res.skippedUnchanged ?? 0;
+  } catch (err) {
+    if (batch.length < 2 || !isRetryableBatchError(err)) throw err;
+    totals.batchRetries++;
+    const mid = Math.ceil(batch.length / 2);
+    await pushBatchAdaptive(api, jobId, batch.slice(0, mid), totals);
+    await pushBatchAdaptive(api, jobId, batch.slice(mid), totals);
+  }
+}
 
 export interface BatchCaps {
   maxFiles: number;
@@ -201,16 +256,18 @@ export async function runFullIngestJob(
       entries.push({ path, content, fileHash });
     }
 
-    let filesIngested = 0;
-    let chunksUpserted = 0;
-    let skippedUnchanged = 0;
+    const totals: AdaptivePushTotals = {
+      filesIngested: 0,
+      chunksUpserted: 0,
+      filesSkipped: 0,
+      skippedUnchanged: 0,
+      batchRetries: 0,
+    };
     for (const batch of planFileBatches(entries, caps)) {
-      const res = await api.pushFiles(job.id, batch);
-      filesIngested += res.filesIngested;
-      chunksUpserted += res.chunksUpserted;
-      skipped += res.filesSkipped;
-      skippedUnchanged += res.skippedUnchanged ?? 0;
+      await pushBatchAdaptive(api, job.id, batch, totals);
     }
+    const { filesIngested, chunksUpserted, skippedUnchanged, batchRetries } = totals;
+    skipped += totals.filesSkipped;
 
     // Precise code-graph enrichment (SCIP). Runs after files are ingested so
     // its edges layer ADDITIVELY on top of the ast-grep graph. Best-effort:
@@ -224,6 +281,7 @@ export async function runFullIngestJob(
       filesSkipped: skipped,
       skippedUnchanged,
       chunksUpserted,
+      batchRetries,
       durationMs: Date.now() - startedAt,
       ...(reader.resolvedSha ? { sha: reader.resolvedSha } : {}),
       ...(scipStats ? { scip: scipStats } : {}),
@@ -265,6 +323,54 @@ function tryResolveSha(repoPath: string, sha?: string | null): string {
     }
   }
   return git(repoPath, ['rev-parse', 'HEAD']).toString().trim();
+}
+
+export type CheckoutCheck = { ok: true } | { ok: false; reason: string };
+
+/** Fetches can hang on an unreachable host; never let one stall the runner. */
+const CHECKOUT_FETCH_TIMEOUT_MS = 60_000;
+
+function gitErrorLine(err: unknown): string {
+  const e = err as { stderr?: Buffer | string; message?: string };
+  const stderr = e?.stderr ? e.stderr.toString() : '';
+  const line = stderr.split('\n').map(l => l.trim()).find(Boolean) ?? e?.message ?? String(err);
+  return line.slice(0, 300);
+}
+
+/**
+ * Can this checkout serve the job? A sha already present locally needs no
+ * network. Otherwise (a sha we do not have, or no sha, meaning "current
+ * default branch") the checkout must be able to fetch `origin`; if it cannot —
+ * an SSH remote with no key, a revoked token, a dead host — the reason is
+ * returned instead of quietly ingesting a stale HEAD.
+ */
+export async function checkCheckoutFetchable(repoPath: string, sha?: string | null): Promise<CheckoutCheck> {
+  if (sha) {
+    try {
+      git(repoPath, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
+      return { ok: true };
+    } catch {
+      // Not present locally — must fetch.
+    }
+  }
+  try {
+    execFileSync('git', sha ? ['fetch', '--quiet', 'origin', sha] : ['fetch', '--quiet', 'origin'], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: CHECKOUT_FETCH_TIMEOUT_MS,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+  } catch (err) {
+    return { ok: false, reason: `git fetch origin failed: ${gitErrorLine(err)}` };
+  }
+  if (sha) {
+    try {
+      git(repoPath, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
+    } catch {
+      return { ok: false, reason: `sha ${sha.slice(0, 12)} not found on origin after fetch` };
+    }
+  }
+  return { ok: true };
 }
 
 /**
@@ -359,6 +465,9 @@ export function createHttpIngestApi(opts: HttpIngestApiOptions): FullIngestApiCl
     },
     async completeJob(jobId, result) {
       await post(`/api/knowledge/ingest-jobs/${jobId}/complete`, result);
+    },
+    async releaseJob(jobId, reason) {
+      await post(`/api/knowledge/ingest-jobs/${jobId}/complete`, { status: 'released', error: reason });
     },
     async pushGraph(jobId, graph) {
       return post<{ edges: number; aliases: number }>(
