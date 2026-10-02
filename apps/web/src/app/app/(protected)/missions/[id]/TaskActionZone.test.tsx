@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import {
+  canOfferForce,
   getGateReasonTitle,
   getGateReasonSubtitle,
   formatFleetStatus,
@@ -12,64 +13,59 @@ import {
 
 describe('task-actions shared helpers', () => {
   describe('getGateReasonTitle', () => {
-    it('returns title for mission_local gate', () => {
-      expect(getGateReasonTitle('mission_local')).toBe('Running in a local session');
+    it('uses the full-page wording for each gate', () => {
+      expect(getGateReasonTitle({ gateReason: 'mission_local' })).toBe('Running in a local session');
+      expect(getGateReasonTitle({ gateReason: 'mission_held' })).toBe('Blocked: parent mission is held');
+      expect(getGateReasonTitle({ gateReason: 'unmerged_dep_pr' })).toBe('Blocked: dependency PR not merged');
+      expect(getGateReasonTitle({ gateReason: 'mission_budget_exhausted' })).toBe('Blocked: mission budget exhausted');
     });
 
-    it('returns title for mission_held gate', () => {
-      expect(getGateReasonTitle('mission_held')).toBe('Mission is held');
-    });
-
-    it('returns title for unmerged_dep_pr gate', () => {
-      expect(getGateReasonTitle('unmerged_dep_pr')).toBe('Dependency PR not merged');
-    });
-
-    it('returns title for mission_budget_exhausted gate', () => {
-      expect(getGateReasonTitle('mission_budget_exhausted')).toBe('Mission budget exhausted');
-    });
-
-    it('returns title for capability_mismatch gate', () => {
-      expect(getGateReasonTitle('capability_mismatch')).toBe('Backend credential unavailable');
+    it('interpolates backend, cap and start time', () => {
+      expect(getGateReasonTitle({ gateReason: 'capability_mismatch', backend: 'codex' })).toBe('Blocked: no codex credential available');
+      expect(getGateReasonTitle({ gateReason: 'workspace_cap_reached', active: 3, cap: 3 })).toBe('Workspace full (3/3 running)');
+      expect(getGateReasonTitle({ gateReason: 'deferred_start' }, { deferredStartLabel: '9:00 AM' })).toBe('Starts at 9:00 AM');
     });
 
     it('returns generic Blocked for unknown gate reason', () => {
-      expect(getGateReasonTitle('unknown_gate')).toBe('Blocked');
+      expect(getGateReasonTitle({ gateReason: 'unknown_gate' })).toBe('Blocked');
     });
   });
 
   describe('getGateReasonSubtitle', () => {
-    it('provides subtitle for mission_local with force guidance', () => {
-      const subtitle = getGateReasonSubtitle('mission_local');
-      expect(subtitle).toContain('Force start');
-      expect(subtitle).toContain('hand it to a runner');
+    it('mission_local explains the hand-off', () => {
+      const subtitle = getGateReasonSubtitle({ gateReason: 'mission_local' });
+      expect(subtitle).toContain('"Force start" hands this task to a runner');
     });
 
-    it('provides subtitle for mission_held', () => {
-      const subtitle = getGateReasonSubtitle('mission_held');
-      expect(subtitle).toContain('force start');
-      expect(subtitle).toContain('bypass the hold');
+    it('mission_held and mission_budget_exhausted point at force start', () => {
+      expect(getGateReasonSubtitle({ gateReason: 'mission_held' })).toContain('bypasses the hold');
+      expect(getGateReasonSubtitle({ gateReason: 'mission_budget_exhausted' })).toContain('force-start this task');
     });
 
-    it('provides subtitle for mission_budget_exhausted', () => {
-      const subtitle = getGateReasonSubtitle('mission_budget_exhausted');
-      expect(subtitle).toContain('Raise the mission budget');
-      expect(subtitle).toContain('force start');
+    it('unmerged_dep_pr pluralises on the blocking count', () => {
+      expect(getGateReasonSubtitle({ gateReason: 'unmerged_dep_pr' }, { blockingCount: 1 })).toContain('PR is blocking');
+      expect(getGateReasonSubtitle({ gateReason: 'unmerged_dep_pr' }, { blockingCount: 2 })).toContain('PRs are blocking');
     });
 
-    it('provides subtitle for unmerged_dep_pr', () => {
-      const subtitle = getGateReasonSubtitle('unmerged_dep_pr');
-      expect(subtitle).toContain('Merge the blocking PRs');
+    it('connector mismatch names the missing connectors and alternative role', () => {
+      const subtitle = getGateReasonSubtitle({ gateReason: 'connector_routing_mismatch', missingConnectors: ['linear'], alternativeRole: 'builder' });
+      expect(subtitle).toContain('Missing: linear.');
+      expect(subtitle).toContain('role: builder');
     });
 
-    it('uses custom error message when provided', () => {
-      const customError = 'Custom error message';
-      const subtitle = getGateReasonSubtitle('unknown_gate', customError);
-      expect(subtitle).toBe(customError);
+    it('unknown gate uses the server error, else a generic line', () => {
+      expect(getGateReasonSubtitle({ gateReason: 'unknown_gate', error: 'Custom error message' })).toBe('Custom error message');
+      expect(getGateReasonSubtitle({ gateReason: 'unknown_gate' })).toBe("This task can't start yet.");
     });
+  });
 
-    it('falls back to error parameter for unknown gate', () => {
-      const subtitle = getGateReasonSubtitle('unknown_gate');
-      expect(subtitle).toBe('This task cannot start yet.');
+  describe('canOfferForce', () => {
+    it('offers force for bypassable policy gates only', () => {
+      expect(canOfferForce({ gateReason: 'mission_local', canForce: true })).toBe(true);
+      expect(canOfferForce({ gateReason: 'mission_local', canForce: false })).toBe(false);
+      expect(canOfferForce({ gateReason: 'capability_mismatch', canForce: true, blockClass: 'capability' })).toBe(false);
+      expect(canOfferForce({ gateReason: 'workspace_cap_reached', canForce: true })).toBe(false);
+      expect(canOfferForce(null)).toBe(false);
     });
   });
 
@@ -131,19 +127,6 @@ describe('task-actions shared helpers', () => {
       const fleet: RunnerFleetStatus = { count: 0, lastSeenSecs: null };
       const msg = formatFleetStatus(fleet, 'builder');
       expect(msg).not.toContain('browser-capable');
-    });
-  });
-
-  describe('gate exclusions', () => {
-    it('workspace_cap_reached should not show force start', () => {
-      const reasons = ['mission_local', 'mission_held', 'unmerged_dep_pr', 'workspace_cap_reached'];
-      const shouldShowForce = reasons.map(reason => {
-        const canShow = reason !== 'workspace_cap_reached' && reason !== 'capability_mismatch';
-        return { reason, canShow };
-      });
-      // workspace_cap_reached should have canShow=false
-      expect(shouldShowForce.find(r => r.reason === 'workspace_cap_reached')?.canShow).toBe(false);
-      expect(shouldShowForce.find(r => r.reason === 'mission_local')?.canShow).toBe(true);
     });
   });
 });

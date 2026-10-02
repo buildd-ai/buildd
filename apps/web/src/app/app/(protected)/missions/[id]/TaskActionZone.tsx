@@ -17,6 +17,7 @@ import type { TaskPhase } from '@/lib/task-presentation';
 import {
   type GateRefusal,
   type RunnerFleetStatus,
+  canOfferForce,
   getGateReasonTitle,
   getGateReasonSubtitle,
   fetchRunnerFleet,
@@ -58,14 +59,14 @@ export default function TaskActionZone({
   const [runnerFleet, setRunnerFleet] = useState<RunnerFleetStatus | null>(null);
 
   useEffect(() => {
-    if (gateRefusal && gateRefusal.blockClass !== 'capability' && workspaceId) {
+    if (canOfferForce(gateRefusal) && workspaceId) {
       fetchRunnerFleet(workspaceId).then(fleet => {
         setRunnerFleet(fleet);
       });
     }
   }, [gateRefusal, workspaceId]);
 
-  const runAction = useCallback(async (path: string, payload?: Record<string, unknown>, options?: { capExempt?: boolean }) => {
+  const runAction = useCallback(async (path: string, payload?: Record<string, unknown>) => {
     setActing(true);
     setActionError(null);
     setGateRefusal(null);
@@ -73,21 +74,14 @@ export default function TaskActionZone({
       const res = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...(payload ?? {}),
-          ...(options?.capExempt ? { capExempt: true } : {}),
-        }),
+        body: JSON.stringify(payload ?? {}),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        // 422 with canForce indicates a gate that can be bypassed
-        if (res.status === 422 && body.canForce) {
-          setGateRefusal({
-            gateReason: body.gateReason || 'unknown',
-            blockClass: body.blockClass,
-            error: body.error,
-            canForce: true,
-          });
+        // A 422 the person can bypass becomes an inline Force start; any other refusal is just an error.
+        const refusal: GateRefusal = { ...body, gateReason: body.gateReason || 'unknown' };
+        if (res.status === 422 && canOfferForce(refusal)) {
+          setGateRefusal(refusal);
           return;
         }
         throw new Error(body.error || 'Action failed');
@@ -189,14 +183,14 @@ export default function TaskActionZone({
       )}
 
       {/* Gate refusal with force option */}
-      {gateRefusal && gateRefusal.canForce && gateRefusal.blockClass !== 'capability' && gateRefusal.gateReason !== 'workspace_cap_reached' && (
+      {gateRefusal && canOfferForce(gateRefusal) && (
         <div className="space-y-3 border border-status-warning p-4">
           <div>
             <p className="font-mono text-[12px] font-medium text-status-warning mb-1">
-              {getGateReasonTitle(gateRefusal.gateReason)}
+              {getGateReasonTitle(gateRefusal)}
             </p>
             <p className="font-mono text-[11px] text-text-muted">
-              {getGateReasonSubtitle(gateRefusal.gateReason, gateRefusal.error)}
+              {getGateReasonSubtitle(gateRefusal)}
             </p>
             {runnerFleet && (
               <p className="font-mono text-[11px] text-text-muted mt-2 p-2 bg-surface-3 rounded border border-border-default">

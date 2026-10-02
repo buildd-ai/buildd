@@ -10,55 +10,73 @@ export interface GateRefusal {
   blockClass?: 'policy' | 'capability';
   error?: string;
   canForce?: boolean;
+  backend?: string;
+  active?: number;
+  cap?: number;
+  queuePosition?: number;
+  missingConnectors?: string[];
+  alternativeRole?: string;
 }
 
-export function getGateReasonTitle(gateReason: string): string {
-  switch (gateReason) {
+export interface GateCopyContext {
+  /** Number of PRs blocking the task (unmerged_dep_pr). */
+  blockingCount?: number;
+  /** Pre-formatted start time (deferred_start); null falls back to a placeholder. */
+  deferredStartLabel?: string | null;
+}
+
+/** Force start is offered only for refusals a person can legitimately bypass. */
+export function canOfferForce(refusal: Pick<GateRefusal, 'canForce' | 'blockClass' | 'gateReason'> | null | undefined): boolean {
+  return !!refusal?.canForce && refusal.blockClass !== 'capability' && refusal.gateReason !== 'workspace_cap_reached';
+}
+
+export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = {}): string {
+  switch (refusal.gateReason) {
+    case 'deferred_start':
+      return ctx.deferredStartLabel ? `Starts at ${ctx.deferredStartLabel}` : 'Scheduled start time';
+    case 'unmerged_dep_pr':
+      return 'Blocked: dependency PR not merged';
+    case 'mission_held':
+      return 'Blocked: parent mission is held';
     case 'mission_local':
       return 'Running in a local session';
-    case 'mission_held':
-      return 'Mission is held';
-    case 'mission_budget_exhausted':
-      return 'Mission budget exhausted';
-    case 'unmerged_dep_pr':
-      return 'Dependency PR not merged';
-    case 'deferred_start':
-      return 'Scheduled start time';
     case 'subject_dead':
-      return 'Subject PR is closed';
+      return 'Blocked: subject PR is closed';
     case 'connector_routing_mismatch':
-      return 'Required connectors not available';
+      return 'Blocked: required connectors not available';
+    case 'mission_budget_exhausted':
+      return 'Blocked: mission budget exhausted';
     case 'capability_mismatch':
-      return 'Backend credential unavailable';
+      return `Blocked: no ${refusal.backend ?? 'backend'} credential available`;
     case 'workspace_cap_reached':
-      return 'Workspace full';
+      return `Workspace full (${refusal.active}/${refusal.cap} running)`;
     default:
       return 'Blocked';
   }
 }
 
-export function getGateReasonSubtitle(gateReason: string, error?: string): string {
-  switch (gateReason) {
-    case 'mission_local':
-      return 'This mission runs in a local session. Force start to hand it to a runner.';
-    case 'mission_held':
-      return 'Arm the mission or force start this task to bypass the hold.';
-    case 'mission_budget_exhausted':
-      return 'Raise the mission budget or force start this task to run it anyway.';
-    case 'unmerged_dep_pr':
-      return 'Merge the blocking PRs or force start to bypass this gate.';
+export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext = {}): string {
+  switch (refusal.gateReason) {
     case 'deferred_start':
       return 'This task has a scheduled start time. Start now to override it.';
-    case 'subject_dead':
-      return 'The subject PR is closed, blocking this task.';
+    case 'unmerged_dep_pr': {
+      const n = ctx.blockingCount ?? 1;
+      return `The following ${n === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${n === 1 ? 'it merges' : 'they merge'}.`;
+    }
+    case 'mission_held':
+      return 'The parent mission is held. Workers claim none of its tasks until you arm the mission. "Force start" bypasses the hold for this task only.';
+    case 'mission_local':
+      return 'This mission runs in a local session, so runners leave its tasks for that session to claim. "Force start" hands this task to a runner instead.';
+    case 'mission_budget_exhausted':
+      return 'The parent mission spent its cost budget, so workers claim none of its tasks. Raise the mission budget to release them all, or force-start this task.';
     case 'connector_routing_mismatch':
-      return 'The role requires connectors not available in this workspace. Contact your workspace admin or re-file with a different role.';
+      return `The role requires connectors that are not available in this workspace.${refusal.missingConnectors?.length ? ` Missing: ${refusal.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${refusal.alternativeRole ? ` Or re-file it with role: ${refusal.alternativeRole}.` : ''}`;
     case 'capability_mismatch':
       return 'The configured backend has no server credentials. Switch to an available backend to start this task.';
     case 'workspace_cap_reached':
-      return 'The workspace is at its concurrent task limit. The task starts when a slot opens.';
+      return `Queued. The task starts when a slot opens.${typeof refusal.queuePosition === 'number' && refusal.queuePosition > 0 ? ` ${refusal.queuePosition} other pending task${refusal.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`;
     default:
-      return error || 'This task cannot start yet.';
+      return refusal.error || "This task can't start yet.";
   }
 }
 
