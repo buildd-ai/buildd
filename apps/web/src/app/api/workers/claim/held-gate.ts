@@ -10,6 +10,9 @@ import { BYPASS_HELD_GATE_KEY, bypassFlagCondition } from '@/lib/bypass-flags';
  */
 export { BYPASS_HELD_GATE_KEY };
 
+/** Context key reviewer tasks carry (lib/reviewer.ts), naming the reviewed task. */
+export const REVIEWER_FOR_KEY = 'reviewerFor' as const;
+
 /**
  * Held-mission gate for the claim route.
  *
@@ -53,14 +56,20 @@ export function missionNotHeld(): SQL {
  * force-start writes context.bypassHeldGate, which lifts this gate too: a
  * person who pressed "Start with override" asked a runner to take it.
  *
+ * Reviewer tasks (context.reviewerFor) are exempt. The platform files them into
+ * the reviewed task's mission and nothing prompts the local session to claim
+ * one, so under this gate the review never ran and the PR it gates never
+ * merged. The review is the merge policy's gate, not mission work.
+ *
  * Orthogonal to missionNotHeld(): a held mission stays unclaimable by everyone,
- * interactive sessions included (held is the pause and wins over the executor).
- * Two-valued for the explicit-claim probe, like missionNotHeld().
+ * interactive sessions and reviewers included (held is the pause and wins over
+ * the executor). Two-valued for the explicit-claim probe, like missionNotHeld().
  */
 export function missionNotLocal(): SQL {
   return sql`(
     ${tasks.missionId} IS NULL
     OR ${bypassFlagCondition(tasks.context, BYPASS_HELD_GATE_KEY)}
+    OR (${tasks.context}->'${sql.raw(REVIEWER_FOR_KEY)}') IS NOT NULL
     OR NOT EXISTS (
       SELECT 1 FROM ${missions} m
       WHERE m.id = ${tasks.missionId}
