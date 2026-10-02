@@ -8,7 +8,7 @@ domain: runners
 surfaces: [apps/runner/src/cbm-enforcement.ts, apps/runner/src/cbm-bootstrap.ts, apps/runner/src/codex-auth.ts, apps/web/src/lib/cbm-insight.ts]
 related: [mcp-connectors-and-roles, codex-backend-spec, worker-sandbox-isolation, knowledge-store-retrieval]
 keywords: [codebase-memory, codebase-memory-mcp, CBM, cbm_access, experiment_withheld, CBM_VERSION, grep-steering, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, codex_task, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm, BUILDD_CBM_CODEX]
-verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-experiment-withheld.test.ts, packages/core/__tests__/cbm-access-experiment.test.ts, packages/core/__tests__/cbm-access-experiment-source.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/cbm-prompt-block.test.ts, apps/runner/__tests__/unit/codex-mcp-config.test.ts, apps/runner/__tests__/unit/codex-instructions.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/lib/cbm-insight.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts, scripts/verify-cbm-grep-steering.test.ts]
+verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-injection.test.ts, apps/runner/__tests__/unit/cbm-experiment-withheld.test.ts, packages/core/__tests__/cbm-access-experiment.test.ts, packages/core/__tests__/cbm-access-experiment-source.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/cbm-prompt-block.test.ts, apps/runner/__tests__/unit/codex-mcp-config.test.ts, apps/runner/__tests__/unit/codex-instructions.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/lib/cbm-insight.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts, scripts/verify-cbm-grep-steering.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -347,6 +347,10 @@ agent does not spend turn one on infrastructure.
   `Read` / `Grep` / `Glob` exactly; no other tool increments them. These are the
   substitution signal — graph calls up, file-access calls down — so mixing any
   other tool into either side destroys the only mechanism evidence there is.
+  The runner's OWN graph queries (search injection,
+  `docs/design/cbm-search-injection.md`) are not agent calls: they are reported
+  in `resultMeta.cbm.injection` and MUST NOT increment `toolCalls`,
+  `totalCbmCalls` or the file-access counts.
 - **CBM-18**: `totalCbmCalls` equals the sum of `toolCalls`.
 
 **Acceptance criteria**:

@@ -52,6 +52,8 @@
     "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
     "./cbm-health": "./cbm-health.ts",
+    "./cbm-injection": "./cbm-injection.ts",
+    "./cbm-injection-decision": "./cbm-injection-decision.ts",
     "./secrets": "./secrets/index.ts",
     "./secrets/team-scope": "./secrets/team-scope.ts",
     "./memory-scope": "./memory-scope.ts",
