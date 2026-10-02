@@ -3,7 +3,7 @@
 **Status**: Superseded — implementation lives in the `buildd-ai/buildd-ios` repo (active). This file is the original MVP scope, kept for the design rationale; it is not the current state of that app.
 **Created**: 2026-03-22
 
-> **Visual design — source of truth: [`docs/design/mobile-feed-spec.md`](design/mobile-feed-spec.md).**
+> **Visual design — tokens: [`docs/design/design-system.md`](../design/design-system.md); screen layout: [`docs/design/mobile-feed-spec.md`](../design/mobile-feed-spec.md).**
 > The app uses the **brutalist / editorial** direction (IBM Plex Mono, warm paper + ink, single teal accent, hard offset shadows, corner-bracket panels) on the canonical artboard `Brutalist — Missions Feed` (`CZXce`) in `buildd-mobile.pen`. The earlier dark+copper mockups (nodes `w7I0O`/`6MKTT`/`k8Qwv`/`sa91X`/`byzyJ`) document **screen structure and flows** only — for tokens, type, and component measurements defer to the spec.
 
 ---
@@ -145,7 +145,7 @@ BuilddApp/
 │   └── Auth/
 │       └── LoginView.swift
 └── Design/
-    ├── Theme.swift              # Tokens from mobile-feed-spec.md §1 (ink/paper/teal, Plex Mono)
+    ├── Theme.swift              # Tokens from design-system.md §2 (Plex Mono)
     └── Components/
         ├── HardShadow.swift      # Solid offset shadow modifier (sibling rect — NOT .shadow)
         ├── TaskCard.swift        # Bordered card, optional teal accent + progress
@@ -159,7 +159,7 @@ BuilddApp/
 
 ## Design Tokens
 
-**Authoritative table: [`docs/design/mobile-feed-spec.md` §1](design/mobile-feed-spec.md#1-design-tokens).** The brutalist/editorial direction below replaces the earlier dark+copper values.
+**Authoritative table: [`docs/design/design-system.md` §2](../design/design-system.md), read from the web app's `globals.css`.** The Swift block below was copied from the older mobile-feed-spec table (ink/paper/teal) and does not match the shipped web tokens (orange accent, warm linen/charcoal surfaces); the differences are listed in design-system §2.9. Re-copy from design-system §2 the next time `Theme.swift` is touched.
 
 ```swift
 // Colors — ink / paper / teal only
@@ -241,4 +241,4 @@ Minimal — the API is mostly ready:
 | Pusher config | `apps/web/src/lib/pusher.ts` |
 | Worker instruct endpoint | `apps/web/src/app/api/workers/[id]/instruct/route.ts` |
 | Mission types | `packages/shared/src/types.ts` — MissionStatus, TaskStatus |
-| Design tokens | `docs/design/mobile-feed-spec.md` §1 (brand reference: `.claude/skills/ui_designer/`) |
+| Design tokens | `docs/design/design-system.md` §2 (mobile layout: `docs/design/mobile-feed-spec.md`) |
