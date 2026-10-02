@@ -13,11 +13,12 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { knowledgeChunks, knowledgeIngestJobs } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, lt } from 'drizzle-orm';
+import { knowledgeIngestJobs } from '@buildd/core/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { isUuid } from '@/lib/uuid';
+import { sweepUnrefreshedFileChunks } from '@/lib/knowledge-ingest-batch';
 
 interface CompleteBody {
   status?: unknown;
@@ -52,8 +53,11 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
   const status = body.status;
-  if (status !== 'done' && status !== 'error') {
-    return NextResponse.json({ error: "status must be 'done' or 'error'" }, { status: 400 });
+  if (status !== 'done' && status !== 'error' && status !== 'released') {
+    return NextResponse.json({ error: "status must be 'done', 'error' or 'released'" }, { status: 400 });
+  }
+  if (status === 'released' && (typeof body.error !== 'string' || !body.error.trim())) {
+    return NextResponse.json({ error: "status 'released' needs an error string saying why" }, { status: 400 });
   }
 
   const job = await db.query.knowledgeIngestJobs.findFirst({
@@ -72,6 +76,37 @@ export async function POST(
   const changedFiles = Array.isArray(body.changedFiles)
     ? body.changedFiles.filter((f): f is string => typeof f === 'string')
     : undefined;
+
+  if (status === 'released') {
+    // The claimer could not run the job (its checkout cannot fetch the repo).
+    // Back to `queued`, lease cleared, the reason kept on the row so the stall
+    // is explained wherever it surfaces. heartbeatAt is cleared rather than
+    // bumped: queued age then counts from created_at, so a release never
+    // restarts the wait before the serverless fallback takes the job.
+    const released = await db
+      .update(knowledgeIngestJobs)
+      .set({
+        status: 'queued',
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        startedAt: null,
+        heartbeatAt: null,
+        stats: {
+          ...(job.stats ?? {}),
+          checkoutReport: {
+            owner: job.leaseOwner ?? account.id,
+            reason: (body.error as string).slice(0, 500),
+            at: new Date().toISOString(),
+          },
+        },
+      })
+      .where(and(eq(knowledgeIngestJobs.id, id), eq(knowledgeIngestJobs.status, 'running')))
+      .returning();
+    if (released.length === 0) {
+      return NextResponse.json({ error: `Job is ${job.status}, expected running` }, { status: 409 });
+    }
+    return NextResponse.json({ job: released[0], released: true });
+  }
 
   const updated = await db
     .update(knowledgeIngestJobs)
@@ -94,20 +129,7 @@ export async function POST(
   let prunedChunks = 0;
   if (status === 'done' && body.sweep === true && job.scope === 'full' && job.startedAt) {
     try {
-      const pruned = await db
-        .delete(knowledgeChunks)
-        .where(
-          and(
-            inArray(knowledgeChunks.namespace, [
-              `${job.workspaceId}:code`,
-              `${job.workspaceId}:docs`,
-            ]),
-            isNotNull(knowledgeChunks.sourcePath),
-            lt(knowledgeChunks.updatedAt, job.startedAt),
-          ),
-        )
-        .returning({ id: knowledgeChunks.id });
-      prunedChunks = pruned.length;
+      prunedChunks = await sweepUnrefreshedFileChunks(job.workspaceId, job.startedAt);
 
       if (prunedChunks > 0) {
         // Best-effort: reflect the prune in the stored stats for the health UI.

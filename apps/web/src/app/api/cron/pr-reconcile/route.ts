@@ -1,6 +1,15 @@
-// GET /api/cron/pr-reconcile[?scope=merge-state | ?scope=landing&gate=due]
+// GET /api/cron/pr-reconcile[?scope=merge-state | ?scope=landing&gate=due | ?scope=ci-red&gate=due]
 //
 // Sweeps behind one route, on three cadences:
+//
+//   ?scope=ci-red&gate=due   every few minutes — ONLY the red-PR sweep
+//                       (lib/ci-red-sweep.ts), behind the same Redis due-queue
+//                       gate. An open buildd PR whose CI is red with nobody
+//                       fixing it gets the CI retry the webhook would have
+//                       filed, or one escalation. The webhook feeds the queue
+//                       when it skips a retry someone must come back to (a fix
+//                       in flight that may finish without pushing). The hourly
+//                       pass below runs it as the floor, like the landing sweep.
 //
 //   ?scope=landing&gate=due  every few minutes — ONLY the landing backstop
 //                       (lib/pr-landing-sweep.ts), behind the Redis due-queue
@@ -71,6 +80,9 @@ import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
+import { sweepCiRedPrs } from '@/lib/ci-red-sweep-deps';
+import type { CiRedSweepResult } from '@/lib/ci-red-sweep';
+import { CI_RED_DUE_QUEUE } from '@/lib/ci-red-queue';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 
@@ -78,20 +90,28 @@ export const maxDuration = 60;
 
 /** What one landing sweep adds to a run's `changed`: PRs it actually moved. */
 const landingChanged = (r: LandingSweepResult) => r.merged + r.updatingBranch + r.needsFix;
+/** What one red-PR sweep adds to `changed`: retries filed and PRs handed to a human. */
+const ciRedChanged = (r: CiRedSweepResult) => r.dispatched + r.escalated;
 
 export async function GET(req: NextRequest) {
   const scope = req.nextUrl.searchParams.get('scope');
   const landingOnly = scope === 'landing';
+  const ciRedOnly = scope === 'ci-red';
   const mergeStateOnly = scope === 'merge-state';
   // Separate cadences are separate health signals: the fast landing tick, the
   // hourly merge-state pass and the daily full pass fail independently and must
   // not be averaged together.
-  const job = landingOnly ? 'pr-reconcile:landing' : mergeStateOnly ? 'pr-reconcile:merge-state' : 'pr-reconcile';
+  const job = landingOnly
+    ? 'pr-reconcile:landing'
+    : ciRedOnly
+      ? 'pr-reconcile:ci-red'
+      : mergeStateOnly ? 'pr-reconcile:merge-state' : 'pr-reconcile';
 
   return withCronRun(job, req, async (report) => {
     if (landingOnly) return runLandingScope(req, report);
+    if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -137,6 +157,11 @@ export async function GET(req: NextRequest) {
       // normal merge door, bounded per head (lib/refresh-redrive.ts). Hourly,
       // on this tick, so it opens no extra Neon wake window; isolated.
       redriveDeferredRefreshes().catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The red-PR sweep's floor pass: open buildd PRs whose lifecycle is
+      // ci_failed, re-seeding the queue the gated tick reads. Isolated.
+      sweepCiRedPrs({ source: 'floor' }).catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
@@ -190,6 +215,11 @@ export async function GET(req: NextRequest) {
     } else {
       logRefreshRedrive(refreshRedrive);
     }
+    if ('error' in ciRed) {
+      console.error('[CiRedSweep] error:', ciRed.error);
+    } else {
+      logCiRed(ciRed);
+    }
     // `changed` is what separates a healthy idle sweep from a dead one. Rows
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
@@ -200,11 +230,13 @@ export async function GET(req: NextRequest) {
     const deferredDispatchErrors = 'error' in deferredDispatch ? 1 : deferredDispatch.failed;
     const landingErrors = 'error' in landing ? 1 : landing.errors;
     const refreshRedriveErrors = 'error' in refreshRedrive ? 1 : refreshRedrive.errors;
+    const ciRedErrors = 'error' in ciRed ? 1 : ciRed.errors;
     report({
       processed:
         reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total)
         + ('error' in landing ? 0 : landing.processed)
-        + ('error' in refreshRedrive ? 0 : refreshRedrive.redriven),
+        + ('error' in refreshRedrive ? 0 : refreshRedrive.redriven)
+        + ('error' in ciRed ? 0 : ciRed.processed),
       changed:
         reconcile.stamped + reconcile.closed + reconcile.unresolvable + reconcile.conflictsDetected
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
@@ -214,11 +246,12 @@ export async function GET(req: NextRequest) {
         + ('error' in lineagePrs ? 0 : lineagePrs.closed)
         + ('error' in deferredDispatch ? 0 : deferredDispatch.dispatched)
         + ('error' in landing ? 0 : landingChanged(landing))
-        + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted),
+        + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted)
+        + ('error' in ciRed ? 0 : ciRedChanged(ciRed)),
       errors:
         reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
-        + deferredDispatchErrors + landingErrors + refreshRedriveErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive },
+        + deferredDispatchErrors + landingErrors + refreshRedriveErrors + ciRedErrors,
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed },
     });
 
     return NextResponse.json({
@@ -233,6 +266,7 @@ export async function GET(req: NextRequest) {
       deferredDispatch,
       landing,
       refreshRedrive,
+      ciRed,
     });
   });
 }
@@ -271,4 +305,31 @@ async function runLandingScope(req: NextRequest, report: CronReport): Promise<Ne
     result: { scope: 'landing', gate: gate.reason, landing },
   });
   return NextResponse.json({ ok: true, scope: 'landing', gate: gate.reason, landing });
+}
+
+function logCiRed(r: CiRedSweepResult): void {
+  console.log(
+    `[CiRedSweep] source=${r.source} enumerated=${r.enumerated} processed=${r.processed} dispatched=${r.dispatched} escalated=${r.escalated} inFlight=${r.inFlight} tooYoung=${r.tooYoung} skipped=${JSON.stringify(r.skipped)} deferred=${r.deferred} truncated=${r.truncated} errors=${r.errors}`,
+  );
+}
+
+/**
+ * `?scope=ci-red`: the red-PR sweep alone. With `gate=due` a tick with nothing
+ * due returns before any query; without it the tick is its own floor.
+ */
+async function runCiRedScope(req: NextRequest, report: CronReport): Promise<NextResponse> {
+  const gate = await gateOnDueQueue(CI_RED_DUE_QUEUE, req.nextUrl.searchParams);
+  if (!gate.proceed) {
+    return NextResponse.json({ ok: true, scope: 'ci-red', gated: true, reason: gate.reason });
+  }
+  const source = gate.reseed || gate.reason === 'redis_unavailable' ? 'floor' : 'due';
+  const ciRed = await sweepCiRedPrs({ source });
+  logCiRed(ciRed);
+  report({
+    processed: ciRed.processed,
+    changed: ciRedChanged(ciRed),
+    errors: ciRed.errors,
+    result: { scope: 'ci-red', gate: gate.reason, ciRed },
+  });
+  return NextResponse.json({ ok: true, scope: 'ci-red', gate: gate.reason, ciRed });
 }
