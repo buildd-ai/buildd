@@ -11,6 +11,18 @@ const config: Config = {
         display: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
         mono: ['var(--font-ibm-plex-mono)', 'ui-monospace', 'monospace'],
       },
+      // Type roles (docs/design/design-system.md §3). Sizes live in globals.css
+      // `--type-*` and switch at md there, so one class covers both widths.
+      fontSize: {
+        chip: ['var(--type-chip)', { lineHeight: '1' }],
+        eyebrow: ['var(--type-eyebrow)', { lineHeight: '1.2' }],
+        meta: ['var(--type-meta)', { lineHeight: '1.4' }],
+        body: ['var(--type-body)', { lineHeight: '1.5' }],
+        title: ['var(--type-title)', { lineHeight: '1.35' }],
+        lede: ['var(--type-lede)', { lineHeight: '1.45' }],
+        heading: ['var(--type-heading)', { lineHeight: '1.25' }],
+        display: ['var(--type-display)', { lineHeight: '1.1' }],
+      },
       colors: {
         primary: {
           DEFAULT: 'var(--primary)',

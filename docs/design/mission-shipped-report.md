@@ -224,6 +224,20 @@ description is not moved: the header simply gives the owner the answer before it
 `<mission>#what-shipped`, so "learn more" lands on this header. The card otherwise stays
 as it is; no new stack or motion.
 
+**Task page.** A completed task leads with the same answer, one task wide. A task
+that must open a PR is asked (`taskShippedPromptText`, `packages/shared/src/shipped.ts`)
+to return `shipped: { lede, offPlan? }` in its `complete_task` output. After completion
+the server checks the lede with the same filter, computes the change type from that
+task's PR files (manifest fallback), and merges the record into `tasks.result.shipped`
+(`apps/web/src/lib/task-shipped-store.ts`). No hero-shot nomination: the page shows
+the task's own audit screenshots. The page (`tasks/[id]/task-shipped-header.ts`) shows,
+in order: the eyebrow "What shipped · type", the plain title, status chips; the lede
+card with the change type in plain words ("On screen" / "Behind the scenes"); one
+full-width "Your move" action with the checks and the PR number under it; matched
+errors as a quiet "One hiccup, already handled" row; then the raw handoff behind a
+collapsed "Technical summary", and "Run details". With no lede, the title stands
+alone and the handoff stays behind its disclosure. It never becomes the headline.
+
 ### Fallbacks
 
 The header is additive. Every case below degrades to what the page renders today, with the

@@ -1,3 +1,5 @@
+import Chip, { type ChipTone } from '@/components/ui/Chip';
+
 const STATUS_LABELS: Record<string, string> = {
   pending: 'Pending',
   assigned: 'Assigned',
@@ -21,45 +23,57 @@ const STATUS_LABELS: Record<string, string> = {
   silent_start: 'No Output',
 };
 
-// Moodboard: status colors at 10% opacity bg, status color text, pill shape
-const STATUS_STYLES: Record<string, { dot: string; bg: string; text: string }> = {
-  pending:                { dot: 'bg-status-warning',                        bg: 'bg-status-warning/10', text: 'text-status-warning' },
-  assigned:               { dot: 'bg-status-info',                           bg: 'bg-status-info/10',    text: 'text-status-info' },
-  running:                { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
-  starting:               { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
-  in_progress:            { dot: 'bg-status-running animate-status-pulse',   bg: 'bg-status-running/10', text: 'text-status-running' },
-  waiting_input:          { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
-  waiting_on_you:         { dot: 'bg-[#D97706] animate-status-pulse',        bg: 'bg-[#D97706]/10',      text: 'text-[#D97706]' },
-  subject_dead:           { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
-  completed:              { dot: 'bg-status-success',                        bg: 'bg-status-success/10', text: 'text-status-success' },
-  failed:                 { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
-  cancelled:              { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-muted line-through' },
-  idle:                   { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-secondary' },
-  budget_limited:         { dot: 'bg-status-warning animate-status-pulse',   bg: 'bg-status-warning/10', text: 'text-status-warning' },
-  infra_failure:          { dot: 'bg-status-error',                          bg: 'bg-status-error/10',   text: 'text-status-error' },
-  infra_stalled:          { dot: 'bg-[#D97706]',                             bg: 'bg-[#D97706]/10',      text: 'text-[#D97706]' },
+/**
+ * Status → Chip tone. `waiting_on_you` is `accent` (orange means "this is
+ * yours to act on"); it and `infra_stalled` used a raw hex before the Chip
+ * (docs/design/design-system.md §4).
+ */
+const STATUS_TONES: Record<string, { tone: ChipTone; pulse?: boolean }> = {
+  pending:        { tone: 'warning' },
+  assigned:       { tone: 'info' },
+  running:        { tone: 'running', pulse: true },
+  starting:       { tone: 'running', pulse: true },
+  in_progress:    { tone: 'running', pulse: true },
+  waiting_input:  { tone: 'warning', pulse: true },
+  waiting_on_you: { tone: 'accent', pulse: true },
+  subject_dead:   { tone: 'error' },
+  completed:      { tone: 'success' },
+  failed:         { tone: 'error' },
+  cancelled:      { tone: 'muted' },
+  idle:           { tone: 'muted' },
+  budget_limited: { tone: 'warning', pulse: true },
+  infra_failure:  { tone: 'error' },
+  infra_stalled:  { tone: 'warning' },
   // Not real task failures: a row no runner started, and a session that streamed
   // nothing. Muted so they don't read as agent errors in the timeline.
-  never_started:          { dot: 'bg-text-muted',                            bg: 'bg-surface-3',         text: 'text-text-muted' },
-  silent_start:           { dot: 'bg-status-warning',                        bg: 'bg-status-warning/10', text: 'text-status-warning' },
+  never_started:  { tone: 'muted' },
+  silent_start:   { tone: 'warning' },
 };
 
-const DEFAULT_STYLE = STATUS_STYLES.pending;
+const DEFAULT_TONE = STATUS_TONES.pending;
 
-// Legacy export for components that reference STATUS_COLORS directly
+// Legacy export: a bg + text class pair per status, for inline spans that do
+// not render the badge itself. Full strings so Tailwind sees them.
+const TONE_COLORS: Record<ChipTone, string> = {
+  success: 'bg-status-success/10 text-status-success',
+  running: 'bg-status-running/10 text-status-running',
+  warning: 'bg-status-warning/10 text-status-warning',
+  error: 'bg-status-error/10 text-status-error',
+  info: 'bg-status-info/10 text-status-info',
+  accent: 'bg-accent-soft text-accent-text',
+  muted: 'bg-surface-3 text-text-muted',
+};
 const STATUS_COLORS: Record<string, string> = Object.fromEntries(
-  Object.entries(STATUS_STYLES).map(([key, val]) => [key, `${val.bg} ${val.text}`])
+  Object.entries(STATUS_TONES).map(([key, { tone }]) => [key, TONE_COLORS[tone]]),
 );
 
 export default function StatusBadge({ status }: { status: string }) {
-  const style = STATUS_STYLES[status] || DEFAULT_STYLE;
-
+  const { tone, pulse } = STATUS_TONES[status] || DEFAULT_TONE;
   return (
-    <span className={`inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 px-2.5 py-0.5 rounded-full font-mono text-[11px] font-medium ${style.bg} ${style.text}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
+    <Chip tone={tone} variant="soft" pulse={pulse} className={status === 'cancelled' ? 'line-through' : ''}>
       {STATUS_LABELS[status] || status}
-    </span>
+    </Chip>
   );
 }
 
-export { STATUS_COLORS, STATUS_LABELS };
+export { STATUS_COLORS, STATUS_LABELS, STATUS_TONES };
