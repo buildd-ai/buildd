@@ -177,6 +177,16 @@ export const GATE_SLUGS = {
    * head an attempt already ran on with nothing pushed, and escalated it.
    */
   CI_RETRY_SKIPPED: 'ci_retry_skipped',
+  /**
+   * POST /api/tasks — the organizer's own planning task tried to create a
+   * decomposition child while sibling tasks the mission creator pre-filed
+   * (after that planning task was created) are still live. The pre-filed
+   * heuristic in `runMission()` only runs once, at planning-task creation —
+   * before a creator who files right after `manage_missions create` gets a
+   * chance to. This is the same check re-run at the point decomposition
+   * actually happens. Retry children (explicit `parentTaskId`) are exempt.
+   */
+  DECOMPOSITION_REFUSED: 'decomposition_refused',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
