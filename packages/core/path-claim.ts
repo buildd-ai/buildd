@@ -6,15 +6,15 @@
  * (apps/web routes) because Pusher lives in apps/web, not packages/core.
  *
  * Call sites:
- *   - POST /api/tasks/[id]/path-claim (REST)
- *   - check_path_claim MCP tool
+ *   - POST / DELETE /api/tasks/[id]/path-claim (REST: acquire / narrow)
+ *   - check_path_claim MCP tool (acquire, or narrow with release=true)
  *   - PATCH /api/workers/[id] (observed touches → lease; terminal status → release)
  *   - GitHub webhook (PR merged/closed → release)
  *   - stale-workers reaper (orphaned worker → release)
  *   - Workers claim route (path_claims backstop)
  */
 
-import { LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
+import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
 import { db } from './db/client';
 import { pathClaims, pathClaimWaiters, missionNotes, workers, tasks } from './db/schema';
 import { and, eq, isNull, lt, inArray, sql } from 'drizzle-orm';
@@ -168,19 +168,31 @@ async function dropTerminalHolders(byTask: Map<string, string[]>): Promise<void>
 }
 
 /**
- * Find every taskId currently holding an active path_claims row whose claim
- * should already have been released (see `dropTerminalHolders`), across every
- * workspace. Used by the maintenance sweep to actually clear the rows —
- * `dropTerminalHolders` only hides them from a single read.
+ * Find every taskId whose ownership state should already have been cleared by
+ * its terminal transition (see `dropTerminalHolders`), across every workspace:
+ * a stale holder of an active path_claims row, or a stale blocker that still
+ * has an un-notified waiter — a waiter re-armed after a failed delivery once
+ * the claims were already gone. Used by the maintenance sweep to actually
+ * clear the rows and wake the waiters; `dropTerminalHolders` only hides them
+ * from a single read.
  */
 export async function findStaleClaimHolderTaskIds(): Promise<string[]> {
-  const activeClaims = await db.query.pathClaims.findMany({
-    where: isNull(pathClaims.releasedAt),
-    columns: { taskId: true },
-  });
-  if (activeClaims.length === 0) return [];
+  const [activeClaims, pendingWaiters] = await Promise.all([
+    db.query.pathClaims.findMany({
+      where: isNull(pathClaims.releasedAt),
+      columns: { taskId: true },
+    }),
+    db.query.pathClaimWaiters.findMany({
+      where: isNull(pathClaimWaiters.notifiedAt),
+      columns: { blockingTaskId: true },
+    }),
+  ]);
+  const taskIds = [...new Set([
+    ...activeClaims.map(c => c.taskId),
+    ...(pendingWaiters ?? []).map(w => w.blockingTaskId),
+  ])];
+  if (taskIds.length === 0) return [];
 
-  const taskIds = [...new Set(activeClaims.map(c => c.taskId))];
   const terminal = await findTerminalHolders(taskIds);
   return [...terminal];
 }
@@ -264,68 +276,263 @@ export async function getActiveClaimsByWorkspace(
   return byTask;
 }
 
-// ── Manifest append ──────────────────────────────────────────────────────────
+// ── Serialized ownership writes ──────────────────────────────────────────────
+//
+// Acquisition, narrowing and terminal release all go through `db.batch`, which
+// on neon-http is ONE non-interactive transaction. Its first statement takes a
+// transaction-scoped advisory lock keyed by workspace; the second does the
+// write. Under READ COMMITTED each statement takes its own snapshot, so the
+// write runs after the lock and sees every row the previous holder committed.
+//
+// Why the lock and not a unique index: overlap is by prefix. `apps/web` and
+// `apps/web/page.tsx` are different rows, so no index can refuse the second;
+// two single-statement check-then-inserts would each miss the other's row.
+//
+// Why release takes it too: a cancel commits the task status and then releases.
+// An acquisition that read the task open could otherwise insert after the
+// release's snapshot and resurrect a lease on a cancelled task. With both under
+// one lock, and the acquisition re-checking the task's status inside its locked
+// statement, whichever runs second sees the other's effect.
+//
+// Every statement is tagged (`-- path_claims:<op>`) and takes one JSON
+// argument, bound once as the `args` CTE. __tests__/path-claim-ownership.test.ts
+// runs the protocol against a model keyed on those tags and asserts the SQL
+// text separately.
 
 /**
- * Atomically append paths to a task's pathManifest and return the updated array.
- *
- * The jsonb concat + DISTINCT dedup runs as a single UPDATE, evaluated against
- * the row's value at execution time — no read-modify-write, so there is nothing
- * to compare-and-swap. Two callers appending different paths to the same task's
- * manifest concurrently are simply serialized by Postgres's row lock; neither
- * one loses a race. This replaces a fixed-retry CAS loop that, under bursty
- * concurrent calls for the same task (e.g. several check_path_claim calls in
- * flight at once), could exhaust its retries and surface a bare "concurrent
- * update conflict" — indistinguishable from a real blocker to the caller.
+ * The lock every ownership write takes first. Keyed by the workspace's
+ * canonical uuid text — resolved from the task when only a task is known — so
+ * a caller-supplied id and a row-derived one always take the same lock.
  */
-export async function appendPathManifest(
-  taskId: string,
-  paths: string[],
-): Promise<string[]> {
-  const result = await db.execute(sql`
-    UPDATE tasks
-    SET path_manifest = (
-      SELECT jsonb_agg(DISTINCT p)
-      FROM jsonb_array_elements_text(COALESCE(path_manifest, '[]'::jsonb) || ${JSON.stringify(paths)}::jsonb) AS p
-    )
-    WHERE id = ${taskId}
-    RETURNING path_manifest
-  `);
-
-  const rows = result.rows as Array<{ path_manifest: string[] }>;
-  return rows[0]?.path_manifest ?? paths;
+function workspaceLock(key: { workspaceId: string } | { taskId: string }) {
+  return db.execute(sql`-- path_claims:lock
+WITH args AS (SELECT ${JSON.stringify(key)}::jsonb AS a)
+SELECT pg_advisory_xact_lock(hashtext('path_claims'), hashtext(COALESCE(
+  (a->>'workspaceId')::uuid::text,
+  (SELECT t.workspace_id::text FROM tasks t WHERE t.id = (a->>'taskId')::uuid)
+)))
+FROM args`);
 }
 
-// ── Claim insertion ──────────────────────────────────────────────────────────
+type RawRow = Record<string, unknown>;
+
+async function runLocked(
+  key: { workspaceId: string } | { taskId: string },
+  statement: ReturnType<typeof db.execute>,
+): Promise<RawRow | undefined> {
+  const [, result] = await db.batch([workspaceLock(key), statement]);
+  return ((result as { rows?: RawRow[] })?.rows ?? [])[0];
+}
+
+const jsonArray = <T>(v: unknown): T[] => {
+  if (Array.isArray(v)) return v as T[];
+  if (typeof v === 'string') {
+    try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  }
+  return [];
+};
+
+/** Trim, strip trailing separators, drop blanks and duplicates. Order-preserving. */
+export function normalizeClaimPaths(paths: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of paths) {
+    if (typeof raw !== 'string') continue;
+    const p = normalizeTrailingSlash(raw.trim());
+    if (isNonEmptyPath(p) && !out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+// ── Acquisition ──────────────────────────────────────────────────────────────
+
+export interface AcquireInput {
+  workspaceId: string;
+  taskId: string;
+  paths: string[];
+  /**
+   * true: a declaration — append granted paths to `tasks.pathManifest`, and
+   * grant nothing unless every path is free (check_path_claim).
+   * false: observed touches — lease each free path, leave the manifest alone.
+   */
+  declare: boolean;
+}
+
+export type AcquireResult =
+  | {
+      kind: 'acquired';
+      inserted: string[];
+      /** Ids of the lease rows this call inserted, parallel to `inserted` (see `releaseLeaseRows`). */
+      insertedIds: string[];
+      blocked: BlockedPath[];
+      pathManifest: string[] | null;
+      revision: number | null;
+    }
+  | { kind: 'conflict'; conflict: ClaimConflict; blocked: BlockedPath[] }
+  | { kind: 'task_closed' };
+
+export interface BlockedPath {
+  path: string;
+  blockingTaskId: string;
+  blockingPath: string;
+}
 
 /**
- * Insert path_claims rows for each new path. Paths already claimed by this
- * task are skipped (idempotent). Returns the paths that were inserted.
+ * Active holders of overlapping paths, split into the ones that really block
+ * and the ones `dropExpiredParkedHolders` / `dropTerminalHolders` discount.
+ * The discounted set is handed to the locked statement so it can re-check the
+ * table without re-deriving liveness in SQL — any holder NOT in it that has
+ * appeared since this read still blocks.
  */
-export async function insertClaims(
-  workspaceId: string,
-  taskId: string,
-  paths: string[],
-): Promise<string[]> {
-  if (paths.length === 0) return [];
-
-  // Fetch existing active claims for this task to avoid inserting duplicates
-  const existing = await db.query.pathClaims.findMany({
-    where: and(
-      eq(pathClaims.taskId, taskId),
-      isNull(pathClaims.releasedAt),
-    ),
-    columns: { path: true },
+async function readHolders(workspaceId: string, taskId: string) {
+  const rows = await db.query.pathClaims.findMany({
+    where: and(eq(pathClaims.workspaceId, workspaceId), isNull(pathClaims.releasedAt)),
+    columns: { taskId: true, path: true },
   });
-  const existingPaths = new Set(existing.map(r => r.path));
-  const newPaths = paths.filter(p => !existingPaths.has(p));
+  const byTask = new Map<string, string[]>();
+  for (const row of rows) {
+    if (row.taskId === taskId) continue;
+    const existing = byTask.get(row.taskId) ?? [];
+    existing.push(row.path);
+    byTask.set(row.taskId, existing);
+  }
+  const all = [...byTask.keys()];
+  await dropExpiredParkedHolders(byTask);
+  await dropTerminalHolders(byTask);
+  return { live: byTask, discounted: all.filter(id => !byTask.has(id)) };
+}
 
-  if (newPaths.length === 0) return [];
+function firstBlocked(paths: string[], live: Map<string, string[]>): BlockedPath[] {
+  const out: BlockedPath[] = [];
+  for (const path of paths) {
+    for (const [holder, held] of live) {
+      const hit = held.find(h => pathsOverlap([path], [h]));
+      if (hit) { out.push({ path, blockingTaskId: holder, blockingPath: hit }); break; }
+    }
+  }
+  return out;
+}
 
-  await db.insert(pathClaims).values(
-    newPaths.map(path => ({ workspaceId, taskId, path })),
-  );
-  return newPaths;
+/**
+ * Exclusively acquire edit leases on `paths` for `taskId`, within its workspace.
+ *
+ * Two phases. An unlocked read discounts stale holders (terminal, or parked
+ * past the TTL) and answers the common conflict without taking a lock. Then
+ * one locked statement re-checks prefix overlap against the live table, checks
+ * the owning task is still open, inserts the missing leases — including for
+ * paths already in the manifest but never leased — and, for a declaration,
+ * appends to the manifest and snapshots the original declaration. Only that
+ * statement decides; the read never grants anything.
+ *
+ * '**' must be rejected by the caller — it is not a lease.
+ */
+export async function acquirePathClaims(input: AcquireInput): Promise<AcquireResult> {
+  const { workspaceId, taskId, declare } = input;
+  const paths = normalizeClaimPaths(input.paths);
+  if (paths.length === 0) {
+    return { kind: 'acquired', inserted: [], insertedIds: [], blocked: [], pathManifest: null, revision: null };
+  }
+
+  const { live, discounted } = await readHolders(workspaceId, taskId);
+  const early = firstBlocked(paths, live);
+  if (declare && early.length > 0) {
+    return { kind: 'conflict', conflict: toConflict(early[0]), blocked: early };
+  }
+
+  const row = await runLocked({ workspaceId }, db.execute(sql`-- path_claims:acquire
+WITH args AS (SELECT ${JSON.stringify({
+    workspaceId,
+    taskId,
+    paths,
+    ignoreHolders: discounted,
+    allOrNothing: declare,
+    declare,
+    openStatuses: OPEN_TASK_STATUSES,
+  })}::jsonb AS a),
+req AS (
+  SELECT DISTINCT p AS path FROM args, jsonb_array_elements_text(a->'paths') AS p
+),
+owner AS (
+  SELECT t.id FROM tasks t, args
+  WHERE t.id = (a->>'taskId')::uuid
+    AND t.workspace_id = (a->>'workspaceId')::uuid
+    AND t.status IN (SELECT jsonb_array_elements_text(a->'openStatuses'))
+),
+blocked AS (
+  SELECT DISTINCT ON (req.path) req.path, pc.task_id AS blocking_task_id, pc.path AS blocking_path
+  FROM req, args, path_claims pc
+  WHERE pc.workspace_id = (a->>'workspaceId')::uuid
+    AND pc.released_at IS NULL
+    AND pc.task_id <> (a->>'taskId')::uuid
+    AND NOT ((a->'ignoreHolders') @> to_jsonb(pc.task_id::text))
+    AND (rtrim(pc.path, '/') = req.path
+      OR starts_with(req.path, rtrim(pc.path, '/') || '/')
+      OR starts_with(rtrim(pc.path, '/'), req.path || '/'))
+  ORDER BY req.path, pc.claimed_at, pc.id
+),
+grantable AS (
+  SELECT req.path FROM req, args
+  WHERE EXISTS (SELECT 1 FROM owner)
+    AND NOT EXISTS (SELECT 1 FROM blocked b WHERE b.path = req.path)
+    AND (NOT (a->>'allOrNothing')::boolean OR NOT EXISTS (SELECT 1 FROM blocked))
+),
+ins AS (
+  INSERT INTO path_claims (workspace_id, task_id, path)
+  SELECT (a->>'workspaceId')::uuid, (a->>'taskId')::uuid, g.path FROM grantable g, args
+  WHERE NOT EXISTS (
+    SELECT 1 FROM path_claims own
+    WHERE own.task_id = (a->>'taskId')::uuid
+      AND own.released_at IS NULL
+      AND rtrim(own.path, '/') = g.path
+  )
+  RETURNING id, path
+),
+declared AS (
+  SELECT g.path FROM grantable g, args, tasks t
+  WHERE (a->>'declare')::boolean
+    AND t.id = (a->>'taskId')::uuid
+    AND NOT (COALESCE(t.path_manifest, '[]'::jsonb) @> to_jsonb(g.path))
+),
+upd AS (
+  UPDATE tasks t SET
+    path_manifest = CASE WHEN EXISTS (SELECT 1 FROM declared)
+      THEN COALESCE(t.path_manifest, '[]'::jsonb) || (SELECT jsonb_agg(d.path ORDER BY d.path) FROM declared d)
+      ELSE t.path_manifest END,
+    path_declaration = COALESCE(t.path_declaration, jsonb_build_object(
+      'declared', t.path_manifest, 'source', 'runtime', 'snapshotAt', now())),
+    path_claim_revision = t.path_claim_revision + 1
+  FROM args
+  WHERE t.id = (a->>'taskId')::uuid
+    AND (EXISTS (SELECT 1 FROM ins) OR EXISTS (SELECT 1 FROM declared))
+  RETURNING t.path_manifest, t.path_claim_revision
+)
+SELECT
+  EXISTS (SELECT 1 FROM owner) AS owner_open,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'path', b.path, 'blockingTaskId', b.blocking_task_id, 'blockingPath', b.blocking_path)) FROM blocked b), '[]'::jsonb) AS blocked,
+  COALESCE((SELECT jsonb_agg(i.path ORDER BY i.id) FROM ins i), '[]'::jsonb) AS inserted,
+  COALESCE((SELECT jsonb_agg(i.id::text ORDER BY i.id) FROM ins i), '[]'::jsonb) AS inserted_ids,
+  COALESCE((SELECT u.path_manifest FROM upd u),
+    (SELECT t.path_manifest FROM tasks t, args WHERE t.id = (a->>'taskId')::uuid)) AS path_manifest,
+  COALESCE((SELECT u.path_claim_revision FROM upd u),
+    (SELECT t.path_claim_revision FROM tasks t, args WHERE t.id = (a->>'taskId')::uuid)) AS revision`));
+
+  if (!row || !row.owner_open) return { kind: 'task_closed' };
+  const blocked = jsonArray<BlockedPath>(row.blocked);
+  if (declare && blocked.length > 0) {
+    return { kind: 'conflict', conflict: toConflict(blocked[0]), blocked };
+  }
+  return {
+    kind: 'acquired',
+    inserted: jsonArray<string>(row.inserted),
+    insertedIds: jsonArray<string>(row.inserted_ids),
+    blocked,
+    pathManifest: (row.path_manifest as string[] | null) ?? null,
+    revision: row.revision == null ? null : Number(row.revision),
+  };
+}
+
+function toConflict(b: BlockedPath): ClaimConflict {
+  return { blockingTaskId: b.blockingTaskId, blockingPath: b.blockingPath };
 }
 
 /**
@@ -334,112 +541,330 @@ export async function insertClaims(
  * This is the join between the two halves of one mechanism that shipped as two.
  * `path_claims` owns the **gate**: the layer-2 backstop in POST
  * /api/workers/claim defers a pending task whose `pathManifest` overlaps a live
- * lease, so the second agent never starts. But nothing wrote rows except an
- * agent voluntarily calling `check_path_claim`, so the gate almost never had a
- * lease to consult. §6d `observedTouches` owns the **signal**: the runner
- * reports every touched path on every sync, no declaration required — but its
- * only output is an advisory `path_blocked_on_you` message, delivered after the
- * file has already been edited by both sides.
+ * lease, so the second agent never starts. §6d `observedTouches` owns the
+ * **signal**: the runner reports every touched path on every sync, no
+ * declaration required. Feeding the signal into the gate is what makes the gate
+ * load-bearing — including for a `'**'` task, whose *touches* are concrete
+ * regardless of what its manifest said.
  *
- * Feeding the signal into the gate is what makes the gate load-bearing. It also
- * covers the case neither half reaches today: §6d skips siblings whose task
- * declared no scope (`isAdvisoryManifest`), and layer 1 skips them too, so a
- * `'**'` task's edits are invisible to both. Its *touches* are concrete
- * regardless of what its manifest said, and this leases them.
+ * It goes through `acquirePathClaims` like a declaration does: a path another
+ * live task already holds is NOT leased (the touch has happened, so §6d's
+ * message is the signal there, not a second lease on the same surface), and a
+ * task that is no longer open leases nothing. Unlike a declaration, each free
+ * path is leased on its own and the manifest is left alone.
  *
  * Two things it deliberately does not lease:
  *  - **Regenerable paths.** A lease on `docs/specs/INDEX.md` or the drizzle
  *    journal would defer every task that regenerates them. A generated file is
- *    not a mutex — the same rule `partitionRegenerableOverlaps` applies to the
- *    §6d message, applied to the lease.
+ *    not a mutex. Migration SQL files are not in that registry and are leased.
  *  - **The repo-wide sentinel.** `'**'` means "scope undeclared", never "I hold
- *    every file"; `checkPathClaimConflict` and the claim-route backstop both
- *    reject it, and a stored sentinel row would be a lock on the whole repo.
+ *    every file".
  *
- * Release needs no new wiring: leases are keyed by `taskId`, and every terminal
- * signal already releases a task's claims with the right reason — `merged`,
- * `pending_merge` or `abandoned` — through `releaseAndNotify`.
- *
- * Returns the paths newly leased (empty when everything was filtered or already
- * held). Idempotent per sync: `insertClaims` skips paths this task already
- * holds, so a re-reported touch is not a second row.
+ * Returns the paths newly leased (empty when everything was filtered, blocked
+ * or already held).
  */
 export async function claimObservedPaths(
   workspaceId: string,
   taskId: string,
   observedPaths: string[],
 ): Promise<string[]> {
-  if (observedPaths.length === 0) return [];
+  return (await acquireObservedPaths(workspaceId, taskId, observedPaths)).inserted;
+}
 
-  const lockable: string[] = [];
-  for (const raw of observedPaths) {
-    if (typeof raw !== 'string' || !isNonEmptyPath(raw)) continue;
-    if (raw.trim() === REPO_WIDE_SENTINEL) continue;
-    const path = normalizeTrailingSlash(raw.trim());
-    if (!isNonEmptyPath(path)) continue;
-    if (findRegenerable(path)) continue;
-    // Dedupe post-normalization: `lib/` and `lib` are one lease, and
-    // insertClaims dedupes against the DB, not within its own argument.
-    if (!lockable.includes(path)) lockable.push(path);
-  }
-  if (lockable.length === 0) return [];
+/**
+ * `claimObservedPaths`, also returning what it could not lease: every observed
+ * path a live holder already has, with that holder. For an observed touch the
+ * write has already happened, so a blocked path is a checkpoint collision
+ * (conflict-aware-orchestration.md §2) — the worker PATCH reports it back so
+ * an enforcing runner can stop and defer. Terminal and expired-parked holders
+ * are discounted exactly as for a declaration; a closed observer gets nothing.
+ */
+export async function acquireObservedPaths(
+  workspaceId: string,
+  taskId: string,
+  observedPaths: string[],
+): Promise<{ inserted: string[]; blocked: BlockedPath[] }> {
+  if (observedPaths.length === 0) return { inserted: [], blocked: [] };
 
-  return insertClaims(workspaceId, taskId, lockable);
+  const lockable = normalizeClaimPaths(
+    observedPaths.filter(raw => typeof raw === 'string' && raw.trim() !== REPO_WIDE_SENTINEL),
+  ).filter(path => !findRegenerable(path));
+  if (lockable.length === 0) return { inserted: [], blocked: [] };
+
+  const result = await acquirePathClaims({ workspaceId, taskId, paths: lockable, declare: false });
+  return result.kind === 'acquired'
+    ? { inserted: result.inserted, blocked: result.blocked }
+    : { inserted: [], blocked: [] };
+}
+
+// ── Narrowing ────────────────────────────────────────────────────────────────
+
+export interface NarrowInput {
+  workspaceId: string;
+  taskId: string;
+  /** Paths to give back. A directory also gives back every lease under it. */
+  paths: string[];
+  /** Recorded on the narrowing, e.g. 'mcp:check_path_claim'. */
+  surface: string;
+  reason?: string | null;
+  /** CAS token: refuse unless the task's pathClaimRevision still equals this. */
+  expectedRevision?: number | null;
+}
+
+export type NarrowResult =
+  | { kind: 'not_found' }
+  | { kind: 'revision_conflict'; currentRevision: number }
+  | ({ kind: 'narrowed'; pathManifest: string[] | null; revision: number } & ReleaseResult);
+
+/** Most recent narrowings kept on `tasks.path_declaration`. */
+export const MAX_RECORDED_NARROWINGS = 20;
+
+/**
+ * Selectively release this task's leases on `paths` (and under them), remove
+ * them from its effective `pathManifest`, record the narrowing next to the
+ * original declaration, and stamp only the waiters blocked on a released path.
+ *
+ * Workspace-scoped: a task outside `workspaceId` is `not_found`. Allowed on a
+ * task in any status — it only ever gives ownership back. Waiter delivery is
+ * the caller's (see apps/web/src/lib/path-claim-release.ts).
+ *
+ * dependsOn is not touched. Edges inferred at creation are recorded in
+ * `path_declaration.inferredDependsOn`; removing them is a separate decision.
+ */
+export async function narrowPathClaims(input: NarrowInput): Promise<NarrowResult> {
+  const { workspaceId, taskId } = input;
+  const paths = normalizeClaimPaths(input.paths);
+  const row = await runLocked({ workspaceId }, db.execute(sql`-- path_claims:narrow
+WITH args AS (SELECT ${JSON.stringify({
+    workspaceId,
+    taskId,
+    paths,
+    surface: input.surface,
+    reason: input.reason ?? null,
+    expectedRevision: input.expectedRevision ?? null,
+    maxNarrowings: MAX_RECORDED_NARROWINGS,
+  })}::jsonb AS a),
+drop_req AS (
+  SELECT DISTINCT p AS path FROM args, jsonb_array_elements_text(a->'paths') AS p
+),
+owner AS (
+  SELECT t.id, t.path_claim_revision, t.path_manifest FROM tasks t, args
+  WHERE t.id = (a->>'taskId')::uuid
+    AND t.workspace_id = (a->>'workspaceId')::uuid
+),
+ok AS (
+  SELECT o.id FROM owner o, args
+  WHERE jsonb_typeof(a->'expectedRevision') IS DISTINCT FROM 'number'
+    OR o.path_claim_revision = (a->>'expectedRevision')::int
+),
+rel AS (
+  UPDATE path_claims pc SET released_at = now()
+  FROM args
+  WHERE pc.task_id = (a->>'taskId')::uuid
+    AND pc.released_at IS NULL
+    AND EXISTS (SELECT 1 FROM ok)
+    AND EXISTS (SELECT 1 FROM drop_req d
+      WHERE rtrim(pc.path, '/') = d.path OR starts_with(rtrim(pc.path, '/'), d.path || '/'))
+  RETURNING pc.path
+),
+entries AS (
+  SELECT x.m, x.ord,
+    EXISTS (SELECT 1 FROM drop_req d
+      WHERE rtrim(x.m, '/') = d.path OR starts_with(rtrim(x.m, '/'), d.path || '/')) AS dropped
+  FROM owner o, jsonb_array_elements_text(o.path_manifest) WITH ORDINALITY AS x(m, ord)
+),
+upd AS (
+  UPDATE tasks t SET
+    path_manifest = CASE WHEN t.path_manifest IS NULL THEN NULL ELSE COALESCE(
+      (SELECT jsonb_agg(e.m ORDER BY e.ord) FROM entries e WHERE NOT e.dropped), '[]'::jsonb) END,
+    path_declaration = COALESCE(t.path_declaration, jsonb_build_object(
+      'declared', t.path_manifest, 'source', 'runtime', 'snapshotAt', now()))
+      || jsonb_build_object('narrowings', (
+        SELECT COALESCE(jsonb_agg(n.e ORDER BY n.o), '[]'::jsonb)
+        FROM jsonb_array_elements(
+          COALESCE(t.path_declaration->'narrowings', '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+            'at', now(), 'dropped', a->'paths', 'surface', a->>'surface', 'reason', a->'reason'))
+        ) WITH ORDINALITY AS n(e, o)
+        WHERE n.o > jsonb_array_length(COALESCE(t.path_declaration->'narrowings', '[]'::jsonb)) + 1
+          - (a->>'maxNarrowings')::int
+      )),
+    path_claim_revision = t.path_claim_revision + 1
+  FROM args
+  WHERE t.id = (a->>'taskId')::uuid
+    AND EXISTS (SELECT 1 FROM ok)
+    AND (EXISTS (SELECT 1 FROM rel) OR EXISTS (SELECT 1 FROM entries WHERE dropped))
+  RETURNING t.path_manifest, t.path_claim_revision
+),
+woken AS (
+  UPDATE path_claim_waiters w SET notified_at = now()
+  FROM args
+  WHERE w.blocking_task_id = (a->>'taskId')::uuid
+    AND w.notified_at IS NULL
+    AND EXISTS (SELECT 1 FROM rel r WHERE rtrim(r.path, '/') = rtrim(w.blocked_path, '/'))
+  RETURNING w.waiting_task_id, w.blocked_path
+)
+SELECT
+  EXISTS (SELECT 1 FROM owner) AS found,
+  EXISTS (SELECT 1 FROM ok) AS revision_ok,
+  COALESCE((SELECT u.path_claim_revision FROM upd u), (SELECT o.path_claim_revision FROM owner o)) AS revision,
+  COALESCE((SELECT u.path_manifest FROM upd u), (SELECT o.path_manifest FROM owner o)) AS path_manifest,
+  COALESCE((SELECT jsonb_agg(r.path) FROM rel r), '[]'::jsonb) AS released_paths,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'waitingTaskId', k.waiting_task_id, 'blockedPath', k.blocked_path)) FROM woken k), '[]'::jsonb) AS waiters`));
+
+  if (!row || !row.found) return { kind: 'not_found' };
+  const revision = Number(row.revision ?? 0);
+  if (!row.revision_ok) return { kind: 'revision_conflict', currentRevision: revision };
+  const waiters = jsonArray<{ waitingTaskId: string; blockedPath: string }>(row.waiters);
+  return {
+    kind: 'narrowed',
+    workspaceId,
+    pathManifest: (row.path_manifest as string[] | null) ?? null,
+    revision,
+    releasedPaths: jsonArray<string>(row.released_paths),
+    notifiedWaiters: waiters.map(w => w.waitingTaskId),
+    waiters,
+  };
+}
+
+// ── Lease give-back ──────────────────────────────────────────────────────────
+
+export type LeaseRowsRelease =
+  | { kind: 'nothing' }
+  | { kind: 'not_found' }
+  /** The task is now in a `keepStatuses` status: its owner keeps the rows. */
+  | { kind: 'kept' }
+  | { kind: 'released'; result: ReleaseResult };
+
+/**
+ * Release exactly the lease rows one acquisition inserted (`insertedIds`),
+ * for an attempt that acquired and then did not go ahead (a gated START that
+ * lost the atomic claim). Unlike `releaseClaims` it never frees another
+ * attempt's rows for the same task, and unlike `narrowPathClaims` it leaves
+ * the manifest and the declaration alone: this gives a lease back, it does
+ * not change scope.
+ *
+ * The owner's status is re-read inside the locked statement: when it is now
+ * in `keepStatuses` (a winning claim owns the task) nothing is released. Only
+ * waiters blocked on a released path are stamped; delivery is the caller's.
+ */
+export async function releaseLeaseRows(input: {
+  workspaceId: string;
+  taskId: string;
+  leaseIds: string[];
+  keepStatuses: readonly string[];
+}): Promise<LeaseRowsRelease> {
+  const leaseIds = [...new Set(input.leaseIds.filter(id => typeof id === 'string' && id.length > 0))];
+  if (leaseIds.length === 0) return { kind: 'nothing' };
+  const { workspaceId, taskId } = input;
+  const row = await runLocked({ workspaceId }, db.execute(sql`-- path_claims:release_rows
+WITH args AS (SELECT ${JSON.stringify({ workspaceId, taskId, leaseIds, keepStatuses: input.keepStatuses })}::jsonb AS a),
+owner AS (
+  SELECT t.id, t.status FROM tasks t, args
+  WHERE t.id = (a->>'taskId')::uuid
+    AND t.workspace_id = (a->>'workspaceId')::uuid
+),
+keep AS (
+  SELECT o.id FROM owner o, args
+  WHERE o.status IN (SELECT jsonb_array_elements_text(a->'keepStatuses'))
+),
+rel AS (
+  UPDATE path_claims pc SET released_at = now()
+  FROM args
+  WHERE pc.id::text IN (SELECT jsonb_array_elements_text(a->'leaseIds'))
+    AND pc.task_id = (a->>'taskId')::uuid
+    AND pc.workspace_id = (a->>'workspaceId')::uuid
+    AND pc.released_at IS NULL
+    AND EXISTS (SELECT 1 FROM owner)
+    AND NOT EXISTS (SELECT 1 FROM keep)
+  RETURNING pc.path
+),
+bump AS (
+  UPDATE tasks t SET path_claim_revision = t.path_claim_revision + 1
+  FROM args
+  WHERE t.id = (a->>'taskId')::uuid AND EXISTS (SELECT 1 FROM rel)
+  RETURNING t.path_claim_revision
+),
+woken AS (
+  UPDATE path_claim_waiters w SET notified_at = now()
+  FROM args
+  WHERE w.blocking_task_id = (a->>'taskId')::uuid
+    AND w.notified_at IS NULL
+    AND EXISTS (SELECT 1 FROM rel r WHERE rtrim(r.path, '/') = rtrim(w.blocked_path, '/'))
+  RETURNING w.waiting_task_id, w.blocked_path
+)
+SELECT
+  EXISTS (SELECT 1 FROM owner) AS found,
+  EXISTS (SELECT 1 FROM keep) AS kept,
+  COALESCE((SELECT jsonb_agg(r.path) FROM rel r), '[]'::jsonb) AS released_paths,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'waitingTaskId', k.waiting_task_id, 'blockedPath', k.blocked_path)) FROM woken k), '[]'::jsonb) AS waiters`));
+
+  if (!row || !row.found) return { kind: 'not_found' };
+  if (row.kept) return { kind: 'kept' };
+  const waiters = jsonArray<{ waitingTaskId: string; blockedPath: string }>(row.waiters);
+  return {
+    kind: 'released',
+    result: {
+      workspaceId,
+      releasedPaths: jsonArray<string>(row.released_paths),
+      notifiedWaiters: waiters.map(w => w.waitingTaskId),
+      waiters,
+    },
+  };
 }
 
 // ── Release ──────────────────────────────────────────────────────────────────
 
 /**
- * Soft-delete all active path_claims for a task and stamp notifiedAt on
- * all pending waiters. Returns release info for the caller to fan out via Pusher.
+ * Soft-delete all active path_claims for a task and stamp notifiedAt on all
+ * of its pending waiters, under the same workspace lock as acquisition (see
+ * "Serialized ownership writes"). Returns release info for the caller to fan
+ * out.
  *
- * Returns null if the task had no active claims.
+ * Waiters are woken even when no lease is left to release: this only runs on a
+ * terminal (or reassigning) transition, when the task holds nothing, and a
+ * waiter re-armed after a failed delivery has no other way to be found again —
+ * so a repeated terminal event is what retries it.
+ *
+ * Returns null when nothing was released and nobody was waiting.
  */
 export async function releaseClaims(taskId: string): Promise<ReleaseResult | null> {
-  const activeClaims = await db.query.pathClaims.findMany({
-    where: and(
-      eq(pathClaims.taskId, taskId),
-      isNull(pathClaims.releasedAt),
-    ),
-    columns: { id: true, workspaceId: true, path: true },
-  });
+  const row = await runLocked({ taskId }, db.execute(sql`-- path_claims:release
+WITH args AS (SELECT ${JSON.stringify({ taskId })}::jsonb AS a),
+rel AS (
+  UPDATE path_claims pc SET released_at = now()
+  FROM args
+  WHERE pc.task_id = (a->>'taskId')::uuid AND pc.released_at IS NULL
+  RETURNING pc.workspace_id, pc.path
+),
+bump AS (
+  UPDATE tasks t SET path_claim_revision = t.path_claim_revision + 1
+  FROM args
+  WHERE t.id = (a->>'taskId')::uuid AND EXISTS (SELECT 1 FROM rel)
+  RETURNING t.path_claim_revision
+),
+woken AS (
+  UPDATE path_claim_waiters w SET notified_at = now()
+  FROM args
+  WHERE w.blocking_task_id = (a->>'taskId')::uuid AND w.notified_at IS NULL
+  RETURNING w.workspace_id, w.waiting_task_id, w.blocked_path
+)
+SELECT
+  COALESCE((SELECT r.workspace_id FROM rel r LIMIT 1), (SELECT k.workspace_id FROM woken k LIMIT 1)) AS workspace_id,
+  COALESCE((SELECT jsonb_agg(r.path) FROM rel r), '[]'::jsonb) AS released_paths,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'waitingTaskId', k.waiting_task_id, 'blockedPath', k.blocked_path)) FROM woken k), '[]'::jsonb) AS waiters`));
 
-  if (activeClaims.length === 0) return null;
-
-  const now = new Date();
-  const claimIds = activeClaims.map(c => c.id);
-  await db
-    .update(pathClaims)
-    .set({ releasedAt: now })
-    .where(inArray(pathClaims.id, claimIds));
-
-  const workspaceId = activeClaims[0].workspaceId;
-  const releasedPaths = activeClaims.map(c => c.path);
-
-  // Stamp notifiedAt on pending waiters for this task
-  const pendingWaiters = await db.query.pathClaimWaiters.findMany({
-    where: and(
-      eq(pathClaimWaiters.blockingTaskId, taskId),
-      isNull(pathClaimWaiters.notifiedAt),
-    ),
-    columns: { id: true, waitingTaskId: true, blockedPath: true },
-  });
-
-  if (pendingWaiters.length > 0) {
-    await db
-      .update(pathClaimWaiters)
-      .set({ notifiedAt: now })
-      .where(inArray(pathClaimWaiters.id, pendingWaiters.map(w => w.id)));
-  }
+  const releasedPaths = jsonArray<string>(row?.released_paths);
+  const waiters = jsonArray<{ waitingTaskId: string; blockedPath: string }>(row?.waiters);
+  if (!row?.workspace_id || (releasedPaths.length === 0 && waiters.length === 0)) return null;
 
   return {
-    workspaceId,
+    workspaceId: String(row.workspace_id),
     releasedPaths,
-    notifiedWaiters: pendingWaiters.map(w => w.waitingTaskId),
-    waiters: pendingWaiters.map(w => ({
-      waitingTaskId: w.waitingTaskId,
-      blockedPath: w.blockedPath,
-    })),
+    notifiedWaiters: waiters.map(w => w.waitingTaskId),
+    waiters,
   };
 }
 
@@ -477,7 +902,7 @@ export async function rearmWaiter(
  * close a cycle in the waiter graph, returns a DeadlockResult.
  *
  * The UNIQUE constraint on (blockingTaskId, waitingTaskId, blockedPath)
- * makes duplicate registrations idempotent.
+ * makes duplicate registrations idempotent; a duplicate re-arms the row.
  */
 export async function registerWaiter(
   blockingTaskId: string,
@@ -490,34 +915,43 @@ export async function registerWaiter(
     return { deadlock: true, cycle };
   }
 
+  // Re-registering re-arms: a waiter woken by a narrowing that then collides
+  // with the same holder again must be pending again, or the holder's next
+  // release would skip it (release only wakes rows with notified_at IS NULL).
   try {
     await db.insert(pathClaimWaiters).values({
       workspaceId,
       blockingTaskId,
       waitingTaskId,
       blockedPath,
+    }).onConflictDoUpdate({
+      target: [pathClaimWaiters.blockingTaskId, pathClaimWaiters.waitingTaskId, pathClaimWaiters.blockedPath],
+      set: { notifiedAt: null },
     });
-  } catch {
-    // Unique constraint violation — already registered; idempotent
+  } catch (err) {
+    console.warn('[path-claim] waiter registration failed:', err);
   }
 
   return { registered: true };
 }
 
 /**
- * BFS: can we reach newBlockingTaskId starting from newWaitingTaskId by
- * following existing (waitingTaskId → blockingTaskId) edges?
+ * BFS: adding the edge newWaitingTaskId → newBlockingTaskId ("waits on")
+ * closes a cycle iff newBlockingTaskId already, transitively, waits on
+ * newWaitingTaskId. Walk the blocker's pending waits looking for the waiter.
+ * Returns the cycle (waiter → blocker → … → waiter) if found, null otherwise.
  *
- * If yes, adding edge (newBlockingTaskId → newWaitingTaskId) would create
- * a cycle. Returns the cycle path if found, null otherwise.
+ * Only pending edges (notifiedAt IS NULL) count: a notified waiter is no
+ * longer waiting. Walking from the waiter instead — as this once did — found
+ * the very edge being re-registered and reported every retry as a deadlock.
  */
 async function detectDeadlockCycle(
   newBlockingTaskId: string,
   newWaitingTaskId: string,
 ): Promise<string[] | null> {
-  const visited = new Set<string>([newWaitingTaskId]);
+  const visited = new Set<string>([newBlockingTaskId]);
   const queue: Array<{ taskId: string; path: string[] }> = [
-    { taskId: newWaitingTaskId, path: [newWaitingTaskId] },
+    { taskId: newBlockingTaskId, path: [newWaitingTaskId, newBlockingTaskId] },
   ];
 
   while (queue.length > 0) {
@@ -525,13 +959,16 @@ async function detectDeadlockCycle(
 
     // Where is taskId currently waiting? Follow waiting → blocking edges.
     const waitingOn = await db.query.pathClaimWaiters.findMany({
-      where: eq(pathClaimWaiters.waitingTaskId, taskId),
+      where: and(
+        eq(pathClaimWaiters.waitingTaskId, taskId),
+        isNull(pathClaimWaiters.notifiedAt),
+      ),
       columns: { blockingTaskId: true },
     });
 
     for (const { blockingTaskId } of waitingOn) {
-      if (blockingTaskId === newBlockingTaskId) {
-        return [...path, newBlockingTaskId];
+      if (blockingTaskId === newWaitingTaskId) {
+        return [...path, newWaitingTaskId];
       }
       if (!visited.has(blockingTaskId)) {
         visited.add(blockingTaskId);

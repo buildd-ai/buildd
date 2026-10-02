@@ -56,11 +56,26 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The real acquisition is one locked statement (packages/core, covered by
+// path-claim-ownership.test.ts). This fake composes it from per-step mocks so
+// the cases below can script a conflict, the leases and the manifest.
+const mockAcquirePathClaims = mock(async ({ workspaceId, taskId, paths }: any) => {
+  const conflict = await mockCheckPathClaimConflict(workspaceId, taskId, paths);
+  if (conflict) return { kind: 'conflict', conflict, blocked: [] };
+  const inserted = await mockInsertClaims(workspaceId, taskId, paths);
+  const pathManifest = await mockAppendPathManifest(taskId, paths);
+  return { kind: 'acquired', inserted, blocked: [], pathManifest, revision: 1 };
+});
+const mockNarrowPathClaims = mock(async (_input: any) => ({ kind: 'not_found' }) as any);
 mock.module('@buildd/core/path-claim', () => ({
-  appendPathManifest: mockAppendPathManifest,
-  checkPathClaimConflict: mockCheckPathClaimConflict,
-  insertClaims: mockInsertClaims,
+  acquirePathClaims: mockAcquirePathClaims,
+  narrowPathClaims: mockNarrowPathClaims,
   registerWaiter: mockRegisterWaiter,
+}));
+const mockDeliverPathReleased = mock(async (..._args: any[]) => {});
+mock.module('@/lib/path-claim-release', () => ({
+  deliverPathReleased: mockDeliverPathReleased,
+  releaseAndNotify: mock(async () => {}),
 }));
 
 mock.module('@buildd/core/knowledge-store', () => ({
@@ -157,6 +172,10 @@ describe('check_path_claim MCP handler', () => {
     mockWorkspacesFindFirst.mockReset();
     mockCheckPathClaimConflict.mockReset();
     mockInsertClaims.mockReset();
+    mockAcquirePathClaims.mockClear();
+    mockNarrowPathClaims.mockReset();
+    mockNarrowPathClaims.mockResolvedValue({ kind: 'not_found' });
+    mockDeliverPathReleased.mockReset();
     mockRegisterWaiter.mockReset();
     mockFireGateEvent.mockReset();
 
@@ -237,7 +256,7 @@ describe('check_path_claim MCP handler', () => {
   // real blocker, with no blockingTaskId to act on. appendPathManifest
   // replaced the CAS with a single atomic statement, so there is no retry
   // loop left: this asserts the handler calls it exactly once.
-  it('extends the manifest via a single call with no CAS retry loop', async () => {
+  it('acquires via a single call with no CAS retry loop', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: null }));
     mockAppendPathManifest.mockResolvedValue(['src/new.ts']);
 
@@ -246,8 +265,7 @@ describe('check_path_claim MCP handler', () => {
 
     expect(result.claimed).toBe(true);
     expect(result.pathManifest).toEqual(['src/new.ts']);
-    expect(mockAppendPathManifest).toHaveBeenCalledTimes(1);
-    expect(mockAppendPathManifest).toHaveBeenCalledWith(TASK_ID, ['src/new.ts']);
+    expect(mockAcquirePathClaims).toHaveBeenCalledTimes(1);
     expect(mockTasksFindFirst).toHaveBeenCalledTimes(1);
   });
 
@@ -259,14 +277,18 @@ describe('check_path_claim MCP handler', () => {
     expect(mockInsertClaims).toHaveBeenCalledWith(WORKSPACE_ID, TASK_ID, ['src/new.ts']);
   });
 
-  it('does not add duplicate paths already in manifest', async () => {
+  // Regression: a path already in the manifest used to short-circuit to
+  // claimed:true without a lease, so the claim-route backstop never saw it.
+  it('still leases a path already in the manifest, without duplicating it', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/foo.ts'] }));
+    mockAppendPathManifest.mockResolvedValue(['src/foo.ts']);
 
     const body: any = await callTool({ paths: ['src/foo.ts'] });
     const result = JSON.parse(body.result.content[0].text);
     expect(result.claimed).toBe(true);
     expect(result.pathManifest).toEqual(['src/foo.ts']);
-    expect(mockInsertClaims).not.toHaveBeenCalled();
+    expect(result.revision).toBe(1);
+    expect(mockInsertClaims).toHaveBeenCalledWith(WORKSPACE_ID, TASK_ID, ['src/foo.ts']);
   });
 
   // ── Conflict / waiter registration ─────────────────────────────────────────
@@ -369,8 +391,10 @@ describe('check_path_claim MCP handler', () => {
     expect(result.message).toContain('path_released message');
     expect(result.message).not.toContain('Pusher');
 
-    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
-    const ev: any = mockFireGateEvent.mock.calls[0][0];
+    // The path_declaration denominator row (conflict-aware-orchestration §3) fires too.
+    const pathClaimEvents = mockFireGateEvent.mock.calls.map((c: any) => c[0]).filter((e: any) => e.gate === REAL_GATE_SLUGS.PATH_CLAIM);
+    expect(pathClaimEvents).toHaveLength(1);
+    const ev: any = pathClaimEvents[0];
     expect(ev.gate).toBe(REAL_GATE_SLUGS.PATH_CLAIM);
     expect(ev.outcome).toBe('deferred');
     expect(ev.surface).toBe('mcp:check_path_claim');
@@ -383,9 +407,40 @@ describe('check_path_claim MCP handler', () => {
     const PATHS = ['**'];
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
     await callTool({ paths: PATHS });
-    expect(mockFireGateEvent).toHaveBeenCalledTimes(1);
-    const ev: any = mockFireGateEvent.mock.calls[0][0];
+    // The path_declaration denominator row (conflict-aware-orchestration §3) fires too.
+    const pathClaimEvents = mockFireGateEvent.mock.calls.map((c: any) => c[0]).filter((e: any) => e.gate === REAL_GATE_SLUGS.PATH_CLAIM);
+    expect(pathClaimEvents).toHaveLength(1);
+    const ev: any = pathClaimEvents[0];
     expect(ev.outcome).toBe('rejected');
     expect(ev.surface).toBe('mcp:check_path_claim');
+  });
+
+  // ── release=true: selective narrowing ──────────────────────────────────────
+
+  it('release=true narrows this worker\'s own task and reports the new revision', async () => {
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask());
+    mockNarrowPathClaims.mockResolvedValue({
+      kind: 'narrowed', workspaceId: WORKSPACE_ID, pathManifest: ['src/keep.ts'], revision: 4,
+      releasedPaths: ['src/drop.ts'], notifiedWaiters: [SIBLING_ID],
+      waiters: [{ waitingTaskId: SIBLING_ID, blockedPath: 'src/drop.ts' }],
+    });
+
+    const body: any = await callTool({ paths: ['src/drop.ts'], release: true, expectedRevision: 3, reason: 'stale' });
+    const result = JSON.parse(body.result.content[0].text);
+
+    expect(result).toEqual({ released: true, releasedPaths: ['src/drop.ts'], pathManifest: ['src/keep.ts'], notifiedWaiters: [SIBLING_ID], revision: 4 });
+    expect(mockNarrowPathClaims).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: WORKSPACE_ID, taskId: TASK_ID, paths: ['src/drop.ts'], expectedRevision: 3, reason: 'stale', surface: 'mcp:check_path_claim',
+    }));
+    expect(mockAcquirePathClaims).not.toHaveBeenCalled();
+    expect(mockDeliverPathReleased).toHaveBeenCalledTimes(1);
+  });
+
+  it('release=true with a stale revision is a retryable error', async () => {
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask());
+    mockNarrowPathClaims.mockResolvedValue({ kind: 'revision_conflict', currentRevision: 9 });
+    const body: any = await callTool({ paths: ['src/drop.ts'], release: true, expectedRevision: 3 });
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ released: false, retryable: true, currentRevision: 9 });
   });
 });

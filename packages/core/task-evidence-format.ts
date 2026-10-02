@@ -48,3 +48,27 @@ export function formatTaskEvidence(
   if (linkBits.length > 0) out.push(`**Links:** ${linkBits.join(' · ')}`);
   return out;
 }
+
+export interface EvidenceObjectLine {
+  id: string;
+  kind: string;
+  bytes: number;
+  uploadState: string;
+}
+
+const humanBytes = (n: number): string =>
+  n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : n >= 1024 ? `${Math.round(n / 1024)} KiB` : `${n} B`;
+
+/**
+ * The stored run-evidence objects behind a task or PR: pointers only. A
+ * failure's key lines are in the record above; the text of an object is read
+ * through `read_evidence`.
+ */
+export function formatEvidenceObjects(objects: readonly EvidenceObjectLine[] | null | undefined): string[] {
+  if (!Array.isArray(objects) || objects.length === 0) return [];
+  return [
+    `## Run evidence objects (${objects.length})`,
+    ...objects.map(o => `- ${o.kind} · ${humanBytes(o.bytes)}${o.uploadState === 'stored' ? '' : ` · ${o.uploadState}`} (id: ${o.id})`),
+    'Read one: action=read_evidence { evidenceId, tail?, grep? }.',
+  ];
+}

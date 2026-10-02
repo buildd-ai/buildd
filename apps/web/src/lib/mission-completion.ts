@@ -13,8 +13,10 @@ import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/co
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
-import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
+import { isSurfaceAuditTask, surfaceAuditMissingReason } from '@buildd/core/surface-audit';
+import { evaluateSurfaceAuditGate } from '@/lib/mission-surface-audit-gate';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
+import { after } from 'next/server';
 
 /**
  * The one mission-completion predicate.
@@ -143,6 +145,8 @@ export interface MissionCompletionDecision {
    * where the refusal code is `visual_review_open`.
    */
   visualReviewHold?: VisualReviewHold | null;
+  /** The rendered UI files behind `surface_audit_missing`, so a surface can say how many without parsing `reason`. */
+  surfaceAuditPaths?: string[];
 }
 
 export interface VisualReviewHold {
@@ -258,6 +262,7 @@ export async function canCompleteMission(
       integrationBranchEnabled: true,
       // The visual review hold reads the model, which scopes by workspace.
       workspaceId: true,
+      autoSurfaceAudit: true,
     },
   });
 
@@ -318,6 +323,8 @@ export async function canCompleteMission(
       taskClass: true, creationSource: true, category: true, result: true,
       // Finds the visual audit, so a mission without one skips the hold check.
       roleSlug: true,
+      // The surface-audit gate reads the declared paths and each PR's repo.
+      workspaceId: true, pathManifest: true,
       // Attempt lineage for derived supersession (pr-shipped.ts).
       parentTaskId: true,
     },
@@ -558,6 +565,27 @@ export async function canCompleteMission(
     }
   }
 
+  // A mission that changed UI does not close unless something looked at it.
+  // The audit is minted from declared paths at task filing; this reads what
+  // actually merged, so an undeclared or mis-declared manifest cannot skip it.
+  // A completed audit, a recorded human waiver, or autoSurfaceAudit=false clears it.
+  const surfaceGate = await evaluateSurfaceAuditGate(
+    mission as { id: string; autoSurfaceAudit?: boolean | null },
+    allTasks as unknown as Parameters<typeof evaluateSurfaceAuditGate>[1],
+  ).catch(err => {
+    console.error(`[surface-audit-gate] ${mission.id.slice(0, 8)} check failed (not blocking):`, err);
+    return null;
+  });
+  if (surfaceGate?.required) {
+    return {
+      ...base,
+      ok: false,
+      code: 'surface_audit_missing',
+      reason: surfaceAuditMissingReason(surfaceGate.uiPaths, surfaceGate.source),
+      surfaceAuditPaths: surfaceGate.uiPaths,
+    };
+  }
+
   // The visual review hold (docs/design/visual-qa-human-review.md, part 5):
   // a current unsure screen nobody decided, or the open round-cap question.
   // Open fixes already hold above through pending_deliverables, and ok and
@@ -663,6 +691,15 @@ export async function completeMissionIfVerified(
      * note a still-working mission; that would be one warning per task.
      */
     proposed?: boolean;
+    /**
+     * The task whose output proposed this completion (the planning task, or the
+     * evaluation task). If this call wins the claim, its `shipped` output is
+     * what the "What shipped" record is built from. Absent for paths with no
+     * proposing author (dormancy, the criteria evaluator). A heartbeat passes
+     * its task, but its prompt never asks for `shipped`, so it records as
+     * `no_author`.
+     */
+    authorTaskId?: string;
   },
 ): Promise<CompleteMissionResult> {
   const decision = opts.decision
@@ -706,7 +743,7 @@ export async function completeMissionIfVerified(
     const worthANote =
       decision.code !== 'mission_not_found' &&
       decision.code !== 'mission_not_active' &&
-      (opts.proposed === true || decision.code.startsWith('criteria_') || decision.code === 'infra_stalled' || decision.code === 'awaiting_merge');
+      (opts.proposed === true || decision.code.startsWith('criteria_') || decision.code === 'infra_stalled' || decision.code === 'awaiting_merge' || decision.code === 'surface_audit_missing');
     if (worthANote) await postAwaitingVerificationNote(missionId, opts.path, decision);
     return { completed: false, decision };
   }
@@ -748,6 +785,28 @@ export async function completeMissionIfVerified(
   computeAndStoreFlightStripCache(missionId, { missionCompletedAt: completedAt }).catch(e =>
     console.error(`[mission-completion] flight-strip cache compute failed for ${missionId}:`, e)
   );
+
+  // The "What shipped" record (docs/design/mission-shipped-report.md): only the
+  // claim winner writes it, from whichever proposal actually won. Not awaited —
+  // it can never un-complete the mission, and the page falls back to today's
+  // rendering when it is absent. Scheduled with `after()` because it does
+  // several seconds of GitHub reads, and Vercel may freeze a function once the
+  // response is sent; outside a request scope (scripts, crons run as scripts)
+  // `after()` throws and it runs detached. Imported on demand so the GitHub
+  // client and screenshot queries stay out of the import graph of a gate that
+  // nearly every mission path loads.
+  const storeShipped = () => import('@/lib/mission-shipped-report')
+    .then(m => m.storeMissionShippedReportSafely(missionId, {
+      authorTaskId: opts.authorTaskId ?? null,
+      origin: 'auto',
+      completedAt,
+    }))
+    .catch(e => console.error(`[mission-completion] shipped report failed for ${missionId}:`, e));
+  try {
+    after(storeShipped);
+  } catch {
+    void storeShipped();
+  }
 
   const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({

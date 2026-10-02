@@ -27,6 +27,7 @@ const {
   STDERR_TRACE_EXCERPT_BYTES,
   MAX_TRANSCRIPT_BYTES,
   flushStderrTrace,
+  parseUnrecognizedModelStderr,
   buildSessionTranscript,
   buildSessionLogBody,
   uploadSessionDiagnostics,
@@ -344,5 +345,33 @@ describe('uploadSessionDiagnostics', () => {
     await uploadSessionDiagnostics(makeWorker({ output: huge }), [], d as any);
     const sizeBytes = d.requestUploadUrl.mock.calls[0][2];
     expect(sizeBytes).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+  });
+});
+
+describe('unrecognized model on stderr', () => {
+  const LINE = '[claude-code:unrecognized_model] {"model":"claude-sonnet-5-5","query_source":"sdk"}';
+
+  test('parseUnrecognizedModelStderr names the id', () => {
+    expect(parseUnrecognizedModelStderr(LINE)).toEqual({ model: 'claude-sonnet-5-5' });
+    expect(parseUnrecognizedModelStderr(`noise\n${LINE}\nmore`)).toEqual({ model: 'claude-sonnet-5-5' });
+  });
+
+  test('parseUnrecognizedModelStderr keeps the signal when the payload is unreadable', () => {
+    expect(parseUnrecognizedModelStderr('[claude-code:unrecognized_model]')).toEqual({ model: null });
+    expect(parseUnrecognizedModelStderr('[claude-code:unrecognized_model] {oops')).toEqual({ model: null });
+  });
+
+  test('parseUnrecognizedModelStderr ignores everything else', () => {
+    expect(parseUnrecognizedModelStderr('')).toBeNull();
+    expect(parseUnrecognizedModelStderr('warning: deprecated flag')).toBeNull();
+  });
+
+  test('the collector reports it only once such a line has arrived', () => {
+    const c = new SessionStderrCollector(WORKER_ID, TASK_ID);
+    expect(c.unrecognizedModel).toBeNull();
+    c.push('some warning');
+    expect(c.unrecognizedModel).toBeNull();
+    c.push(LINE);
+    expect(c.unrecognizedModel).toEqual({ model: 'claude-sonnet-5-5' });
   });
 });

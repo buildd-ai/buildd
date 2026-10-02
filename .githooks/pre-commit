@@ -45,7 +45,7 @@ if [ -f packages/core/__tests__/migration-journal-ordering.test.ts ]; then
 fi
 
 # No Production Data gate, reproduced locally. This is this repo's single
-# most common CI failure. It diffs origin/dev against HEAD, same as CI does
+# most common CI failure. It diffs the nearest of origin/dev and origin/mission/* against HEAD, same as CI does
 # against the PR base — so it checks commits already made on this branch, not
 # the one about to be created here; that one is caught on your *next* commit,
 # or explicitly via `bun run no-prod-data:check` right before you push/open

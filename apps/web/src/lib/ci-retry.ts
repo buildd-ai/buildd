@@ -12,6 +12,7 @@
 import { isOpenTaskStatus } from '@buildd/shared';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { lineageStamp } from '@/lib/attempt-lineage';
+import { MODEL_REJECTION_CONTEXT_KEY } from '@/lib/worker-exit-taxonomy';
 
 /** Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries. */
 export const DEFAULT_MAX_CI_RETRIES = 3;
@@ -106,6 +107,8 @@ export function summarizePrFixAttempts(
     if (r.outputRequirement === 'artifact_required') return false;
     const ctx = (r.context && typeof r.context === 'object' ? r.context : {}) as Record<string, unknown>;
     if (ctx.foreign_head_sha === true) return false;
+    // The CLI refused the model before the agent took a turn: the PR was never attempted.
+    if (ctx[MODEL_REJECTION_CONTEXT_KEY]) return false;
     return time(r) > lastManual;
   }).length;
 

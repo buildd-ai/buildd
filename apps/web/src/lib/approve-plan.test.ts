@@ -38,6 +38,14 @@ const NEXT_IDS = [
   'cccccccc-0000-4000-8000-000000000003',
 ];
 
+// Manifest provenance denominator (conflict-aware-orchestration.md §3): captured
+// here so its ledger write does not land in the insert spy below.
+const declarations: any[] = [];
+mock.module('@/lib/path-declaration-ledger', () => ({
+  recordPathDeclaration: (input: any) => { declarations.push(input); },
+  manifestShape: (m: unknown) => (Array.isArray(m) && m.length ? 'concrete' : 'none'),
+}));
+
 mock.module('drizzle-orm', () => ({
   eq: (col: any, val: any) => ({ _op: 'eq', args: [col, val] }),
   and: (...args: any[]) => ({ _op: 'and', args }),
@@ -496,6 +504,59 @@ describe('approvePlan — doc-fix proposal approves as exactly one linked child'
     expect(result.taskIds).toHaveLength(2);
     expect(insertedValues[0].context.specDocFix).toBeUndefined();
     expect(insertedValues[0].pathManifest).toBeUndefined();
+  });
+});
+
+/**
+ * A plan step's `pathManifest` is the planner's declared scope for that child.
+ * It used to be accepted by the schema and dropped at insert, so every
+ * plan-approved child filed scope-undeclared and serialized behind, or raced,
+ * its siblings. Conflict-aware orchestration §1–2 (Step B).
+ */
+describe('approvePlan — persists explicit step manifests', () => {
+  beforeEach(reset);
+
+  it('writes each step manifest, normalized, with plan-step provenance', async () => {
+    declarations.length = 0;
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Step A', pathManifest: ['apps/web/src/lib/a.ts', ' packages/core/ ', 'apps/web/src/lib/a.ts'] },
+      { ref: 'b', title: 'Step B', pathManifest: ['docs/b.md'] },
+    ] as any);
+    expect(insertedValues[0].pathManifest).toEqual(['apps/web/src/lib/a.ts', 'packages/core']);
+    expect(insertedValues[1].pathManifest).toEqual(['docs/b.md']);
+    const decl = insertedValues[0].pathDeclaration;
+    expect(decl.declared).toEqual(['apps/web/src/lib/a.ts', 'packages/core']);
+    expect(decl.source).toBe('creation');
+    expect(decl.origin).toEqual({ kind: 'plan_step', planningTaskId: PLANNING_TASK_ID, stepRef: 'a' });
+    expect(typeof decl.snapshotAt).toBe('string');
+    expect(declarations.map((d) => d.provenance)).toEqual(['plan_step', 'plan_step']);
+  });
+
+  it('a step with no (or only blank) manifest stays undeclared', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Step A' },
+      { ref: 'b', title: 'Step B', pathManifest: ['  '] },
+    ] as any);
+    for (const v of insertedValues) {
+      expect(v.pathManifest).toBeUndefined();
+      expect(v.pathDeclaration).toBeUndefined();
+    }
+  });
+
+  it('keeps the sentinel as the planner wrote it: undeclared scope is not invented away', async () => {
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Step A', pathManifest: ['**'] }] as any);
+    expect(insertedValues[0].pathManifest).toEqual(['**']);
+  });
+
+  it('the doc-fix override still wins over a step manifest, and records that it did', async () => {
+    const SPEC = 'docs/design/runner-oauth-broker.md';
+    planningTaskRow.context = { specDocFix: { specPath: SPEC, assertionIds: [], discrepancyIds: [], workspaceId: 'ws-1' }, planOptional: true };
+    planningTaskRow.pathManifest = [SPEC];
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 's1', title: 'Do it', description: 'x', pathManifest: ['apps/web/src/lib/other.ts'] }] as any);
+    expect(insertedValues[0].pathManifest).toEqual([SPEC]);
+    expect(insertedValues[0].pathDeclaration.origin).toEqual({ kind: 'doc_fix', planningTaskId: PLANNING_TASK_ID });
+    expect(insertedValues[0].pathDeclaration.declared).toEqual([SPEC]);
   });
 });
 

@@ -20,6 +20,8 @@ export function classifyFailure(error: string): FailureClass {
   if (/session limit|hit your session|budget limit exceeded|out of extra usage|error_max_budget_usd|max budget/i.test(error)) return 'budget_limited';
 
   // Environmental — same environment = same failure, never retry
+  // A model id the runner's CLI rejects (unknown id, or its version floor): the id comes from config, so every retry on this runner fails identically.
+  if (/claude-code:unrecognized_model|does not support this model[\s\S]*?or newer is required/i.test(error)) return 'environmental';
   if (/cannot find module|framework not found|canImport|linker error|no such module|xcrun|xcodebuild|platform.*not supported/i.test(error)) return 'environmental';
   if (/command not found|permission denied|EACCES/i.test(error)) return 'environmental';
   if (/import (CoreData|SwiftUI|UIKit|AppKit)/i.test(error)) return 'environmental';

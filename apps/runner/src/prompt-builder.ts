@@ -3,7 +3,7 @@ import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
-import { HEARTBEAT_PROTOCOL_BLOCK } from '@buildd/shared';
+import { HEARTBEAT_PROTOCOL_BLOCK, shippedPromptText, taskShippedPromptText } from '@buildd/shared';
 import {
   buildMemoryBlock,
   byteLength,
@@ -544,6 +544,9 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   // no plan at all is the expected outcome, so the standard planning block's
   // "an empty plan stalls the mission" rule would be exactly backwards here.
   const planIsOptional = (task.context as { planOptional?: boolean } | undefined)?.planOptional === true;
+  // Heartbeats return an operational schema and the evaluator's own prompt
+  // already carries the `shipped` text, so neither gets it from here.
+  const authorsShipped = taskContext?.heartbeat !== true && taskContext?.evaluator !== true;
   let outputRequirementContent: string;
   if (task.mode === 'planning' && !planIsOptional) {
     outputRequirementContent =
@@ -553,9 +556,12 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       'Optional per item: dependsOn (array of refs for ordering), baseBranch (ref of predecessor task to chain branches from), roleSlug (e.g. "builder", "researcher"), priority (integer), kind, complexity.\n' +
       'Always set `summary`, and set `missionComplete: true` when the mission goal is fully achieved.\n' +
       'Every planning cycle must either return a non-empty `plan` OR set `missionComplete: true` (or triageOutcome: "conflict") — an empty plan that does neither stalls the mission.\n' +
-      'Do NOT call create_task — the system creates tasks from your plan automatically.';
+      'Do NOT call create_task — the system creates tasks from your plan automatically.' +
+      (authorsShipped ? `\n\n${shippedPromptText('planning')}` : '');
   } else if (outputReq === 'pr_required') {
-    outputRequirementContent = '## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.';
+    outputRequirementContent = '## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.' +
+      // A fixed outputSchema (a reviewer verdict, say) would reject the extra key.
+      (!task.outputSchema ? `\n\n${taskShippedPromptText()}` : '');
   } else if (outputReq === 'artifact_required') {
     outputRequirementContent = '## Output Requirement\nThis task **requires you to create an artifact** as a deliverable. Use `buildd` action: create_artifact before completing the task.';
   } else if (outputReq === 'none') {

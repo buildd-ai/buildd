@@ -11,32 +11,14 @@
 
 import { db } from '@buildd/core/db';
 import { changeIntents, missionNotes, tasks, workers } from '@buildd/core/db/schema';
-import { and, eq, isNull, inArray, ne } from 'drizzle-orm';
+import { and, eq, isNull, inArray, ne, or, sql, type SQL } from 'drizzle-orm';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { fireGateEvent, GATE_SLUGS } from './gate-ledger';
 
 // ── Surface matching ─────────────────────────────────────────────────────────
 
-/**
- * Returns true if `path` is matched by a conflictSurface pattern.
- * Rules (evaluated in order):
- *  1. Exact match.
- *  2. Prefix directory match: pattern "a/b" matches path "a/b/c.ts".
- *  3. Trailing-glob match: pattern "a/b/**" matches any path under "a/b/".
- */
-export function matchesSurface(path: string, pattern: string): boolean {
-  // Strip trailing "/**" for glob prefix matching
-  const globSuffix = '/**';
-  const prefix = pattern.endsWith(globSuffix)
-    ? pattern.slice(0, -globSuffix.length)
-    : null;
-
-  if (prefix !== null) {
-    return path === prefix || path.startsWith(prefix + '/');
-  }
-  // Exact match or prefix-directory match (pattern is a directory)
-  return path === pattern || path.startsWith(pattern + '/');
-}
+export { matchesSurface } from './surface-ordering-config';
+import { matchesSurface } from './surface-ordering-config';
 
 /**
  * Given a list of file paths and the workspace gitConfig, returns the surfaces
@@ -80,10 +62,15 @@ export function resolveAnchorInjections(
   if (!namespaces?.length || !pathManifest.length) return [];
 
   const toAdd: string[] = [];
+  const under = (path: string, dir: string) => path === dir || path.startsWith(dir + '/');
   for (const ns of namespaces) {
     const dir = ns.dir.replace(/\/+$/, '');
+    // A schema trigger (e.g. schema.ts) generates INTO the namespace without
+    // touching it: a manifest naming the trigger, or a directory containing
+    // it, serializes on the anchor too. The directory-only rule misses it.
+    const triggers = (ns.triggers ?? []).map((t) => t.replace(/\/+$/, ''));
     const overlaps = pathManifest.some(
-      (p) => p === dir || p.startsWith(dir + '/'),
+      (p) => under(p, dir) || triggers.some((t) => under(t, p.replace(/\/+$/, ''))),
     );
     if (overlaps && !pathManifest.includes(ns.anchorFile)) {
       toAdd.push(ns.anchorFile);
@@ -100,6 +87,8 @@ interface RecordIntentsInput {
   prNumber: number;
   branch: string;
   headSha?: string | null;
+  /** The PR's base branch; surface ordering compares only same-base contenders. */
+  baseRef?: string | null;
   matchedSurfaces: string[];
 }
 
@@ -108,7 +97,7 @@ interface RecordIntentsInput {
  * for this task+surface combination).
  */
 export async function recordChangeIntents(input: RecordIntentsInput): Promise<void> {
-  const { workspaceId, taskId, prNumber, branch, headSha, matchedSurfaces } = input;
+  const { workspaceId, taskId, prNumber, branch, headSha, baseRef, matchedSurfaces } = input;
   if (!matchedSurfaces.length) return;
 
   const rows = matchedSurfaces.map((surface) => ({
@@ -118,11 +107,17 @@ export async function recordChangeIntents(input: RecordIntentsInput): Promise<vo
     prNumber,
     branch,
     headSha: headSha ?? null,
+    baseRef: baseRef ?? null,
   }));
 
-  // ON CONFLICT DO NOTHING — safe to call multiple times for the same PR (dedup retries)
+  // One open row per (workspace, PR, surface). The table has no unique key for
+  // ON CONFLICT DO NOTHING to bind to, so each insert is guarded by NOT EXISTS
+  // in the same statement; a racing duplicate is harmless (ordering groups
+  // contenders per PR).
   try {
-    await db.insert(changeIntents).values(rows).onConflictDoNothing();
+    for (const row of rows) {
+      await db.execute(intentInsertIfAbsentSql({ ...row, branch: row.branch ?? null, headSha: row.headSha }));
+    }
   } catch (err) {
     console.error('[changeIntent] Failed to record intent rows:', err);
   }
@@ -137,6 +132,41 @@ interface ConflictingIntent {
 }
 
 /**
+ * Open intents on these surfaces, minus one task's own. `task_id <> x` is NULL
+ * (not true) for a row whose task was deleted or never set, so a bare `ne`
+ * would silently drop every task-less PR from the conflict set.
+ */
+export function conflictingIntentsWhere(
+  workspaceId: string,
+  surfaces: string[],
+  excludeTaskId: string | null | undefined,
+): SQL {
+  return and(
+    eq(changeIntents.workspaceId, workspaceId),
+    inArray(changeIntents.surface, surfaces),
+    isNull(changeIntents.closedAt),
+    ...(excludeTaskId ? [or(isNull(changeIntents.taskId), ne(changeIntents.taskId, excludeTaskId))!] : []),
+  )!;
+}
+
+/**
+ * One open intent per (workspace, PR, surface), as one statement guarded by
+ * NOT EXISTS (see recordChangeIntents).
+ */
+export function intentInsertIfAbsentSql(i: {
+  workspaceId: string; surface: string; taskId: string | null; prNumber: number; branch: string | null; headSha: string | null;
+  baseRef?: string | null;
+}): SQL {
+  return sql`INSERT INTO "change_intents" ("workspace_id", "surface", "task_id", "pr_number", "branch", "head_sha", "base_ref")
+    SELECT ${i.workspaceId}::uuid, ${i.surface}, ${i.taskId}::uuid, ${i.prNumber}::int, ${i.branch}, ${i.headSha}, ${i.baseRef ?? null}
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "change_intents" ci
+      WHERE ci.workspace_id = ${i.workspaceId}::uuid AND ci.pr_number = ${i.prNumber}::int
+        AND ci.surface = ${i.surface} AND ci.closed_at IS NULL
+    )`;
+}
+
+/**
  * Find open changeIntent rows for the same workspace + surfaces (excluding the
  * current task so we don't warn a task about itself).
  */
@@ -148,12 +178,7 @@ export async function findConflictingIntents(
   if (!matchedSurfaces.length) return [];
 
   const rows = await db.query.changeIntents.findMany({
-    where: and(
-      eq(changeIntents.workspaceId, workspaceId),
-      inArray(changeIntents.surface, matchedSurfaces),
-      isNull(changeIntents.closedAt),
-      ...(excludeTaskId ? [ne(changeIntents.taskId as any, excludeTaskId)] : []),
-    ),
+    where: conflictingIntentsWhere(workspaceId, matchedSurfaces, excludeTaskId),
     columns: { taskId: true, prNumber: true, surface: true },
   });
 
@@ -197,7 +222,9 @@ async function postConflictNote(
       missionId: task?.missionId ?? null,
       taskId,
       callerOrigin: 'system',
-      detail,
+      // Advisory: a warning note never gates a merge. Ordering deferrals are
+      // the separate `surface_ordering` gate (lib/surface-ordering.ts).
+      detail: { ...detail, advisory: true },
     });
   } catch (err) {
     console.error('[changeIntent] Failed to post conflict note on task', taskId, ':', err);

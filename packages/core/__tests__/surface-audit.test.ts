@@ -8,6 +8,9 @@ import {
   isSurfaceAuditTask,
   isSurfaceFixTask,
   isUiSurfacePath,
+  isRenderedSurfaceChange,
+  surfaceAuditMissingReason,
+  surfaceAuditHeadline,
   planSurfaceFixFollowUp,
   surfaceAuditRound,
   surfaceAuditTitle,
@@ -275,5 +278,50 @@ describe('buildSurfaceAuditDescription — later rounds', () => {
   it('a round-1 description does not mention rounds', () => {
     const desc = buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [], requiredRoutes: [] });
     expect(desc).not.toContain('Round ');
+  });
+});
+
+describe('isRenderedSurfaceChange', () => {
+  it('matches UI source files', () => {
+    expect(isRenderedSurfaceChange('apps/web/src/components/Card.tsx')).toBe(true);
+    expect(isRenderedSurfaceChange('apps/web/src/app/app/(protected)/team/page.tsx')).toBe(true);
+  });
+
+  it('ignores API routes, tests, stories, snapshots and docs', () => {
+    expect(isRenderedSurfaceChange('apps/web/src/app/api/tasks/route.ts')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/components/Card.test.tsx')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/components/Card.stories.tsx')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/components/__tests__/x.tsx')).toBe(false);
+    expect(isRenderedSurfaceChange('apps/web/src/app/notes.md')).toBe(false);
+  });
+
+  it('ignores files outside the UI directories', () => {
+    expect(isRenderedSurfaceChange('packages/core/db/schema.ts')).toBe(false);
+  });
+});
+
+describe('surfaceAuditMissingReason', () => {
+  it('names the files, the evidence, and both ways out', () => {
+    const r = surfaceAuditMissingReason(['a/one.tsx', 'a/two.tsx'], 'diff');
+    expect(r).toContain('its merged PRs changed a/one.tsx, a/two.tsx');
+    expect(r).toContain('[surface audit]');
+    expect(r).toContain('surfaceAuditWaiver');
+  });
+
+  it('caps the list and says how many more', () => {
+    const r = surfaceAuditMissingReason(['1', '2', '3', '4', '5'], 'manifest');
+    expect(r).toContain('its tasks declare 1, 2, 3 and 2 more');
+  });
+});
+
+describe('surfaceAuditHeadline', () => {
+  it('is one plain sentence with the file count and no API or tool names', () => {
+    expect(surfaceAuditHeadline(9)).toBe('This mission changed 9 UI files and no visual audit has run.');
+    expect(surfaceAuditHeadline(1)).toBe('This mission changed 1 UI file and no visual audit has run.');
+    for (const n of [0, 1, 9]) expect(surfaceAuditHeadline(n)).not.toMatch(/surfaceAuditWaiver|manage_missions|\[surface audit\]/);
+  });
+
+  it('does not claim a count when the files are unknown', () => {
+    expect(surfaceAuditHeadline(0)).toBe('This mission changed UI and no visual audit has run.');
   });
 });

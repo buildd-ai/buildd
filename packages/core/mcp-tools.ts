@@ -13,7 +13,7 @@ import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
-import { formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
+import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
 import { saveMemory, updateMemory } from './memory-write';
@@ -30,6 +30,7 @@ import type {
   FailureSignatureFamily,
   GateAnalytics,
   GateReasonFamily,
+  LandingMetrics,
   GateRow,
   GateWindow,
   FailureSignatureLookup,
@@ -196,6 +197,52 @@ const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  * message if missing or malformed — specifically calling out 8-character UI
  * prefixes, which are the most common mistake.
  */
+const GET_TASK_INCLUDES: readonly string[] = ['workers', 'artifacts', 'scheduling'];
+
+/**
+ * The stored facts that decide when, where and how a task runs. Rendered on
+ * request so a filer can confirm what create_task persisted — dependency edges,
+ * the effective path scope, tier and verification — without a raw REST read.
+ */
+function formatTaskScheduling(task: any): string[] {
+  const ctx = task.context && typeof task.context === 'object' ? task.context as Record<string, unknown> : {};
+  const out: string[] = ['', '## Scheduling'];
+  const deps: string[] = Array.isArray(task.dependsOn) ? task.dependsOn : [];
+  out.push(deps.length > 0 ? `**Depends on (${deps.length}):** ${deps.join(', ')}` : '**Depends on:** none');
+  const manifest: string[] | null = Array.isArray(task.pathManifest) ? task.pathManifest : null;
+  out.push(manifest === null
+    ? '**Path manifest:** none declared'
+    : `**Path manifest (${manifest.length}):** ${manifest.length > 0 ? manifest.join(', ') : 'empty'}`);
+  const decl = task.pathDeclaration;
+  if (decl && typeof decl === 'object') {
+    const declared = Array.isArray(decl.declared) ? decl.declared : null;
+    if (declared) out.push(`**Declared manifest (${decl.source ?? 'unknown'}):** ${declared.join(', ') || 'empty'}`);
+    if (Array.isArray(decl.inferredDependsOn) && decl.inferredDependsOn.length > 0) {
+      out.push(`**Inferred dependsOn:** ${decl.inferredDependsOn.join(', ')}`);
+    }
+    if (Array.isArray(decl.narrowings) && decl.narrowings.length > 0) {
+      out.push(`**Narrowings:** ${decl.narrowings.length}`);
+    }
+  }
+  if (typeof task.pathClaimRevision === 'number') out.push(`**Path claim revision:** ${task.pathClaimRevision}`);
+  out.push(`**Tier:** ${task.tier ?? 'unset (resolved from role/kind at claim)'}`);
+  if (task.complexity) out.push(`**Complexity:** ${task.complexity}`);
+  if (task.classifiedBy) out.push(`**Classified by:** ${task.classifiedBy}`);
+  if (task.taskClass) out.push(`**Task class:** ${task.taskClass}`);
+  if (task.parentTaskId) out.push(`**Parent task:** ${task.parentTaskId}`);
+  if (task.outputRequirement) out.push(`**Output requirement:** ${task.outputRequirement}`);
+  if (typeof ctx.verificationCommand === 'string' && ctx.verificationCommand) {
+    out.push(`**Verification command:** \`${truncate(ctx.verificationCommand, 400)}\``);
+  }
+  const specSource = ctx.specSource;
+  if (specSource && typeof specSource === 'object') {
+    const src = specSource as Record<string, unknown>;
+    const planning = typeof src.planningTaskId === 'string' ? ` (planning task ${src.planningTaskId})` : '';
+    out.push(`**Spec source:** ${typeof src.specPath === 'string' ? src.specPath : JSON.stringify(src)}${planning}`);
+  }
+  return out;
+}
+
 function requireFullUuid(id: unknown, paramName: string): string {
   if (!id || typeof id !== 'string') throw new Error(`${paramName} is required`);
   if (!FULL_UUID_REGEX.test(id)) {
@@ -296,6 +343,9 @@ export const workerActions = [
   // Worker level, not admin: any worker's own recon needs this, same
   // reasoning as get_failure_analytics above.
   'list_runners',
+  // Read-only over run evidence (logs, test reports) of tasks the caller can
+  // already see; the routes check reach and lineage and audit every read.
+  'read_evidence',
   // Split by sub-action: list/get/readout are worker level (and only return
   // visibility='team' experiments below admin — the API 404s the rest); every
   // write sub-action (EXPERIMENT_WRITE_OPS) is admin level, checked in the
@@ -326,6 +376,7 @@ export const adminActions = [
   'manage_workspaces',
   'manage_watched_projects',
   'manage_model_tiers',
+  'manage_evidence_backends',
   'trigger_release',
   'release_status',
   'send_agent_message',
@@ -347,7 +398,15 @@ export const MEMORY_TYPES = ['gotcha', 'pattern', 'decision', 'discovery', 'arch
  * Corpus value (knowledge-store/types.ts) but write-only/internal — never
  * advertised to callers here.
  */
-export const CORPORA = ['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec', 'initiative'] as const;
+export const CORPORA = ['memory', 'task', 'pr', 'plan', 'artifact', 'code', 'docs', 'spec', 'initiative', 'evidence'] as const;
+
+/**
+ * Corpora a sensitive workspace never reads. memory/initiative are team-wide
+ * namespaces a sensitive context must not see; evidence is never indexed for a
+ * sensitive workspace (docs/specs/byo-evidence-storage.md, "Private and
+ * sensitive rules"), and MUST return nothing for one even if a chunk exists.
+ */
+const SENSITIVE_WITHHELD_CORPORA: ReadonlySet<string> = new Set(['memory', 'initiative', 'evidence']);
 
 /**
  * Validate a `recall`/`query_knowledge` scope-or-corpus param (string or
@@ -396,7 +455,8 @@ export const recallToolDefinition = {
         description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
       },
       scope: {
-        description: `Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: ${CORPORA.join(' | ')}`,
+        // The enum below lists the corpora; repeating them here only cost tokens.
+        description: 'Corpus to search — single string or array for multi-corpus fused results. Default: memory.',
         oneOf: [
           {
             type: "string" as const,
@@ -495,8 +555,8 @@ export function buildToolDescription(actions: readonly string[]): string {
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
-    get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both), fullDescription? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
+    list_tasks: '{ offset?, limit? (default 5, clamped 1-50), status? ("active"|"completed"|"failed"|"cancelled", default "active"), missionId? (full UUID) } — unknown params and bad values are rejected, never ignored. "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
+    get_task: '{ taskId (required), include? (array of "workers"|"artifacts"|"scheduling", default workers+artifacts; "scheduling" adds dependsOn, pathManifest/declaration, tier, verificationCommand, specSource), fullDescription? } — read-only status check. Descriptions default to a 400-character preview with an explicit omitted-character count; pass fullDescription:true to read all instructions and policy sections. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId?, taskId? (full UUID), force? (admin, with taskId) }: returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task. Pass taskId to pick up one specific pending task (e.g. from list_tasks): it is treated like the dashboard Start button without override. A task in a mission with executor="local" is claimable ONLY this way, from your interactive session (never auto-assigned). OAuth budget pacing is skipped, but a held mission or held task, unmet dependencies (including edges added automatically at creation for overlapping pathManifests), a future startAt, path overlap, mission pacing/concurrency and the workspace cap still apply. force: true (admin token, with taskId, task in your own team) claims that task past all of those except a hold on the task itself, like Start with override on the dashboard; it never bypasses a live worker, the mission budget, scope-undeclared serialization, provider walls or account limits, and it is recorded. When nothing is claimed the reply starts "Nothing claimed:" and names the server\'s reason, plus the specific gate that excluded taskId when one was given.',
     update_progress: '{ workerId?, progress (required), message?, plan?, kind? (coordination|engineering|research|writing|design|analysis|observation — the shape of the work you are actually doing; recorded only if the task has no kind yet, so reporting one for an already-classified task is a harmless no-op), inputTokens?, outputTokens?, costUsd?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted. inputTokens/outputTokens/costUsd are self-reported usage, written as a plain overwrite (a later, smaller report replaces rather than merges with the prior value) — the only way an interactive MCP session, with no runner watching the process, gets counted in get_usage_stats.',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]), inputTokens?, outputTokens?, costUsd? } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). inputTokens/outputTokens/costUsd are self-reported usage — same plain overwrite as update_progress (a later, smaller report replaces rather than merges with the prior value), the only way an interactive MCP session\'s cost gets counted in get_usage_stats. workerId auto-resolved from context if omitted',
@@ -505,7 +565,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
       + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
-    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
+    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments?, includeCiFailures? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. When the PR has fix attempts (after CI #N / after review #N, including one that opened a PR of its own after a failed resume) they are listed with each attempt\'s errorClass, first key line and any mismatch flag. Stored run-evidence objects (kind, size, id) are listed when the task has any; read one with read_evidence. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state. When CI is red and you need to know why, pass includeCiFailures:true: for each failing check it returns the job, the failing step and the last ~150 log lines (timestamps and escape codes stripped, secrets and production figures redacted, size-capped); a job whose log is unavailable comes back as its name and URL only.',
     list_prs: '{ state? ("open" default | "attention" = conflicts and red CI | "conflict" | "ci_failed" | "merged"), workspaceId? (omit: every workspace you reach), sinceDays? (merged: default 7, max 90), limit? (default 20, max 50) } — PRs buildd opened or adopted, one line each: number, state, task title, workspace, mission, task id, url, plus when it matters: NEEDS YOU (why), CI fix attempts so far, an agent already fixing or reviewing it, a mission-branch base, a stale state. Order: waiting on you, red nobody is fixing, red being fixed, the rest. attention lists only conflicts, red CI and PRs waiting on you. Closed PRs are never listed; read one with get_pr.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. A `review_failed` state carries `failureReason` — the reviewer worker\'s own crash/exit reason (e.g. budget exhausted, never started), when one was recorded — so a dropped verdict is explained rather than bare. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
@@ -530,6 +590,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_skill: '{ slug (required), workspaceId? } — fetch full skill body and config by slug. Returns the same shape register_skill accepts, so the result can be edited and passed back to update_skill [admin]',
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null), whenToUse? (20–300 chars, null clears), notFor? (≤200 chars, null clears) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
+    manage_evidence_backends: '{ action: "list" | "get" | "create" | "update" | "delete" | "verify", backendId? (required except list/create), workspaceId? (create: scope the backend to one workspace; omit for the team default), provider? (create: "s3" | "r2" | "s3_compatible" | "buildd_default"), endpoint? (https URL; required for r2 and s3_compatible; must resolve to a public address), region?, bucket? (required except buildd_default), prefix? (one path segment, default "evidence"), forcePathStyle?: boolean, sse? ("none" | "AES256" | "aws:kms"), kmsKeyId? (only with aws:kms), retentionDays? (1-3650, default 30), maxBytesPerTask? (bytes, default 8 MiB), credentials? ({ accessKeyId, secretAccessKey, sessionToken? }; required for create, replaces the stored credential on update; never returned) } — where a team\'s run evidence is written: a workspace backend beats the team backend, which beats the buildd-managed bucket. create and update verify the bucket on save (PUT, GET, DELETE of one probe object under {prefix}/.buildd-probe/, never a list) and report it; a failing probe does not reject the save or affect any task. verify re-runs the probe and warns when the probe object is readable without credentials. provider and workspaceId cannot change after create. [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
     list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
     get_discrepancy: '{ discrepancyId (required) } — one ledger row, including `evidence`: the exact file/symbol/route/migration the checker read and what it found. Never a similarity score — spec_compare already covers "how related is this text."',
@@ -537,7 +598,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean (check-ins, default true for a new auto mission: an hourly stuck check that starts the organizer only when the mission is stuck; the next step is planned when work finishes either way. false opts out), heartbeatChecklist?: string (the organizer checklist), activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), executor?: "runner" | "local" (default "runner" — who runs its tasks. "local": a person runs them from their own interactive session (Claude Code + local subagents); background runners never auto-claim them, the session claims each one with claim_task {taskId} and gets a normal tracked worker (PR link, cost), then finishes it with complete_task. Use this — not startMode=held — for work you run locally: held is a pure pause, blocks interactive claims too, and wins over executor), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable; local-executor missions have tasks only an interactive session claims [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId? (UUID, or a title to find), title? (get/update without missionId: finds by title, no rename), query? (list/get: title substring), description?, workspaceId? (title lookup: scope; update by UUID: move), initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status? (list: default "open" = not completed/archived, or all when query given; "all" for history), limit? (list: default 20, newest activity first), taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean (check-ins, default true for a new auto mission: an hourly stuck check that starts the organizer only when the mission is stuck; the next step is planned when work finishes either way. false opts out), heartbeatChecklist?: string (the organizer checklist), activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission parallel cap, integer 1–20; overrides the workspace cap up or down for its tasks), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), executor?: "runner" | "local" (default "runner" — who runs its tasks. "local": a person runs them from their own interactive session (Claude Code + local subagents); background runners never auto-claim them, the session claims each one with claim_task {taskId} and gets a normal tracked worker (PR link, cost), then finishes it with complete_task. Use this — not startMode=held — for work you run locally: held is a pure pause, blocks interactive claims too, and wins over executor), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose, graded by one of two graders set by optional grader:"auto"|"api"|"runner" on the criterion (else the workspace gitConfig.criteriaGrader, else "auto"): "api" makes one inference call on the team\'s API key (per-token; with no key the criterion reads NOT_EVALUATED saying so, it never switches grader), "runner" dispatches a read-only verification task per criterion that a runner agent grades asynchronously on the team\'s own seat (OAuth included; the criterion reads PENDING "verifying on runner…" meanwhile, and says "waiting for a runner" if nothing claims it), "auto" uses api when a key resolves and runner otherwise. A prose verdict can still come back NOT_EVALUATED (unsure, failed run) which never counts as a pass, so "description" REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string+grader?:"auto"|"api"|"runner", metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out. Independently, a mission whose merged PRs changed UI files cannot complete without a passed audit; the refusal says so), surfaceAuditWaiver?: string (update only, a person\'s call: the reason (10+ chars) a mission that changed UI ships without a visual audit. Recorded on the mission and lets completion through; an in-task agent is refused), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable; local-executor missions have tasks only an interactive session claims [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "planned" | "active" | "paused" | "completed" | "archived" (set by a person; nothing derives or auto-advances it), priority?: number, ownerUserId?: string (a member of the initiative\'s team; null falls back to the creator; create defaults to the caller), targetDate?: "YYYY-MM-DD" | null (optional calendar target). Initiatives carry no KPIs: put checkable outcomes in mission goalCriteria. } — an initiative is an execution-free container above missions (initiative → mission → task), like a Linear initiative. Progress is missions done over missions. "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; gitConfig.criteriaGrader: "auto"|"api"|"runner" sets the workspace default grader for prose goal criteria; to apply a detected policyConfig from action=init, use gitConfig.policyConfig; merge-policy paths are detected by action=init, never typed), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), releaseBranch? (branch_merge — e.g. "dev"; when set, releases promote an open releaseBranch→prodBranch PR instead of merging the completing task\'s own branch directly; distinct from prodBranch, and NOT the same field as ref, which only applies to workflow_dispatch/script), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy (or, when releaseBranch is set, promotes releaseBranch to prodBranch via an open release PR instead), "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Paths are grouped into named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
@@ -546,13 +607,14 @@ export function buildParamsDescription(actions: readonly string[]): string {
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
-    explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
+    explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field; a task or PR subject also carries `evidenceObjects[]` (id, kind, bytes, state; read with read_evidence). Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
     get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns errors caught from agent tool output: every non-zero Bash exit (redacted command, exit code, output tail) plus known patterns (cd: No such file, git fatal, OOM, etc.). taskId also returns the evidence record written when the task ended (error class, key lines, last failing command, CI checks) and any mismatch flags — the answer to "why did it fail". workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
-    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     get_page_source: '{ workerId?, sha? (commit to audit; default the trunk head), prNumber? (use this PR\'s head commit instead, e.g. when trunk deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto). Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
@@ -583,7 +645,7 @@ export function buildMemoryDescription(actions: readonly string[]): string {
     save: '{ type (required: gotcha|pattern|decision|discovery|architecture), title (required), content (required), files? (array), tags? (array), project?, source?, supersedes? (string[] of memory IDs this entry replaces — memory ids ARE the chunk source_ids in the team memory namespace; superseded entries drop out of default knowledge retrieval; response includes the superseded count) }',
     get: '{ id (required) }',
     update: '{ id (required), title?, content?, type?, files? (array), tags?, project?, supersedes? (string[] of memory IDs this updated entry replaces; superseded entries drop out of default knowledge retrieval) }',
-    query_knowledge: '{ query (required), corpus? (string or string[] — memory|task|pr|plan|artifact|code|docs|spec|initiative, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Pass corpus as an array to query multiple corpora in one call and get a single rank-fused result set — e.g. corpus=["memory","task"] covers prior lessons AND recent outcomes without two round trips. Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
+    query_knowledge: '{ query (required), corpus? (string or string[] — memory|task|pr|plan|artifact|code|docs|spec|initiative|evidence, default memory), mode? (hybrid|vector|lexical, default hybrid), topK? (default 10) } — semantic+lexical hybrid search across the team\'s knowledge: prior memories, completed task outcomes, PRs, approved plans, artifacts, and initiatives. Pass corpus as an array to query multiple corpora in one call and get a single rank-fused result set — e.g. corpus=["memory","task"] covers prior lessons AND recent outcomes without two round trips. Use corpus=evidence to search the error-bearing lines of stored run evidence (failing tests, error blocks, CI failure digests; read the full object with read_evidence). Use corpus=code to search this workspace\'s codebase (must be ingested first), corpus=spec to search spec/docs chunks. Also use corpus=memory BEFORE saving a new memory to detect near-duplicates (skip or update rather than adding another entry for the same gotcha). Returns ranked results with sourceUrl. NOTE: corpus=memory and corpus=initiative are team-scoped ({teamId}:{corpus}); all other corpora use {workspaceId}:{corpus}.',
   };
 
   const lines = actions
@@ -868,6 +930,35 @@ function formatGateOverview(gates: GateAnalytics, limit: number): string {
   if (omitted > 0) lines.push(`  … ${omitted} more gate(s) (raise limit, max ${FAILURE_SIGNATURES_MAX})`);
   lines.push('');
   lines.push('Bypass % = bypassed / (bypassed + rejected + warned). For a lint, that IS its false-positive rate.');
+  return lines.join('\n');
+}
+
+const fmtDuration = (ms: number): string => {
+  const min = Math.round(ms / 60_000);
+  if (min < 60) return `${min}m`;
+  return `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}m`;
+};
+
+/**
+ * Landing scoreboard: how long approved-and-green PRs wait to merge, and how
+ * many are waiting past the target right now. Unmeasured landings are reported
+ * rather than folded in as zeros — a missing clock is not a fast merge.
+ */
+function formatLandingMetrics(landing: LandingMetrics): string {
+  const { timeToLand: t, stuck } = landing;
+  const lines: string[] = [`**PR landing — last ${landing.window}**`];
+  lines.push(
+    t
+      ? `  time to land (approved + green → merged): p50 ${fmtDuration(t.p50Ms)} · p90 ${fmtDuration(t.p90Ms)} · max ${fmtDuration(t.maxMs)} · ${t.count} measured of ${landing.landed} landed`
+      : `  time to land: no measured landings (${landing.landed} landed, ${landing.unmeasured} unmeasured)`,
+  );
+  if (t && landing.unmeasured > 0) lines.push(`  ${landing.unmeasured} landed with no derivable start (excluded from the percentiles)`);
+  lines.push(
+    stuck.count > 0
+      ? `  stuck: ${stuck.count} PR(s) approved and green for over ${fmtDuration(stuck.thresholdMs)} without merging · oldest ${fmtDuration(stuck.oldestMs ?? 0)}`
+      : `  stuck: none past ${fmtDuration(stuck.thresholdMs)}`,
+  );
+  lines.push('  Only merges through the landing function are measured; a merge done directly on GitHub is not.');
   return lines.join('\n');
 }
 
@@ -1540,6 +1631,18 @@ export async function handleBuilddAction(
 
   switch (action) {
     case 'list_tasks': {
+      // Every filter here narrows the result, so one that is misspelled, malformed
+      // or unsupported must fail loudly: dropped silently, the call returns the
+      // whole workspace and reads as a filtered answer.
+      const allowedListTaskParams = new Set(['workspaceId', 'limit', 'offset', 'status', 'missionId']);
+      const unknownListParams = Object.keys(params).filter(key => !allowedListTaskParams.has(key));
+      if (unknownListParams.length > 0) {
+        throw new Error(`Unknown list_tasks parameter(s): ${unknownListParams.join(', ')}. Supported: ${[...allowedListTaskParams].join(', ')}.`);
+      }
+      if (params.status !== undefined && !['active', 'completed', 'failed', 'cancelled'].includes(params.status as string)) {
+        throw new Error(`list_tasks status must be one of: active, completed, failed, cancelled — received ${JSON.stringify(params.status)}.`);
+      }
+      if (params.missionId !== undefined) requireFullUuid(params.missionId, 'missionId');
       // An explicit workspaceId (the guard above asks for one) wins over the default.
       const wsId = params.workspaceId
         ? await resolveWorkspaceId(api, params.workspaceId, ctx)
@@ -1554,19 +1657,20 @@ export async function handleBuilddAction(
       // get_task/get_artifact one row at a time. A terminal status here switches
       // the REST route into its audit mode: exact-status match, no 24h window,
       // fully paginated, with per-row deliverable attribution.
-      const validStatuses = ['active', 'completed', 'failed', 'cancelled'];
-      const requestedStatus = typeof params.status === 'string' ? params.status : 'active';
-      const status = validStatuses.includes(requestedStatus) ? requestedStatus : 'active';
+      const status = typeof params.status === 'string' ? params.status : 'active';
       const isTerminalAudit = status !== 'active';
       // Server handles status filter, workspace scoping, sort (pending-first /
       // priority-desc, or updatedAt-desc for a terminal audit), and pagination —
       // no client-side fan-out needed.
       const query = new URLSearchParams({ status, limit: String(limit), offset: String(offset) });
       if (wsId) query.set('workspaceId', wsId);
+      const missionId = typeof params.missionId === 'string' ? params.missionId : null;
+      if (missionId) query.set('missionId', missionId);
       const data = await api(`/api/tasks?${query.toString()}`);
       const paginated: any[] = data.tasks || [];
+      const scope = missionId ? ` in mission ${missionId}` : '';
 
-      if (paginated.length === 0 && offset === 0) return text(`No ${status} tasks found.`);
+      if (paginated.length === 0 && offset === 0) return text(`No ${status} tasks found${scope}.`);
 
       const total: number = data.total ?? paginated.length;
       const pendingCount: number = data.pendingCount ?? paginated.filter((t: any) => t.status === 'pending').length;
@@ -1589,8 +1693,8 @@ export async function handleBuilddAction(
       }).join('\n\n');
 
       const header = isTerminalAudit
-        ? `${total} ${status} task${total === 1 ? '' : 's'}:`
-        : `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
+        ? `${total} ${status} task${total === 1 ? '' : 's'}${scope}:`
+        : `${total} active task${total === 1 ? '' : 's'}${scope} (${pendingCount} pending, ${total - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
       const claimHint = isTerminalAudit || ctx.surface === 'chat'
         ? ''
@@ -1605,7 +1709,14 @@ export async function handleBuilddAction(
       const includes = Array.isArray(includeParam)
         ? (includeParam as string[])
         : ['workers', 'artifacts'];
-      const qs = includes.length > 0 ? `?include=${encodeURIComponent(includes.join(','))}` : '';
+      const unknownIncludes = includes.filter(i => !GET_TASK_INCLUDES.includes(i));
+      if (unknownIncludes.length > 0) {
+        throw new Error(`get_task include must be drawn from: ${GET_TASK_INCLUDES.join(', ')} — unsupported: ${unknownIncludes.join(', ')}.`);
+      }
+      // `scheduling` is rendered from the task row the route already returns;
+      // only workers/artifacts need a server-side expansion.
+      const serverIncludes = includes.filter(i => i !== 'scheduling');
+      const qs = serverIncludes.length > 0 ? `?include=${encodeURIComponent(serverIncludes.join(','))}` : '';
 
       const task = await api(`/api/tasks/${encodeURIComponent(taskId)}${qs}`).catch((e: unknown) => {
         // The id is often a mission's, read off a mission list: say where to go.
@@ -1669,6 +1780,7 @@ export async function handleBuilddAction(
       if (task.mission) {
         lines.push(`**Mission:** ${task.mission.title} (${task.mission.id}) — ${task.mission.status}`);
       }
+      if (includes.includes('scheduling')) lines.push(...formatTaskScheduling(task));
       if (task.description) {
         const desc = params.fullDescription === true
           ? task.description
@@ -1716,6 +1828,8 @@ export async function handleBuilddAction(
       if (result?.error && typeof result.error === 'string' && !result.evidence) {
         lines.push('', `**Error:** ${String(result.error).slice(0, 400)}`);
       }
+      const evidenceObjectLines = formatEvidenceObjects(task.evidenceObjects);
+      if (evidenceObjectLines.length > 0) lines.push('', ...evidenceObjectLines);
 
       const workers = Array.isArray(task.workers) ? task.workers : [];
       if (workers.length > 0) {
@@ -2423,6 +2537,9 @@ export async function handleBuilddAction(
           }).join('\n')}\nRead one: action=get_task { taskId }, action=get_error_traces { taskId }.`
         : '';
 
+      const evidenceObjectLines = formatEvidenceObjects(data.evidenceObjects);
+      const evidenceObjectsSection = evidenceObjectLines.length > 0 ? `\n${evidenceObjectLines.join('\n')}` : '';
+
       return text([
         `**PR #${pr.number}: ${pr.title ?? '(no title)'}**`,
         `State: ${pr.state} | ${mergeableLine}`,
@@ -2436,6 +2553,7 @@ export async function handleBuilddAction(
         commentsSection,
         ciFailuresSection,
         attemptsSection,
+        evidenceObjectsSection,
       ].filter(Boolean).join('\n'));
     }
 
@@ -4090,6 +4208,90 @@ export async function handleBuilddAction(
       return text(`${traces.length} error trace(s) for ${scope}:\n\n${summary}${evidenceBlock.length > 0 ? `\n\n${evidenceBlock.join('\n')}` : ''}`);
     }
 
+    case 'read_evidence': {
+      // Every read goes through the evidence routes, which check reach and the
+      // object's task lineage and audit the read. This never asks for, and the
+      // routes never return, a presigned URL.
+      const strParam = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+      const taskIdParam = strParam(params.taskId);
+      const evidenceId = strParam(params.evidenceId);
+      const prNumber = typeof params.prNumber === 'number' ? params.prNumber
+        : typeof params.prNumber === 'string' && /^\d+$/.test(params.prNumber) ? Number(params.prNumber) : null;
+      if (!taskIdParam && !evidenceId && !prNumber) {
+        return errorResult('read_evidence needs taskId, prNumber or evidenceId.');
+      }
+      const kind = strParam(params.kind);
+      const readQs = new URLSearchParams();
+      if (typeof params.tail === 'number' || typeof params.tail === 'string') readQs.set('tail', String(params.tail));
+      if (strParam(params.grep)) readQs.set('grep', params.grep as string);
+      if (typeof params.cursor === 'number' || strParam(params.cursor)) readQs.set('cursor', String(params.cursor));
+      const wantsRead = !!evidenceId || [...readQs.keys()].length > 0;
+      const kindQs = kind ? `kind=${encodeURIComponent(kind)}` : '';
+
+      type EvidenceRow = { id: string; taskId: string; rootTaskId: string; kind: string; bytes: number; uploadState: string; createdAt: string; prNumber: number | null };
+      const kib = (n: number) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.round(n / 1024))} KiB`);
+      const row = (o: EvidenceRow) =>
+        `- ${o.kind} ${kib(o.bytes)} [${o.uploadState}] ${o.createdAt} task ${o.taskId.slice(0, 8)}${o.prNumber ? ` PR #${o.prNumber}` : ''} (id: ${o.id})`;
+
+      let objects: EvidenceRow[] = [];
+      let scope: string;
+      let readVia: (o: EvidenceRow) => string;
+      if (evidenceId) {
+        const id = requireFullUuid(evidenceId, 'evidenceId');
+        let owner = taskIdParam;
+        if (!owner) {
+          const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+          if (!wsId) return errorResult('read_evidence with only evidenceId needs a workspace: pass workspaceId or taskId.');
+          const data = await api(`/api/evidence?workspaceId=${encodeURIComponent(wsId)}&evidenceId=${encodeURIComponent(id)}`);
+          owner = data?.objects?.[0]?.taskId ?? null;
+          if (!owner) return errorResult(`Evidence object ${id} not found.`);
+        }
+        objects = [{ id, taskId: owner } as EvidenceRow];
+        scope = `evidence ${id}`;
+        readVia = () => owner!;
+      } else if (taskIdParam) {
+        const data = await api(`/api/tasks/${encodeURIComponent(taskIdParam)}/evidence${kindQs ? `?${kindQs}` : ''}`);
+        objects = (data?.objects ?? []) as EvidenceRow[];
+        const resolvedTask = (data?.taskId as string) || taskIdParam;
+        scope = `task ${resolvedTask}`;
+        readVia = () => resolvedTask;
+      } else {
+        const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+        if (!wsId) return errorResult('read_evidence with prNumber needs a workspace: pass workspaceId.');
+        const data = await api(`/api/evidence?workspaceId=${encodeURIComponent(wsId)}&prNumber=${prNumber}${kindQs ? `&${kindQs}` : ''}`);
+        objects = (data?.objects ?? []) as EvidenceRow[];
+        scope = `PR #${prNumber}`;
+        readVia = (o) => o.taskId;
+      }
+
+      const kindLabel = kind ? `${kind} ` : '';
+      if (!wantsRead) {
+        if (objects.length === 0) return text(`No ${kindLabel}evidence stored for ${scope}.`);
+        return text(`${objects.length} ${kindLabel}evidence object(s) for ${scope}, newest first:\n${objects.map(row).join('\n')}\n\nRead one with tail or grep (and evidenceId to pick a specific object).`);
+      }
+
+      const target = evidenceId ? objects[0] : objects.find(o => o.uploadState === 'stored');
+      if (!target) {
+        return text(objects.length === 0
+          ? `No ${kindLabel}evidence stored for ${scope}.`
+          : `No readable ${kindLabel}evidence for ${scope}: ${objects.length} object(s), none stored.\n${objects.map(row).join('\n')}`);
+      }
+      const qs = new URLSearchParams(readQs);
+      qs.set('evidenceId', target.id);
+      const read = await api(`/api/tasks/${encodeURIComponent(readVia(target))}/evidence?${qs}`);
+      const o = read.object as EvidenceRow;
+      const span = read.fromLine ? `lines ${read.fromLine}-${read.toLine}` : 'no lines';
+      const more = read.truncated
+        ? read.cursor
+          ? `\nTRUNCATED at 64 KB: continue with cursor=${read.cursor}.`
+          : '\nTRUNCATED at 64 KB: earlier lines were dropped; narrow with grep or a smaller tail.'
+        : '';
+      const others = !evidenceId && objects.length > 1 ? `\n(${objects.length - 1} other object(s) for ${scope}; pass evidenceId to read one.)` : '';
+      return text(
+        `${o.kind} evidence ${o.id} (task ${read.taskId}, ${span}, ${read.lineCount} line(s) returned, ${read.scannedLines} scanned)${more}${others}\n\n${read.text || '(no matching lines)'}`,
+      );
+    }
+
     case 'get_budget_forecast': {
       const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
       const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
@@ -4362,7 +4564,9 @@ export async function handleBuilddAction(
         if (gateFamily) return text(formatGateFamily(gateFamily, window));
         const gates = data?.gates as GateAnalytics | undefined;
         if (!gates) return text('No gate analytics available.');
-        return text(formatGateOverview(gates, limit));
+        const landing = data?.landing as LandingMetrics | undefined;
+        const overview = formatGateOverview(gates, limit);
+        return text(landing ? `${overview}\n\n${formatLandingMetrics(landing)}` : overview);
       }
 
       const lookup = data?.lookup as FailureSignatureLookup | undefined;
@@ -4736,6 +4940,7 @@ export async function handleBuilddAction(
           if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (params.branchStrategy !== undefined) body.branchStrategy = params.branchStrategy;
           if (params.autoSurfaceAudit !== undefined) body.autoSurfaceAudit = params.autoSurfaceAudit;
+          if (params.surfaceAuditWaiver !== undefined) body.surfaceAuditWaiver = params.surfaceAuditWaiver;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           // Names the calling worker's task on the mission-feed entry this PATCH
           // produces, so an in-task agent's edit reads as "agent (task X)"
@@ -5709,6 +5914,79 @@ export async function handleBuilddAction(
       return text(`Experiment updated:\n${line(data.experiment)}${note}`);
     }
 
+    case 'manage_evidence_backends': {
+      const op = params.action as string;
+      const ops = ['list', 'get', 'create', 'update', 'delete', 'verify'];
+      if (!op || !ops.includes(op)) {
+        throw new Error(`action must be one of: ${ops.join(', ')}`);
+      }
+
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : null;
+      const q = wsId ? `?workspaceId=${encodeURIComponent(wsId)}` : '';
+
+      const bytes = (n: number) => (n >= 1048576 ? `${Math.round(n / 1048576)} MiB` : `${Math.round(n / 1024)} KiB`);
+      const line = (b: any) =>
+        `- ${b.workspaceId ? `workspace ${b.workspaceId}` : 'team default'}: ${b.provider}` +
+        `${b.provider === 'buildd_default' ? '' : ` bucket=${b.bucket}${b.endpoint ? ` endpoint=${b.endpoint}` : ''}`}` +
+        ` prefix=${b.prefix} sse=${b.sse} retention=${b.retentionDays}d cap=${bytes(b.maxBytesPerTask)}/task` +
+        ` [${b.status}${b.lastVerifiedAt ? `, verified ${b.lastVerifiedAt}` : ''}]${b.lastError ? ` (${b.lastError})` : ''} (id: ${b.id})`;
+      const verification = (v: any) => {
+        if (!v) return '';
+        const head = v.status === 'ok' ? 'Verified: ok.' : `Verification FAILING: ${v.error}`;
+        const warns = (v.warnings ?? []).map((w: string) => `\nWarning: ${w}`).join('');
+        return `\n${head}${warns}`;
+      };
+
+      if (op === 'list') {
+        const data = await api(`/api/evidence-backends${q}`);
+        const list = (data?.backends ?? []) as any[];
+        if (list.length === 0) {
+          return text('No evidence backends configured: run evidence goes to the buildd-managed bucket. Configure one with manage_evidence_backends action=create.');
+        }
+        return text(`Evidence backends (${list.length}):\n${list.map(line).join('\n')}`);
+      }
+
+      if (op === 'create') {
+        if (!params.provider) throw new Error('provider is required for create');
+        const body: Record<string, unknown> = { provider: params.provider };
+        if (wsId) body.workspaceId = wsId;
+        for (const f of ['endpoint', 'region', 'bucket', 'prefix', 'forcePathStyle', 'sse', 'kmsKeyId', 'retentionDays', 'maxBytesPerTask', 'credentials'] as const) {
+          if (params[f] !== undefined) body[f] = params[f];
+        }
+        const data = await api('/api/evidence-backends', { method: 'POST', body: JSON.stringify(body) });
+        return text(`Created evidence backend:\n${line(data.backend)}${verification(data.verification)}`);
+      }
+
+      const id = requireFullUuid(params.backendId, 'backendId');
+
+      if (op === 'get') {
+        const data = await api(`/api/evidence-backends/${id}${q}`);
+        return text(`${line(data.backend)}\nCredential: ${data.backend.hasCredential ? 'set' : 'none'}`);
+      }
+
+      if (op === 'verify') {
+        const data = await api(`/api/evidence-backends/${id}/verify${q}`, { method: 'POST' });
+        return text(`Probe finished at ${data.verifiedAt}.${verification(data)}`);
+      }
+
+      if (op === 'delete') {
+        await api(`/api/evidence-backends/${id}${q}`, { method: 'DELETE' });
+        return text(`Evidence backend ${id} deleted. Its credential was removed; runs fall back to the next backend in precedence.`);
+      }
+
+      const patch: Record<string, unknown> = {};
+      for (const f of ['endpoint', 'region', 'bucket', 'prefix', 'forcePathStyle', 'sse', 'kmsKeyId', 'retentionDays', 'maxBytesPerTask', 'credentials'] as const) {
+        if (params[f] !== undefined) patch[f] = params[f];
+      }
+      if (Object.keys(patch).length === 0) {
+        throw new Error('update needs at least one of: endpoint, region, bucket, prefix, forcePathStyle, sse, kmsKeyId, retentionDays, maxBytesPerTask, credentials');
+      }
+      const data = await api(`/api/evidence-backends/${id}${q}`, { method: 'PATCH', body: JSON.stringify(patch) });
+      return text(`Evidence backend updated:\n${line(data.backend)}${verification(data.verification)}`);
+    }
+
     case 'manage_model_tiers': {
 
       const wsId = params.workspaceId
@@ -6290,7 +6568,7 @@ async function fanOutCorpora(
   const failures: CorpusFailure[] = [];
   const perCorpus = await Promise.all(
     corpora.map(async (c): Promise<QueryResult[]> => {
-      if (ctx.isSensitive && (c === 'memory' || c === 'initiative')) return [];
+      if (ctx.isSensitive && SENSITIVE_WITHHELD_CORPORA.has(c)) return [];
       if (c === 'memory' && !normalizeProject(ctx.project)) {
         failures.push({ corpus: c, reason: NO_MEMORY_SCOPE });
         return [];
@@ -6455,6 +6733,9 @@ export async function handleRecallAction(
 
   if (ctx.isSensitive && scope === 'memory') {
     return text('(No results — memory access is disabled for sensitive workspaces.)');
+  }
+  if (ctx.isSensitive && scope === 'evidence') {
+    return text('(No results — evidence is not indexed for sensitive workspaces.)');
   }
   if (scope === 'memory' && !normalizeProject(ctx.project)) {
     return errorResult(`${NO_MEMORY_SCOPE} — recall scope=memory is unavailable`);
@@ -7099,6 +7380,9 @@ export async function handleMemoryAction(
 
       if (ctx.isSensitive && corpus === 'memory') {
         return text('(No results — memory access is disabled for sensitive workspaces.)');
+      }
+      if (ctx.isSensitive && corpus === 'evidence') {
+        return text('(No results — evidence is not indexed for sensitive workspaces.)');
       }
       if (corpus === 'memory' && !normalizeProject(ctx.project)) {
         throw new Error(`${NO_MEMORY_SCOPE} — query_knowledge corpus=memory is unavailable`);

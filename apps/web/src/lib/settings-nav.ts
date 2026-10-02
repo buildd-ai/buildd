@@ -17,6 +17,7 @@ export type SettingsSectionId =
   | 'github'
   | 'notifications'
   | 'connectors'
+  | 'storage'
   | 'ai'
   | 'models'
   | 'workspaces';
@@ -99,6 +100,12 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
         label: 'MCP connectors',
         href: '/app/settings/connectors',
         description: 'Outside tools your agents can call, and which workspaces get them.',
+      },
+      {
+        id: 'storage',
+        label: 'Storage',
+        href: '/app/settings/storage',
+        description: 'The bucket where run evidence is kept: logs, test reports and transcripts.',
       },
     ],
   },

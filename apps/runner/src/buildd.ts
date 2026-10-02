@@ -35,6 +35,19 @@ export function getLastServerContactAt(): number {
  */
 const FETCH_TIMEOUT_MS = Number(process.env.BUILDD_FETCH_TIMEOUT_MS ?? 30_000);
 
+/** Outcome of one path-claim request — see BuilddClient.claimPaths. */
+export type PathClaimResponse =
+  | { kind: 'claimed' }
+  | {
+      kind: 'conflict';
+      blockingTaskId: string;
+      blockingTaskTitle?: string | null;
+      blockingPath?: string | null;
+      /** Every requested path that is held; null when the server did not say (treat all as held). */
+      blocked?: Array<{ path: string; blockingTaskId: string; blockingPath?: string | null }> | null;
+    }
+  | { kind: 'unavailable'; reason: 'timeout' | 'error' };
+
 export class BuilddClient {
   private config: LocalUIConfig;
   private outbox: Outbox | null = null;
@@ -290,6 +303,9 @@ export class BuilddClient {
     sessionBudgetCapped?: boolean;
     // Steering-delivery crash: classify as infra_failure (must not consume retry)
     steeringDelivery?: boolean;
+    /** The CLI rejected the session's model id (stderr marker); rejectedModel names it when readable. */
+    unrecognizedModel?: boolean;
+    rejectedModel?: string;
     // Set by restoreWorkersFromDisk when this 'failed' write reconciles a
     // session whose process died without ever reporting a terminal status —
     // never sent by a live session. Tells the server's terminal-record ledger
@@ -346,6 +362,16 @@ export class BuilddClient {
     // Incremental file paths touched since last check-in (from git diff --name-only).
     // Server accumulates into workers.observedTouches for passive collision detection (§6d).
     touchedPaths?: string[];
+    /** Path-claim calls that went ahead degraded since the last report (a delta). */
+    pathClaimDegraded?: number;
+    /** Pre-push/completion sweep: the server re-offers every path in touchedPaths, not only new ones. */
+    checkpointSweep?: boolean;
+    /**
+     * Sent with a `Deferred:` failure when enforce-mode path claims found a
+     * collision: the colliding path, its holder and the checkpoint written. The
+     * server records it and holds the requeued task until the holder releases.
+     */
+    pathCollision?: Record<string, unknown>;
     /**
      * Measurement-only write: accepted on an ALREADY-TERMINAL worker, which is
      * the only way the terminal payload survives when the agent completed the
@@ -366,11 +392,6 @@ export class BuilddClient {
     }, [409]);
   }
 
-  /**
-   * Call POST /api/tasks/{taskId}/path-claim with a 200ms timeout.
-   * Returns the parsed response body on success (200 or 409), or null on
-   * timeout / network error (fail-open — caller must not block on null).
-   */
   /**
    * Cloud --once park (docs/design/cloudflare-sandbox-runner.md, Phase 2):
    * mark the worker parked after its park bundle is uploaded. The server picks
@@ -415,16 +436,42 @@ export class BuilddClient {
     }
   }
 
-  async claimPaths(taskId: string, paths: string[]): Promise<{ claimed: boolean; blockingTaskId?: string } | null> {
+  /**
+   * POST /api/tasks/{taskId}/path-claim with a 200ms timeout.
+   *
+   * Three answers, kept distinct because enforcement treats them differently:
+   *  - `claimed`: every path is leased to this task.
+   *  - `conflict`: a confirmed live holder (the server's 409). Nothing was
+   *    granted — declarations are all-or-nothing — and `blocked` lists every
+   *    requested path that is held, so a caller can keep the free ones queued.
+   *  - `unavailable`: timeout, network error, 5xx, or a body that is neither.
+   *    Fail-open: the caller must not block on it.
+   */
+  async claimPaths(taskId: string, paths: string[]): Promise<PathClaimResponse> {
     try {
-      const result = await this.fetch(`/api/tasks/${taskId}/path-claim`, {
+      const body = await this.fetch(`/api/tasks/${taskId}/path-claim`, {
         method: 'POST',
         body: JSON.stringify({ paths }),
         signal: AbortSignal.timeout(200),
-      }, [409]);
-      return result as { claimed: boolean; blockingTaskId?: string };
-    } catch {
-      return null;
+      }, [409]) as Record<string, unknown> | null;
+      if (body?.claimed === true) return { kind: 'claimed' };
+      if (body?.claimed === false && typeof body.blockingTaskId === 'string') {
+        const blocked = Array.isArray(body.blockedPaths)
+          ? (body.blockedPaths as Array<Record<string, unknown>>).filter(b => typeof b?.path === 'string' && typeof b?.blockingTaskId === 'string')
+              .map(b => ({ path: b.path as string, blockingTaskId: b.blockingTaskId as string, blockingPath: typeof b.blockingPath === 'string' ? b.blockingPath : null }))
+          : null;
+        return {
+          kind: 'conflict',
+          blockingTaskId: body.blockingTaskId,
+          blockingTaskTitle: typeof body.blockingTaskTitle === 'string' ? body.blockingTaskTitle : null,
+          blockingPath: typeof body.blockingPath === 'string' ? body.blockingPath : null,
+          blocked,
+        };
+      }
+      return { kind: 'unavailable', reason: 'error' };
+    } catch (err) {
+      const name = (err as { name?: string } | null)?.name;
+      return { kind: 'unavailable', reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'error' };
     }
   }
 
@@ -469,6 +516,8 @@ export class BuilddClient {
       agentInstructions?: string;
       useClaudeMd: boolean;
       maxBudgetUsd?: number;
+      /** Workspace opt-in; absent = advisory. See path-claim-enforcement.ts. */
+      pathClaimEnforcement?: 'advisory' | 'enforce' | null;
     };
     configStatus: 'unconfigured' | 'admin_confirmed';
   }> {
@@ -542,6 +591,55 @@ export class BuilddClient {
     );
     if (!data?.uploadUrl || !data?.storageKey) return null;
     return { uploadUrl: data.uploadUrl as string, storageKey: data.storageKey as string };
+  }
+
+  /**
+   * Ask for a presigned PUT for one piece of run evidence
+   * (docs/specs/byo-evidence-storage.md). The server resolves the team's
+   * backend, derives the key, enforces the per-task byte cap and binds
+   * `sizeBytes` into the signature; PUT exactly that many bytes within 15 min.
+   *
+   * Evidence never fails a task, so every refusal (sensitive workspace, over
+   * cap, storage unavailable, not our worker) and any transport error is null.
+   */
+  async requestEvidenceUploadUrl(
+    workerId: string,
+    req: { kind: 'command_output' | 'test_report' | 'transcript'; seq: number; sizeBytes: number },
+  ): Promise<{ uploadUrl: string; key: string; evidenceId?: string } | null> {
+    try {
+      const data = await this.fetch(
+        `/api/workers/${workerId}/evidence-upload-url`,
+        { method: 'POST', body: JSON.stringify({ kind: req.kind, seq: req.seq, sizeBytes: req.sizeBytes }) },
+        [400, 401, 403, 404, 409, 413, 424, 503],
+      );
+      if (typeof data?.uploadUrl !== 'string' || typeof data?.key !== 'string') return null;
+      return {
+        uploadUrl: data.uploadUrl,
+        key: data.key,
+        ...(typeof data.evidenceId === 'string' ? { evidenceId: data.evidenceId } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * After a 2xx PUT to the presigned URL: ask the server to HEAD the object and
+   * mark the evidence row `stored`, so the read routes serve it. True only when
+   * the server reports it stored. Best-effort: every refusal or transport error
+   * is false, never a throw.
+   */
+  async confirmEvidenceUpload(workerId: string, evidenceId: string): Promise<boolean> {
+    try {
+      const data = await this.fetch(
+        `/api/workers/${workerId}/evidence/${evidenceId}/confirm`,
+        { method: 'POST' },
+        [400, 401, 403, 404, 409, 424, 503],
+      );
+      return data?.uploadState === 'stored';
+    } catch {
+      return false;
+    }
   }
 
   async createObservation(workspaceId: string, data: {

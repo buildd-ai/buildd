@@ -69,6 +69,7 @@ import {
   flushStderrTrace,
   uploadSessionDiagnostics,
 } from './session-diagnostics';
+import { EvidenceWriter, buildWorkerSecretValues } from './evidence-writer';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
@@ -90,6 +91,8 @@ import { buildPromptCompositionRecord, appendPromptCompositionEvent, resolveRunn
 import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
+import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
+import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
 import { HUMAN_UI_DENIAL } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
 import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
@@ -752,6 +755,9 @@ export class WorkerManager {
   // Call it for free text; use `.body()` for anything already parsed, so field
   // names (not string escaping) decide what the generic patterns may rewrite.
   private secretRedactors = new Map<string, SecretRedactor>();
+  // Per-worker BYO evidence writers (command_output / test_report). Built next
+  // to the redactor in startSession and dropped with it. Best-effort only.
+  private evidenceWriters = new Map<string, EvidenceWriter>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -778,6 +784,7 @@ export class WorkerManager {
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       emit: (event) => this.emit(event),
       pendingPermissionRequests: this.pendingPermissionRequests,
+      onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
     });
     this.recoveryManager = new RecoveryManager({
       workers: this.workers,
@@ -807,6 +814,7 @@ export class WorkerManager {
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       buildUserMessage: (content, opts) => buildUserMessage(content, opts),
       unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
+      onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
     });
 
     // Check for stale workers every 30s
@@ -2122,6 +2130,16 @@ export class WorkerManager {
         // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
         // there could disagree with the ref the worktree really uses.
         worker.worktreeBaseRef = setupResult.base;
+        // The PR's base, which the path-claim sweep measures against. Read
+        // after setup: a fallback to a fresh base has already cleared the
+        // resume fields from the context.
+        worker.prBaseRef = resolvePrBaseRef({
+          task: fullTask,
+          head: setupResult.branch,
+          worktreeBase: setupResult.base,
+          fallbacks: [gitConfig?.targetBranch, defaultBranch],
+          worktreeFallback: setupResult.fallback ?? null,
+        });
         // Resume and shared-branch collision recovery can both change the ref.
         // The server must acknowledge this actual branch before the agent starts
         // (see startWithPersistedBranch below), since create_pr derives its head
@@ -2470,7 +2488,13 @@ export class WorkerManager {
     spanPayload: Record<string, unknown>,
     closingTurnOutcome: 'declined' | `skipped:${string}`,
   ): Promise<void> {
-    const errMsg = error instanceof Error ? error.message : 'Unknown error';
+    // The CLI's model-id rejection is only ever on stderr; the thrown error is
+    // just the exit code. Name the id so the failure says what to fix.
+    const modelRejection = stderrCollector.unrecognizedModel;
+    const rawErrMsg = error instanceof Error ? error.message : 'Unknown error';
+    const errMsg = modelRejection
+      ? `[claude-code:unrecognized_model] ${JSON.stringify({ model: modelRejection.model })} — this runner's Claude Code does not recognise the model id (${rawErrMsg})`
+      : rawErrMsg;
     const errStack = error instanceof Error ? error.stack : undefined;
     console.error(`Worker ${worker.id} error:`, error);
     sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
@@ -2523,6 +2547,10 @@ export class WorkerManager {
       ...(isBudgetError && { budgetExhausted: true }),
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+      ...(modelRejection && {
+        unrecognizedModel: true,
+        ...(modelRejection.model ? { rejectedModel: modelRejection.model } : {}),
+      }),
       ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
       resultMeta: {
         ...(provisionFailure ? { provisionFailure } : {}),
@@ -2735,16 +2763,26 @@ export class WorkerManager {
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
-    // Build a secret redactor for this worker from the BUILDD_API_KEY and any
-    // MCP credential values delivered during claim. Applies to milestones,
-    // currentAction, error traces, and the history archive before persistence.
-    const secretValues = [
-      { label: 'BUILDD_API_KEY', value: this.config.apiKey },
-      ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
-      ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
-    ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
+    // Build a secret redactor for this worker from the BUILDD_API_KEY and every
+    // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
+    // credentials — see buildWorkerSecretValues). Applies to milestones,
+    // currentAction, error traces, evidence bodies and the history archive.
+    const secretValues = buildWorkerSecretValues(this.config.apiKey, worker);
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
+    // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
+    // on a client that does not have the method.
+    this.evidenceWriters.set(worker.id, new EvidenceWriter({
+      workerId: worker.id,
+      taskId: task.id,
+      redact: redactWorkerSecrets,
+      deps: {
+        requestEvidenceUploadUrl: async (workerId, req) =>
+          (await (this.buildd as any).requestEvidenceUploadUrl?.(workerId, req)) ?? null,
+        confirmEvidenceUpload: async (workerId, evidenceId) =>
+          (await (this.buildd as any).confirmEvidenceUpload?.(workerId, evidenceId)) ?? false,
+      },
+    }));
 
     const inputStream = new MessageStream();
     const abortController = new AbortController();
@@ -2828,6 +2866,14 @@ export class WorkerManager {
       const workspaceConfig = await this.buildd.getWorkspaceConfig(task.workspaceId);
       const gitConfig = workspaceConfig.gitConfig;
       const isConfigured = workspaceConfig.configStatus === 'admin_confirmed';
+
+      // Path-claim enforcement is a workspace opt-in (off by default). Say
+      // what this backend can actually promise: pre-edit denial needs a
+      // PreToolUse seam, which Codex does not have.
+      worker.pathClaimMode = resolvePathClaimMode(gitConfig);
+      if (worker.pathClaimMode === 'enforce') {
+        this.addMilestone(worker, { type: 'status', label: describeEnforcement(worker.taskBackend, 'enforce'), ts: Date.now() });
+      }
 
       // Extract image attachments from task context (if any)
       // Supported formats: image/jpeg, image/png, image/gif, image/webp (Anthropic API)
@@ -4172,6 +4218,21 @@ export class WorkerManager {
           ...(!isCodexTask
             ? [{ hooks: [this.hookFactory.createPathClaimHook(worker)] }]
             : []),
+          // Enforce mode only: sweep the worktree before a push, create_pr or
+          // completion. Checkpoint enforcement (a Bash write is found here
+          // after it happened), not a pre-edit guarantee. Codex has no seam
+          // for this either; its writes are swept on the sync tick.
+          ...(!isCodexTask && worker.pathClaimMode === 'enforce'
+            ? [{
+                timeout: Math.ceil((CHECKPOINT_FETCH_DEADLINE_MS + CHECKPOINT_SYNC_DEADLINE_MS) / 1000) + 15,
+                hooks: [this.hookFactory.createPathCheckpointGuardHook(worker, (w, source) =>
+                  runCheckpointSweep(w, source, {
+                    buildd: this.buildd,
+                    addMilestone: (wk, m) => this.addMilestone(wk, m),
+                    refreshBase: true,
+                  }))],
+              }]
+            : []),
           // Command-loop tasks: verify before the agent's own complete_task
           // lands, so the server's loop decision sees the evidence. Timeout
           // is the command's own budget plus headroom for the PATCH — the
@@ -5128,6 +5189,12 @@ export class WorkerManager {
         // itself produced.
         return;
       }
+      // BYO evidence: read the session's test report BEFORE the worktree can be
+      // removed below (error/abort sessions lose it). Upload is awaited later by
+      // drain(). Best-effort; never touches worker.status.
+      if (!bwrapRetryAfterCleanup) {
+        this.evidenceWriters.get(worker.id)?.queueTestReport(cwd);
+      }
       // Clean up session
       const session = this.sessions.get(worker.id);
       if (session) {
@@ -5268,6 +5335,17 @@ export class WorkerManager {
           console.warn(`[Worker ${worker.id}] session diagnostics failed (non-fatal): ${err instanceof Error ? err.message : err}`);
         }
       }
+
+      // BYO evidence: wait for in-flight command_output / test_report uploads. Never throws, never touches worker.status.
+      const evidenceWriter = this.evidenceWriters.get(worker.id);
+      if (evidenceWriter && !bwrapRetryAfterCleanup) {
+        try {
+          await evidenceWriter.drain();
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] evidence write failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      this.evidenceWriters.delete(worker.id);
 
       // Clean up the per-worker secret redactor now that the session is fully done.
       this.secretRedactors.delete(worker.id);
@@ -5962,6 +6040,13 @@ export class WorkerManager {
           const traces = scanToolResult(worker.id, text, source, {
             isError: block.is_error === true,
           });
+          // BYO evidence: full redacted output of a failing Bash call.
+          // Fire-and-forget; drained at session end.
+          this.evidenceWriters.get(worker.id)?.onToolResult({
+            source,
+            isError: block.is_error === true,
+            text,
+          });
           // Every non-zero Bash exit, not just the known patterns — so a red
           // test run or tsc leaves a record. See scanBashResult.
           if (source === 'Bash') {
@@ -6331,6 +6416,24 @@ export class WorkerManager {
 
   async abort(workerId: string, reason?: string, cancelQueued?: boolean) {
     return this.recoveryManager.abort(workerId, reason, cancelQueued);
+  }
+
+  /**
+   * Enforce-mode path collision (from the edit hook's pending flush, the sync
+   * sweep or a pre-push/completion sweep): checkpoint, report a `Deferred:`
+   * failure the server requeues behind the holder, and end the session.
+   * Deferred off the calling hook so a deny can return first.
+   */
+  private handlePathCollision(worker: LocalWorker, collision: PathCollision): void {
+    if (worker.pathClaimMode !== 'enforce' || worker.pathCollisionDeferring) return;
+    setTimeout(() => {
+      deferOnPathCollision(worker, collision, {
+        buildd: this.buildd,
+        abort: (id, reason) => this.abort(id, reason),
+        save: (w) => storeSaveWorker(w),
+        addMilestone: (w, m) => this.addMilestone(w, m),
+      }).catch(err => console.error(`[Worker ${worker.id}] Path-collision deferral failed:`, err));
+    }, 0);
   }
 
   getSessionLogs(workerId: string, maxLines = 100) {

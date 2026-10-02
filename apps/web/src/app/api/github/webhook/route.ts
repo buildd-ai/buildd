@@ -8,6 +8,7 @@ import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } fr
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
+import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import {
   fetchPrRetryGate,
   fetchCIFailureLogs,
@@ -63,7 +64,6 @@ import {
 } from '@/lib/subject-anchor-observer';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
-import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
@@ -74,6 +74,8 @@ import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { conformanceManifest } from '@/lib/path-declaration';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner, listWorkspaceRoles } from '@/lib/pr-review-request';
@@ -582,6 +584,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             policy,
             owner: { taskId: worker.taskId ?? null, workerId: worker.id },
             releaseConfig: workspace.releaseConfig ?? null,
+            gitConfig: workspace.gitConfig ?? null,
           });
           if (landingMode === 'enforce') {
             console.log(`[pr-landing] check_suite ${repository.full_name}#${pr.number}@${headSha}: ${outcome.kind}`);
@@ -636,6 +639,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             headSha,
             worker,
             policy,
+            surfaceOrderingConfig: workspace.gitConfig ?? null,
           });
           continue;
         }
@@ -648,6 +652,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           headSha,
           worker,
           policy,
+          surfaceOrderingConfig: workspace.gitConfig ?? null,
         });
       }
 
@@ -739,6 +744,9 @@ async function handlePullRequestEvent(event: {
       // cannot return 400 at anyone, so the enforcement form of "refused" here
       // is putting the base back. Reporting is what is left when it cannot.
       const retargetMissionId: string | null = retargetCandidate?.task?.missionId ?? null;
+      // Where the PR's base ends up after this event — the observed ref, or the
+      // integration branch when the guard below puts it back.
+      let settledBaseRef = observedBaseRef;
       if (rebased.length > 0 && retargetMissionId && retargetCandidate?.task && !isMissionPrTask(retargetCandidate.task) && !pr.merged) {
         const task = retargetCandidate.task;
         const mission = await db.query.missions.findFirst({
@@ -766,6 +774,7 @@ async function handlePullRequestEvent(event: {
                 },
               );
               restored = true;
+              settledBaseRef = integrationBase;
               await db
                 .update(workers)
                 .set({ prBaseRef: integrationBase, updatedAt: new Date() })
@@ -795,6 +804,29 @@ async function handlePullRequestEvent(event: {
             toBase: observedBaseRef,
             restored,
           });
+        }
+      }
+
+      // A retarget leaves the PR's change-intent rows naming the OLD base, so
+      // surface ordering on the new base cannot see it as a contender and the
+      // old lane keeps waiting on it. Move its open intents to where the PR now
+      // lands and re-wake the head of both lanes (the wake only under ordering
+      // `enforce`; the row update is cheap and always true). Workspace comes from
+      // the repo-scoped worker that owns this PR. Never throws; network work in after().
+      const retargetFrom = event.changes?.base?.ref?.from;
+      const intentWorkspaceId = retargetCandidate?.workspaceId;
+      if (
+        action === 'edited' && typeof retargetFrom === 'string' && retargetFrom
+        && retargetFrom !== settledBaseRef && !pr.merged && intentWorkspaceId
+      ) {
+        const toBase = settledBaseRef;
+        const retargetIntents = () => import('@/lib/surface-ordering')
+          .then((m) => m.retargetSurfaceIntents({ workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase }))
+          .then(() => {}, (e) => console.error(`[webhook] surface intent retarget failed for PR #${pr.number}:`, e));
+        try {
+          after(retargetIntents);
+        } catch {
+          await retargetIntents();
         }
       }
     } catch (err) {
@@ -858,6 +890,20 @@ async function handlePullRequestEvent(event: {
       await triggerEvent(channels.workspace(openWorker.workspaceId), events.WORKER_PROGRESS, {
         taskId: openWorker.taskId,
       });
+
+      // Reconcile the PR's claim scope against its actual diff at this head
+      // (conflict-aware-orchestration §1): inherited fix-attempt manifests and
+      // reviewer leases shrink to what the PR really touches. After the
+      // response; a read at any other head is not trusted and changes nothing.
+      if (event.installation && pr.head?.sha) {
+        schedulePrScopeReconcile({
+          workspaceId: openWorker.workspaceId,
+          installationId: event.installation.id,
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          expectedHeadSha: pr.head.sha,
+        });
+      }
 
       // Follow-up push on a PR buildd is already working (CI fix or review fix).
       // onlyIfPresent: no sticky comment yet means we haven't claimed this PR,
@@ -1143,10 +1189,21 @@ async function handlePullRequestEvent(event: {
       }
     }
 
-    // Close any open changeIntent rows for this PR — surfaces are now free.
-    closeIntentsForPr(worker.workspaceId, pr.number).catch(e =>
-      console.error(`[webhook] closeIntentsForPr failed for PR #${pr.number}:`, e),
-    );
+    // Close any open changeIntent rows for this PR — surfaces are now free —
+    // drop its merge reservations, and re-drive the PR that was waiting behind
+    // it on each serialized surface (conflict-aware-orchestration.md §3). The
+    // wake is network work, so it runs in after(); settle never throws.
+    {
+      const settleWorkspaceId = worker.workspaceId;
+      const settle = () => import('@/lib/surface-ordering')
+        .then((m) => m.settleSurfaceIntentsOnClose({ workspaceId: settleWorkspaceId, prNumber: pr.number }))
+        .then(() => {}, (e) => console.error(`[webhook] surface settle failed for PR #${pr.number}:`, e));
+      try {
+        after(settle);
+      } catch {
+        await settle();
+      }
+    }
 
     // Reconciliation sweep: update subject state for tasks anchored to this PR.
     // Best-effort — sweep failure must never fail the webhook response.
@@ -2028,6 +2085,24 @@ async function handleCheckSuiteFailure(
         }
         await dispatchNewTask(newTask, workspace);
         console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
+        // ci_job_log evidence (byo-evidence-storage AC-3). After dispatch, and
+        // never throws: evidence is diagnostics, the retry is the product.
+        const captureEvidence = () => captureCiJobLogEvidence({
+          installationId,
+          repoFullName: repository.full_name,
+          failedJobId: ciLogs.failedJobId,
+          workspaceId: retryTask.workspaceId,
+          retryTaskId: newTask.id,
+          parentTaskId: retryTask.parentTaskId,
+          workerId: worker.id,
+          prNumber: pr.number,
+        });
+        try {
+          after(captureEvidence);
+        } catch {
+          // Outside a request scope (tests, direct invocation) — run inline.
+          await captureEvidence();
+        }
         await appendPrActivity({
           installationId,
           repoFullName: repository.full_name,
@@ -2171,7 +2246,7 @@ async function maybeDispatchReviewer(
 
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, context: true },
+      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
     });
     if (!task) return false;
 
@@ -2320,7 +2395,7 @@ async function maybeDispatchReviewer(
       description: task.description,
       backend: task.backend,
       missionId: task.missionId ?? null,
-      pathManifest: task.pathManifest as string[] | null ?? null,
+      pathManifest: conformanceManifest(task),
       iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
       maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
     };
@@ -2472,7 +2547,7 @@ async function maybeReDispatchReviewer(
 
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, context: true },
+      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
     });
     if (!task) return;
 
@@ -2504,7 +2579,7 @@ async function maybeReDispatchReviewer(
       description: task.description,
       backend: task.backend,
       missionId: task.missionId ?? null,
-      pathManifest: task.pathManifest as string[] | null ?? null,
+      pathManifest: conformanceManifest(task),
       iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
       maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
     };
@@ -2624,6 +2699,7 @@ async function maybeAutoMergeNoCiPr(
       headSha: pr.head.sha,
       worker,
       policy,
+      surfaceOrderingConfig: workspace.gitConfig ?? null,
     });
   }
 }

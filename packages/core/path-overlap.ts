@@ -238,6 +238,36 @@ export function findBlockingPr(
   return null;
 }
 
+/**
+ * Open PRs stacked on top of one of `ownBranches` — directly (their base ref
+ * is one of those branches) or transitively (based on a PR that is).
+ *
+ * A stacked PR's diff against the shared base contains every file of the PR it
+ * sits on, so its manifest overlaps that PR by construction. Those overlaps are
+ * the lower PR's own changes, not a competing writer: a review/CI/conflict fix
+ * for PR C must not defer behind PR D just because D is based on C's branch.
+ * The claim route drops the returned PRs from its open-PR backstop.
+ */
+export function findStackedPrs<T extends { branch?: string | null; prBaseRef?: string | null }>(
+  ownBranches: Iterable<string>,
+  openPrs: T[],
+): Set<T> {
+  const ancestors = new Set([...ownBranches].filter(Boolean));
+  const stacked = new Set<T>();
+  // Fixed point over the base→head edges; bounded by openPrs.length rounds.
+  let grew = ancestors.size > 0;
+  while (grew) {
+    grew = false;
+    for (const pr of openPrs) {
+      if (stacked.has(pr) || !pr.prBaseRef || !ancestors.has(pr.prBaseRef)) continue;
+      stacked.add(pr);
+      if (pr.branch && !ancestors.has(pr.branch)) ancestors.add(pr.branch);
+      grew = true;
+    }
+  }
+  return stacked;
+}
+
 // ── Regenerable paths ─────────────────────────────────────────────────────────
 
 /**

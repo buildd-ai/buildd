@@ -15,6 +15,8 @@ import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { mergePullRequest, githubApi } from '@/lib/github';
+import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
+import { checkBaseRefreshHold } from '@/lib/base-refresh';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -97,6 +99,11 @@ export async function POST(
   // moment the human chose to override, so the audit trail records what they
   // actually saw rather than a fresh (and possibly since-changed) DB re-read.
   let override = false;
+  // Further things a person may knowingly override under `enforce` (the landing
+  // function's own overrides): the size cap and base freshness. Red CI and deny
+  // paths are never overridable.
+  let sizeOverride = false;
+  let freshnessOverride = false;
   let overrideEscalationReason: string | null = null;
   // Set by the legacy review gate when it blocked and `override` bypassed it.
   let reviewGateReason: string | null = null;
@@ -105,7 +112,11 @@ export async function POST(
     if (body?.workspaceId && typeof body.workspaceId === 'string') {
       rawWorkspaceId = body.workspaceId;
     }
-    if (body?.override === true) {
+    if (body?.overrides && typeof body.overrides === 'object') {
+      sizeOverride = body.overrides.size === true;
+      freshnessOverride = body.overrides.freshness === true;
+    }
+    if (body?.override === true || body?.overrides?.verdict === true) {
       override = true;
       if (typeof body.escalationReason === 'string' && body.escalationReason.trim().length > 0) {
         overrideEscalationReason = body.escalationReason.trim();
@@ -368,11 +379,24 @@ export async function POST(
       prNumber,
       eventHeadSha: null,
       door: 'dashboard',
-      actor: { kind: 'human', userId: user.id, ...(override ? { override: { verdict: true } } : {}) },
+      actor: {
+        kind: 'human',
+        userId: user.id,
+        ...(override || sizeOverride || freshnessOverride
+          ? {
+              override: {
+                ...(override ? { verdict: true } : {}),
+                ...(sizeOverride ? { size: true } : {}),
+                ...(freshnessOverride ? { freshness: true } : {}),
+              },
+            }
+          : {}),
+      },
       mode: landingMode,
       policy,
       owner: { taskId: worker.taskId ?? null, workerId: worker.id },
       releaseConfig: workspace.releaseConfig ?? null,
+      gitConfig: workspace.gitConfig ?? null,
     });
     if (landingMode === 'enforce') {
       return outcome.kind === 'merged'
@@ -487,8 +511,64 @@ export async function POST(
     }
   }
 
+  // ── Post-refresh semantic hold (base-refresh.ts) ───────────────────────
+  // Every merge door consults it (docs/specs/base-refresh-classification.md).
+  // Under semanticRefresh `enforce`, a refresh that merged in base commits the
+  // semantic verdict never saw holds the PR until they are re-verified. With
+  // the check off it returns at once with no read, so the default path costs
+  // nothing. `override` is the review-verdict override only; a person who
+  // wants past a hold merges on GitHub or calls merge_pr with `force`.
+  // Before surface ordering, so a held PR never reserves a merge slot.
+  {
+    const hold = await checkBaseRefreshHold({
+      installationId,
+      repoFullName,
+      prNumber,
+      headSha: liveHeadSha,
+      taskId: worker.taskId ?? null,
+      workspaceId: worker.workspaceId,
+      workerId: worker.id,
+      missionId: (worker.task as { missionId?: string | null } | null)?.missionId ?? null,
+      gitConfig: workspace.gitConfig ?? null,
+    });
+    if (hold.blocks) {
+      return NextResponse.json(
+        { error: `Merge held: ${hold.reason}`, semanticHold: true, needsPerson: hold.needsPerson },
+        { status: 409 },
+      );
+    }
+  }
+
+  // ── Surface merge ordering (conflict-aware-orchestration.md §3) ─────────
+  // A person merging does not silently jump an earlier PR on a serialized
+  // surface. Off by default; there is no dashboard override for it.
+  const surfaceOrder = await checkSurfaceOrder({
+    workspaceId: worker.workspaceId,
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha: liveHeadSha,
+    gitConfig: workspace.gitConfig ?? null,
+    taskId: worker.taskId ?? null,
+    workerId: worker.id,
+    door: 'dashboard',
+    callerOrigin: 'dashboard',
+  });
+  if (surfaceOrder.blocks) {
+    return NextResponse.json(
+      { error: `Merge deferred: ${surfaceOrder.reason}`, surfaceOrderBlocked: true, waitingOnPr: surfaceOrder.counterpartPrNumber, surface: surfaceOrder.surface },
+      { status: 409 },
+    );
+  }
+
   // Perform the merge
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha);
+  const slotted = await mergeInSurfaceSlot(surfaceOrder, () =>
+    mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha),
+  );
+  if ('refused' in slotted) {
+    return NextResponse.json({ error: `Merge deferred: ${slotted.refused}`, surfaceOrderBlocked: true }, { status: 409 });
+  }
+  const result = slotted.result;
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';

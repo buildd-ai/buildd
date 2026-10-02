@@ -123,6 +123,11 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
+const mockCaptureCiJobLogEvidence = mock((_input: any) => Promise.resolve({ status: 'stored' }));
+mock.module('@/lib/ci-job-log-evidence', () => ({
+  captureCiJobLogEvidence: mockCaptureCiJobLogEvidence,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -522,6 +527,10 @@ mock.module('@/lib/pr-review-request', () => ({
   listWorkspaceRoles: mockListWorkspaceRoles,
 }));
 
+const mockSchedulePrScopeReconcile = mock((_input: any) => {});
+mock.module('@/lib/pr-scope-reconcile-trigger', () => ({
+  schedulePrScopeReconcile: mockSchedulePrScopeReconcile,
+}));
 // The landing function — its decisions are covered in lib/pr-landing.test.ts;
 // here only the door's wiring is asserted. Mode resolution is the real rule.
 const mockLandPr = mock(async (_input: any, _deps?: any): Promise<any> => ({ kind: 'waiting_ci', headSha: 'abc123' }));
@@ -531,6 +540,14 @@ mock.module('@/lib/pr-landing', () => ({
     const mode = gitConfig?.landing?.mode;
     return mode === 'off' || mode === 'shadow' || mode === 'enforce' ? mode : 'shadow';
   },
+}));
+// Surface ordering's own decisions are covered in lib/surface-ordering.test.ts;
+// here only which PR, workspace and bases the webhook hands it.
+const mockRetargetSurfaceIntents = mock(async (_input: any): Promise<any> => ({ woke: [] }));
+const mockSettleSurfaceIntentsOnClose = mock(async (_input: any): Promise<any> => ({ woke: [] }));
+mock.module('@/lib/surface-ordering', () => ({
+  retargetSurfaceIntents: mockRetargetSurfaceIntents,
+  settleSurfaceIntentsOnClose: mockSettleSurfaceIntentsOnClose,
 }));
 const mockCarryForwardApproval = mock(async (_p: any): Promise<any> => ({ carried: false, reason: 'test' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForwardApproval }));
@@ -615,6 +632,8 @@ function makeCheckSuitePayload(overrides: Record<string, any> = {}) {
 }
 
 function resetAll() {
+  mockRetargetSurfaceIntents.mockClear();
+  mockSettleSurfaceIntentsOnClose.mockClear();
   mockResolveCompletedTask.mockClear();
   mockCheckDependsOnResolved.mockClear();
   mockWakeMissionAfterResponse.mockClear();
@@ -632,6 +651,7 @@ function resetAll() {
   mockWorkerOwnsPrUrl.mockClear();
   mockWorkspaceRepoMatches.mockClear();
   mockDispatchNewTask.mockReset();
+  mockCaptureCiJobLogEvidence.mockClear();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
   mockWorkspacesFindMany.mockReset();
@@ -1206,6 +1226,27 @@ describe('POST /api/github/webhook', () => {
       expect((inserted.context as any).baseBranch).toBe('buildd/abc12345-fix');
       expect(insertCalls[0].conflict).toBe('nothing');
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    // byo-evidence-storage AC-3: the failed job's log is captured as evidence
+    // for the new retry task, after the retry has been dispatched.
+    it('captures ci_job_log evidence for the retry task after dispatching it', async () => {
+      withFailedWorkerPr();
+      const order: string[] = [];
+      mockDispatchNewTask.mockImplementation(() => { order.push('dispatch'); return Promise.resolve(); });
+      mockCaptureCiJobLogEvidence.mockImplementationOnce(() => { order.push('evidence'); return Promise.resolve({ status: 'stored' }); });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCaptureCiJobLogEvidence).toHaveBeenCalledTimes(1);
+      const arg = mockCaptureCiJobLogEvidence.mock.calls[0][0];
+      expect(arg.retryTaskId).toBe('task-1'); // the id the insert mock returns
+      expect(arg.parentTaskId).toBe('t1');
+      expect(arg.workerId).toBe('w1');
+      expect(arg.workspaceId).toBe('ws1');
+      expect(arg.prNumber).toBe(42);
+      expect(order).toEqual(['dispatch', 'evidence']);
     });
 
     // Regression: the CI fix attempt copied only the phase, so a Codex task's
@@ -3978,6 +4019,23 @@ describe('POST /api/github/webhook', () => {
       } as any);
     }
 
+    it('schedules a PR-scope reconcile pinned to the pushed head', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockSchedulePrScopeReconcile.mockClear();
+
+      await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(mockSchedulePrScopeReconcile).toHaveBeenCalledTimes(1);
+      expect(mockSchedulePrScopeReconcile.mock.calls[0][0]).toEqual({
+        workspaceId: 'ws1',
+        installationId: 5000,
+        repoFullName: 'test-org/test-repo',
+        prNumber: 42,
+        expectedHeadSha: NEW_SHA,
+      });
+    });
+
     it('re-dispatches exactly one reviewer when a push follows a request-changes verdict', async () => {
       withAgentReviewWorkspaceAndWorker();
       withChangesRequestedVerdict();
@@ -4895,6 +4953,50 @@ describe('pull_request → workers.prBaseRef sync', () => {
     expect(baseRefWrites[0].setValues.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
   });
 
+  // Change intents recorded at create_pr carry the base the PR had then. A
+  // retarget must move them, or surface ordering on the new base cannot see
+  // this PR and the old base's lane keeps waiting on it.
+  it('moves the PR\'s change intents to the new base on a retarget', async () => {
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+
+    expect(mockRetargetSurfaceIntents).toHaveBeenCalledTimes(1);
+    expect(mockRetargetSurfaceIntents.mock.calls[0][0]).toEqual({
+      workspaceId: 'ws-9', prNumber: 9, fromBase: 'dev', toBase: 'mission/example-slug-0a1b2c3d',
+    });
+  });
+
+  it('moves intents even when the worker row already had the new base (no prBaseRef write)', async () => {
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'mission/example-slug-0a1b2c3d', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+    expect(mockRetargetSurfaceIntents).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not touch intents on an edit that did not change the base (title/body edit)', async () => {
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({ changes: { title: { from: 'old' } } })));
+    expect(mockRetargetSurfaceIntents).not.toHaveBeenCalled();
+  });
+
+  it('does not touch intents on a non-edited action', async () => {
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({ action: 'synchronize' })));
+    expect(mockRetargetSurfaceIntents).not.toHaveBeenCalled();
+  });
+
+  it('does not touch intents when no buildd worker owns the PR (no workspace to scope to)', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+    expect(mockRetargetSurfaceIntents).not.toHaveBeenCalled();
+  });
+
+  it('a failed intent retarget never fails the webhook', async () => {
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-9', workspaceId: 'ws-9', taskId: 't-9', prBaseRef: 'dev', task: null });
+    mockRetargetSurfaceIntents.mockImplementationOnce(async () => { throw new Error('boom'); });
+    const res = await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+    expect(res.status).toBe(200);
+  });
+
   it('writes nothing when the payload carries no base ref', async () => {
     const payload = makeRetargetPayload();
     delete (payload.pull_request as any).base;
@@ -5047,6 +5149,24 @@ describe('pull_request retarget off the mission integration branch (P2b)', () =>
     const noteInserts = insertCalls.filter(c => c.values?.type === 'warning');
     expect(noteInserts.length).toBe(1);
     expect(noteInserts[0].values.body).toContain('retargeted it back');
+    // Put straight back: the intents never left the integration branch's lane.
+    expect(mockRetargetSurfaceIntents).not.toHaveBeenCalled();
+  });
+
+  it('when the base cannot be restored, the intents follow the PR to trunk', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    optedInMission();
+    mockGithubApi.mockImplementation((_id: number, _path: string, init?: any) => {
+      if (init?.method === 'PATCH') return Promise.reject(new Error('422 Unprocessable Entity'));
+      return Promise.resolve({});
+    });
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload()));
+
+    expect(mockRetargetSurfaceIntents).toHaveBeenCalledTimes(1);
+    expect(mockRetargetSurfaceIntents.mock.calls[0][0]).toEqual({
+      workspaceId: 'ws-1', prNumber: 9, fromBase: INTEGRATION_BRANCH, toBase: 'dev',
+    });
   });
 
   it('falls back to the lost-gate report when the base cannot be restored', async () => {

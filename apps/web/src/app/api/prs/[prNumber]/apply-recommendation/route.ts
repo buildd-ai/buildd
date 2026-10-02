@@ -32,6 +32,7 @@ import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
+import { performLandingAction } from '@/lib/landing-action-run';
 
 // A human choosing to apply a fix is a deliberate one-off, not another lap of
 // the bounded agent-only request-changes loop — it gets its own fresh budget
@@ -85,9 +86,13 @@ export async function POST(
 
   let workspaceId: string | undefined;
   let corrections: string | undefined;
+  let landingToken: string | undefined;
+  let landingAction: string | undefined;
   try {
     const body = await req.json().catch(() => ({}));
     if (typeof body?.workspaceId === 'string') workspaceId = body.workspaceId;
+    if (typeof body?.token === 'string' && body.token) landingToken = body.token;
+    if (typeof body?.action === 'string') landingAction = body.action;
     if (typeof body?.corrections === 'string' && body.corrections.trim().length > 0) {
       corrections = body.corrections.trim();
     }
@@ -120,6 +125,31 @@ export async function POST(
     return NextResponse.json({ error: 'No task found for this PR' }, { status: 404 });
   }
   const originalTask = worker.task;
+
+  // A tap from a landing alert: the signed link only picks the action; the
+  // session above already proved this person belongs to the PR's workspace.
+  if (landingToken) {
+    const outcome = await performLandingAction({
+      token: landingToken,
+      action: landingAction as never,
+      workspaceId: worker.workspaceId,
+      prNumber,
+      taskId: worker.taskId,
+      workerId: worker.id,
+    });
+    switch (outcome.status) {
+      case 'rejected':
+        return NextResponse.json({ error: `This link is ${outcome.code === 'expired' ? 'expired' : 'not valid'}`, code: outcome.code }, { status: outcome.httpStatus });
+      case 'in_progress':
+        return NextResponse.json({ error: 'This action is already being run' }, { status: 409 });
+      case 'already_done':
+        return NextResponse.json({ ok: true, alreadyDone: true, result: outcome.result });
+      case 'done':
+        return outcome.ok
+          ? NextResponse.json({ ok: true, stale: outcome.stale, result: outcome.result })
+          : NextResponse.json({ error: outcome.error, stale: outcome.stale }, { status: 502 });
+    }
+  }
 
   const headSha = worker.lastCommitSha;
   if (!headSha) {

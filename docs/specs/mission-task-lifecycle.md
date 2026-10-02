@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-28
+last_verified: 2026-10-01
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -11,6 +11,13 @@ keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, de
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
+  - id: "local-strand"
+    type: "symbol"
+    name: "deriveLocalStrand"
+    path: "apps/web/src/lib/local-strand.ts"
+  - id: "local-strand-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/local-strand.test.ts"
   - id: "claim-task"
     type: "route"
     method: "POST"
@@ -423,6 +430,43 @@ hold:
   `Local`, grouped with running missions, never HELD / "arm to start" and never
   STALLED / "dispatch a worker". A queued task reads "Waiting for a local
   session to claim …", and `/api/cron/queue-stall` does not report it.
+
+- **LX-6**: stranded. A local, unheld mission is *stranded* when it holds a
+  claimable task (pending, every dependency met by the claim gate's own rule,
+  start floor passed) and nothing has touched any of its workers for
+  `LOCAL_SESSION_QUIET_MS` (30 minutes), measured from the later of the last
+  session touch and the moment the oldest claimable task became claimable.
+  `deriveLocalStrand` (`apps/web/src/lib/local-strand.ts`) is the one
+  predicate; the card, the mission page, `explain` and the chat mission object
+  hand its answer to `deriveMissionStateView` as `localStrand`. A stranded
+  mission reads chip `STRANDED`, list status `Stranded`, kind
+  `awaiting_decision` (so it is an ask: NEEDS YOU), headline "Stranded: no
+  local session for Xm. Continue on a runner?". It outranks failures and
+  unmerged PRs, which stay in `outstanding`: a reviewer nobody claims is why
+  the PR sits. Held still wins (LX-3).
+- **LX-7**: "Continue on a runner". The stranded card's primary action flips
+  `executor` to `runner` through the mission PATCH, which re-dispatches the
+  open tasks. `continueOnRunnerBlockedReason` is the refusal: the PATCH returns
+  `409` with it on a local → runner flip of a terminal mission or one with no
+  workspace, and the card computes the same reason at render time and shows the
+  button disabled with it — never hidden. "Keep local" changes nothing and
+  shows the `claim_task {taskId}` hint.
+- **LX-8**: the decision shadow. With the team's `mission_strand_choice`
+  capability on, a decision model picks `continue-on-runner` |
+  `wait-for-local` | `blocked-on-deps` from structured facts only and logs a
+  `[decision-shadow]` line. In `shadow` mode (`STRAND_CHOICE_MODE`) nothing
+  changes; in `gated` mode a confident pick may only reorder the two buttons.
+  It never flips the executor. Each tap is recorded as a `[decision-label]`
+  line by `POST /api/missions/[id]/strand-choice`.
+- **LX-9**: dependency-blocked work is not an ask (any executor). When every
+  open task is waiting on an unmet dependency, the reading is `waiting`, the
+  headline names the blockers ("1 task is waiting on #3319 and #3317 to
+  merge") and the next action is "Nothing to do yet. Unblocks when #3319 and
+  #3317 merge." — never "Dispatch a worker". A task PR with an open attempt (a
+  reviewer queued or reviewing, a fix being pushed) is the platform's move, not
+  an unmerged PR for the owner (`ownerUnmergedPrs`, read by the card and by
+  `explain` alike). A green PR with nobody on it is still the owner's merge,
+  and that merge is the action the card offers.
 
 Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
 pause: it also blocks the interactive claim, so it was never a fit for that.
@@ -1314,8 +1358,9 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `buildDecideItems()`, `EscalatedMissionCandidate`
 - Home DECIDE card (one CTA, recommendation only — never a pre-selected
   exit): `apps/web/src/components/WaitingOnYouDecideCard.tsx`
-- Mission-detail decision sheet (the three real exits — file the work / fix
-  the criterion / waive): `apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheet.tsx`,
+- Mission-detail decision sheet (the three goal-criteria exits — file the work
+  / fix the criterion / waive — plus the two visual-audit exits, see the
+  surface-audit gate below): `apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheet.tsx`,
   `apps/web/src/lib/criteria-decision-links.ts` (task-composer link),
   `apps/web/src/lib/goal-criterion-label.ts` (client-safe criterion labeling)
 - "File the work" resolution: `apps/web/src/app/api/tasks/route.ts` (POST,
@@ -1653,6 +1698,62 @@ within the mission, so a repeat pass only extends `dependsOn`. Best-effort under
 concurrent task creation (check-then-act, matching this codebase's other
 neon-http non-transactional patterns) — not a hard concurrency guarantee.
 
+**Completion gate** (the audit above is minted from what a task *declares* at
+filing; a task filed with no manifest, or by a path that never calls the hook,
+mints nothing, and the mission used to close as shipped with no one having
+looked at the screen). `canCompleteMission` therefore also reads what the
+mission's merged work *actually changed*, via `evaluateSurfaceAuditGate`:
+- Not required when `autoSurfaceAudit = false`, when a `[surface audit]` /
+  visual-auditor task has completed, when the mission has no finished builder
+  task, or when a human waiver is recorded.
+- Otherwise required when a finished builder task's declared manifest, or any
+  file in its PR diff (including the old name of a renamed file), is a rendered
+  UI file: under a UI surface directory and not a test, story, snapshot, mock
+  or doc. A backend-only mission is never touched.
+- Refusal code `surface_audit_missing`; the reason names the UI files and both
+  ways out (run the audit, or waive it). The state view shows it as an owner
+  decision.
+- Fails open when the diff cannot be read (no linked repo, GitHub error), so an
+  outage never strands a mission.
+- **Waiver**: `PATCH /api/missions/[id]` with `surfaceAuditWaiver` (a reason of
+  at least 10 characters; MCP `manage_missions update`) records a
+  `Surface audit waived` mission note carrying the reason. Only a person or an
+  admin key acting for one may waive; an in-task agent (`actorWorkerId`) gets 403
+  and the engine never waives. The same PATCH carrying `status: completed`
+  is refused with 409 `surface_audit_missing` unless a waiver is supplied or
+  already recorded. Archiving is not gated.
+- **Decision sheet** (`MissionDecisionSheet`): the exits it renders follow the
+  blocker the server reports, so no button leads to a refusal. A missing audit
+  shows exactly two actions, **Run visual audit** and **Waive with reason**; the
+  goal-criteria exits (file the work, fix the criterion, waive and complete)
+  render only while criteria are unmet, and nothing renders when neither holds.
+  Each action has a one-line subtitle, the headline is one plain sentence
+  (`surfaceAuditHeadline`), the changed files sit in a collapsed, wrapping list,
+  and no API or tool name appears in text a person reads (the agent-facing
+  wording stays in the API error body).
+  - *Run visual audit* is `POST /api/missions/[id]/surface-audit`
+    (`requestMissionSurfaceAudit`): files the `[surface audit]` task for the
+    visual-auditor role, scoped to the files the PRs changed, and is idempotent
+    (an open or finished audit is returned, only a failed or cancelled one is
+    replaced). On an `executor: local` mission the sheet says buildd's runners
+    will not claim it.
+  - *Waive with reason* requires a reason of at least 10 characters (the same
+    minimum as the API, checked on the client first), then sends
+    `surfaceAuditWaiver` with `status: completed` in one PATCH. The sheet shows
+    the recorded reason only after the PATCH succeeds. With goal criteria also
+    unmet it sends the waiver alone, so the criteria are never waived by
+    implication.
+  - **Suggestion**: opening the sheet on this blocker asks a decision model
+    (`POST /api/missions/[id]/surface-audit/advice`, capability
+    `surface_audit_advice`, built in) whether to audit or waive, from the changed
+    UI files and the shipped work titles (never descriptions or diffs). A
+    confident pick is pre-selected with a one-sentence reason, and a waive pick
+    prefills the editable reason. It only suggests: the person always confirms.
+    No key, a timeout, an error, a low-confidence pick or a sensitive workspace
+    all mean no suggestion, and both actions stand bare. Results are cached per
+    mission and the set of merged PRs on each server instance, and the spend is
+    recorded like other decision calls.
+
 **Non-goals**: The recurring workspace-wide `Weekly mobile UI audit` mission is
 unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
 
@@ -1668,9 +1769,34 @@ unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
   sentinel) THEN no audit task is ever created.
 - AC-32: GIVEN a mission with `autoSurfaceAudit = false` THEN no audit task is
   created or extended regardless of what paths its tasks declare.
+- AC-33: GIVEN a mission whose merged PRs changed a rendered UI file and that has
+  no completed audit and no waiver WHEN completion is attempted (automated or by
+  a person) THEN it is refused with `surface_audit_missing` and a reason naming
+  the files and how to clear it.
+- AC-34: GIVEN that mission WHEN a person supplies `surfaceAuditWaiver` THEN the
+  reason is recorded on the mission and completion proceeds; an in-task agent's
+  waiver is refused.
+- AC-35: GIVEN a backend-only mission, or one with a completed audit, THEN the
+  completion gate does not apply.
+- AC-36: GIVEN a mission blocked only on a missing visual audit WHEN its
+  decision sheet renders THEN it offers exactly "Run visual audit" and "Waive
+  with reason" and none of the goal-criteria exits; with only unmet criteria it
+  offers only the criteria exits; with both it offers both groups.
+- AC-37: GIVEN the waiver field WHEN the reason is under 10 characters THEN no
+  request is sent; WHEN a valid reason is submitted THEN the mission is
+  completed with that reason recorded, and a refused request records and shows
+  nothing.
+- AC-38: GIVEN the suggestion call fails, times out or is not confident THEN
+  both actions render live with nothing pre-selected.
 
 **Code surface**:
+- `apps/web/src/lib/mission-surface-audit-gate.ts` — `evaluateSurfaceAuditGate()`
 - `packages/core/surface-audit.ts` — pure predicates and checklist content
-- `apps/web/src/lib/mission-surface-audit.ts` — `ensureMissionSurfaceAudit()`
+- `apps/web/src/lib/mission-surface-audit.ts` — `ensureMissionSurfaceAudit()`,
+  `requestMissionSurfaceAudit()`
+- `apps/web/src/lib/surface-audit-advice.ts` — `adviseSurfaceAudit()` (the
+  decision-sheet suggestion)
+- `apps/web/src/app/api/missions/[id]/surface-audit/route.ts` and
+  `.../surface-audit/advice/route.ts`
 - `apps/web/src/app/api/tasks/route.ts` — trigger point (`POST` handler)
 - `packages/core/db/schema.ts` — `missions.autoSurfaceAudit` (default `true`)

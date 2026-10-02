@@ -25,6 +25,11 @@ const mockWorkersInsert = mock(() => ({
     returning: mock(() => [{ id: 'worker-1', taskId: 'task-1', branch: 'buildd/test', status: 'idle' }]),
   })),
 }));
+const mockErrorTracesTable = { __table: 'worker_error_traces' };
+const errorTraceRows: any[] = [];
+const mockErrorTracesInsert = mock(() => ({
+  values: mock((v: any) => { errorTraceRows.push(...(Array.isArray(v) ? v : [v])); return Promise.resolve(); }),
+}));
 const mockDbExecute = mock(() => Promise.resolve({
   rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
 }));
@@ -145,7 +150,7 @@ mock.module('@buildd/core/db', () => ({
       }
       return mockTasksUpdate();
     },
-    insert: (table: any) => mockWorkersInsert(),
+    insert: (table: any) => table === mockErrorTracesTable ? mockErrorTracesInsert() : mockWorkersInsert(),
     delete: (table: any) => ({ where: mock(() => Promise.resolve()) }),
     select: mockDbSelect,
     execute: mockDbExecute,
@@ -159,8 +164,9 @@ mock.module('@buildd/core/db', () => ({
 // reach model-catalog-cache's own DB miss and then perform a REAL network
 // fetch to OpenRouter on every claim test. Empty catalog reproduces the exact
 // pre-existing behavior (falls through to TIER_DEFAULTS).
+const mockGetCatalog = mock(() => Promise.resolve([] as any[]));
 mock.module('@buildd/core/model-catalog-cache', () => ({
-  getCachedOpenRouterCatalog: mock(() => Promise.resolve([] as any[])),
+  getCachedOpenRouterCatalog: (...a: any[]) => (mockGetCatalog as any)(...a),
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -199,6 +205,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
   missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
+  workerErrorTraces: mockErrorTracesTable,
   workspaces: { id: 'id', accessMode: 'accessMode', teamId: 'teamId' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
@@ -337,8 +344,39 @@ mock.module('@buildd/core/model-tier-registry', () => ({
   },
 }));
 
+// Hold/start-at-claim shadow (§5b). The real module runs; only its
+// dependencies are swapped per test through `holdStartTest.deps`, and the
+// after-response work is captured so a test can await it. Default: a team
+// that has not opted in, so no other test in this file sees any change.
+const realHoldStart = { ...(await import('./hold-start-shadow')) };
+const holdStartOff = () => ({
+  hasRecent: async () => false,
+  loadHolder: async () => null,
+  decisionDeps: {
+    resolveAccess: async () => ({ ok: false, error: { kind: 'capability_disabled', message: 'off' } }) as any,
+    record: async () => {},
+  },
+});
+const holdStartTest = {
+  deps: holdStartOff() as Record<string, any>,
+  scheduled: [] as Promise<void>[],
+};
+mock.module('./hold-start-shadow', () => ({
+  ...realHoldStart,
+  scheduleClaimHoldShadow: (c: any) => realHoldStart.scheduleClaimHoldShadow(c, {
+    ...holdStartTest.deps,
+    schedule: (fn: () => Promise<void>) => { holdStartTest.scheduled.push(fn()); },
+  }),
+  gatedStartReachable: () => realHoldStart.gatedStartReachable(holdStartTest.deps),
+  gatedStartApplies: (n: any) => realHoldStart.gatedStartApplies(n, holdStartTest.deps),
+  acquireGatedStartPaths: (i: any) => realHoldStart.acquireGatedStartPaths(i, holdStartTest.deps),
+  releaseGatedStartPaths: (i: any) => realHoldStart.releaseGatedStartPaths(i, holdStartTest.deps),
+}));
+
 import { POST } from './route';
+import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
+import { claimHoldIdentity } from '@buildd/core/orchestration-promotion';
 
 function createMockRequest(options: {
   headers?: Record<string, string>;
@@ -1570,6 +1608,98 @@ describe('POST /api/workers/claim', () => {
         mockDrawAgentPoolArm.mockResolvedValue({ arm: { id: 'arm-1' } });
         await POST(claimReq());
         expect(mockRecordAgentPoolAssignment).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('dispatch model guard', () => {
+      const entry = (id: string, createdDay: number, input = 2) => ({
+        id, canonicalId: null, openRouterId: `anthropic/${id}`, provider: 'anthropic', displayName: id,
+        contextLength: 1_000_000, created: 1_790_000_000 + createdDay * 86_400, input, output: input * 5, cacheRead: 0, cacheWrite: 0,
+      });
+      // opus-5-5 is the newest model with a recorded CLI floor; sonnet-5-5 postdates it.
+      const CATALOG = [
+        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15),
+      ];
+      const BAD = 'claude-sonnet-5-5';
+
+      beforeEach(() => {
+        mockGetCatalog.mockResolvedValue(CATALOG as any);
+        errorTraceRows.length = 0;
+        mockDrawAgentPoolArm.mockReset();
+        mockDrawAgentPoolArm.mockResolvedValue(null);
+        mockApplyAgentPoolArm.mockReset();
+        mockApplyAgentPoolArm.mockReturnValue(null);
+        mockRecordAgentPoolAssignment.mockReset();
+        mockRecordAgentPoolAssignment.mockResolvedValue(undefined);
+      });
+      afterEach(() => {
+        mockGetCatalog.mockResolvedValue([]);
+        mockTasksUpdate.mockReturnValue({
+          set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+        });
+      });
+
+      it('a pinned id the runner would reject is not launched: the tier default runs and the rejection is traced', async () => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), context: { model: BAD } }]);
+        const res = await POST(claimReq());
+        expect((await res.json()).workers.length).toBe(1);
+
+        const claimSet = sets.find(v => v.status === 'assigned');
+        expect(claimSet.predictedModel).not.toBe(BAD);
+        expect(claimSet.context.model).toBe('claude-sonnet-5');
+
+        expect(errorTraceRows).toHaveLength(1);
+        expect(errorTraceRows[0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', pattern: 'dispatch_model_rejected', source: 'claim' });
+        expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from pin (newer_than_floor_table)`);
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+      });
+
+      it('a pool challenger on an unvouched id never reaches the runner: the incumbent is served and the arm is un-served', async () => {
+        const sets = setup();
+        const draw: any = { arm: { id: 'arm-2' }, served: true, assignedModel: BAD, eligibility: {} };
+        mockDrawAgentPoolArm.mockResolvedValue(draw);
+        // The real applyAgentPoolArm consults the closure it is handed; assert on that closure.
+        mockApplyAgentPoolArm.mockImplementation((_d: any, args: any) => (args.clientCanServe(BAD) ? { model: BAD, provider: 'anthropic' } : null));
+        await POST(claimReq());
+
+        const claimSet = sets.find(v => v.status === 'assigned');
+        expect(claimSet.predictedModel).toBe('claude-sonnet-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(errorTraceRows).toHaveLength(1);
+        expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from tier_pool_arm`);
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+      });
+
+      it('an arm the guard rejects after it was served is un-served in the recorded assignment', async () => {
+        const sets = setup();
+        const draw: any = { arm: { id: 'arm-2' }, served: true, assignedModel: BAD, eligibility: {} };
+        mockDrawAgentPoolArm.mockResolvedValue(draw);
+        mockApplyAgentPoolArm.mockReturnValue({ model: BAD, provider: 'anthropic' });
+        await POST(claimReq());
+
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(draw.served).toBe(false);
+        expect(draw.assignedModel).toBe('claude-sonnet-5');
+        expect(draw.eligibility).toMatchObject({ fallback: 'model_unrecognized' });
+        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5' });
+      });
+
+      it('a recognised model is left alone and leaves no trace', async () => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), context: { model: 'claude-opus-5-5' } }]);
+        await POST(claimReq());
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-opus-5-5');
+        expect(errorTraceRows).toHaveLength(0);
+      });
+
+      it('an empty catalog is "learned nothing": nothing is rejected', async () => {
+        mockGetCatalog.mockResolvedValue([]);
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), context: { model: BAD } }]);
+        await POST(claimReq());
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe(BAD);
+        expect(errorTraceRows).toHaveLength(0);
       });
     });
 
@@ -5003,6 +5133,83 @@ describe('path-overlap claim guard', () => {
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
     });
+
+    // Stacked mission chains: PR D is based on PR C's branch, so D's diff
+    // contains all of C's files. A fix for C must not defer behind D (or
+    // anything stacked on D) — those overlaps are C's own changes.
+    it(`claims a ${label} fix task despite PRs stacked on its own PR overlapping`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'step-c', prNumber: 3293, prUrl: 'https://github.com/org/repo/pull/3293', branch: 'buildd/step-c', prBaseRef: 'mission/m', status: 'completed', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'step-e', prNumber: 3296, prUrl: 'https://github.com/org/repo/pull/3296', branch: 'buildd/step-e', prBaseRef: 'buildd/step-d', status: 'running', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'step-d', prNumber: 3295, prUrl: 'https://github.com/org/repo/pull/3295', branch: 'buildd/step-d', prBaseRef: 'buildd/step-c', status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['packages/shared/src/types.ts', 'packages/core/db/schema.ts']),
+        id: 'fix-task',
+        [column]: 3293,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([
+          { id: 'step-c', pathManifest: ['packages/shared/src/types.ts', 'packages/core/db/schema.ts'] },
+          { id: 'step-d', pathManifest: ['packages/shared/src/types.ts', 'packages/core/db/schema.ts', 'apps/web/src/lib/x.ts'] },
+          { id: 'step-e', pathManifest: ['packages/core/db/schema.ts'] },
+        ]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].taskId).toBe('fix-task');
+    });
+
+    it(`still defers a ${label} fix task behind an overlapping PR on the shared base (not stacked)`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+
+      mockWorkersFindMany
+        .mockResolvedValueOnce([]) // active workers
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'step-c', prNumber: 3293, prUrl: 'https://github.com/org/repo/pull/3293', branch: 'buildd/step-c', prBaseRef: 'mission/m', status: 'completed', prLifecycleStatus: 'open' },
+          { workspaceId: 'ws-1', taskId: 'sibling', prNumber: 3297, prUrl: 'https://github.com/org/repo/pull/3297', branch: 'buildd/sibling', prBaseRef: 'mission/m', status: 'running', prLifecycleStatus: 'open' },
+        ]);
+
+      const fixTask = {
+        ...taskWithManifest(['packages/core/db/schema.ts']),
+        id: 'fix-task',
+        [column]: 3293,
+      };
+
+      mockTasksFindMany
+        .mockResolvedValueOnce([fixTask])
+        .mockResolvedValueOnce([
+          { id: 'step-c', pathManifest: ['packages/core/db/schema.ts'] },
+          { id: 'sibling', pathManifest: ['packages/core/db/schema.ts'] },
+        ]);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
   }
 
   // A task whose title/description names a PR as its subject (e.g. "rebase and
@@ -7610,5 +7817,333 @@ describe('claim route: interactive session marker', () => {
     const marker = signInteractiveSession({ accountId: 'account-1', userId: 'user-1' });
     await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test', [INTERACTIVE_SESSION_HEADER]: marker }, body: { runner: 'mcp' } }));
     expect(insertedRunner()).toBe('mcp');
+  });
+});
+
+describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
+  const JEV = 'typesafe/jev-1.13-20260917';
+  const GATED = defineD({
+    id: 'buildd.orchestration_claim_hold',
+    promptVersion: 'test-gated',
+    questions: { action: choiceQ({ question: 'q' }, { HOLD: 'h', START: 's' }) },
+    mode: 'gated',
+    minConfidence: 0.8,
+  });
+
+  // Synthetic readout evidence for GATED: the promotion guard grants nothing without it.
+  const PROMOTED = ['ch1.open_pr_overlap', 'ch1.advisory_manifest'].map(candidatePolicyVersion => ({
+    decisionId: GATED.id, candidatePolicyVersion, measuredFingerprint: claimHoldIdentity(GATED),
+    verdict: 'eligible_for_gated' as const, threshold: 0.8, maxApplyingFraction: 1, readoutRef: 'synthetic',
+  }));
+
+  const rows: any[] = [];
+  function holdStartOn(over: Record<string, any> = {}) {
+    return {
+      hasRecent: async () => false,
+      loadHolder: async () => ({ title: 'Holder', workerStatus: 'completed', lastActivityAt: null, prLifecycle: 'ci_green', baseStale: false }),
+      decisionDeps: {
+        resolveAccess: async () => ({ ok: true, apiKey: 'k', model: JEV }) as any,
+        call: (async () => ({
+          ok: true,
+          answers: { action: { choice: 'START', confidence: 0.99, distribution: {} } },
+          model: JEV,
+          usage: { inputTokens: 10, outputTokens: 1, costUsd: 0 },
+          latencyMs: 1,
+          attempts: 1,
+        })) as any,
+        record: async (row: any) => { rows.push(row); },
+      },
+      ...over,
+    };
+  }
+
+  function apiAccount() {
+    return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
+  }
+
+  const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
+
+  function task(over: Record<string, unknown> = {}) {
+    return {
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      missionId: null,
+      title: 'Task one',
+      backend: 'claude' as const,
+      dependsOn: [],
+      pathManifest: ['apps/web/src/lib/widget.ts'],
+      context: {},
+      createdAt: new Date('2026-09-30T11:00:00Z'),
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
+      ...over,
+    };
+  }
+
+  /** Re-arm every mock for one claim: one candidate task, optional open PR and in-flight rows. */
+  function arm(opts: { tasks: any[]; openPrs?: any[]; prManifests?: any[]; inFlight?: any[]; leases?: Map<string, string[]> | Error; missions?: any[] }) {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    for (const m of [mockSecretsFindMany, mockConnectorsFindMany, mockConnectorSharesFindMany, mockConnectorWorkspacesFindMany, mockWorkspaceSkillsFindMany, mockOauthEpisodesFindMany, mockBackendPausesFindMany]) {
+      m.mockReset();
+      m.mockResolvedValue([] as any);
+    }
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue((opts.missions ?? []) as any);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce((opts.openPrs ?? []) as any).mockResolvedValue([]);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValueOnce(opts.tasks as any).mockResolvedValueOnce((opts.prManifests ?? []) as any).mockResolvedValue([]);
+    mockGetActiveClaimsByWorkspace.mockReset();
+    if (opts.leases instanceof Error) mockGetActiveClaimsByWorkspace.mockRejectedValue(opts.leases);
+    else mockGetActiveClaimsByWorkspace.mockResolvedValue(opts.leases ?? new Map());
+    mockDbSelect.mockReset();
+    mockDbSelect.mockReturnValue(makeSelectChain(opts.inFlight ?? []));
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+    });
+    mockDbExecute.mockReset();
+    mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+  }
+
+  async function claimWith(deps: Record<string, any>, setup: () => void) {
+    setup();
+    holdStartTest.deps = deps;
+    holdStartTest.scheduled = [];
+    rows.length = 0;
+    // Per-instance memos (a disabled team is not re-checked for a minute) would
+    // carry the "off" run into the "on" one; each claim here is a fresh instance.
+    realHoldStart.resetClaimHoldMemos();
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    const body = await res.json();
+    await Promise.all(holdStartTest.scheduled);
+    return { status: res.status, body, rows: [...rows], scheduled: holdStartTest.scheduled.length };
+  }
+
+  const scenarios: Record<string, () => void> = {
+    advisoryManifest: () => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+      missions: mission,
+      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
+    }),
+    openPrAfterWorkerEnded: () => arm({
+      tasks: [task()],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }),
+  };
+
+  afterEach(() => { holdStartTest.deps = holdStartOff(); });
+
+  for (const [name, setup] of Object.entries(scenarios)) {
+    it(`${name}: the claim response is identical with the capability on and off, and only "on" records a shadow row`, async () => {
+      const off = await claimWith(holdStartOff(), setup);
+      const on = await claimWith(holdStartOn(), setup);
+      expect(on.status).toBe(off.status);
+      expect(on.body).toEqual(off.body);
+      expect(off.body.workers).toHaveLength(0);
+      expect(off.rows).toHaveLength(0);
+      expect(on.rows).toHaveLength(1);
+      expect(on.rows[0]).toMatchObject({
+        capability: 'orchestration_claim',
+        ruleVerdict: 'HOLD',
+        suggested: 'START',
+        effective: 'HOLD',
+        applied: false,
+        status: 'suggested',
+        reason: 'shadow',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        teamId: 'team-1',
+        prNumber: null,
+        experimentArm: 'observe',
+        propensity: 1,
+        candidatePolicyVersion: name === 'advisoryManifest' ? 'ch1.advisory_manifest' : 'ch1.open_pr_overlap',
+      });
+    });
+  }
+
+  it.each([
+    ['conflictSurfaces is an object', { conflictSurfaces: { label: 'x', pattern: 'apps', serialize: true } }],
+    ['a conflictSurfaces pattern is not a string', { conflictSurfaces: [{ label: 'x', pattern: 42, serialize: true }] }],
+    ['sequenceNamespaces is an object', { sequenceNamespaces: { label: 'm', dir: 'db', serialize: true } }],
+  ])('a malformed workspace gitConfig (%s) leaves the claim response unchanged: same deferral, no 500', async (_name, gitConfig) => {
+    const openPrs = [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }];
+    const prManifests = [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }];
+    const baseline = await claimWith(holdStartOn(), () => arm({ tasks: [task()], openPrs, prManifests }));
+    const malformed = await claimWith(holdStartOn(), () => arm({
+      tasks: [task({ workspace: { id: 'ws-1', teamId: 'team-1', gitConfig } })], openPrs, prManifests,
+    }));
+    expect(malformed.status).toBe(200);
+    expect(malformed.body).toEqual(baseline.body);
+    expect(malformed.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    expect(malformed.scheduled).toBe(0);
+  });
+
+  it('the response never waits on the decision (a model call that never answers)', async () => {
+    let called = false;
+    const hanging = holdStartOn();
+    hanging.decisionDeps.call = (() => { called = true; return new Promise(() => {}); }) as any;
+    scenarios.openPrAfterWorkerEnded();
+    holdStartTest.deps = hanging;
+    holdStartTest.scheduled = [];
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toHaveLength(0);
+    expect(holdStartTest.scheduled).toHaveLength(1);
+    // The call may or may not have started by now; either way the response is out.
+    void called;
+  });
+
+  const noCandidate: Record<string, () => void> = {
+    'a live PR holder (worker running)': () => arm({
+      tasks: [task()],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'running', prLifecycleStatus: 'pr_open' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }),
+    'an exclusive live lease (layer 2)': () => arm({
+      tasks: [task()],
+      leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+    }),
+    'a migration path': () => arm({
+      tasks: [task({ pathManifest: ['packages/core/drizzle/0300_x.sql'] })],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['packages/core/drizzle/0300_x.sql'] }],
+    }),
+    'a failed lease read (unknown state)': () => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+      missions: mission,
+      inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }],
+      leases: new Error('db down'),
+    }),
+    'a mission pacing deferral (not advisory)': () => arm({
+      tasks: [task({ missionId: 'mission-A', pathManifest: ['**'] })],
+      missions: [{ ...mission[0], pacingMode: 'paced', pacingMaxPerHour: 1, lastTaskStartedAt: new Date() }],
+    }),
+  };
+
+  for (const [name, setup] of Object.entries(noCandidate)) {
+    it(`never consults the decision for ${name}`, async () => {
+      const on = await claimWith(holdStartOn(), setup);
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.scheduled).toBe(0);
+      expect(on.rows).toHaveLength(0);
+    });
+  }
+
+  it.each([
+    ['conflictRetryPrNumber'],
+    ['reviewerRetryPrNumber'],
+    ['ciRetryPrNumber'],
+  ])('preserves the %s own-PR exemption: claims, nothing asked', async (column) => {
+    const on = await claimWith(holdStartOn(), () => arm({
+      tasks: [task({ [column]: 41 })],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+    expect(on.scheduled).toBe(0);
+  });
+
+  it('preserves the subject-PR exemption: claims, nothing asked', async () => {
+    const on = await claimWith(holdStartOn(), () => arm({
+      tasks: [task({ subjectKind: 'pull_request', subjectPrNumber: 41 })],
+      openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+      prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+    }));
+    expect(on.body.workers).toHaveLength(1);
+    expect(on.scheduled).toBe(0);
+  });
+
+  it('as shipped, the gated START lookup is never made', async () => {
+    let lookups = 0;
+    const on = await claimWith(holdStartOn({ findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
+    expect(on.body.workers).toHaveLength(0);
+    expect(lookups).toBe(0);
+  });
+
+  describe('gated START, when reached (not reachable as shipped)', () => {
+    const acquired: any[] = [];
+    const gated = (over: Record<string, any> = {}) => holdStartOn({
+      decision: GATED,
+      applyingFraction: 1,
+      promotions: PROMOTED,
+      findAppliedStart: async () => true,
+      acquire: async (input: any) => { acquired.push(input); return { kind: 'acquired', inserted: input.paths, insertedIds: input.paths.map((_: string, i: number) => `lease-${i}`), blocked: [], pathManifest: null, revision: 1 }; },
+      ...over,
+    });
+    beforeEach(() => { acquired.length = 0; });
+
+    it('relaxes only the open-PR overlap and acquires the declared paths exclusively first', async () => {
+      const on = await claimWith(gated(), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toEqual([{ workspaceId: 'ws-1', taskId: 'task-1', paths: ['apps/web/src/lib/widget.ts'], declare: true }]);
+    });
+
+    it('without readout evidence the requested cohort is refused: no lookup, the hold stands', async () => {
+      let lookups = 0;
+      const on = await claimWith(gated({ promotions: [], findAppliedStart: async () => { lookups++; return true; } }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(0);
+      expect(lookups).toBe(0);
+      expect(acquired).toHaveLength(0);
+    });
+
+    it('a failed exclusive acquisition keeps the hold', async () => {
+      const on = await claimWith(gated({ acquire: async () => ({ kind: 'conflict', conflict: {}, blocked: [] }) }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(0);
+      expect(on.body.diagnostics?.deferrals?.path_overlap).toBe(1);
+    });
+
+    it('no applied START for this state: the hold stands', async () => {
+      const on = await claimWith(gated({ findAppliedStart: async () => false }), scenarios.openPrAfterWorkerEnded);
+      expect(on.body.workers).toHaveLength(0);
+    });
+
+    it('still never relaxes a live lease, even with an applied START on record', async () => {
+      const on = await claimWith(gated(), () => arm({
+        tasks: [task()],
+        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+        leases: new Map([['task-9', ['apps/web/src/lib/widget.ts']]]),
+      }));
+      expect(on.body.workers).toHaveLength(0);
+      expect(acquired).toHaveLength(0);
+    });
+
+    it('relaxes the scope-undeclared serialization; acquires nothing up front', async () => {
+      const on = await claimWith(gated(), scenarios.advisoryManifest);
+      expect(on.body.workers).toHaveLength(1);
+      expect(acquired).toHaveLength(0);
+    });
+
+    it('a later gate (mission concurrency cap) still applies after a relaxed advisory gate', async () => {
+      const on = await claimWith(gated(), () => arm({
+        tasks: [task()],
+        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      }));
+      expect(on.body.workers).toHaveLength(1);
+      const capped = await claimWith(gated(), () => arm({
+        tasks: [task({ missionId: 'mission-A' })],
+        missions: [{ ...mission[0], maxConcurrentTasks: 1 }],
+        inFlight: [{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['apps/web/src/lib/other.ts'] }],
+        openPrs: [{ workspaceId: 'ws-1', taskId: 'pr-task', prNumber: 41, prUrl: 'https://example.test/pull/41', status: 'completed', prLifecycleStatus: 'ci_green' }],
+        prManifests: [{ id: 'pr-task', pathManifest: ['apps/web/src/lib/widget.ts'] }],
+      }));
+      expect(capped.body.workers).toHaveLength(0);
+      expect(capped.body.diagnostics?.deferrals?.mission_concurrent).toBe(1);
+      expect(acquired).toHaveLength(1);
+    });
   });
 });

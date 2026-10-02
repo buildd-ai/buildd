@@ -31,7 +31,11 @@ export type InferenceCapability =
   | 'mission_summary'
   | 'heartbeat_triage'
   | 'task_category'
+  | 'surface_audit_advice'
   | 'task_role_shadow'
+  | 'orchestration_manifest'
+  | 'orchestration_claim'
+  | 'mission_strand_choice'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -89,12 +93,47 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'A decision model picks each task\'s category when it is confident. Never changes a category you set, or a review task.',
     costHint: '~$0.00002 per task',
   },
+  surface_audit_advice: {
+    id: 'surface_audit_advice',
+    kind: 'built_in',
+    label: 'Visual audit advice',
+    description: 'When you open a mission that changed UI with no visual audit, a decision model suggests running the audit or waiving it. Only a suggestion; you always confirm.',
+    costHint: '~$0.00003 per mission, cached',
+  },
   task_role_shadow: {
     id: 'task_role_shadow',
     kind: 'opt_in',
     label: 'Task role shadow',
     description: 'A decision model says which role it would give a task filed without one. Logged only; never changes the task.',
     costHint: '~$0.00003 per task',
+  },
+  // Conflict-aware orchestration decisions (docs/design/conflict-aware-orchestration.md
+  // §5, packages/core/orchestration-decision.ts). Opt-in shadows: they ship dark,
+  // and opting in records suggestions only until a decision's applying cohort is
+  // raised from zero after a held-out readout.
+  orchestration_manifest: {
+    id: 'orchestration_manifest',
+    kind: 'opt_in',
+    label: 'Scope prediction shadow',
+    description: 'A decision model predicts which files a task filed without a scope will touch. Logged only until measured.',
+    costHint: '~$0.0001 per task',
+  },
+  orchestration_claim: {
+    id: 'orchestration_claim',
+    kind: 'opt_in',
+    label: 'Hold/start shadow',
+    description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
+    costHint: '~$0.00003 per check',
+  },
+  // Stranded local missions (apps/web/src/lib/strand-choice-decision.ts).
+  // Shadow first: logged only; it can at most reorder the two buttons, and
+  // only once its gate is raised in code after a readout. Never flips anything.
+  mission_strand_choice: {
+    id: 'mission_strand_choice',
+    kind: 'opt_in',
+    label: 'Stranded mission shadow',
+    description: 'A decision model says whether a stranded local mission should continue on a runner or wait for your session. Logged only; you always choose.',
+    costHint: '~$0.00003 per stranded mission, cached',
   },
   chat: {
     id: 'chat',

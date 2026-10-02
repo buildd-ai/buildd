@@ -19,7 +19,6 @@ mock.module('@buildd/core/config', () => ({
     storageBucket: 'test-bucket',
     storageAccessKey: 'test-access-key',
     storageSecretKey: 'test-secret-key',
-    storagePublicUrl: '',
   },
 }));
 
@@ -51,6 +50,12 @@ describe('generateConstrainedUploadUrl', () => {
   it('targets the derived key and nothing else', async () => {
     const url = await generateConstrainedUploadUrl(KEY, 'application/x-ndjson', 10);
     expect(new URL(url).pathname).toContain(KEY);
+  });
+
+  it('carries no precomputed body checksum', async () => {
+    const url = await generateConstrainedUploadUrl(KEY, 'application/x-ndjson', 10);
+    const names = [...new URL(url).searchParams.keys()].map((k) => k.toLowerCase());
+    expect(names.filter((k) => k.startsWith('x-amz-checksum') || k === 'x-amz-sdk-checksum-algorithm')).toEqual([]);
   });
 
   it('expires — the signature is short-lived', async () => {
