@@ -284,12 +284,16 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClo
   }, [choice, hasGateway, baseUrl, apiKey, authHeader, current?.kind]);
 
   const needsKey = choice === 'openrouter' || choice === 'anthropic-compatible';
-  // Replacing an endpoint of the same kind still needs the key: it is never read back.
+  // A blank key keeps the saved one (the server reuses it for the same kind and
+  // URL at this scope only; it is never read back). A new endpoint, another
+  // kind or another URL needs the key typed.
+  const sameUrl = choice === 'openrouter' || baseUrl.trim().replace(/\/+$/, '') === (current?.baseUrl ?? '');
+  const keepsKey = needsKey && current?.kind === choice && !!current.last4 && sameUrl;
   const canSave = !busy && (choice === 'anthropic'
     ? !!current
     : choice === 'gateway'
       ? hasGateway
-      : !!apiKey.trim() && (choice === 'openrouter' || !!baseUrl.trim()));
+      : (!!apiKey.trim() || keepsKey) && (choice === 'openrouter' || !!baseUrl.trim()));
 
   async function save() {
     setBusy(true);
@@ -308,8 +312,8 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClo
         }
         const body: Record<string, unknown> = { kind: choice };
         if (scope) body.workspaceId = scope;
-        if (choice === 'openrouter') body.apiKey = apiKey.trim();
-        if (choice === 'anthropic-compatible') Object.assign(body, { baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), authHeader });
+        if (choice === 'anthropic-compatible') Object.assign(body, { baseUrl: baseUrl.trim(), authHeader });
+        if (needsKey && apiKey.trim()) body.apiKey = apiKey.trim();
         if (choice !== 'openrouter' && Object.keys(models).length > 0) body.models = models;
         const res = await fetch(`/api/teams/${teamId}/agent-endpoint`, {
           method: 'PUT',
@@ -377,7 +381,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClo
       {needsKey && (
         <div className="space-y-1">
           <label className="field-label" htmlFor="agent-endpoint-key">Key</label>
-          <input id="agent-endpoint-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" className={INPUT} />
+          <input id="agent-endpoint-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={current && current.kind === choice && current.last4 ? `Saved key …${current.last4}, leave blank to keep` : 'sk-…'} className={INPUT} />
           <p className="text-text-muted">buildd sends one short test request before saving. Stored encrypted. Nobody can read it back.</p>
         </div>
       )}

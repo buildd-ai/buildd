@@ -238,6 +238,26 @@ async function storedBlobAt(teamId: string, workspaceId: string | null): Promise
   return row ? readBlob(row.encryptedValue) : null;
 }
 
+/**
+ * The editor's input with the saved key filled in when the key field was left
+ * blank: only for the same kind and the same normalised URL at the same scope,
+ * so a saved key is never sent anywhere it was not saved for. The saved auth
+ * header comes along unless the input names one. Null: blank key and nothing
+ * to reuse. Input with a key (or a kind that has none) passes through.
+ */
+function withStoredKey(input: Record<string, unknown>, stored: AgentEndpointBlob | null): Record<string, unknown> | null {
+  const raw: Record<string, unknown> = { ...input };
+  if (raw.kind !== 'anthropic-compatible' && raw.kind !== 'openrouter') return raw;
+  if (typeof raw.apiKey === 'string' ? raw.apiKey.trim() !== '' : raw.apiKey !== undefined && raw.apiKey !== null) return raw;
+  if (!stored || stored.kind !== raw.kind) return null;
+  const url = raw.baseUrl;
+  if (url !== undefined && url !== null && url !== '' && (typeof url !== 'string' || normalizeGatewayUrl(url) !== stored.baseUrl)) return null;
+  raw.apiKey = stored.apiKey;
+  raw.baseUrl = stored.baseUrl;
+  if (raw.authHeader === undefined || raw.authHeader === null || raw.authHeader === '') raw.authHeader = stored.authHeader;
+  return raw;
+}
+
 export interface AgentEndpointModelPreview {
   ok: true;
   /** Whether the endpoint returned a model list. False: the editor falls back to typed aliases. */
@@ -264,18 +284,9 @@ export async function previewAgentEndpointModels(
   if (!input.endpoint || typeof input.endpoint !== 'object' || Array.isArray(input.endpoint)) {
     return { ok: false, status: 400, error: 'An endpoint needs a kind.' };
   }
-  const raw: Record<string, unknown> = { ...(input.endpoint as Record<string, unknown>) };
   const stored = await storedBlobAt(input.teamId, scope.workspaceId);
-  if ((raw.kind === 'anthropic-compatible' || raw.kind === 'openrouter') && (raw.apiKey === undefined || raw.apiKey === '')) {
-    const sameUrl = (b: { baseUrl: string }) => raw.baseUrl === undefined || raw.baseUrl === '' ||
-      (typeof raw.baseUrl === 'string' && normalizeGatewayUrl(raw.baseUrl) === b.baseUrl);
-    if (!stored || stored.kind !== raw.kind || !sameUrl(stored)) {
-      return { ok: false, status: 400, error: 'Enter the key to list this endpoint\'s models.' };
-    }
-    raw.apiKey = stored.apiKey;
-    raw.baseUrl = stored.baseUrl;
-    raw.authHeader ??= stored.authHeader;
-  }
+  const raw = withStoredKey(input.endpoint as Record<string, unknown>, stored);
+  if (!raw) return { ok: false, status: 400, error: 'Enter the key to list this endpoint\'s models.' };
   const v = validateAgentEndpointInput(raw);
   if (!v.ok) return { ok: false, status: 400, error: v.error };
   const gateway = v.blob.kind === 'gateway' ? await gatewayFor(input.teamId, scope.workspaceId) : null;
@@ -309,7 +320,14 @@ export async function setTeamAgentEndpoint(
   if (!scope.ok) return scope;
   const workspaceId = scope.workspaceId;
 
-  const v = validateAgentEndpointInput(input.endpoint);
+  // A blank key keeps the saved one, for the same endpoint only.
+  let endpoint = input.endpoint;
+  if (endpoint && typeof endpoint === 'object' && !Array.isArray(endpoint)) {
+    const filled = withStoredKey(endpoint as Record<string, unknown>, await storedBlobAt(input.teamId, workspaceId));
+    if (!filled) return { ok: false, status: 400, error: 'Enter the key for this endpoint.' };
+    endpoint = filled;
+  }
+  const v = validateAgentEndpointInput(endpoint);
   if (!v.ok) return { ok: false, status: 400, error: v.error };
 
   const gateway = v.blob.kind === 'gateway' ? await gatewayFor(input.teamId, workspaceId) : null;

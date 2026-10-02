@@ -270,6 +270,46 @@ describe('setTeamAgentEndpoint with model discovery', () => {
   });
 });
 
+describe('setTeamAgentEndpoint with a blank key', () => {
+  const storedRow = (blob: unknown, workspaceId: string | null = null) => ({ id: 's-1', purpose: 'agent_endpoint', workspaceId, accountId: null, userId: null, encryptedValue: JSON.stringify(blob) });
+  const saved = { ...custom, baseUrl: 'https://litellm.example.com', authHeader: 'x-api-key', models: { 'claude-opus-5': 'team-opus' } };
+
+  it('same kind and URL at the same scope: keeps the stored key and header, verifies with it, never returns it', async () => {
+    secretRows = [storedRow(saved)];
+    const ep = fakeEndpoint(404);
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com/', models: { 'claude-opus-5': 'team-opus-2' } } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(r).toMatchObject({ ok: true, endpoint: { last4: '1234', authHeader: 'x-api-key' } });
+    expect(ep.messages()[0].headers.get('x-api-key')).toBe(KEY);
+    expect(JSON.parse(stored[0].value)).toMatchObject({ apiKey: KEY, authHeader: 'x-api-key', models: { 'claude-opus-5': 'team-opus-2' } });
+    expect(JSON.stringify(r)).not.toContain(KEY);
+  });
+
+  it('an explicitly changed header is kept', async () => {
+    secretRows = [storedRow(saved)];
+    const ep = fakeEndpoint(404);
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: '', authHeader: 'authorization' } }, { lookup: publicLookup, fetcher: ep.fetcher });
+    expect(r.ok).toBe(true);
+    expect(ep.messages()[0].headers.get('authorization')).toBe(`Bearer ${KEY}`);
+  });
+
+  it('a changed URL, a changed kind, another scope, or nothing stored: refused, nothing called', async () => {
+    const ep = fakeEndpoint(404);
+    secretRows = [storedRow(saved)];
+    for (const endpoint of [
+      { kind: 'anthropic-compatible', baseUrl: 'https://elsewhere.example.com' },
+      { kind: 'openrouter' },
+    ]) {
+      expect(await setTeamAgentEndpoint({ teamId: 't', endpoint }, { lookup: publicLookup, fetcher: ep.fetcher }))
+        .toEqual({ ok: false, status: 400, error: 'Enter the key for this endpoint.' });
+    }
+    secretRows = [storedRow(saved, 'ws-1')];
+    expect(await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com' } }, { lookup: publicLookup, fetcher: ep.fetcher }))
+      .toMatchObject({ ok: false, status: 400 });
+    expect(ep.calls).toHaveLength(0);
+    expect(stored).toHaveLength(0);
+  });
+});
+
 describe('previewAgentEndpointModels', () => {
   it('lists the endpoint\'s models and one prefilled row per model buildd asks for, without the key', async () => {
     const ep = fakeEndpoint(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']);

@@ -252,6 +252,28 @@ describe('AgentEndpointSection', () => {
     expect(row('claude-opus-5').textContent).toContain('claude-sonnet-5');
   });
 
+  it('editing an existing endpoint keeps the saved key when the key field is left blank', async () => {
+    endpoints = [teamEndpoint];
+    await mount();
+    await click(button('Edit'));
+    const key = host.querySelector('#agent-endpoint-key') as HTMLInputElement;
+    expect(key.placeholder).toBe('Saved key …1234, leave blank to keep');
+    expect(key.value).toBe('');
+    await settle();
+    await click(button('Save'));
+    const put = writes.find((w) => w.method === 'PUT')!;
+    expect(put.body).toEqual({ kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', authHeader: 'authorization', models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' } });
+  });
+
+  it('a new endpoint, or a different kind, still needs a key', async () => {
+    endpoints = [teamEndpoint];
+    await mount();
+    await click(button('Edit'));
+    await click(kindRadio(2));
+    expect((host.querySelector('#agent-endpoint-key') as HTMLInputElement).placeholder).toBe('sk-…');
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('is read-only for a member', async () => {
     endpoints = [teamEndpoint];
     await mount(false);
