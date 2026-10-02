@@ -203,6 +203,10 @@ that does is labelled with its workspace and fenced as untrusted text.
   { sources: [{ workspaceId, acknowledgeSensitive? }] }`, at most 3 sources.
   Absent or empty means own namespaces only. A source is never inferred from
   team membership.
+- `gitConfig.linkedKnowledgeWorkspaces` is a separate, unlabelled docs-only widening
+  (own team, not sensitive, account-reachable). When `crossWorkspaceDocs` yields
+  readable sources the labelled path above is used and the linked list is not
+  merged in; otherwise the linked list applies as before.
 - Only the `docs` and `spec` corpora cross. `code`, `memory`, `task` and the rest
   are always the caller's own workspace, in single-scope, multi-scope and
   `spec_compare` calls alike.
