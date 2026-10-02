@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   prShipState,
   isPrShipped,
+  isPrUnshipped,
   deriveLineageSupersession,
   summarizePrShipStates,
   countDistinctPrs,
@@ -31,6 +32,19 @@ describe('prShipState — the one shipped predicate', () => {
     const w = { prUrl: pr(1), prLifecycleStatus: 'closed' };
     expect(prShipState(w)).toBe('closed_unsuperseded');
     expect(isPrShipped(w)).toBe(false);
+  });
+
+  it('closed and declared abandoned is settled: neither shipped nor blocking', () => {
+    const w = { prUrl: pr(1), prLifecycleStatus: 'closed', abandonedAt: '2026-01-02' };
+    expect(prShipState(w)).toBe('abandoned');
+    expect(isPrShipped(w)).toBe(false);
+    expect(isPrUnshipped(w)).toBe(false);
+  });
+
+  it('abandonedAt on a PR that is still open changes nothing', () => {
+    const w = { prUrl: pr(1), prLifecycleStatus: 'pr_open', abandonedAt: '2026-01-02' };
+    expect(prShipState(w)).toBe('open');
+    expect(isPrUnshipped(w)).toBe(true);
   });
 
   it('open / CI-failing / conflicted are open, not shipped', () => {

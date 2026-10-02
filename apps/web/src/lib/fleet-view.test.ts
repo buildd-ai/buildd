@@ -3,6 +3,7 @@ import {
   buildFleetSnapshot,
   fleetCapacity,
   fleetDisplayRows,
+  fleetLabel,
   fleetSummary,
   homeHeadline,
   runnerIdentity,
@@ -279,5 +280,121 @@ describe('fleetSummary', () => {
 
   it('an empty fleet has no last run', () => {
     expect(fleetSummary({ runners: [], live: 0, capacity: 0, window: { from: 0, to: 0 } }).last).toBeNull();
+  });
+});
+
+describe('ephemeral --once runs: one elastic group per cloud dispatcher', () => {
+  const host = (id: string, url: string, max = 4): FleetHeartbeatRow => ({
+    id, accountId: 'acct', localUiUrl: url, maxConcurrentWorkers: max, lastHeartbeatAt: new Date(NOW - 10_000),
+    environment: { labels: { hostname: id, os: 'darwin', arch: 'arm64' } }, activeWorkerCount: 0,
+  });
+  /** A cloud container's row: per-task URL, the container's hostname, the dispatcher's group. */
+  const cloud = (task: string, over: Partial<FleetHeartbeatRow> & { group?: string | null } = {}): FleetHeartbeatRow => {
+    const { group = 'my-dispatcher', ...rest } = over;
+    return {
+      id: `hb-${task}`, accountId: 'acct', localUiUrl: `headless://container/once/${task}`, maxConcurrentWorkers: 1,
+      lastHeartbeatAt: new Date(NOW - 10_000), activeWorkerCount: 1,
+      environment: {
+        labels: { hostname: 'container', os: 'linux', arch: 'x64' },
+        ...(group === null ? {} : { fleet: { executor: 'cloud', ephemeral: true, concurrency: 1, group } }),
+      },
+      ...rest,
+    };
+  };
+  const run = (id: string, url: string, over: Partial<FleetWorkerRow> = {}): FleetWorkerRow => ({
+    id, accountId: 'acct', runner: url, localUiUrl: url, status: 'running', startedAt: min(5),
+    task: { id: `t-${id}`, title: `feat(${id}): something`, roleSlug: 'builder', missionId: 'm1' }, ...over,
+  });
+
+  it('folds live cloud runs into one row with one slot per run, beside the unchanged host runner', () => {
+    const s = buildFleetSnapshot(
+      [host('atlas', 'http://atlas.local:8766'), cloud('a'), cloud('b'), cloud('c')],
+      [
+        run('a', 'headless://container/once/a'),
+        run('b', 'headless://container/once/b', { status: 'waiting_input', waitingFor: { prompt: 'Which one?' } }),
+        run('h', 'http://atlas.local:8766'),
+        // Finished run: its container is gone.
+        run('c', 'headless://container/once/c', { status: 'completed', startedAt: min(30), completedAt: min(20) }),
+      ],
+      { now: NOW },
+    );
+    expect(s.runners).toHaveLength(2);
+    const group = s.runners.find(r => r.elastic)!;
+    expect(group.name).toBe('my-dispatcher');
+    expect(group.machine).toBe('Cloudflare · elastic');
+    expect(group.elastic).toEqual({ executor: 'cloud', group: 'my-dispatcher', running: 2 });
+    expect(group.maxSlots).toBe(2);
+    expect(group.slots.map(sl => sl.worker?.workerId)).toEqual(['a', 'b']);
+    // Never "idle with free slots".
+    expect(group.slots.every(sl => sl.worker)).toBe(true);
+    expect(group.online).toBe(true);
+    const atlas = s.runners.find(r => !r.elastic)!;
+    expect(atlas).toMatchObject({ name: 'atlas', maxSlots: 4, machine: 'macOS · arm64' });
+    expect(atlas.elastic).toBeUndefined();
+    expect(s.live).toBe(3);
+  });
+
+  it('a finished cloud run leaves the fleet even while its heartbeat is still fresh', () => {
+    const s = buildFleetSnapshot(
+      [cloud('a', { activeWorkerCount: 0 }), cloud('b', { activeWorkerCount: 0 })],
+      [
+        run('a', 'headless://container/once/a', { status: 'completed', startedAt: min(30), completedAt: min(1) }),
+        run('b', 'headless://container/once/b', { status: 'failed', startedAt: min(30), completedAt: min(2) }),
+      ],
+      { now: NOW },
+    );
+    expect(s.runners).toEqual([]);
+    expect(s.capacity).toBe(0);
+  });
+
+  it('a container that has not claimed yet is not a runner with a free slot', () => {
+    const s = buildFleetSnapshot([cloud('a', { activeWorkerCount: 0 })], [], { now: NOW });
+    expect(s.runners).toEqual([]);
+  });
+
+  it('legacy cloud rows (no group reported) fold by machine name and hide once finished, with no hardcoded names', () => {
+    const legacy = (task: string, active: number): FleetHeartbeatRow => ({
+      ...cloud(task, { group: null, activeWorkerCount: active }),
+      // Rows from before this change carry the account default, not 1.
+      maxConcurrentWorkers: 5,
+    });
+    const s = buildFleetSnapshot(
+      [legacy('a', 1), legacy('b', 1), legacy('old1', 0), legacy('old2', 0)],
+      [
+        run('a', 'headless://container/once/a'),
+        run('b', 'headless://container/once/b'),
+        run('old1', 'headless://container/once/old1', { status: 'completed', startedAt: min(90), completedAt: min(60) }),
+      ],
+      { now: NOW },
+    );
+    expect(s.runners).toHaveLength(1);
+    expect(s.runners[0]).toMatchObject({ name: 'container', machine: 'elastic', maxSlots: 2, elastic: { executor: null, group: null, running: 2 } });
+    // One slot per live run, not the account default of 5 per row.
+    expect(s.capacity).toBe(2);
+  });
+
+  it('capacity counts a live ephemeral run as one slot and a finished one as none', () => {
+    const beats = [host('atlas', 'http://atlas.local:8766', 4), cloud('a'), cloud('b', { activeWorkerCount: 0 }), { ...cloud('c'), maxConcurrentWorkers: 5 }];
+    expect(fleetCapacity(beats, { now: NOW })).toBe(4 + 1 + 0 + 1);
+  });
+
+  it('two dispatchers are two groups', () => {
+    const s = buildFleetSnapshot(
+      [cloud('a'), cloud('b', { group: 'other-dispatcher' })],
+      [run('a', 'headless://container/once/a'), run('b', 'headless://container/once/b')],
+      { now: NOW },
+    );
+    expect(s.runners.map(r => r.name).sort()).toEqual(['my-dispatcher', 'other-dispatcher']);
+  });
+
+  it('fleetLabel names groups as elastic, not as N runners × slots', () => {
+    const s = buildFleetSnapshot(
+      [host('atlas', 'http://atlas.local:8766', 4), host('birch', 'http://birch.local:8766', 4), cloud('a'), cloud('b')],
+      [run('a', 'headless://container/once/a'), run('b', 'headless://container/once/b')],
+      { now: NOW },
+    );
+    expect(fleetLabel(s)).toBe('Fleet · 2 runners × 4 slots + 1 elastic group');
+    const only = buildFleetSnapshot([cloud('a')], [run('a', 'headless://container/once/a')], { now: NOW });
+    expect(fleetLabel(only)).toBe('Fleet · 1 elastic group');
   });
 });

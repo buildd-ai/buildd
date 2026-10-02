@@ -202,6 +202,37 @@ describe('list_runners', () => {
     expect(unknown).toContain('Browser-capable runner online for My Workspace: unknown');
   });
 
+  it('cloud runs read as one elastic group with its runs nested, host runners unchanged', async () => {
+    const fleet = { executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' };
+    const once = (task: string) => runner({
+      localUiUrl: `headless://container/once/${task}`, activeWorkers: 1, maxConcurrent: 1, capacity: 0, fleet,
+      runnerCommit: 'c0ffee', runnerVersion: '0.1.0',
+    });
+    mockApi.mockResolvedValueOnce({ activeLocalUis: [runner({ accountName: 'Host', fleet: null }), once('a'), once('b')] });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('1 runner(s), 1 elastic group(s):');
+    expect(out).toContain('Host — http://localhost:8766 — 0 busy of 10 slots');
+    const groupLine = out.split('\n').find(l => l.includes('my-dispatcher'))!;
+    expect(groupLine).toBe('- Cloudflare · my-dispatcher · elastic · 2 running — Runner A');
+    expect(out).toContain('  run headless://container/once/a — last heartbeat 2026-09-27T00:00:00.000Z');
+    expect(out).toContain('  run headless://container/once/b — last heartbeat 2026-09-27T00:00:00.000Z');
+    // Not listed as machines with slots.
+    expect(out).not.toContain('headless://container/once/a — 1 busy of 1 slots');
+    expect(out).toContain('runnerCommit=c0ffee runnerVersion=0.1.0');
+  });
+
+  it('a run from an older build (no group) still folds, by its machine name', async () => {
+    const legacy = (task: string) => runner({
+      localUiUrl: `headless://container/once/${task}`, activeWorkers: 1, maxConcurrent: 1,
+      fleet: { executor: null, ephemeral: true, concurrency: 1, group: null },
+      environment: { labels: { hostname: 'container' } },
+    });
+    mockApi.mockResolvedValueOnce({ activeLocalUis: [legacy('a'), legacy('b')] });
+    const out = (await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', {}, ctx())).content[0].text;
+    expect(out).toContain('0 runner(s), 1 elastic group(s):');
+    expect(out).toContain('- container · elastic · 2 running — Runner A');
+  });
+
   it('with a workspaceId that does not resolve: an error, not every runner', async () => {
     mockApi.mockResolvedValueOnce({ workspaces: [] });
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'list_runners', { workspaceId: 'Nope' }, ctx());

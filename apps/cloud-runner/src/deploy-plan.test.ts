@@ -53,12 +53,14 @@ describe('deploy names', () => {
     for (const bad of ['', 'Upper', '-lead', 'has space', 'a"b', 'x'.repeat(50)]) expect(() => deployNames(bad)).toThrow();
   });
 
-  it('renders a config with only the Worker name and bucket changed', () => {
+  it('renders a config with only the Worker name, its runner group and the bucket changed', () => {
     const out = renderWranglerConfig(base(), deployNames('agent-runtime-spike'));
-    const a = parse(base()), b = parse(out);
+    const a = parse(base()) as any, b = parse(out) as any;
     expect(b.name).toBe('agent-runtime-spike');
     expect(b.r2_buckets).toEqual([{ binding: 'SNAPSHOTS', bucket_name: 'agent-runtime-spike-snapshots' }]);
-    expect({ ...b, name: a.name, r2_buckets: a.r2_buckets }).toEqual(a);
+    // The fleet shows this deployment's runs as one group under its own name.
+    expect(b.vars.RUNNER_GROUP).toBe('agent-runtime-spike');
+    expect({ ...b, name: a.name, r2_buckets: a.r2_buckets, vars: { ...b.vars, RUNNER_GROUP: a.vars.RUNNER_GROUP } }).toEqual(a);
   });
 
   it('fails loudly if wrangler.jsonc no longer has the fields it rewrites', () => {

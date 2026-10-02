@@ -77,6 +77,7 @@ import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { sweepDeferredDispatch } from '@/lib/deferred-dispatch-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
+import { sweepClosedUnsupersededPrs } from '@/lib/pr-supersession-detect';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
@@ -111,7 +112,7 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed, closedPrs] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
@@ -162,6 +163,13 @@ export async function GET(req: NextRequest) {
       // The red-PR sweep's floor pass: open buildd PRs whose lifecycle is
       // ci_failed, re-seeding the queue the gated tick reads. Isolated.
       sweepCiRedPrs({ source: 'floor' }).catch((err): { error: string } => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // Closed-unmerged mission PRs with no supersession edge: look for where
+      // the work landed and record it only if the content verifies, else leave
+      // a suggestion (lib/pr-supersession-detect.ts). Backfill for webhook
+      // misses and PRs closed before the webhook door existed. Isolated.
+      sweepClosedUnsupersededPrs().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
@@ -220,6 +228,13 @@ export async function GET(req: NextRequest) {
     } else {
       logCiRed(ciRed);
     }
+    if ('error' in closedPrs) {
+      console.error('[ClosedPrSupersession] error:', closedPrs.error);
+    } else {
+      console.log(
+        `[ClosedPrSupersession] candidates=${closedPrs.candidates} recorded=${closedPrs.recorded} suggested=${closedPrs.suggested} none=${closedPrs.none} skipped=${closedPrs.skipped}`,
+      );
+    }
     // `changed` is what separates a healthy idle sweep from a dead one. Rows
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
@@ -231,6 +246,7 @@ export async function GET(req: NextRequest) {
     const landingErrors = 'error' in landing ? 1 : landing.errors;
     const refreshRedriveErrors = 'error' in refreshRedrive ? 1 : refreshRedrive.errors;
     const ciRedErrors = 'error' in ciRed ? 1 : ciRed.errors;
+    const closedPrErrors = 'error' in closedPrs ? 1 : 0;
     report({
       processed:
         reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total)
@@ -247,11 +263,12 @@ export async function GET(req: NextRequest) {
         + ('error' in deferredDispatch ? 0 : deferredDispatch.dispatched)
         + ('error' in landing ? 0 : landingChanged(landing))
         + ('error' in refreshRedrive ? 0 : refreshRedrive.merged + refreshRedrive.exhausted)
-        + ('error' in ciRed ? 0 : ciRedChanged(ciRed)),
+        + ('error' in ciRed ? 0 : ciRedChanged(ciRed))
+        + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested),
       errors:
         reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
-        + deferredDispatchErrors + landingErrors + refreshRedriveErrors + ciRedErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed },
+        + deferredDispatchErrors + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors,
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, deferredDispatch, landing, refreshRedrive, ciRed, closedPrs },
     });
 
     return NextResponse.json({
@@ -267,6 +284,7 @@ export async function GET(req: NextRequest) {
       landing,
       refreshRedrive,
       ciRed,
+      closedPrs,
     });
   });
 }

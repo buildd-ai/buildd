@@ -78,6 +78,7 @@ export interface MissionCardWorkerRow {
   prLifecycleStatus?: string | null;
   mergedAt?: DateLike;
   supersededByPrNumber?: number | null;
+  abandonedAt?: DateLike;
   exitCause?: string | null;
 }
 
