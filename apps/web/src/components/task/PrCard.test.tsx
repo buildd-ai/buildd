@@ -119,7 +119,7 @@ describe('Checks by commit on a phone', () => {
       outcome: withCommits([{ attempt: 1, sha: '69786bc', state: 'passed', failure: null, runs: Array.from({ length: 9 }, (_, i) => pass(`check ${i}`)) }]),
     });
     expect(html).toContain('data-testid="pr-commit-checks-mobile"');
-    expect(html).toContain('Attempt 1 · 69786bc');
+    expect(html).toContain('Attempt 1</span> · <span class="text-text-primary">69786bc</span>');
     expect(html).toContain('✓ 9 checks passed');
     expect(html).toContain('data-open="false"');
     // Collapsed: no mobile rows mounted; the desktop list is untouched.

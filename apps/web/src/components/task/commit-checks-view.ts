@@ -31,6 +31,8 @@ export interface AttemptChecksView {
   key: string;
   /** "Attempt 1 · 69786bc" */
   heading: string;
+  attempt: number;
+  sha: string;
   runs: CiCheckRun[];
   failed: number;
   pending: number;
@@ -77,6 +79,8 @@ export function buildCommitChecksView(commits: readonly PrCommitChecks[]): Attem
     return {
       key: `${c.attempt}-${c.sha}`,
       heading: `Attempt ${c.attempt} · ${c.sha}`,
+      attempt: c.attempt,
+      sha: c.sha,
       runs,
       failed,
       pending,

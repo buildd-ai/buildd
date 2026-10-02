@@ -351,7 +351,7 @@ export function CommitChecksMobile({ commits, className = '' }: { commits: PrCom
     <div data-testid="pr-commit-checks-mobile" className={className}>
       {views.map((v, i) => (
         <div key={v.key} data-testid="pr-commit-attempt" data-open={v.defaultOpen ? 'true' : 'false'} className="border-b border-border-default last:border-b-0 py-3">
-          <div className="font-mono text-meta uppercase tracking-[1.5px] text-text-muted">{v.heading}</div>
+          <div className="font-mono text-meta text-text-muted"><span className="uppercase tracking-[1.5px]">Attempt {v.attempt}</span> · <span className="text-text-primary">{v.sha}</span></div>
           <Disclosure defaultOpen={v.defaultOpen} summary={<span className={`font-mono text-body ${SUMMARY_TEXT[v.tone]}`}>{v.summary}</span>}>
             {v.runs.length > 0 && (
               <ul className="pb-2">

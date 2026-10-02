@@ -39,7 +39,7 @@ describe('TaskShippedBody', () => {
     expect(html).toContain('On screen');
     expect(html).toContain('Your move');
     expect(html).toContain('Review &amp; merge');
-    expect(html).toContain('w-full');
+    expect(html).toContain('w-full md:w-auto');
     expect(html).toContain('Checks passing · PR #416');
     expect(html.indexOf('task-shipped-lede-card')).toBeLessThan(html.indexOf('task-shipped-your-move'));
     // The raw handoff is behind the collapsed disclosure, never the headline.

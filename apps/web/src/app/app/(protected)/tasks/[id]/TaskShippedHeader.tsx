@@ -106,7 +106,7 @@ export function TaskShippedBody({
       {view.action && (
         <Section title="Your move" className="!py-0">
           <div data-testid="task-shipped-your-move" className="flex flex-col gap-2">
-            <PrimaryAction href={view.action.href} tone={view.action.tone} className="w-full" data-testid="task-shipped-action">
+            <PrimaryAction href={view.action.href} tone={view.action.tone} fullWidthOnMobile data-testid="task-shipped-action">
               {view.action.label}
             </PrimaryAction>
             {view.actionMeta && (
