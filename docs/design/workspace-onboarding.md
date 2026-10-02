@@ -1,6 +1,6 @@
 # Workspace Onboarding: make any repo buildd-ready
 
-**Status:** Proposed
+**Status:** Implemented. The contract now lives in `docs/specs/workspace-onboarding.md`; this document keeps the rationale and the rejected alternatives.
 **Related:** `apps/web/src/app/api/workspaces/[id]/policy-init/route.ts`, `apps/web/src/lib/workspace-policy.ts`, `packages/core/spec-conformance-detect.ts`, `packages/core/spec-conformance.ts`, `apps/runner/src/env-verify.ts`, `.buildd/env.yaml`, `docs/specs/SPEC-FORMAT.md`, `docs/design/DESIGN-FORMAT.md`, `docs/design/spec-conformance.md`, `docs/design/merge-policy.md`, `docs/design/release-handoff-workflow.md`, `docs/design/buildd-mcp-consumer-skill.md`, `docs/design/visual-qa-auditor.md`, `docs/specs/team-workspace-mission-onboarding.md`, `.claude/skills/buildd-mcp-consumer/SKILL.md`, `.claude/skills/visual-review/SKILL.md`
 
 ---

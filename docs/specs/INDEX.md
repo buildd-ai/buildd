@@ -122,10 +122,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 
-## Draft (1)
+## Draft (2)
 
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
+- [Workspace Onboarding](./workspace-onboarding.md) · @max — verified 2026-10-02
+  Onboarding MUST derive a workspace's readiness from observable repo facts without writing, and every change it proposes to the repo MUST arrive as an owner-merged PR from a non-default branch.
 
 ## Superseded (2)
 
