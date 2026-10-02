@@ -162,6 +162,9 @@ type LoadedTask = {
     supersededByPrNumber: number | null;
     supersededByPrUrl: string | null;
     supersededReason: string | null;
+    abandonedAt?: Date | null;
+    abandonedReason?: string | null;
+    supersessionScan?: import('@buildd/core/pr-shipped').SupersessionScan | null;
   }>;
 };
 
@@ -184,6 +187,7 @@ const WORKER_WITH = {
     // The session heartbeat `deriveLocalStrand` reads, and the PR grace window.
     updatedAt: true, completedAt: true,
     supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
+    abandonedAt: true, abandonedReason: true, supersessionScan: true,
   },
   orderBy: [desc(workers.startedAt)],
 };
@@ -626,13 +630,18 @@ async function viewForTask(taskId: string): Promise<{
   // A PR recorded as superseded (task fcaf83d5) shipped anyway, under a
   // different, merged PR — verified against GitHub at write time, so it reads
   // as shipped here without a second check. Never awaiting-merge.
+  // An abandoned PR (closed, with a person's reason) is settled, not awaiting.
   const unmergedPr = task.status === 'completed' && worker?.prNumber && !worker.mergedAt && !worker.supersededByPrNumber
+    && !(worker.prLifecycleStatus === 'closed' && worker.abandonedAt)
     ? [{
         taskId: task.id,
         title: task.title,
         prNumber: worker.prNumber,
         prUrl: worker.prUrl,
         ...(worker.prLifecycleStatus === 'closed' ? { closedUnsuperseded: true as const } : {}),
+        ...(worker.prLifecycleStatus === 'closed' && worker.supersessionScan?.suggestion
+          ? { suggestion: worker.supersessionScan.suggestion }
+          : {}),
       }]
     : [];
 
