@@ -429,22 +429,28 @@ notification text) follows the same rules as a PR lede:
 
 ## Design drift check
 
-**`bun run design:check`** runs in CI (after `specs:check`) to prevent reintroduction of design debt.
-The check is a **ratchet**: it compares the current count of violations to a baseline recorded in
-`scripts/.design-drift-baseline.json` and fails only when a count goes UP, so existing debt does
-not block CI. The check flags five categories:
+**`bun run design:check`** runs in CI (after `specs:check`) to stop new design debt landing.
+It is a **ratchet**: `scripts/design-check.baseline.json` records per-file counts for each rule,
+and the check fails only when a rule's total goes UP, so existing debt does not block CI.
+It flags five categories in `apps/web/src/`:
 
-1. **Arbitrary font sizes** (`text-[<n>px]`): Use one of the type-scale roles instead (§3).
-2. **Raw hex colors** in `className` / `style`: Use design tokens (§2).
-3. **`rounded-full` usage**: Corners are square per §2.7.
-4. **Hand-rolled `fixed inset-0` sheets**: Use `Sheet` or `BottomSheet` from `components/ui/`.
-5. **Local `StatusBadge` definitions**: Consolidate on `components/StatusBadge.tsx` or use `Chip`.
+1. **Arbitrary font sizes** (`text-[<n>px]`): use a type-scale role (§3).
+2. **Raw hex colors** in `className` / `style`: use a design token (§2).
+3. **`rounded-full` on chip/badge-like elements** (the same line carries `px-`, `uppercase`,
+   `text-xs` or an arbitrary font size): corners are square (§2.7), use `Chip` (§4).
+   Avatars and dots are not flagged.
+4. **Hand-rolled `fixed inset-0` sheets**: use `Sheet` or `BottomSheet` (§4).
+5. **Local `StatusBadge` definitions**: consolidate on `components/StatusBadge.tsx` or use `Chip`.
 
-When the check runs, it prints the offending file:line and the design-system.md section to consult.
-(The check excludes `components/ui/**` and `FlightStrip.tsx`, and looks only at `apps/web/src/`.)
+On failure it prints every violation in the files whose count rose, with file:line and the
+section to consult. `components/ui/**` is excluded from all rules; `FlightStrip.tsx` from rules 1–3.
 
-To increase the baseline (e.g., when reverting a large feature), run `bun run design:check` locally
-and commit the updated `.design-drift-baseline.json`.
+The check fails closed: an unreadable file or unparseable baseline is an error, and in CI a
+missing baseline is an error rather than a fresh baseline.
+
+**Updating the baseline.** After paying debt down, run `bun run design:check --update` and commit
+the baseline — it lowers counts to today's and never raises them. To deliberately accept new debt
+(e.g. reverting a large feature), add `--allow-increase`; reviewers will see the baseline grow.
 
 ## Non-goals
 

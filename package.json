@@ -48,7 +48,7 @@
     "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts",
     "screenshot": "bun run scripts/qa/capture.ts",
     "screenshot:app": "bash scripts/qa/shoot.sh",
-    "design:check": "bun run scripts/check-design-drift.ts",
+    "design:check": "bun run scripts/design-check.ts",
     "specs:check": "bun run scripts/check-specs.ts",
     "specs:lint": "bun run scripts/check-specs.ts --check",
     "specs:conformance": "bun run scripts/check-spec-conformance.ts",
