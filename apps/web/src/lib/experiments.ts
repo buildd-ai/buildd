@@ -28,13 +28,14 @@ import type {
 } from '@buildd/shared';
 import { defaultCbmAccessConfig } from '@buildd/core/cbm-access-experiment';
 import { defaultHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
+import { defaultQuestionGateConfig } from '@buildd/core/question-gate';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
 
 export const EXPERIMENT_STATUSES: readonly ExperimentStatus[] = ['draft', 'running', 'paused', 'concluded'];
 export const EXPERIMENT_VISIBILITIES: readonly ExperimentVisibility[] = ['admins', 'team'];
-export const EXPERIMENT_KINDS = ['model_routing', 'cbm_access', 'heartbeat_triage'] as const satisfies readonly ExperimentKind[];
+export const EXPERIMENT_KINDS = ['model_routing', 'cbm_access', 'heartbeat_triage', 'question_gate'] as const satisfies readonly ExperimentKind[];
 
 /** Legal status moves. `concluded` is terminal. */
 export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly ExperimentStatus[]> = {
@@ -127,6 +128,10 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
   if (kind === 'heartbeat_triage' && b.treatmentFraction === undefined) {
     return { ok: false, status: 400, error: 'treatmentFraction is required for kind heartbeat_triage (the share of missions whose confident waits skip the organizer, e.g. 0.3)' };
   }
+  // Same rule: pushing questions back to agents is the intervention.
+  if (kind === 'question_gate' && b.treatmentFraction === undefined) {
+    return { ok: false, status: 400, error: 'treatmentFraction is required for kind question_gate (the share of tasks whose unclear questions are pushed back to the agent, e.g. 0.5)' };
+  }
   const fraction = b.treatmentFraction ?? 0.5;
   if (!validFraction(fraction)) return { ok: false, status: 400, error: 'treatmentFraction must be a number strictly between 0 and 1' };
 
@@ -150,6 +155,7 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
       config: (b.config as Record<string, unknown> | undefined)
         ?? (kind === 'cbm_access' ? defaultCbmAccessConfig()
           : kind === 'heartbeat_triage' ? defaultHeartbeatTriageConfig()
+          : kind === 'question_gate' ? defaultQuestionGateConfig()
           : defaultModelRoutingConfig()),
       visibility,
     },

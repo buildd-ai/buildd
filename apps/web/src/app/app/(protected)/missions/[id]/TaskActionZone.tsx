@@ -23,7 +23,7 @@ export interface TaskActionZoneProps {
   blockedByCount: number;
   backend: 'claude' | 'codex' | null;
   lastError: { excerpt: string } | null;
-  worker: { id: string; waitingFor: { prompt: string; options?: string[] } | null } | null;
+  worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
   onChanged?: () => void | Promise<void>;
@@ -79,6 +79,7 @@ export default function TaskActionZone({
             workerId={worker.id}
             question={worker.waitingFor.prompt}
             options={worker.waitingFor.options}
+            context={worker.waitingFor.context}
           />
         </div>
       )}

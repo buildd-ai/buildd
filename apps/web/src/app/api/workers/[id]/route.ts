@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
@@ -1071,18 +1072,26 @@ export async function PATCH(
     // a boolean, not prose, so it survives sensitive-workspace redaction.
     const isContentlessQuestion = waitingFor?.type === 'question'
       && (!waitingFor.prompt || !waitingFor.prompt.trim() || waitingFor.prompt.trim() === 'Awaiting input');
+    // Question brief (packages/core/question-brief.ts): optional, validated
+    // and capped here so a malformed field is dropped, never a refused park.
+    const briefed = waitingFor !== null && waitingFor?.type === 'question'
+      ? withSanitizedBrief(waitingFor)
+      : waitingFor;
     updates.waitingFor = (isSensitive && waitingFor !== null)
       ? { type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
-      : (waitingFor !== null && isContentlessQuestion ? { ...waitingFor, contractViolation: true } : waitingFor);
+      : (briefed !== null && isContentlessQuestion ? { ...briefed, contractViolation: true } : briefed);
   }
   // Pushover notification when agent needs input — sensitive: generic message only
   if (waitingFor?.type === 'question') {
     const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
+    // Short by design: the question, one line of context, the recommended default.
+    const note = questionNotificationText(
+      withSanitizedBrief(waitingFor),
+      { sensitive: isSensitive },
+    );
     void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
-      title: 'Agent needs your input',
-      message: isSensitive
-        ? 'Agent waiting for input'
-        : (waitingFor.prompt || 'A task needs your response').slice(0, 200),
+      title: note.title,
+      message: note.message,
       url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
       urlTitle: 'Respond',
       priority: 0,

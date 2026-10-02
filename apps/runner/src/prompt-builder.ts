@@ -1,4 +1,5 @@
 import type { query } from '@anthropic-ai/claude-agent-sdk';
+import { QUESTION_BRIEF_GUIDANCE } from '@buildd/core/question-brief';
 import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
@@ -668,6 +669,10 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     // inputAsRetry explicitly disabled — hard block
     communicationContent = `## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`;
   }
+  // Where AskUserQuestion is allowed, every question must be a decision brief
+  // a person with no context can answer (packages/core/question-brief.ts).
+  const asksAllowed = inputPolicy === 'allow' || inputPolicy === 'important-only' || inputAsRetry !== false;
+  if (asksAllowed) communicationContent += `\n${QUESTION_BRIEF_GUIDANCE}`;
   addSection('communication', `${communicationContent}\n\n${REFUSED_TOOL_CALL_GUIDANCE}`);
 
   // Add task metadata

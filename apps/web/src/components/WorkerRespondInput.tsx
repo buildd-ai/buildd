@@ -7,12 +7,15 @@ interface WorkerRespondInputProps {
   workerId: string;
   question: string;
   options?: string[];
+  /** Question brief: the task and the exact decision. */
+  context?: string;
 }
 
 export default function WorkerRespondInput({
   workerId,
   question,
   options,
+  context,
 }: WorkerRespondInputProps) {
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -55,6 +58,11 @@ export default function WorkerRespondInput({
           {question}
         </p>
       </div>
+      {context && (
+        <p data-testid="question-brief-context" className="ml-[18px] text-[12px] leading-relaxed text-text-secondary">
+          {context}
+        </p>
+      )}
 
       {/* Quick option buttons */}
       {options && options.length > 0 && (

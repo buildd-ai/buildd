@@ -21,6 +21,42 @@ export interface UnifiedQuestion {
   options: QuestionOption[];
   /** The mission note this question is (also) recorded as, if any. */
   noteId: string | null;
+  /**
+   * Question brief (packages/core/question-brief.ts): the task and the exact
+   * decision, in at most two sentences. Absent on questions without one.
+   */
+  context?: string;
+  /** Where it was asked from: task title, branch, last edited file. */
+  where?: { taskTitle?: string; branch?: string; file?: string };
+}
+
+type BriefedWaitingFor = {
+  prompt: string;
+  options?: WaitingForOption[] | null;
+  type?: string;
+  context?: string;
+  recommended?: { label: string; reason?: string };
+  where?: { taskTitle?: string; branch?: string; file?: string };
+};
+
+/** The brief fields worth carrying onto the unified question. */
+function briefOf(w: BriefedWaitingFor): Pick<UnifiedQuestion, 'context' | 'where'> {
+  const out: Pick<UnifiedQuestion, 'context' | 'where'> = {};
+  if (typeof w.context === 'string' && w.context.trim()) out.context = w.context.trim();
+  const where = w.where && typeof w.where === 'object' ? w.where : null;
+  if (where && (where.taskTitle || where.branch || where.file)) out.where = where;
+  return out;
+}
+
+/**
+ * Mark the brief's recommended option and give it the reason when the option
+ * has no line of its own. Labels match case-insensitively.
+ */
+function withRecommendation(options: QuestionOption[], rec: BriefedWaitingFor['recommended']): QuestionOption[] {
+  if (!rec?.label || options.some(o => o.recommended)) return options;
+  return options.map(o => same(o.label, rec.label)
+    ? { ...o, recommended: true, ...(!o.description && rec.reason ? { description: rec.reason } : {}) }
+    : o);
 }
 
 export interface QuestionNoteLike {
@@ -42,9 +78,12 @@ export function normalizeOptions(options: WaitingForOption[] | null | undefined,
     if (typeof o === 'string') {
       if (o.trim()) out.push({ label: o, recommended: false });
     } else if (o && typeof o === 'object' && typeof o.label === 'string' && o.label.trim()) {
+      // The brief's one-line consequence is what the option leads to; the
+      // agent's own description is the fallback (older questions).
+      const description = o.consequence || o.description;
       out.push({
         label: o.label,
-        ...(o.description ? { description: o.description } : {}),
+        ...(description ? { description } : {}),
         recommended: o.recommended === true,
       });
     }
@@ -96,17 +135,18 @@ function withConsequences(options: QuestionOption[], body: string | null | undef
 }
 
 export function unifyWorkerQuestion(
-  waitingFor: { prompt: string; options?: WaitingForOption[] | null; type?: string },
+  waitingFor: BriefedWaitingFor,
   note: QuestionNoteLike | null,
 ): UnifiedQuestion {
-  const options = normalizeOptions(waitingFor.options ?? [], note?.defaultChoice);
-  if (!note) return { headline: waitingFor.prompt, body: null, options, noteId: null };
+  const options = withRecommendation(normalizeOptions(waitingFor.options ?? [], note?.defaultChoice), waitingFor.recommended);
+  const brief = briefOf(waitingFor);
+  if (!note) return { headline: waitingFor.prompt, body: null, options, noteId: null, ...brief };
   const withC = withConsequences(
     options.length ? options : note.defaultChoice ? [{ label: note.defaultChoice, recommended: true }] : [],
     note.body,
   );
   const body = note.body?.trim() ? withC.body : same(note.title, waitingFor.prompt) ? null : waitingFor.prompt;
-  return { headline: note.title, body, options: withC.options, noteId: note.id };
+  return { headline: note.title, body, options: withC.options, noteId: note.id, ...brief };
 }
 
 export function unifyNoteQuestion(note: QuestionNoteLike): UnifiedQuestion {

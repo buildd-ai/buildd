@@ -1583,13 +1583,21 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
  * AskUserQuestion options as objects; older rows and hand-written callers still
  * send bare strings, so readers must accept both.
  */
-export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean };
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string };
 
+/**
+ * `context`, `recommended` and `where` are the question brief
+ * (module header: packages/core/question-brief.ts). All optional: rows written before
+ * it carry none and still render.
+ */
 export type WorkerWaitingFor = {
   type: string;
   prompt: string;
   options?: WaitingForOption[];
   toolUseId?: string;
+  context?: string;
+  recommended?: { label: string; reason?: string };
+  where?: { taskTitle?: string; branch?: string; file?: string };
 };
 
 /**
@@ -2713,7 +2721,7 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.

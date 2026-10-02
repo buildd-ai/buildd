@@ -21,7 +21,14 @@ export interface WaitingFor {
   options?: Array<{
     label: string;
     description?: string;
+    /** Question brief: what choosing this leads to (from the option's description). */
+    consequence?: string;
+    recommended?: boolean;
   }>;
+  /** Question brief (packages/core/question-brief.ts): the task and the exact decision. */
+  context?: string;
+  recommended?: { label: string; reason?: string };
+  where?: { taskTitle?: string; branch?: string; file?: string };
   toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
   // Permission-specific fields (when type === 'permission')
   toolName?: string;           // The tool requesting permission
@@ -315,6 +322,16 @@ export interface LocalWorker {
    * experiment: no CBM mount, no steering, every CBM tool denied.
    */
   cbmExperimentWithheld?: boolean;
+  /**
+   * The claim put this task in a running `question_gate` experiment: every
+   * AskUserQuestion goes through POST /api/workers/[id]/question-check before
+   * it is parked (apps/runner/src/question-gate.ts).
+   */
+  questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number };
+  /** Questions the gate sent back to the agent in this worker. */
+  questionPushbacks?: number;
+  /** Last file the agent edited or wrote, for the question brief's `where`. */
+  lastEditedFile?: string;
   cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
   cbmBootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   cbmBootstrapFailReason?: string;
