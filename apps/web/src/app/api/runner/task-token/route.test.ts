@@ -75,6 +75,18 @@ describe('POST /api/runner/task-token', () => {
     expect((await POST(req({ taskId: TASK_ID }))).status).toBe(200);
   });
 
+  it('mints for a scoped key with the runner capabilities', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, scopes: ['tasks:read', 'tasks:write', 'workers:write', 'analytics:read', 'knowledge:write'], workspaceIds: null });
+    expect((await POST(req({ taskId: TASK_ID }))).status).toBe(200);
+  });
+
+  it('refuses, with a reason, a scoped key below the runner capabilities instead of minting a token that cannot authenticate', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, scopes: ['tasks:read', 'workers:write'], workspaceIds: null });
+    const res = await POST(req({ taskId: TASK_ID }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('knowledge:write');
+  });
+
   it('returns 401 without a valid account key', async () => {
     mockAuthenticateApiKey.mockResolvedValue(null);
     expect((await POST(req({ taskId: TASK_ID }))).status).toBe(401);

@@ -263,10 +263,16 @@ Then, from the repo root:
 
 ```bash
 export BUILDD_API_KEY=bld_…            # admin key
-export BUILDD_RUNNER_API_KEY=bld_…     # worker key for the containers
+export BUILDD_RUNNER_API_KEY=bld_…     # worker key for the containers (see below)
 bun apps/cloud-runner/scripts/deploy.ts --workspace my-workspace --dry-run   # print the plan
 bun apps/cloud-runner/scripts/deploy.ts --workspace my-workspace
 ```
+
+The runner key never enters a container: the Worker uses it to mint a per-task
+token for each run. A scoped key needs at least the **Task agent** capabilities
+(`tasks:read`, `tasks:write`, `workers:write`, `analytics:read`,
+`knowledge:write`) and, if limited to workspaces, the dispatching workspace;
+narrowing the key later ends the tokens it minted.
 
 `deploy.ts` fetches the saved token with the admin key
 (`POST /api/cloudflare/credential/reveal`: `bld_` admin keys only, own team
