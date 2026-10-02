@@ -206,7 +206,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
     return this.modelEndpoints.get();
   }
 
-  /** RPC from EgressHandler after the endpoint answered 401/403. */
+  /** RPC from EgressHandler after the endpoint answered 401 (endpointRejectedKey). */
   async reportModelEndpointAuthFailure(): Promise<void> {
     this.modelEndpoints.invalidate();
   }

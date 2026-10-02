@@ -15,6 +15,8 @@ import type { Env } from './env';
 import {
   classifyEgressHost,
   describeForwardForDebug,
+  endpointRejectedKey,
+  rewriteModelInBody,
   needsServerModelEndpoint,
   resolveModelRoute,
   rewriteOutbound,
@@ -72,13 +74,22 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     // redirect: 'manual' so a redirect goes back to the container, which
     // follows it itself. The Worker never carries an injected credential to a
     // redirect target.
+    let body: BodyInit | null = request.body;
+    if (decision.mapModel) {
+      // The team endpoint's model names (aliases, or OpenRouter ids), as a
+      // host runner would send them. Only `model` changes.
+      const text = await request.text();
+      const mapped = rewriteModelInBody(text, decision.mapModel);
+      body = mapped ?? text;
+      if (mapped !== null) decision.headers.delete('content-length');
+    }
     const res = fetch(decision.url, {
       method: request.method,
       headers: decision.headers,
-      body: request.body,
+      body,
       redirect: 'manual',
     }).then((r) => {
-      if (viaServer && (r.status === 401 || r.status === 403)) {
+      if (viaServer && endpointRejectedKey(r.status)) {
         // The endpoint rejected its key: have the agent drop it and refetch
         // after a short backoff (a rotated key then takes effect mid-run).
         void this.agent().then(a => a?.reportModelEndpointAuthFailure()).catch(() => {});

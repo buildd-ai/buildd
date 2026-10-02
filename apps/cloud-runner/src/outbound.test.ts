@@ -12,6 +12,10 @@ import {
   modelEndpointRequest,
   needsServerModelEndpoint,
   parseServerModelEndpoint,
+  mapEndpointModel,
+  rewriteModelInBody,
+  isModelRewritePath,
+  endpointRejectedKey,
   type ServerModelEndpoint,
   classifyEgressHost,
   describeForwardForDebug,
@@ -609,8 +613,15 @@ describe('needsServerModelEndpoint', () => {
 describe('parseServerModelEndpoint', () => {
   test('accepts the route shape and defaults the header', () => {
     expect(parseServerModelEndpoint({ kind: 'gateway', baseUrl: 'https://litellm.example.com/', key: 'k', authHeader: 'authorization', models: {} }))
-      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization', kind: 'gateway', models: {} });
     expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k' }).authHeader).toBe('authorization');
+  });
+  test('keeps the model mapping and kind, dropping anything that is not a string-to-string pair', () => {
+    const e = parseServerModelEndpoint({ kind: 'url', baseUrl: 'https://litellm.example.com', key: 'k',
+      models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5', bad: 5, '': 'x', ok: '' } });
+    expect(e.kind).toBe('url');
+    expect(e.models).toEqual({ 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' });
+    expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k', models: 'nope' }).models).toEqual({});
   });
   test('throws on anything unexpected', () => {
     for (const b of [null, {}, { baseUrl: 'http://litellm.example.com', key: 'k' }, { baseUrl: 'https://u:p@litellm.example.com', key: 'k' },
@@ -787,5 +798,49 @@ describe('api.anthropic.com: only the model API paths are forwarded', () => {
   test('the egress handler passes the request method', async () => {
     const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
     expect(src).toMatch(/rewriteOutbound\(\s*\{ url: request\.url, method: request\.method, headers: request\.headers \}/);
+  });
+});
+
+describe('endpoint model mapping (the cloud path applies what host runners apply via env)', () => {
+  test('aliases map listed ids and leave the rest unchanged', () => {
+    const e = { kind: 'url', models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' } };
+    expect(mapEndpointModel(e, 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5');
+    expect(mapEndpointModel(e, 'claude-sonnet-5')).toBe('claude-sonnet-5');
+  });
+  test('openrouter names Anthropic models anthropic/<undated, dotted>, as buildd core does', () => {
+    const e = { kind: 'openrouter', models: {} };
+    expect(mapEndpointModel(e, 'claude-haiku-4-5-20251001')).toBe('anthropic/claude-haiku-4.5');
+    expect(mapEndpointModel(e, 'claude-sonnet-5')).toBe('anthropic/claude-sonnet-5');
+    expect(mapEndpointModel(e, 'anthropic/claude-opus-5')).toBe('anthropic/claude-opus-5');
+  });
+  test('only the message endpoints carry a model to rewrite', () => {
+    expect(isModelRewritePath('POST', 'https://api.anthropic.com/v1/messages?beta=true')).toBe(true);
+    expect(isModelRewritePath('POST', 'https://api.anthropic.com/v1/messages/count_tokens')).toBe(true);
+    expect(isModelRewritePath('GET', 'https://api.anthropic.com/v1/models')).toBe(false);
+  });
+  test('rewrites the model field and nothing else; non-JSON or no change returns null', () => {
+    const map = (id: string) => (id === 'claude-haiku-4-5-20251001' ? 'claude-haiku-4-5' : id);
+    const out = rewriteModelInBody(JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 5, messages: [{ role: 'user', content: 'model: x' }] }), map);
+    expect(JSON.parse(out!)).toEqual({ model: 'claude-haiku-4-5', max_tokens: 5, messages: [{ role: 'user', content: 'model: x' }] });
+    expect(rewriteModelInBody(JSON.stringify({ model: 'claude-sonnet-5' }), map)).toBeNull();
+    expect(rewriteModelInBody('not json', map)).toBeNull();
+    expect(rewriteModelInBody(JSON.stringify([1]), map)).toBeNull();
+  });
+  test('the forward decision for a server endpoint carries its model mapper', () => {
+    const server = { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' as const, kind: 'url', models: { a: 'b' } };
+    const d = rewriteOutbound({ url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: new Headers() }, { model: resolveModelRoute({}, server) });
+    expect(d.action).toBe('forward');
+    if (d.action !== 'forward') return;
+    expect(d.mapModel?.('a')).toBe('b');
+    const g = rewriteOutbound({ url: 'https://api.anthropic.com/v1/models', method: 'GET', headers: new Headers() }, { model: resolveModelRoute({}, server) });
+    expect(g.action === 'forward' && g.mapModel).toBeFalsy();
+  });
+});
+
+describe('endpointRejectedKey: only a 401 means the key is bad', () => {
+  test('401 drops the key; a 403 is a per-request refusal (e.g. a model this key may not use)', () => {
+    expect(endpointRejectedKey(401)).toBe(true);
+    expect(endpointRejectedKey(403)).toBe(false);
+    expect(endpointRejectedKey(200)).toBe(false);
   });
 });
