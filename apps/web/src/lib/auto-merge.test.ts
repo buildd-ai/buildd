@@ -2374,7 +2374,6 @@ describe('tryAutoMergeWorkerPr — passes the workspace gitConfig to the semanti
   });
 });
 
-
 // ── Human-merge guarantee (workspace onboarding scaffold PR) ──────────────────
 //
 // A task flagged `requiresReview` is human-tier in `resolvePolicy`, but three
@@ -2401,6 +2400,9 @@ describe('tryAutoMergeWorkerPr — tasks that require human review', () => {
     mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: false }) as any);
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }) as any);
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
     mockFireGateEvent.mockReset();
     mockGuardReviewVerdict.mockReset();
     mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
