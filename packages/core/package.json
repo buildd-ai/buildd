@@ -44,6 +44,7 @@
     "./net/fetch-public-gateway": "./net/fetch-public-gateway.ts",
     "./agent-endpoint": "./agent-endpoint.ts",
     "./openrouter-id": "./openrouter-id.ts",
+    "./inference-route": "./inference-route.ts",
     "./inference-keys": "./inference-keys.ts",
     "./inference-key-policy": "./inference-key-policy.ts",
     "./conversation-title": "./conversation-title.ts",

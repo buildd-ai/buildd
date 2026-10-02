@@ -2,11 +2,10 @@
  * Which model serves a chat turn: a tier, never a user-picked model.
  *
  * The tier → (provider, model) mapping is the team admin's, through the tier
- * registry (`resolveTierEntry`). The key comes from the one resolver
- * (`resolveInferenceCredential`): the user's own key, then the workspace's,
- * then the team's. Chat never falls back to a subscription seat. With no
- * key for the tier's provider (nor OpenRouter), the team's LiteLLM gateway
- * serves the same model as `provider/model` (@buildd/core/litellm-gateway).
+ * registry (`resolveTierEntry`). The route comes from the one resolver
+ * (`resolveInferenceRoute`): the tier vendor's own key, then OpenRouter, then
+ * the team's LiteLLM gateway, each key from the user's own, then the
+ * workspace's, then the team's. Chat never falls back to a subscription seat.
  */
 
 import type { LanguageModel } from 'ai';
@@ -16,6 +15,7 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { resolveTierEntry } from '@buildd/core/model-tier-registry';
 import { drawChatPoolArm, type ChatPoolDraw } from '@buildd/core/tier-pool-source';
 import { resolveInferenceCredential, isInferenceKeyProvider, type InferenceKeyScope } from '@buildd/core/inference-keys';
+import { isRouteVendor, resolveInferenceRoute } from '@buildd/core/inference-route';
 import { priceForModel } from '@buildd/core/model-prices';
 import type { Tier } from '@buildd/core/model-tier-defaults';
 import type { ChatProvider } from '@buildd/shared';
@@ -153,50 +153,37 @@ async function resolveIncumbentChatModel(
 ): Promise<ResolvedChatModel> {
   const entry = await deps.resolveTierEntry(opts.tier, opts.teamId, opts.workspaceId, 'chat');
   const provider = entry.provider as string;
-  if (!isInferenceKeyProvider(provider)) return { ok: false, reason: 'unsupported_provider', provider, tier: opts.tier };
-  const scope = { teamId: opts.teamId, workspaceId: opts.workspaceId, userId: opts.userId };
-  const cred = await deps.resolveInferenceCredential({ provider, ...scope });
-  if (cred) {
+  if (!isRouteVendor(provider)) return { ok: false, reason: 'unsupported_provider', provider, tier: opts.tier };
+  // The vendor's own key, then OpenRouter (which serves the same Anthropic and
+  // OpenAI models), then the team's LiteLLM gateway: one order for chat and
+  // inference calls (@buildd/core/inference-route).
+  const route = await resolveInferenceRoute(
+    { vendor: provider, model: entry.model, teamId: opts.teamId, workspaceId: opts.workspaceId, userId: opts.userId },
+    {
+      resolveInferenceCredential: deps.resolveInferenceCredential,
+      resolveLiteLLMGateway: deps.resolveLiteLLMGateway ?? (async () => null),
+    },
+  );
+  if (!route) return { ok: false, reason: 'no_key', provider, tier: opts.tier };
+  if (route.route === 'litellm') {
     return {
       ok: true,
-      model: languageModelFor(provider, entry.model, cred.key),
+      model: gatewayLanguageModel({ apiKey: route.apiKey, baseURL: route.baseURL }, provider, entry.model),
       provider,
       modelId: entry.model,
       tier: opts.tier,
-      keyScope: cred.scope,
-    };
-  }
-  // OpenRouter serves the same Anthropic and OpenAI models, so a team whose
-  // only key is OpenRouter still gets the tier's model through it.
-  if (provider !== 'openrouter') {
-    const orCred = await deps.resolveInferenceCredential({ provider: 'openrouter', ...scope });
-    if (orCred) {
-      const modelId = openRouterModelId(provider, entry.model);
-      return {
-        ok: true,
-        model: languageModelFor('openrouter', modelId, orCred.key),
-        provider: 'openrouter',
-        modelId,
-        tier: opts.tier,
-        keyScope: orCred.scope,
-      };
-    }
-  }
-  const gateway = deps.resolveLiteLLMGateway
-    ? await deps.resolveLiteLLMGateway({ teamId: opts.teamId, workspaceId: opts.workspaceId }).catch(() => null)
-    : null;
-  if (gateway) {
-    return {
-      ok: true,
-      model: gatewayLanguageModel(gateway, provider, entry.model),
-      provider,
-      modelId: entry.model,
-      tier: opts.tier,
-      keyScope: 'team',
+      keyScope: route.keyScope,
       via: 'litellm',
     };
   }
-  return { ok: false, reason: 'no_key', provider, tier: opts.tier };
+  return {
+    ok: true,
+    model: languageModelFor(route.route, route.modelId, route.apiKey),
+    provider: route.route,
+    modelId: route.modelId,
+    tier: opts.tier,
+    keyScope: route.keyScope,
+  };
 }
 
 type CostUsage = { inputTokens?: number; outputTokens?: number };

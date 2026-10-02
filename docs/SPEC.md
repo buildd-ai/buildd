@@ -340,12 +340,15 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   half); under `own` there is no team cap and the per-person cap defaults to none.
   Settings → Budgets shows each person's spend split into Interactive and Agent runs
   (agent runs attributed to the mission's creator), per person for admins.
-- **Providers per path** — chat: `anthropic | openai | openrouter`. `inferenceCall`:
-  `anthropic | openrouter` (`openai` returns `unsupported_provider` unless a gateway
-  serves it). Decision calls: OpenRouter, or the team's decision model.
-  A team **LiteLLM gateway** (`packages/core/litellm-gateway.ts`) is the fallback
-  after the provider's own key (and, for chat, OpenRouter): the same model as
-  `provider/model` on the proxy's OpenAI-compatible API.
+- **Routes** — a tier names a *vendor* and model; a *route* is where the call goes
+  (`ROUTES` in `packages/ai-kit/src/models/routes.ts`: `anthropic`, `openai`,
+  `openrouter`, `litellm`). Chat and `inferenceCall` share one resolver
+  (`packages/core/inference-route.ts`) and one order: the vendor's own API, then
+  OpenRouter, then the team's **LiteLLM gateway** (`packages/core/litellm-gateway.ts`),
+  which serves the model as `vendor/model` on its OpenAI-compatible API. Receipts
+  and prices keep the planned vendor and model whatever the route. `openai-codex`
+  is an agent backend, not a route (`unsupported_provider`). Decision calls:
+  OpenRouter, or the team's decision model.
 - **Agent model endpoint** — one `secrets` row, purpose `agent_endpoint`
   (`packages/core/agent-endpoint.ts`, team-wide or one workspace): where
   runner-spawned agents send model traffic (the team gateway, OpenRouter, or any
