@@ -5,6 +5,8 @@ import {
   GITHUB_TOKEN_FAILURE_BACKOFF_MS,
   GITHUB_TOKEN_REFRESH_MARGIN_MS,
   GithubTokenCache,
+  GrantFetchError,
+  lookupGithubGrant,
   INTERCEPTED_HOSTS,
   MODEL_ENDPOINT_FAILURE_BACKOFF_MS,
   ModelEndpointCache,
@@ -384,6 +386,44 @@ describe('rewriteOutbound: GitHub', () => {
   });
 });
 
+describe('rewriteOutbound: why a GitHub request went out without our credential', () => {
+  const url = 'https://github.com/acme/widget.git/info/refs?service=git-upload-pack';
+  const go = (c: Partial<Parameters<typeof rewriteOutbound>[1]>, u = url) =>
+    forwarded(rewriteOutbound({ url: u, headers: {} }, { model: gateway, now: NOW, ...c }));
+
+  test('credentialed: no reason', () => {
+    const d = go({ github: GRANT });
+    expect(d.injected).toBe('github_basic');
+    expect(d.unauthenticated).toBeUndefined();
+  });
+
+  test('no live run on the agent: no_grant', () => {
+    expect(go({ github: null, githubUnavailable: 'no_run' }).unauthenticated).toBe('no_grant');
+  });
+
+  test('the token fetch failed (or is backing off): grant_fetch_failed', () => {
+    expect(go({ github: null, githubUnavailable: 'fetch_failed' }).unauthenticated).toBe('grant_fetch_failed');
+  });
+
+  test('no grant and no stated cause is still counted, as no_grant', () => {
+    expect(go({ github: null }).unauthenticated).toBe('no_grant');
+  });
+
+  test('an expired grant: grant_expired', () => {
+    expect(go({ github: { ...GRANT, expiresAt: NOW - 1 } }).unauthenticated).toBe('grant_expired');
+  });
+
+  test('a path outside the task repo: out_of_scope (codeload included)', () => {
+    expect(go({ github: GRANT }, 'https://github.com/acme/other.git/info/refs').unauthenticated).toBe('out_of_scope');
+    expect(go({ github: GRANT }, 'https://codeload.github.com/acme/widget/tar.gz/main').unauthenticated).toBe('out_of_scope');
+  });
+
+  test('model forwards never carry a GitHub reason', () => {
+    const d = forwarded(rewriteOutbound({ url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: {} }, { model: gateway, github: null }));
+    expect(d.unauthenticated).toBeUndefined();
+  });
+});
+
 describe('rewriteOutbound: everything else', () => {
   test('passes through untouched (the handler forwards the original request)', () => {
     expect(rewriteOutbound({ url: 'https://registry.npmjs.org/left-pad', headers: hostileHeaders() }, { model: gateway }).action).toBe('passthrough');
@@ -468,6 +508,26 @@ describe('GithubTokenCache', () => {
     expect(s.calls()).toBe(2);
   });
 
+  test('a failure is reported once per fetch, with the endpoint status (0 when nothing answered), and logged with it', async () => {
+    let now = NOW;
+    const failures: number[] = [];
+    const logs: string[] = [];
+    let next: Error = new GrantFetchError(409, 'Task has no live worker claimed by this account');
+    const cache = new GithubTokenCache({
+      fetchGrant: async () => { throw next; },
+      now: () => now,
+      log: (m) => logs.push(m),
+      onFailure: (status) => failures.push(status),
+    });
+    expect(await cache.get()).toBeNull();
+    expect(await cache.get()).toBeNull(); // backing off: no new fetch, no new failure
+    now += GITHUB_TOKEN_FAILURE_BACKOFF_MS;
+    next = new Error('network down');
+    expect(await cache.get()).toBeNull();
+    expect(failures).toEqual([409, 0]);
+    expect(logs[0]).toContain('409');
+  });
+
   test('reset drops the token and an in-flight fetch from the previous run', async () => {
     let resolve!: (g: GithubGrant) => void;
     const s = setup(() => new Promise(r => { resolve = r; }));
@@ -475,6 +535,19 @@ describe('GithubTokenCache', () => {
     s.cache.reset();
     resolve(GRANT);
     expect(await stale).toBeNull();
+  });
+});
+
+describe('lookupGithubGrant: the agent RPC says why there is no grant', () => {
+  test('no live run: no_run, and the cache is never asked', async () => {
+    let asked = 0;
+    expect(await lookupGithubGrant(false, async () => { asked++; return GRANT; })).toEqual({ grant: null, unavailable: 'no_run' });
+    expect(asked).toBe(0);
+  });
+
+  test('live run: the grant, or fetch_failed when the cache has none', async () => {
+    expect(await lookupGithubGrant(true, async () => GRANT)).toEqual({ grant: GRANT });
+    expect(await lookupGithubGrant(true, async () => null)).toEqual({ grant: null, unavailable: 'fetch_failed' });
   });
 });
 
@@ -800,6 +873,16 @@ describe('api.anthropic.com: only the model API paths are forwarded', () => {
   test('the egress handler passes the request method', async () => {
     const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
     expect(src).toMatch(/rewriteOutbound\(\s*\{ url: request\.url, method: request\.method, headers: request\.headers \}/);
+  });
+
+  test('the egress handler passes why there is no grant, and labels every GitHub forward and its status', async () => {
+    const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
+    expect(src).toContain('githubUnavailable: lookup.unavailable');
+    expect(src).toContain("kind === 'github' ? (decision.unauthenticated ?? 'credentialed') : undefined");
+    expect(src).toMatch(/type: 'status', cls, status: res\.status, \.\.\.\(auth \? \{ auth \} : \{\}\)/);
+    const agent = await Bun.file(new URL('./worker-agent.ts', import.meta.url)).text();
+    expect(agent).toContain("recordEgress({ type: 'grant_failure', cls: 'github', status })");
+    expect(agent).toContain('throw new GrantFetchError(res.status, detail)');
   });
 });
 

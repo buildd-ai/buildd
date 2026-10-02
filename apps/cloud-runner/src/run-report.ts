@@ -151,13 +151,30 @@ export const REJECTED_PATH_LABELS = ['api_hello', 'event_logging', 'oauth', 'cla
 export type RejectedPathLabelName = typeof REJECTED_PATH_LABELS[number];
 
 /**
+ * Why a forwarded GitHub request carried no injected credential. Mirrors
+ * outbound.ts GithubUnauthenticatedReason. Fixed labels only.
+ *  - no_grant: the agent had no live run to hand a token to
+ *  - grant_fetch_failed: buildd's github-token endpoint refused or failed (or the cache is backing off after that)
+ *  - grant_expired: the cached token was past its expiry
+ *  - out_of_scope: the path is not the task's repo (another repo, /user, codeload)
+ */
+export const GITHUB_UNAUTH_REASONS = ['no_grant', 'grant_fetch_failed', 'grant_expired', 'out_of_scope'] as const;
+export type GithubUnauthReason = typeof GITHUB_UNAUTH_REASONS[number];
+/** A GitHub forward's credential state: ours was attached, or why not. */
+export type GithubAuthLabel = 'credentialed' | GithubUnauthReason;
+
+/**
  * The only shape the handler sends the agent. No URL, no headers: a refusal
- * carries only its reason, and an upstream answer only its status code.
+ * carries only its reason, an upstream answer only its status code, and a
+ * GitHub forward only whether our credential went with it (`auth`).
+ * `grant_failure` comes from the agent itself: buildd's github-token endpoint
+ * answered `status` (0: nothing answered).
  */
 export type EgressEvent =
-  | { type: 'request'; cls: EgressClass; at: number; rejected?: boolean; reason?: RejectReason; pathLabel?: RejectedPathLabelName }
+  | { type: 'request'; cls: EgressClass; at: number; rejected?: boolean; reason?: RejectReason; pathLabel?: RejectedPathLabelName; auth?: GithubAuthLabel }
   | { type: 'bytes'; cls: EgressClass; bytes: number }
-  | { type: 'status'; cls: EgressClass; status: number };
+  | { type: 'status'; cls: EgressClass; status: number; auth?: GithubAuthLabel }
+  | { type: 'grant_failure'; cls: 'github'; status: number };
 
 export function isEgressEvent(v: unknown): v is EgressEvent {
   const e = v as Record<string, unknown> | null;
@@ -165,6 +182,7 @@ export function isEgressEvent(v: unknown): v is EgressEvent {
   if (e.type === 'request') return typeof e.at === 'number' && Number.isFinite(e.at);
   if (e.type === 'bytes') return typeof e.bytes === 'number' && Number.isFinite(e.bytes) && e.bytes >= 0;
   if (e.type === 'status') return typeof e.status === 'number' && Number.isInteger(e.status);
+  if (e.type === 'grant_failure') return e.cls === 'github' && typeof e.status === 'number' && Number.isInteger(e.status);
   return false;
 }
 
@@ -175,12 +193,27 @@ export interface EgressClassDetail {
   rejectedPaths: Partial<Record<RejectedPathLabelName, number>>;
   errorStatuses: Record<string, number>;
 }
-export type EgressDetail = Record<EgressClass, EgressClassDetail>;
+
+/**
+ * GitHub only: whether our credential went with each forwarded request.
+ * Settles "was that 429 anonymous?" from the report alone.
+ */
+export interface GithubAuthDetail {
+  /** Forwards that carried the injected installation token. */
+  credentialed: number;
+  /** Forwards that carried none, by fixed reason. */
+  unauthenticated: Partial<Record<GithubUnauthReason, number>>;
+  /** Upstream 4xx/5xx on those unauthenticated forwards, by code. */
+  unauthenticatedErrorStatuses: Record<string, number>;
+  /** buildd's github-token endpoint refusing or failing, by status (`error`: nothing answered). */
+  grantFetchFailures: Record<string, number>;
+}
+export type EgressDetail = Record<EgressClass, EgressClassDetail> & { github: EgressClassDetail & GithubAuthDetail };
 
 export function emptyEgressDetail(): EgressDetail {
   return {
     model: { rejectReasons: {}, rejectedPaths: {}, errorStatuses: {} },
-    github: { rejectReasons: {}, rejectedPaths: {}, errorStatuses: {} },
+    github: { rejectReasons: {}, rejectedPaths: {}, errorStatuses: {}, credentialed: 0, unauthenticated: {}, unauthenticatedErrorStatuses: {}, grantFetchFailures: {} },
     passthrough: { rejectReasons: {}, rejectedPaths: {}, errorStatuses: {} },
   };
 }
@@ -188,7 +221,27 @@ export function emptyEgressDetail(): EgressDetail {
 const MAX_STATUS_KEYS = 20;
 const isErrorStatus = (code: number) => Number.isInteger(code) && code >= 400 && code <= 599;
 
+function bump(map: Record<string, number>, key: string): void {
+  if (key in map || Object.keys(map).length < MAX_STATUS_KEYS) map[key] = (map[key] ?? 0) + 1;
+}
+
+const unauthReason = (v: unknown): GithubUnauthReason =>
+  (GITHUB_UNAUTH_REASONS as readonly string[]).includes(v as string) ? v as GithubUnauthReason : 'no_grant';
+
 export function applyEgressDetail(detail: EgressDetail, e: EgressEvent): void {
+  if (e.type === 'grant_failure') {
+    if (e.cls === 'github') bump(detail.github.grantFetchFailures, isErrorStatus(e.status) ? String(e.status) : 'error');
+    return;
+  }
+  if (e.cls === 'github' && e.type !== 'bytes' && e.auth !== undefined) {
+    const g = detail.github;
+    if (e.type === 'request' && !e.rejected) {
+      if (e.auth === 'credentialed') g.credentialed += 1;
+      else { const r = unauthReason(e.auth); g.unauthenticated[r] = (g.unauthenticated[r] ?? 0) + 1; }
+    } else if (e.type === 'status' && e.auth !== 'credentialed' && isErrorStatus(e.status)) {
+      bump(g.unauthenticatedErrorStatuses, String(e.status));
+    }
+  }
   const d = detail[e.cls];
   if (e.type === 'request' && e.rejected) {
     const reason: RejectReason = REJECT_REASONS.includes(e.reason as RejectReason) ? e.reason as RejectReason : 'other';
@@ -198,10 +251,7 @@ export function applyEgressDetail(detail: EgressDetail, e: EgressEvent): void {
       d.rejectedPaths[label] = (d.rejectedPaths[label] ?? 0) + 1;
     }
   } else if (e.type === 'status' && isErrorStatus(e.status)) {
-    const key = String(e.status);
-    if (key in d.errorStatuses || Object.keys(d.errorStatuses).length < MAX_STATUS_KEYS) {
-      d.errorStatuses[key] = (d.errorStatuses[key] ?? 0) + 1;
-    }
+    bump(d.errorStatuses, String(e.status));
   }
 }
 
@@ -218,6 +268,16 @@ function normalizeEgressDetail(input: unknown): EgressDetail {
     for (const [k, v] of Object.entries(statuses).slice(0, MAX_STATUS_KEYS)) {
       if (/^\d{3}$/.test(k) && isErrorStatus(Number(k)) && n(v)) out[cls].errorStatuses[k] = n(v);
     }
+  }
+  const g = (src.github ?? {}) as Partial<Record<keyof GithubAuthDetail, unknown>>;
+  out.github.credentialed = n(g.credentialed);
+  const unauth = (g.unauthenticated ?? {}) as Record<string, unknown>;
+  for (const r of GITHUB_UNAUTH_REASONS) if (n(unauth[r])) out.github.unauthenticated[r] = n(unauth[r]);
+  for (const [k, v] of Object.entries((g.unauthenticatedErrorStatuses ?? {}) as Record<string, unknown>).slice(0, MAX_STATUS_KEYS)) {
+    if (/^\d{3}$/.test(k) && isErrorStatus(Number(k)) && n(v)) out.github.unauthenticatedErrorStatuses[k] = n(v);
+  }
+  for (const [k, v] of Object.entries((g.grantFetchFailures ?? {}) as Record<string, unknown>).slice(0, MAX_STATUS_KEYS)) {
+    if (((/^\d{3}$/.test(k) && isErrorStatus(Number(k))) || k === 'error') && n(v)) out.github.grantFetchFailures[k] = n(v);
   }
   return out;
 }

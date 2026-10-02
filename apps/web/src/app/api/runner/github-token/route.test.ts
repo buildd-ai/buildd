@@ -201,6 +201,20 @@ describe('POST /api/runner/github-token', () => {
       mockWorkersFindMany.mockResolvedValue([liveWorker({ status })]);
       expect((await POST(req())).status).toBe(200);
     });
+
+    // A resuming container restores and fetches BEFORE it re-attaches, so the
+    // grant must already work for the parked worker it names. A park keeps
+    // the worker's status (a question's waiting_input, an orphan's running),
+    // which is why no parked-specific rule is needed; this pins that.
+    it.each(['waiting_input', 'running'])('grants the resume workerId of a worker parked in %s', async (status) => {
+      mockWorkersFindMany.mockResolvedValue([liveWorker({ status, parkedUntil: new Date('2026-01-02T00:00:00Z') })]);
+      expect((await POST(req({ body: { taskId: 'task-1', workerId: 'worker-1' } }))).status).toBe(200);
+    });
+
+    it('every parkable status is a live one', async () => {
+      const { PARKABLE_WORKER_STATUSES, LIVE_WORKER_STATUSES } = await import('@buildd/shared');
+      for (const s of PARKABLE_WORKER_STATUSES) expect(LIVE_WORKER_STATUSES as readonly string[]).toContain(s);
+    });
   });
 
   it('409 when the workspace has no linked GitHub repo', async () => {

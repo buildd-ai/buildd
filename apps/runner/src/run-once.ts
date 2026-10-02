@@ -366,16 +366,37 @@ export async function runOnce(opts: { taskId: string }, d: RunOnceDeps): Promise
 
 /** How a resumed run gets its parked worker back. The CLI wiring implements it. */
 export interface ResumePort {
-  /** Download and apply the park bundle (repo, worktree, transcript, record). */
-  restore(workerId: string): Promise<{ ok: true; kind: 'waiting' | 'orphan' } | { ok: false; reason: string }>;
+  /** Download and apply the park bundle (repo, worktree, transcript, record). `kind` on a failure once the manifest was read. */
+  restore(workerId: string): Promise<{ ok: true; kind: 'waiting' | 'orphan' } | { ok: false; reason: string; kind?: 'waiting' | 'orphan' }>;
   /** POST /api/workers/<id>/reattach: one conditional UPDATE on the server. */
   reattach(workerId: string): Promise<'ok' | 'refused' | 'failed'>;
   /** Clear the park after a failed restore, so the answer degrades to a cold continuation. */
   unpark(workerId: string): Promise<void>;
+  /**
+   * After unpark: a worker no answer sweep will ever pick up (an orphan park,
+   * still `running`) is reported failed, so the task does not sit `assigned`
+   * until stale detection. See unrestoredResumeAction.
+   */
+  settleUnrestored(workerId: string, reason: string, kind?: 'waiting' | 'orphan'): Promise<void>;
   /** Load the restored record into the WorkerManager (and nudge an orphan). */
   adopt(workerId: string, kind: 'waiting' | 'orphan'): Promise<boolean>;
   /** Drop the park bundle once the resume took. */
   discardBundle(): Promise<void>;
+}
+
+/**
+ * What a resume that could not restore does with its worker, after clearing
+ * the park. `waiting_input` holds a queued answer that the server's
+ * ack-deadline sweep (cleanupUnresumedAnswers) degrades into a cold
+ * continuation, so it is left alone. A `running` worker is an orphan park:
+ * nothing is queued, no process drives it, and nothing but stale detection
+ * would ever end it, so it is failed (through the normal worker PATCH, which
+ * moves the task too). With the status unknown, only a known orphan is failed.
+ */
+export function unrestoredResumeAction(remoteStatus: string | null | undefined, kind?: 'waiting' | 'orphan'): 'fail' | 'leave' {
+  if (remoteStatus === 'running') return 'fail';
+  if (remoteStatus) return 'leave';
+  return kind === 'orphan' ? 'fail' : 'leave';
 }
 
 /**
@@ -390,10 +411,12 @@ export async function runResume(opts: { workerId: string }, d: RunOnceDeps & { r
   const { workerId } = opts;
   let code: number = EXIT_FAILED;
   try {
-    const restored = await d.resume.restore(workerId).catch((err): { ok: false; reason: string } => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+    const restored = await d.resume.restore(workerId).catch((err): { ok: false; reason: string; kind?: undefined } => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
     if (!restored.ok) {
       d.log(`[once] could not restore parked worker ${workerId}: ${restored.reason}; clearing the park`);
       await d.resume.unpark(workerId).catch(() => {});
+      await d.resume.settleUnrestored(workerId, restored.reason, restored.kind)
+        .catch((err) => d.log(`[once] could not report worker ${workerId} failed: ${err instanceof Error ? err.message : String(err)}`));
       return (code = EXIT_FAILED);
     }
     const attached = await d.resume.reattach(workerId);
@@ -577,6 +600,7 @@ export async function runOnceFromCli(opts: {
       emitPhase('restore_park_start');
       const tarPath = join(parkPaths.tmpDir, `resume-${workerId}.tar`);
       const stage = join(parkPaths.tmpDir, `resume-${workerId}`);
+      let kind: 'waiting' | 'orphan' | undefined;
       try {
         const { mkdirSync } = await import('fs');
         mkdirSync(parkPaths.tmpDir, { recursive: true });
@@ -585,17 +609,18 @@ export async function runOnceFromCli(opts: {
         const opened = park.readParkBundle(tarPath, stage);
         const m = opened.manifest;
         if (m.workerId !== workerId) return { ok: false, reason: 'the park bundle belongs to another worker' };
+        kind = m.kind;
         const task = (await client.getTask(m.taskId)) as (OnceTask & { workspace?: { id: string; name: string; repo?: string | null }; context?: Record<string, unknown> | null }) | null;
         const workspace = task?.workspace ?? { id: m.workspaceId, name: '', repo: null };
         const clonePath = onceResolver.resolve({ ...workspace, id: workspace.id || m.workspaceId }, task?.context ?? null);
-        if (!clonePath) return { ok: false, reason: 'the workspace repo could not be restored or cloned' };
+        if (!clonePath) return { ok: false, reason: 'the workspace repo could not be restored or cloned', kind };
         park.applyParkRepo(opened, clonePath);
         park.restoreParkFiles(opened, parkPaths);
         pinned = { id: m.workspaceId, path: clonePath };
         emitMetric('restore_bytes', dl.bytes);
         return { ok: true, kind: m.kind };
       } catch (err) {
-        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+        return { ok: false, reason: err instanceof Error ? err.message : String(err), kind };
       } finally {
         rmSync(tarPath, { force: true });
         rmSync(stage, { recursive: true, force: true });
@@ -604,6 +629,15 @@ export async function runOnceFromCli(opts: {
     },
     reattach: (workerId) => client.reattachWorker(workerId),
     unpark: async (workerId) => { await client.unparkWorker(workerId); },
+    settleUnrestored: async (workerId, reason, kind) => {
+      const remote = await client.getWorkerRemote(workerId).catch(() => null);
+      if (unrestoredResumeAction(remote?.status, kind) !== 'fail') return;
+      await client.updateWorker(workerId, {
+        status: 'failed',
+        error: `Cloud runner: resuming the parked run failed, the bundle could not be restored: ${reason}`.slice(0, 1000),
+      });
+      log(`[once] worker ${workerId} reported failed (its parked run could not be restored)`);
+    },
     adopt: async (workerId, kind) => {
       const w = wm.adoptParkedWorker(workerId, kind);
       if (!w) return false;
