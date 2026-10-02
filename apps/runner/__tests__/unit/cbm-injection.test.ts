@@ -329,6 +329,20 @@ describe('CbmInjector', () => {
     expect(snap.injections).toBe(3);
   });
 
+  it('parallel searches cannot exceed the per-session cap', async () => {
+    const symbols = ['alphaOne', 'betaTwo', 'gammaThree', 'deltaFour', 'epsilonFive'];
+    const { graph } = fakeGraph(Object.fromEntries(symbols.map(s => [s, PARSE_CONFIG])));
+    const inj = injector(graph, async () => {
+      await new Promise(r => setTimeout(r, 5));
+      return applied('inject_callers');
+    });
+    const notes = await Promise.all(symbols.map(s => inj.handlePostToolUse('Bash', { command: `rg ${s}` }, rgOutput([]))));
+    expect(notes.filter(n => n !== null)).toHaveLength(3);
+    const snap = inj.snapshot();
+    expect(snap.injections).toBe(3);
+    expect(snap.byOutcome).toEqual({ injected_callers: 3, cap_reached: 2 });
+  });
+
   it('a hung graph ends at the hook budget as deadline_exceeded', async () => {
     const { graph } = fakeGraph({ parseConfig: PARSE_CONFIG }, { delayMs: 5_000 });
     const inj = injector(graph, decider(applied('inject_callers')).decide);

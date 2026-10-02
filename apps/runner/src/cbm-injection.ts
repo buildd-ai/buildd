@@ -298,6 +298,8 @@ interface Evaluation {
 export class CbmInjector {
   private readonly metrics: CbmInjectionMetrics = emptyCbmInjectionMetrics(true);
   private readonly seenSymbols = new Set<string>();
+  // Slots held by in-flight evaluations: parallel searches must not all pass the cap before any records.
+  private pendingInjections = 0;
   private readonly editedPaths = new Set<string>();
   private readonly uptake: UptakeWindow[] = [];
   private readonly now: () => number;
@@ -351,7 +353,7 @@ export class CbmInjector {
     const started = this.now();
 
     const zero = { hitCount: 0, hitFiles: 0, graphCount: 0, diffSize: 0, symbolKind: null, injectedCount: 0 };
-    if (this.metrics.injections >= CBM_INJECTION_MAX_PER_SESSION) {
+    if (this.metrics.injections + this.pendingInjections >= CBM_INJECTION_MAX_PER_SESSION) {
       this.record(trigger, { ...zero, outcome: 'cap_reached' }, this.now() - started);
       return null;
     }
@@ -364,6 +366,7 @@ export class CbmInjector {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<'deadline'>(resolve => { timer = setTimeout(() => resolve('deadline'), CBM_INJECTION_HOOK_BUDGET_MS); });
     let ev: Evaluation | 'deadline';
+    this.pendingInjections++;
     try {
       ev = await Promise.race([
         this.evaluate(trigger, symbol, toolName, toolResponse).catch((): Evaluation => ({ ...zero, outcome: 'no_index' })),
@@ -371,6 +374,7 @@ export class CbmInjector {
       ]);
     } finally {
       clearTimeout(timer);
+      this.pendingInjections--;
     }
     if (ev === 'deadline') {
       this.record(trigger, { ...zero, outcome: 'deadline_exceeded' }, this.now() - started);
