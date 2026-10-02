@@ -12,6 +12,7 @@ import { useVisualReviewDecisions } from '@/components/visual-review/review-tran
 import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
+import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
@@ -20,6 +21,7 @@ import {
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
+    MISSION_TASK_STRIP_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
@@ -52,6 +54,10 @@ export default function DevFixturesPage() {
                 <MissionBoardVisualFixture />
             </KeyHintsProvider>
         );
+    }
+
+    if (state === MISSION_TASK_STRIP_FIXTURE_STATE) {
+        return <MissionTaskStripFixture />;
     }
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {

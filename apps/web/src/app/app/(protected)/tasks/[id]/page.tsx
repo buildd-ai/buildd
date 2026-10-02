@@ -21,7 +21,6 @@ import LocalTime from '../LocalTime';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
-import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
@@ -85,6 +84,11 @@ import type { PrOutcome } from '@/components/task/PrCard';
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
 const BADGED_EXIT_CAUSES = new Set(['budget_limited', 'infra_failure', 'never_started', 'silent_start']);
+
+/** The task's mission executor, for the action zone's `claim_task` hint. */
+function missionExecutorOf(row: { executor?: string | null } | null | undefined): 'runner' | 'local' | null {
+  return row?.executor === 'local' ? 'local' : row?.executor === 'runner' ? 'runner' : null;
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
@@ -1079,26 +1083,26 @@ export default async function TaskDetailPage({
         </div>
 
         {/* Action first (W6): the phase's one decision, before anything to read.
-            Retry/switch is the task sheet's own TaskActionZone, so the sheet and
-            the page cannot offer different things for a failure. Start keeps
-            its richer button (local-runner targeting, capacity). An open
+            The task sheet's own TaskActionZone, for a start and a failure alike,
+            so the sheet, this page and the mission drawer cannot offer
+            different things. The page alone adds runner targeting. An open
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
-        {(phase === 'failed' || canStart) && (
+        {(phase === 'failed' || canStart || isBlocked) && (
           <div className="mb-6" data-testid="task-page-action-zone">
-            {phase === 'failed' && (
-              <TaskPageActionZone
-                taskId={task.id}
-                workspaceId={task.workspaceId}
-                phase={phase}
-                isBlocked={false}
-                blockedByCount={0}
-                backend={(task.backend as 'claude' | 'codex' | null) ?? null}
-                lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
-                worker={null}
-              />
-            )}
-            {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
+            <TaskPageActionZone
+              taskId={task.id}
+              workspaceId={task.workspaceId}
+              phase={phase}
+              isBlocked={isBlocked}
+              blockedByCount={unresolvedDeps.length}
+              backend={(task.backend as 'claude' | 'codex' | null) ?? null}
+              lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
+              worker={null}
+              roleSlug={task.roleSlug}
+              missionExecutor={missionExecutorOf(missionContextRow)}
+              runnerPicker
+            />
           </div>
         )}
 

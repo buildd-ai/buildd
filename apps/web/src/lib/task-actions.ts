@@ -1,21 +1,184 @@
 'use client';
 
 /**
- * Shared gate-reason copy and force-flow helpers for task start actions.
- * Used by both TaskActionZone (missions sheet) and StartTaskButton (full page).
+ * The one module behind every task action a person takes from the dashboard:
+ * which actions a task's state offers, the requests they make, and the copy for
+ * a refused start. `TaskActionZone` is the one renderer over it, mounted by the
+ * task sheet, the full task page and the mission page's Landed drawer, so the
+ * three can never offer different things for the same task.
+ *
+ * Every client POST to `/api/tasks/[id]/start` goes through `requestTaskStart`
+ * and every POST to `/api/tasks/[id]/reassign` through `requestTaskRetry`.
  */
+import { deriveTaskPhase, type TaskPhase } from './task-presentation';
 
 export interface GateRefusal {
   gateReason: string;
   blockClass?: 'policy' | 'capability';
   error?: string;
   canForce?: boolean;
+  /** workspace_cap_reached: the person may start this one task past the cap. */
+  canExempt?: boolean;
   backend?: string;
+  /** capability_mismatch: backends the team does hold a credential for. */
+  availableBackends?: string[];
   active?: number;
   cap?: number;
   queuePosition?: number;
   missingConnectors?: string[];
   alternativeRole?: string;
+  /** unmerged_dep_pr: the PRs holding the task. */
+  blockingDeps?: Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>;
+  /** deferred_start: the scheduled start (ISO). */
+  startAt?: string | null;
+}
+
+// ── Action set ───────────────────────────────────────────────────────────────
+
+export type Backend = 'claude' | 'codex';
+export type MissionExecutor = 'runner' | 'local';
+
+/** Phases where nothing is running and a person can ask for a start. */
+export const STARTABLE_PHASES: ReadonlySet<TaskPhase> = new Set<TaskPhase>([
+  'pending', 'budget_paused', 'mission_budget_exhausted', 'subject_dead',
+]);
+
+/**
+ * What a task's state offers, in render order. The renderer draws exactly
+ * these, and the parity test compares them across surfaces:
+ * - `answer`: reply to the agent's open question;
+ * - `retry` / `switch_backend` / `history`: a failed task;
+ * - `blocked`: the dependency notice (no action, by design);
+ * - `claim_hint`: `claim_task {taskId}` for a task only a local session claims;
+ * - `run_now`: ask for a start now (a gate refusal becomes Force start inline).
+ */
+export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'blocked' | 'claim_hint' | 'run_now';
+
+export interface TaskActionState {
+  phase: TaskPhase;
+  isBlocked: boolean;
+  backend: Backend | null;
+  /** The live worker has a question waiting. */
+  hasQuestion: boolean;
+  /** The host can link to the full history (the sheet and drawer, not the page itself). */
+  hasHistory: boolean;
+  /** The task's mission executor; `local` means runners never claim it. */
+  missionExecutor?: MissionExecutor | null;
+}
+
+export function otherBackendOf(backend: Backend | null): Backend | null {
+  return backend === 'codex' ? 'claude' : backend === 'claude' ? 'codex' : null;
+}
+
+export function taskActionSet(s: TaskActionState): TaskActionId[] {
+  const out: TaskActionId[] = [];
+  const waiting = s.phase === 'waiting_input';
+  if (waiting && s.hasQuestion) out.push('answer');
+  if (s.phase === 'failed' && !waiting) {
+    out.push('retry');
+    if (otherBackendOf(s.backend)) out.push('switch_backend');
+    if (s.hasHistory) out.push('history');
+  }
+  if (s.isBlocked) out.push('blocked');
+  if (STARTABLE_PHASES.has(s.phase) && !s.isBlocked) {
+    if (s.missionExecutor === 'local') out.push('claim_hint');
+    out.push('run_now');
+  }
+  return out;
+}
+
+/**
+ * Phase and blocked flag for a task the host holds as a light row (the sheet's
+ * summary, the board model). The full task page has more inputs and calls
+ * `deriveTaskPhase` itself; both end in the same function.
+ */
+export function taskActionPhase(i: {
+  taskStatus: string;
+  taskMode?: string | null;
+  workerStatus?: string | null;
+  workerWaitingFor?: unknown;
+  blockedByCount: number;
+}): { phase: TaskPhase; isBlocked: boolean } {
+  const isBlocked = i.taskStatus === 'pending' && i.blockedByCount > 0;
+  const phase = deriveTaskPhase({
+    taskStatus: i.taskStatus,
+    taskMode: i.taskMode ?? null,
+    workerStatus: i.workerStatus ?? null,
+    workerWaitingFor: i.workerWaitingFor,
+    isBlocked,
+  });
+  return { phase, isBlocked };
+}
+
+/** What a person types in their own session to take a local mission's task. */
+export function claimTaskCommand(taskId: string): string {
+  return `claim_task {taskId: "${taskId}"}`;
+}
+
+// ── Requests ─────────────────────────────────────────────────────────────────
+
+export interface StartRequest {
+  forceOverride?: boolean;
+  capExempt?: boolean;
+  /** Hand the task to one runner's local UI instead of any runner. */
+  targetLocalUiUrl?: string;
+}
+
+export type StartOutcome =
+  | { ok: true }
+  | { ok: false; status: number; refusal: GateRefusal | null; error: string };
+
+/** The only client POST to `/api/tasks/[id]/start`. A 422 with a gate reason comes back as `refusal`. */
+export async function requestTaskStart(taskId: string, req: StartRequest = {}): Promise<StartOutcome> {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...(req.targetLocalUiUrl ? { targetLocalUiUrl: req.targetLocalUiUrl } : {}),
+        ...(req.forceOverride ? { forceOverride: true } : {}),
+        ...(req.capExempt ? { capExempt: true } : {}),
+      }),
+    });
+    if (res.ok) return { ok: true };
+    const body = await res.json().catch(() => ({})) as Record<string, unknown>;
+    const error = typeof body.error === 'string' ? body.error : 'Failed to start task';
+    const refusal = res.status === 422 && typeof body.gateReason === 'string'
+      ? ({ ...body, gateReason: body.gateReason } as GateRefusal)
+      : null;
+    return { ok: false, status: res.status, refusal, error };
+  } catch (err) {
+    return { ok: false, status: 0, refusal: null, error: err instanceof Error ? err.message : 'Failed to start task' };
+  }
+}
+
+/**
+ * The only client POST to `/api/tasks/[id]/reassign`: retry a task, on its own
+ * backend or (with `backend`) on another. Omitting the backend keeps the stored one.
+ */
+export async function requestTaskRetry(taskId: string, opts: { backend?: Backend } = {}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/reassign?force=true`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts.backend ? { backend: opts.backend } : {}),
+    });
+    if (res.ok) return { ok: true };
+    const body = await res.json().catch(() => ({})) as { error?: unknown };
+    return { ok: false, error: typeof body.error === 'string' ? body.error : 'Failed to retry task' };
+  } catch {
+    return { ok: false, error: 'Failed to retry task' };
+  }
+}
+
+/** Switch the task's backend (claude is stored as null, the default). */
+export async function requestBackendSwitch(taskId: string, backend: string): Promise<boolean> {
+  const res = await fetch(`/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ backend: backend === 'claude' ? null : backend }),
+  }).catch(() => null);
+  return !!res?.ok;
 }
 
 export interface GateCopyContext {
