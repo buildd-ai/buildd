@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
  * PATCH /api/model-tiers/pools/[id] — set weights, or pin/unpin/explore.
  * Body: { teamId, expectedVersion, weights?: {armId: 'off'|'low'|'med'|'high'}, mode?: 'pinned' | 'split' | 'explore' }.
  * The server derives the allocation from the weights in split mode
- * (docs/design/tier-weights.md §1) — an admin never sends a percentage.
+ * (knowledge-base: buildd/design/tier-weights.md §1) — an admin never sends a percentage.
  * Choosing explore hands the shares to buildd's daily step (tier-weights §3):
  * the current shares are projected onto each arm's stage bounds, and an
  * explore pool takes no typed weights.

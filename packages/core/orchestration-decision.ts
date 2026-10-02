@@ -1,6 +1,6 @@
 /**
  * The shared access adapter for conflict-aware orchestration decisions
- * (docs/design/conflict-aware-orchestration.md §5 intro and §6).
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §5 intro and §6).
  *
  * One entry point, `runOrchestrationDecision`, that every orchestration call
  * site (creation-time scope prediction, claim-time hold/start) goes through. It

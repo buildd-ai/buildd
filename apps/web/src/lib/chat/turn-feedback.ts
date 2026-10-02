@@ -1,5 +1,5 @@
 /**
- * Thumbs on a chat turn (docs/design/tier-model-pools.md §5b). A person can
+ * Thumbs on a chat turn (knowledge-base: buildd/design/tier-model-pools.md §5b). A person can
  * rate an assistant turn of a conversation they own; the vote lands in
  * `user_feedback` under the conversation's team with a reason LABEL, never
  * free text, so it can feed the tier pool's per-arm stats.

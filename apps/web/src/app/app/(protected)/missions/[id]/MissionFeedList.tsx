@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The one task list on the mission page (docs/design/mission-feed-mobile-continuity.md,
+ * The one task list on the mission page (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * "Grouping rules", W2, W3). It replaces both the flight-strip navigator's list
  * and the mobile rail.
  *

@@ -1764,7 +1764,7 @@ export interface LoopHistoryEntry {
  * conformance checks and audits can compare the two. First write wins:
  * `declared` is set at creation, or on the first runtime mutation for a task
  * created before this column existed. See
- * docs/design/conflict-aware-orchestration.md §1.
+ * knowledge-base: buildd/design/conflict-aware-orchestration.md §1.
  */
 export interface PathDeclaration {
   declared: string[] | null;
@@ -2760,9 +2760,41 @@ export interface GateAnalytics {
   truncatedGates: number;
 }
 
+/** One full knowledge-ingest job no runner has taken (GET /api/health/failures `stalledIngest`). */
+export interface StalledIngestJob {
+  id: string;
+  workspaceId: string;
+  /** "owner/name" */
+  repo: string;
+  /** `stalled`: queued past the stall window, waiting on the serverless fallback. `fallback`: the fallback is running it. */
+  state: 'stalled' | 'fallback';
+  /** How long the job has waited (queued age, or since creation once the fallback runs it). */
+  ageMs: number;
+  attempts: number;
+  /** Why the last runner to claim it handed it back (e.g. its checkout cannot fetch). */
+  checkoutReason?: string;
+  /** Fallback cursor over the repo's ingestible files. */
+  progress?: { cursor: number; total: number | null };
+  /** Last failing fallback slice, when the most recent tick failed. */
+  lastError?: string;
+}
+
+/**
+ * Full knowledge-ingest jobs that are stuck or being rescued. These never
+ * become failed workers, so without this block they are invisible to
+ * get_failure_analytics. Omitted from the response when there are none.
+ */
+export interface StalledIngestReport {
+  stalled: number;
+  inFallback: number;
+  oldestAgeMs: number;
+  /** Oldest first, capped; the counts cover every job. */
+  jobs: StalledIngestJob[];
+}
+
 /**
  * How long approved-and-green PRs wait before they land, from the `pr_landing`
- * gate events (docs/design/pr-landing-guarantee.md §J). A regression shows up
+ * gate events (knowledge-base: buildd/design/pr-landing-guarantee.md §J). A regression shows up
  * here before anyone files a friction report.
  */
 export interface LandingMetrics {

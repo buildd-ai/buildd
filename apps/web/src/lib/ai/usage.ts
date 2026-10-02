@@ -1,6 +1,6 @@
 /**
  * Usage receipts from sibling apps: `POST /api/ai/usage`
- * (docs/design/shared-ai-kit.md §1a, §2).
+ * (knowledge-base: buildd/design/shared-ai-kit.md §1a, §2).
  *
  * A receipt says which model a plan ran on, how many tokens, what it cost,
  * how long it took and how it ended. It is content-free and identity-free by

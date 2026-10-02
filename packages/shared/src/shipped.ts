@@ -4,7 +4,7 @@
 //
 // The owner-facing answer to "what changed for me?" that the agent already
 // proposing a mission's completion writes in the output it already returns
-// (docs/design/mission-shipped-report.md). One definition, shared by
+// (knowledge-base: buildd/design/mission-shipped-report.md). One definition, shared by
 // `planningOutputSchema` and the evaluation output schema so the two cannot
 // drift.
 //

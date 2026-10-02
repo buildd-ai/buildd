@@ -31,7 +31,7 @@ export type ResolvedChatModel =
     ok: true; model: LanguageModel; provider: ChatProvider; modelId: string; tier: ChatTier; keyScope: InferenceKeyScope;
     /** Set when the team's LiteLLM gateway serves the turn; `modelId` stays the planned model, for pricing. */
     via?: 'litellm';
-    /** Set when the tier's chat pool enrolled this turn (docs/design/tier-model-pools.md). */
+    /** Set when the tier's chat pool enrolled this turn (knowledge-base: buildd/design/tier-model-pools.md). */
     pool?: ChatPoolDraw;
   }
   | { ok: false; reason: 'no_key' | 'unsupported_provider'; provider: string; tier: ChatTier };

@@ -197,13 +197,13 @@ export function rewriteOtlp(req: OutboundRequestLike, env: OtelEgressEnv): Egres
   const host = url.hostname.toLowerCase().replace(/\.$/, '');
   if (host !== config.hostname) return null;
   if (config.scheme === 'https' && url.protocol === 'http:') {
-    return { action: 'reject', status: 403, message: `${url.hostname} is reachable only over HTTPS` };
+    return { action: 'reject', status: 403, message: `${url.hostname} is reachable only over HTTPS`, reason: 'plain_http' };
   }
   if (url.origin !== config.origin) return null;
 
   const name = authHeaderName(env);
   if (!name) {
-    return { action: 'reject', status: 503, message: 'telemetry egress is not configured: OTEL_EXPORTER_OTLP_AUTH_HEADER is not a usable header name' };
+    return { action: 'reject', status: 503, message: 'telemetry egress is not configured: OTEL_EXPORTER_OTLP_AUTH_HEADER is not a usable header name', reason: 'unconfigured' };
   }
   const headers = stripContainerCredentials(req.headers);
   headers.delete(name);

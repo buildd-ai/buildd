@@ -13,7 +13,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { missionNotHeld, missionNotLocal, checkMissionLocal, checkTaskMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY, notHeldOrLocal } from './held-gate';
+import { missionNotHeld, missionNotLocal, checkMissionLocal, checkTaskMissionLocal, BYPASS_HELD_GATE_KEY, checkMissionHeld, taskNotHeld, TASK_HOLD_KEY, notHeldOrLocal, REVIEWER_FOR_KEY } from './held-gate';
 
 /**
  * The held gate is a SQL expression. We verify the exported constant that
@@ -174,7 +174,16 @@ describe('missionNotLocal() — emitted SQL', () => {
   it('honours the dashboard force-start bypass, two-valued', () => {
     expect(text()).toMatch(/COALESCE\("tasks"\."context"->>\$1, ''\) = 'true'/);
     expect(render().params[0]).toBe(BYPASS_HELD_GATE_KEY);
-    expect(text().split(' OR ')).toHaveLength(3);
+    expect(text().split(' OR ')).toHaveLength(4);
+  });
+
+  // A reviewer task is filed by the platform into the reviewed task's mission.
+  // Nothing tells the local session it exists, so under the local gate it sat
+  // pending with no worker and the PR it gates never merged.
+  it('lets a reviewer task through: the review is the merge gate, not mission work', () => {
+    expect(text()).toContain(`OR ("tasks"."context"->'${REVIEWER_FOR_KEY}') IS NOT NULL`);
+    // Exempt from the executor only — a held mission still holds its reviews.
+    expect(dialect.sqlToQuery(missionNotHeld()).sql).not.toContain(REVIEWER_FOR_KEY);
   });
 });
 

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The mission sheet's body (docs/design/chat-canvas.md, "Mission sheet"): the
+ * The mission sheet's body (knowledge-base: buildd/design/chat-canvas.md, "Mission sheet"): the
  * context card, the ASK ABOUT rows and the composer's locked scope cell, all
  * read from the mission's live view. The title shows once, in the card.
  */

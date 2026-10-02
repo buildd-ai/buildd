@@ -28,7 +28,7 @@ async function resolveTaskAccess(id: string, user: Awaited<ReturnType<typeof get
 
 // GET /api/tasks/[id]/notes — every note scoped to this task. A mission task's
 // notes carry its missionId too; they are still this task's, and the task page
-// shows them (docs/design/mission-feed-mobile-continuity.md S6).
+// shows them (knowledge-base: buildd/design/mission-feed-mobile-continuity.md S6).
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },

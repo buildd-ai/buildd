@@ -218,7 +218,7 @@ export const accounts = pgTable('accounts', {
   // (ai_usage receipts, day in the team's timezone). POST /api/ai/plan answers
   // `downgrade` from 80% of it and `deny` at 100%. NULL = no buildd-side cap:
   // the app's own provider-key limit is the hard ceiling
-  // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
+  // (knowledge-base: buildd/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
 
   // A long-lived host runner key, flagged explicitly by a team owner/admin.
@@ -380,7 +380,7 @@ export interface WorkspaceGitConfig {
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
   effort?: 'low' | 'medium' | 'high' | 'max';
 
-  // Path-claim enforcement (docs/design/conflict-aware-orchestration.md §2). Off by
+  // Path-claim enforcement (knowledge-base: buildd/design/conflict-aware-orchestration.md §2). Off by
   // default ('advisory' or absent). 'enforce': a confirmed live holder denies
   // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
   // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
@@ -487,7 +487,7 @@ export interface WorkspaceGitConfig {
   autoResolveMergeConflicts?: boolean;
 
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
-  // docs/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
+  // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and
   // recorded on the gate ledger beside the legacy action, which still runs.
   // `enforce`: doors act on the landing outcome.
@@ -702,7 +702,7 @@ export interface TaskScheduleTemplate {
   complexity?: 'simple' | 'normal' | 'complex';
   // The role every task this schedule spawns runs as, stated once. Applied at
   // fire time only if the slug still resolves to a role in the task's
-  // workspace (docs/design/role-routing.md §3.1); otherwise the task files
+  // workspace (knowledge-base: buildd/design/role-routing.md §3.1); otherwise the task files
   // role-less.
   roleSlug?: string;
 }
@@ -2918,7 +2918,7 @@ export const secrets = pgTable('secrets', {
 }));
 
 
-// ── Agent chat (docs/design/agent-chat.md) ───────────────────────────────────
+// ── Agent chat (knowledge-base: buildd/design/agent-chat.md) ───────────────────────────────────
 
 // One conversation with the buildd agent. Same conversation on web and phone.
 export const conversations = pgTable('conversations', {
@@ -2962,7 +2962,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   authorCreatedIdx: index('conversation_messages_author_created_idx').on(t.authorUserId, t.createdAt),
 }));
 
-// Chat session retro lessons (experiment; docs/design/chat-session-retro.md,
+// Chat session retro lessons (experiment; knowledge-base: buildd/design/chat-session-retro.md,
 // code in apps/web/src/lib/chat-retro/, removal in its REMOVAL.md). One row per
 // conversation window the daily pass looked at. Content-free by construction:
 // every text column holds a label from a fixed vocabulary, a buildd tool name,
@@ -3175,7 +3175,7 @@ export const memoryUses = pgTable('memory_uses', {
 }));
 
 // Memory decision log: one row per Jev verdict on a memory decision
-// (packages/core/memory-decisions.ts, docs/design/memory-done-right.md "Where
+// (packages/core/memory-decisions.ts, knowledge-base: buildd/design/memory-done-right.md "Where
 // Jev helps"). Every row carries the verdict, its confidence, what the current
 // rule said and whether the verdict was acted on, so the offline readout
 // (packages/core/scripts/memory-decision-readout.ts) can compare Jev, the rule
@@ -3624,7 +3624,7 @@ export const notificationPreferencesRelations = relations(notificationPreference
   team: one(teams, { fields: [notificationPreferences.teamId], references: [teams.id] }),
 }));
 
-// ── Subscriptions and the delivery ledger (docs/design/subscriptions-and-notifications.md) ──
+// ── Subscriptions and the delivery ledger (knowledge-base: buildd/design/subscriptions-and-notifications.md) ──
 //
 // A subscription is "who wants to hear about what". Exactly one owner column is
 // set: a person (owner_user_id), a waiting worker (owner_task_id) or an MCP
@@ -4057,7 +4057,7 @@ export const modelTierRegistryRelations = relations(modelTierRegistry, ({ one })
   workspace: one(workspaces, { fields: [modelTierRegistry.workspaceId], references: [workspaces.id] }),
 }));
 
-// ── Tier model pools (docs/design/tier-model-pools.md) ──────────────────────
+// ── Tier model pools (knowledge-base: buildd/design/tier-model-pools.md) ──────────────────────
 //
 // A tier is served by a pool of one to four arms per surface. With no row here
 // a tier resolves exactly as before (model_tier_registry). Pools are created
@@ -4078,7 +4078,7 @@ export const tierPools = pgTable('tier_pools', {
   // Bumped by every allocation write; writes are compare-and-set on it.
   allocationVersion: integer('allocation_version').notNull().default(1),
   // { [tier_pool_arms.id]: 'off'|'low'|'med'|'high' }. `split` only — the
-  // input `allocation` is derived from it (docs/design/tier-weights.md §1). A
+  // input `allocation` is derived from it (knowledge-base: buildd/design/tier-weights.md §1). A
   // pool created before this shipped has `weights = {}`; see
   // `packages/core/tier-weights.ts` `backfillWeights`.
   weights: jsonb('weights').$type<Record<string, 'off' | 'low' | 'med' | 'high'>>().notNull().default({}),
@@ -4142,7 +4142,7 @@ export const tierPoolChanges = pgTable('tier_pool_changes', {
 }));
 
 // Model plans served to sibling apps by POST /api/ai/plan
-// (docs/design/shared-ai-kit.md §2). One row per plan: which model buildd
+// (knowledge-base: buildd/design/shared-ai-kit.md §2). One row per plan: which model buildd
 // chose for an app account, and the may-spend decision it returned. The model
 // call itself runs in the app; buildd never sees its content. Metadata only:
 // `kind` is the app's free attribution label, no other text is stored.
@@ -4486,7 +4486,7 @@ export const memories = pgTable('memories', {
   // Consecutive failed reconcile attempts to mirror this row into the index.
   // Rows past the cap drop out of reconcile so they cannot block the backlog.
   indexFailures: integer('index_failures').notNull().default(0),
-  // Lifecycle (docs/design/memory-done-right.md, "Write: candidates, then
+  // Lifecycle (knowledge-base: buildd/design/memory-done-right.md, "Write: candidates, then
   // promotion"; packages/core/memory-candidates.ts). Every row written before
   // this existed is 'active', and writes stay 'active' unless the workspace
   // flag `memoryCandidateWrites` is on. Only 'active' is pushed at claim time;
@@ -4671,7 +4671,7 @@ export type NewCronRun = typeof cronRuns.$inferInsert;
 
 // ── Orchestration decision / outcome ledger ──────────────────────────────────
 //
-// docs/design/conflict-aware-orchestration.md §5–§6. One row per look by an
+// knowledge-base: buildd/design/conflict-aware-orchestration.md §5–§6. One row per look by an
 // orchestration decision (creation-time scope prediction, claim-time
 // hold/start), written by packages/core/orchestration-decision.ts. Content-free:
 // ids, versions, the definition fingerprint, a candidate-set digest, opaque
@@ -4769,7 +4769,7 @@ export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
 export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
 export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;
 
-// Creation-time manifest predictions (docs/design/conflict-aware-orchestration.md
+// Creation-time manifest predictions (knowledge-base: buildd/design/conflict-aware-orchestration.md
 // §5a, packages/core/manifest-prediction.ts). One row per task per candidate
 // policy, written in shadow AFTER the creation response for teams that opted in
 // to `orchestration_manifest`. Each pick also writes a content-free

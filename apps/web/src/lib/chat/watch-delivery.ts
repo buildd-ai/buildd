@@ -1,6 +1,6 @@
 /**
  * Fired watches in the conversation they were set from
- * (docs/design/subscriptions-and-notifications.md → Delivery routing).
+ * (knowledge-base: buildd/design/subscriptions-and-notifications.md → Delivery routing).
  *
  * Two separate things, on purpose:
  *

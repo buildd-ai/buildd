@@ -1,6 +1,6 @@
 /**
  * A watch the person set has fired: "#123 merged." In the chat v3 language
- * (docs/design/chat-canvas.md, "Mobile canvas"): a square card with a 1px
+ * (knowledge-base: buildd/design/chat-canvas.md, "Mobile canvas"): a square card with a 1px
  * rule and a 3px offset shadow, the sentence in Newsreader, the chrome in
  * mono. Colour carries meaning only: the 8px square is landed (green) for done
  * or merged, needs-you (copper) when it waits on you, red when it failed.

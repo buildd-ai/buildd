@@ -1,6 +1,6 @@
 /**
  * Planning-mode updates for missions filed from chat post back into the
- * conversation they came from (docs/design/agent-chat.md → Should the
+ * conversation they came from (knowledge-base: buildd/design/agent-chat.md → Should the
  * Orchestrator be the chat?). The message is a `role: 'event'` row with one
  * `data-buildd-event` part carrying object refs; the ping carries no text.
  *

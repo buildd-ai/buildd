@@ -26,6 +26,17 @@ if ! bun run scripts/check-specs.ts --check; then
   exit 1
 fi
 
+# Public-docs boundary gate. Pure file I/O, sub-second. Design/strategy prose
+# belongs in the private knowledge-base repo; docs/design keeps stubs only.
+if [ -f scripts/check-public-docs.ts ]; then
+  if ! bun run scripts/check-public-docs.ts; then
+    echo "" >&2
+    echo "✖ public-docs check failed. Move the prose to knowledge-base buildd/design/" >&2
+    echo "  and keep only the frontmatter stub here, then re-stage and commit." >&2
+    exit 1
+  fi
+fi
+
 # Migration journal ordering gate. Also fast (JSON parse only, no DB) — same
 # sub-second budget as the spec check above. Drizzle's migrator applies
 # journal entries by `when` high-water-mark, not idx order: a new migration

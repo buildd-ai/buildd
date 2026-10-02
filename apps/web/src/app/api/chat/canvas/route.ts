@@ -7,7 +7,7 @@ import { loadTeamChatAgent } from '@/lib/chat/chat-page-data';
  * GET /api/chat/canvas?teamId= → { available, agent, canManageTeamKeys }
  *
  * What the chat canvas needs when it's summoned over a page that isn't the
- * chat page (docs/design/chat-canvas.md, step 2): who the agent is and whether
+ * chat page (knowledge-base: buildd/design/chat-canvas.md, step 2): who the agent is and whether
  * this person can fix a missing key. Loaded once, on first open, so no page
  * pays for it until someone asks.
  */

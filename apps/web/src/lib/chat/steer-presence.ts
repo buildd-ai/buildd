@@ -1,5 +1,5 @@
 /**
- * The Steer canvas (docs/design/chat-canvas.md's "Ask about this task", but
+ * The Steer canvas (knowledge-base: buildd/design/chat-canvas.md's "Ask about this task", but
  * for telling a running agent something instead of asking about it): the
  * title it rescopes to, and the small presence strip under the header —
  * who's running, how fresh their last heartbeat is, and what they're doing

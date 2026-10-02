@@ -1,5 +1,5 @@
 /**
- * Jev decisions for memory (docs/design/memory-done-right.md, "Where Jev
+ * Jev decisions for memory (knowledge-base: buildd/design/memory-done-right.md, "Where Jev
  * helps"; docs/design/decision-calls.md).
  *
  * Every decision here is typed through `@builddai/ai-kit/decide`, gated by a

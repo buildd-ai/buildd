@@ -3458,6 +3458,47 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
     });
 
+    describe("size cap on a task PR into its own mission's integration branch", () => {
+      const MISSION_BRANCH = 'mission/example-slug-0a1b2c3d';
+      const ghFor = (baseRef: string) => (_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+        }
+        if (/\/files/.test(path)) {
+          return Promise.resolve([{ filename: 'apps/web/src/lib/feature.ts', additions: 2500, deletions: 0, status: 'modified' }]);
+        }
+        if (/\/compare\//.test(path)) return Promise.resolve({ behind_by: 0, ahead_by: 0, files: [] });
+        return Promise.resolve({ number: 42, head: { sha: 'sha-42', ref: 'buildd/task' }, base: { ref: baseRef }, mergeable_state: 'clean' });
+      };
+      const inMission = () => {
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', title: 'Some task', requiresReview: false, missionId: 'mission-1', context: {} });
+        mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workingBranch: MISSION_BRANCH, integrationBranchEnabled: true });
+      };
+
+      it('merges an oversize task PR into its mission branch', async () => {
+        workerOk();
+        inMission();
+        mockGithubApi.mockImplementation(ghFor(MISSION_BRANCH));
+
+        const res = await put();
+
+        expect(res.status).toBe(200);
+        expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      });
+
+      it("refuses an oversize PR into another mission's branch", async () => {
+        workerOk();
+        inMission();
+        mockGithubApi.mockImplementation(ghFor('mission/other-slug-4e5f6a7b'));
+
+        const res = await put();
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toContain('2500');
+        expect(mockMergePullRequest).not.toHaveBeenCalled();
+      });
+    });
+
     it('consults the post-refresh semantic hold with the workspace gitConfig and refuses while it holds', async () => {
       workerOk();
       mockCheckBaseRefreshHold.mockImplementationOnce(async () => ({ blocks: true, needsPerson: true, reason: 'semantic hold (needs a person): y' }));

@@ -1,5 +1,5 @@
 /**
- * The task role shadow (docs/design/role-routing.md §3, §5, §6(a)).
+ * The task role shadow (knowledge-base: buildd/design/role-routing.md §3, §5, §6(a)).
  *
  * Most tasks are filed with no `roleSlug`. This asks a decision model (Jev)
  * which of the workspace's roles should do the work, and — when the task has no
