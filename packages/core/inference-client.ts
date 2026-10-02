@@ -14,11 +14,11 @@
  *
  * ## Provider routing
  *
- * The provider comes from the team's model tier registry, which has always stored
- * `provider: 'anthropic' | 'openai-codex' | 'openrouter'` per tier row and has
- * never had server-side code that honoured anything but Anthropic. Point a tier
- * row at OpenRouter and every inference call on that tier goes to OpenRouter —
- * no call-site edits.
+ * The tier registry names the vendor and model. `resolveInferenceRoute`
+ * (inference-route.ts) picks the route that serves it: the vendor's own API,
+ * then OpenRouter, then the team's LiteLLM gateway, the same order chat uses.
+ * The call is then made in the route's wire format (Anthropic messages or
+ * OpenAI-compatible chat).
  *
  * ## Why OAuth cannot back an inference call
  *
@@ -39,17 +39,13 @@
 import { db } from './db';
 import { teams } from './db/schema';
 import { eq } from 'drizzle-orm';
-import { resolveInferenceKey, INFERENCE_KEY_PURPOSE as KEY_PURPOSE } from './inference-keys';
+import { INFERENCE_KEY_PURPOSE as KEY_PURPOSE } from './inference-keys';
 import { resolveTierEntry } from './model-tier-registry';
 import type { Tier, TierProvider } from './model-tier-defaults';
 import { isInferenceAllowed, type InferenceCapability } from './inference-policy';
-import { resolveLiteLLMGateway } from './litellm-gateway';
-import { gatewayModel } from '@builddai/ai-kit/models';
+import { ROUTES, routeAttributionHeaders, type RouteId } from '@builddai/ai-kit/models';
 import { createPublicGatewayFetcher } from './net/fetch-public-gateway';
-
-const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_VERSION = '2023-06-01';
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+import { isRouteVendor, resolveInferenceRoute } from './inference-route';
 
 const DEFAULT_MAX_TOKENS = 1024;
 const RETRY_BACKOFF_MS = 1000;
@@ -90,7 +86,11 @@ export type InferenceError =
   | { kind: 'parse'; raw: string };
 
 export type InferenceResult<T> =
-  | { ok: true; data: T; model: string; provider: TierProvider; usage: TokenUsage }
+  | {
+      ok: true; data: T; model: string; provider: TierProvider; usage: TokenUsage;
+      /** Which route served it (`provider` stays the planned vendor, for pricing). */
+      route: RouteId;
+    }
   | { ok: false; error: InferenceError };
 
 /** One-line operator-facing summary of a failure. */
@@ -197,10 +197,16 @@ interface ProviderReply {
 
 type Fetcher = typeof fetch;
 
-async function callAnthropic(opts: {
+interface WireCall {
+  /** The route's API root, no trailing slash. */
+  baseURL: string;
   apiKey: string; model: string; system: string; user: string;
   imageB64?: string; maxTokens: number; fetcher: Fetcher; timeoutMs: number;
-}): Promise<{ ok: true; reply: ProviderReply } | { ok: false; error: InferenceError }> {
+  /** Non-auth headers the route sends (API version, attribution). */
+  headers: Record<string, string>;
+}
+
+async function callAnthropicMessages(opts: WireCall): Promise<{ ok: true; reply: ProviderReply } | { ok: false; error: InferenceError }> {
   const content: unknown[] = [];
   if (opts.imageB64) {
     content.push({
@@ -210,12 +216,12 @@ async function callAnthropic(opts: {
   }
   content.push({ type: 'text', text: opts.user });
 
-  const res = await opts.fetcher(ANTHROPIC_URL, {
+  const res = await opts.fetcher(`${opts.baseURL}/messages`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-api-key': opts.apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
+      ...opts.headers,
     },
     body: JSON.stringify({
       model: opts.model,
@@ -245,12 +251,7 @@ async function callAnthropic(opts: {
   };
 }
 
-async function callOpenRouter(opts: {
-  apiKey: string; model: string; system: string; user: string;
-  imageB64?: string; maxTokens: number; fetcher: Fetcher; timeoutMs: number;
-  /** Another OpenAI-compatible `/chat/completions` URL (a LiteLLM gateway). No OpenRouter attribution is sent there. */
-  url?: string;
-}): Promise<{ ok: true; reply: ProviderReply } | { ok: false; error: InferenceError }> {
+async function callOpenAIChat(opts: WireCall): Promise<{ ok: true; reply: ProviderReply } | { ok: false; error: InferenceError }> {
   // OpenAI-compatible chat format. Multimodal uses an image_url part with a data
   // URI rather than Anthropic's base64 source block.
   const userContent: unknown = opts.imageB64
@@ -260,14 +261,12 @@ async function callOpenRouter(opts: {
       ]
     : opts.user;
 
-  const res = await opts.fetcher(opts.url ?? OPENROUTER_URL, {
+  const res = await opts.fetcher(`${opts.baseURL}/chat/completions`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'authorization': `Bearer ${opts.apiKey}`,
-      // OpenRouter attributes requests by referer/title; without them calls are
-      // anonymous in the team's OpenRouter dashboard.
-      ...(opts.url ? {} : { 'http-referer': 'https://buildd.dev', 'x-title': 'buildd' }),
+      ...opts.headers,
     },
     body: JSON.stringify({
       model: opts.model,
@@ -371,42 +370,36 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
   const entry = await resolveTierEntry(params.tier, params.teamId, params.workspaceId, 'chat');
   const provider = entry.provider;
 
-  if (provider !== 'anthropic' && provider !== 'openrouter' && provider !== 'openai') {
+  if (!isRouteVendor(provider)) {
     // openai-codex is an agent backend: it drives a CLI with its own session, not
     // a single-shot structured endpoint this client can speak to.
     return { ok: false, error: { kind: 'unsupported_provider', provider } };
   }
 
-  // The provider's own key first (OpenAI has no direct path here), then the
-  // team's LiteLLM gateway, which serves the same model as `provider/model`.
-  const apiKey = provider === 'openai' ? null : await resolveInferenceKey({
-    provider,
-    teamId: params.teamId,
-    workspaceId: params.workspaceId,
+  const route = await resolveInferenceRoute({
+    vendor: provider, model: entry.model, teamId: params.teamId, workspaceId: params.workspaceId,
   });
-  const gateway = apiKey ? null : await resolveLiteLLMGateway({ teamId: params.teamId, workspaceId: params.workspaceId });
-  if (!apiKey && !gateway) {
-    return provider === 'openai'
-      ? { ok: false, error: { kind: 'unsupported_provider', provider } }
-      : { ok: false, error: { kind: 'missing_key', provider } };
-  }
+  if (!route) return { ok: false, error: { kind: 'missing_key', provider } };
+
+  // A gateway's URL is the team's: only public addresses, no redirects.
+  const callFetcher = route.route === 'litellm'
+    ? (params.gatewayFetcher ?? createPublicGatewayFetcher({ fetcher })) as Fetcher
+    : fetcher;
+  // OpenRouter attributes requests by referer/title; without them calls are
+  // anonymous in the team's OpenRouter dashboard.
+  const headers = {
+    ...ROUTES[route.route].headers,
+    ...lowerKeys(routeAttributionHeaders(route.route, { appName: 'buildd', appUrl: 'https://buildd.dev' })),
+  };
+  const call = route.wire === 'anthropic-messages' ? callAnthropicMessages : callOpenAIChat;
 
   const invoke = async (): Promise<{ ok: true; reply: ProviderReply } | { ok: false; error: InferenceError }> => {
     try {
-      const common = {
-        system: params.system, user: params.user,
-        imageB64: params.imageB64, maxTokens,
-        timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      };
-      if (gateway) {
-        const gatewayFetcher = params.gatewayFetcher ?? createPublicGatewayFetcher({ fetcher });
-        return await callOpenRouter({
-          ...common, apiKey: gateway.apiKey, model: gatewayModel({ kind: 'litellm', baseURL: gateway.baseURL }, provider, entry.model),
-          url: `${gateway.baseURL}/chat/completions`, fetcher: gatewayFetcher as typeof fetch,
-        });
-      }
-      const args = { ...common, apiKey: apiKey!, model: entry.model, fetcher };
-      return provider === 'anthropic' ? await callAnthropic(args) : await callOpenRouter(args);
+      return await call({
+        baseURL: route.baseURL, apiKey: route.apiKey, model: route.modelId, headers,
+        system: params.system, user: params.user, imageB64: params.imageB64, maxTokens,
+        timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS, fetcher: callFetcher,
+      });
     } catch (e) {
       return { ok: false, error: { kind: 'transport', message: e instanceof Error ? e.message : String(e) } };
     }
@@ -418,7 +411,7 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
     attempt = await invoke();
   }
   if (!attempt.ok) {
-    console.error(`[inference] ${provider}/${entry.model} tier=${params.tier}: ${describeInferenceError(attempt.error)}`);
+    console.error(`[inference] ${provider}/${entry.model} via ${route.route} tier=${params.tier}: ${describeInferenceError(attempt.error)}`);
     return { ok: false, error: attempt.error };
   }
 
@@ -429,5 +422,9 @@ export async function inferenceCall<T>(params: InferenceCallParams<T>): Promise<
     return { ok: false, error: { kind: 'parse', raw: attempt.reply.text.slice(0, 2000) } };
   }
 
-  return { ok: true, data, model: entry.model, provider, usage: attempt.reply.usage };
+  return { ok: true, data, model: entry.model, provider, usage: attempt.reply.usage, route: route.route };
+}
+
+function lowerKeys(h: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 }

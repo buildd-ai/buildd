@@ -362,15 +362,16 @@ describe('inferenceCall through the team LiteLLM gateway', () => {
     expect((fetcher.mock.calls[0] as any[])[0]).toContain('api.anthropic.com');
   });
 
-  it('serves an OpenAI tier only through the gateway', async () => {
+  it('serves an OpenAI tier through the gateway when there is no OpenAI or OpenRouter key', async () => {
     tierEntry = { provider: 'openai', model: 'gpt-5.6-terra', source: 'team' };
     secretRows = [gatewayRow()];
     const fetcherMock = mock(() => Promise.resolve(chatReply('{"verdicts":[]}'))) as any;
     const gatewayFetcher = createPublicGatewayFetcher({ lookup: publicLookup as any, fetcher: fetcherMock });
-    expect((await inferenceCall(baseParams({ gatewayFetcher }))).ok).toBe(true);
+    const res = await inferenceCall(baseParams({ gatewayFetcher }));
+    expect(res.ok && res.route).toBe('litellm');
     secretRows = [];
-    const res = await inferenceCall(baseParams({ fetcher: fetcherMock }));
-    expect(!res.ok && res.error).toEqual({ kind: 'unsupported_provider', provider: 'openai' });
+    const none = await inferenceCall(baseParams({ fetcher: fetcherMock }));
+    expect(!none.ok && none.error).toEqual({ kind: 'missing_key', provider: 'openai' });
   });
 
   it('refuses to call a gateway that resolves to a private address', async () => {
@@ -396,6 +397,46 @@ describe('inferenceCall through the team LiteLLM gateway', () => {
     const gatewayFetcher = createPublicGatewayFetcher({ lookup: publicLookup as any, fetcher });
     const res = await inferenceCall(baseParams({ gatewayFetcher }));
     expect(!res.ok && res.error).toEqual({ kind: 'transport', message: expect.stringContaining('redirect') });
+  });
+});
+
+// ── One route order: own API → OpenRouter → gateway ───────────────────────────
+
+describe('inferenceCall route order', () => {
+  it('calls OpenAI directly with its own key', async () => {
+    tierEntry = { provider: 'openai', model: 'gpt-5.6-terra', source: 'team' };
+    secretRows = [secretRow({ label: 'openai', encryptedValue: 'enc:sk-oa' })];
+    const fetcher = mock(() => Promise.resolve(openRouterReply('{"verdicts":[]}'))) as any;
+    const res = await inferenceCall(baseParams({ fetcher }));
+    const [url, init] = fetcher.mock.calls[0] as any[];
+    expect(url).toBe('https://api.openai.com/v1/chat/completions');
+    expect(init.headers.authorization).toBe('Bearer sk-oa');
+    expect(init.headers['x-title']).toBeUndefined();
+    expect(JSON.parse(init.body).model).toBe('gpt-5.6-terra');
+    expect(res.ok && res.route).toBe('openai');
+  });
+
+  it('serves an Anthropic tier through OpenRouter when that is the only key', async () => {
+    secretRows = [secretRow({ label: 'openrouter', encryptedValue: 'enc:or-key' })];
+    const fetcher = mock(() => Promise.resolve(openRouterReply('{"verdicts":[]}'))) as any;
+    const res = await inferenceCall(baseParams({ fetcher }));
+    const [url, init] = fetcher.mock.calls[0] as any[];
+    expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(init.headers['x-title']).toBe('buildd');
+    expect(JSON.parse(init.body).model).toBe('anthropic/claude-haiku-4.5');
+    // The receipt still names the planned vendor and model, so it is priced as itself.
+    expect(res.ok && [res.provider, res.model, res.route]).toEqual(['anthropic', 'claude-haiku-4-5-20251001', 'openrouter']);
+  });
+
+  it('prefers OpenRouter over the gateway', async () => {
+    secretRows = [
+      secretRow({ label: 'openrouter', encryptedValue: 'enc:or-key' }),
+      secretRow({ id: 's-gw', label: 'litellm', encryptedValue: `enc:${JSON.stringify({ apiKey: 'sk-lite', baseUrl: 'https://litellm.example.test/v1' })}` }),
+    ];
+    const fetcher = mock(() => Promise.resolve(openRouterReply('{"verdicts":[]}'))) as any;
+    const res = await inferenceCall(baseParams({ fetcher }));
+    expect((fetcher.mock.calls[0] as any[])[0]).toContain('openrouter.ai');
+    expect(res.ok && res.route).toBe('openrouter');
   });
 });
 

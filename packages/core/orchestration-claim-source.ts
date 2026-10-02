@@ -1,5 +1,5 @@
 /**
- * Stores for hold/start at claim (docs/design/conflict-aware-orchestration.md
+ * Stores for hold/start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md
  * §5b, §6). Split from the pure half (./orchestration-claim-decision.ts) so
  * every predicate is an exported function a test renders with the real
  * dialect.

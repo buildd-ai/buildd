@@ -16,7 +16,8 @@ import type { MergePolicy } from '@buildd/shared';
 import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
-import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { policyValue } from '@/lib/policy-overrides';
 import {
   evaluateModelApproveBound,
   BUILD_PROOF_CHECK_TOKENS,
@@ -36,6 +37,8 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import { checkBaseRefreshHold } from '@/lib/base-refresh';
+import { dispatchStaleApprovalReReview } from '@/lib/stale-approval-re-review';
+import type { DispatchConflictRetryResult } from '@/lib/conflict-retry';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 
 /**
@@ -104,9 +107,11 @@ const TRANSIENT_REFUSALS: ReadonlySet<AutoMergeRefusalClass> = new Set(['ci', 's
  * decisions, both of which ask `isMissionIntegrationBase` — never a branch-name
  * shape test:
  *
- *  - whether this PR is the mission's integration PR (Option A′), in which
- *    case the AGGREGATE LINE THRESHOLD does not apply. Nothing else is
- *    relaxed — see the comment at the size check;
+ *  - whether this is a task PR into the mission's own integration branch
+ *    (its BASE ref), in which case the AGGREGATE LINE THRESHOLD does not
+ *    apply: under branchStrategy "mission-branch" the tier, cap included,
+ *    applies once, at the mission-to-trunk PR. Nothing else is relaxed — see
+ *    the comment at the size check;
  *  - whether `opts.bound` may permit an unattended merge (below).
  *
  * `opts.releaseConfig` is the workspace's release config, read for the same
@@ -293,9 +298,10 @@ export async function evaluateAutoMergeSafety(
   }
 
   // Read the PR once. Hoisted above the size check (it also feeds the
-  // mergeable_state check below) because the PR's HEAD ref is what identifies
-  // the mission integration PR. Both refs are read here: HEAD for the size-gate
-  // exemption, BASE for the model-approve bound.
+  // mergeable_state check below) because the PR's refs feed the size-gate
+  // exemptions: BASE identifies a task PR into its mission's integration
+  // branch, HEAD and BASE together the release PR. BASE also feeds the
+  // model-approve bound.
   //
   // An unreadable PR keeps the size gate on and fails closed at the live-head
   // check below. The bound also requires a verified base ref.
@@ -322,17 +328,22 @@ export async function evaluateAutoMergeSafety(
   // workspace on either tier cannot inherit the 800-line default just
   // because `policy.threshold` happened to be unset.
   if (policy.tier === 'auto-threshold') {
-    // Is this the mission's integration PR (integration branch → trunk)?
+    // Is this a task PR into its own mission's integration branch
+    // (task branch → integration branch)?
     //
-    // `isMissionIntegrationBase` asks "is this ref the mission's integration
-    // branch"; for the mission PR the ref of interest is its HEAD, since its BASE
-    // is trunk. Authoritative predicate rather than the `mission/` shape
-    // heuristic: the only caller can reach the mission row, and a false positive
-    // here would drop the size gate for any branch that merely looks like a
-    // mission branch. An unknown head ref or a mission that has not opted in is
-    // false, so nothing changes for a mission that is not using Option A′.
-    const isMissionIntegrationPr = isMissionIntegrationBase({
-      baseRef: prData?.head?.ref ?? null,
+    // Under branchStrategy "mission-branch" the tier applies ONCE, to the
+    // mission-to-trunk PR, so a task PR landing on the integration branch is
+    // not where the cap belongs. The ref of interest is the task PR's BASE.
+    // The mission-to-trunk PR (integration branch as HEAD) is NOT exempt: it is
+    // where the tier applies, cap included.
+    //
+    // Authoritative predicate rather than the `mission/` shape heuristic: it
+    // compares against the calling task's own mission row, so a PR into a
+    // branch that merely looks like a mission branch, or into another
+    // mission's, keeps the cap. An unknown base ref or a mission that has not
+    // opted in is false.
+    const isTaskPrIntoOwnMissionBranch = isMissionIntegrationBase({
+      baseRef: prData?.base?.ref ?? null,
       mission: opts?.mission ?? null,
     });
 
@@ -350,31 +361,27 @@ export async function evaluateAutoMergeSafety(
       (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
     );
     const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
-    // Option A′: the AGGREGATE line threshold does not apply to a mission
-    // integration PR. That PR is the union of every task diff in the mission, and
-    // each of those diffs was already size-gated when it merged into the
-    // integration branch — 800 lines is the right granularity per task, and
-    // re-applying it to the union double-counts a check that already passed.
-    // Under the DEFAULT policy the union is over the cap essentially by
-    // construction, which would make every mission PR unmergeable by the platform
-    // and reduce "the tier applies at the mission PR" to a claim that only holds
-    // for operators who explicitly configured a tier.
+    // A task PR into its own mission's integration branch skips the AGGREGATE
+    // line threshold: the mission-to-trunk PR carries the same lines to trunk
+    // later and is size-gated there, under the full policy.
     //
-    // The same reasoning applies to the workspace's release PR (dev → main):
-    // it bundles every commit merged since the last release, each already
-    // size-gated on its own way into the release branch, so the union is over
-    // the cap essentially by construction and every release would otherwise
-    // need a human to merge_pr regardless of review outcome.
+    // The workspace's release PR (dev → main) skips it too: it bundles every
+    // commit merged since the last release, each already size-gated on its own
+    // way into the release branch, so the union is over the cap essentially by
+    // construction and every release would otherwise need a human to merge_pr
+    // regardless of review outcome.
     //
     // ONLY the aggregate size gate is exempt for either. Everything else in this
     // function still runs, unchanged and in the same order: CI-green
     // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
     // operation-class inspector, and the conflict / branch-protection checks.
-    if ((isMissionIntegrationPr || isReleasePr) && totalLines > maxLines) {
-      const exemption = isMissionIntegrationPr ? 'mission integration PR' : 'release PR';
+    if ((isTaskPrIntoOwnMissionBranch || isReleasePr) && totalLines > maxLines) {
+      const exemption = isTaskPrIntoOwnMissionBranch
+        ? "task PR into its mission's integration branch — the mission-to-trunk PR is size-gated instead"
+        : 'release PR — each underlying commit was size-gated on the way in';
       console.log(
-        `[auto-merge] ${repoFullName}#${prNumber}: ${exemption} — aggregate size gate not applied ` +
-          `(${totalLines} source lines > limit ${maxLines}); each underlying commit was size-gated on the way in`,
+        `[auto-merge] ${repoFullName}#${prNumber}: aggregate size gate not applied ` +
+          `(${totalLines} source lines > limit ${maxLines}): ${exemption}`,
       );
     } else if (totalLines > maxLines) {
       const limitSource = policy.threshold?.maxLines != null ? 'configured' : 'default';
@@ -470,10 +477,7 @@ export async function evaluateAutoMergeSafety(
         }`,
       };
     }
-    // BASE ref here, HEAD ref for the size-gate exemption above — the same
-    // question ("is this ref the mission's integration branch") asked about the
-    // two different PRs in the topology. The mission PR runs integration branch
-    // → trunk, so its integration branch is its HEAD; a task PR runs task
+    // BASE ref, as for the size-gate exemption above: a task PR runs task
     // branch → integration branch, so its integration branch is its BASE.
     const verdict = evaluateModelApproveBound({
       baseRef: prData.base?.ref,
@@ -619,7 +623,11 @@ export async function tryAutoMergeWorkerPr(params: {
           await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
           return { merged: false, reason: safetyCheck.reason };
         } else {
-          // Duplicate dedup hit — already handling it
+          // Nothing was filed. Say why on the ledger, and page a person for the
+          // outcomes no later event clears on its own.
+          await recordUnfiledRefreshOutcome(dispatchResult, {
+            workspaceId, taskId: worker.taskId, workerId: worker.id, repoFullName, prNumber, headSha, refusal: safetyCheck.reason,
+          });
           return { merged: false, reason: safetyCheck.reason };
         }
       }
@@ -673,6 +681,21 @@ export async function tryAutoMergeWorkerPr(params: {
     if (reviewGate.blocks) {
       const reason = `${reviewGate.reason}. ${reviewGate.clearedBy}`;
       console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+      // Carry-forward could not keep the approval (the diff changed): send a
+      // reviewer for this head rather than waiting for a person to ask.
+      const reReview = reviewGate.kind === 'stale_approval'
+        ? await dispatchStaleApprovalReReview({
+            workspaceId: reviewWorkspaceId,
+            installationId,
+            repoFullName,
+            prNumber,
+            headSha,
+            baseRef: observed.baseRef ?? null,
+            taskId: worker.taskId ?? null,
+            workerId: worker.id ?? null,
+            policy,
+          })
+        : null;
       fireGateEvent({
         gate: GATE_SLUGS.REVIEW_VERDICT,
         surface: 'auto-merge',
@@ -688,6 +711,13 @@ export async function tryAutoMergeWorkerPr(params: {
           reviewState: reviewGate.state ?? null,
           reviewKind: reviewGate.kind ?? null,
           reviewTaskId: reviewGate.reviewTaskId ?? null,
+          ...(reReview
+            ? {
+                reReview: reReview.outcome,
+                ...('reviewTaskId' in reReview ? { reReviewTaskId: reReview.reviewTaskId } : {}),
+                ...('reason' in reReview ? { reReviewSkipped: reReview.reason } : {}),
+              }
+            : {}),
         },
       });
       return { merged: false, reason };
@@ -770,10 +800,103 @@ export async function tryAutoMergeWorkerPr(params: {
         // Supersession detected — escalateSupersession already fired inside dispatch
       } else if (dispatchResult.exhausted && worker.taskId) {
         await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
+      } else if (!dispatchResult.dispatched && !dispatchResult.disabled) {
+        await recordUnfiledRefreshOutcome(dispatchResult, {
+          workspaceId, taskId: worker.taskId, workerId: worker.id, repoFullName, prNumber, headSha, refusal: result.message ?? '',
+        });
       }
     }
   }
   return { merged: false, reason: result.message };
+}
+
+/**
+ * The branch-refresh outcomes `dispatchConflictRetry` returns without filing
+ * anything, each with its own ledger reason. `page` names the landing cause a
+ * person is paged with — the same page `landPr` raises (pr-landing.ts
+ * `mapRetry`) — for the two that no later event clears on its own.
+ */
+export function describeUnfiledRefreshOutcome(res: DispatchConflictRetryResult): {
+  refreshOutcome: string;
+  reason: string;
+  page: 'refresh_failed' | 'semantic_unverified' | null;
+} {
+  if (res.refreshExhausted) {
+    return {
+      refreshOutcome: 'refresh_exhausted',
+      reason: `updating the branch kept failing (${res.refreshFailure ?? 'unknown'}), not a conflict; retries are used up`,
+      page: 'refresh_failed',
+    };
+  }
+  if (res.semanticUnverified) {
+    return {
+      refreshOutcome: 'semantic_unverified',
+      reason: 'the PR and the base change the same files and their symbol overlap could not be verified',
+      page: 'semantic_unverified',
+    };
+  }
+  if (res.inFlightTaskId) {
+    return { refreshOutcome: 'conflict_retry_in_flight', reason: `a conflict retry is already working this PR (task ${res.inFlightTaskId.slice(0, 8)})`, page: null };
+  }
+  if (res.dependencyBot) {
+    return { refreshOutcome: 'dependency_bot', reason: 'this is a dependency-bot PR; its own rebase owns the branch', page: null };
+  }
+  if (res.headChanged) return { refreshOutcome: 'head_changed', reason: 'the PR head moved before the refresh; the new head re-evaluates', page: null };
+  if (res.refreshInFlight) return { refreshOutcome: 'refresh_in_flight', reason: 'another refresh of this PR is in flight', page: null };
+  if (res.refreshDeferred) {
+    return { refreshOutcome: 'refresh_deferred', reason: `updating the branch failed (${res.refreshFailure ?? 'unknown'}), not a conflict; will retry`, page: null };
+  }
+  if (res.semanticDeferred) return { refreshOutcome: 'semantic_deferred', reason: 'semantic overlap with the base is not yet verified; will recheck', page: null };
+  if (res.alreadyUpToDate) return { refreshOutcome: 'already_up_to_date', reason: 'the branch already has every base commit', page: null };
+  if (res.baseRewritten) return { refreshOutcome: 'base_rewritten', reason: 'the base branch was rewritten after this PR opened', page: null };
+  return { refreshOutcome: 'dedup', reason: 'a conflict retry for this PR head was already filed', page: null };
+}
+
+/** Ledger row (and, for the two terminal outcomes, a page) for a refresh that filed nothing. Never throws. */
+async function recordUnfiledRefreshOutcome(
+  res: DispatchConflictRetryResult,
+  ctx: { workspaceId: string; taskId: string; workerId: string; repoFullName: string; prNumber: number; headSha: string; refusal: string },
+): Promise<void> {
+  const { refreshOutcome, reason, page } = describeUnfiledRefreshOutcome(res);
+  console.log(`[auto-merge] ${ctx.repoFullName}#${ctx.prNumber}: refresh filed nothing (${refreshOutcome}) — ${reason}`);
+  try {
+    fireGateEvent({
+      gate: GATE_SLUGS.AUTO_MERGE,
+      surface: 'auto-merge',
+      outcome: page ? 'stranded' : 'deferred',
+      reason,
+      workspaceId: ctx.workspaceId,
+      taskId: ctx.taskId,
+      workerId: ctx.workerId,
+      callerOrigin: 'system',
+      detail: {
+        prNumber: ctx.prNumber,
+        headSha: ctx.headSha,
+        repoFullName: ctx.repoFullName,
+        refreshOutcome,
+        refusal: ctx.refusal,
+        ...(res.inFlightTaskId ? { inFlightTaskId: res.inFlightTaskId } : {}),
+        ...(res.refreshFailure ? { refreshFailure: res.refreshFailure } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn('[auto-merge] gate event write failed:', err instanceof Error ? err.message : String(err));
+  }
+  if (!page) return;
+  try {
+    const { raiseLandingAlert } = await import('@/lib/pr-landing-alert-deps');
+    await raiseLandingAlert({
+      workspaceId: ctx.workspaceId,
+      prNumber: ctx.prNumber,
+      headSha: ctx.headSha,
+      repoFullName: ctx.repoFullName,
+      prTitle: null,
+      taskId: ctx.taskId,
+      outcome: { kind: 'needs_human', cause: page, reason },
+    });
+  } catch (err) {
+    console.warn(`[auto-merge] landing page failed for PR #${ctx.prNumber}:`, err instanceof Error ? err.message : String(err));
+  }
 }
 
 /**
@@ -861,7 +984,7 @@ export async function escalateConflictExhaustion(
   const maxIterations =
     typeof ctx.maxConflictIterations === 'number'
       ? ctx.maxConflictIterations
-      : DEFAULT_MAX_CONFLICT_ITERATIONS;
+      : policyValue('maxConflictIterations');
   const prUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
   const taskUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/tasks/${taskId}`;
 

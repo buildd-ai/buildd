@@ -178,7 +178,7 @@ export interface RoutingPreviewInput extends RoutingInferenceInput {
   /**
    * No role stated AND the workspace has at least two roles a later
    * inference could choose between. Adds a note that an inferred role will
-   * not change the model (docs/design/role-routing.md §4.2).
+   * not change the model (knowledge-base: buildd/design/role-routing.md §4.2).
    */
   roleMayBeInferred?: boolean;
 }

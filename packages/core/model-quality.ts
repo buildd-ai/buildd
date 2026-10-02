@@ -1,6 +1,6 @@
 /**
  * Artificial Analysis as a quality prior for tier pools
- * (docs/design/model-quality-signals.md, unit Q1).
+ * (knowledge-base: buildd/design/model-quality-signals.md, unit Q1).
  *
  * Pure: parsing, scoring, the prior, trust and the price-fallback rule are all
  * functions of their arguments. Fetching AA, mapping its ids to the catalog and

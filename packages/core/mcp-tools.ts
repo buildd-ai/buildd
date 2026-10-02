@@ -31,6 +31,7 @@ import type {
   GateAnalytics,
   GateReasonFamily,
   LandingMetrics,
+  StalledIngestReport,
   GateRow,
   GateWindow,
   FailureSignatureLookup,
@@ -614,7 +615,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
-    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     get_page_source: '{ workerId?, sha? (commit to audit; default the trunk head), prNumber? (use this PR\'s head commit instead, e.g. when trunk deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto). Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
@@ -962,6 +963,27 @@ function formatLandingMetrics(landing: LandingMetrics): string {
   return lines.join('\n');
 }
 
+/**
+ * Full knowledge-ingest jobs no runner has taken. They never become failed
+ * workers, so this block is the only place the overview shows them.
+ */
+function formatStalledIngest(report: StalledIngestReport): string {
+  const lines: string[] = [
+    `**Stalled knowledge ingest** — ${report.stalled} waiting for the serverless fallback, ` +
+      `${report.inFallback} being ingested by it · oldest ${fmtDuration(report.oldestAgeMs)}`,
+  ];
+  for (const j of report.jobs) {
+    const progress = j.progress ? ` · ${j.progress.cursor}/${j.progress.total ?? '?'} files` : '';
+    lines.push(`  ${j.id.slice(0, 8)} ${j.repo} — ${j.state}, waiting ${fmtDuration(j.ageMs)}${progress}`);
+    if (j.checkoutReason) lines.push(`    runner handed it back: ${j.checkoutReason}`);
+    if (j.lastError) lines.push(`    last fallback error: ${j.lastError}`);
+  }
+  const listed = report.jobs.length;
+  const total = report.stalled + report.inFallback;
+  if (total > listed) lines.push(`  … ${total - listed} more`);
+  return lines.join('\n');
+}
+
 /** Prefix rollup over gate reasons — the gate-ledger twin of formatFailureFamily. */
 function formatGateFamily(family: GateReasonFamily, window: GateWindow): string {
   const nextCall = `context: { frictionSignature: "${family.frictionSignature}", frictionExcerpt: "<the refusal you saw>" }`;
@@ -1081,7 +1103,7 @@ function buildSkillBody(params: Record<string, unknown>): Record<string, unknown
   if (params.defaultBackend === 'claude' || params.defaultBackend === 'codex' || params.defaultBackend === null) {
     body.defaultBackend = params.defaultBackend;
   }
-  // Routing text (docs/design/role-routing.md §2); the API validates the limits.
+  // Routing text (knowledge-base: buildd/design/role-routing.md §2); the API validates the limits.
   if (params.whenToUse !== undefined) body.whenToUse = params.whenToUse;
   if (params.notFor !== undefined) body.notFor = params.notFor;
   return body;
@@ -4575,7 +4597,9 @@ export async function handleBuilddAction(
       const family = data?.family as FailureSignatureFamily | undefined;
       if (family) return text(formatFailureFamily(family, window));
 
-      return text(formatFailureOverview(analytics, limit));
+      const overview = formatFailureOverview(analytics, limit);
+      const stalledIngest = data?.stalledIngest as StalledIngestReport | undefined;
+      return text(stalledIngest ? `${overview}\n\n${formatStalledIngest(stalledIngest)}` : overview);
     }
 
     case 'suggest_schedule_update': {
@@ -6237,6 +6261,13 @@ type MemoryActionCtx = {
   api?: ApiFn;
   /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
   isSensitive?: boolean;
+  /**
+   * Same-team workspaces whose docs corpus this caller may also read, already
+   * authorised by the web layer (link config, team, sensitivity, token
+   * restriction, account reach). Core never decides access: it only widens the
+   * docs corpus over exactly these ids, and never code/task/memory.
+   */
+  linkedDocsWorkspaceIds?: string[];
   /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
   memoryLedger?: MemoryLedgerWriter;
   /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
@@ -6548,6 +6579,40 @@ function formatCorpusFailures(failures: CorpusFailure[]): string {
 }
 
 /**
+ * Query one corpus namespace. For `docs`, also query each linked workspace's
+ * docs namespace and fuse by rank (RRF, k=60 as elsewhere; raw scores are not
+ * comparable across namespaces). A linked workspace failing is dropped — it is
+ * an add-on, not the caller's own corpus; the own namespace still throws.
+ */
+async function queryCorpus(
+  ks: KnowledgeStore,
+  ctx: MemoryActionCtx,
+  corpus: Corpus,
+  ns: string,
+  opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
+): Promise<QueryResult[]> {
+  const linked = corpus === 'docs'
+    ? Array.from(new Set(ctx.linkedDocsWorkspaceIds ?? [])).filter(id => id && id !== ctx.workspaceId)
+    : [];
+  if (linked.length === 0) return ks.query(ns, opts);
+
+  const [own, ...rest] = await Promise.all([
+    ks.query(ns, opts),
+    ...linked.map(id => ks.query(buildNamespace(id, 'docs'), opts).catch((): QueryResult[] => [])),
+  ]);
+  const k = 60;
+  const fused = new Map<string, { rrf: number; result: QueryResult }>();
+  [own, ...rest].forEach(results => {
+    results.forEach((r, rank) => {
+      const key = `${r.namespace}:${r.id}`;
+      const prev = fused.get(key);
+      fused.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
+    });
+  });
+  return Array.from(fused.values()).sort((a, b) => b.rrf - a.rrf).slice(0, opts.topK).map(v => v.result);
+}
+
+/**
  * Fan a query out across corpora concurrently, tracking which corpora failed
  * and why instead of the previous `.catch(() => [])` that made a retrieval
  * outage or an unresolvable namespace indistinguishable from "no hits".
@@ -6595,7 +6660,7 @@ async function fanOutCorpora(
             onError: 'throw',
           })).results;
         }
-        const raw = await ks.query(ns, opts);
+        const raw = await queryCorpus(ks, ctx, c, ns, opts);
         return raw.filter(r => r.isCurrent !== false);
       } catch (e) {
         failures.push({ corpus: c, reason: e instanceof Error ? e.message : 'unknown error' });
@@ -6711,7 +6776,7 @@ export async function handleRecallAction(
     const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
     perCorpus.forEach((results, listIdx) => {
       results.forEach((r, rank) => {
-        const key = `${scopes[listIdx]}:${r.id}`;
+        const key = `${scopes[listIdx]}:${r.namespace}:${r.id}`;
         const prev = fusionScores.get(key);
         fusionScores.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
       });
@@ -6778,7 +6843,7 @@ export async function handleRecallAction(
       onError: 'throw',
     })).results;
   } else {
-    const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+    const raw = await queryCorpus(ks, ctx, scope, ns, { text: query, mode, topK: fetchTopK });
     results = raw.filter(r => r.isCurrent !== false);
     if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
     results = results.slice(0, limit);
@@ -7340,7 +7405,7 @@ export async function handleMemoryAction(
         const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
         perCorpus.forEach((results, listIdx) => {
           results.forEach((r, rank) => {
-            const key = `${corpora[listIdx]}:${r.id}`;
+            const key = `${corpora[listIdx]}:${r.namespace}:${r.id}`;
             const prev = fusionScores.get(key);
             fusionScores.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
           });
@@ -7412,7 +7477,7 @@ export async function handleMemoryAction(
             ledger: ctx.memoryLedger,
             onError: 'throw',
           })).results
-        : await ks.query(ns, { text: params.query as string, mode, topK });
+        : await queryCorpus(ks, ctx, corpus, ns, { text: params.query as string, mode, topK });
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {

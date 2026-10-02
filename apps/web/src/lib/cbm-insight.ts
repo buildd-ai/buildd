@@ -13,6 +13,12 @@
  * whole time, and an -80% token delta with no mechanism behind it).
  */
 import type { CbmMetrics } from '@buildd/core/db/schema';
+import {
+  CBM_INJECTION_KILL_DEFAULTS,
+  INELIGIBLE_OUTCOMES,
+  type CbmInjectionMetrics,
+  type CbmInjectionOutcome,
+} from '@buildd/core/cbm-injection';
 
 export interface CbmRow {
   inputTokens: number;
@@ -212,6 +218,7 @@ export function aggregateCbm(rows: CbmRow[], windowParam: string, windowStart: D
     window: windowParam,
     windowStart: windowStart.toISOString(),
     totalTracked,
+    injection: aggregateCbmInjection(rows.map(r => r.cbm.injection)),
     fallbackRate,
     eligibleFallbackRate,
     eligibility: { eligibleCount, fallbackCount, byDesignSkipCount, byDesignSkips },
@@ -285,6 +292,111 @@ export function aggregateCbm(rows: CbmRow[], windowParam: string, windowStart: D
 }
 
 export type CbmAggregate = ReturnType<typeof aggregateCbm>;
+
+function percentile(sorted: number[], p: number): number | null {
+  if (sorted.length === 0) return null;
+  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+}
+
+/**
+ * CBM search injection, across sessions (docs/design/cbm-search-injection.md,
+ * "Kill metric"). Read from `resultMeta.cbm.injection`; a session without the
+ * block never ran injection and is not counted anywhere here.
+ *
+ * - injectedRate = triggers whose diff was non-empty ÷ eligible triggers
+ *   (eligible drops cap/repeat/unsupported: those never reached the graph by
+ *   rule, not by anything the graph did).
+ * - uptakeRate = injections followed by a Read/Edit of an injected location
+ *   within the window ÷ injections tracked.
+ *
+ * Both null, never 0, on an empty denominator. The verdict stays
+ * `insufficient_n` until enough sessions had an eligible trigger.
+ */
+export function aggregateCbmInjection(
+  blocks: Array<CbmInjectionMetrics | undefined>,
+  kill: { sessions: number; minInjectedRate: number; minUptakeRate: number } = CBM_INJECTION_KILL_DEFAULTS,
+) {
+  let sessions = 0;
+  let enabledSessions = 0;
+  let sessionsWithEligibleTrigger = 0;
+  const disabledReasons: Record<string, number> = {};
+  const byOutcome: Partial<Record<CbmInjectionOutcome, number>> = {};
+  let triggers = 0;
+  let eligibleTriggers = 0;
+  let nonEmptyDiff = 0;
+  let injections = 0;
+  let uptakeTracked = 0;
+  let uptakeTaken = 0;
+  const jevLabels: Record<string, number> = {};
+  const jevStatuses: Record<string, number> = {};
+  const latencies: number[] = [];
+  const jevLatencies: number[] = [];
+
+  for (const b of blocks) {
+    if (!b) continue;
+    sessions++;
+    if (b.enabled) enabledSessions++;
+    else if (b.disabledReason) disabledReasons[b.disabledReason] = (disabledReasons[b.disabledReason] ?? 0) + 1;
+    triggers += b.triggers ?? 0;
+    let ineligible = 0;
+    for (const [k, v] of Object.entries(b.byOutcome ?? {}) as [CbmInjectionOutcome, number][]) {
+      byOutcome[k] = (byOutcome[k] ?? 0) + v;
+      if (INELIGIBLE_OUTCOMES.has(k)) ineligible += v;
+    }
+    const eligible = (b.triggers ?? 0) - ineligible;
+    eligibleTriggers += eligible;
+    if (eligible > 0) sessionsWithEligibleTrigger++;
+    nonEmptyDiff += b.nonEmptyDiff ?? 0;
+    injections += b.injections ?? 0;
+    uptakeTracked += b.uptake?.tracked ?? 0;
+    uptakeTaken += b.uptake?.taken ?? 0;
+    for (const e of b.events ?? []) {
+      if (INELIGIBLE_OUTCOMES.has(e.outcome)) continue;
+      latencies.push(e.latencyMs);
+      if (e.jev) {
+        jevStatuses[e.jev.status] = (jevStatuses[e.jev.status] ?? 0) + 1;
+        if (e.jev.label) jevLabels[e.jev.label] = (jevLabels[e.jev.label] ?? 0) + 1;
+        jevLatencies.push(e.jev.latencyMs);
+      }
+    }
+  }
+  latencies.sort((a, b) => a - b);
+  jevLatencies.sort((a, b) => a - b);
+  const jevCalls = Object.values(jevStatuses).reduce((a, b) => a + b, 0);
+  const injectedRate = eligibleTriggers > 0 ? nonEmptyDiff / eligibleTriggers : null;
+  const uptakeRate = uptakeTracked > 0 ? uptakeTaken / uptakeTracked : null;
+  const verdict: 'insufficient_n' | 'keep' | 'kill' = sessionsWithEligibleTrigger < kill.sessions
+    ? 'insufficient_n'
+    : (injectedRate !== null && injectedRate < kill.minInjectedRate) || (uptakeRate !== null && uptakeRate < kill.minUptakeRate)
+      ? 'kill'
+      : 'keep';
+
+  return {
+    sessions,
+    enabledSessions,
+    disabledReasons,
+    triggers,
+    eligibleTriggers,
+    byOutcome,
+    nonEmptyDiff,
+    injections,
+    /** Kill metric 1: how often the graph knew something the search missed. */
+    injectedRate,
+    uptake: { tracked: uptakeTracked, taken: uptakeTaken },
+    /** Kill metric 2: how often an injection was followed by a Read/Edit of what it named. */
+    uptakeRate,
+    jev: {
+      calls: jevCalls,
+      labels: jevLabels,
+      statuses: jevStatuses,
+      /** Share of Jev calls whose answer was not applied (error or below the gate). */
+      fallbackShare: jevCalls > 0 ? ((jevStatuses.error ?? 0) + (jevStatuses.below_threshold ?? 0)) / jevCalls : null,
+      p50LatencyMs: percentile(jevLatencies, 0.5),
+    },
+    hookLatencyMs: { p50: percentile(latencies, 0.5), p90: percentile(latencies, 0.9) },
+    killMetric: { ...kill, sessionsWithEligibleTrigger, verdict },
+  };
+}
 
 export interface CbmHealthSummary {
   tracked: number;

@@ -1,5 +1,5 @@
 /**
- * Alerting for the PR landing guarantee (docs/design/pr-landing-guarantee.md §H).
+ * Alerting for the PR landing guarantee (knowledge-base: buildd/design/pr-landing-guarantee.md §H).
  *
  * `landPr` decides; this decides whether that deserves a person. Exactly one
  * Pushover per (workspace, PR, head, reason), and none for a PR that is

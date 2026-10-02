@@ -1,6 +1,6 @@
 /**
  * What the completed mission page's "What shipped" header shows, from the
- * stored record (docs/design/mission-shipped-report.md, "Surface" and
+ * stored record (knowledge-base: buildd/design/mission-shipped-report.md, "Surface" and
  * "Fallbacks"). Pure: the page loads the record, this decides the branch.
  *
  * Every degraded case falls back to what the page rendered before the header

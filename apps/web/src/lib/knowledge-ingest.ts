@@ -8,6 +8,12 @@
  * SHA via the GitHub contents API (no checkout), chunk + upsert through the
  * existing knowledge-store ingest path, and delete chunks for removed files.
  *
+ * Direct pushes to the default branch (no PR) enqueue the same kind of job via
+ * `enqueuePushIngestJobs`, for docs-corpus files only: the push payload names
+ * the files, the executor fetches each at the pushed sha, and a path that no
+ * longer exists there is a deletion. This is what keeps a repo that is mostly
+ * committed to directly (a docs/knowledge repo) fresh in its `docs` corpus.
+ *
  * Oversized diffs (>MAX_DIFF_FILES files or >MAX_DIFF_TOTAL_BYTES fetched)
  * escalate to a `full`-scope job; the full-job executor lands in stream A2 —
  * here we only enqueue. Likewise, a workspace with no pre-existing `code`
@@ -69,7 +75,7 @@ export async function enqueueFullIngestJobDetailed(params: {
   workspaceId: string;
   /** "owner/name" */
   repo: string;
-  trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled';
+  trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled' | 'push';
 }): Promise<FullEnqueueOutcome> {
   // Heal anything wedged in this workspace before judging the slot as occupied.
   await reclaimStaleIngestJobs({ workspaceId: params.workspaceId });
@@ -140,7 +146,7 @@ export async function enqueueFullIngestJob(params: {
   workspaceId: string;
   /** "owner/name" */
   repo: string;
-  trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled';
+  trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled' | 'push';
 }): Promise<string | null> {
   const outcome = await enqueueFullIngestJobDetailed(params);
   return outcome.status === 'enqueued' ? outcome.jobId : null;
@@ -172,28 +178,47 @@ export type DiffIngestOutcome =
  * did nothing at all.
  */
 export async function enqueueMergedPrIngestJobs(params: EnqueueMergedPrParams): Promise<string[]> {
+  return enqueueDiffJobs({
+    repoFullName: params.repoFullName,
+    sha: params.sha,
+    job: { trigger: 'pr_merged', prNumber: params.prNumber },
+  });
+}
+
+/** Workspaces bound to the repo, via github_repos.fullName → workspaces.githubRepoId. */
+async function workspacesBoundToRepo(repoFullName: string): Promise<string[]> {
   const repoRows = await db
     .select({ id: githubRepos.id })
     .from(githubRepos)
-    .where(eq(githubRepos.fullName, params.repoFullName));
+    .where(eq(githubRepos.fullName, repoFullName));
   if (repoRows.length === 0) return [];
 
   const boundWorkspaces = await db
     .select({ id: workspaces.id })
     .from(workspaces)
     .where(inArray(workspaces.githubRepoId, repoRows.map(r => r.id)));
-  if (boundWorkspaces.length === 0) return [];
+  return boundWorkspaces.map(w => w.id);
+}
+
+async function enqueueDiffJobs(params: {
+  repoFullName: string;
+  sha: string;
+  job: { trigger: 'pr_merged'; prNumber: number } | { trigger: 'push'; changedFiles: string[] };
+}): Promise<string[]> {
+  const workspaceIds = await workspacesBoundToRepo(params.repoFullName);
 
   const jobIds: string[] = [];
-  for (const ws of boundWorkspaces) {
+  for (const workspaceId of workspaceIds) {
     const inserted = await db
       .insert(knowledgeIngestJobs)
       .values({
-        workspaceId: ws.id,
+        workspaceId,
         repo: params.repoFullName,
-        trigger: 'pr_merged',
+        trigger: params.job.trigger,
         sha: params.sha,
-        prNumber: params.prNumber,
+        ...(params.job.trigger === 'pr_merged'
+          ? { prNumber: params.job.prNumber }
+          : { changedFiles: params.job.changedFiles }),
         scope: 'diff',
         status: 'queued',
       })
@@ -207,13 +232,101 @@ export async function enqueueMergedPrIngestJobs(params: EnqueueMergedPrParams): 
     // for this (workspace, sha, diff). If it's wedged, reclaim it and hand the
     // id back so this delivery re-runs it.
     const recovered = await recoverBlockedDiffJob({
-      workspaceId: ws.id,
+      workspaceId,
       repo: params.repoFullName,
       sha: params.sha,
     });
     if (recovered) jobIds.push(recovered);
   }
   return jobIds;
+}
+
+// ── Direct pushes to the default branch ──────────────────────────────────────
+
+/** The slice of a GitHub `push` payload the ingest decision reads. */
+export interface PushIngestEvent {
+  repoFullName: string;
+  /** Head sha after the push. */
+  after: string;
+  /** Total commits in the push (`size`); more than `commits.length` means the list was cut off. */
+  size?: number;
+  commits: Array<{ added?: string[]; modified?: string[]; removed?: string[] }>;
+  headCommitMessage?: string | null;
+  deleted?: boolean;
+}
+
+export interface PushIngestOutcome {
+  /** Diff jobs the caller should execute (new, plus reclaimed wedged ones). */
+  jobIds: string[];
+  /** Workspaces given a full job instead because the payload could not be trusted to list every file. */
+  fullEnqueued: number;
+}
+
+const ZERO_SHA = /^0+$/;
+
+/**
+ * A merged PR already enqueues its own job, keyed on the same sha (the merge
+ * commit is the pushed head). The idempotency index would let whichever of the
+ * two webhooks lands first win, and a docs-only push job winning would starve
+ * the PR job of code. So a head commit that GitHub itself wrote for a PR merge
+ * is left to the PR path.
+ */
+export function isPrMergeCommitMessage(message: string | null | undefined): boolean {
+  const first = (message ?? '').split('\n', 1)[0].trim();
+  return /^Merge pull request #\d+/.test(first) || /\(#\d+\)$/.test(first);
+}
+
+/**
+ * Docs-corpus paths a push touched (added, modified or removed), deduped.
+ * Whether a path still exists is decided at fetch time against the pushed sha,
+ * not by replaying commit order.
+ */
+export function docsPathsFromPush(commits: PushIngestEvent['commits']): string[] {
+  const paths = new Set<string>();
+  for (const c of commits) {
+    for (const p of [...(c.added ?? []), ...(c.modified ?? []), ...(c.removed ?? [])]) {
+      if (classifyIngestCorpus(p) === 'docs') paths.add(p);
+    }
+  }
+  return [...paths];
+}
+
+/**
+ * Enqueue ingest for a push to the default branch: one `diff` job per bound
+ * workspace carrying the touched docs paths, keyed on the pushed sha.
+ *
+ * Docs only, by design — direct pushes can be arbitrarily large and frequent,
+ * and `docs` is the corpus other workspaces read through linked knowledge.
+ * (Code arrives with merged PRs and full backfills, as before.)
+ *
+ * A payload that does not list every file (commit list truncated) or lists
+ * more than MAX_DIFF_FILES docs falls back to a full job rather than ingesting
+ * a partial picture.
+ */
+export async function enqueuePushIngestJobs(event: PushIngestEvent): Promise<PushIngestOutcome> {
+  const none: PushIngestOutcome = { jobIds: [], fullEnqueued: 0 };
+  if (event.deleted || !event.after || ZERO_SHA.test(event.after)) return none;
+  if (isPrMergeCommitMessage(event.headCommitMessage)) return none;
+
+  const paths = docsPathsFromPush(event.commits);
+  const truncated = typeof event.size === 'number' && event.size > event.commits.length;
+  if (paths.length === 0 && !truncated) return none;
+
+  if (truncated || paths.length > MAX_DIFF_FILES) {
+    let fullEnqueued = 0;
+    for (const workspaceId of await workspacesBoundToRepo(event.repoFullName)) {
+      const id = await enqueueFullIngestJob({ workspaceId, repo: event.repoFullName, trigger: 'push' });
+      if (id) fullEnqueued++;
+    }
+    return { jobIds: [], fullEnqueued };
+  }
+
+  const jobIds = await enqueueDiffJobs({
+    repoFullName: event.repoFullName,
+    sha: event.after,
+    job: { trigger: 'push', changedFiles: paths },
+  });
+  return { jobIds, fullEnqueued: 0 };
 }
 
 /**
@@ -274,21 +387,107 @@ interface DiffExecution {
   changedFiles: string[];
 }
 
-async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
-  if (!job.prNumber || !job.sha) {
-    throw new Error(`diff job ${job.id} is missing prNumber/sha`);
-  }
-
-  // Resolve the numeric GitHub installation id for token minting.
+/** Resolve the numeric GitHub installation id for token minting. */
+async function installationIdForRepo(repo: string): Promise<number> {
   const installRows = await db
     .select({ installationId: githubInstallations.installationId })
     .from(githubRepos)
     .innerJoin(githubInstallations, eq(githubRepos.installationId, githubInstallations.id))
-    .where(eq(githubRepos.fullName, job.repo));
+    .where(eq(githubRepos.fullName, repo));
   if (installRows.length === 0) {
-    throw new Error(`no GitHub installation bound for repo ${job.repo}`);
+    throw new Error(`no GitHub installation bound for repo ${repo}`);
   }
-  const installationId = installRows[0].installationId;
+  return installRows[0].installationId;
+}
+
+/**
+ * Execute a `push` job: the docs paths seeded in `changedFiles` are fetched at
+ * the pushed sha. A path with no content there (404) was removed by the push,
+ * so its chunks are deleted. Same size guards as a PR diff; no PR-diff corpus
+ * and no first-index backfill (a docs push must not start a code index).
+ */
+async function executePushJob(job: IngestJob): Promise<DiffExecution> {
+  if (!job.sha) throw new Error(`push job ${job.id} is missing sha`);
+  const installationId = await installationIdForRepo(job.repo);
+
+  const candidates = (job.changedFiles ?? []).filter(p => classifyIngestCorpus(p) === 'docs');
+  if (candidates.length > MAX_DIFF_FILES) {
+    return escalateToFullJob(job, `${candidates.length} changed docs > ${MAX_DIFF_FILES}`);
+  }
+
+  const deletions: string[] = [];
+  const docs: Array<{ path: string; content: string }> = [];
+  let skipped = 0;
+  let totalBytes = 0;
+  for (const filePath of candidates) {
+    if (!shouldIngestFile(filePath)) {
+      // Not ingestable now, but it may have been before (rules changed) or be
+      // a leftover: nothing to fetch either way.
+      skipped++;
+      continue;
+    }
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    let data: any;
+    try {
+      data = await githubApi(installationId, `/repos/${job.repo}/contents/${encodedPath}?ref=${job.sha}`);
+    } catch (err) {
+      if (err instanceof Error && /GitHub API error: 404\b/.test(err.message)) {
+        deletions.push(filePath);
+        continue;
+      }
+      throw err;
+    }
+    if (!data?.content || data.encoding !== 'base64') {
+      skipped++;
+      continue;
+    }
+    const size: number = typeof data.size === 'number' ? data.size : 0;
+    if (size > MAX_INGEST_FILE_BYTES) {
+      skipped++;
+      continue;
+    }
+    totalBytes += size;
+    if (totalBytes > MAX_DIFF_TOTAL_BYTES) {
+      return escalateToFullJob(job, `fetched bytes ${totalBytes} > ${MAX_DIFF_TOTAL_BYTES}`);
+    }
+    docs.push({ path: filePath, content: Buffer.from(data.content, 'base64').toString('utf8') });
+  }
+
+  const { PgVectorStore, getVoyageEmbedder, buildNamespace, ingestFiles } =
+    await import('@buildd/core/knowledge-store');
+  const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'));
+
+  const docsNamespace = buildNamespace(job.workspaceId, 'docs');
+  for (const filePath of deletions) {
+    await store.deleteBySource(docsNamespace, { sourcePath: filePath });
+  }
+  let chunksUpserted = 0;
+  if (docs.length > 0) {
+    const res = await ingestFiles(store, job.workspaceId, 'docs', docs);
+    chunksUpserted = res.chunks;
+  }
+
+  return {
+    stats: {
+      filesIngested: docs.length,
+      filesSkipped: skipped,
+      filesDeleted: deletions.length,
+      chunksUpserted,
+      prChunksUpserted: 0,
+      totalBytes,
+      backfillEnqueued: false,
+    },
+    changedFiles: candidates,
+  };
+}
+
+async function executeDiffJob(job: IngestJob): Promise<DiffExecution> {
+  if (job.trigger === 'push') return executePushJob(job);
+  if (!job.prNumber || !job.sha) {
+    throw new Error(`diff job ${job.id} is missing prNumber/sha`);
+  }
+
+  const installationId = await installationIdForRepo(job.repo);
 
   // List the PR's changed files (paginated). Stop as soon as the cap is blown.
   const prFiles: Array<{ filename: string; status: string; previous_filename?: string; patch?: string }> = [];

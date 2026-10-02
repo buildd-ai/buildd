@@ -1,6 +1,6 @@
 /**
  * A person's own Pushover channel: where their away-alerts go
- * (docs/design/subscriptions-and-notifications.md, Channels; decision 1).
+ * (knowledge-base: buildd/design/subscriptions-and-notifications.md, Channels; decision 1).
  *
  * Stored as one `secrets` row: purpose `pushover_personal`, `userId` set,
  * team-scoped, account/workspace NULL, value = the Pushover user key. It is a

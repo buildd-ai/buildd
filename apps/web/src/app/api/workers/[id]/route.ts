@@ -3686,6 +3686,16 @@ export async function PATCH(
         );
       });
 
+      // The task's "What shipped" record (lede + change type from the PR diff),
+      // which the completed task page leads with. Merged into result, never
+      // a rewrite; a failure leaves the page on its title-only fallback.
+      await runStep('task-shipped', async () => {
+        if (status === 'completed' && loopDispatchResult?.kind !== 'requeue') {
+          const { storeTaskShippedRecord } = await import('@/lib/task-shipped-store');
+          await storeTaskShippedRecord({ taskId, structuredOutput: body.structuredOutput, summarySource: body.summarySource });
+        }
+      });
+
       // Auto-create/upsert artifact from structured output or summary.
       // Skip for loop requeue — the task is still running; artifact will be created on final completion.
       await runStep('auto-artifact', async () => {
@@ -3970,7 +3980,7 @@ export async function PATCH(
     });
   }
 
-  // Memory use labels (Jev, docs/design/memory-done-right.md): did the final
+  // Memory use labels (Jev, knowledge-base: buildd/design/memory-done-right.md): did the final
   // summary act on each memory this task was shown? Writes memory_uses.outcome
   // after the response, at most a bounded handful of calls, never on the claim
   // path. Only on the transition into completed, and only for a standard
@@ -4362,7 +4372,7 @@ export async function PATCH(
     updatedAt: updated.updatedAt,
   };
   // The mission page's live store patches the MOVING row's line from this
-  // (docs/design/mission-feed-mobile-continuity.md, S7) instead of re-rendering.
+  // (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, S7) instead of re-rendering.
   // `updates.currentAction` is the persisted value: already secret-redacted and
   // masked to 'working' for a sensitive workspace. Capped for Pusher's 10 KB.
   if (typeof updates.currentAction === 'string' && updates.currentAction) {

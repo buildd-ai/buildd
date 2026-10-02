@@ -1,5 +1,5 @@
 /**
- * Tier model pools — the pure half (docs/design/tier-model-pools.md, P1).
+ * Tier model pools — the pure half (knowledge-base: buildd/design/tier-model-pools.md, P1).
  *
  * A tier is served by a pool of one to four arms. An arm is `(route, model)`.
  * Each tier has two pools, one per surface: agent runs and chat turns. The
@@ -114,7 +114,7 @@ export type AllocationCheck =
  * traffic. The result keeps every active arm, rounded to 4 places.
  *
  * `opts.mode === 'split'` skips the floor/cap checks below (see
- * `docs/design/tier-weights.md` §1): a `split` pool's shares come from an
+ * `knowledge-base: buildd/design/tier-weights.md` §1): a `split` pool's shares come from an
  * admin's own weights via `sharesFromWeights` (`./tier-weights.ts`), and the
  * admin's weights are final — the incumbent may legally go to 0%. Every other
  * mode (the default, and `explore`) keeps the floor and cap enforced, since

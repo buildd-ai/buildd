@@ -2,7 +2,7 @@
 
 /**
  * The mission pulse: one segment per deliverable, in a position that never
- * moves (docs/design/mission-feed-mobile-continuity.md, "The shared object").
+ * moves (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "The shared object").
  *
  * Renders `buildPulseSegments` output and nothing else — the order, the phase
  * gaps and the > 40 fold are the builder's, so card, header and context

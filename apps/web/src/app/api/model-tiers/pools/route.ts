@@ -15,7 +15,7 @@ import { buildTierPoolRows, type TierPoolsResponse } from '@/lib/tier-pools-view
 
 /**
  * GET /api/model-tiers/pools?teamId= — every tier's arms, traffic and stats,
- * per surface (docs/design/tier-model-pools.md §9). Members read.
+ * per surface (knowledge-base: buildd/design/tier-model-pools.md §9). Members read.
  */
 export async function GET(req: NextRequest) {
   const access = await tierPoolAccess(new URL(req.url).searchParams.get('teamId'), false);
@@ -44,7 +44,7 @@ const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
  * on first use; the incumbent (the registry row) is pinned first if the tier
  * was following the catalog, so the baseline cannot move mid-comparison. The
  * new arm starts at a weight — the caller's, or a price-based suggestion
- * (docs/design/tier-weights.md §2) — and carries traffic immediately.
+ * (knowledge-base: buildd/design/tier-weights.md §2) — and carries traffic immediately.
  */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));

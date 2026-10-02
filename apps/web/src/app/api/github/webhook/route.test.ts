@@ -128,6 +128,15 @@ mock.module('@/lib/ci-job-log-evidence', () => ({
   captureCiJobLogEvidence: mockCaptureCiJobLogEvidence,
 }));
 
+// The red-PR sweep's due queue: a skipped CI retry that someone must come back
+// to (fix in flight, head already tried) schedules a look here.
+const mockScheduleCiRedLook = mock((_ref: any, _dueAtMs: number) => Promise.resolve());
+mock.module('@/lib/ci-red-queue', () => ({
+  CI_RED_DUE_QUEUE: 'ci-red',
+  CI_RED_ESCALATED_KEY: 'ciRedEscalatedHeadSha',
+  scheduleCiRedLook: mockScheduleCiRedLook,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -687,6 +696,7 @@ function resetAll() {
     Promise.resolve({ superseded: false, reviewerTaskId: null }),
   );
   mockFireGateEvent.mockClear();
+  mockScheduleCiRedLook.mockClear();
   mockPreflightEscalationCheck.mockReset();
   mockTryDispatchMigrationCollisionRetry.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
@@ -1626,6 +1636,138 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    // Every "no CI retry" return writes a ledger row with a stable reason code,
+    // so a red PR nobody is fixing can be explained instead of reconstructed.
+    describe('ci_retry_skipped ledger', () => {
+      const skipEvents = () =>
+        (mockFireGateEvent.mock.calls as any[])
+          .map(c => c[0])
+          .filter(e => e.gate === REAL_GATE_SLUGS.CI_RETRY_SKIPPED);
+
+      async function fail(payloadOverrides: Record<string, any> = {}) {
+        const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload(payloadOverrides)));
+        expect(res.status).toBe(200);
+      }
+
+      it('dispatching a retry writes no skip row', async () => {
+        withFailedWorkerPr();
+        await fail();
+        expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+        expect(skipEvents()).toEqual([]);
+      });
+
+      it('a dispatched retry schedules a sweep look, so a fix that never pushes is noticed', async () => {
+        withFailedWorkerPr();
+        await fail();
+        expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
+        expect(mockScheduleCiRedLook.mock.calls[0][0]).toEqual({ workspaceId: 'ws1', prNumber: 42 });
+      });
+
+      it('draft PR → draft', async () => {
+        withFailedWorkerPr();
+        mockGithubApi.mockReturnValue(Promise.resolve({ draft: true }));
+        await fail();
+        const [e] = skipEvents();
+        expect(e.detail.skipReason).toBe('draft');
+        expect(e.outcome).toBe('rejected');
+        expect(e.detail).toMatchObject({ prNumber: 42, headSha: 'abc123', repo: 'test-org/test-repo' });
+        expect(e.workspaceId).toBe('ws1');
+        expect(e.taskId).toBe('t1');
+        expect(e.surface).toBe('webhook:check_suite');
+      });
+
+      for (const prState of ['merged', 'closed'] as const) {
+        it(`${prState} PR → pr_${prState}`, async () => {
+          withFailedWorkerPr({ status: 'completed', prState });
+          await fail();
+          expect(skipEvents().map(e => e.detail.skipReason)).toEqual([`pr_${prState}`]);
+        });
+      }
+
+      it('terminal PR lifecycle → pr_terminal', async () => {
+        withFailedWorkerPr();
+        const w = mockWorkersFindFirst();
+        mockWorkersFindFirst.mockReturnValue({ ...w, prLifecycleStatus: 'merged' });
+        await fail();
+        expect(skipEvents().map(e => e.detail.skipReason)).toEqual(['pr_terminal']);
+      });
+
+      for (const status of ['failed', 'cancelled'] as const) {
+        it(`${status} owner → owner_stopped`, async () => {
+          withFailedWorkerPr({ status, missionId: null });
+          await fail();
+          const [e] = skipEvents();
+          expect(e.detail.skipReason).toBe('owner_stopped');
+          expect(e.detail.ownerStatus).toBe(status);
+        });
+      }
+
+      it('fix in flight → fix_in_flight, deferred, names the attempt, and schedules a sweep look', async () => {
+        withFailedWorkerPr({
+          status: 'completed',
+          fixAttempts: [
+            { id: 'rf1', status: 'in_progress', creationSource: 'webhook', ciRetryPrNumber: null, context: {}, createdAt: '2026-01-01T00:00:00Z' },
+          ],
+        });
+        await fail();
+        const [e] = skipEvents();
+        expect(e.detail.skipReason).toBe('fix_in_flight');
+        expect(e.outcome).toBe('deferred');
+        expect(e.detail.inFlightTaskId).toBe('rf1');
+        expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
+        expect(mockScheduleCiRedLook.mock.calls[0][0]).toEqual({ workspaceId: 'ws1', prNumber: 42 });
+      });
+
+      it('a CI retry already filed for this exact head → head_already_retried, before fetching logs', async () => {
+        withFailedWorkerPr({
+          status: 'completed',
+          fixAttempts: [
+            { id: 'c1', status: 'completed', creationSource: 'webhook', ciRetryPrNumber: 42, ciRetryHeadSha: 'abc123', context: {}, createdAt: '2026-01-01T00:00:00Z' },
+          ],
+        });
+        await fail();
+        expect(insertCalls.length).toBe(0);
+        const [e] = skipEvents();
+        expect(e.detail.skipReason).toBe('head_already_retried');
+        expect(e.detail.priorAttemptTaskId).toBe('c1');
+        const runsCalls = (mockGithubApi.mock.calls as any[]).filter(c => String(c[1]).includes('/actions/runs'));
+        expect(runsCalls).toEqual([]);
+        expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
+      });
+
+      it('retry budget used up → retries_exhausted', async () => {
+        withFailedWorkerPr({ taskCtx: { iteration: 3 }, gitConfig: { maxCiRetries: 3 } });
+        await fail();
+        const [e] = skipEvents();
+        expect(e.detail.skipReason).toBe('retries_exhausted');
+        expect(e.detail.attemptsUsed).toBe(3);
+      });
+
+      it('retries disabled → retries_disabled', async () => {
+        withFailedWorkerPr({ gitConfig: { maxCiRetries: 0 } });
+        await fail();
+        expect(skipEvents().map(e => e.detail.skipReason)).toEqual(['retries_disabled']);
+      });
+
+      it('the insert conflicts (same PR/head retried concurrently) → duplicate', async () => {
+        withFailedWorkerPr();
+        jobInsertConflicts = true;
+        await fail();
+        expect(skipEvents().map(e => e.detail.skipReason)).toEqual(['duplicate']);
+      });
+
+      it('reason text is stable per code so the ledger coalesces repeats', async () => {
+        withFailedWorkerPr();
+        mockGithubApi.mockReturnValue(Promise.resolve({ draft: true }));
+        await fail();
+        await fail({ check_suite: { head_sha: 'other' } });
+        const reasons = skipEvents().map(e => e.reason);
+        expect(reasons.length).toBe(2);
+        expect(reasons[0]).toBe(reasons[1]);
+        expect(reasons[0]).not.toContain('42');
+      });
     });
 
     // AC-4: a late check_suite.failure webhook must not overwrite a merged PR's lifecycle status
@@ -5747,6 +5889,77 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
       { repoFullName: 'test-org/test-repo', revertedBy: 'c1', text: 'Revert "fix: x"\n\nThis reverts commit abcdef1.' },
       { repoFullName: 'test-org/test-repo', revertedBy: 'c2', text: 'chore: bump' },
     ]);
+  });
+
+  describe('push → docs ingest', () => {
+    beforeEach(() => {
+      insertCalls = [];
+      selectTableResults = () => null;
+    });
+    const bindOneWorkspace = () => {
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) return [{ id: 'repo-uuid-1' }];
+        if (table === schemaMock.workspaces) return [{ id: 'ws-kb' }];
+        return null;
+      };
+    };
+    const push = (over: Record<string, unknown> = {}) => createWebhookRequest('push', {
+      ref: 'refs/heads/main',
+      after: 'sha-after-1',
+      repository: { full_name: 'test-org/test-repo', default_branch: 'main' },
+      head_commit: { message: 'docs: update strategy' },
+      commits: [{ id: 'c1', message: 'docs: update strategy', added: ['docs/new.md'], modified: ['docs/strategy.md', 'src/app.ts'], removed: ['docs/old.md'] }],
+      ...over,
+    });
+    const jobInserts = () => insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
+
+    it('a push to the default branch enqueues a diff job seeded with the docs paths', async () => {
+      bindOneWorkspace();
+      const res = await POST(push());
+      expect(res.status).toBe(200);
+      expect(jobInserts()).toHaveLength(1);
+      expect(jobInserts()[0].values).toMatchObject({
+        workspaceId: 'ws-kb',
+        repo: 'test-org/test-repo',
+        trigger: 'push',
+        sha: 'sha-after-1',
+        scope: 'diff',
+        status: 'queued',
+      });
+      expect([...jobInserts()[0].values.changedFiles].sort()).toEqual(['docs/new.md', 'docs/old.md', 'docs/strategy.md']);
+      expect(jobInserts()[0].conflict).toBe('nothing');
+    });
+
+    it('a push that touches no docs enqueues nothing', async () => {
+      bindOneWorkspace();
+      await POST(push({ commits: [{ id: 'c1', message: 'fix: x', modified: ['src/app.ts'] }] }));
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('a push to another branch enqueues nothing', async () => {
+      bindOneWorkspace();
+      await POST(push({ ref: 'refs/heads/feature' }));
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('a PR merge commit is left to the merged-PR path', async () => {
+      bindOneWorkspace();
+      await POST(push({ head_commit: { message: 'docs: update strategy (#123)' } }));
+      await POST(push({ head_commit: { message: 'Merge pull request #124 from x/y' } }));
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('a repo bound to no workspace enqueues nothing', async () => {
+      selectTableResults = () => null;
+      await POST(push());
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('returns 200 when the enqueue throws (best-effort)', async () => {
+      selectTableResults = () => { throw new Error('db down'); };
+      const res = await POST(push());
+      expect(res.status).toBe(200);
+    });
   });
 
   it('a push to another branch records nothing', async () => {

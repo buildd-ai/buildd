@@ -78,7 +78,7 @@ export type ModelProxyAuthHeader = 'authorization' | 'x-api-key';
 
 export type ModelRoute =
   | { kind: 'gateway'; baseUrl: string; token: string }
-  | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader }
+  | { kind: 'proxy'; baseUrl: string; key: string; authHeader: ModelProxyAuthHeader; mapModel?: (id: string) => string }
   | { kind: 'direct'; apiKey: string }
   | { kind: 'unconfigured'; reason: string };
 
@@ -138,6 +138,10 @@ export interface ServerModelEndpoint {
   baseUrl: string;
   key: string;
   authHeader: ModelProxyAuthHeader;
+  /** The endpoint kind (`url`, `gateway`, `openrouter`); decides how model ids are named. */
+  kind?: string;
+  /** The team's model aliases (native id → endpoint id). */
+  models?: Record<string, string>;
 }
 
 /**
@@ -192,7 +196,13 @@ export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointSt
   if (server === 'unavailable') {
     return { kind: 'unconfigured', reason: 'the team agent model endpoint is temporarily unavailable' };
   }
-  if (server) return { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
+  if (server) {
+    const route: ModelRoute = { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
+    if (server.kind === 'openrouter' || (server.models && Object.keys(server.models).length > 0)) {
+      route.mapModel = (id: string) => mapEndpointModel({ kind: server.kind, models: server.models }, id);
+    }
+    return route;
+  }
   const account = env.AI_GATEWAY_ACCOUNT_ID;
   const gateway = env.AI_GATEWAY_ID;
   const token = env.AI_GATEWAY_TOKEN;
@@ -285,10 +295,36 @@ export function modelApiPathAllowed(method: string | undefined, rawUrl: string):
   });
 }
 
+/** Why a request was refused (run-report.ts REJECT_REASONS). */
+export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'unparseable' | 'other';
+
+/** Where a refused api.anthropic.com request was going, as a fixed label (no raw path leaves the handler). */
+export type RejectedPathLabel = 'api_hello' | 'event_logging' | 'oauth' | 'claude_code_api' | 'other_api' | 'files' | 'batches' | 'other_v1' | 'other';
+
+export function rejectedPathLabel(rawUrl: string): RejectedPathLabel {
+  let p: string;
+  try { p = new URL(rawUrl).pathname; } catch { return 'other'; }
+  if (p === '/api/hello') return 'api_hello';
+  if (p.startsWith('/api/event_logging')) return 'event_logging';
+  if (p.startsWith('/api/oauth/') || p === '/api/oauth') return 'oauth';
+  if (p.startsWith('/api/claude_code/') || p === '/api/claude_code') return 'claude_code_api';
+  if (p.startsWith('/api/')) return 'other_api';
+  if (p.startsWith('/v1/files')) return 'files';
+  if (p.startsWith('/v1/messages/batches')) return 'batches';
+  if (p.startsWith('/v1/')) return 'other_v1';
+  return 'other';
+}
+
 export type EgressDecision =
   | { action: 'passthrough' }
-  | { action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none' }
-  | { action: 'reject'; status: number; message: string };
+  /** Answered by the handler itself; nothing leaves the Worker. */
+  | { action: 'respond'; status: number }
+  | {
+      action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none';
+      /** Set for a message request to a team endpoint with a model mapping: the egress handler rewrites the body's `model`. */
+      mapModel?: (id: string) => string;
+    }
+  | { action: 'reject'; status: number; message: string; reason: RejectReason; pathLabel?: RejectedPathLabel };
 
 export interface RewriteContext {
   model: ModelRoute;
@@ -366,21 +402,21 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   try {
     url = new URL(req.url);
   } catch {
-    return { action: 'reject', status: 400, message: 'unparseable request URL' };
+    return { action: 'reject', status: 400, message: 'unparseable request URL', reason: 'unparseable' };
   }
   const kind = classifyEgressHost(url.hostname);
   if (kind === 'passthrough') return { action: 'passthrough' };
   // Served in the Worker by the snapshot store; forwarding it would send the
   // container's snapshot bytes to whatever that name resolves to.
-  if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded' };
+  if (kind === 'snapshot') return { action: 'reject', status: 404, message: 'the snapshot host is not forwarded', reason: 'other' };
 
   // Credentialed hosts are HTTPS only: a plaintext request is refused rather
   // than upgraded, so nothing credentialed is ever built from it.
   if (url.protocol !== 'https:') {
-    return { action: 'reject', status: 403, message: `${url.hostname} is reachable only over HTTPS` };
+    return { action: 'reject', status: 403, message: `${url.hostname} is reachable only over HTTPS`, reason: 'plain_http' };
   }
   if (url.port && url.port !== '443') {
-    return { action: 'reject', status: 403, message: `${url.hostname}: only port 443 is allowed` };
+    return { action: 'reject', status: 403, message: `${url.hostname}: only port 443 is allowed`, reason: 'port' };
   }
 
   const headers = stripContainerCredentials(req.headers);
@@ -390,13 +426,20 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   url.password = '';
 
   if (kind === 'anthropic') {
+    // Claude Code's connectivity check (HEAD /api/hello at start-up). It
+    // carries nothing and needs no credential: answer it here rather than
+    // refuse it (a refusal reads as "offline") or forward it to an endpoint
+    // that does not serve it.
+    if ((req.method === 'HEAD' || req.method === 'GET') && url.pathname === '/api/hello' && !url.search) {
+      return { action: 'respond', status: 200 };
+    }
     // Judged on the original URL string, before anything is added.
     if (!modelApiPathAllowed(req.method, req.url)) {
-      return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded` };
+      return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded`, reason: 'path', pathLabel: rejectedPathLabel(req.url) };
     }
     const route = ctx.model;
     if (route.kind === 'unconfigured') {
-      return { action: 'reject', status: 503, message: `model egress is not configured: ${route.reason}` };
+      return { action: 'reject', status: 503, message: `model egress is not configured: ${route.reason}`, reason: 'unconfigured' };
     }
     if (route.kind === 'direct') {
       headers.set('x-api-key', route.apiKey);
@@ -405,7 +448,8 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
     if (route.kind === 'proxy') {
       // Container credentials are already stripped; this is the only one added.
       headers.set(route.authHeader, route.authHeader === 'authorization' ? `Bearer ${route.key}` : route.key);
-      return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'proxy' };
+      const mapModel = route.mapModel && isModelRewritePath(req.method, req.url) ? route.mapModel : undefined;
+      return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'proxy', ...(mapModel ? { mapModel } : {}) };
     }
     headers.set('cf-aig-authorization', `Bearer ${route.token}`);
     return { action: 'forward', url: `${route.baseUrl}${url.pathname}${url.search}`, headers, injected: 'gateway' };
@@ -529,7 +573,7 @@ export interface ModelEndpointCacheDeps {
  * never in Durable Object storage and never in the container env. Fetched on
  * the first model request; concurrent callers share one in-flight fetch. A
  * 404 is an answer ("none", cached for the run: egress falls through to the
- * Worker's own route). Any other failure, and a 401/403 from the endpoint
+ *  Worker's own route). Any other failure, and a 401 from the endpoint
  * (`invalidate`), yields `'unavailable'` for MODEL_ENDPOINT_FAILURE_BACKOFF_MS
  * and then refetches.
  */
@@ -600,7 +644,90 @@ export function parseServerModelEndpoint(body: unknown): ServerModelEndpoint {
   if (!authHeader || (b.authHeader !== undefined && typeof b.authHeader !== 'string')) {
     throw new Error('model-endpoint response authHeader must be authorization or x-api-key');
   }
-  return { baseUrl: parsed.baseUrl, key: b.key, authHeader };
+  const raw = (body as { kind?: unknown; models?: unknown }) ?? {};
+  const models: Record<string, string> = {};
+  if (raw.models && typeof raw.models === 'object' && !Array.isArray(raw.models)) {
+    for (const [k, v] of Object.entries(raw.models as Record<string, unknown>).slice(0, MAX_MODEL_ALIASES)) {
+      if (k && typeof v === 'string' && v) models[k] = v;
+    }
+  }
+  return {
+    baseUrl: parsed.baseUrl, key: b.key, authHeader, models,
+    ...(typeof raw.kind === 'string' ? { kind: raw.kind } : {}),
+  };
+}
+
+const MAX_MODEL_ALIASES = 200;
+
+/**
+ * The model id to send to the team endpoint for a native id: the same rule as
+ * buildd core's mapAgentModel (packages/core/agent-endpoint.ts), which host
+ * runners apply through ANTHROPIC_*_MODEL env vars. A cloud container gets no
+ * endpoint details, so the egress handler applies it to the request body.
+ * OpenRouter names Anthropic models `anthropic/<undated id, minor version
+ * dotted>` (packages/ai-kit openRouterModelId); everything else uses aliases.
+ */
+export function mapEndpointModel(endpoint: { kind?: string; models?: Record<string, string> }, id: string): string {
+  if (endpoint.kind === 'openrouter') {
+    if (id.includes('/')) return id;
+    return `anthropic/${id.replace(/-\d{8}$/, '').replace(/-(\d+)-(\d+)$/, '-$1.$2')}`;
+  }
+  return endpoint.models?.[id] ?? id;
+}
+
+/** The requests whose JSON body names a model: messages and token counting. */
+export function isModelRewritePath(method: string | undefined, rawUrl: string): boolean {
+  if (method !== 'POST') return false;
+  try {
+    const p = new URL(rawUrl).pathname;
+    return p === '/v1/messages' || p === '/v1/messages/count_tokens';
+  } catch {
+    return false;
+  }
+}
+
+/** Whether an endpoint model id names a Claude model (any provider prefix). */
+export function isClaudeModelId(id: string): boolean {
+  return /(^|[/.])claude-/i.test(id) || /^claude/i.test(id);
+}
+
+/**
+ * The Messages API's standard top-level fields. Claude Code also sends
+ * Anthropic-only ones (`context_management`, `output_config`, `diagnostics`,
+ * ...), which a proxy passes through and a non-Anthropic model behind it
+ * rejects ("Extra inputs are not permitted").
+ */
+const STANDARD_MESSAGE_FIELDS = new Set([
+  'model', 'messages', 'system', 'max_tokens', 'metadata', 'stop_sequences', 'stream',
+  'temperature', 'top_p', 'top_k', 'tools', 'tool_choice', 'thinking',
+]);
+
+/**
+ * The body with its top-level `model` mapped; null when it is not a JSON
+ * object or nothing changes. When the target is not a Claude model, only the
+ * standard Messages API fields are kept.
+ */
+export function rewriteModelInBody(text: string, map: (id: string) => string): string | null {
+  let body: unknown;
+  try { body = JSON.parse(text); } catch { return null; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const model = (body as { model?: unknown }).model;
+  if (typeof model !== 'string') return null;
+  const mapped = map(model);
+  if (mapped === model) return null;
+  const fields = Object.entries(body as Record<string, unknown>)
+    .filter(([k]) => isClaudeModelId(mapped) || STANDARD_MESSAGE_FIELDS.has(k));
+  return JSON.stringify({ ...Object.fromEntries(fields), model: mapped });
+}
+
+/**
+ * Whether an endpoint answer means its key is bad. Only 401: a 403 is a
+ * per-request refusal (LiteLLM answers 403 for a model the key may not use),
+ * and treating it as a dead key would refuse every request, the agent's main
+ * model included, until the backoff ends.
+ */
+export function endpointRejectedKey(status: number): boolean {
+  return status === 401;
 }
 
 // ── buildd request ────────────────────────────────────────────────────────────

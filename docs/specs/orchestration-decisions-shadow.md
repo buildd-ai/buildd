@@ -58,7 +58,7 @@ evidence-backed promotion grants an applying cohort for that exact definition.
 
 This contract describes **shadow-only** behaviour. As shipped, no promotion is
 recorded, so every applying fraction resolves to zero and both decisions are
-record-only. See `docs/design/conflict-aware-orchestration.md` "Rollout status".
+record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md` "Rollout status".
 
 **Invariants**:
 

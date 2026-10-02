@@ -12,6 +12,21 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.16.0 — 2026-10-02
+
+Minor: a route registry in `/models`:
+
+- `ROUTES` (new): one entry per place a model call can go (`anthropic`,
+  `openai`, `openrouter`, `litellm`), with its wire format, API root, auth
+  scheme, verify path, which vendors it serves and whether it takes
+  attribution or reports cost. Types `RouteId`, `RouteSpec`, `RouteWire`.
+- `routeOrder(vendor)`: own API, then OpenRouter, then a gateway.
+- `routeModelId(route, vendor, model, naming?)`: the id to send on a route.
+  `openRouterModelId` (now exported here) and `gatewayModel` are its two cases.
+- `routeAuthHeaders`, `routeAttributionHeaders`.
+- `toCallConfig` reads its base URLs and headers from `ROUTES`; its output is
+  unchanged. `gatewayModel` also accepts a bare `{ models, prefix }`.
+
 ## 0.15.0 — 2026-09-30
 
 Minor: a finished turn folds to one line:
@@ -29,7 +44,7 @@ Minor: a finished turn folds to one line:
 ## 0.14.0 — 2026-09-30
 
 Minor, with one breaking change to `defineRankSurface` (below; the kit is
-0.x): multi-slot surfaces, shadow first (docs/design/shared-ai-kit.md, P7).
+0.x): multi-slot surfaces, shadow first (knowledge-base: buildd/design/shared-ai-kit.md, P7).
 
 - `/surfaces` `defineSurface`: `rank` slots (chips) and `choice` slots (one
   optional card) in one Jev call. Every slot defaults to shadow: it renders
@@ -62,7 +77,7 @@ be skipped through it):
 ## 0.13.0 — 2026-09-30
 
 Minor: a turn's writes are the rows of one approval card instead of one card
-per turn (docs/design/chat-write-approval-v2.md, step 2). What runs is
+per turn (knowledge-base: buildd/design/chat-write-approval-v2.md, step 2). What runs is
 unchanged; only how many cards it takes.
 
 - `createChatTurn`: the one-card-per-turn cap is gone. Each write that needs a
@@ -564,7 +579,7 @@ Minor because `/surfaces` and `/chat/contract` gain API; nothing is removed.
 ## 0.2.0 — 2026-09-27
 
 The chat turn runner and the React components (P3 of
-`docs/design/shared-ai-kit.md`), generalised from buildd's v3 chat. See the
+`knowledge-base: buildd/design/shared-ai-kit.md`), generalised from buildd's v3 chat. See the
 README's "Chat" section for the full API.
 
 - `/chat/server`: `createChatTurn` — one streamed turn on AI SDK v7
@@ -643,7 +658,7 @@ Published as `@builddai/ai-kit` (the npm user scope of the `builddai`
 account). The in-repo name was `@buildd/ai-kit`, which was never published;
 update any `@buildd/ai-kit` imports to `@builddai/ai-kit`.
 
-- `/chat/contract` (P0 of `docs/design/shared-ai-kit.md`): message and
+- `/chat/contract` (P0 of `knowledge-base: buildd/design/shared-ai-kit.md`): message and
   tool-part types, object refs, the `data-step`, `data-handoff` and
   `data-event` parts, approval previews, tool-permission rows. buildd's own
   chat reads these from here.

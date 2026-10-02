@@ -12,6 +12,12 @@ import {
   modelEndpointRequest,
   needsServerModelEndpoint,
   parseServerModelEndpoint,
+  mapEndpointModel,
+  rewriteModelInBody,
+  isClaudeModelId,
+  rejectedPathLabel,
+  isModelRewritePath,
+  endpointRejectedKey,
   type ServerModelEndpoint,
   classifyEgressHost,
   describeForwardForDebug,
@@ -609,8 +615,15 @@ describe('needsServerModelEndpoint', () => {
 describe('parseServerModelEndpoint', () => {
   test('accepts the route shape and defaults the header', () => {
     expect(parseServerModelEndpoint({ kind: 'gateway', baseUrl: 'https://litellm.example.com/', key: 'k', authHeader: 'authorization', models: {} }))
-      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization', kind: 'gateway', models: {} });
     expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k' }).authHeader).toBe('authorization');
+  });
+  test('keeps the model mapping and kind, dropping anything that is not a string-to-string pair', () => {
+    const e = parseServerModelEndpoint({ kind: 'url', baseUrl: 'https://litellm.example.com', key: 'k',
+      models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5', bad: 5, '': 'x', ok: '' } });
+    expect(e.kind).toBe('url');
+    expect(e.models).toEqual({ 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' });
+    expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k', models: 'nope' }).models).toEqual({});
   });
   test('throws on anything unexpected', () => {
     for (const b of [null, {}, { baseUrl: 'http://litellm.example.com', key: 'k' }, { baseUrl: 'https://u:p@litellm.example.com', key: 'k' },
@@ -787,5 +800,111 @@ describe('api.anthropic.com: only the model API paths are forwarded', () => {
   test('the egress handler passes the request method', async () => {
     const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
     expect(src).toMatch(/rewriteOutbound\(\s*\{ url: request\.url, method: request\.method, headers: request\.headers \}/);
+  });
+});
+
+describe('endpoint model mapping (the cloud path applies what host runners apply via env)', () => {
+  test('aliases map listed ids and leave the rest unchanged', () => {
+    const e = { kind: 'url', models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' } };
+    expect(mapEndpointModel(e, 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5');
+    expect(mapEndpointModel(e, 'claude-sonnet-5')).toBe('claude-sonnet-5');
+  });
+  test('openrouter names Anthropic models anthropic/<undated, dotted>, as buildd core does', () => {
+    const e = { kind: 'openrouter', models: {} };
+    expect(mapEndpointModel(e, 'claude-haiku-4-5-20251001')).toBe('anthropic/claude-haiku-4.5');
+    expect(mapEndpointModel(e, 'claude-sonnet-5')).toBe('anthropic/claude-sonnet-5');
+    expect(mapEndpointModel(e, 'anthropic/claude-opus-5')).toBe('anthropic/claude-opus-5');
+  });
+  test('only the message endpoints carry a model to rewrite', () => {
+    expect(isModelRewritePath('POST', 'https://api.anthropic.com/v1/messages?beta=true')).toBe(true);
+    expect(isModelRewritePath('POST', 'https://api.anthropic.com/v1/messages/count_tokens')).toBe(true);
+    expect(isModelRewritePath('GET', 'https://api.anthropic.com/v1/models')).toBe(false);
+  });
+  test('rewrites the model field and nothing else; non-JSON or no change returns null', () => {
+    const map = (id: string) => (id === 'claude-haiku-4-5-20251001' ? 'claude-haiku-4-5' : id);
+    const out = rewriteModelInBody(JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 5, messages: [{ role: 'user', content: 'model: x' }] }), map);
+    expect(JSON.parse(out!)).toEqual({ model: 'claude-haiku-4-5', max_tokens: 5, messages: [{ role: 'user', content: 'model: x' }] });
+    expect(rewriteModelInBody(JSON.stringify({ model: 'claude-sonnet-5' }), map)).toBeNull();
+    expect(rewriteModelInBody('not json', map)).toBeNull();
+    expect(rewriteModelInBody(JSON.stringify([1]), map)).toBeNull();
+  });
+  test('the forward decision for a server endpoint carries its model mapper', () => {
+    const server = { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' as const, kind: 'url', models: { a: 'b' } };
+    const d = rewriteOutbound({ url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: new Headers() }, { model: resolveModelRoute({}, server) });
+    expect(d.action).toBe('forward');
+    if (d.action !== 'forward') return;
+    expect(d.mapModel?.('a')).toBe('b');
+    const g = rewriteOutbound({ url: 'https://api.anthropic.com/v1/models', method: 'GET', headers: new Headers() }, { model: resolveModelRoute({}, server) });
+    expect(g.action === 'forward' && g.mapModel).toBeFalsy();
+  });
+});
+
+describe('endpointRejectedKey: only a 401 means the key is bad', () => {
+  test('401 drops the key; a 403 is a per-request refusal (e.g. a model this key may not use)', () => {
+    expect(endpointRejectedKey(401)).toBe(true);
+    expect(endpointRejectedKey(403)).toBe(false);
+    expect(endpointRejectedKey(200)).toBe(false);
+  });
+});
+
+describe('reject decisions name a reason (counted in the run report, no URL)', () => {
+  test('path, plain http, port, unconfigured', () => {
+    const route = resolveModelRoute({}, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    const r = (url: string, method = 'POST', model: ModelRoute = route) => rewriteOutbound({ url, method, headers: new Headers() }, { model });
+    expect(r('https://api.anthropic.com/api/event_logging/batch')).toMatchObject({ action: 'reject', reason: 'path' });
+    expect(r('http://api.anthropic.com/v1/messages')).toMatchObject({ action: 'reject', reason: 'plain_http' });
+    expect(r('https://api.anthropic.com:8443/v1/messages')).toMatchObject({ action: 'reject', reason: 'port' });
+    expect(r('https://api.anthropic.com/v1/messages', 'POST', resolveModelRoute({}))).toMatchObject({ action: 'reject', reason: 'unconfigured' });
+  });
+});
+
+describe("Claude Code's connectivity check is answered by the Worker, not refused or forwarded", () => {
+  test('HEAD/GET /api/hello on api.anthropic.com is answered locally with 200', () => {
+    const route = resolveModelRoute({}, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    for (const method of ['HEAD', 'GET']) {
+      const d = rewriteOutbound({ url: 'https://api.anthropic.com/api/hello', method, headers: new Headers() }, { model: route });
+      expect(d).toEqual({ action: 'respond', status: 200 });
+    }
+    // Only that exact probe: anything else under /api is still refused.
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello', method: 'POST', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello/x', method: 'GET', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
+  });
+});
+
+describe('a call mapped to a non-Claude model keeps only standard Messages API fields', () => {
+  const body = { model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }], system: 's', max_tokens: 10, stream: true,
+    tools: [], thinking: { type: 'enabled', budget_tokens: 5 }, metadata: { user_id: 'u' },
+    context_management: { edits: [] }, output_config: { effort: 'high' }, diagnostics: { x: 1 } };
+  test('non-Claude target: Claude-only fields dropped', () => {
+    const out = JSON.parse(rewriteModelInBody(JSON.stringify(body), () => 'fireworks_ai/deepseek-v4p1-flash')!);
+    expect(Object.keys(out).sort()).toEqual(['max_tokens', 'messages', 'metadata', 'model', 'stream', 'system', 'thinking', 'tools']);
+    expect(out.model).toBe('fireworks_ai/deepseek-v4p1-flash');
+  });
+  test('Claude target: everything kept', () => {
+    const out = JSON.parse(rewriteModelInBody(JSON.stringify(body), () => 'claude-sonnet-5-alias-claude')!);
+    expect(out.context_management).toEqual({ edits: [] });
+    expect(out.diagnostics).toEqual({ x: 1 });
+  });
+  test('isClaudeModelId', () => {
+    expect(isClaudeModelId('claude-haiku-4-5')).toBe(true);
+    expect(isClaudeModelId('anthropic/claude-sonnet-4.5')).toBe(true);
+    expect(isClaudeModelId('bedrock/us.anthropic.claude-sonnet-5')).toBe(true);
+    expect(isClaudeModelId('fireworks_ai/deepseek-v4p1-flash')).toBe(false);
+  });
+});
+
+describe('rejectedPathLabel: a fixed vocabulary, never the raw path', () => {
+  test('known Claude Code endpoints get their label; anything else a coarse bucket', () => {
+    const l = (u: string) => rejectedPathLabel(u);
+    expect(l('https://api.anthropic.com/api/hello')).toBe('api_hello');
+    expect(l('https://api.anthropic.com/api/event_logging/batch')).toBe('event_logging');
+    expect(l('https://api.anthropic.com/api/oauth/profile')).toBe('oauth');
+    expect(l('https://api.anthropic.com/api/claude_code/settings')).toBe('claude_code_api');
+    expect(l('https://api.anthropic.com/api/claude_cli_feedback')).toBe('other_api');
+    expect(l('https://api.anthropic.com/v1/files')).toBe('files');
+    expect(l('https://api.anthropic.com/v1/messages/batches')).toBe('batches');
+    expect(l('https://api.anthropic.com/v1/skills')).toBe('other_v1');
+    expect(l('https://api.anthropic.com/secret-token-in-path')).toBe('other');
+    expect(l('not a url')).toBe('other');
   });
 });

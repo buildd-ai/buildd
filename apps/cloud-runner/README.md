@@ -114,6 +114,7 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
 | `instanceType` | `CONTAINER_INSTANCE_TYPE` |
 | `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
+| `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `exitCode`, `outcome`, `crashReport`, `attempt`, `taskId`, `workerId` | As in the state |
 
 The report is built from an allowlist of typed fields; identifiers that do not
@@ -263,10 +264,16 @@ Then, from the repo root:
 
 ```bash
 export BUILDD_API_KEY=bld_…            # admin key
-export BUILDD_RUNNER_API_KEY=bld_…     # worker key for the containers
+export BUILDD_RUNNER_API_KEY=bld_…     # worker key for the containers (see below)
 bun apps/cloud-runner/scripts/deploy.ts --workspace my-workspace --dry-run   # print the plan
 bun apps/cloud-runner/scripts/deploy.ts --workspace my-workspace
 ```
+
+The runner key never enters a container: the Worker uses it to mint a per-task
+token for each run. A scoped key needs at least the **Task agent** capabilities
+(`tasks:read`, `tasks:write`, `workers:write`, `analytics:read`,
+`knowledge:write`) and, if limited to workspaces, the dispatching workspace;
+narrowing the key later ends the tokens it minted.
 
 `deploy.ts` fetches the saved token with the admin key
 (`POST /api/cloudflare/credential/reveal`: `bld_` admin keys only, own team
@@ -297,6 +304,7 @@ accepted only for `localhost`, `127.0.0.1` and `host.docker.internal`.
 | `--remove` | `webhookConfig = null`: clears the dispatch keys (`url`, `token`, `enabled`, `runnerPreference`, `events`); the workspace goes back to Pusher-notified runners (Coder, local). The Worker stays deployed |
 | `--print-token` | Print the `DISPATCH_TOKEN` it set |
 | `--url` | Worker base URL, for a custom domain |
+| `--name <worker>` | Deploy under another Worker name, with its own bucket `<worker>-snapshots`. The script writes `wrangler.generated.jsonc` (gitignored; only `name` and `bucket_name` differ) and passes it to every wrangler call. Pass the same `--name` on every later run against that deployment |
 | `--model-proxy-url <url>` | Route model traffic through your Anthropic-compatible proxy (see Model routes). Also read from `MODEL_PROXY_URL`; the key comes from `MODEL_PROXY_KEY` (required the first time, never printed) and the header from `MODEL_PROXY_AUTH_HEADER`. All three are put as Worker secrets so a later deploy keeps them. A re-run without the flag leaves an existing proxy in place; `bunx wrangler secret delete MODEL_PROXY_URL` goes back to AI Gateway |
 
 A second workspace on an existing Worker needs the current token

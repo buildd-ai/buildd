@@ -1,5 +1,5 @@
 /**
- * The Thinking panel's steps (docs/design/chat-canvas.md, "Thinking"), decided
+ * The Thinking panel's steps (knowledge-base: buildd/design/chat-canvas.md, "Thinking"), decided
  * on the server: the turn streams a `data-step` part per tool call, in plain
  * words (never the tool's name), and the kit's ThinkingPanel draws them. The
  * labels come from the table below, keyed by the tool lifecycle; the model

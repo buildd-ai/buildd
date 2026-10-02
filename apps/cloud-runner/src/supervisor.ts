@@ -44,6 +44,9 @@ import {
   assembleRunReport,
   deliverRunReport,
   emptyEgressCounters,
+  emptyEgressDetail,
+  applyEgressDetail,
+  type EgressDetail,
   isEgressEvent,
   parseMetricLine,
   parsePhaseLine,
@@ -62,7 +65,12 @@ import { otelContainerEnv, type OtelEnv } from './otel';
 export interface ContainerPort {
   readonly running: boolean;
   start(options: { env: Record<string, string>; enableInternet: boolean; labels?: Record<string, string> }): void;
-  exec(cmd: string[], options?: { stdout?: 'pipe'; stderr?: 'pipe' }): Promise<ProcessPort>;
+  /**
+   * `env` is the process's whole environment: on Cloudflare an exec'd process
+   * does not inherit the env given to start() (Docker's exec does, so local
+   * runs never showed it).
+   */
+  exec(cmd: string[], options?: { stdout?: 'pipe'; stderr?: 'pipe'; env?: Record<string, string> }): Promise<ProcessPort>;
   monitor(): Promise<void>;
   destroy(reason?: string): Promise<void>;
   setInactivityTimeout(durationMs: number): Promise<void>;
@@ -134,6 +142,7 @@ export class TaskSupervisor {
   private tail: string[] = [];
   /** Egress counters for the live run. Memory only: one write at the end, not one per request. */
   private egress: EgressCounters = emptyEgressCounters();
+  private egressDetail: EgressDetail = emptyEgressDetail();
 
   constructor(private readonly d: SupervisorDeps) {}
 
@@ -178,6 +187,7 @@ export class TaskSupervisor {
     });
     this.tail = [];
     this.egress = emptyEgressCounters();
+    this.egressDetail = emptyEgressDetail();
     this.d.log(`[cloud-runner] task ${this.d.taskId}: starting attempt ${decision.attempt}${resume ? ` (resuming worker ${resume})` : ''}`);
     const run = this.d.keepAliveWhile(() => this.run(decision.attempt, resume))
       .catch(err => this.d.log(`[cloud-runner] task ${this.d.taskId}: supervisor error: ${describe(err)}`))
@@ -250,10 +260,18 @@ export class TaskSupervisor {
   private async parkOrphan(workerId: string): Promise<boolean> {
     this.d.log(`[cloud-runner] task ${this.d.taskId}: container still running after an agent restart; parking worker ${workerId}`);
     try {
+      // A fresh per-task token, minted first as on a normal start: the exec'd
+      // process inherits nothing from the run's start(), and the runner key
+      // never enters the container.
+      const attempt = this.d.getState().attempt ?? 1;
+      const env = {
+        ...buildContainerEnv(this.d.config, await this.d.mintTaskToken()),
+        ...otelContainerEnv(this.d.config, { taskId: this.d.taskId, attempt }),
+      };
       // The interception belonged to the agent before the restart; the park
       // upload goes through the snapshot route, so this agent installs its own.
       await this.d.installEgress();
-      const proc = await this.d.container.exec(orphanParkCommand(this.d.taskId, workerId), { stdout: 'pipe', stderr: 'pipe' });
+      const proc = await this.d.container.exec(orphanParkCommand(this.d.taskId, workerId), { stdout: 'pipe', stderr: 'pipe', env });
       const pumps = Promise.all([this.pump(proc.stdout), this.pump(proc.stderr)]);
       const code = await Promise.race([
         proc.exitCode,
@@ -279,6 +297,7 @@ export class TaskSupervisor {
   recordEgress(event: unknown): void {
     if (!this.hasLiveRun || !isEgressEvent(event)) return;
     applyEgressEvent(this.egress, event);
+    applyEgressDetail(this.egressDetail, event);
     if (event.type === 'request' && event.cls === 'model' && this.d.getState().timings?.firstModelRequestAt === undefined) {
       this.patchTimings({ firstModelRequestAt: event.at });
     }
@@ -306,7 +325,7 @@ export class TaskSupervisor {
       await this.waitUntilRunning();
       this.patchTimings({ containerRunningAt: this.d.now() });
 
-      const proc = await c.exec(runnerCommand(this.d.taskId, resumeWorkerId), { stdout: 'pipe', stderr: 'pipe' });
+      const proc = await c.exec(runnerCommand(this.d.taskId, resumeWorkerId), { stdout: 'pipe', stderr: 'pipe', env });
       this.patch({ status: 'running' });
       this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${attempt} running`);
 
@@ -358,6 +377,7 @@ export class TaskSupervisor {
       dispatchReceivedAt: state.startedAt,
       timings: state.timings,
       egress: this.egress,
+      egressDetail: this.egressDetail,
       exitCode: r.code,
       outcome: r.outcome,
       crashReport,

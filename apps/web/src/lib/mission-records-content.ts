@@ -1,6 +1,6 @@
 /**
  * Lazy artifact bodies for the mission Records sheet
- * (docs/design/mission-feed-mobile-continuity.md, slice S7, AC-18). The mission
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, slice S7, AC-18). The mission
  * page renders artifact metadata only; the sheet fetches bodies when it opens.
  *
  * Shared by the route (`/api/missions/[id]/artifacts/content`) and the client,

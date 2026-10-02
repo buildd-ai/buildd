@@ -1,5 +1,5 @@
 /**
- * The agent-chat opener for the demo (docs/design/agent-chat.md): a conversation
+ * The agent-chat opener for the demo (knowledge-base: buildd/design/agent-chat.md): a conversation
  * seeded with the approval card open, and the t=0 `mission_create` event that
  * confirms it — the proposing tool part turns `output-available` carrying the
  * mission ref, exactly as the chat route stores a confirmed filing, and the

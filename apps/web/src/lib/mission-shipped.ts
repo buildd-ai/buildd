@@ -1,5 +1,5 @@
 /**
- * The mission "What shipped" record, pure half (docs/design/mission-shipped-report.md).
+ * The mission "What shipped" record, pure half (knowledge-base: buildd/design/mission-shipped-report.md).
  *
  * The author task writes a lede, an off-plan note and a NOMINATION of hero
  * shots. Everything here is what the server decides about that output: what

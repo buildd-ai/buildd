@@ -1,6 +1,6 @@
 # Removing the chat retro experiment
 
-Chat session retros (docs/design/chat-session-retro.md) are an experiment. This
+Chat session retros (knowledge-base: buildd/design/chat-session-retro.md) are an experiment. This
 is everything it adds. Nothing else in the codebase depends on it.
 
 ## To turn it off without removing code
@@ -35,7 +35,7 @@ is everything it adds. Nothing else in the codebase depends on it.
   the `teams` entry of `SAFE` (remove in the same release as the schema).
 - `packages/core/db/schema.ts`: the `chatRetros` table and the `teams.chatRetro`
   column.
-- `docs/design/chat-session-retro.md`: set its status to withdrawn.
+- `knowledge-base: buildd/design/chat-session-retro.md`: set its status to withdrawn.
 - Environment: `CHAT_RETRO_ENABLED`, if it was set.
 
 ## The schema, in two releases

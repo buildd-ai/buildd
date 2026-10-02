@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The directive card (docs/design/memory-done-right.md, "Chat"): the person
+ * The directive card (knowledge-base: buildd/design/memory-done-right.md, "Chat"): the person
  * just stated a standing rule, and one tap keeps it. The rule is said in
  * Newsreader; the chrome is Plex Mono; the card is square with a 1px rule and
  * the 3px offset shadow of every chat object, over a faint patch of sea (calm

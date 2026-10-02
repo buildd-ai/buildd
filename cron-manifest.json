@@ -31,7 +31,7 @@
       "enabled": true
     },
     {
-      "$comment": "Tier model pools daily step (docs/design/tier-weights.md \u00a73c, \u00a74). Hourly at :00 inside the wake window the schedules tick already opens; the work inside is once per UTC day: OpenRouter rankings after 03:00 UTC for teams with an explore pool (their own key, at most 3 requests, no retry), then one step per unfrozen split/explore pool after 06:00 UTC. A second run the same day writes nothing. No pools \u2192 one cheap query.",
+      "$comment": "Tier model pools daily step (knowledge-base: buildd/design/tier-weights.md \u00a73c, \u00a74). Hourly at :00 inside the wake window the schedules tick already opens; the work inside is once per UTC day: OpenRouter rankings after 03:00 UTC for teams with an explore pool (their own key, at most 3 requests, no retry), then one step per unfrozen split/explore pool after 06:00 UTC. A second run the same day writes nothing. No pools \u2192 one cheap query.",
       "title": "Buildd: Tier Pools Daily Step",
       "path": "/api/cron/tier-pools",
       "schedule": "0 * * * *",
@@ -41,6 +41,13 @@
       "$comment": "Evidence index sweep (docs/specs/byo-evidence-storage.md, 'The evidence corpus'). Indexes evidence_objects rows in index_state queued, and re-drives failed rows past a 1h backoff, into the {workspaceId}:evidence knowledge corpus; this is what makes the best-effort index durable. Hourly at :00, inside the wake window the schedules tick already opens: evidence is searched after a failure, not within minutes of it, so sub-hourly buys nothing. At most 25 rows per run. Sensitive workspaces are marked skipped and never reach the embedder. Empty queue -> one cheap query.",
       "title": "Buildd: Evidence Index Sweep",
       "path": "/api/cron/evidence-index",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Serverless fallback for full knowledge-ingest jobs no runner will take (apps/web/src/lib/knowledge-full-ingest-fallback.ts). Takes a queued full job once it is stalled (no runner offered a checkout for an hour) and reads the repo through the GitHub tree/blob API at the job's sha, a bounded slice per tick, resuming from a cursor stored on the job. Hourly at :00, inside the wake window the schedules tick already opens: a full index that lands within hours instead of never is the whole point, minutes buy nothing. Nothing stalled -> one cheap query.",
+      "title": "Buildd: Knowledge Ingest Fallback",
+      "path": "/api/cron/knowledge-ingest-fallback",
       "schedule": "0 * * * *",
       "method": "GET"
     },
@@ -143,10 +150,17 @@
       "method": "GET"
     },
     {
-      "$comment": "Redis-gated fast tick for the landing backstop: re-drives approved, green, unmerged buildd PRs through landPr, the same function every landing door calls, so a PR a missed event left parked still merges (docs/design/pr-landing-guarantee.md). Rides the pr-reconcile route as a gated scope because the design chose that over a new route; it shares the installation resolution and GitHub rate limiting. Reads one sorted set (buildd:due:pr-landing) and returns without querying Postgres unless a PR is due, so every 10 minutes costs Redis reads and no extra Neon wake while nothing is waiting. Offset to :05/:15/... so it never fires at the same minute as the :10 merge-state pass, which is the floor: that pass enumerates from Postgres and re-seeds the set, so a lost queue write costs an hour, not the guarantee. Fail-open: with Redis unconfigured or erroring the tick enumerates from Postgres rather than reading idle. Separate cron_runs slug (pr-reconcile:landing). See apps/web/src/lib/cron-due-queue.ts.",
+      "$comment": "Redis-gated fast tick for the landing backstop: re-drives approved, green, unmerged buildd PRs through landPr, the same function every landing door calls, so a PR a missed event left parked still merges (knowledge-base: buildd/design/pr-landing-guarantee.md). Rides the pr-reconcile route as a gated scope because the design chose that over a new route; it shares the installation resolution and GitHub rate limiting. Reads one sorted set (buildd:due:pr-landing) and returns without querying Postgres unless a PR is due, so every 10 minutes costs Redis reads and no extra Neon wake while nothing is waiting. Offset to :05/:15/... so it never fires at the same minute as the :10 merge-state pass, which is the floor: that pass enumerates from Postgres and re-seeds the set, so a lost queue write costs an hour, not the guarantee. Fail-open: with Redis unconfigured or erroring the tick enumerates from Postgres rather than reading idle. Separate cron_runs slug (pr-reconcile:landing). See apps/web/src/lib/cron-due-queue.ts.",
       "title": "Buildd: PR Landing Backstop (gated)",
       "path": "/api/cron/pr-reconcile?scope=landing&gate=due",
       "schedule": "5-55/10 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Redis-gated fast tick for the red-PR sweep (lib/ci-red-sweep.ts; knowledge-base: buildd/design/pr-merge-reliability.md M3): an open buildd PR whose CI is red, with no live fix attempt and no escalation, past a short window, gets the CI retry the check_suite webhook would have filed (under the existing per-PR cap), or one escalation to a human per PR + head. The webhook feeds buildd:due:ci-red whenever it skips a retry someone must come back to: a fix attempt in flight that may finish without pushing, which GitHub never reports again. Reads one sorted set and returns without querying Postgres unless a PR is due, so it costs no extra Neon wake while nothing is waiting. Offset to :07/:17/... so it never shares a minute with the landing tick (:05) or the :10 merge-state pass, which is the floor: that pass enumerates ci_failed PRs from Postgres and re-seeds the set. Fail-open on Redis like the landing tick. Separate cron_runs slug (pr-reconcile:ci-red).",
+      "title": "Buildd: Red PR Sweep (gated)",
+      "path": "/api/cron/pr-reconcile?scope=ci-red&gate=due",
+      "schedule": "7-57/10 * * * *",
       "method": "GET"
     },
     {

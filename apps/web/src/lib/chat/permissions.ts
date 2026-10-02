@@ -1,5 +1,5 @@
 /**
- * Per-person tool permissions for chat (docs/design/agent-chat.md → Tools and
+ * Per-person tool permissions for chat (knowledge-base: buildd/design/agent-chat.md → Tools and
  * permissions → "Allow" for a tool group).
  *
  * Every write gets an approval card by default. A person may set a tool group

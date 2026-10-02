@@ -2,7 +2,7 @@
 
 /**
  * The task sheet's `TaskActionZone` on the full task page
- * (docs/design/mission-feed-mobile-continuity.md W6: "the same component",
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W6: "the same component",
  * action first). The page is a server component, so the zone's `onChanged`
  * refreshes the route here.
  */

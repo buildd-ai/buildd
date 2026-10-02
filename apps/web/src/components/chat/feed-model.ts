@@ -1,5 +1,5 @@
 /**
- * Pure derivations for the chat feed (docs/design/agent-chat.md, "Tool calls
+ * Pure derivations for the chat feed (knowledge-base: buildd/design/agent-chat.md, "Tool calls
  * you can see"): message parts → render segments, a tool part → its one-line
  * row, and which object the docked pane follows.
  */

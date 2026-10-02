@@ -5,7 +5,7 @@ import { SegmentStrip } from './SegmentStrip';
 import { missionTaskHref } from '@/lib/mission-task-href';
 
 // One tone per state across surfaces: BLOCKED is error-toned here exactly as on
-// the detail header chip (docs/design/mission-feed-mobile-continuity.md, D2).
+// the detail header chip (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, D2).
 const healthTone = HEALTH_CHIP_CLASS;
 
 export function MissionBadges({ mission, health, nextRun, isReviewReady }: { mission: { status: string; orchestrationMode?: string | null; lastDeferralReason?: string | null; lastDeferredAt?: string | null }; health: Health; nextRun: { text: string; urgency: unknown }; isReviewReady?: boolean }) {

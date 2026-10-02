@@ -94,6 +94,7 @@ async function buildCorporaHint(
   workspaceId: string | null | undefined,
   ks: KnowledgeQuerier,
   memoryScope: MemoryHitScope | null,
+  linkedDocsWorkspaceIds: readonly string[] = [],
 ): Promise<string> {
   if (!ks.countNamespace) return '';
   const countNamespace = ks.countNamespace.bind(ks);
@@ -101,7 +102,7 @@ async function buildCorporaHint(
     // The three counts are independent; awaiting them one after another cost
     // three sequential round trips on the claim path. Order of `parts` is
     // fixed below, not by which count lands first.
-    const [memCount, codeCount, docsCount] = await Promise.all([
+    const [memCount, codeCount, docsCount, linkedDocsCount] = await Promise.all([
       // The caller's own-project memories, never the team namespace total: a
       // team-wide count would describe other workspaces' memory.
       hasMemoryScope(memoryScope) && memoryScope.count
@@ -117,6 +118,12 @@ async function buildCorporaHint(
       workspaceId
         ? countNamespace(buildNamespace(workspaceId, 'docs')).catch(() => 0)
         : Promise.resolve(null),
+      // Chunks across the linked workspaces' docs, so an agent knows there is
+      // a second docs corpus worth a `recall scope=docs`.
+      linkedDocsWorkspaceIds.length > 0
+        ? Promise.all(linkedDocsWorkspaceIds.map(id => countNamespace(buildNamespace(id, 'docs')).catch(() => 0)))
+            .then(counts => counts.reduce((a, b) => a + b, 0))
+        : Promise.resolve(null),
     ]);
 
     const parts: string[] = [];
@@ -125,6 +132,7 @@ async function buildCorporaHint(
       parts.push(codeCount > 0 ? `code indexed (${codeCount.toLocaleString()} chunks)` : 'code not indexed');
     }
     if (docsCount !== null) parts.push(docsCount > 0 ? `docs ${docsCount}` : 'docs not indexed');
+    if (linkedDocsCount) parts.push(`linked docs ${linkedDocsCount}`);
 
     if (parts.length === 0) return '';
     return `knowledge: ${parts.join(' · ')} — recall before diagnosing`;
@@ -150,10 +158,19 @@ export async function buildKnowledgeContext(
     /** Memory ledger writer; default the DB. Injectable for tests. */
     ledger?: MemoryLedgerWriter | false;
     memoryIndex?: MemoryIndexOption;
+    /**
+     * Same-team workspaces whose docs corpus is also searched, already
+     * authorised by resolveLinkedDocsWorkspaces. Ignored for a sensitive
+     * workspace.
+     */
+    linkedDocsWorkspaceIds?: readonly string[];
   },
 ): Promise<string[]> {
   if (!query.trim()) return [];
   const sensitive = opts?.sensitive ?? false;
+  const linkedDocs = sensitive || !workspaceId
+    ? []
+    : Array.from(new Set(opts?.linkedDocsWorkspaceIds ?? [])).filter(id => id !== workspaceId);
   const excluded = opts?.excludedSourceIds;
   try {
     const ks: KnowledgeQuerier = store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
@@ -164,7 +181,7 @@ export async function buildKnowledgeContext(
     // Started now, awaited after the fan-out: the hint's counts do not depend
     // on any query below, and awaiting them first put their round trips in
     // front of every claim's retrieval.
-    const hintPromise = buildCorporaHint(workspaceId, ks, memoryScope);
+    const hintPromise = buildCorporaHint(workspaceId, ks, memoryScope, linkedDocs);
 
     // Query memory (team namespace, narrowed to the caller's project), plans,
     // task outcomes, PRs, and code (workspace-scoped).
@@ -234,6 +251,19 @@ export async function buildKnowledgeContext(
       sources.push(ws('Past task outcomes', buildNamespace(workspaceId, 'task')));
       sources.push(ws('Pull requests', buildNamespace(workspaceId, 'pr')));
       sources.push(ws('Code index', buildNamespace(workspaceId, 'code')));
+      // One section across the linked workspaces: each is queried, the hits
+      // are merged by score and capped at the same 3 as every other corpus.
+      if (linkedDocs.length > 0) {
+        sources.push({
+          label: 'Linked docs',
+          run: async () => {
+            const lists = await Promise.all(
+              linkedDocs.map(id => ks.query(buildNamespace(id, 'docs'), { text: query, topK: 3 }).catch(() => [] as QueryResult[])),
+            );
+            return lists.flat().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 3);
+          },
+        });
+      }
     }
 
     const sectioned = sources.length > 0

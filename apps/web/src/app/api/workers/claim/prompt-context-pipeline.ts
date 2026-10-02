@@ -37,6 +37,7 @@ import {
   type ContextBlockSink,
 } from './context-injection';
 import { attachMissionHandoff } from './mission-handoff-injection';
+import type { LinkedDocsAccount } from '@/lib/linked-knowledge';
 
 type ClaimedTask = { id: string; title: string; workspaceId: string; missionId?: string | null };
 
@@ -87,6 +88,7 @@ function flush(claimedWorkers: readonly Worker[], buffer: Map<Worker, string>): 
 export async function runDependentContextInjections(
   claimedWorkers: readonly Worker[],
   claimedTasks: readonly ClaimedTask[],
+  account?: LinkedDocsAccount | null,
 ): Promise<ReadonlyMap<string, TaskAreaPrediction>> {
   const handoffExcludedSources = new Set<string>();
   const missionHandoffBuffer = new Map<Worker, string>();
@@ -136,6 +138,7 @@ export async function runDependentContextInjections(
       predictions,
       handoffExcludedSources,
       bufferingSink(knowledgeBuffer),
+      account,
     );
   } else {
     await attachKnowledgeContext(
@@ -144,6 +147,7 @@ export async function runDependentContextInjections(
       new Map(),
       handoffExcludedSources,
       bufferingSink(knowledgeBuffer),
+      account,
     );
     predictions = await predictionsPromise;
   }

@@ -1,7 +1,7 @@
 {
   "name": "buildd",
   "private": true,
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-ALv2",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -51,7 +51,8 @@
     "design:check": "bun run scripts/design-check.ts",
     "specs:check": "bun run scripts/check-specs.ts",
     "specs:lint": "bun run scripts/check-specs.ts --check",
-    "specs:conformance": "bun run scripts/check-spec-conformance.ts",
+    "public-docs:check": "bun run scripts/check-public-docs.ts",
+    "specs:conformance":"bun run scripts/check-spec-conformance.ts",
     "specs:discrepancies": "bun run packages/core/scripts/write-spec-discrepancies.ts",
     "specs:conformance-gate": "bun run scripts/spec-conformance-delta-gate.ts",
     "no-prod-data:check": "bash scripts/check-no-prod-data-local.sh",

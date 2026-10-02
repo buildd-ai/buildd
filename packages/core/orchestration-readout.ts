@@ -1,5 +1,5 @@
 /**
- * The orchestration shadow readout (docs/design/conflict-aware-orchestration.md
+ * The orchestration shadow readout (knowledge-base: buildd/design/conflict-aware-orchestration.md
  * §6, Step I). Pure: the loaders are in ./orchestration-readout-source.ts and
  * the operator command is scripts/orchestration-readout.ts.
  *

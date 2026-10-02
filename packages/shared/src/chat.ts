@@ -1,13 +1,13 @@
 /**
  * Agent chat — the wire contract shared by the chat API, the chat UI and the
- * settings UI. See `docs/design/agent-chat.md`.
+ * settings UI. See `knowledge-base: buildd/design/agent-chat.md`.
  *
  * Nothing here imports the AI SDK: message `parts` are AI SDK v7 `UIMessage`
  * parts on the wire, but this package stays dependency-free so the runner and
  * core can read the types too. The UI narrows `ChatMessagePart` with the SDK's
  * own guards (`isToolUIPart`, `isDataUIPart`, …).
  *
- * TODO(P6, docs/design/shared-ai-kit.md): the generic half of this file (tool
+ * TODO(P6, knowledge-base: buildd/design/shared-ai-kit.md): the generic half of this file (tool
  * part states, message parts, approval previews, usage, tool-permission rows)
  * now also lives in `@builddai/ai-kit/chat/contract`, which apps/web imports.
  * It is duplicated here, not re-exported, because installed runners
@@ -464,7 +464,7 @@ export type ChatEventKind =
   | 'visual_review';   // the mission's visual audit moved (docs/design/visual-qa-human-review.md)
 
 /**
- * A watch firing (docs/design/subscriptions-and-notifications.md): what the
+ * A watch firing (knowledge-base: buildd/design/subscriptions-and-notifications.md): what the
  * notice card shows besides the sentence in `text` ("#123 merged.").
  */
 export interface ChatWatchNotice {
@@ -515,7 +515,7 @@ export const CHAT_EVENT_PART_TYPE = 'data-buildd-event' as const;
 
 /**
  * A directive card on an assistant turn: the rule the person just stated,
- * proposed for one-tap saving (docs/design/memory-done-right.md, "Chat").
+ * proposed for one-tap saving (knowledge-base: buildd/design/memory-done-right.md, "Chat").
  */
 export const CHAT_DIRECTIVE_PART_TYPE = 'data-buildd-directive' as const;
 

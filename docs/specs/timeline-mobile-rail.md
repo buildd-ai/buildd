@@ -12,7 +12,7 @@ keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse,
 verified_by: [apps/web/src/lib/condensed-timeline.test.ts, apps/web/src/lib/condensed-timeline-rail.test.ts, apps/web/src/lib/attempt-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx]
 supersedes: []
 # Superseded 2026-09-23 by mission-feed.md (slice S3 of
-# docs/design/mission-feed-mobile-continuity.md): below md the mission page now
+# knowledge-base: buildd/design/mission-feed-mobile-continuity.md): below md the mission page now
 # renders MissionFeedList, and CondensedTimeline no longer renders the rail. The
 # rail's pure model (buildRail in lib/condensed-timeline.ts) and its model tests
 # remain until a follow-up removes them; the build-rail-reachable assertion

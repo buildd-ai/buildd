@@ -1,5 +1,5 @@
 /**
- * The "What shipped" store (docs/design/mission-shipped-report.md, "Storage").
+ * The "What shipped" store (knowledge-base: buildd/design/mission-shipped-report.md, "Storage").
  *
  * Called by the winner of the atomic completion claim in
  * `completeMissionIfVerified` and by the human-completion route, never anywhere
@@ -93,10 +93,23 @@ async function fetchChangedPaths(
   const installationId = repo?.installation?.installationId;
   if (!repo?.fullName || !installationId) return null;
 
+  return fetchPrFilePaths(installationId, repo.fullName, prNumbers);
+}
+
+/**
+ * Filenames changed by these PRs, or null when any one cannot be read whole
+ * (a failed fetch, or a full page that may be followed by more). Shared with
+ * the task record (`task-shipped-store.ts`).
+ */
+export async function fetchPrFilePaths(
+  installationId: number,
+  repoFullName: string,
+  prNumbers: readonly number[],
+): Promise<string[] | null> {
   const pages = await Promise.all(prNumbers.map(n =>
     githubApi(
       installationId,
-      `/repos/${repo.fullName}/pulls/${n}/files?per_page=${SHIPPED_PR_FILES_PER_PAGE}`,
+      `/repos/${repoFullName}/pulls/${n}/files?per_page=${SHIPPED_PR_FILES_PER_PAGE}`,
       { signal: AbortSignal.timeout(SHIPPED_PR_FILES_TIMEOUT_MS) },
     ).catch(() => null),
   ));
