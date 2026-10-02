@@ -103,6 +103,29 @@ describe('runLandingAction: one tap dispatches the right fix', () => {
   });
 });
 
+describe('runLandingAction: review-on-GitHub pages', () => {
+  it('refuses to run review_on_github: it is a link, and buildd never merges past a protected path', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await runLandingAction(tapped(sign('needs_human:deny_path'), 'review_on_github'), deps);
+    expect(res).toMatchObject({ status: 'rejected', code: 'bad_action', httpStatus: 400 });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('still lets a person re-run landing once new commits arrive (the protected file may be gone)', async () => {
+    const { deps, calls } = fakeDeps({ readLiveHead: async () => 'head2' });
+    const res = await runLandingAction(tapped(sign('needs_human:deny_path'), 'retry_landing'), deps);
+    expect(res).toMatchObject({ status: 'done', stale: true });
+    expect(calls.map((c) => c.action)).toEqual(['retry_landing']);
+  });
+
+  it('a protected-path page does not run a retry on the same commit', async () => {
+    const { deps, calls } = fakeDeps();
+    const res = await runLandingAction(tapped(sign('needs_human:deny_path'), 'retry_landing'), deps);
+    expect(res).toMatchObject({ status: 'rejected', code: 'bad_action' });
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('runLandingAction: the signed link', () => {
   it('rejects an expired link and acts on nothing', async () => {
     const { deps, calls } = fakeDeps({ now: () => NOW + LANDING_ACTION_TTL_MS });
