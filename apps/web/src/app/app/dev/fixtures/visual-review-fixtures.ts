@@ -32,7 +32,10 @@ export const TASK_EVIDENCE_FIXTURE_STATE = 'task-evidence';
 /** Settings → Storage with fixture backends (EvidenceStorageFixture.tsx). */
 export const EVIDENCE_STORAGE_FIXTURE_STATE = 'evidence-storage';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE];
+/** The mission Board's Landed strip and its tethered drawer (mission-task-strip-fixtures.ts). */
+export const MISSION_TASK_STRIP_FIXTURE_STATE = 'mission-task-strip';
+
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

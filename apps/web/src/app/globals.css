@@ -650,6 +650,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .fleet-hatch-future { background-image: repeating-linear-gradient(135deg, var(--fleet-hatch) 0 1px, transparent 1px 7px); }
   .fleet-hatch-accent { background-image: repeating-linear-gradient(135deg, var(--accent) 0 2px, transparent 2px 4px); }
   .fleet-hatch-ok { background-image: repeating-linear-gradient(90deg, var(--fleet-ok-soft) 0 3px, transparent 3px 5px); }
+  .fleet-hatch-err { background-image: repeating-linear-gradient(135deg, var(--fleet-err-soft) 0 3px, transparent 3px 5px); }
 }
 
 /* ── Chat canvas (docs/design/chat-canvas.md). Two materials, one rule: the

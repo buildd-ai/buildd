@@ -24,6 +24,7 @@ import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { StrandCta } from '@/lib/mission-list-card';
 import type { StrandButtonOrder } from '@/lib/strand-choice-decision';
+import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
 
 function recordChoice(missionId: string, label: 'continue-on-runner' | 'wait-for-local', order: StrandButtonOrder, quietMs: number) {
   void fetch(`/api/missions/${encodeURIComponent(missionId)}/strand-choice`, {
@@ -133,9 +134,7 @@ export default function ContinueOnRunnerCta({
         <p role="alert" className="font-mono text-[11.5px] leading-snug text-status-error">{error}</p>
       )}
       {keptLocal && strand.taskId && (
-        <p data-testid="strand-keep-local-hint" className="font-mono text-[11.5px] leading-snug text-text-secondary [overflow-wrap:anywhere]">
-          Kept local. From your session: <code className="text-text-primary">claim_task {'{'}taskId: &quot;{strand.taskId}&quot;{'}'}</code>
-        </p>
+        <ClaimTaskHint taskId={strand.taskId} lead="Kept local. From your session:" testId="strand-keep-local-hint" />
       )}
     </div>
   );

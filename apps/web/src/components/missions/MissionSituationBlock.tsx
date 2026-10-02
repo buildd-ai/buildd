@@ -32,6 +32,7 @@ import { situationDetail, type MissionSituation, type WaitingOnDescriptor, type 
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { strandCtaFor } from '@/lib/mission-list-card';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
+import SituationTaskAffordance from './SituationTaskAffordance';
 
 /**
  * The element the criteria affordance targets: the Verified pill in the
@@ -247,11 +248,13 @@ export default function MissionSituationBlock({ missionId, situation, because, c
             >
               {affordance.label} →
             </a>
+          ) : affordance.taskId ? (
+            // One task: on the Board its drawer carries the action (no second CTA).
+            <SituationTaskAffordance label={affordance.label} href={affordance.href} taskId={affordance.taskId} />
           ) : (
             <Link
               data-testid="mission-primary-action"
               href={affordance.href}
-              data-task-id={affordance.taskId}
               className="inline-flex min-h-11 w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-accent text-white font-mono text-[13px] font-semibold hover:bg-accent/90 transition-colors"
             >
               {affordance.label} →
