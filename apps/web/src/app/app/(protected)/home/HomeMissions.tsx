@@ -1,5 +1,5 @@
 /**
- * Home's Missions section (docs/design/mission-feed-mobile-continuity.md, W1, S5).
+ * Home's Missions section (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W1, S5).
  *
  * Every card is the same `MissionCard` the missions list renders, built by the
  * same `buildMissionCardView`, so a mission reads identically on both. Groups

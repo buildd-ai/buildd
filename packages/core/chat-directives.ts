@@ -1,5 +1,5 @@
 /**
- * Chat directives (docs/design/memory-done-right.md, "Chat" and Decision #3):
+ * Chat directives (knowledge-base: buildd/design/memory-done-right.md, "Chat" and Decision #3):
  * rules a person states in chat ("always ...", "never ...", "from now on ...")
  * that, once confirmed in one tap, load into every one of their chat turns.
  *

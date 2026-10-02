@@ -3,7 +3,7 @@
  *
  * It names the head SHA whose green lands a PR after the platform pushed to the
  * branch, so a refused "behind base" is a wait with an owner instead of a
- * refusal nobody follows up (docs/design/pr-landing-guarantee.md §C). Stored on
+ * refusal nobody follows up (knowledge-base: buildd/design/pr-landing-guarantee.md §C). Stored on
  * the PR's owning worker task, next to the keys conflict/CI retry keep there,
  * so no schema change: one live value per PR.
  *

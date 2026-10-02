@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Orchestration shadow readout (docs/design/conflict-aware-orchestration.md §6).
+ * Orchestration shadow readout (knowledge-base: buildd/design/conflict-aware-orchestration.md §6).
  *
  * Grades one workspace's recorded shadow decisions (creation manifest picks
  * §5a, claim hold/start §5b) against their outcome labels, splits them by

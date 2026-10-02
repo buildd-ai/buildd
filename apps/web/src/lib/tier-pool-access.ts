@@ -1,7 +1,7 @@
 /**
  * Who may read or change a team's tier pools. Everyone in the team reads;
  * only owners and admins write, as for the tier registry itself
- * (docs/design/tier-model-pools.md §9). Session only: pools are an admin
+ * (knowledge-base: buildd/design/tier-model-pools.md §9). Session only: pools are an admin
  * screen, not an API-key surface, in P1.
  */
 import { NextResponse } from 'next/server';

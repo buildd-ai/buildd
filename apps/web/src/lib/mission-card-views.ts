@@ -1,5 +1,5 @@
 /**
- * Server loader for mission cards (docs/design/mission-feed-mobile-continuity.md,
+ * Server loader for mission cards (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * S5). The pure model is `mission-card-view.ts`; this adds the one extra read a
  * card needs that its page did not already make — the human steering marks the
  * time-axis strip in `FlightDetailSheet` draws — batched into a single query and

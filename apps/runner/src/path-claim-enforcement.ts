@@ -1,5 +1,5 @@
 /**
- * Path-claim enforcement: the runner half of docs/design/conflict-aware-orchestration.md
+ * Path-claim enforcement: the runner half of knowledge-base: buildd/design/conflict-aware-orchestration.md
  * §2 ("Automatic declaration and checkpoint sweeps").
  *
  * Two mechanisms, deliberately named differently because they promise different

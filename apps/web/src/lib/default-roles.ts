@@ -28,7 +28,7 @@ const BUILDD_MCP = {
 };
 
 /**
- * Choice criteria for role inference (docs/design/role-routing.md §2). This
+ * Choice criteria for role inference (knowledge-base: buildd/design/role-routing.md §2). This
  * text IS the routing prompt: the model reads nothing else about the role.
  * whenToUse is 20–300 chars, notFor ≤ 200 chars and names the neighbouring
  * role. `disabled` keeps a role out of the candidate set on purpose — used for

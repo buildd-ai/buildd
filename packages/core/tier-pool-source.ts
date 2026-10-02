@@ -1,5 +1,5 @@
 /**
- * Tier model pools — the stores half of the draw (docs/design/tier-model-pools.md).
+ * Tier model pools — the stores half of the draw (knowledge-base: buildd/design/tier-model-pools.md).
  *
  * Called from the claim route (agent runs) and from chat model resolution
  * (chat turns). The decisions live in `./tier-pool.ts`; this file loads the

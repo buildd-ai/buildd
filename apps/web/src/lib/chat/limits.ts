@@ -1,5 +1,5 @@
 /**
- * Chat spend and rate limits (docs/design/agent-chat.md → Cost and rate limits).
+ * Chat spend and rate limits (knowledge-base: buildd/design/agent-chat.md → Cost and rate limits).
  *
  * Chat spend is inference spend: metered per turn from `usage` (the generative
  * call plus the routing decision call in front of it), stored on the messages,

@@ -1,5 +1,5 @@
 // The signed, expiring token behind a landing page's tap URL
-// (docs/design/pr-landing-guarantee.md §H).
+// (knowledge-base: buildd/design/pr-landing-guarantee.md §H).
 //
 // The token only SELECTS an action for one (workspace, PR, head, reason): it
 // never acts. Confirming it still needs a signed-in session in the workspace's

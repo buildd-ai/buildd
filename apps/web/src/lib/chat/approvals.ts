@@ -1,5 +1,5 @@
 /**
- * Approval cards for chat writes (docs/design/agent-chat.md → Tools and permissions).
+ * Approval cards for chat writes (knowledge-base: buildd/design/agent-chat.md → Tools and permissions).
  *
  * The approval card is consent on top of authorization. It's checked on the
  * server when the answer arrives: the approval id, the hash of the tool input

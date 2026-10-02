@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The model picker for tiers and tier-pool arms (docs/design/tier-model-pools.md §2).
+ * The model picker for tiers and tier-pool arms (knowledge-base: buildd/design/tier-model-pools.md §2).
  *
  * Grouped by the key that pays (route) first, then by vendor inside
  * OpenRouter. The default view is the tier's price band, newest first, three

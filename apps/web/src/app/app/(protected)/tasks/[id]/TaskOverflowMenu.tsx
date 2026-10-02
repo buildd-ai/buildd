@@ -3,7 +3,7 @@
 /**
  * "⋮" on the task page: the admin actions (Edit, Reassign, View Source,
  * Delete) behind one control, so the title has the header to itself
- * (docs/design/mission-feed-mobile-continuity.md W6, addendum D9). The same
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W6, addendum D9). The same
  * side sheet as the mission page's ⋮: Edit stacks on top of it with Back. The actions are passed in
  * as children and keep their own confirm/modal logic unchanged.
  */

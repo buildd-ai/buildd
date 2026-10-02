@@ -6,7 +6,7 @@
  * Below 1024px, phone and tablet alike, the same object opens as a sheet over
  * the conversation: a tablet gets the phone's single column.
  *
- * The canvas (docs/design/chat-canvas.md): crumbs for who you're talking to
+ * The canvas (knowledge-base: buildd/design/chat-canvas.md): crumbs for who you're talking to
  * and about what, the live object pinned at the top, a soft conversation over
  * the sea (sea.ts), and the composer, whose top edge carries the one glow while
  * a turn streams.
@@ -76,7 +76,7 @@ export interface ChatWorkspaceProps {
   viewerName: string | null;
   /**
    * The conversation list the desktop right panel shows under HISTORY
-   * (docs/design/chat-v3-desktop.md, decision 4). The old 400px context aside
+   * (knowledge-base: buildd/design/chat-v3-desktop.md, decision 4). The old 400px context aside
    * is gone: the panel docks a real object instead.
    */
   aside?: ReactNode;
@@ -365,17 +365,17 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
 
   const shownTitle = title ?? (messages.length > 0 ? provisionalTitle(messages) : 'New chat');
   const docked = !overlay && focus !== null;
-  // The mission sheet: the summoned canvas over a mission (docs/design/chat-canvas.md,
+  // The mission sheet: the summoned canvas over a mission (knowledge-base: buildd/design/chat-canvas.md,
   // "Mission sheet"). An opaque sheet with a context card; the title shows once.
   const missionSheet = overlay && focusRef && !focusOpensSheet && focusRef.kind === 'mission' ? focusRef : null;
   const missionEmpty = !!missionSheet && messages.length === 0;
 
   // A phone or tablet (mobile chat v3): `CHAT / new` left, `HISTORY →` right,
-  // in place of the back arrow. Desktop (lg, docs/design/chat-v3-desktop.md)
+  // in place of the back arrow. Desktop (lg, knowledge-base: buildd/design/chat-v3-desktop.md)
   // reads the same.
   const phoneCrumbs = !overlay && !crumbs;
   const isNew = !title && messages.length === 0;
-  // The v3 peek header (docs/design/chat-v3-desktop.md, "Peek"): ASK / what,
+  // The v3 peek header (knowledge-base: buildd/design/chat-v3-desktop.md, "Peek"): ASK / what,
   // FULL SCREEN, close. The mission sheet wears it at every width; any other
   // summoned canvas wears it on desktop only.
   const peekHeader = (what: string, ids: { header: string; crumbs: string; full: string; close: string }, cls: string, sheet?: 'mission') => (
@@ -503,7 +503,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
     else { setDraft(sg.text); requestAnimationFrame(() => composer.current?.focus()); }
   };
 
-  // The empty canvas (docs/design/chat-canvas.md): an overline with the mood,
+  // The empty canvas (knowledge-base: buildd/design/chat-canvas.md): an overline with the mood,
   // a hero line in the voice face, and two picked questions as square rows
   // under their own header. All of it is the kit's ChatEmpty (overline, mood,
   // greeting, sub line, chips header and rows); globals.css ("Chat on the kit")

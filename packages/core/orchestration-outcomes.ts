@@ -1,6 +1,6 @@
 /**
  * Outcome labels for orchestration decisions — the pure join
- * (docs/design/conflict-aware-orchestration.md §5a/§5b labelling, §6).
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §5a/§5b labelling, §6).
  *
  * A decision row is graded against what actually happened to its task:
  *

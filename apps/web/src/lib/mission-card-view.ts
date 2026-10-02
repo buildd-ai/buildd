@@ -1,6 +1,6 @@
 /**
  * The mission card — one model for the Home card and the missions-list card
- * (docs/design/mission-feed-mobile-continuity.md, W1, S5, addendum D7/D8).
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W1, S5, addendum D7/D8).
  *
  * Pure and client-safe. Two steps, so a surface can group every mission it
  * loaded but only pay for the heavy parts of the ones it shows:

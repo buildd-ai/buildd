@@ -2,7 +2,7 @@
 
 /**
  * The chat canvas, rescoped to steer one running worker instead of talking
- * with an agent (docs/design/chat-canvas.md's "Ask about this task", but for
+ * with an agent (knowledge-base: buildd/design/chat-canvas.md's "Ask about this task", but for
  * telling it something) — from a running task's card/row (the tasks list,
  * Board tiles, home's fleet slot). No LLM turn happens here: every send goes
  * straight to the worker's instruction queue (`POST /api/workers/[id]/instruct`,

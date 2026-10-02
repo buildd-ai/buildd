@@ -1,5 +1,5 @@
 /**
- * Can this person start a chat turn right now? (docs/design/agent-chat.md,
+ * Can this person start a chat turn right now? (knowledge-base: buildd/design/agent-chat.md,
  * "When no key resolves".)
  *
  * Chat is always on: it is part of buildd, not an option, so there is no

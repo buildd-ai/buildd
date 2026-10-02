@@ -1,13 +1,13 @@
 'use client';
 
 /**
- * The chat canvas, summonable from any page (docs/design/chat-canvas.md, step 2).
+ * The chat canvas, summonable from any page (knowledge-base: buildd/design/chat-canvas.md, step 2).
  *
  * A floating "Ask" button (and ⌘K / Ctrl+K, shown only with keyboard hints on)
  * opens the canvas over the page, scoped to the page's object through the same
  * `entry.about` contract as "Ask about this mission". On a phone it takes over
  * the screen; on desktop it peeks as a solid 600px panel anchored right over a
- * heavy scrim, with no sea (docs/design/chat-v3-desktop.md, "Peek").
+ * heavy scrim, with no sea (knowledge-base: buildd/design/chat-v3-desktop.md, "Peek").
  *
  * The conversation stays mounted while closed, so reopening on the same page
  * continues it. Opening it about something else starts a fresh one (the old

@@ -1,5 +1,5 @@
 /**
- * The chat turn's directive hook (docs/design/memory-done-right.md, "Chat").
+ * The chat turn's directive hook (knowledge-base: buildd/design/memory-done-right.md, "Chat").
  * Two jobs, both behind `TurnDeps.directives` so the turn builder carries one
  * seam and no directive logic of its own:
  *
