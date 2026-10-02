@@ -3686,6 +3686,16 @@ export async function PATCH(
         );
       });
 
+      // The task's "What shipped" record (lede + change type from the PR diff),
+      // which the completed task page leads with. Merged into result, never
+      // a rewrite; a failure leaves the page on its title-only fallback.
+      await runStep('task-shipped', async () => {
+        if (status === 'completed' && loopDispatchResult?.kind !== 'requeue') {
+          const { storeTaskShippedRecord } = await import('@/lib/task-shipped-store');
+          await storeTaskShippedRecord({ taskId, structuredOutput: body.structuredOutput, summarySource: body.summarySource });
+        }
+      });
+
       // Auto-create/upsert artifact from structured output or summary.
       // Skip for loop requeue — the task is still running; artifact will be created on final completion.
       await runStep('auto-artifact', async () => {

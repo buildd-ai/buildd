@@ -3,7 +3,7 @@ import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
-import { HEARTBEAT_PROTOCOL_BLOCK, shippedPromptText } from '@buildd/shared';
+import { HEARTBEAT_PROTOCOL_BLOCK, shippedPromptText, taskShippedPromptText } from '@buildd/shared';
 import {
   buildMemoryBlock,
   byteLength,
@@ -559,7 +559,9 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       'Do NOT call create_task — the system creates tasks from your plan automatically.' +
       (authorsShipped ? `\n\n${shippedPromptText('planning')}` : '');
   } else if (outputReq === 'pr_required') {
-    outputRequirementContent = '## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.';
+    outputRequirementContent = '## Output Requirement\nThis task **requires a PR**. Make your changes, commit, push, and create a PR via `buildd` action: create_pr before completing.' +
+      // A fixed outputSchema (a reviewer verdict, say) would reject the extra key.
+      (!task.outputSchema ? `\n\n${taskShippedPromptText()}` : '');
   } else if (outputReq === 'artifact_required') {
     outputRequirementContent = '## Output Requirement\nThis task **requires you to create an artifact** as a deliverable. Use `buildd` action: create_artifact before completing the task.';
   } else if (outputReq === 'none') {

@@ -111,6 +111,35 @@ export function shippedPromptText(trigger: 'planning' | 'evaluation'): string {
 }
 
 /**
+ * The same contract, one task wide: a task that opens a PR may return
+ * `shipped: { lede, offPlan? }` in its `complete_task` structured output, and
+ * the completed task page leads with it. The server adds the change type from
+ * the PR diff and checks the lede exactly as it does a mission's; a lede that
+ * fails is not shown and the page falls back to the title. No hero shots: the
+ * task page picks those from its own audit screenshots.
+ */
+export function taskShippedPromptText(): string {
+  return [
+    '## What shipped',
+    'When you call `complete_task`, include `shipped` in `structuredOutput`:',
+    '`{ shipped: { lede: "...", offPlan?: ["..."] } }`. The completed task page leads with it.',
+    '',
+    '`shipped.lede`: ONE or TWO plain sentences for the person who asked for this task and will',
+    'not read the diff: what is different for them now, and if the change was visual, whether',
+    'anyone looked at it. No file paths, route or endpoint names, symbol or function names, class',
+    `names, PR numbers, or internal vocabulary. Max ${SHIPPED_LEDE_MAX_CHARS} characters. A lede that breaks these`,
+    'rules is not shown.',
+    '',
+    '`shipped.offPlan`: OMIT unless what you delivered materially differs from the task description',
+    `(something cut, or done a different way). Then at most ${SHIPPED_OFF_PLAN_MAX_LINES} short plain lines saying what and why.`,
+    '',
+    'BAD:  "Added TaskShippedHeader to page.tsx and a jsonb merge on tasks.result."',
+    'GOOD: "A finished task now opens on a plain sentence about what changed, with the merge',
+    '       button full width on a phone. Checked at phone and desktop width."',
+  ].join('\n');
+}
+
+/**
  * The one-line outcome of a task, for prompts that list a mission's completed
  * work: the handoff's `delivered` line when there is one, else the summary.
  * A summary the runner captured at session end (`summarySource: 'fallback'`)
