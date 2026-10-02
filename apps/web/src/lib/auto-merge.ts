@@ -105,9 +105,11 @@ const TRANSIENT_REFUSALS: ReadonlySet<AutoMergeRefusalClass> = new Set(['ci', 's
  * decisions, both of which ask `isMissionIntegrationBase` — never a branch-name
  * shape test:
  *
- *  - whether this PR is the mission's integration PR (Option A′), in which
- *    case the AGGREGATE LINE THRESHOLD does not apply. Nothing else is
- *    relaxed — see the comment at the size check;
+ *  - whether this is a task PR into the mission's own integration branch
+ *    (its BASE ref), in which case the AGGREGATE LINE THRESHOLD does not
+ *    apply: under branchStrategy "mission-branch" the tier, cap included,
+ *    applies once, at the mission-to-trunk PR. Nothing else is relaxed — see
+ *    the comment at the size check;
  *  - whether `opts.bound` may permit an unattended merge (below).
  *
  * `opts.releaseConfig` is the workspace's release config, read for the same
@@ -294,9 +296,10 @@ export async function evaluateAutoMergeSafety(
   }
 
   // Read the PR once. Hoisted above the size check (it also feeds the
-  // mergeable_state check below) because the PR's HEAD ref is what identifies
-  // the mission integration PR. Both refs are read here: HEAD for the size-gate
-  // exemption, BASE for the model-approve bound.
+  // mergeable_state check below) because the PR's refs feed the size-gate
+  // exemptions: BASE identifies a task PR into its mission's integration
+  // branch, HEAD and BASE together the release PR. BASE also feeds the
+  // model-approve bound.
   //
   // An unreadable PR keeps the size gate on and fails closed at the live-head
   // check below. The bound also requires a verified base ref.
@@ -323,17 +326,22 @@ export async function evaluateAutoMergeSafety(
   // workspace on either tier cannot inherit the 800-line default just
   // because `policy.threshold` happened to be unset.
   if (policy.tier === 'auto-threshold') {
-    // Is this the mission's integration PR (integration branch → trunk)?
+    // Is this a task PR into its own mission's integration branch
+    // (task branch → integration branch)?
     //
-    // `isMissionIntegrationBase` asks "is this ref the mission's integration
-    // branch"; for the mission PR the ref of interest is its HEAD, since its BASE
-    // is trunk. Authoritative predicate rather than the `mission/` shape
-    // heuristic: the only caller can reach the mission row, and a false positive
-    // here would drop the size gate for any branch that merely looks like a
-    // mission branch. An unknown head ref or a mission that has not opted in is
-    // false, so nothing changes for a mission that is not using Option A′.
-    const isMissionIntegrationPr = isMissionIntegrationBase({
-      baseRef: prData?.head?.ref ?? null,
+    // Under branchStrategy "mission-branch" the tier applies ONCE, to the
+    // mission-to-trunk PR, so a task PR landing on the integration branch is
+    // not where the cap belongs. The ref of interest is the task PR's BASE.
+    // The mission-to-trunk PR (integration branch as HEAD) is NOT exempt: it is
+    // where the tier applies, cap included.
+    //
+    // Authoritative predicate rather than the `mission/` shape heuristic: it
+    // compares against the calling task's own mission row, so a PR into a
+    // branch that merely looks like a mission branch, or into another
+    // mission's, keeps the cap. An unknown base ref or a mission that has not
+    // opted in is false.
+    const isTaskPrIntoOwnMissionBranch = isMissionIntegrationBase({
+      baseRef: prData?.base?.ref ?? null,
       mission: opts?.mission ?? null,
     });
 
@@ -351,31 +359,27 @@ export async function evaluateAutoMergeSafety(
       (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
     );
     const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
-    // Option A′: the AGGREGATE line threshold does not apply to a mission
-    // integration PR. That PR is the union of every task diff in the mission, and
-    // each of those diffs was already size-gated when it merged into the
-    // integration branch — 800 lines is the right granularity per task, and
-    // re-applying it to the union double-counts a check that already passed.
-    // Under the DEFAULT policy the union is over the cap essentially by
-    // construction, which would make every mission PR unmergeable by the platform
-    // and reduce "the tier applies at the mission PR" to a claim that only holds
-    // for operators who explicitly configured a tier.
+    // A task PR into its own mission's integration branch skips the AGGREGATE
+    // line threshold: the mission-to-trunk PR carries the same lines to trunk
+    // later and is size-gated there, under the full policy.
     //
-    // The same reasoning applies to the workspace's release PR (dev → main):
-    // it bundles every commit merged since the last release, each already
-    // size-gated on its own way into the release branch, so the union is over
-    // the cap essentially by construction and every release would otherwise
-    // need a human to merge_pr regardless of review outcome.
+    // The workspace's release PR (dev → main) skips it too: it bundles every
+    // commit merged since the last release, each already size-gated on its own
+    // way into the release branch, so the union is over the cap essentially by
+    // construction and every release would otherwise need a human to merge_pr
+    // regardless of review outcome.
     //
     // ONLY the aggregate size gate is exempt for either. Everything else in this
     // function still runs, unchanged and in the same order: CI-green
     // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
     // operation-class inspector, and the conflict / branch-protection checks.
-    if ((isMissionIntegrationPr || isReleasePr) && totalLines > maxLines) {
-      const exemption = isMissionIntegrationPr ? 'mission integration PR' : 'release PR';
+    if ((isTaskPrIntoOwnMissionBranch || isReleasePr) && totalLines > maxLines) {
+      const exemption = isTaskPrIntoOwnMissionBranch
+        ? "task PR into its mission's integration branch — the mission-to-trunk PR is size-gated instead"
+        : 'release PR — each underlying commit was size-gated on the way in';
       console.log(
-        `[auto-merge] ${repoFullName}#${prNumber}: ${exemption} — aggregate size gate not applied ` +
-          `(${totalLines} source lines > limit ${maxLines}); each underlying commit was size-gated on the way in`,
+        `[auto-merge] ${repoFullName}#${prNumber}: aggregate size gate not applied ` +
+          `(${totalLines} source lines > limit ${maxLines}): ${exemption}`,
       );
     } else if (totalLines > maxLines) {
       const limitSource = policy.threshold?.maxLines != null ? 'configured' : 'default';
@@ -471,10 +475,7 @@ export async function evaluateAutoMergeSafety(
         }`,
       };
     }
-    // BASE ref here, HEAD ref for the size-gate exemption above — the same
-    // question ("is this ref the mission's integration branch") asked about the
-    // two different PRs in the topology. The mission PR runs integration branch
-    // → trunk, so its integration branch is its HEAD; a task PR runs task
+    // BASE ref, as for the size-gate exemption above: a task PR runs task
     // branch → integration branch, so its integration branch is its BASE.
     const verdict = evaluateModelApproveBound({
       baseRef: prData.base?.ref,

@@ -110,11 +110,11 @@ export { isMissionIntegrationBase } from '@buildd/core/mission-integration';
  *   explicit, per-task operator act — somebody asked for a human on this exact
  *   task by name — and A' must not silently revoke it.
  * - The THRESHOLD is carried through from whatever the rest of the chain would
- *   have resolved (falling back to DEFAULT_MERGE_POLICY.threshold). Only the
- *   tier drops. The size guard still applies per task PR, which is the right
- *   granularity: an 800-line task is worth a look whether or not its base is
- *   quarantined, and the mission PR is the union of every task diff so a
- *   per-task guard there would be meaningless.
+ *   have resolved (falling back to DEFAULT_MERGE_POLICY.threshold), so its
+ *   denyPaths still apply. Its aggregate line cap does NOT apply to the task
+ *   PR: `evaluateAutoMergeSafety` exempts a PR whose base is its own mission's
+ *   integration branch, and applies the cap once, at the mission-to-trunk PR,
+ *   with the rest of the tier.
  *
  * Backwards compatibility: with `pr` omitted, `pr.baseRef` null, or the mission
  * not opted in (`integrationBranchEnabled` false, the default), this returns
@@ -138,7 +138,7 @@ export function resolvePolicy(
   if (task?.requiresReview) return { tier: 'human' };
 
   // 2. Option A': task PR based on the mission integration branch. The tier
-  //    belongs to the mission PR, so drop it here — but keep the size guard.
+  //    belongs to the mission PR, so drop it here and carry the threshold.
   if (isMissionIntegrationBase({ baseRef: pr?.baseRef, mission })) {
     const carried = resolveChainBelowIntegrationBranch(workspace, mission);
     return {

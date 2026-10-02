@@ -20,6 +20,7 @@ type Gh = {
   baseMovement: { ahead_by: number; files: string[] };
   failPr?: boolean;
   failCompare?: boolean;
+  headRef?: string;
 };
 let gh: Gh;
 const freshGh = (): Gh => ({
@@ -48,21 +49,22 @@ const mockGithubApi = mock(async (_installationId: number, path: string): Promis
       merged: gh.merged,
       merge_commit_sha: gh.merged ? 'merge-sha' : null,
       mergeable_state: gh.mergeableState,
-      head: { sha: gh.head, ref: 'buildd/task' },
+      head: { sha: gh.head, ref: gh.headRef ?? 'buildd/task' },
       base: { ref: gh.baseRef },
     };
   }
-  if (/\/compare\/dev\.\.\.[^/]+$/.test(path)) {
+  const base = encodeURIComponent(gh.baseRef);
+  if (path.includes(`/compare/${base}...`)) {
     if (gh.failCompare) throw new Error('compare down');
     return { behind_by: gh.behindBy };
   }
-  if (/\/compare\/[^/]+\.\.\.dev$/.test(path)) {
+  if (path.endsWith(`...${base}`)) {
     return {
       ahead_by: gh.baseMovement.ahead_by,
       files: gh.baseMovement.files.map((filename) => ({ filename })),
     };
   }
-  if (/\/commits\/dev$/.test(path)) return { sha: gh.baseTip };
+  if (path.endsWith(`/commits/${base}`)) return { sha: gh.baseTip };
   throw new Error(`unexpected github path ${path}`);
 });
 const mockMergePullRequest = mock(async (..._a: any[]): Promise<any> => ({ merged: true, message: 'merged' }));
@@ -605,6 +607,41 @@ describe('landPr — safety rails', () => {
   it('an oversize diff is a human decision', async () => {
     const out = await land({ policy: { tier: 'auto-threshold', threshold: { maxLines: 3, denyPaths: [] } } });
     expect(out).toMatchObject({ kind: 'needs_human', cause: 'size_cap' });
+  });
+
+  describe('mission-branch strategy and the size cap', () => {
+    // The tier applies once, at the mission-to-trunk PR. A task PR into its own
+    // mission's integration branch skips the cap here too, or switching the
+    // landing function to enforce would put the cap straight back.
+    const MISSION_BRANCH = 'mission/example-slug-0a1b2c3d';
+    const mission = { workingBranch: MISSION_BRANCH, integrationBranchEnabled: true };
+    const tinyCap: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 3, denyPaths: [] } };
+
+    it("lands an oversize task PR into its own mission's integration branch", async () => {
+      gh.baseRef = MISSION_BRANCH;
+      const out = await land({ policy: tinyCap, mission });
+      expect(out).toMatchObject({ kind: 'merged' });
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds an oversize PR into another mission's integration branch", async () => {
+      gh.baseRef = 'mission/other-slug-4e5f6a7b';
+      const out = await land({ policy: tinyCap, mission });
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'size_cap' });
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('holds an oversize task PR into trunk even when its task has a mission', async () => {
+      const out = await land({ policy: tinyCap, mission });
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'size_cap' });
+    });
+
+    it('holds an oversize mission-to-trunk PR', async () => {
+      gh.headRef = MISSION_BRANCH;
+      const out = await land({ policy: tinyCap, mission });
+      expect(out).toMatchObject({ kind: 'needs_human', cause: 'size_cap' });
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
   });
 
   it('a conflicting PR dispatches the conflict agent (not update-branch)', async () => {
