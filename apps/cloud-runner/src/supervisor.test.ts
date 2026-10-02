@@ -31,6 +31,7 @@ function fakeContainer() {
   const calls: string[] = [];
   const starts: Array<{ env: Record<string, string>; enableInternet: boolean }> = [];
   const execs: string[][] = [];
+  const execEnvs: Array<Record<string, string> | undefined> = [];
   const exits: Array<ReturnType<typeof deferred<number>>> = [];
   let died = deferred<void>();
   let stdout: string[] = [];
@@ -39,9 +40,10 @@ function fakeContainer() {
   const container: ContainerPort = {
     get running() { return running; },
     start(opts) { calls.push('start'); starts.push(opts); running = true; died = deferred<void>(); },
-    async exec(cmd) {
+    async exec(cmd, opts) {
       calls.push('exec');
       execs.push(cmd);
+      execEnvs.push(opts?.env);
       const exit = deferred<number>();
       exits.push(exit);
       const proc: ProcessPort = { stdout: streamOf(stdout), stderr: streamOf([]), exitCode: exit.promise };
@@ -52,7 +54,7 @@ function fakeContainer() {
     async setInactivityTimeout(ms) { inactivityMs = ms; },
   };
   return {
-    container, calls, starts, execs, exits,
+    container, calls, starts, execs, execEnvs, exits,
     setStdout(lines: string[]) { stdout = lines; },
     kill() { running = false; died.resolve(); },
     /** A container left running from before an agent restart. */
@@ -144,6 +146,19 @@ describe('dispatch', () => {
     const env = h.fc.starts[0]!.env;
     expect(env.BUILDD_API_KEY).toBe('bldt_test_task_token');
     expect(Object.values(env).join('\n')).not.toContain('bld_test_key');
+  });
+
+  test('the runner process gets the run env itself: exec does not inherit start() env on Cloudflare', async () => {
+    // Docker's exec inherits the container env, so a local run passed with
+    // the env on start() alone; a real Cloudflare container started the
+    // runner with no BUILDD_API_KEY and it exited 64.
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    const env = h.fc.execEnvs[0];
+    expect(env).toEqual(h.fc.starts[0]!.env);
+    expect(env!.BUILDD_API_KEY).toBe('bldt_test_task_token');
+    expect(env!.BUILDD_EXECUTOR).toBe('cloud');
   });
 
   test('a failed mint starts no container', async () => {
@@ -636,6 +651,19 @@ describe('resumable runs: park and resume', () => {
     expect(h.state.reportHistory?.at(-1)?.outcome).toBe('parked');
   });
 
+  test('the orphan park gets a per-task token too, never the runner key', async () => {
+    const h = harness({ config: { resumableRuns: true }, initial: { taskId: TASK_ID, attempt: 1, status: 'running', workerId: 'w-orph', startedAt: 1 } });
+    h.fc.markRunning();
+    const recovering = h.sup.recoverOrphan();
+    await h.until(() => h.fc.execs.length === 1);
+    const env = h.fc.execEnvs[0]!;
+    expect(env.BUILDD_API_KEY).toBe('bldt_test_task_token');
+    expect(Object.values(env).join('\n')).not.toContain('bld_test_key');
+    h.fc.exits[0]!.resolve(4);
+    await recovering;
+    await h.until(() => h.fc.execs.length === 2);
+  });
+
   test("the orphan park does not block the agent's start: the egress handler calls back into the agent", async () => {
     // onStart runs under blockConcurrencyWhile; the park's upload reaches the
     // snapshot route, which asks this agent for its scope. Awaiting the park
@@ -687,7 +715,7 @@ describe('resumable runs: park and resume', () => {
     h.fc.markRunning();
     const recovering = h.sup.recoverOrphan();
     await h.until(() => h.fc.execs.length === 1);
-    expect(h.fc.calls.slice(0, 2)).toEqual(['installEgress', 'exec']);
+    expect(h.fc.calls.slice(0, 3)).toEqual(['mintTaskToken', 'installEgress', 'exec']);
     h.fc.exits[0]!.resolve(1);
     await recovering;
   });
