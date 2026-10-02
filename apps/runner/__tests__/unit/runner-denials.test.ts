@@ -53,6 +53,10 @@ const CASES: Case[] = [
     run: async () => reasonOf(await makeFactory().createReadJailHook(worker, OWN, ['/secret'])(pre('Read', { file_path: '/secret/x' }), undefined, signal)),
   },
   {
+    name: 'claude.ai artifact gate: delete',
+    run: async () => reasonOf(await makeFactory().createClaudeAiArtifactHook(worker, 'publish')(pre('Artifact', { action: 'delete', url: 'u' }), undefined, signal)),
+  },
+  {
     name: 'worktree confinement: Bash cd into the primary clone',
     run: async () => reasonOf(await makeFactory().createWorktreeConfinementHook(worker, OWN, PRIMARY)(pre('Bash', { command: `cd ${PRIMARY} && ls` }), undefined, signal)),
   },

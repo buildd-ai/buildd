@@ -68,12 +68,28 @@ export interface ClaudeCredentialsJson {
   /** Epoch seconds when the access_token expires. */
   expires_at?: number;
   version?: number;
+  /**
+   * OAuth scopes the token was granted, when known (the dashboard login
+   * records them from the token response). Lets the runner declare e.g.
+   * `user:mcp_servers` so claude.ai connectors load. Absent = unknown, and the
+   * runner declares the legacy `['user:inference']`.
+   */
+  scopes?: string[];
 }
 
 /** Encrypted-at-rest payload in secrets.encryptedValue. */
 interface ClaudeBlob {
   access_token: string;
   refresh_token: string;
+  /** Granted OAuth scopes, when recorded. Carried through every refresh. */
+  scopes?: string[];
+}
+
+/** Scopes as a clean string list, or undefined when there are none. */
+function normalizeScopes(raw: unknown): string[] | undefined {
+  const list = typeof raw === 'string' ? raw.split(/\s+/) : Array.isArray(raw) ? raw : [];
+  const scopes = list.filter((s): s is string => typeof s === 'string' && s.length > 0);
+  return scopes.length > 0 ? [...new Set(scopes)] : undefined;
 }
 
 // ── Scope ─────────────────────────────────────────────────────────────────────
@@ -101,6 +117,8 @@ export interface ClaudeCredential {
   accessToken: string;
   tokenExpiresAt: Date | null;
   lastRefreshedAt: Date | null;
+  /** Granted OAuth scopes, or null when the credential predates recording them. */
+  scopes: string[] | null;
 }
 
 export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error' | 'revoked';
@@ -180,9 +198,11 @@ export async function storeClaudeCredential(
   scope: ClaudeScope,
   credential: ClaudeCredentialsJson,
 ): Promise<void> {
+  const scopes = normalizeScopes(credential.scopes);
   const encryptedValue = encodeBlob({
     access_token: credential.access_token,
     refresh_token: credential.refresh_token,
+    ...(scopes ? { scopes } : {}),
   });
   const tokenExpiresAt = expiresAtToDate(credential.expires_at);
   const now = new Date();
@@ -260,6 +280,7 @@ export async function resolveClaudeCredential(opts: {
     accessToken: blob.access_token,
     tokenExpiresAt: best.tokenExpiresAt ?? null,
     lastRefreshedAt: best.lastRefreshedAt ?? null,
+    scopes: normalizeScopes(blob.scopes) ?? null,
   };
 }
 
@@ -496,7 +517,7 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
     await db
       .update(secrets)
       .set({
-        encryptedValue: encodeBlob({ access_token: newAccessToken, refresh_token: newRefreshToken }),
+        encryptedValue: encodeBlob({ ...blob, access_token: newAccessToken, refresh_token: newRefreshToken }),
         tokenExpiresAt,
         lastVerificationError: null,
         // The rotation resolved successfully: this is the one place a Claude refresh

@@ -388,6 +388,43 @@ describe('attachRoleConfig', () => {
     expect(workers[0].cbmDisabled).toBe(true);
   });
 
+  // claude.ai artifact access: off unless the role or the task opts in.
+  describe('claudeAiArtifacts', () => {
+    const builderTask = (id: string, context?: Record<string, unknown>) =>
+      task(id, { roleSlug: 'builder', workspace: { teamId: 'team-1' }, context });
+
+    it('is absent by default (role without the flag)', async () => {
+      mockSelectRows.mockResolvedValue([roleRow({ metadata: {} })]);
+      const workers = [worker('t1')];
+      await attachRoleConfig(workers, [builderTask('t1')], 'acct-1');
+      expect(workers[0].claudeAiArtifacts).toBeUndefined();
+    });
+
+    it('is set from the role metadata flag, without a packaged bundle', async () => {
+      mockSelectRows.mockResolvedValue([roleRow({ configStorageKey: null, configHash: null, metadata: { claudeAiArtifacts: 'read' } })]);
+      const workers = [worker('t1')];
+      await attachRoleConfig(workers, [builderTask('t1')], 'acct-1');
+      expect(workers[0].claudeAiArtifacts).toBe('read');
+    });
+
+    it('lets a task turn a role flag off', async () => {
+      mockSelectRows.mockResolvedValue([roleRow({ metadata: { claudeAiArtifacts: 'publish' } })]);
+      const workers = [worker('t1')];
+      await attachRoleConfig(workers, [builderTask('t1', { claudeAiArtifacts: 'off' })], 'acct-1');
+      expect(workers[0].claudeAiArtifacts).toBeUndefined();
+    });
+
+    it('lets a task opt in with no role at all, but only to read', async () => {
+      const workers = [worker('t1'), worker('t2')];
+      await attachRoleConfig(workers, [
+        task('t1', { context: { claudeAiArtifacts: 'read' } }),
+        task('t2', { context: { claudeAiArtifacts: 'publish' } }),
+      ], 'acct-1');
+      expect(workers[0].claudeAiArtifacts).toBe('read');
+      expect(workers[1].claudeAiArtifacts).toBe('read');
+    });
+  });
+
   it('leaves cbmDisabled unset when codebase-memory is not opted out', async () => {
     mockSelectRows.mockResolvedValue([roleRow({ mcpServers: { 'codebase-memory': true } })]);
     const workers = [worker('t1')];

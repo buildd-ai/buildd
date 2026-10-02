@@ -11,7 +11,7 @@ export { isolatedClaudeConfigDirPath } from './isolation-paths.js';
  * Kept separate from the filesystem write so the shape — the part that actually
  * broke — is unit-testable without touching disk.
  */
-export function buildClaudeCredentialsFile(accessToken: string, expiresAt: Date | null) {
+export function buildClaudeCredentialsFile(accessToken: string, expiresAt: Date | null, scopes?: readonly unknown[] | null) {
   return {
     claudeAiOauth: {
       accessToken,
@@ -21,10 +21,26 @@ export function buildClaudeCredentialsFile(accessToken: string, expiresAt: Date 
       // epoch MILLISECONDS — the CLI stores Date.now() + expires_in * 1000 and
       // compares with (expiresAt - Date.now()).
       expiresAt: expiresAt != null ? expiresAt.getTime() : null,
-      scopes: ['user:inference'],
+      scopes: credentialScopes(scopes),
       subscriptionType: null,
     },
   };
+}
+
+/** What a credential with no recorded scopes declares — inference only, as before. */
+export const LEGACY_CLAUDE_SCOPES = ['user:inference'] as const;
+
+/**
+ * The scopes to declare in `.credentials.json`: the ones the credential was
+ * granted (recorded by the dashboard login), so the CLI can do what the token
+ * allows — e.g. load claude.ai connectors, which it only fetches when
+ * `user:mcp_servers` is declared. Unrecorded falls back to the legacy
+ * `['user:inference']`. Only `user:` scopes pass, and inference is always kept.
+ */
+export function credentialScopes(scopes?: readonly unknown[] | null): string[] {
+  const granted = (scopes ?? []).filter((s): s is string => typeof s === 'string' && /^user:[a-z_:]+$/.test(s));
+  if (granted.length === 0) return [...LEGACY_CLAUDE_SCOPES];
+  return [...new Set(granted.includes('user:inference') ? granted : ['user:inference', ...granted])];
 }
 
 /**
@@ -58,7 +74,7 @@ export function materializeClaudeConfigDir(
   workerId: string,
   accessToken: string,
   expiresAt: Date | null,
-  options?: { isolationRoot?: string; workspaceId?: string },
+  options?: { isolationRoot?: string; workspaceId?: string; scopes?: readonly string[] },
 ): { claudeConfigDir: string } {
   let claudeConfigDir: string;
   if (options?.isolationRoot && options?.workspaceId) {
@@ -71,7 +87,7 @@ export function materializeClaudeConfigDir(
     fs.chmodSync(claudeConfigDir, 0o700);
   }
 
-  const credentials = buildClaudeCredentialsFile(accessToken, expiresAt);
+  const credentials = buildClaudeCredentialsFile(accessToken, expiresAt, options?.scopes);
 
   const credPath = join(claudeConfigDir, '.credentials.json');
   fs.writeFileSync(credPath, JSON.stringify(credentials));

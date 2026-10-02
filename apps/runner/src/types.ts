@@ -401,6 +401,10 @@ export interface LocalWorker {
   // access_token — no refresh_token — preventing in-session token rotation.
   claudeAccessToken?: string;
   claudeTokenExpiresAt?: Date | null;
+  /** OAuth scopes recorded for the managed claude_credential; written into .credentials.json. */
+  claudeTokenScopes?: string[];
+  /** claude.ai artifact access resolved by the claim (absent = off). */
+  claudeAiArtifacts?: import('@buildd/shared').ClaudeAiArtifactAccess;
   // secretId of the claude_credential managed by the broker for this worker.
   // Used by startSession to fetch a fresh token via the broker socket instead
   // of relying on the potentially-stale claudeAccessToken from the claim response.

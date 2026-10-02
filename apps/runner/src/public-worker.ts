@@ -107,6 +107,8 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   cbmOutcome: true,
   cbmExperimentWithheld: true,
   questionGate: true,
+  claudeAiArtifacts: true,
+  claudeTokenScopes: true,
   questionPushbacks: true,
   lastEditedFile: true,
   cbmDisableReason: true,

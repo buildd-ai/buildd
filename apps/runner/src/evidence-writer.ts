@@ -97,6 +97,9 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   serverOauthToken: 'secret',
   claudeAccessToken: 'secret',
   claudeTokenExpiresAt: 'not_secret',
+  // Scope names (e.g. user:inference), not a credential.
+  claudeTokenScopes: 'not_secret',
+  claudeAiArtifacts: 'not_secret',
   mcpSecrets: 'secret',
   // Resolved connector descriptors; credential values arrive via mcpSecrets.
   mcpConnectors: 'not_secret',
