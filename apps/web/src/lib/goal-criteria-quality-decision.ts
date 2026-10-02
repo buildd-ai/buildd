@@ -37,6 +37,7 @@ import type {
   decisionCall,
 } from '@buildd/core/decision-client';
 import type { GateCallerOrigin, RecordGateEventInput } from '@buildd/core/gate-events';
+import { CODE_RUBRIC, GOAL_QUALITY_BASELINE_RUBRIC, type GoalQualityRubric } from './goal-criteria-rubric';
 
 export const DECISION_SHADOW_LOG_PREFIX = '[decision-shadow]';
 export const GOAL_QUALITY_CAPABILITY = 'mission_goal_quality' as const;
@@ -45,8 +46,12 @@ export const GOAL_QUALITY_LOG_SITE = 'goal_criteria_quality';
 export const GOAL_QUALITY_TIMEOUT_MS = 3_000;
 /** A weak label counts at or above this. Proposed; set from the shadow readout. */
 export const GOAL_QUALITY_MIN_CONFIDENCE = 0.8;
-/** Bump when a question, a definition, the rubric or the state shape changes. */
-export const GOAL_QUALITY_PROMPT_VERSION = 'gq1';
+/**
+ * Bump when a question, a definition, the code-default rubric or the state
+ * shape changes. A rubric read from memory is versioned on its own
+ * (`GoalQualityRubric.version`), logged and cached alongside this.
+ */
+export const GOAL_QUALITY_PROMPT_VERSION = 'gq2';
 
 /**
  * `shadow`: log and ledger only, response unchanged. `surface`: the response
@@ -75,17 +80,8 @@ export const GOAL_QUALITY_REWRITES: Record<RewriteLabel, string | null> = {
   none: null,
 };
 
-/**
- * The code-owned baseline rubric. Bounded, static, and the same for every
- * team until the rubric-from-memory step replaces it per team.
- */
-export const GOAL_QUALITY_RUBRIC = [
-  'A mission goal is an Outcome (what a user, or the workspace owner for internal work, can do or see when the mission is done that they could not before), its Proof (a check that holds only when that outcome holds) and Bookkeeping.',
-  'Bookkeeping is all PRs merged and no open tasks, or anything equally true of every finished mission (tests pass, CI green, branch deleted). It proves the work was closed out, not that anything changed.',
-  'A command criterion is judged by the outcome its label says the command asserts: "a visitor can sign up from the landing page" names something a user would notice; "tests pass" or "build succeeds" does not.',
-  'An artifact_exists criterion is judged by whether the deliverable it names is something a person would read or use.',
-  'A description criterion is prose that a model or a person reads to grade.',
-].join(' ');
+/** The code-owned baseline rubric (lib/goal-criteria-rubric.ts); a team's memory may replace it. */
+export const GOAL_QUALITY_RUBRIC = GOAL_QUALITY_BASELINE_RUBRIC;
 
 const NOTICEABLE_DEFINITIONS: Record<NoticeableLabel, { what: string; not_for: string }> = {
   yes: {
@@ -193,14 +189,14 @@ function asksCheckable(c: GoalCriterion): boolean {
  * `c{i}_noticeable`, and `c{i}_checkable` when its type is not checked by a
  * machine already. One `rewrite` for the whole goal.
  */
-export function buildGoalQualityQuestions(graded: readonly IndexedCriterion[]) {
+export function buildGoalQualityQuestions(graded: readonly IndexedCriterion[], rubric: string = GOAL_QUALITY_RUBRIC) {
   const questions: Questions = {};
   graded.forEach((g, i) => {
     questions[`c${i}_noticeable`] = {
       type: 'choice',
       instructions: {
         question: `Would a user notice the outcome that criteria[${i}] states?`,
-        rule: GOAL_QUALITY_RUBRIC,
+        rule: rubric,
       },
       criteria: NOTICEABLE_DEFINITIONS,
     };
@@ -209,7 +205,7 @@ export function buildGoalQualityQuestions(graded: readonly IndexedCriterion[]) {
         type: 'choice',
         instructions: {
           question: `Can whether criteria[${i}] holds be checked without a person reading prose and deciding?`,
-          rule: GOAL_QUALITY_RUBRIC,
+          rule: rubric,
         },
         criteria: CHECKABLE_DEFINITIONS,
       };
@@ -219,7 +215,7 @@ export function buildGoalQualityQuestions(graded: readonly IndexedCriterion[]) {
     type: 'choice',
     instructions: {
       question: 'Taking the criteria together, which one change would most improve this goal?',
-      rule: GOAL_QUALITY_RUBRIC,
+      rule: rubric,
     },
     criteria: REWRITE_DEFINITIONS,
   };
@@ -250,13 +246,20 @@ export interface GoalQualityVerdict {
   suggestion: string | null;
   model: string;
   promptVersion: string;
+  /** `base` for the code default, else the memory rubric's digest. */
+  rubricVersion: string;
 }
 
 interface Answer { choice: string; confidence: number }
 /** What a cache entry holds: the model's answers by question name, not a verdict tied to array positions. */
 interface CachedAnswers { answers: Record<string, Answer>; model: string }
 
-function toVerdict(fresh: readonly IndexedCriterion[], graded: readonly IndexedCriterion[], cached: CachedAnswers): GoalQualityVerdict | null {
+function toVerdict(
+  fresh: readonly IndexedCriterion[],
+  graded: readonly IndexedCriterion[],
+  cached: CachedAnswers,
+  rubricVersion: string,
+): GoalQualityVerdict | null {
   const { answers } = cached;
   const pos = new Map(graded.map((g, i) => [g.index, i]));
   const criteria: CriterionQuality[] = [];
@@ -296,14 +299,18 @@ function toVerdict(fresh: readonly IndexedCriterion[], graded: readonly IndexedC
     suggestion: weakCount > 0 ? GOAL_QUALITY_REWRITES[rewrite] : null,
     model: cached.model,
     promptVersion: GOAL_QUALITY_PROMPT_VERSION,
+    rubricVersion,
   };
 }
 
-/** Keyed on what is sent, so the same criteria in any mission do not spend twice. */
-export function goalQualityCacheKey(graded: readonly IndexedCriterion[]): string {
+/**
+ * Keyed on what is sent and the rubric it is judged by, so the same criteria in
+ * any mission do not spend twice, and a rubric change is a fresh judgement.
+ */
+export function goalQualityCacheKey(graded: readonly IndexedCriterion[], rubricVersion: string = CODE_RUBRIC.version): string {
   const state = buildGoalQualityState(graded.map(g => g.criterion));
   const digest = createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 16);
-  return `${GOAL_QUALITY_PROMPT_VERSION}:${digest}`;
+  return `${GOAL_QUALITY_PROMPT_VERSION}:${rubricVersion}:${digest}`;
 }
 
 type DecideFn = typeof decisionCall<Questions>;
@@ -321,6 +328,17 @@ export interface GoalQualityDeps {
   recordReceipt?: (receipt: DecisionReceipt, scope: { teamId: string; accountId: string | null }) => Promise<void>;
   cache?: Map<string, CachedAnswers>;
   log?: (line: string) => void;
+  /** Never throws by contract; a throw is still caught and means the code default. */
+  loadRubric?: (scope: { teamId: string; workspaceId: string | null }) => Promise<GoalQualityRubric>;
+}
+
+async function rubricFor(facts: GoalQualityFacts, deps: GoalQualityDeps): Promise<GoalQualityRubric> {
+  try {
+    const load = deps.loadRubric ?? (await import('./goal-criteria-rubric')).loadGoalQualityRubric;
+    return await load({ teamId: facts.teamId, workspaceId: facts.workspaceId });
+  } catch {
+    return CODE_RUBRIC;
+  }
 }
 
 const MAX_CACHE_ENTRIES = 200;
@@ -339,13 +357,7 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
   const cache = deps.cache ?? sharedCache;
   try {
     if (facts.dataClass === 'sensitive') return null;
-    const fresh = newCriteria(facts.criteria, facts.stored);
-    const graded = fresh.filter(g => !isBookkeeping(g.criterion));
-    if (graded.length === 0) return null;
-
-    const key = goalQualityCacheKey(graded);
-    const hit = cache.get(key);
-    if (hit) return toVerdict(fresh, graded, hit);
+    if (gradedCriteria(facts.criteria, facts.stored).length === 0) return null;
 
     const client = deps.decide && deps.resolveAccess ? null : await import('@buildd/core/decision-client');
     const resolveAccess = deps.resolveAccess ?? (client!.resolveDecisionAccess as ResolveAccess);
@@ -357,6 +369,20 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
       userId: facts.userId ?? null,
     });
     if (!access.ok) return null;
+
+    // Read only once the team has opted in, so a write costs no memory query
+    // otherwise. An accepted pattern suppresses its criterion outright: not
+    // sent, not in the verdict, never warned.
+    const rubric = await rubricFor(facts, deps);
+    const accepted = new Set(rubric.acceptedFingerprints);
+    const fresh = newCriteria(facts.criteria, facts.stored)
+      .filter(g => !accepted.has(criterionFingerprint(g.criterion)));
+    const graded = fresh.filter(g => !isBookkeeping(g.criterion));
+    if (graded.length === 0) return null;
+
+    const key = goalQualityCacheKey(graded, rubric.version);
+    const hit = cache.get(key);
+    if (hit) return toVerdict(fresh, graded, hit, rubric.version);
 
     const scope = { teamId: facts.teamId, accountId: facts.accountId ?? null };
     const recordReceipt = deps.recordReceipt ?? (async (receipt, s) => {
@@ -372,7 +398,7 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
       accountId: facts.accountId ?? null,
       userId: facts.userId ?? null,
       state: buildGoalQualityState(graded.map(g => g.criterion)),
-      questions: buildGoalQualityQuestions(graded),
+      questions: buildGoalQualityQuestions(graded, rubric.text),
       timeoutMs: GOAL_QUALITY_TIMEOUT_MS,
       decisionId: GOAL_QUALITY_DECISION_ID,
       access,
@@ -382,7 +408,7 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
 
     const mission = facts.missionId.slice(0, 8);
     if (!res.ok) {
-      log(logLine({ v: GOAL_QUALITY_PROMPT_VERSION, mission, error: res.error.kind, latencyMs: res.latencyMs }));
+      log(logLine({ v: GOAL_QUALITY_PROMPT_VERSION, rubric: rubric.version, mission, error: res.error.kind, latencyMs: res.latencyMs }));
       return null;
     }
     const answers: Record<string, Answer> = {};
@@ -390,11 +416,12 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
       answers[name] = { choice: a.choice, confidence: a.confidence };
     }
     const cached: CachedAnswers = { answers, model: res.model };
-    const verdict = toVerdict(fresh, graded, cached);
+    const verdict = toVerdict(fresh, graded, cached, rubric.version);
 
     // Labels, numbers and fingerprints only — never criterion text.
     log(logLine({
       v: `${GOAL_QUALITY_PROMPT_VERSION}|${res.model}`,
+      rubric: rubric.version,
       mission,
       mode: GOAL_QUALITY_MODE,
       graded: graded.length,
@@ -465,6 +492,7 @@ export function goalQualityWarnings(
       weakOn: c.weakOn,
       rewrite: verdict.rewrite,
       promptVersion: verdict.promptVersion,
+      rubricVersion: verdict.rubricVersion,
       model: verdict.model,
       mode: ctx.mode ?? GOAL_QUALITY_MODE,
     },
