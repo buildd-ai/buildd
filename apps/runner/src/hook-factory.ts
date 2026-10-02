@@ -2,7 +2,7 @@ import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
 import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
 import { findWorktreeEscape, findWriteEscape } from './worktree-confinement.js';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
@@ -382,6 +382,35 @@ export class HookFactory {
         ));
       }
       return {};
+    };
+  }
+
+  /**
+   * PreToolUse gate for claude.ai artifact tools (Artifact, ArtifactData,
+   * ArtifactComments, ArtifactCheck, DesignSync). They act in the seat owner's
+   * claude.ai account, so: read/list/get when opted in, publish only for
+   * producer roles, delete never. Registered for every Claude session, so a
+   * tool that appears without the opt-in (e.g. a role env secret setting
+   * CLAUDE_CODE_ARTIFACT) is still refused. Policy: @buildd/shared
+   * claude-ai-artifacts.ts.
+   */
+  createClaudeAiArtifactHook(worker: LocalWorker, access: ClaudeAiArtifactAccess): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+      const toolName = (input as any).tool_name as string;
+      if (!isClaudeAiArtifactTool(toolName)) return {};
+      const toolInput = ((input as any).tool_input ?? {}) as Record<string, unknown>;
+      const decision = classifyArtifactToolCall(toolName, toolInput, access);
+      const url = typeof toolInput.url === 'string' ? toolInput.url : '';
+      if (decision.allowed) {
+        console.log(`[Worker ${worker.id}] claude.ai artifact: ${toolName} ${String(toolInput.action ?? '')} ${url}`.trim());
+        return {};
+      }
+      console.log(`[Worker ${worker.id}] claude.ai artifact: denied ${toolName} ${String(toolInput.action ?? '')} ${url}`.trim());
+      return denyPreToolUse(runnerDenial(
+        decision.reason,
+        'read the design from the copy-in artifact keys in the task context (get_artifact / list_artifacts), or ask in the task if it needs a write',
+      ));
     };
   }
 

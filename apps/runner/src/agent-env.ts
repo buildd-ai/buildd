@@ -36,7 +36,11 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   'GITHUB_TOKEN', 'GH_TOKEN',
   // Claude Code: no telemetry, error reporting or auto-update calls. Set by the
   // --once container image (apps/runner/Dockerfile.once), where every outbound
-  // call goes through an egress proxy. Not secret.
+  // call goes through an egress proxy. Not secret. A session opted in to
+  // claude.ai artifacts swaps it for its parts (applyClaudeAiArtifactEnv),
+  // because it also withholds the Artifact tool. CLAUDE_CODE_ARTIFACT itself is
+  // deliberately NOT passed through: that would turn the tool on for every
+  // worker on the host. The claim's per-session flag sets it.
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
   // TLS trust. In the --once container, buildd-once points these at a bundle
   // that includes the Cloudflare egress CA; without them the agent's own

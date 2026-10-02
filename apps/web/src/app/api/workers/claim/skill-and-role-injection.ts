@@ -9,7 +9,7 @@
 import { db } from '@buildd/core/db';
 import { workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
-import type { ClaimTasksResponse, SkillBundle } from '@buildd/shared';
+import { resolveClaudeAiArtifactAccess, type ClaimTasksResponse, type SkillBundle } from '@buildd/shared';
 import { generateDownloadUrl, isStorageConfigured } from '@/lib/storage';
 
 /** The claim-candidate rows these blocks look tasks up in. */
@@ -147,6 +147,21 @@ export async function resolveRoleRow(
 }
 
 /**
+ * claude.ai artifact access for this session: the role's
+ * `metadata.claudeAiArtifacts` flag, overridden by the task's
+ * `context.claudeAiArtifacts`. Sent only when not `off`, so an older runner
+ * and a default session look the same. See @buildd/shared claude-ai-artifacts.
+ */
+function attachClaudeAiArtifacts(
+  cw: ClaimTasksResponse['workers'][number],
+  roleMetadata: Record<string, unknown> | null,
+  taskContext: Record<string, unknown> | null,
+): void {
+  const access = resolveClaudeAiArtifactAccess({ roleMetadata, taskContext });
+  if (access !== 'off') cw.claudeAiArtifacts = access;
+}
+
+/**
  * Resolve the task's role (`task.roleSlug`) and attach it to the claim.
  *
  * Precedence is workspace override > team default (§C.2), with a legacy
@@ -173,14 +188,18 @@ export async function attachRoleConfig(
 
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find(t => t.id === cw.taskId);
+    const taskContext = ((task as any)?.context ?? (cw as any).task?.context ?? null) as Record<string, unknown> | null;
     const roleSlug = (task as any)?.roleSlug as string | null;
-    if (!roleSlug) continue;
-
     const wsId = task?.workspaceId;
-    if (!wsId) continue;
+    if (!roleSlug || !wsId) {
+      // A task can opt in to claude.ai artifact reads with no role.
+      attachClaudeAiArtifacts(cw, null, taskContext);
+      continue;
+    }
 
     const teamId = (task as any).workspace?.teamId as string | undefined;
     const role = await resolveRoleRow(roleSlug, teamId, wsId, accountId);
+    attachClaudeAiArtifacts(cw, (role?.metadata ?? null) as Record<string, unknown> | null, taskContext);
 
     // Persona first — independent of packaging. A blank body attaches nothing
     // rather than an empty "## Role: X" section.

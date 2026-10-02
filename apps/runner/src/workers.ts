@@ -6,7 +6,7 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
+import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -1842,7 +1842,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -2044,6 +2044,13 @@ export class WorkerManager {
     }
     if ((claimedWorker as any).cbmDisabled) {
       (worker as any).cbmDisabled = true;
+    }
+    if (claimedWorker.claudeTokenScopes?.length) {
+      worker.claudeTokenScopes = claimedWorker.claudeTokenScopes;
+    }
+    if (claimedWorker.claudeAiArtifacts) {
+      worker.claudeAiArtifacts = claimedWorker.claudeAiArtifacts;
+      console.log(`[Worker ${claimedWorker.id}] claude.ai artifact access: ${claimedWorker.claudeAiArtifacts}`);
     }
     if ((claimedWorker as any).degradedConnectors?.length) {
       worker.degradedConnectors = (claimedWorker as any).degradedConnectors;
@@ -3429,9 +3436,12 @@ export class WorkerManager {
             worker.id,
             claudeTokenForSession,
             claudeTokenExpiry,
-            this.config.workspaceIsolationRoot
-              ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
-              : undefined,
+            {
+              ...(this.config.workspaceIsolationRoot
+                ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
+                : {}),
+              scopes: worker.claudeTokenScopes,
+            },
           );
           claudeConfigDir = _cd;
           cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
@@ -3513,6 +3523,14 @@ export class WorkerManager {
           console.error(`[Worker ${worker.id}] Failed to resolve role env:`, err);
         }
       }
+
+      // claude.ai artifact access (Artifact / DesignSync tools). Applied after
+      // every other env source, role env secrets included, so the claim's
+      // resolved flag is the only thing that sets CLAUDE_CODE_ARTIFACT. Opted
+      // in, it also swaps the --once image's umbrella no-traffic switch (which
+      // withholds the tool) for its telemetry/error-report/updater parts.
+      // Codex has no such tool. See @buildd/shared claude-ai-artifacts.ts.
+      applyClaudeAiArtifactEnv(cleanEnv, isCodexTask ? 'off' : (worker.claudeAiArtifacts ?? 'off'));
 
       // Provision gate — prove the environment is runnable BEFORE the budget loop.
       // cleanEnv is now fully assembled (server creds + connector + role secrets),
@@ -4332,6 +4350,12 @@ export class WorkerManager {
           // only — Codex has no PreToolUse seam. See worktree-confinement.ts.
           ...(!isCodexTask && cwd !== repoPath
             ? [{ hooks: [this.hookFactory.createWorktreeConfinementHook(worker, cwd, repoPath)] }]
+            : []),
+          // claude.ai artifact gate: read/list/get when opted in, publish only
+          // for producer roles, delete never. Registered even when not opted
+          // in, so a tool that shows up some other way is still refused.
+          ...(!isCodexTask
+            ? [{ hooks: [this.hookFactory.createClaudeAiArtifactHook(worker, worker.claudeAiArtifacts ?? 'off')] }]
             : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
           // Path-claim hook: auto-claims file paths on Edit/Write/MultiEdit (§6c).
