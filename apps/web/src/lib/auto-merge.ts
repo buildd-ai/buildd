@@ -16,7 +16,8 @@ import type { MergePolicy } from '@buildd/shared';
 import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
-import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
+import { policyValue } from '@/lib/policy-overrides';
 import {
   evaluateModelApproveBound,
   BUILD_PROOF_CHECK_TOKENS,
@@ -861,7 +862,7 @@ export async function escalateConflictExhaustion(
   const maxIterations =
     typeof ctx.maxConflictIterations === 'number'
       ? ctx.maxConflictIterations
-      : DEFAULT_MAX_CONFLICT_ITERATIONS;
+      : policyValue('maxConflictIterations');
   const prUrl = `https://github.com/${repoFullName}/pull/${prNumber}`;
   const taskUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/tasks/${taskId}`;
 
