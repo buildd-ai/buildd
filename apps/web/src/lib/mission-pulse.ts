@@ -1,6 +1,6 @@
 /**
  * The mission pulse: one segment per deliverable row, in a position that never
- * moves (docs/design/mission-feed-mobile-continuity.md, "The shared object").
+ * moves (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "The shared object").
  *
  * Pure and client-safe. This module also owns the two facts every mission-feed
  * surface must agree on — which tasks are rows at all (`foldMissionDeliverables`,

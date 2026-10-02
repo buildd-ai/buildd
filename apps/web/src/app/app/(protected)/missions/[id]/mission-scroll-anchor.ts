@@ -1,5 +1,5 @@
 /**
- * Scroll anchoring across a mission refresh (docs/design/mission-feed-mobile-continuity.md,
+ * Scroll anchoring across a mission refresh (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * "Freeze rule", slice S7).
  *
  * The page scrolls inside `<main class="overflow-y-auto">`, and iOS Safari's

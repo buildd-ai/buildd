@@ -1,6 +1,6 @@
 /**
  * What the task sheet's header needs from the mission feed model
- * (docs/design/mission-feed-mobile-continuity.md W4, Grouping rules §6):
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W4, Grouping rules §6):
  * `n / N · <ordinal> <PHASE>`, the ‹ › siblings in pulse order, and
  * "Next needing you". Pure; the model is `buildMissionFeedGroups` output.
  */

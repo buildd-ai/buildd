@@ -1,6 +1,6 @@
 /**
  * Checkpoint enforcement and the collision hand-off
- * (docs/design/conflict-aware-orchestration.md §2).
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §2).
  *
  * `runCheckpointSweep` is the pre-push / completion sweep: the worktree's
  * changes against the task's resolved PR base (Bash and untracked writes

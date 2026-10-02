@@ -1,5 +1,5 @@
 /**
- * One chat turn: `POST /api/chat/[id]` (docs/design/agent-chat.md → P1).
+ * One chat turn: `POST /api/chat/[id]` (knowledge-base: buildd/design/agent-chat.md → P1).
  *
  * Order matters and is the point of this module:
  *  1. refuse before any model call (capability off, no key, over a limit), so
@@ -335,7 +335,7 @@ export async function runChatTurn(args: {
   const memory = scoped?.memory ?? deps.memory;
 
   // 2. A model for the tier, on the caller's key, else the workspace's, else the team's.
-  // The tier's chat pool may enrol the turn (docs/design/tier-model-pools.md):
+  // The tier's chat pool may enrol the turn (knowledge-base: buildd/design/tier-model-pools.md):
   // a turn continuing the previous turn's chain keeps its arm.
   const prevAssistant = stored.filter(m => m.role === 'assistant').at(-1);
   const pool: ChatPoolContext = {
@@ -640,7 +640,7 @@ function lastAssistantText(stored: MessageRow[]): string | null {
 }
 
 /**
- * Which tool groups this turn sends to the model (docs/design/agent-chat.md →
+ * Which tool groups this turn sends to the model (knowledge-base: buildd/design/agent-chat.md →
  * Tool groups): the core groups, plus the area routing named when confident,
  * else the fallback set. Admin tools only for an owner/admin. A continuation
  * adds the groups of the tools it's answering, so the approved call's tool is

@@ -9,7 +9,7 @@ import { rateableTurnTeam } from '@/lib/chat/turn-feedback';
 import { isChatFeedbackReason, type ChatFeedbackReason } from '@buildd/core/tier-pool';
 
 // 'conversation_message' = thumbs on an assistant chat turn
-// (docs/design/tier-model-pools.md). It carries a reason label, never a comment.
+// (knowledge-base: buildd/design/tier-model-pools.md). It carries a reason label, never a comment.
 const VALID_ENTITY_TYPES = ['note', 'artifact', 'summary', 'orchestration', 'heartbeat', 'conversation_message'] as const;
 const VALID_SIGNALS = ['up', 'down', 'dismiss'] as const;
 

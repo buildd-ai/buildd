@@ -1,5 +1,5 @@
 -- One-time backfill for orphaned mission heartbeat schedules
--- (docs/reports/mission-heartbeat-schedule-lifecycle-audit.md §2).
+-- (knowledge-base: buildd/reports/mission-heartbeat-schedule-lifecycle-audit.md §2).
 --
 -- `archiveStaleDoneMissions` (apps/web/src/lib/mission-archive.ts) wrote
 -- status='archived' via a raw UPDATE that never deleted the mission's

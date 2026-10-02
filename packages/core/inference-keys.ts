@@ -1,7 +1,7 @@
 /**
  * The one resolver for API-token model keys.
  *
- * Chat turns (`docs/design/agent-chat.md`), inference calls
+ * Chat turns (`knowledge-base: buildd/design/agent-chat.md`), inference calls
  * (`inference-client.ts`) and decision calls (`decision-client.ts`) all spend a
  * metered API key, never a subscription seat. They all resolve it here, so one
  * OpenRouter key serves chat, judgments and decisions alike.

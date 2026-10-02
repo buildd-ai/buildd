@@ -1,5 +1,5 @@
 /**
- * The summoned chat canvas (docs/design/chat-canvas.md, step 2): what it's
+ * The summoned chat canvas (knowledge-base: buildd/design/chat-canvas.md, step 2): what it's
  * about on the current page, where the floating Ask button shows, how it
  * presents, and the shortcut that toggles it. Pure.
  */

@@ -52,6 +52,13 @@ const REDRIVE_ZERO = {
 const mockRefreshRedrive = mock(() => Promise.resolve<any>(REDRIVE_ZERO));
 mock.module('@/lib/refresh-redrive', () => ({ redriveDeferredRefreshes: mockRefreshRedrive }));
 
+const CI_RED_ZERO = {
+  source: 'floor', enumerated: 0, processed: 0, dispatched: 0, escalated: 0, inFlight: 0, tooYoung: 0,
+  skipped: {}, errors: 0, deferred: 0, truncated: false,
+};
+const mockCiRedSweep = mock((_opts: { source: string }) => Promise.resolve<any>(CI_RED_ZERO));
+mock.module('@/lib/ci-red-sweep-deps', () => ({ sweepCiRedPrs: mockCiRedSweep }));
+
 let dueCount: number | null = 0;
 mock.module('@/lib/redis', () => ({
   countDue: async () => dueCount,
@@ -101,6 +108,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockLandingSweep.mockResolvedValue(LANDING_ZERO);
     mockRefreshRedrive.mockReset();
     mockRefreshRedrive.mockResolvedValue(REDRIVE_ZERO);
+    mockCiRedSweep.mockReset();
+    mockCiRedSweep.mockResolvedValue(CI_RED_ZERO);
     dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
   });
@@ -407,6 +416,75 @@ describe('GET /api/cron/pr-reconcile', () => {
     it('still requires the cron secret on the gated scope', async () => {
       expect((await GET(makeRequest(undefined, GATED))).status).toBe(401);
       expect(mockLandingSweep).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Red-PR sweep ───────────────────────────────────────────────────────────
+  //
+  // Same two-tick shape as the landing backstop: the hourly pass is the floor,
+  // `scope=ci-red&gate=due` is the fast tick the webhook's skipped retries feed.
+
+  describe('red-PR sweep', () => {
+    const GATED = '?scope=ci-red&gate=due';
+
+    it('a gated tick with nothing due returns before any sweep or query', async () => {
+      dueCount = 0;
+      const res = await GET(makeRequest('test-secret', GATED));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ ok: true, scope: 'ci-red', gated: true, reason: 'nothing_due' });
+      expect(mockCiRedSweep).not.toHaveBeenCalled();
+      expect(mockLandingSweep).not.toHaveBeenCalled();
+      expect(mockReconcile).not.toHaveBeenCalled();
+      expect(dbTouches).toEqual([]);
+    });
+
+    it('a gated tick with work due runs only the red-PR sweep, from the due queue', async () => {
+      dueCount = 1;
+      mockCiRedSweep.mockResolvedValue({ ...CI_RED_ZERO, source: 'due', processed: 1, dispatched: 1 });
+      const res = await GET(makeRequest('test-secret', GATED));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.scope).toBe('ci-red');
+      expect(body.ciRed.dispatched).toBe(1);
+      expect(mockCiRedSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'due' }]);
+      expect(mockLandingSweep).not.toHaveBeenCalled();
+      expect(mockReconcile).not.toHaveBeenCalled();
+      expect(mockDeadZone).not.toHaveBeenCalled();
+    });
+
+    it('fails open when Redis cannot answer', async () => {
+      dueCount = null;
+      await GET(makeRequest('test-secret', GATED));
+      expect(mockCiRedSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'floor' }]);
+    });
+
+    it('the hourly merge-state pass runs the floor sweep and reports it', async () => {
+      mockCiRedSweep.mockResolvedValue({ ...CI_RED_ZERO, processed: 2, dispatched: 1, escalated: 1 });
+      const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+      expect(res.status).toBe(200);
+      expect(mockCiRedSweep.mock.calls.map(c => c[0])).toEqual([{ source: 'floor' }]);
+      expect((await res.json()).ciRed).toMatchObject({ dispatched: 1, escalated: 1 });
+    });
+
+    it('a red-PR sweep failure does not discard merge-state healing', async () => {
+      mockReconcile.mockResolvedValue({ total: 4, stamped: 2, closed: 0, skipped: 2, errors: 0 });
+      mockCiRedSweep.mockRejectedValue(new Error('ci-red query failed'));
+      const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.reconcile.stamped).toBe(2);
+      expect(body.ciRed.error).toContain('ci-red query failed');
+    });
+
+    it('the gated landing tick never runs the red-PR sweep', async () => {
+      dueCount = 1;
+      await GET(makeRequest('test-secret', '?scope=landing&gate=due'));
+      expect(mockCiRedSweep).not.toHaveBeenCalled();
+    });
+
+    it('still requires the cron secret', async () => {
+      expect((await GET(makeRequest(undefined, GATED))).status).toBe(401);
+      expect(mockCiRedSweep).not.toHaveBeenCalled();
     });
   });
 });

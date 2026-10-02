@@ -744,7 +744,7 @@ for e in TL:
     if "from_" in e: e["from"] = e.pop("from_")
 TL.sort(key=lambda e: e["t"])
 
-# ── Agent chat opener (docs/design/agent-chat.md) ─────────────────────────────
+# ── Agent chat opener (knowledge-base: buildd/design/agent-chat.md) ─────────────────────────────
 # The conversation that files M1: seeded before t=0 with the approval card open;
 # the t=0 mission_create event confirms it (scripts/demo/lib/chat.ts). Strings
 # of the form {{KEY}} resolve to the seeded UUID of that dataset key. No model

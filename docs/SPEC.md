@@ -136,7 +136,7 @@ Notable fields:
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission
   branch never claims the slot. Both fields stay null for workspace-less missions.
-- `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. An *explicit* status write to `completed` or `archived` (dashboard / MCP) **deletes** the linked schedule; an *automated* completion through `completeMissionIfVerified` **disables** it (`enabled = false`) instead, so a mission that later reopens — or one refused by the goal-criteria gate — keeps its heartbeat. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. A transition to `budget_exhausted` deliberately does neither (the cron dispatcher defers instead of disabling, because a budget-raise auto-resume flips status back to `active` but does not re-enable schedules — disabling here would strand the mission dormant). Deleting a mission also deletes its schedule. Either way a heartbeat schedule cannot outlive the mission that owns it — **except the auto-archive path** (`archiveStaleDoneMissions`), which today writes `archived` without deleting the schedule it leaves disabled; this is a known gap, not an intended fifth case — see `docs/specs/mission-heartbeat-schedule-lifecycle.md` and `docs/reports/mission-heartbeat-schedule-lifecycle-audit.md`.
+- `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. An *explicit* status write to `completed` or `archived` (dashboard / MCP) **deletes** the linked schedule; an *automated* completion through `completeMissionIfVerified` **disables** it (`enabled = false`) instead, so a mission that later reopens — or one refused by the goal-criteria gate — keeps its heartbeat. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. A transition to `budget_exhausted` deliberately does neither (the cron dispatcher defers instead of disabling, because a budget-raise auto-resume flips status back to `active` but does not re-enable schedules — disabling here would strand the mission dormant). Deleting a mission also deletes its schedule. Either way a heartbeat schedule cannot outlive the mission that owns it — **except the auto-archive path** (`archiveStaleDoneMissions`), which today writes `archived` without deleting the schedule it leaves disabled; this is a known gap, not an intended fifth case — see `docs/specs/mission-heartbeat-schedule-lifecycle.md` and `knowledge-base: buildd/reports/mission-heartbeat-schedule-lifecycle-audit.md`.
 - **`goalCriteria`** (jsonb) + **`goalCriteriaState`** (jsonb) + `autoVerify` — the
   completion gate. `goalCriteria` is a list of outcome criteria
   (`command | all_prs_merged | no_open_tasks | artifact_exists | description`);
@@ -382,7 +382,7 @@ nothing routes there on its own) · `premium` · `standard` · `budget`
 tasks. Chat and inference calls resolve per call; for chat, a tier on Anthropic or
 OpenAI with only an OpenRouter key is served through OpenRouter. An explicit `model` on a task or a
 role's full-ID pin bypasses tiers. **Tier model pools** (several models per tier with
-traffic splits) are proposed, not shipped (`docs/design/tier-model-pools.md`).
+traffic splits) are proposed, not shipped (`knowledge-base: buildd/design/tier-model-pools.md`).
 
 ---
 
@@ -396,7 +396,7 @@ the route tree is authoritative.)
   `mcp-oauth/[workspace]` (workspace-scoped JWT enforcement).
 - **Accounts:** `accounts`, `accounts/me`, `accounts/[id]`, `.../regenerate-key`,
   `.../ai-budget` (an app key's daily AI cap, owner/admin).
-- **Model plans for sibling apps** (`docs/design/shared-ai-kit.md` §2): `ai/plan`
+- **Model plans for sibling apps** (`knowledge-base: buildd/design/shared-ai-kit.md` §2): `ai/plan`
   (tier → model on the app's providers, from the team's registry and chat pools,
   with an `ok`/`downgrade`/`deny` spend decision and a TTL), `ai/usage`
   (content-free, identity-free receipts; unknown fields rejected; an optional
@@ -569,7 +569,7 @@ brutalist UI.
   There is no longer a hand-mirrored copy of the gate predicates.
 
 **Planned, not in this repo:** iOS app (`buildd-ios`, separate repo;
-`buildd-mobile.pen` design + `docs/plans/ios-app-mvp.md`).
+`buildd-mobile.pen` design + `knowledge-base: buildd/plans/ios-app-mvp.md`).
 
 ---
 

@@ -1,5 +1,5 @@
 /**
- * Hold/start-at-claim readout inputs (docs/design/conflict-aware-orchestration.md
+ * Hold/start-at-claim readout inputs (knowledge-base: buildd/design/conflict-aware-orchestration.md
  * §5b labelling, §6 evaluation). Pure: the stores are in
  * ./orchestration-claim-source.ts; the outcome join is ./orchestration-outcomes.ts.
  *

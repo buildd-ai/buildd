@@ -1,5 +1,5 @@
 /**
- * Schedules the creation-manifest shadow (docs/design/conflict-aware-orchestration.md
+ * Schedules the creation-manifest shadow (knowledge-base: buildd/design/conflict-aware-orchestration.md
  * §5a) from task creation. The prediction runs AFTER the response via `after()`,
  * so it cannot add latency to, change, or fail the request: the task row, its
  * manifest, its inferred dependsOn and every creation rejection are decided

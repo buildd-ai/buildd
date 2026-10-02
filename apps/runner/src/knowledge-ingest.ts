@@ -19,9 +19,11 @@
  * Gated by KNOWLEDGE_INGEST_JOBS (default on; set to 0 to disable).
  */
 import {
+  checkCheckoutFetchable,
   createGitRepoReader,
   createHttpIngestApi,
   runFullIngestJob,
+  type CheckoutCheck,
   type FullIngestApiClient,
   type FullIngestJob,
 } from '@buildd/core/knowledge-store/full-ingest';
@@ -32,7 +34,18 @@ export interface LocalRepo {
   normalizedUrl: string | null;
 }
 
-export type PollOutcome = 'disabled' | 'busy' | 'idle' | 'ran' | 'error';
+export type PollOutcome = 'disabled' | 'busy' | 'idle' | 'ran' | 'error' | 'released';
+
+/** How long a repo whose checkout could not fetch is left out of claim offers. */
+export const UNFETCHABLE_BACKOFF_MS = 60 * 60 * 1000;
+
+export interface UnfetchableRepo {
+  repo: string;
+  path: string;
+  reason: string;
+  /** Epoch ms after which the repo is offered again. */
+  until: number;
+}
 
 export interface KnowledgeIngestPollerOptions {
   enabled: boolean;
@@ -40,16 +53,34 @@ export interface KnowledgeIngestPollerOptions {
   scanRepos: () => LocalRepo[];
   /** Injectable for tests; defaults to the git-reader + batch executor. */
   executeJob?: (job: FullIngestJob, repoPath: string) => Promise<{ status: 'done' | 'error' }>;
+  /**
+   * Pre-flight: can this checkout serve the job (has the sha, or can fetch it)?
+   * When it cannot, the job is released back to the queue with the reason
+   * instead of being run against a stale tree. Omitted = no check.
+   */
+  checkCheckout?: (repoPath: string, sha: string | null | undefined) => Promise<CheckoutCheck>;
   log?: (msg: string) => void;
+  now?: () => number;
 }
 
 export class KnowledgeIngestPoller {
   private running = false;
+  private readonly unfetchable = new Map<string, UnfetchableRepo>();
 
   constructor(private readonly opts: KnowledgeIngestPollerOptions) {}
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  /** Repos currently left out of claim offers because their checkout could not fetch. */
+  unfetchableRepos(): UnfetchableRepo[] {
+    const now = this.now();
+    return [...this.unfetchable.values()].filter(r => r.until > now);
+  }
+
+  private now(): number {
+    return this.opts.now ? this.opts.now() : Date.now();
   }
 
   /** Claim and execute at most one full ingest job. Never throws. */
@@ -59,7 +90,12 @@ export class KnowledgeIngestPoller {
     this.running = true;
     const log = this.opts.log ?? ((msg: string) => console.log(msg));
     try {
-      const repos = this.opts.scanRepos().filter(r => r.normalizedUrl);
+      const now = this.now();
+      const repos = this.opts.scanRepos().filter(r => {
+        if (!r.normalizedUrl) return false;
+        const backoff = this.unfetchable.get(r.normalizedUrl.toLowerCase());
+        return !backoff || backoff.until <= now;
+      });
       if (repos.length === 0) return 'idle';
       const bytSlug = new Map(repos.map(r => [r.normalizedUrl!.toLowerCase(), r.path]));
 
@@ -75,6 +111,27 @@ export class KnowledgeIngestPoller {
           error: 'runner has no local checkout for this repo',
         });
         return 'error';
+      }
+
+      if (this.opts.checkCheckout) {
+        const check = await this.opts.checkCheckout(repoPath, job.sha);
+        if (!check.ok) {
+          const slug = job.repo.toLowerCase();
+          this.unfetchable.set(slug, {
+            repo: slug,
+            path: repoPath,
+            reason: check.reason,
+            until: this.now() + UNFETCHABLE_BACKOFF_MS,
+          });
+          const reason = `runner checkout at ${repoPath} cannot serve ${job.repo}: ${check.reason}`;
+          log(`[knowledge-ingest] releasing job ${job.id}: ${reason}`);
+          if (this.opts.api.releaseJob) {
+            await this.opts.api.releaseJob(job.id, reason);
+          } else {
+            await this.opts.api.completeJob(job.id, { status: 'error', error: reason });
+          }
+          return 'released';
+        }
       }
 
       log(`[knowledge-ingest] job ${job.id} (${job.trigger}) for ${job.repo} @ ${job.sha ?? 'HEAD'}`);
@@ -238,5 +295,6 @@ export function createKnowledgeIngestPoller(config: {
     api,
     scanRepos: config.scanRepos,
     executeJob: hasLocalDb ? createLocalExecuteJob(api) : undefined,
+    checkCheckout: checkCheckoutFetchable,
   });
 }

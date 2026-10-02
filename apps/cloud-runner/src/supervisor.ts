@@ -44,6 +44,9 @@ import {
   assembleRunReport,
   deliverRunReport,
   emptyEgressCounters,
+  emptyEgressDetail,
+  applyEgressDetail,
+  type EgressDetail,
   isEgressEvent,
   parseMetricLine,
   parsePhaseLine,
@@ -139,6 +142,7 @@ export class TaskSupervisor {
   private tail: string[] = [];
   /** Egress counters for the live run. Memory only: one write at the end, not one per request. */
   private egress: EgressCounters = emptyEgressCounters();
+  private egressDetail: EgressDetail = emptyEgressDetail();
 
   constructor(private readonly d: SupervisorDeps) {}
 
@@ -183,6 +187,7 @@ export class TaskSupervisor {
     });
     this.tail = [];
     this.egress = emptyEgressCounters();
+    this.egressDetail = emptyEgressDetail();
     this.d.log(`[cloud-runner] task ${this.d.taskId}: starting attempt ${decision.attempt}${resume ? ` (resuming worker ${resume})` : ''}`);
     const run = this.d.keepAliveWhile(() => this.run(decision.attempt, resume))
       .catch(err => this.d.log(`[cloud-runner] task ${this.d.taskId}: supervisor error: ${describe(err)}`))
@@ -292,6 +297,7 @@ export class TaskSupervisor {
   recordEgress(event: unknown): void {
     if (!this.hasLiveRun || !isEgressEvent(event)) return;
     applyEgressEvent(this.egress, event);
+    applyEgressDetail(this.egressDetail, event);
     if (event.type === 'request' && event.cls === 'model' && this.d.getState().timings?.firstModelRequestAt === undefined) {
       this.patchTimings({ firstModelRequestAt: event.at });
     }
@@ -371,6 +377,7 @@ export class TaskSupervisor {
       dispatchReceivedAt: state.startedAt,
       timings: state.timings,
       egress: this.egress,
+      egressDetail: this.egressDetail,
       exitCode: r.code,
       outcome: r.outcome,
       crashReport,

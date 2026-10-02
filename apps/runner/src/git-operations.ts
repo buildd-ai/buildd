@@ -494,7 +494,7 @@ export async function setupWorktree(
    */
   installEnv?: Record<string, string>,
   /**
-   * The retry's task identity (M1, docs/design/pr-merge-reliability.md). With
+   * The retry's task identity (M1, knowledge-base: buildd/design/pr-merge-reliability.md). With
    * it, a resume branch still checked out in a TERMINAL prior attempt's
    * retained worktree of the same lineage can be released instead of diverting
    * to a fresh branch (+ new PR). On by default; BUILDD_RELEASE_LINEAGE_HELD_BRANCH=0

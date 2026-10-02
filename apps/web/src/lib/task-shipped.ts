@@ -1,6 +1,6 @@
 /**
  * The task "What shipped" record, pure half. The same contract as a mission's
- * (`mission-shipped.ts`, docs/design/mission-shipped-report.md), one task wide:
+ * (`mission-shipped.ts`, knowledge-base: buildd/design/mission-shipped-report.md), one task wide:
  * the task's own `complete_task` output carries `shipped: { lede, offPlan? }`,
  * and the server adds the change type from the PR diff and checks the lede.
  *

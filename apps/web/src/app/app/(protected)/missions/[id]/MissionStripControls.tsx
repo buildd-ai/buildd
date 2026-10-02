@@ -2,7 +2,7 @@
 
 /**
  * The mission page's client edges around the sticky masthead
- * (docs/design/mission-feed-mobile-continuity.md, W2/W3, "Desktop adaptation",
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W2/W3, "Desktop adaptation",
  * addendum D4):
  *
  * - `MissionStripExpand` — the ⤢ control. On mobile the time-axis flight strip

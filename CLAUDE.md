@@ -81,7 +81,7 @@ whose task it is, including your own. Measured over this gate's history, a
 full-UUID self-citation in prose is the single largest source of trips — far
 ahead of a genuine leak — and it's pure habit: nothing in `create_pr`, the MCP
 tool descriptions, or the workflow skills ever asks for the full form. See
-`docs/reports/no-prod-data-gate-trip-analysis.md`.
+`knowledge-base: buildd/reports/no-prod-data-gate-trip-analysis.md`.
 
 Before pushing, run `bun run no-prod-data:check` (or let `.githooks/pre-commit`
 catch it on your next commit) to reproduce this gate locally. It cannot check
@@ -301,10 +301,10 @@ Keep the `docs/` namespace clean — each folder means exactly one thing:
 
 - **`docs/SPEC.md`** — canonical product/architecture spec (single source of truth). Code is truth → SPEC.md is its written form → doc/site repos are outputs.
 - **`docs/specs/*.md`** — living per-capability **contracts**, format defined by `docs/specs/SPEC-FORMAT.md`. Every file carries lifecycle frontmatter (`title / status / owner / last_verified`). Retire by setting `status: superseded` + `superseded_by`, not by deleting.
-- **`docs/design/*.md`** — design proposals (pre-implementation), format defined by `docs/design/DESIGN-FORMAT.md`.
+- **Design proposals, plans and reports live in the private `knowledge-base` repo** under `buildd/design/`, `buildd/plans/` and `buildd/reports/`, not here. Read them with `recall scope=docs` (buildd links that workspace's docs) and cite one as `knowledge-base: buildd/design/<file>`. Write new ones there, in the format defined by `docs/design/DESIGN-FORMAT.md`.
+- **`docs/reports/gate-audit.md`** — the one report that stays public: `packages/core/__tests__/gate-slug-coverage.test.ts` fails if a wired gate is missing from it.
+- **`docs/design/*.md` stubs** — a design doc whose frontmatter carries `assertions:` keeps that frontmatter here as a stub, because spec conformance checks those assertions against the code on every push. Edit assertions in the stub; edit prose in knowledge-base.
 - **`docs/design/design-system.md`** — the one UI design reference (tokens, type scale, shared primitives, copy rules). Read it before any UI work; `globals.css` stays the executable truth.
-- **`docs/plans/*.md`** — ephemeral rollout plans; move to `docs/plans/archive/` once shipped.
-- **`docs/reports/*.md`** — generated audit/drift outputs; rebuildable, may be stale. Never a source of truth.
 
 **After touching any `docs/specs/` file**, run `bun run specs:check` — it validates frontmatter + code-surface paths, guards against duplicate active specs, and regenerates `docs/specs/INDEX.md`. CI (`specs:lint`) and a pre-commit hook (`.githooks/pre-commit`, auto-registered on `bun install`) enforce this; a stale INDEX or missing frontmatter fails the build.
 

@@ -18,7 +18,7 @@ export interface ActionCardContext {
  * reads as a chore rather than as mission work.
  *
  * A mission label that names a task lands on that task's row in the mission
- * (`#t-<id>`, docs/design/mission-feed-mobile-continuity.md), not at the top
+ * (`#t-<id>`, knowledge-base: buildd/design/mission-feed-mobile-continuity.md), not at the top
  * of a bare mission page.
  */
 export function resolveActionCardContext(item: ActionQueueItem): ActionCardContext | null {

@@ -51,7 +51,7 @@ highlight:
   - artifact-card
 steps:
   # ── chat opener ────────────────────────────────────────────────────────────
-  # The demo opens in the chat (docs/design/agent-chat.md): the goal asked as a
+  # The demo opens in the chat (knowledge-base: buildd/design/agent-chat.md): the goal asked as a
   # question, the agent's read-only tool rows, "Make it a mission", and the
   # approval card. C1 is seeded with the card open (story `chat`, lib/chat.ts);
   # the t=0 mission_create event is the confirm — the card folds to its row and

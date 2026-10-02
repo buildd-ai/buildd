@@ -2,7 +2,7 @@
 
 /**
  * MissionContextBar: the sticky mission header on the full task page
- * (docs/design/mission-feed-mobile-continuity.md W6). It is the `micro`
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W6). It is the `micro`
  * masthead — the same object the task sheet opens with — so a task reads the
  * same whether it was opened over the mission or cold from a link:
  *

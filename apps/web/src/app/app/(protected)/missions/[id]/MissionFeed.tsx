@@ -301,7 +301,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
 
 /**
  * `Notes` — the mission's notes feed, in a sheet
- * (docs/design/mission-feed-mobile-continuity.md, W3 footer rows). It was the
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W3 footer rows). It was the
  * Feed tab. The sheet mounts the feed only when opened, so the notes fetch and
  * its Pusher subscription cost nothing until someone reads them.
  */

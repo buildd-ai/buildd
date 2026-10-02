@@ -1,7 +1,7 @@
 /**
  * A waiting-input question as a live chat object — and the loader the
  * `/tasks/[id]/respond` page renders from, so the feed card and the deep link
- * show one question the same way (docs/design/agent-chat.md, "The respond page
+ * show one question the same way (knowledge-base: buildd/design/agent-chat.md, "The respond page
  * folds in").
  */
 import { db } from '@buildd/core/db';

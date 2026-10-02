@@ -109,7 +109,7 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'A decision model says which role it would give a task filed without one. Logged only; never changes the task.',
     costHint: '~$0.00003 per task',
   },
-  // Conflict-aware orchestration decisions (docs/design/conflict-aware-orchestration.md
+  // Conflict-aware orchestration decisions (knowledge-base: buildd/design/conflict-aware-orchestration.md
   // §5, packages/core/orchestration-decision.ts). Opt-in shadows: they ship dark,
   // and opting in records suggestions only until a decision's applying cohort is
   // raised from zero after a held-out readout.

@@ -182,7 +182,8 @@ export function createLandingSweepDeps(): LandingSweepDeps {
 
     // No `dispatchFix`: the doors have not handed the fix-filing logic over, and
     // wiring a second copy here would be a second decision path. Until one
-    // does, a `needs_fix` the sweep produces carries no task id.
+    // does, a `needs_fix` the sweep produces carries no task id — except a
+    // stale approval, which landPr's default re-review dispatcher handles.
     land: (input) => landPr(input),
 
     markDue: (member, dueAtMs) => markDue(PR_LANDING_DUE_QUEUE, member, dueAtMs),

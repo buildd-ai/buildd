@@ -1,7 +1,7 @@
 # Design System
 
 **Status:** Accepted (tokens describe what ships; the §3 type scale and the §4 primitives are built)
-**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `docs/design/chat-canvas.md` (the one soft surface), `docs/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
+**Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `knowledge-base: buildd/design/chat-canvas.md` (the one soft surface), `knowledge-base: buildd/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The
 `ui_designer` skill, its `references/` files and `mobile-feed-spec.md` point here
@@ -20,7 +20,7 @@ Four documents described the design system and none of them matched the code:
   `#5e5850`, light `--status-error` `#c0524a`) and a 359-line
   `references/components.md` that predates the button, pill and sheet classes
   now in `globals.css`.
-- `docs/plans/ios-app-mvp.md` defers to mobile-feed-spec and so ships a teal
+- `knowledge-base: buildd/plans/ios-app-mvp.md` defers to mobile-feed-spec and so ships a teal
   accent the web app does not have.
 
 The code drifted in the same way. Three components render a status chip three
@@ -69,10 +69,10 @@ talking."** This is what ships (adopted mid-2026 across the dashboard).
 **One sanctioned exception: the chat canvas.** The conversation is soft (Plex
 Sans, Newsreader for the voice, rounded bubbles via `--kit-radius-soft`, the
 blurred "sea"). Fleet objects inside it stay square. See
-`docs/design/chat-canvas.md`; the chat tokens (`--chat-*`, `--mood-*`,
+`knowledge-base: buildd/design/chat-canvas.md`; the chat tokens (`--chat-*`, `--mood-*`,
 `--sea-*`, `--kit-*`) are owned there and not repeated below.
 
-**iOS.** The native app's `Theme.swift` table in `docs/plans/ios-app-mvp.md` is
+**iOS.** The native app's `Theme.swift` table in `knowledge-base: buildd/plans/ios-app-mvp.md` is
 meant to mirror these tokens. Today it mirrors the old mobile-feed-spec values
 instead (teal accent; see §2.9). When the iOS theme is next touched, copy from
 §2 here.
@@ -430,6 +430,6 @@ notification text) follows the same rules as a PR lede:
 ## Non-goals
 
 - No colour, radius or shadow changes; every token is documented as shipped.
-- The chat canvas's own tokens and rules stay in `docs/design/chat-canvas.md`.
+- The chat canvas's own tokens and rules stay in `knowledge-base: buildd/design/chat-canvas.md`.
 - Mobile page layouts (sections, data mapping, the Missions Feed artboard) stay
   in `docs/design/mobile-feed-spec.md`.

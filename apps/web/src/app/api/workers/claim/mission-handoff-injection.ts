@@ -4,7 +4,7 @@
  *
  * ORDER MATTERS. This runs BEFORE attachKnowledgeContext so handoff is
  * structured, high-precision, and cheap to read before the fuzzier retrieval-based
- * knowledge section arrives. The spec contract in docs/design/mission-task-handoff.md
+ * knowledge section arrives. The spec contract in knowledge-base: buildd/design/mission-task-handoff.md
  * §4 update reflects this ordering.
  */
 import { FAILED_WORKER_STATUSES } from '@buildd/shared';

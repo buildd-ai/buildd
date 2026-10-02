@@ -1,7 +1,7 @@
 /**
  * Claim-time memory as an index: one line per memory, bodies pulled on demand.
  *
- * See docs/design/memory-done-right.md ("Injection shape", Decisions #1). Every
+ * See knowledge-base: buildd/design/memory-done-right.md ("Injection shape", Decisions #1). Every
  * push surface that puts memory in front of an agent at claim time (the
  * claim-time "Related prior work" block, the `claim_task` "Relevant Memory"
  * reply, the runner's `## Workspace Memory` block) renders through this module

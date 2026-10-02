@@ -1,5 +1,5 @@
 /**
- * Reach declarations for the chat's in-process routes (docs/design/agent-chat.md
+ * Reach declarations for the chat's in-process routes (knowledge-base: buildd/design/agent-chat.md
  * → Tools and permissions → Reach).
  *
  * A chat tool reaches data only through the routes in CHAT_ROUTES
