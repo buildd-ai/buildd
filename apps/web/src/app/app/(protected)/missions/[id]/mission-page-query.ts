@@ -48,6 +48,7 @@ export const MISSION_WORKER_COLUMNS = {
   prLifecycleStatus: true,
   mergedAt: true,
   supersededByPrNumber: true,
+  abandonedAt: true,
   supersededByPrUrl: true,
   supersededReason: true,
   costUsd: true,

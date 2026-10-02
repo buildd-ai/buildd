@@ -346,6 +346,34 @@ describe('deriveMissionStateView — awaiting merge', () => {
     expect(view.nextAction).toContain('record_pr_supersession');
   });
 
+  it('names an unverified supersession suggestion without treating it as recorded', () => {
+    const suggestion = {
+      repo: 'org/buildd', prNumber: 3366, prUrl: 'https://github.com/org/buildd/pull/3366',
+      signal: 'sibling_task' as const, why: 'merged by "docs: move strategy docs" in the same mission', score: 0.6,
+    };
+    const view = deriveMissionStateView({
+      ...base,
+      completion: {
+        ok: false,
+        code: 'awaiting_merge',
+        reason: 'x',
+        awaitingMerge: 1,
+        awaitingMergeDetails: [
+          { taskId: 'task-c', title: 'Docs import', prNumber: 6, prUrl: 'https://github.com/org/kb/pull/6', closedUnsuperseded: true, suggestion },
+        ],
+      },
+    });
+
+    const waiting = gated(view);
+    if (waiting.kind !== 'pr_closed_unmerged') throw new Error('expected pr_closed_unmerged');
+    expect(waiting.suggestions).toEqual([{ taskId: 'task-c', prNumber: 6, suggestion }]);
+    // Cross-repo, so the ref carries the repo.
+    expect(waiting.label).toContain('likely superseded by org/buildd#3366');
+    expect(view.situation.headline).toContain('likely superseded by org/buildd#3366');
+    expect(view.situation.headline).toContain('mark the PR abandoned');
+    expect(view.nextAction).toContain('Confirm the suggested PR');
+  });
+
   it('keeps the ordinary merge reading when only some of the unmerged PRs are closed', () => {
     const view = deriveMissionStateView({
       ...base,

@@ -87,6 +87,12 @@ describe('POST /api/github/pr/supersede', () => {
     }));
   });
 
+  it('passes a cross-repo supersedingRepo through to the write (which scopes it)', async () => {
+    const res = await POST(makeRequest({ prNumber: 6, supersedingPrNumber: 3366, supersedingRepo: 'org/other', reason: 'moved' }));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ supersedingRepo: 'org/other', supersedingPrNumber: 3366 }));
+  });
+
   it('rejects cross-team access when resolveWorkerByPrNumber returns a worker from another team', async () => {
     mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve({ id: 'w-1', workspace: { teamId: 'other-team' } } as any));
     const res = await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));

@@ -228,6 +228,7 @@ export default async function MissionDetailPage({
             body: true,
             status: true,
             supersededByPrNumber: true,
+            abandonedAt: true,
             createdAt: true,
           },
           orderBy: desc(missionNotes.createdAt),

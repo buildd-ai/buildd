@@ -121,6 +121,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
           body: true,
           status: true,
           supersededByPrNumber: true,
+          abandonedAt: true,
           createdAt: true,
         },
       })
