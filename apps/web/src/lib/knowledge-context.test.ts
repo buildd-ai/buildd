@@ -59,6 +59,54 @@ function mockStore(
 }
 
 describe('buildKnowledgeContext', () => {
+  describe('linked docs workspaces', () => {
+    const linkedStore = () => mockStore(
+      {
+        'kb-ws:docs': [{ id: 'docs/strategy.md#1', corpus: 'docs', sourceType: 'docs', content: 'pricing strategy notes', score: 0.9 }],
+        'other-ws:docs': [{ id: 'docs/secret.md#1', corpus: 'docs', sourceType: 'docs', content: 'unlinked workspace secret', score: 0.9 }],
+      },
+      { 'ws-1:code': 1, 'ws-1:docs': 5, 'kb-ws:docs': 42, 'other-ws:docs': 7 },
+    );
+
+    it('adds a Linked docs section from the linked workspace', async () => {
+      const text = (await buildKnowledgeContext('pricing', 'ws-1', 'team-1', linkedStore(), { linkedDocsWorkspaceIds: ['kb-ws'] })).join('\n');
+      expect(text).toContain('### Linked docs');
+      expect(text).toContain('pricing strategy notes');
+    });
+
+    it('never reads a workspace that was not resolved as linked', async () => {
+      const text = (await buildKnowledgeContext('pricing', 'ws-1', 'team-1', linkedStore(), { linkedDocsWorkspaceIds: ['kb-ws'] })).join('\n');
+      expect(text).not.toContain('unlinked workspace secret');
+      expect(text).not.toContain('docs 7');
+    });
+
+    it('without linked ids there is no linked section and no linked hint', async () => {
+      const text = (await buildKnowledgeContext('pricing', 'ws-1', 'team-1', linkedStore())).join('\n');
+      expect(text).not.toContain('Linked docs');
+      expect(text).not.toContain('pricing strategy notes');
+      expect(text).not.toContain('linked docs');
+    });
+
+    it('the corpora hint reports linked docs separately from own docs', async () => {
+      const text = (await buildKnowledgeContext('pricing', 'ws-1', 'team-1', linkedStore(), { linkedDocsWorkspaceIds: ['kb-ws'] })).join('\n');
+      expect(text).toContain('docs 5');
+      expect(text).toContain('linked docs 42');
+    });
+
+    it('is skipped for a sensitive workspace', async () => {
+      const text = (await buildKnowledgeContext('pricing', 'ws-1', 'team-1', linkedStore(), { sensitive: true, linkedDocsWorkspaceIds: ['kb-ws'] })).join('\n');
+      expect(text).not.toContain('pricing strategy notes');
+    });
+
+    it('a failing linked query does not break the rest of the context', async () => {
+      const store = linkedStore();
+      const base = store.query;
+      store.query = async (ns, p) => { if (ns === 'kb-ws:docs') throw new Error('boom'); return base(ns, p); };
+      const out = await buildKnowledgeContext('pricing', 'ws-1', 'team-1', store, { linkedDocsWorkspaceIds: ['kb-ws'] });
+      expect(out.join('\n')).not.toContain('Linked docs');
+    });
+  });
+
   it('returns [] for an empty query', async () => {
     expect(await buildKnowledgeContext('', 'ws-1', 'team-1', mockStore({}))).toEqual([]);
   });

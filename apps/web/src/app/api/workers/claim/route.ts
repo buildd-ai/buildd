@@ -2559,7 +2559,18 @@ export async function POST(req: NextRequest) {
   // ./prompt-context-pipeline for why the middle four run concurrently without
   // disturbing that order.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
-  const taskAreaPredictions = await runDependentContextInjections(claimedWorkers, filteredTasks);
+  const taskAreaPredictions = await runDependentContextInjections(
+    claimedWorkers,
+    filteredTasks,
+    account?.teamId
+      ? {
+          id: account.id,
+          teamId: account.teamId,
+          workspaceIds: account.workspaceIds,
+          sessionUser: !!(account as { sessionUserId?: string }).sessionUserId,
+        }
+      : null,
+  );
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)

@@ -6237,6 +6237,13 @@ type MemoryActionCtx = {
   api?: ApiFn;
   /** Workspace is dataClass='sensitive' — memory reads/writes are blocked. */
   isSensitive?: boolean;
+  /**
+   * Same-team workspaces whose docs corpus this caller may also read, already
+   * authorised by the web layer (link config, team, sensitivity, token
+   * restriction, account reach). Core never decides access: it only widens the
+   * docs corpus over exactly these ids, and never code/task/memory.
+   */
+  linkedDocsWorkspaceIds?: string[];
   /** Memory use ledger writer for reads; default fire-and-forget. See ActionContext. */
   memoryLedger?: MemoryLedgerWriter;
   /** Jev decisions on writes (keep, type, update). Omitted: today's rules. See ActionContext. */
@@ -6548,6 +6555,40 @@ function formatCorpusFailures(failures: CorpusFailure[]): string {
 }
 
 /**
+ * Query one corpus namespace. For `docs`, also query each linked workspace's
+ * docs namespace and fuse by rank (RRF, k=60 as elsewhere; raw scores are not
+ * comparable across namespaces). A linked workspace failing is dropped — it is
+ * an add-on, not the caller's own corpus; the own namespace still throws.
+ */
+async function queryCorpus(
+  ks: KnowledgeStore,
+  ctx: MemoryActionCtx,
+  corpus: Corpus,
+  ns: string,
+  opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
+): Promise<QueryResult[]> {
+  const linked = corpus === 'docs'
+    ? Array.from(new Set(ctx.linkedDocsWorkspaceIds ?? [])).filter(id => id && id !== ctx.workspaceId)
+    : [];
+  if (linked.length === 0) return ks.query(ns, opts);
+
+  const [own, ...rest] = await Promise.all([
+    ks.query(ns, opts),
+    ...linked.map(id => ks.query(buildNamespace(id, 'docs'), opts).catch((): QueryResult[] => [])),
+  ]);
+  const k = 60;
+  const fused = new Map<string, { rrf: number; result: QueryResult }>();
+  [own, ...rest].forEach(results => {
+    results.forEach((r, rank) => {
+      const key = `${r.namespace}:${r.id}`;
+      const prev = fused.get(key);
+      fused.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
+    });
+  });
+  return Array.from(fused.values()).sort((a, b) => b.rrf - a.rrf).slice(0, opts.topK).map(v => v.result);
+}
+
+/**
  * Fan a query out across corpora concurrently, tracking which corpora failed
  * and why instead of the previous `.catch(() => [])` that made a retrieval
  * outage or an unresolvable namespace indistinguishable from "no hits".
@@ -6595,7 +6636,7 @@ async function fanOutCorpora(
             onError: 'throw',
           })).results;
         }
-        const raw = await ks.query(ns, opts);
+        const raw = await queryCorpus(ks, ctx, c, ns, opts);
         return raw.filter(r => r.isCurrent !== false);
       } catch (e) {
         failures.push({ corpus: c, reason: e instanceof Error ? e.message : 'unknown error' });
@@ -6711,7 +6752,7 @@ export async function handleRecallAction(
     const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
     perCorpus.forEach((results, listIdx) => {
       results.forEach((r, rank) => {
-        const key = `${scopes[listIdx]}:${r.id}`;
+        const key = `${scopes[listIdx]}:${r.namespace}:${r.id}`;
         const prev = fusionScores.get(key);
         fusionScores.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
       });
@@ -6778,7 +6819,7 @@ export async function handleRecallAction(
       onError: 'throw',
     })).results;
   } else {
-    const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+    const raw = await queryCorpus(ks, ctx, scope, ns, { text: query, mode, topK: fetchTopK });
     results = raw.filter(r => r.isCurrent !== false);
     if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
     results = results.slice(0, limit);
@@ -7340,7 +7381,7 @@ export async function handleMemoryAction(
         const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
         perCorpus.forEach((results, listIdx) => {
           results.forEach((r, rank) => {
-            const key = `${corpora[listIdx]}:${r.id}`;
+            const key = `${corpora[listIdx]}:${r.namespace}:${r.id}`;
             const prev = fusionScores.get(key);
             fusionScores.set(key, { rrf: (prev?.rrf ?? 0) + 1 / (k + rank + 1), result: r });
           });
@@ -7412,7 +7453,7 @@ export async function handleMemoryAction(
             ledger: ctx.memoryLedger,
             onError: 'throw',
           })).results
-        : await ks.query(ns, { text: params.query as string, mode, topK });
+        : await queryCorpus(ks, ctx, corpus, ns, { text: params.query as string, mode, topK });
 
       // Fire-and-forget telemetry — never blocks or fails the query response.
       if (ctx.api && ctx.workerId) {

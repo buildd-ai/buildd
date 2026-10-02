@@ -5749,6 +5749,77 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
     ]);
   });
 
+  describe('push → docs ingest', () => {
+    beforeEach(() => {
+      insertCalls = [];
+      selectTableResults = () => null;
+    });
+    const bindOneWorkspace = () => {
+      selectTableResults = (table: any) => {
+        if (table === schemaMock.githubRepos) return [{ id: 'repo-uuid-1' }];
+        if (table === schemaMock.workspaces) return [{ id: 'ws-kb' }];
+        return null;
+      };
+    };
+    const push = (over: Record<string, unknown> = {}) => createWebhookRequest('push', {
+      ref: 'refs/heads/main',
+      after: 'sha-after-1',
+      repository: { full_name: 'test-org/test-repo', default_branch: 'main' },
+      head_commit: { message: 'docs: update strategy' },
+      commits: [{ id: 'c1', message: 'docs: update strategy', added: ['docs/new.md'], modified: ['docs/strategy.md', 'src/app.ts'], removed: ['docs/old.md'] }],
+      ...over,
+    });
+    const jobInserts = () => insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
+
+    it('a push to the default branch enqueues a diff job seeded with the docs paths', async () => {
+      bindOneWorkspace();
+      const res = await POST(push());
+      expect(res.status).toBe(200);
+      expect(jobInserts()).toHaveLength(1);
+      expect(jobInserts()[0].values).toMatchObject({
+        workspaceId: 'ws-kb',
+        repo: 'test-org/test-repo',
+        trigger: 'push',
+        sha: 'sha-after-1',
+        scope: 'diff',
+        status: 'queued',
+      });
+      expect([...jobInserts()[0].values.changedFiles].sort()).toEqual(['docs/new.md', 'docs/old.md', 'docs/strategy.md']);
+      expect(jobInserts()[0].conflict).toBe('nothing');
+    });
+
+    it('a push that touches no docs enqueues nothing', async () => {
+      bindOneWorkspace();
+      await POST(push({ commits: [{ id: 'c1', message: 'fix: x', modified: ['src/app.ts'] }] }));
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('a push to another branch enqueues nothing', async () => {
+      bindOneWorkspace();
+      await POST(push({ ref: 'refs/heads/feature' }));
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('a PR merge commit is left to the merged-PR path', async () => {
+      bindOneWorkspace();
+      await POST(push({ head_commit: { message: 'docs: update strategy (#123)' } }));
+      await POST(push({ head_commit: { message: 'Merge pull request #124 from x/y' } }));
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('a repo bound to no workspace enqueues nothing', async () => {
+      selectTableResults = () => null;
+      await POST(push());
+      expect(jobInserts()).toHaveLength(0);
+    });
+
+    it('returns 200 when the enqueue throws (best-effort)', async () => {
+      selectTableResults = () => { throw new Error('db down'); };
+      const res = await POST(push());
+      expect(res.status).toBe(200);
+    });
+  });
+
   it('a push to another branch records nothing', async () => {
     await POST(createWebhookRequest('push', {
       ref: 'refs/heads/feature',
