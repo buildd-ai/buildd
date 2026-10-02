@@ -13,7 +13,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 mock.module('@buildd/core/db', () => ({ db: { query: {} } }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve()) }));
 
-import { claimablePendingWhere } from './fleet-idle';
+import { claimablePendingWhere, heartbeatHasSpareCapacity } from './fleet-idle';
 import { missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
 
 const dialect = new PgDialect();
@@ -47,5 +47,19 @@ describe('fleet-idle claimable scan — SQL', () => {
     expect(where).toContain('"tasks"."status" = $');
     expect(where).toContain('"tasks"."created_at" <= $');
     expect(where).toContain('"tasks"."start_at" is null');
+  });
+});
+
+describe('fleet-idle spare capacity', () => {
+  it('a host runner with a free slot has spare capacity', () => {
+    expect(heartbeatHasSpareCapacity({ localUiUrl: 'http://atlas.local:8766', activeWorkerCount: 1, maxConcurrentWorkers: 4 })).toBe(true);
+    expect(heartbeatHasSpareCapacity({ localUiUrl: 'http://atlas.local:8766', activeWorkerCount: 4, maxConcurrentWorkers: 4 })).toBe(false);
+  });
+
+  it('a finished --once run (a cloud container) is never a runner refusing work', () => {
+    // It claims nothing but its own task, so its empty slot is not capacity;
+    // legacy rows still carry the account default of several slots.
+    expect(heartbeatHasSpareCapacity({ localUiUrl: 'headless://container/once/t1', activeWorkerCount: 0, maxConcurrentWorkers: 5 })).toBe(false);
+    expect(heartbeatHasSpareCapacity({ localUiUrl: 'headless://container/once/t1', activeWorkerCount: 0, maxConcurrentWorkers: 1 })).toBe(false);
   });
 });

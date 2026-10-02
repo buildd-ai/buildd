@@ -74,6 +74,7 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { detectPrSupersession } from '@/lib/pr-supersession-detect';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -1137,6 +1138,19 @@ async function handlePullRequestEvent(event: {
         .update(workers)
         .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
+      // Where did the work go? Claims and sibling tasks only nominate; an edge
+      // is recorded only if the content verifies (lib/pr-supersession-detect.ts).
+      // GitHub-heavy, so after(); the hourly pr-reconcile sweep is the backstop.
+      const closedWorkerId = worker.id;
+      const detect = () => detectPrSupersession({ workerId: closedWorkerId, via: 'webhook' }).then(
+        r => console.log(`[webhook] supersession detection for PR #${pr.number}: ${r.outcome}`),
+        e => console.error(`[webhook] supersession detection failed for PR #${pr.number}:`, e),
+      );
+      try {
+        after(detect);
+      } catch {
+        await detect();
+      }
     }
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,

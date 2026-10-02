@@ -106,6 +106,14 @@ export const GATE_SLUGS = {
    */
   RETRY_PR_SUPERSESSION: 'retry_pr_supersession',
   /**
+   * Automatic supersession of a closed-unmerged PR (`lib/pr-supersession-detect.ts`).
+   * `accepted`: content verification (patch-id or content) proved the work is
+   * in a merged PR, so the edge was recorded — `detail.method` and
+   * `detail.confidence` separate these from a person's edge. `deferred`: a
+   * candidate was found but not verified, so only a suggestion was stored.
+   */
+  AUTO_PR_SUPERSESSION: 'auto_pr_supersession',
+  /**
    * The chat retro proposal pass (apps/web/src/lib/chat-retro/, experiment).
    * `deferred`: a pattern over the daily per-team cap. `rejected`: a signature
    * muted until its evidence doubles, or a pattern with no workspace to file

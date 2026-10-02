@@ -33,6 +33,14 @@ import {
 } from './phase-lines';
 
 export const WARM_ENV_FLAG = 'BUILDD_WARM_REPO';
+/**
+ * Set on every warm restore, before the fetch: the default branch's tip as
+ * the snapshot had it. A park bundle (park.ts) is built against this rather
+ * than the freshly fetched origin, so a resume restored onto the same (or a
+ * newer) snapshot has every prerequisite without reaching origin. Local to the
+ * clone: refresh bundles `--remotes` only, so it never enters a snapshot.
+ */
+export const WARM_BASE_REF = 'refs/buildd/warm-base';
 export const SNAPSHOT_URL_ENV = 'BUILDD_SNAPSHOT_URL';
 
 /** Refresh a warm snapshot older than this after a successful task. */
@@ -274,9 +282,23 @@ export function objectBytes(repo: string): number {
   return kib * 1024;
 }
 
+/**
+ * git's own reason for a failure: its `fatal:` / `error:` lines (the last line
+ * is often advice, and some commands print nothing with -q), else the last
+ * line, else how the process ended. Never empty.
+ */
+export function gitFailureText(r: { status: number | null; stderr?: string | null; error?: Error; signal?: NodeJS.Signals | null }): string {
+  const lines = (r.stderr ?? '').split('\n').map(l => l.trim()).filter(Boolean);
+  const causes = lines.filter(l => /^(fatal|error):/i.test(l));
+  if (causes.length) return causes.slice(0, 4).join('; ').slice(0, 500);
+  if (lines.length) return lines.at(-1)!.slice(0, 500);
+  if (r.error) return r.error.message;
+  return r.signal ? `killed by ${r.signal}` : `exit ${r.status ?? 'unknown'}`;
+}
+
 function run(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): void {
   const r = spawnSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
-  if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${(r.stderr ?? '').trim().split('\n').at(-1) ?? r.status}`);
+  if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${gitFailureText(r)}`);
 }
 
 /**
@@ -336,13 +358,15 @@ export class WarmRepoSession {
       if (dl.status !== 200) throw new Error(`bundle download answered ${dl.status || 'nothing'}`);
       mkdirSync(clonePath, { recursive: true });
       run(clonePath, ['init', '-q', '-b', manifest.defaultBranch]);
-      run(clonePath, ['bundle', 'verify', '-q', bundle]);
+      // No -q: with it, a bundle missing its prerequisites fails silently.
+      run(clonePath, ['bundle', 'verify', bundle]);
       run(clonePath, ['fetch', '-q', '--no-tags', bundle, '+refs/remotes/origin/*:refs/remotes/origin/*']);
       run(clonePath, ['remote', 'add', 'origin', cloneUrl]);
       const head = `refs/remotes/origin/${manifest.defaultBranch}`;
       run(clonePath, ['rev-parse', '--verify', '-q', head]);
       run(clonePath, ['symbolic-ref', 'refs/remotes/origin/HEAD', head]);
       run(clonePath, ['checkout', '-q', '-B', manifest.defaultBranch, '--track', `origin/${manifest.defaultBranch}`]);
+      run(clonePath, ['update-ref', WARM_BASE_REF, head]);
       this.metric('restore_bytes', dl.bytes);
       restored = true;
     } catch (err) {

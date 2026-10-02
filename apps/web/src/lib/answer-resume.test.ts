@@ -11,6 +11,8 @@ import {
   RESUME_ACK_DEADLINE_MS,
   explainNotWaiting,
   isAnswerableWaitingFor,
+  isAnswerQueued,
+  recordedAnswerOf,
   type AnswerPathInput,
 } from './answer-resume';
 
@@ -342,6 +344,20 @@ describe('explainNotWaiting', () => {
     expect(r.nextAction).toEqual({ kind: 'refresh' });
   });
 
+  // The resume path leaves status `waiting_input` with the answer queued until
+  // the runner picks it up. A second tap on the same card is a duplicate, not
+  // an agent that "moved on".
+  it('calls a waiting_input worker with a queued answer already answered', () => {
+    const r = explainNotWaiting({ workerStatus: 'waiting_input', continuationTaskId: null, answerQueued: true });
+    expect(r.reasonCode).toBe('already_answered');
+    expect(r.nextAction).toEqual({ kind: 'refresh' });
+  });
+
+  it('ignores a queued answer once the worker has ended', () => {
+    const r = explainNotWaiting({ workerStatus: 'failed', continuationTaskId: null, answerQueued: true });
+    expect(r.reasonCode).toBe('worker_ended');
+  });
+
   it('every reason carries plain-language prose', () => {
     for (const status of ['superseded', 'failed', 'running']) {
       const r = explainNotWaiting({ workerStatus: status, continuationTaskId: null });
@@ -391,5 +407,45 @@ describe('buildContinuationTaskValues: runner preference', () => {
   it('no parent preference leaves the column default', () => {
     expect(buildContinuationTaskValues({ ...args, task: { id: 't' } }).runnerPreference).toBeUndefined();
     expect(buildContinuationTaskValues({ ...args, task: null }).runnerPreference).toBeUndefined();
+  });
+});
+
+// What a duplicate answer is told was recorded, so the card can say "you
+// answered X" (and whether that differs from the tap) instead of an error.
+describe('recordedAnswerOf', () => {
+  it('reads the newest instruction on a resumed worker', () => {
+    const history = [
+      { type: 'instruction', message: 'first steer', timestamp: 1 },
+      { type: 'response', message: 'ok', timestamp: 2 },
+      { type: 'instruction', message: 'Park and wait', timestamp: 3, deliveryState: 'pending' },
+    ];
+    expect(recordedAnswerOf({ workerStatus: 'waiting_input', instructionHistory: history })).toBe('Park and wait');
+  });
+
+  it('reads the continuation brief on a superseded worker', () => {
+    expect(recordedAnswerOf({
+      workerStatus: 'superseded',
+      instructionHistory: [{ type: 'instruction', message: 'an old steer', timestamp: 1 }],
+      continuationContext: { userInput: 'Park and wait' },
+    })).toBe('Park and wait');
+  });
+
+  it('is null when nothing recorded the text (sensitive workspace, no continuation)', () => {
+    expect(recordedAnswerOf({ workerStatus: 'waiting_input', instructionHistory: [{ type: 'instruction', timestamp: 1 }] })).toBeNull();
+    expect(recordedAnswerOf({ workerStatus: 'superseded', instructionHistory: null, continuationContext: null })).toBeNull();
+  });
+});
+
+describe('isAnswerQueued', () => {
+  it('is true while an answer waits in the queue', () => {
+    expect(isAnswerQueued({ pendingInstructions: 'Park and wait', instructionHistory: [] })).toBe(true);
+  });
+
+  it('is true while the newest instruction is unacknowledged', () => {
+    expect(isAnswerQueued({ pendingInstructions: null, instructionHistory: [{ type: 'instruction', message: 'x', timestamp: 1, deliveryState: 'pending' }] })).toBe(true);
+  });
+
+  it('is false with nothing queued', () => {
+    expect(isAnswerQueued({ pendingInstructions: null, instructionHistory: [{ type: 'instruction', message: 'x', timestamp: 1, deliveryState: 'delivered' }] })).toBe(false);
   });
 });

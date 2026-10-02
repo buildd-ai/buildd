@@ -21,11 +21,11 @@ import {
   needsServerModelEndpoint,
   resolveModelRoute,
   rewriteOutbound,
-  type GithubGrant,
+  type GithubGrantLookup,
   type ServerModelEndpointState,
 } from './outbound';
 import { rewriteOtlp } from './otel';
-import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent } from './run-report';
+import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
 import { resumableRunsEnabled, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
 
@@ -35,7 +35,7 @@ export interface EgressProps {
 }
 
 interface AgentSource {
-  getGithubGrant(): Promise<GithubGrant | null>;
+  getGithubGrant(): Promise<GithubGrantLookup>;
   getSnapshotScope(): Promise<SnapshotScope | null>;
   recordEgress(event: EgressEvent): Promise<void>;
   getModelEndpoint(): Promise<ServerModelEndpointState>;
@@ -54,14 +54,18 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const cls = egressClassForKind(kind);
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));
 
-    const github = kind === 'github' ? await this.githubGrant() : null;
+    const lookup = kind === 'github' ? await this.githubGrant() : null;
     // The team's agent model endpoint, only when neither the local direct
     // route nor the Worker's MODEL_PROXY_URL override would win anyway.
     const server = kind === 'anthropic' && needsServerModelEndpoint(this.env) ? await this.modelEndpoint() : null;
     const viaServer = !!server && server !== 'unavailable';
     const decision = rewriteOutbound(
       { url: request.url, method: request.method, headers: request.headers },
-      { model: resolveModelRoute(this.env, server), github },
+      {
+        model: resolveModelRoute(this.env, server),
+        github: lookup?.grant ?? null,
+        ...(lookup && !lookup.grant ? { githubUnavailable: lookup.unavailable } : {}),
+      },
     );
     if (decision.action === 'passthrough') return this.counted('passthrough', at, fetch(request));
     if (decision.action === 'respond') return this.counted(cls, at, Promise.resolve(new Response(null, { status: decision.status })));
@@ -73,6 +77,9 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       // Local smoke only: show what would be sent (values fingerprinted).
       return this.counted(cls, at, Promise.resolve(Response.json(await describeForwardForDebug(decision), { headers: { 'x-buildd-egress-echo': '1' } })));
     }
+    // GitHub: whether our credential went with this request, or why not. A
+    // fixed label only; no URL or header.
+    const auth: GithubAuthLabel | undefined = kind === 'github' ? (decision.unauthenticated ?? 'credentialed') : undefined;
     // redirect: 'manual' so a redirect goes back to the container, which
     // follows it itself. The Worker never carries an injected credential to a
     // redirect target.
@@ -103,7 +110,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       }
       return r;
     });
-    return this.counted(cls, at, res);
+    return this.counted(cls, at, res, auth);
   }
 
   /** An OTLP export: counted as passthrough in the run report (it is not model or GitHub traffic). */
@@ -131,10 +138,10 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
    * container has read the body. Only the class, a timestamp and a byte count
    * leave this handler; never the URL or a header.
    */
-  private async counted(cls: EgressClass, at: number, response: Promise<Response>): Promise<Response> {
-    this.record({ type: 'request', cls, at });
+  private async counted(cls: EgressClass, at: number, response: Promise<Response>, auth?: GithubAuthLabel): Promise<Response> {
+    this.record({ type: 'request', cls, at, ...(auth ? { auth } : {}) });
     const res = await response;
-    if (res.status >= 400) this.record({ type: 'status', cls, status: res.status });
+    if (res.status >= 400) this.record({ type: 'status', cls, status: res.status, ...(auth ? { auth } : {}) });
     return countResponseBytes(res, (bytes) => this.record({ type: 'bytes', cls, bytes }));
   }
 
@@ -196,16 +203,16 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     });
   }
 
-  /** The task's installation token, from its WorkerAgent's in-memory cache. */
-  private async githubGrant(): Promise<GithubGrant | null> {
+  /** The task's installation token, from its WorkerAgent's in-memory cache, or why there is none. */
+  private async githubGrant(): Promise<GithubGrantLookup> {
     const taskId = this.ctx.props?.taskId;
-    if (!taskId) return null;
+    if (!taskId) return { grant: null, unavailable: 'no_run' };
     try {
       const agent = (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
       return await agent.getGithubGrant();
     } catch (err) {
       console.log(`[cloud-runner] task ${taskId}: GitHub grant lookup failed: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
+      return { grant: null, unavailable: 'fetch_failed' };
     }
   }
 }

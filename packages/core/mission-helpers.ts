@@ -871,7 +871,7 @@ function deriveMissionSegmentState(task: {
     // count with dead PRs nobody is about to merge.
     const state = prShipState(workers.find(w => w.prUrl));
     if (state === 'no_pr' || state === 'merged' || state === 'superseded') return 'solid';
-    if (state === 'closed_unsuperseded') return 'notch';
+    if (state === 'closed_unsuperseded' || state === 'abandoned') return 'notch';
     return 'half';
   }
 

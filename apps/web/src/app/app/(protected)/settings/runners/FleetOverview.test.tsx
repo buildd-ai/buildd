@@ -61,6 +61,24 @@ describe('FleetOverview', () => {
     expect(fleetOverviewHeadline(fleet([]), 'Team 1').map(p => p.text).join('')).toBe('No runners online for Team 1.');
   });
 
+  it('an elastic cloud group reads N running, not busy of a fixed slot count', () => {
+    const group: FleetRunner = {
+      ...runner('g', 'my-dispatcher', 3, 3), machine: 'Cloudflare · elastic',
+      elastic: { executor: 'cloud', group: 'my-dispatcher', running: 3 },
+    };
+    const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'runner-1', 1, 4), group])} />);
+    const t = text(html);
+    expect(html.match(/data-testid="fleet-runner-row"/g)?.length).toBe(2);
+    expect(html).toContain('data-elastic="true"');
+    expect(t).toContain('my-dispatcher Online');
+    expect(t).toContain('Cloudflare · elastic');
+    expect(t).toContain('3 running');
+    expect(t).not.toContain('3 /3 busy');
+    // The host runner keeps its slot meter.
+    expect(t).toContain('1 /4 busy');
+    expect(t).toContain('Fleet · 1 runner × 4 slots + 1 elastic group');
+  });
+
   it('flags a runner whose agent is waiting on you', () => {
     const html = renderToStaticMarkup(<FleetOverview fleet={fleet([runner('a', 'runner-1', 1, 2, true, true)])} />);
     expect(text(html)).toContain('1 waiting on you');

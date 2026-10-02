@@ -78,6 +78,7 @@ import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
+import { withFleetIdentity } from './fleet-identity';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -1042,11 +1043,11 @@ export class WorkerManager {
     }
   }
 
-  /** Environment as sent on the heartbeat: the scan plus post-update canary status. */
+  /** Environment as sent on the heartbeat: the scan, post-update canary status and (`--once`) the fleet identity. */
   private heartbeatEnvironment(): WorkerEnvironment | undefined {
     const canary = getUpdateCanary();
-    if (!this.environment || !canary) return this.environment;
-    return { ...this.environment, updateCanary: canary.report() };
+    const env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
   /** Push a heartbeat right away (e.g. so a canary trip reaches the server before a restart). */

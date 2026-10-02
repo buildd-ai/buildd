@@ -103,10 +103,11 @@ export function deployNames(name?: string): DeployNames {
 }
 
 /**
- * wrangler.jsonc with the Worker name and snapshot bucket replaced, for
- * `wrangler -c`. Everything else is byte-for-byte the checked-in config, so
- * a custom-named deploy cannot drift from the default one. Throws if either
- * field is missing rather than deploying a half-renamed Worker.
+ * wrangler.jsonc with the Worker name, its runner group (vars.RUNNER_GROUP)
+ * and snapshot bucket replaced, for `wrangler -c`. Everything else is
+ * byte-for-byte the checked-in config, so a custom-named deploy cannot drift
+ * from the default one. Throws if any field is missing rather than deploying
+ * a half-renamed Worker.
  */
 export function renderWranglerConfig(base: string, names: DeployNames): string {
   const swap = (text: string, re: RegExp, value: string, field: string) => {
@@ -115,7 +116,9 @@ export function renderWranglerConfig(base: string, names: DeployNames): string {
     return text.replace(re, (_m, pre: string) => `${pre}"${value}"`);
   };
   const named = swap(base, /^(\s*"name":\s*)"[^"]*"/m, names.worker, '"name"');
-  return swap(named, /("bucket_name":\s*)"[^"]*"/m, names.bucket, '"bucket_name"');
+  // The fleet groups this deployment's runs under its Worker name.
+  const grouped = swap(named, /("RUNNER_GROUP":\s*)"[^"]*"/m, names.worker, '"RUNNER_GROUP"');
+  return swap(grouped, /("bucket_name":\s*)"[^"]*"/m, names.bucket, '"bucket_name"');
 }
 
 export type DeployStep =

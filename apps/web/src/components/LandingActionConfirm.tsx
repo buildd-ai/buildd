@@ -7,6 +7,8 @@ interface Option {
   action: string;
   label: string;
   hint: string;
+  /** A link option (review on GitHub): opens this URL instead of asking the server to act. */
+  href?: string;
 }
 
 type Phase = 'idle' | 'running' | 'done' | 'error';
@@ -71,19 +73,43 @@ export function LandingActionConfirm({
 
   return (
     <div className="mt-4 flex flex-col gap-3" data-testid="landing-action-confirm">
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => submitAction(primary.action)}
-        className="min-h-12 bg-accent px-4 py-3 text-left font-mono text-sm font-bold text-white disabled:opacity-50"
-        data-testid="landing-action-primary"
-      >
-        {busy ? 'Working…' : headMoved ? 'Re-run landing' : primary.label}
-      </button>
+      {primary.href && !headMoved ? (
+        <a
+          href={primary.href}
+          target="_blank"
+          rel="noreferrer"
+          className="min-h-12 bg-accent px-4 py-3 text-left font-mono text-sm font-bold text-white"
+          data-testid="landing-action-primary"
+        >
+          {primary.label}
+        </a>
+      ) : (
+        <button
+          type="button"
+          disabled={busy}
+          // New commits make any page's advice stale; re-running landing is the one answer that fits.
+          onClick={() => submitAction(headMoved ? 'retry_landing' : primary.action)}
+          className="min-h-12 bg-accent px-4 py-3 text-left font-mono text-sm font-bold text-white disabled:opacity-50"
+          data-testid="landing-action-primary"
+        >
+          {busy ? 'Working…' : headMoved ? 'Re-run landing' : primary.label}
+        </button>
+      )}
       <p className="text-xs text-text-secondary">{headMoved ? 'Landing re-checks the current commit.' : primary.hint}</p>
       {!headMoved &&
         rest.map((o) => (
           <div key={o.action} className="flex flex-col gap-1">
+            {o.href ? (
+              <a
+                href={o.href}
+                target="_blank"
+                rel="noreferrer"
+                className="min-h-12 border border-border-default px-4 py-3 text-left font-mono text-sm text-text-primary"
+                data-testid={`landing-action-${o.action}`}
+              >
+                {o.label}
+              </a>
+            ) : (
             <button
               type="button"
               disabled={busy}
@@ -93,6 +119,7 @@ export function LandingActionConfirm({
             >
               {o.label}
             </button>
+            )}
             <p className="text-xs text-text-secondary">{o.hint}</p>
           </div>
         ))}

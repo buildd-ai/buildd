@@ -6,9 +6,13 @@
  * a `MissionSituation` by hand. A component that drifted into phrasing its own
  * sentence would pass a literal-string test and fail these.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import MissionSituationBlock, { MissionSituationLine, affordanceFor } from './MissionSituationBlock';
+
+// The closed-PR buttons are a client component; a static render has no app router.
+mock.module('next/navigation', () => ({ useRouter: () => ({ refresh: () => {}, push: () => {} }) }));
+
+const { default: MissionSituationBlock, MissionSituationLine, affordanceFor } = await import('./MissionSituationBlock');
 import { deriveMissionStateView, type MissionStateInput } from '@/lib/mission-state-view';
 import { buildStateBecause } from '@/lib/explain-because';
 
@@ -352,5 +356,39 @@ describe('affordanceFor', () => {
     const html = renderToStaticMarkup(<MissionSituationBlock missionId="m-1" situation={situation} because={[]} />);
     expect(html).toContain('data-task-id="t-9"');
     expect(html).toContain('href="/app/missions/m-1?task=t-9"');
+  });
+});
+
+describe('mission header — a deliverable PR closed without merging', () => {
+  const closed = (suggestion?: Record<string, unknown>): MissionStateInput => ({
+    ...base,
+    progress: 100,
+    completion: {
+      ok: false,
+      code: 'awaiting_merge',
+      reason: 'closed unmerged',
+      awaitingMerge: 1,
+      awaitingMergeDetails: [{
+        taskId: 'task-6', title: 'Docs import', prNumber: 6, prUrl: 'https://github.com/org/kb/pull/6', closedUnsuperseded: true,
+        ...(suggestion ? { suggestion: suggestion as any } : {}),
+      }],
+    },
+  });
+
+  it('offers Confirm and Not this for an unverified suggestion, plus Mark abandoned', () => {
+    const { html } = render(closed({
+      repo: 'org/kb', prNumber: 3366, prUrl: 'https://github.com/org/kb/pull/3366', signal: 'sibling_task', why: 'merged by a sibling task', score: 0.6,
+    }));
+    expect(html).toContain('likely superseded by');
+    expect(html).toContain('https://github.com/org/kb/pull/3366');
+    expect(html).toContain('data-testid="closed-pr-confirm"');
+    expect(html).toContain('data-testid="closed-pr-dismiss"');
+    expect(html).toContain('data-testid="closed-pr-abandon"');
+  });
+
+  it('with no suggestion, offers only Mark abandoned — never a guess to confirm', () => {
+    const { html } = render(closed());
+    expect(html).toContain('data-testid="closed-pr-abandon"');
+    expect(html).not.toContain('data-testid="closed-pr-confirm"');
   });
 });
