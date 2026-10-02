@@ -1,4 +1,29 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// --- Database mocks for testing getWorkerDeliverableArtifactCount ---
+const mockArtifactsFindMany = mock((opts?: any) => [] as any[]);
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      artifacts: { findMany: mockArtifactsFindMany },
+    },
+  },
+}));
+
+mock.module('drizzle-orm', () => ({
+  eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  or: (...conditions: any[]) => ({ conditions, type: 'or' }),
+  not: (expr: any) => ({ expr, type: 'not' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  notLike: (field: any, pattern: any) => ({ field, pattern, type: 'notLike' }),
+}));
+
+mock.module('@buildd/core/db/schema', () => ({
+  artifacts: { workerId: 'workerId', type: 'type', key: 'key', id: 'id' },
+}));
 
 // Inline the pure function to avoid bun's process-global mock.module() pollution.
 // Other test files (stale-workers.test.ts) mock '@/lib/worker-deliverables' which
@@ -172,5 +197,60 @@ describe('checkWorkerDeliverables', () => {
     expect(result.hasArtifacts).toBe(false);
     expect(result.hasAny).toBe(false);
     expect(result.details).toBe('none');
+  });
+});
+
+// --- Test getWorkerDeliverableArtifactCount with real database filtering ---
+describe('getWorkerDeliverableArtifactCount', () => {
+  beforeEach(() => {
+    // Reset mock before each test
+    mockArtifactsFindMany.mockClear();
+  });
+
+  it('excludes cloud-run-report data artifacts (telemetry only)', async () => {
+    // Worker has only a cloud-run-report artifact — should not be counted as a deliverable
+    mockArtifactsFindMany.mockImplementationOnce(() => []);
+
+    const { getWorkerDeliverableArtifactCount } = await import('./worker-deliverables');
+    const count = await getWorkerDeliverableArtifactCount('worker-1');
+
+    expect(count).toBe(0);
+    expect(mockArtifactsFindMany).toHaveBeenCalled();
+  });
+
+  it('includes report-type artifacts (non-byproduct)', async () => {
+    // Worker has a report artifact (non-byproduct type) — should be counted
+    mockArtifactsFindMany.mockImplementationOnce(() => [
+      { id: 'artifact-1' },
+    ]);
+
+    const { getWorkerDeliverableArtifactCount } = await import('./worker-deliverables');
+    const count = await getWorkerDeliverableArtifactCount('worker-2');
+
+    expect(count).toBe(1);
+  });
+
+  it('includes keyed byproduct artifacts that are not cloud-run-report', async () => {
+    // Worker has a data artifact with a non-telemetry key — should be counted
+    mockArtifactsFindMany.mockImplementationOnce(() => [
+      { id: 'artifact-2' },
+    ]);
+
+    const { getWorkerDeliverableArtifactCount } = await import('./worker-deliverables');
+    const count = await getWorkerDeliverableArtifactCount('worker-3');
+
+    expect(count).toBe(1);
+  });
+
+  it('handles database errors gracefully', async () => {
+    // DB error should return 0, not throw
+    mockArtifactsFindMany.mockImplementationOnce(() => {
+      throw new Error('Database connection failed');
+    });
+
+    const { getWorkerDeliverableArtifactCount } = await import('./worker-deliverables');
+    const count = await getWorkerDeliverableArtifactCount('worker-4');
+
+    expect(count).toBe(0);
   });
 });
