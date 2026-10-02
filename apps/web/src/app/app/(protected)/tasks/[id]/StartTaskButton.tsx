@@ -7,6 +7,14 @@ import { subscribeToChannel, unsubscribeFromChannel, getSubscribedChannel, CHANN
 import Spinner from '@/components/Spinner';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
+import {
+  fetchRunnerFleet,
+  formatFleetStatus,
+  getGateReasonSubtitle,
+  getGateReasonTitle,
+  canOfferForce,
+  type RunnerFleetStatus,
+} from '@/lib/task-actions';
 
 interface Props {
   taskId: string;
@@ -66,7 +74,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
   const [status, setStatus] = useState<StartStatus>('idle');
   const [error, setError] = useState('');
-  const [runnerFleet, setRunnerFleet] = useState<{ count: number; lastSeenSecs: number | null } | null>(null);
+  const [runnerFleet, setRunnerFleet] = useState<RunnerFleetStatus | null>(null);
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
   const [blockingDeps, setBlockingDeps] = useState<Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>>([]);
   const [deferredStartAt, setDeferredStartAt] = useState<string | null>(null);
@@ -119,24 +127,9 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     };
   }, [releaseChannel]);
 
-  const fetchRunnerFleet = useCallback(async () => {
-    try {
-      const res = await fetch('/api/workers/active');
-      if (!res.ok) return;
-      const data = await res.json();
-      const uis: Array<{ lastUpdated: string; workspaceIds: string[] }> = data.activeLocalUis || [];
-      const relevant = uis.filter(u => u.workspaceIds?.includes(workspaceId));
-      const now = Date.now();
-      const lastSeenMs = relevant.length > 0
-        ? Math.min(...relevant.map(u => now - new Date(u.lastUpdated).getTime()))
-        : null;
-      setRunnerFleet({
-        count: relevant.length,
-        lastSeenSecs: lastSeenMs !== null ? Math.floor(lastSeenMs / 1000) : null,
-      });
-    } catch {
-      // best-effort — fleet info is non-critical
-    }
+  const fetchRunnerFleetImpl = useCallback(async () => {
+    const fleet = await fetchRunnerFleet(workspaceId);
+    setRunnerFleet(fleet);
   }, [workspaceId]);
 
   const pollTaskStatus = useCallback(async (startTime: number, targetLocalUiUrl: string) => {
@@ -148,7 +141,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       }
       // Not a failure: manualStartAt + priority boost mean the task is at the
       // front of the claim queue. Show queued state with fleet liveness.
-      fetchRunnerFleet();
+      fetchRunnerFleetImpl();
       setStatus('queued');
       return;
     }
@@ -191,7 +184,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     } catch {
       // Ignore polling errors — countdown/timeout still runs above
     }
-  }, [taskId, fetchRunnerFleet]);
+  }, [taskId, fetchRunnerFleetImpl]);
 
   const handleStart = async (forceOverride = false, capExempt = false) => {
     setLoading(true);
@@ -372,20 +365,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           </div>
           {runnerFleet !== null && (
             <div className="p-2.5 bg-surface-3 rounded border border-border-default text-xs text-text-secondary">
-              {runnerFleet.count === 0 ? (
-                <span className="text-status-warning">No runners online. The task starts when a runner connects.</span>
-              ) : (
-                <span>
-                  <span className="text-text-primary font-medium">{runnerFleet.count} runner{runnerFleet.count !== 1 ? 's' : ''} online</span>
-                  {runnerFleet.lastSeenSecs !== null && (
-                    <>, last seen {runnerFleet.lastSeenSecs < 60
-                      ? `${runnerFleet.lastSeenSecs}s ago`
-                      : `${Math.floor(runnerFleet.lastSeenSecs / 60)}m ago`}
-                    </>
-                  )}
-                  {'. If the runner is mid-task, it claims this task on its next poll.'}
-                </span>
-              )}
+              <span className={runnerFleet.count === 0 ? 'text-status-warning' : undefined}>{formatFleetStatus(runnerFleet)}</span>
             </div>
           )}
           <button
@@ -543,44 +523,10 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           </svg>
         </div>
         <p className="text-text-primary font-medium mb-1">
-          {gateData?.gateReason === 'deferred_start' && deferredStartAt
-            ? `Starts at ${displayTz ? formatInZone(deferredStartAt, displayTz, 'time') : '…'}`
-            : gateData?.gateReason === 'unmerged_dep_pr'
-            ? 'Blocked: dependency PR not merged'
-            : gateData?.gateReason === 'mission_held'
-            ? 'Blocked: parent mission is held'
-            : gateData?.gateReason === 'mission_local'
-            ? 'Running in a local session'
-            : gateData?.gateReason === 'subject_dead'
-            ? 'Blocked: subject PR is closed'
-            : gateData?.gateReason === 'connector_routing_mismatch'
-            ? 'Blocked: required connectors not available'
-            : gateData?.gateReason === 'mission_budget_exhausted'
-            ? 'Blocked: mission budget exhausted'
-            : gateData?.gateReason === 'capability_mismatch'
-            ? `Blocked: no ${gateData.backend ?? 'backend'} credential available`
-            : gateData?.gateReason === 'workspace_cap_reached'
-            ? `Workspace full (${gateData.active}/${gateData.cap} running)`
-            : 'Blocked'}
+          {gateData ? getGateReasonTitle(gateData, { deferredStartLabel: deferredStartAt && displayTz ? formatInZone(deferredStartAt, displayTz, 'time') : deferredStartAt ? '…' : null }) : 'Blocked'}
         </p>
         <p className="text-sm text-text-secondary mb-3">
-          {gateData?.gateReason === 'deferred_start'
-            ? 'This task has a scheduled start time. Start now to override it.'
-            : gateData?.gateReason === 'unmerged_dep_pr'
-            ? `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`
-            : gateData?.gateReason === 'mission_held'
-            ? 'The parent mission is held. Workers claim none of its tasks until you arm the mission. "Force start" bypasses the hold for this task only.'
-            : gateData?.gateReason === 'mission_local'
-            ? 'This mission runs in a local session, so runners leave its tasks for that session to claim. "Force start" hands this task to a runner instead.'
-            : gateData?.gateReason === 'mission_budget_exhausted'
-            ? 'The parent mission spent its cost budget, so workers claim none of its tasks. Raise the mission budget to release them all, or force-start this task.'
-            : gateData?.gateReason === 'connector_routing_mismatch'
-            ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Or re-file it with role: ${gateData.alternativeRole}.` : ''}`
-            : gateData?.gateReason === 'capability_mismatch'
-            ? `The configured backend has no server credentials. Switch to an available backend to start this task.`
-            : gateData?.gateReason === 'workspace_cap_reached'
-            ? `Queued. The task starts when a slot opens.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
-            : gateData?.error || 'This task can\'t start yet.'}
+          {gateData ? getGateReasonSubtitle(gateData, { blockingCount: blockingDeps.length }) : "This task can't start yet."}
         </p>
         {gateData?.gateReason === 'unmerged_dep_pr' && (
           <div className="space-y-2 text-left">
@@ -662,7 +608,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
             Start anyway (this once)
           </button>
         )}
-        {gateData?.canForce && gateData?.blockClass !== 'capability' && gateData?.gateReason !== 'workspace_cap_reached' && (
+        {canOfferForce(gateData) && (
           <button
             onClick={() => handleStart(true)}
             disabled={loading}
@@ -675,7 +621,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           onClick={handleClose}
           className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
         >
-          {gateData?.gateReason === 'workspace_cap_reached' ? 'Leave queued (closes)' : gateData?.canForce && gateData?.blockClass !== 'capability' ? 'Cancel' : 'Close'}
+          {gateData?.gateReason === 'workspace_cap_reached' ? 'Leave queued (closes)' : canOfferForce(gateData) ? 'Cancel' : 'Close'}
         </button>
       </div>
     </div>

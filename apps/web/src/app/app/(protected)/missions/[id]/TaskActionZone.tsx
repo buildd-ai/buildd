@@ -10,13 +10,23 @@
  * Self-contained: it owns the in-flight action and its error, and calls
  * `onChanged` after a successful action so the host can refetch.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
 import type { TaskPhase } from '@/lib/task-presentation';
+import {
+  type GateRefusal,
+  type RunnerFleetStatus,
+  canOfferForce,
+  getGateReasonTitle,
+  getGateReasonSubtitle,
+  fetchRunnerFleet,
+  formatFleetStatus,
+} from '@/lib/task-actions';
 
 export interface TaskActionZoneProps {
   taskId: string;
+  workspaceId: string;
   /** Canonical phase from `deriveTaskPhase`. */
   phase: TaskPhase;
   isBlocked: boolean;
@@ -26,11 +36,13 @@ export interface TaskActionZoneProps {
   worker: { id: string; waitingFor: { prompt: string; options?: string[] } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
+  roleSlug?: string | null;
   onChanged?: () => void | Promise<void>;
 }
 
 export default function TaskActionZone({
   taskId,
+  workspaceId,
   phase,
   isBlocked,
   blockedByCount,
@@ -38,14 +50,26 @@ export default function TaskActionZone({
   lastError,
   worker,
   historyHref,
+  roleSlug,
   onChanged,
 }: TaskActionZoneProps) {
   const [acting, setActing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [gateRefusal, setGateRefusal] = useState<GateRefusal | null>(null);
+  const [runnerFleet, setRunnerFleet] = useState<RunnerFleetStatus | null>(null);
+
+  useEffect(() => {
+    if (canOfferForce(gateRefusal) && workspaceId) {
+      fetchRunnerFleet(workspaceId).then(fleet => {
+        setRunnerFleet(fleet);
+      });
+    }
+  }, [gateRefusal, workspaceId]);
 
   const runAction = useCallback(async (path: string, payload?: Record<string, unknown>) => {
     setActing(true);
     setActionError(null);
+    setGateRefusal(null);
     try {
       const res = await fetch(path, {
         method: 'POST',
@@ -54,6 +78,12 @@ export default function TaskActionZone({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        // A 422 the person can bypass becomes an inline Force start; any other refusal is just an error.
+        const refusal: GateRefusal = { ...body, gateReason: body.gateReason || 'unknown' };
+        if (res.status === 422 && canOfferForce(refusal)) {
+          setGateRefusal(refusal);
+          return;
+        }
         throw new Error(body.error || 'Action failed');
       }
       await onChanged?.();
@@ -138,7 +168,7 @@ export default function TaskActionZone({
       )}
 
       {/* Queued / pending → run now */}
-      {isQueued && !isWaiting && !isBlocked && (
+      {isQueued && !isWaiting && !isBlocked && !gateRefusal && (
         <div className="flex items-center justify-between gap-3 border border-border-default p-4">
           <span className="font-mono text-[12px] text-text-secondary">Waiting for a runner to claim it.</span>
           <button
@@ -149,6 +179,43 @@ export default function TaskActionZone({
           >
             {acting ? 'Starting…' : 'Run now'}
           </button>
+        </div>
+      )}
+
+      {/* Gate refusal with force option */}
+      {gateRefusal && canOfferForce(gateRefusal) && (
+        <div className="space-y-3 border border-status-warning p-4">
+          <div>
+            <p className="font-mono text-[12px] font-medium text-status-warning mb-1">
+              {getGateReasonTitle(gateRefusal)}
+            </p>
+            <p className="font-mono text-[11px] text-text-muted">
+              {getGateReasonSubtitle(gateRefusal)}
+            </p>
+            {runnerFleet && (
+              <p className="font-mono text-[11px] text-text-muted mt-2 p-2 bg-surface-3 rounded border border-border-default">
+                {formatFleetStatus(runnerFleet, roleSlug)}
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => runAction(`/api/tasks/${taskId}/start`, { forceOverride: true })}
+              disabled={acting}
+              className="min-h-11 px-3 font-mono text-[12px] font-medium border-2 border-status-warning bg-status-warning text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {acting ? 'Force starting…' : 'Force start'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setGateRefusal(null)}
+              disabled={acting}
+              className="min-h-11 px-3 font-mono text-[12px] text-text-secondary hover:text-text-primary disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 

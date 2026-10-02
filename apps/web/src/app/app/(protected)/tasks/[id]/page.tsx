@@ -1089,6 +1089,7 @@ export default async function TaskDetailPage({
             {phase === 'failed' && (
               <TaskPageActionZone
                 taskId={task.id}
+                workspaceId={task.workspaceId}
                 phase={phase}
                 isBlocked={false}
                 blockedByCount={0}
