@@ -105,6 +105,6 @@ describe('submitAnswer', () => {
     const fetchImpl = mock(async () => { throw new TypeError('Failed to fetch'); });
     const err = await submitAnswer({ workerId: 'w1', message: 'x' }, fetchImpl as unknown as typeof fetch).catch(e => e);
     expect(err).toBeInstanceOf(AnswerSubmitError);
-    expect(err.message).toMatch(/try again/i);
+    expect(err.message).toMatch(/did not send/i);
   });
 });

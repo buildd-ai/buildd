@@ -110,7 +110,7 @@ export async function submitAnswer(
       body: JSON.stringify({ message }),
     });
   } catch {
-    throw new AnswerSubmitError('The answer did not send. Check your connection and try again.');
+    throw new AnswerSubmitError('The answer did not send. Check your connection.');
   }
   const data = await res.json().catch(() => ({} as Record<string, unknown>));
   const outcome = classifyRespondReply(res.status, data, message);

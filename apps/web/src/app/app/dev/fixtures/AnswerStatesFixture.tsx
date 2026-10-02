@@ -79,7 +79,7 @@ export default function AnswerStatesFixture() {
                 workerId="w1"
                 question={QUESTION}
                 options={OPTIONS}
-                answer={state({ error: { message: 'The answer did not send. Check your connection and try again.', credentialRevoked: false } })}
+                answer={state({ error: { message: 'The answer did not send. Check your connection.', credentialRevoked: false } })}
               />
             </SheetBox>
           </Panel>
