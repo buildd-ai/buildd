@@ -11,7 +11,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { getDeployIdentity } from '@/lib/deploy-identity';
 import { browserRunnerOnline } from '@/lib/visual-audit-runner';
 import { isRunnerOnline, RUNNER_ONLINE_WINDOW_MS } from '@/lib/runner-heartbeats-shared';
-import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { CAPABILITY_BROWSER, RUNNER_STALE_CUTOFF_MS, isOnceRunnerUrl, runnerFleetIdentity } from '@buildd/shared';
 
 // "Not dead" window (2.5× the poll cycle): a runner listed here may be quiet,
 // but has not been presumed dead. Presence is judged separately below with
@@ -133,18 +133,27 @@ export async function GET(req: NextRequest) {
     // This prevents showing stale capacity when workers are stuck
     const accountIds = [...new Set(heartbeats.map(hb => hb.accountId))];
     const actualWorkerCounts = new Map<string, number>();
+    // Live workers of ephemeral `--once` runs, keyed by account + run URL: such
+    // a run holds exactly its own worker, and those workers are not any host
+    // runner's (they used to inflate every host row of the same account).
+    const onceLive = new Map<string, number>();
+    const onceKey = (accountId: string, url: string) => `${accountId}\n${url}`;
     if (accountIds.length > 0) {
       const activeWorkerRecords = await db.query.workers.findMany({
         where: and(
           inArray(workers.accountId, accountIds),
           inArray(workers.status, [...LIVE_WORKER_STATUSES]),
         ),
-        columns: { accountId: true },
+        columns: { accountId: true, localUiUrl: true },
       });
-      for (const w of activeWorkerRecords) {
-        if (w.accountId) {
-          actualWorkerCounts.set(w.accountId, (actualWorkerCounts.get(w.accountId) || 0) + 1);
+      for (const w of activeWorkerRecords as Array<{ accountId: string | null; localUiUrl?: string | null }>) {
+        if (!w.accountId) continue;
+        if (isOnceRunnerUrl(w.localUiUrl)) {
+          const k = onceKey(w.accountId, w.localUiUrl!);
+          onceLive.set(k, (onceLive.get(k) || 0) + 1);
+          continue;
         }
+        actualWorkerCounts.set(w.accountId, (actualWorkerCounts.get(w.accountId) || 0) + 1);
       }
     }
 
@@ -169,11 +178,24 @@ export async function GET(req: NextRequest) {
           .map(w => w.id);
         if (overlapping.length === 0) return null;
 
+        // An ephemeral `--once` run (a cloud container) holds its one task
+        // and exits; it never accepts another. So: one slot, no spare
+        // capacity ever (a picker must not target it), and once its worker is
+        // no longer live it is gone, even while its last heartbeat is fresh.
+        const fleet = runnerFleetIdentity(hb);
+        if (fleet.ephemeral) {
+          const running = onceLive.get(onceKey(hb.accountId, hb.localUiUrl)) || 0;
+          if (running === 0) return null;
+        }
+
         // Use the higher of heartbeat-reported count and actual DB count
         // This catches cases where runner reports 0 but workers are still 'running' in DB
         const reportedCount = hb.activeWorkerCount;
-        const dbCount = actualWorkerCounts.get(hb.accountId) || 0;
-        const effectiveActiveWorkers = Math.max(reportedCount, dbCount);
+        const dbCount = fleet.ephemeral
+          ? onceLive.get(onceKey(hb.accountId, hb.localUiUrl)) || 0
+          : actualWorkerCounts.get(hb.accountId) || 0;
+        const maxConcurrent = fleet.ephemeral ? 1 : hb.maxConcurrentWorkers;
+        const effectiveActiveWorkers = fleet.ephemeral ? Math.min(1, Math.max(reportedCount, dbCount)) : Math.max(reportedCount, dbCount);
         const envKeys = (hb.environment as { envKeys?: unknown } | null)?.envKeys;
 
         return {
@@ -181,9 +203,13 @@ export async function GET(req: NextRequest) {
           viewerToken: hb.viewerToken,
           accountId: hb.accountId,
           accountName: hb.account?.name || 'Unknown',
-          maxConcurrent: hb.maxConcurrentWorkers,
+          maxConcurrent,
           activeWorkers: effectiveActiveWorkers,
-          capacity: Math.max(0, hb.maxConcurrentWorkers - effectiveActiveWorkers),
+          capacity: fleet.ephemeral ? 0 : Math.max(0, hb.maxConcurrentWorkers - effectiveActiveWorkers),
+          // What this runner is in the fleet: null for a long-lived runner;
+          // for a `--once` run its executor and elastic group (list_runners
+          // groups on it).
+          fleet: fleet.ephemeral ? fleet : null,
           workspaceIds: overlapping,
           workspaceNames: overlapping.map(id => workspaceNameMap.get(id) || 'Unknown'),
           environment: hb.environment || null,

@@ -70,6 +70,7 @@ export class WorkerAgent extends Agent<Env, RunState> {
         PUSHER_KEY: env.PUSHER_KEY,
         PUSHER_CLUSTER: env.PUSHER_CLUSTER,
         BUILDD_ONCE_MAX_WAIT_MS: env.BUILDD_ONCE_MAX_WAIT_MS,
+        RUNNER_GROUP: env.RUNNER_GROUP,
         // Telemetry vars only; the collector credential stays with the egress handler.
         OTEL_EXPORTER_OTLP_ENDPOINT: env.OTEL_EXPORTER_OTLP_ENDPOINT,
         OTEL_EXPORTER_OTLP_PROTOCOL: env.OTEL_EXPORTER_OTLP_PROTOCOL,
