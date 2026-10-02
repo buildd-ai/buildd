@@ -1,5 +1,6 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
 import type { RunnerFleetIdentity } from './runner-fleet';
+import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
 // UTILS
@@ -1588,6 +1589,12 @@ export interface ClaimTasksResponse {
      * through POST /api/workers/[id]/question-check before parking.
      */
     questionGate?: QuestionGateMarker;
+    /**
+     * claude.ai artifact access for this session, resolved from the role's
+     * `metadata.claudeAiArtifacts` and the task's `context.claudeAiArtifacts`.
+     * Absent means off. See claude-ai-artifacts.ts.
+     */
+    claudeAiArtifacts?: ClaudeAiArtifactAccess;
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
     /** Decrypted server-managed OAuth token (inline) */
@@ -1601,6 +1608,12 @@ export interface ClaimTasksResponse {
     claudeAccessToken?: string;
     /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
     claudeTokenExpiresAt?: string | null;
+    /**
+     * OAuth scopes the managed claude_credential was granted, when recorded
+     * (the dashboard login records them). The runner writes these into the
+     * worker's .credentials.json; absent means the legacy `['user:inference']`.
+     */
+    claudeTokenScopes?: string[];
     /**
      * The team's agent model endpoint, when it won the §2 ranking for this task
      * (docs/design/agent-model-endpoint.md). When set, serverApiKey,

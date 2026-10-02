@@ -424,6 +424,18 @@ describe('attachClaudeCredentials', () => {
     expect(workers[0].claudeTokenExpiresAt).toBe('2026-09-03T12:00:00.000Z');
   });
 
+  it('passes the recorded scopes through, and nothing when none were recorded', async () => {
+    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null, scopes: ['user:inference', 'user:mcp_servers'] });
+    const withScopes = [worker('t1')];
+    await attachClaudeCredentials(withScopes, [task('t1', 'claude')]);
+    expect(withScopes[0].claudeTokenScopes).toEqual(['user:inference', 'user:mcp_servers']);
+
+    mockResolveClaude.mockResolvedValue({ accessToken: 'claude-access', tokenExpiresAt: null, scopes: null });
+    const without = [worker('t1')];
+    await attachClaudeCredentials(without, [task('t1', 'claude')]);
+    expect(without[0].claudeTokenScopes).toBeUndefined();
+  });
+
   // Workers must never receive a refresh_token: with one in the credentials
   // file the SDK rotates in-session and triggers token-family revocation.
   it('never attaches a refresh token', async () => {

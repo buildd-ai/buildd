@@ -210,6 +210,7 @@ export async function attachClaudeCredentials(
       if (cred) {
         (cw as any).claudeAccessToken = cred.accessToken;
         (cw as any).claudeTokenExpiresAt = cred.tokenExpiresAt ? cred.tokenExpiresAt.toISOString() : null;
+        if (cred.scopes?.length) (cw as any).claudeTokenScopes = cred.scopes;
         console.log(`[claim] Attached claude_credential access_token for workspace ${wsId}`);
       }
     } catch (err) {

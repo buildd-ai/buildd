@@ -1,6 +1,7 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
+import { patchClaudeAiArtifactsMetadata } from '@buildd/shared';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
@@ -149,6 +150,12 @@ export async function PATCH(
         if (source !== undefined) updates.source = source;
         if (metadata !== undefined) updates.metadata = metadata;
         if (routing.patch) updates.metadata = applyRoutingPatch(metadata ?? existing.metadata, routing.patch);
+        // claude.ai artifact access (@buildd/shared claude-ai-artifacts.ts), kept in metadata.
+        if (body.claudeAiArtifacts !== undefined) {
+            const patched = patchClaudeAiArtifactsMetadata(updates.metadata ?? existing.metadata, body.claudeAiArtifacts);
+            if (!patched.ok) return NextResponse.json({ error: patched.error }, { status: 400 });
+            updates.metadata = patched.metadata;
+        }
         if (enabled !== undefined) updates.enabled = enabled;
         if (model !== undefined) updates.model = model;
         if (defaultBackend !== undefined) updates.defaultBackend = normalizeBackend(defaultBackend);
