@@ -1,6 +1,6 @@
 # Design System
 
-**Status:** Accepted (tokens describe what ships; §3 type scale and §4 primitives are Proposed, built by the follow-up primitives task)
+**Status:** Accepted (tokens describe what ships; the §3 type scale and the §4 primitives are built)
 **Related:** `apps/web/src/app/globals.css`, `apps/web/tailwind.config.ts`, `apps/web/src/app/mobile-type-floor.test.ts`, `apps/web/src/components/BottomSheet.tsx`, `apps/web/src/components/StatusBadge.tsx`, `apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx`, `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`, `docs/design/mobile-feed-spec.md` (mobile layout), `docs/design/chat-canvas.md` (the one soft surface), `docs/plans/ios-app-mvp.md` (iOS tokens), `.claude/skills/ui_designer/`
 
 **This is the one design reference.** Read this file before writing UI. The
@@ -42,9 +42,9 @@ disagrees, the code value is recorded here and the disagreement is listed in
 §2.9, never resolved by editing this doc to match the older one. If this doc
 and `globals.css` ever disagree, `globals.css` wins and this doc is the bug.
 
-What this doc adds that the code does not yet have is two things the next task
-builds: a fixed type scale (§3) and a small primitive layer (§4). Until those
-land, §3 and §4 are proposals; everything in §1–§2 describes what ships today.
+On top of the tokens sit a fixed type scale (§3) and a small primitive layer
+(§4), both in code: `--type-*` in `globals.css` and the components in
+`apps/web/src/components/ui/`.
 
 ---
 
@@ -211,11 +211,11 @@ Safari does not zoom.
 | `.section-label` colour `--text-muted` | `--text-primary` | ui_designer skill |
 | Sidebar rail 60px / 56px | Not a token; check `MissionsSidebar.tsx` | mobile-feed-spec §6 / ui_designer skill |
 | Radius 0 everywhere | `.filter-pill` has `border-radius: 3px`; its hover/active fills are hard-coded night `rgba(255,245,230,…)` | `globals.css` drift, not a doc |
-| Status colours via tokens only | `StatusBadge` uses raw `#D97706` for `waiting_on_you` and `infra_stalled` | `StatusBadge.tsx` drift |
+| Status colours via tokens only | `StatusBadge` used raw `#D97706` for `waiting_on_you` and `infra_stalled`; fixed when it moved onto `Chip` (§4) | `StatusBadge.tsx` drift |
 
 ---
 
-## 3. Type scale (Proposed)
+## 3. Type scale
 
 One fixed set of roles replaces per-page `text-[Npx]` and `text-[Npx] md:text-[Npx]`
 pairs. Mobile is below `md` (48rem); desktop is `md` and up. Sizes are chosen
@@ -234,17 +234,24 @@ by a wide margin) so most call sites move by 0–1px. Nothing on mobile is under
 | `heading` | 20 | 24 | 700 | sentence | 1.25 | Page `h1` (today `text-xl md:text-2xl font-bold`) |
 | `display` | 28 | 40 | 700 | UPPERCASE allowed | 1.1 | Mastheads and hero numbers only |
 
-Implementation sketch for the follow-up task (not built here): one CSS variable
-per role in `globals.css` (`--type-chip: 11px`, overridden in an
-`@media (width >= 48rem)` block), exposed as Tailwind `fontSize` entries
-(`text-chip`, `text-eyebrow`, …) so a call site writes one class, not a
-breakpoint pair. The primitives in §4 consume these roles; new code should not
+Implementation: one CSS variable per role in `globals.css` (`--type-chip: 11px`,
+overridden in an `@media (width >= 48rem)` block), exposed as Tailwind
+`fontSize` entries in `tailwind.config.ts` (`text-chip`, `text-eyebrow`,
+`text-meta`, `text-body`, `text-title`, `text-lede`, `text-heading`,
+`text-display`) so a call site writes one class, not a breakpoint pair. The
+classes carry size and line height only; weight, case and tracking stay on the
+call site (or in the primitive). The primitives in §4 consume these roles; new code should not
 add `text-[Npx]`. Glyph-only sizes (disclosure chevrons, the desktop rail) keep
 their exemptions in `mobile-type-floor.test.ts`.
 
 ---
 
-## 4. Primitive inventory (Proposed; built by the next task)
+## 4. Primitive inventory
+
+All seven are built in `apps/web/src/components/ui/` (`Chip`, `Eyebrow`,
+`Section`, `Lede`, `PrimaryAction`, `Disclosure`, `Sheet`), each with a unit or
+DOM test beside it. Only `Chip` and `Sheet` have been swapped in so far; the
+**Replaces** lists of the other five are follow-up migrations.
 
 Location: `apps/web/src/components/ui/`, next to `Dialog`, `Select`,
 `Combobox`, `Switch`. Tokens only, no raw hex, no `text-[Npx]`, square chrome,
@@ -255,6 +262,8 @@ touch targets ≥ 44px on mobile.
 **Purpose:** the one way to show a state word. Square, 1px border, mono
 uppercase, optional leading square dot (the `.status-pill` look).
 
+**Built:** `components/ui/Chip.tsx`.
+
 **Props:** `tone: 'success' | 'running' | 'warning' | 'error' | 'info' | 'accent' | 'muted'`,
 `variant?: 'outline' (default) | 'soft' | 'solid'`, `dot?: boolean` (default true),
 `pulse?: boolean` (live states), `children`, `trailing?: ReactNode` (a muted suffix such as `3m`),
@@ -264,7 +273,9 @@ uppercase, optional leading square dot (the `.status-pill` look).
 - `components/StatusBadge.tsx`: becomes a thin wrapper mapping `status → { tone, label }`
   over `Chip`. Keep the `StatusBadge` default export and the `STATUS_COLORS` /
   `STATUS_LABELS` exports, since several call sites import them. The two raw
-  `#D97706` entries map to a token tone.
+  `#D97706` entries map to a token tone: `waiting_on_you → accent`,
+  `infra_stalled → warning`. `StatusBadge` and `HeartbeatStatusBadge` use the
+  `soft` variant so the tinted fill they had survives the swap.
 - `missions/[id]/HeartbeatStatusBadge.tsx`: `LastCheckTone` maps 1:1 onto
   `success | warning | error | muted`; the relative time goes in `trailing`.
   Keep `data-testid="mission-last-check"`.
@@ -345,6 +356,8 @@ hand-rolled chevron toggles in `TaskGrid.tsx` and `CondensedTimeline.tsx`.
 
 **Purpose:** the one modal panel that rises from the bottom on mobile.
 
+**Built:** `components/ui/Sheet.tsx`; `components/BottomSheet.tsx` re-exports it.
+
 **Start from what exists:** `components/BottomSheet.tsx` already is this
 primitive (portal to `<body>`, scroll lock on the shell's scroll root,
 Escape to close, optional focus trap, `auto`/`tall` heights, a 44px close
@@ -355,9 +368,13 @@ focus to the trigger on close (as `FlightDetailSheet.tsx` and
 1px `--border` it draws now. `SideSheet.tsx` (the docked desktop panel) already
 reuses its `lockScroll` and `nextTrappedFocus` helpers and stays separate.
 
-**Props:** as `BottomSheet` today: `open`, `onClose`, `title`, `children`,
+**Props:** as `BottomSheet` had: `open`, `onClose`, `title`, `children`,
 `height?: 'auto' | 'tall'`, `handle?`, `trapFocus?`, `flush?`, `lockTarget?`,
-`testId?`.
+`testId?`; plus `width?: 'default' | 'wide'` (`max-w-lg` / `max-w-3xl`, for a
+sheet with its own side rail) and `returnFocusRef?` (the trigger to refocus on
+close; defaults to whatever was focused when it opened, which Safari leaves on
+`<body>` after a click). Focus is only returned if it was lost with the sheet,
+never pulled back from somewhere the closing action moved it.
 
 **Replaces (hand-rolled `fixed inset-0` backdrop + bottom panel):**
 - `components/MissionPolicyDrawer.tsx`: no dialog role, no `aria-modal`, no
@@ -366,8 +383,12 @@ reuses its `lockScroll` and `nextTrappedFocus` helpers and stays separate.
   the four (focus first item, arrow keys, Escape returns focus to the menu
   button); keep that behaviour when it moves.
 - `components/ArtifactViewer.tsx`: full-height viewer with arrow-key paging;
-  maps to `height="tall"` plus its own key handler.
+  maps to `height="tall" width="wide"` plus its own arrow-key handler. On
+  desktop it is a wide bottom sheet now, not a panel docked right.
 - `components/FlightDetailSheet.tsx`: already restores focus; a straight swap.
+  Not migrated yet.
+
+The first three are migrated.
 
 `MissionDecisionSheet.tsx` is named in older notes as a hand-rolled sheet; it
 now renders inline on the mission page and needs no migration.
@@ -397,12 +418,10 @@ notification text) follows the same rules as a PR lede:
 
 ## Open questions
 
-- **`waiting_on_you` tone.** It is raw `#D97706` today. I lean `accent` (orange
-  means "this is for you to act on"); `warning` is the alternative. The
-  primitives task decides and records it here.
-- **Desktop `chip` at 10px vs 11px.** Keeping 10px preserves the current desktop
-  rhythm; 11px everywhere would remove a breakpoint pair. I lean 10px (no
-  visual change on desktop).
+- ~~**`waiting_on_you` tone.**~~ Decided: `accent` (orange means "this is for
+  you to act on").
+- ~~**Desktop `chip` at 10px vs 11px.**~~ Decided: 10px on desktop, 11px below
+  md, held in `--type-chip`.
 - **`.filter-pill` radius and hard-coded fills.** Lean: square it and move its
   fills to tokens when the Chip lands.
 - **iOS `Theme.swift`.** Lean: copy §2 into it on the next iOS task, rather than
@@ -410,7 +429,6 @@ notification text) follows the same rules as a PR lede:
 
 ## Non-goals
 
-- No component code in this change; §3 and §4 are built by the follow-up task.
 - No colour, radius or shadow changes; every token is documented as shipped.
 - The chat canvas's own tokens and rules stay in `docs/design/chat-canvas.md`.
 - Mobile page layouts (sections, data mapping, the Missions Feed artboard) stay
