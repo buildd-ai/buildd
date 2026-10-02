@@ -12,6 +12,21 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.16.0 — 2026-10-02
+
+Minor: a route registry in `/models`:
+
+- `ROUTES` (new): one entry per place a model call can go (`anthropic`,
+  `openai`, `openrouter`, `litellm`), with its wire format, API root, auth
+  scheme, verify path, which vendors it serves and whether it takes
+  attribution or reports cost. Types `RouteId`, `RouteSpec`, `RouteWire`.
+- `routeOrder(vendor)`: own API, then OpenRouter, then a gateway.
+- `routeModelId(route, vendor, model, naming?)`: the id to send on a route.
+  `openRouterModelId` (now exported here) and `gatewayModel` are its two cases.
+- `routeAuthHeaders`, `routeAttributionHeaders`.
+- `toCallConfig` reads its base URLs and headers from `ROUTES`; its output is
+  unchanged. `gatewayModel` also accepts a bare `{ models, prefix }`.
+
 ## 0.15.0 — 2026-09-30
 
 Minor: a finished turn folds to one line:
