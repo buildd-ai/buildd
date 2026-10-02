@@ -23,6 +23,9 @@ import {
   executorOf,
   BUILT_IN_SERVER,
   UNASSIGNED_ROLE,
+  INFERRED_ROLE_SUFFIX,
+  roleGroupKey,
+  parseRoleGroupKey,
   type UsageWorkerRow,
 } from './usage-stats';
 
@@ -832,6 +835,58 @@ describe('role histogram — separated from the cost rollup (Rule R3-2)', () => 
     expect(stats.groups).toHaveLength(1);
     expect(stats.groups[0].key).toBe('ws-a');
     expect(stats.groups[0].tasks).toBe(1);
+  });
+});
+
+describe('stated vs inferred roles, and claim latency (role-routing §6(d))', () => {
+  const T0 = new Date('2026-10-01T10:00:00Z');
+  const at = (ms: number) => new Date(T0.getTime() + ms);
+  const rows = () => [
+    row({ taskId: 'stated-1', roleSlug: 'builder', taskCreatedAt: T0, taskClaimedAt: at(10_000) }),
+    row({ taskId: 'stated-2', roleSlug: 'builder', taskStatus: 'failed', taskCreatedAt: T0, taskClaimedAt: at(30_000) }),
+    row({ taskId: 'routed-1', roleSlug: 'builder', roleInferred: true, taskCreatedAt: T0, taskClaimedAt: at(120_000) }),
+    row({ taskId: 'none-1', roleSlug: null, taskCreatedAt: T0, taskClaimedAt: at(5_000) }),
+  ];
+
+  test('an inferred role is its own group beside the stated one', () => {
+    const stats = computeUsageStats(rows(), 'role');
+    expect(stats.groups.map(g => g.key).sort()).toEqual([UNASSIGNED_ROLE, 'builder', `builder${INFERRED_ROLE_SUFFIX}`].sort());
+    const stated = stats.groups.find(g => g.key === 'builder')!;
+    const inferred = stats.groups.find(g => g.key === `builder${INFERRED_ROLE_SUFFIX}`)!;
+    expect(stated).toMatchObject({ tasks: 2, completed: 1, failed: 1, roleSlug: 'builder', roleSource: 'stated' });
+    expect(inferred).toMatchObject({ tasks: 1, completed: 1, successRate: 1, roleSlug: 'builder', roleSource: 'inferred' });
+    // The routed task does not move the stated group's success rate.
+    expect(stated.successRate).toBe(0.5);
+    // Totals still count every task once.
+    expect(stats.totals.tasks).toBe(4);
+  });
+
+  test('each role group reports its claim latency, routed against unassigned', () => {
+    const stats = computeUsageStats(rows(), 'role');
+    const latency = (key: string) => dist(stats.groups.find(g => g.key === key)!.claimLatencyMs as never);
+    expect(latency(`builder${INFERRED_ROLE_SUFFIX}`).median).toBe(120_000);
+    expect(latency(UNASSIGNED_ROLE).median).toBe(5_000);
+    expect(latency('builder').max).toBe(30_000);
+  });
+
+  test('a group with no claimed task says so instead of reporting 0', () => {
+    const stats = computeUsageStats([row({ taskId: 'x', roleSlug: 'writer', taskCreatedAt: T0, taskClaimedAt: null })], 'role');
+    expect(stats.groups[0].claimLatencyMs).toMatchObject({ kind: 'unavailable', reason: 'no_scope' });
+  });
+
+  test('only the role dimension carries the role fields', () => {
+    const stats = computeUsageStats(rows(), 'workspace');
+    expect(stats.groups[0].claimLatencyMs).toBeUndefined();
+    expect(stats.groups[0].roleSource).toBeUndefined();
+  });
+
+  test('group keys round-trip', () => {
+    expect(roleGroupKey({ roleSlug: 'builder', roleInferred: true })).toBe(`builder${INFERRED_ROLE_SUFFIX}`);
+    expect(roleGroupKey({ roleSlug: 'builder' })).toBe('builder');
+    expect(roleGroupKey({ roleSlug: null, roleInferred: true })).toBe(UNASSIGNED_ROLE);
+    expect(parseRoleGroupKey(`builder${INFERRED_ROLE_SUFFIX}`)).toEqual({ roleSlug: 'builder', roleSource: 'inferred' });
+    expect(parseRoleGroupKey('builder')).toEqual({ roleSlug: 'builder', roleSource: 'stated' });
+    expect(parseRoleGroupKey(UNASSIGNED_ROLE)).toEqual({ roleSlug: null, roleSource: 'stated' });
   });
 });
 

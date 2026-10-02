@@ -16,7 +16,7 @@ import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskCategorize } from '@/lib/task-category-decision';
-import { scheduleTaskRoleShadow } from '@/lib/task-role-decision';
+import { scheduleTaskRoleRouting } from '@/lib/task-role-apply';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
@@ -1549,13 +1549,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // The role shadow (lib/task-role-decision.ts, role-routing.md §6(a)): which
-    // role the decision model would give this task. Opt-in per team, after the
-    // response, log only — it never writes the task. Pipeline/bookkeeping rows
+    // Role routing (lib/task-role-decision.ts + lib/task-role-apply.ts,
+    // role-routing.md §6(a)/(c)): which role the decision model would give this
+    // task, logged; and, for a role-less task on a team that opted into
+    // task_role_apply, written when confident and still unclaimed. After the
+    // response, so it never delays or fails creation. Pipeline/bookkeeping rows
     // get their role from their parent, so only `work` rows are looked at.
     if (intake.outcome.action !== 'attached' && task.taskClass === 'work' && targetWorkspace.teamId) {
       try {
-        scheduleTaskRoleShadow({
+        scheduleTaskRoleRouting({
           taskId: task.id,
           teamId: targetWorkspace.teamId,
           workspaceId,

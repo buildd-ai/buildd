@@ -194,6 +194,19 @@ describe('GET /api/stats/usage — aggregation', () => {
     expect(body.groups[0].successRate).toBeCloseTo(0.5);
   });
 
+  it('labels an inferred role group apart from the stated one', async () => {
+    mockSkillsFindMany.mockResolvedValue([{ slug: 'builder', name: 'Builder' }]);
+    mockWorkersFindMany.mockResolvedValue([
+      worker({ taskId: 'a', task: { id: 'a', status: 'completed', roleSlug: 'builder', parentTaskId: null } }),
+      worker({ taskId: 'b', task: { id: 'b', status: 'completed', roleSlug: 'builder', parentTaskId: null, roleInferred: true } }),
+    ]);
+
+    const body = await (await GET(makeRequest({ groupBy: 'role' }))).json();
+    const byKey = Object.fromEntries(body.groups.map((g: any) => [g.key, g]));
+    expect(byKey.builder).toMatchObject({ label: 'Builder', roleSource: 'stated', tasks: 1 });
+    expect(byKey['builder · inferred']).toMatchObject({ label: 'Builder · inferred', roleSource: 'inferred', tasks: 1 });
+  });
+
   it('labels workspace groups with the workspace name', async () => {
     mockWorkersFindMany.mockResolvedValue([
       worker({ taskId: 'a', workspaceId: 'ws-1', task: { id: 'a', status: 'completed', roleSlug: null, parentTaskId: null } }),

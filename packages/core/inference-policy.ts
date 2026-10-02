@@ -8,7 +8,7 @@
  *   is no switch (`teams.chatDisabled` is deprecated and unread).
  * - **built_in** decision calls (task classification, the task category shadow
  *   check): low cost, no toggle. They run whenever a key resolves.
- * - **opt_in** decision shadows (the task role shadow): off unless the team
+ * - **opt_in** decision shadows (the task role shadow and its apply step): off unless the team
  *   row lists the capability in `teams.enabledDecisionShadows`. A new shadow
  *   ships dark, and turning one on never turns on another.
  * - **server_feature** (goal grading, visual QA judgment, mission summaries):
@@ -33,6 +33,7 @@ export type InferenceCapability =
   | 'task_category'
   | 'surface_audit_advice'
   | 'task_role_shadow'
+  | 'task_role_apply'
   | 'orchestration_manifest'
   | 'orchestration_claim'
   | 'mission_strand_choice'
@@ -108,6 +109,15 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     kind: 'opt_in',
     label: 'Task role shadow',
     description: 'A decision model says which role it would give a task filed without one. Logged only; never changes the task.',
+    costHint: '~$0.00003 per task',
+  },
+  // The apply half of role routing (apps/web/src/lib/task-role-apply.ts). Its own
+  // switch, so turning the shadow on never starts writing roles.
+  task_role_apply: {
+    id: 'task_role_apply',
+    kind: 'opt_in',
+    label: 'Task role routing',
+    description: 'When a decision model is confident, a task filed without a role gets one before a runner picks it up. Never replaces a role you chose, and never changes the model.',
     costHint: '~$0.00003 per task',
   },
   // Conflict-aware orchestration decisions (knowledge-base: buildd/design/conflict-aware-orchestration.md

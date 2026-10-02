@@ -67,7 +67,16 @@ export async function fetchUsageRows(opts: {
           creationSource: true,
           parentTaskId: true,
           predictedModel: true,
+          createdAt: true,
+          claimedAt: true,
         },
+        // One boolean, not the whole context blob: the role split needs only
+        // whether the role was routed (lib/task-role-apply.ts).
+        // The callback form: a nested relation is aliased, so the column must
+        // come from the aliased table, not the imported one.
+        extras: (t, { sql }) => ({
+          roleInferred: sql<boolean>`(${t.context} -> 'roleInferred') is not null`.as('role_inferred'),
+        }),
       },
     },
     orderBy: [desc(workers.completedAt), desc(workers.id)],
@@ -82,6 +91,9 @@ export async function fetchUsageRows(opts: {
     workspaceId: w.workspaceId,
     taskStatus: w.task?.status ?? null,
     roleSlug: w.task?.roleSlug ?? null,
+    roleInferred: w.task?.roleInferred === true,
+    taskCreatedAt: w.task?.createdAt ?? null,
+    taskClaimedAt: w.task?.claimedAt ?? null,
     creationSource: w.task?.creationSource ?? null,
     assignedModel: w.task?.predictedModel ?? null,
     inputTokens: w.inputTokens,

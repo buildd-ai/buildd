@@ -16,8 +16,22 @@
  * The data file stays local: `.decision-data/` is gitignored, and this repo is
  * public. Nothing here touches the database; the key comes from the env.
  *
+ * `task_role` (role-routing §6(b)) builds its question per row, from the
+ * row's own candidate set, the way the live shadow does:
+ *   {"id":"t1","role":"builder","category":"feature","title":"...","description":"...",
+ *    "kind":null,"candidates":["builder","researcher","writer"]}
+ * Candidates are slugs resolved through `--roles <file>` (a JSON array of
+ * {slug,name,whenToUse,notFor?}: the workspace's routing text, kept local), or
+ * full objects inline. Gold `none` means "no role should take this"; it is
+ * never an option, so it only counts against a gate that applies it. The same
+ * file serves `--set task_category --label-field category`, so role and
+ * category are labelled on one sample. The output adds the gate table and the
+ * picked TASK_ROLE_MIN_CONFIDENCE.
+ *
  * Flags:
  *   --set <name>          question set (default task_category)
+ *   --label-field <key>   which field holds the gold (default: the set's own)
+ *   --roles <path>        task_role: routing text for slug candidates
  *   --file <path>         labelled JSONL (default .decision-data/<set>.jsonl)
  *   --split heldout|train|all   (default heldout)
  *   --held-out <0..1>     held-out fraction (default 0.3)
@@ -40,9 +54,17 @@ import {
 import { TASK_CATEGORY_QUESTIONS, buildTaskCategoryState } from '../apps/web/src/lib/task-category-decision';
 import { classifyTask } from '../apps/web/src/lib/task-category';
 import { HEARTBEAT_TRIAGE_QUESTIONS, buildHeartbeatTriageState } from '../apps/web/src/lib/heartbeat-triage';
+import { buildRoleQuestion, buildTaskRoleState, type RoleCandidate } from '../apps/web/src/lib/task-role-decision';
+import { pickGateThreshold, formatGateTable } from '../packages/core/decision-benchmark';
 
 interface QuestionSet {
   questions: DecisionQuestions;
+  /** Per-row questions (a dynamic label set). Returns the questions and how to read the answer back. */
+  questionsFor?(fields: Record<string, unknown>): { questions: DecisionQuestions; toLabel(choice: string): string } | null;
+  /** The field the gold is read from when --label-field is not given. */
+  labelField?: string;
+  /** Print the apply-gate table (a wrong answer is worse than none). */
+  gate?: boolean;
   /** Which choice question's answer is compared with the gold label. */
   answerKey: string;
   toState(fields: Record<string, unknown>): Record<string, unknown> | string;
@@ -56,6 +78,25 @@ interface QuestionSet {
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
+
+/** Routing text for slug candidates (`--roles`). Loaded once in main(). */
+let ROLE_TEXT: Map<string, RoleCandidate> = new Map();
+
+function roleCandidates(fields: Record<string, unknown>): RoleCandidate[] {
+  const raw = Array.isArray(fields.candidates) ? fields.candidates : [];
+  const out: RoleCandidate[] = [];
+  for (const c of raw) {
+    if (typeof c === 'string') {
+      const known = ROLE_TEXT.get(c);
+      if (!known) throw new Error(`candidate "${c}" has no routing text; pass --roles <file> or inline the candidate`);
+      out.push(known);
+    } else if (c && typeof c === 'object' && typeof (c as RoleCandidate).slug === 'string') {
+      const r = c as RoleCandidate;
+      out.push({ slug: r.slug, name: r.name ?? r.slug, whenToUse: r.whenToUse, ...(r.notFor ? { notFor: r.notFor } : {}), connectorRefs: [] });
+    }
+  }
+  return out;
+}
 
 const SETS: Record<string, QuestionSet> = {
   task_category: {
@@ -74,6 +115,30 @@ const SETS: Record<string, QuestionSet> = {
     baseline: () => 'act',
     gatedLabel: 'wait',
   },
+  task_role: {
+    questions: {},
+    labelField: 'role',
+    answerKey: 'role',
+    gate: true,
+    questionsFor: f => {
+      const q = buildRoleQuestion(roleCandidates(f));
+      if (!q) return null;
+      return { questions: { role: q.question }, toLabel: choice => q.slugFor.get(choice) ?? choice };
+    },
+    toState: f => buildTaskRoleState({
+      title: str(f.title),
+      label: typeof f.taskLabel === 'string' ? f.taskLabel : null,
+      kind: typeof f.kind === 'string' ? f.kind : null,
+      description: str(f.description),
+      pathManifest: Array.isArray(f.paths) ? f.paths as string[] : null,
+      pathManifestIsConcrete: Array.isArray(f.paths) && f.paths.length > 0,
+      creationSource: typeof f.source === 'string' ? f.source : null,
+      inMission: f.inMission === true,
+      outputRequirement: typeof f.output === 'string' ? f.output : null,
+    }),
+    // Today every role-less task stays role-less.
+    baseline: () => 'none',
+  },
 };
 
 function arg(name: string): string | undefined {
@@ -89,8 +154,14 @@ async function main() {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('OPENROUTER_API_KEY is required');
 
+  const rolesFile = arg('roles');
+  if (rolesFile) {
+    const roles = JSON.parse(readFileSync(rolesFile, 'utf8')) as Array<{ slug: string; name?: string; whenToUse: string; notFor?: string }>;
+    ROLE_TEXT = new Map(roles.map(r => [r.slug, { slug: r.slug, name: r.name ?? r.slug, whenToUse: r.whenToUse, ...(r.notFor ? { notFor: r.notFor } : {}), connectorRefs: [] }]));
+  }
+
   const file = arg('file') ?? `.decision-data/${setName.replace(/_/g, '-')}.jsonl`;
-  const { examples, skipped } = parseLabeledJsonl(readFileSync(file, 'utf8'));
+  const { examples, skipped } = parseLabeledJsonl(readFileSync(file, 'utf8'), { labelField: arg('label-field') ?? set.labelField });
   const { train, heldOut } = splitHeldOut(examples, {
     heldOutFraction: arg('held-out') ? Number(arg('held-out')) : undefined,
     seed: arg('seed'),
@@ -112,19 +183,26 @@ async function main() {
     while (next < chosen.length) {
       const i = next++;
       const ex = chosen[i];
+      const baseline = set.baseline ? set.baseline(ex.fields) : undefined;
+      const dynamic = set.questionsFor ? set.questionsFor(ex.fields) : null;
+      if (set.questionsFor && !dynamic) {
+        // Fewer than two candidates: the live path makes no call and leaves the role null.
+        scored[i] = { id: ex.id, gold: ex.label, predicted: null, confidence: null, baseline, error: 'too_few_candidates' };
+        continue;
+      }
       const res = await decisionCall({
         capability: 'task_category_shadow',
         teamId: 'offline',
         apiKey,
         model: arg('model'),
         state: set.toState(ex.fields),
-        questions: set.questions,
+        questions: dynamic ? dynamic.questions : set.questions,
         timeoutMs: 10_000,
       });
-      const baseline = set.baseline ? set.baseline(ex.fields) : undefined;
       if (res.ok) {
         const a = res.answers[set.answerKey] as { choice?: string; confidence?: number };
-        scored[i] = { id: ex.id, gold: ex.label, predicted: a.choice ?? null, confidence: a.confidence ?? null, baseline };
+        const predicted = a.choice == null ? null : dynamic ? dynamic.toLabel(a.choice) : a.choice;
+        scored[i] = { id: ex.id, gold: ex.label, predicted, confidence: a.confidence ?? null, baseline };
         costUsd += res.usage.costUsd ?? 0;
         latencyTotal += res.latencyMs;
       } else {
@@ -136,13 +214,17 @@ async function main() {
 
   const summary = summarizeBenchmark(scored);
   if (process.argv.includes('--json')) {
-    console.log(JSON.stringify({ set: setName, split, costUsd, summary }, null, 2));
+    console.log(JSON.stringify({ set: setName, split, costUsd, summary, ...(set.gate ? { gate: pickGateThreshold(scored) } : {}) }, null, 2));
   } else {
     console.log(formatBenchmarkSummary(`${setName} / ${split}`, summary));
     const ok = scored.filter(s => !s.error).length;
     console.log(`\ncost $${costUsd.toFixed(6)}   mean latency ${ok ? Math.round(latencyTotal / ok) : 0}ms`);
     const errors = scored.filter(s => s.error);
     if (errors.length) console.log(`errors (first 5): ${errors.slice(0, 5).map(e => `${e.id}: ${e.error}`).join(' | ')}`);
+    if (set.gate) {
+      const gate = pickGateThreshold(scored);
+      console.log(`\napply gate (precision >= 0.95 on every label with >= 10 picks):\n${formatGateTable(gate.rows, gate.threshold)}`);
+    }
     if (set.gatedLabel) {
       console.log(`\n'${set.gatedLabel}' picks by confidence (precision = gold agrees):`);
       for (const t of [0.5, 0.7, 0.8, 0.9, 0.95]) {
