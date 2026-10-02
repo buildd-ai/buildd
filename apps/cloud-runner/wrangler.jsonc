@@ -18,7 +18,13 @@
       // 1/2 vCPU, 4 GiB, 8 GB disk. Enough for Claude Code plus a
       // depth-limited clone; revisit with canary numbers (design, open question 2).
       "instance_type": "standard-1",
-      "max_instances": 10
+      "max_instances": 10,
+      // A deploy rolls the container application. With the default grace of
+      // 0 s every running task container is shut down at once (SIGTERM, exit
+      // 143), including a run the restarted agent has just resumed. 30 min
+      // lets in-flight runs finish; a longer run is parked and resumed by the
+      // restarted agent (Phase 2, resumable runs).
+      "rollout_active_grace_period": 1800
     }
   ],
   "durable_objects": {
