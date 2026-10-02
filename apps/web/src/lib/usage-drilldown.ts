@@ -15,6 +15,7 @@
 import type { CbmHealthSummary } from './cbm-insight';
 import type { Distribution, MetricBlock, PerTaskBlock, ScanBounds, UsageStats } from './usage-stats';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
+import type { BashBucketsBlock, CbmToolsBlock, SearchShapesBlock } from './usage-breakdowns';
 
 // ── Window ───────────────────────────────────────────────────────────────────
 
@@ -90,10 +91,10 @@ const CODE_NAV_MCP_PREFIX = 'mcp__codebase-memory__';
 /**
  * Code NAVIGATION, not "code search" — and deliberately without `Bash`.
  *
- * Nothing records the command string inside a `Bash` call (the runner keys its
- * histogram on the SDK tool name), so `Bash` is an undifferentiated mix of `rg`,
- * `git`, test runs and builds. Counting it here would make "how does this role
- * find code" a number that also contains every build it ran.
+ * The tool histogram keys on the SDK tool name, so `Bash` there is a mix of
+ * `rg`, `git`, test runs and builds. Counting it here would make "how does this
+ * role find code" a number that also contains every build it ran. Its intent
+ * buckets (`bashBuckets`) live on the shell panel, on that panel's population.
  */
 export function isCodeNavigationTool(name: string): boolean {
   return CODE_NAV_BUILTINS.has(name) || name.startsWith(CODE_NAV_MCP_PREFIX);
@@ -467,7 +468,16 @@ export interface UsageDrilldownView {
   scan: ScanBounds;
   codeNavigation: CodeNavigationPanel;
   shell: ShellPanel;
+  /** What the shell calls were for. Same exact-histogram population as `shell`. */
+  bashBuckets: BashBucketsBlock;
+  /** Pattern shapes inside the `code_search` bucket. */
+  searchShapes: SearchShapesBlock;
   adoption: IndexAdoptionLine;
+  /**
+   * Every graph tool over the adoption line's population (session-keyed).
+   * Null when no completed session in the window recorded CBM metrics.
+   */
+  cbmTools: CbmToolsBlock | null;
   /** Null when the caller could not read the event stream at all. */
   actions: ActionBreakdownPanel | null;
 }
@@ -492,7 +502,10 @@ export function buildUsageDrilldownView(input: {
     scan,
     codeNavigation: buildCodeNavigationPanel(current, previous, resolution.window),
     shell: buildShellPanel(current),
+    bashBuckets: current.bashBuckets,
+    searchShapes: current.searchShapes,
     adoption: indexAdoptionLine(cbm, resolution.window),
+    cbmTools: cbm && cbm.activeCount > 0 ? cbm.tools : null,
     actions: input.actions ?? null,
   };
 }

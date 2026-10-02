@@ -613,7 +613,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
-    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
+    get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor. Also returns every tool, Bash intent buckets and code-search shapes (exact-histogram tasks only), per-action buildd calls (recorded since capture began) and per-tool codebase-graph calls (session-keyed), each with its own coverage line.',
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     get_page_source: '{ workerId?, sha? (commit to audit; default the trunk head), prNumber? (use this PR\'s head commit instead, e.g. when trunk deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto). Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
@@ -748,6 +748,62 @@ const FAILURE_WINDOW_VALUES = Object.keys(
 
 /** Mirrors `USAGE_WINDOWS` in apps/web/src/lib/usage-stats.ts — kept local since that module lives in a different package. */
 const USAGE_WINDOW_VALUES = ['24h', '7d', '30d'] as const;
+
+const pctOf = (share: number) => (share > 0 && share < 0.01 ? '<1%' : `${Math.round(share * 100)}%`);
+
+/**
+ * get_usage_stats: the four fine-grained breakdowns, each followed by its own
+ * coverage line because none of them shares a population with another (or
+ * with the task-keyed totals above them). A block whose data is absent says
+ * why in one line rather than disappearing — "not recorded" must not read as
+ * "zero".
+ */
+export function renderUsageBreakdowns(data: any): string[] {
+  const lines: string[] = [];
+
+  const bb = data?.bashBuckets;
+  if (bb) {
+    if (bb.classifiedCalls > 0) {
+      const rows = (bb.buckets ?? []).map((b: any) => `  ${b.key}: ${b.calls} (${pctOf(b.share)})`);
+      lines.push(`Bash buckets (share of classified Bash):\n${rows.join('\n')}`);
+      lines.push(
+        `  coverage: ${bb.classifiedCalls}/${bb.bashCalls} Bash calls classified, over ${bb.histogramTasks} task(s) with an exact histogram only; no cross-window delta`,
+      );
+    } else {
+      lines.push(`Bash buckets: none classified (${bb.bashCalls} Bash call(s) over ${bb.histogramTasks} exact-histogram task(s), all from workers older than the classifier)`);
+    }
+  }
+
+  const ss = data?.searchShapes;
+  if (ss && ss.codeSearchCalls > 0) {
+    const rows = (ss.shapes ?? []).map((s: any) => `  ${s.key}: ${s.calls} (${pctOf(s.share)})`);
+    lines.push(`Search shapes (of ${ss.codeSearchCalls} code_search call(s); identifier = answerable by a structural index):\n${rows.join('\n')}`);
+  }
+
+  const ba = data?.buildActions;
+  if (ba) {
+    const rows = (ba.actions ?? []).map((a: any) => `  ${a.action}: ${a.calls} (${pctOf(a.share / 100)})`);
+    lines.push(rows.length > 0 ? `buildd actions (${ba.totalCalls} call(s)):\n${rows.join('\n')}` : 'buildd actions: none recorded in this window');
+    lines.push(
+      `  coverage: ${ba.workersWithEvents}/${ba.workers} worker(s) recorded; actions recorded since ${ba.capturedSince}, no backfill` +
+      `${ba.windowPredatesCapture ? ' (this window opens earlier, so a low count may mean not yet recorded)' : ''}` +
+      `${ba.truncated ? '; row cap hit, counts are floors' : ''}`,
+    );
+  } else {
+    lines.push('buildd actions: unavailable (the action event stream could not be read)');
+  }
+
+  const ct = data?.cbmTools;
+  if (ct) {
+    const rows = (ct.tools ?? []).map((t: any) => `  ${t.tool}: ${t.calls} (${pctOf(t.share)}) in ${t.sessions} session(s)`);
+    lines.push(rows.length > 0 ? `Codebase-graph tools (${ct.totalCalls} call(s)):\n${rows.join('\n')}` : 'Codebase-graph tools: no graph call');
+    lines.push(`  coverage: over ${ct.sessions} CBM-enabled completed worker session(s); session-keyed, so a retried task counts once per attempt`);
+  } else {
+    lines.push('Codebase-graph tools: no completed session in this window had the graph available');
+  }
+
+  return lines;
+}
 
 // Agent context is finite. A small default, a hard ceiling, short lines.
 const FAILURE_SIGNATURES_DEFAULT = 5;
@@ -4474,15 +4530,19 @@ export async function handleBuilddAction(
         );
       }
 
-      const topTools: string[] = (data.tools?.byTool ?? []).slice(0, 8).map((tool: any) =>
-        `  ${tool.name}: ${tool.calls} (${Math.round(tool.share * 100)}%) across ${tool.tasks} task(s)`
+      // Every tool, not a top slice: the long tail (graph tools, recall,
+      // ToolSearch) is exactly what a top-8 list hid.
+      const allTools: string[] = (data.tools?.byTool ?? []).map((tool: any) =>
+        `  ${tool.name}: ${tool.calls} (${pctOf(tool.share)}) across ${tool.tasks} task(s)`
       );
-      if (topTools.length > 0) lines.push(`Top tools:\n${topTools.join('\n')}`);
+      if (allTools.length > 0) lines.push(`Tools (all ${allTools.length}):\n${allTools.join('\n')}`);
 
       const servers: string[] = (data.tools?.byServer ?? []).slice(0, 6).map((s: any) =>
         `  ${s.server}: ${s.calls}`
       );
       if (servers.length > 0) lines.push(`By server:\n${servers.join('\n')}`);
+
+      lines.push(...renderUsageBreakdowns(data));
 
       const models: string[] = (data.byModel ?? []).slice(0, 5).map((m: any) =>
         `  ${m.model}: ${fmtTokens(m.inputTokens)} in / ${fmtTokens(m.outputTokens)} out (${Math.round(m.share * 100)}%)`

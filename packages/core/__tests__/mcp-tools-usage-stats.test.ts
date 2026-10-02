@@ -274,3 +274,92 @@ describe('get_usage_stats', () => {
     expect(res.content[0].text).toMatch(/n\/a success/);
   });
 });
+
+describe('get_usage_stats — fine-grained breakdowns', () => {
+  const breakdowns = {
+    bashBuckets: {
+      histogramTasks: 9, classifiedTasks: 8, bashCalls: 400, classifiedCalls: 360,
+      buckets: [
+        { key: 'code_search', calls: 180, share: 0.5 },
+        { key: 'test', calls: 120, share: 1 / 3 },
+        { key: 'git', calls: 60, share: 1 / 6 },
+        { key: 'gh', calls: 0, share: 0 },
+      ],
+    },
+    searchShapes: {
+      codeSearchCalls: 180,
+      shapes: [
+        { key: 'identifier', calls: 90, share: 0.5 },
+        { key: 'regex', calls: 90, share: 0.5 },
+        { key: 'unknown', calls: 0, share: 0 },
+      ],
+    },
+    buildActions: {
+      actions: [
+        { action: 'update_progress', calls: 30, share: 75 },
+        { action: 'recall', calls: 10, share: 25 },
+      ],
+      totalCalls: 40, workersWithEvents: 6, workers: 15, capturedSince: '2026-09-03',
+      windowPredatesCapture: false, truncated: false,
+    },
+    cbmTools: {
+      sessions: 7, totalCalls: 20,
+      tools: [{ tool: 'search_graph', calls: 20, sessions: 5, share: 1 }],
+    },
+  };
+
+  const run = async (payload: any) => {
+    const api = mock();
+    api.mockResolvedValueOnce(payload);
+    const res = await handleBuilddAction(api as unknown as ApiFn, 'get_usage_stats', {}, ctx());
+    return res.content[0].text as string;
+  };
+
+  it('lists every tool, not a top slice', async () => {
+    const byTool = Array.from({ length: 14 }, (_, i) => ({ name: `Tool${i}`, calls: 20 - i, share: 0.01, tasks: 1 }));
+    const out = await run({ ...statsPayload, tools: { ...statsPayload.tools, byTool } });
+    expect(out).toContain('Tools (all 14):');
+    expect(out).toContain('Tool13: 7');
+  });
+
+  it('renders Bash buckets and search shapes over the exact-histogram population', async () => {
+    const out = await run({ ...statsPayload, ...breakdowns });
+    expect(out).toMatch(/code_search: 180 \(50%\)/);
+    expect(out).toMatch(/gh: 0 \(0%\)/);
+    expect(out).toMatch(/360\/400 Bash calls classified, over 9 task\(s\) with an exact histogram only; no cross-window delta/);
+    expect(out).toMatch(/Search shapes \(of 180 code_search call\(s\); identifier = answerable by a structural index\)/);
+    expect(out).toMatch(/identifier: 90 \(50%\)/);
+  });
+
+  it('renders the buildd action list with its recorded-since coverage', async () => {
+    const out = await run({ ...statsPayload, ...breakdowns });
+    expect(out).toMatch(/buildd actions \(40 call\(s\)\):/);
+    expect(out).toMatch(/update_progress: 30 \(75%\)/);
+    expect(out).toMatch(/6\/15 worker\(s\) recorded; actions recorded since 2026-09-03, no backfill/);
+  });
+
+  it('renders codebase-graph tools as session-keyed', async () => {
+    const out = await run({ ...statsPayload, ...breakdowns });
+    expect(out).toMatch(/search_graph: 20 \(100%\) in 5 session\(s\)/);
+    expect(out).toMatch(/over 7 CBM-enabled completed worker session\(s\); session-keyed/);
+  });
+
+  it('says why a breakdown is missing instead of dropping it', async () => {
+    const out = await run({
+      ...statsPayload,
+      bashBuckets: { histogramTasks: 3, classifiedTasks: 0, bashCalls: 12, classifiedCalls: 0, buckets: [] },
+      searchShapes: { codeSearchCalls: 0, shapes: [] },
+      buildActions: { ...breakdowns.buildActions, actions: [], totalCalls: 0, windowPredatesCapture: true },
+      cbmTools: null,
+    });
+    expect(out).toMatch(/Bash buckets: none classified/);
+    expect(out).toMatch(/buildd actions: none recorded in this window/);
+    expect(out).toMatch(/may mean not yet recorded/);
+    expect(out).toMatch(/Codebase-graph tools: no completed session in this window had the graph available/);
+  });
+
+  it('documents the breakdowns in the action description', () => {
+    const desc = buildParamsDescription(['get_usage_stats']);
+    expect(desc).toMatch(/Bash intent buckets and code-search shapes/);
+  });
+});
