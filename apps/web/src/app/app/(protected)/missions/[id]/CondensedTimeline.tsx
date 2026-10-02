@@ -375,6 +375,7 @@ function TaskRow({
           <span className="section-label text-status-warning">Needs your input</span>
           <WorkerRespondInput
             workerId={latestWorker.id}
+            taskId={task.id}
             question={waitingFor.prompt}
             options={waitingFor.options}
           />
