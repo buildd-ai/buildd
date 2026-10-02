@@ -15,7 +15,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 
 // ─── Assertion vocabulary (§1) ──────────────────────────────────────────────
 
@@ -596,6 +596,44 @@ export interface DiscoveredDoc {
   docType: DocType;
 }
 
+/**
+ * `designRoot` may be repo-relative (the default) or an absolute path to a
+ * checkout outside the repo — design docs can live in a private repo and be
+ * mounted for the run. A missing or unreadable root is "no design docs", never
+ * an error.
+ */
+function listDesignFiles(config: ConformanceConfig): string[] {
+  try {
+    return readdirSync(resolve(config.repoRoot, config.designRoot));
+  } catch {
+    return [];
+  }
+}
+
+export interface DesignRootInfo {
+  /** The design root directory exists and is readable. */
+  present: boolean;
+  /** Design docs discovered under it (meta files excluded). */
+  docCount: number;
+  /** One line to print when there are no design docs; null otherwise. */
+  notice: string | null;
+}
+
+export function describeDesignRoot(config: ConformanceConfig): DesignRootInfo {
+  let present = true;
+  try {
+    readdirSync(resolve(config.repoRoot, config.designRoot));
+  } catch {
+    present = false;
+  }
+  const docCount = listDesignFiles(config).filter((f) => f.endsWith('.md') && !DESIGN_META_FILES.has(f)).length;
+  const notice =
+    docCount > 0
+      ? null
+      : `no design docs found at ${present ? '' : 'missing root '}${config.designRoot} — checking docs/specs assertions only`;
+  return { present, docCount, notice };
+}
+
 export function discoverDocs(config: ConformanceConfig): DiscoveredDoc[] {
   const docs: DiscoveredDoc[] = [];
   const specs = (() => {
@@ -610,14 +648,7 @@ export function discoverDocs(config: ConformanceConfig): DiscoveredDoc[] {
       docs.push({ path: join(config.specsRoot, f), docType: 'spec' });
     }
   }
-  const designs = (() => {
-    try {
-      return readdirSync(join(config.repoRoot, config.designRoot));
-    } catch {
-      return [];
-    }
-  })();
-  for (const f of designs) {
+  for (const f of listDesignFiles(config)) {
     if (f.endsWith('.md') && !DESIGN_META_FILES.has(f)) {
       docs.push({ path: join(config.designRoot, f), docType: 'design' });
     }
@@ -636,7 +667,7 @@ export interface DocEvaluation {
 }
 
 export function evaluateDoc(doc: DiscoveredDoc, config: ConformanceConfig, now?: Date): DocEvaluation {
-  const content = readFileSync(join(config.repoRoot, doc.path), 'utf8');
+  const content = readFileSync(resolve(config.repoRoot, doc.path), 'utf8');
   const frontmatter = parseFrontmatter(content);
   const declared = declaredStatus(content, frontmatter, doc.docType);
   const { valid, errors } = validateAssertions(frontmatter?.assertions ?? []);
@@ -687,7 +718,7 @@ export function computeWatchSet(config: ConformanceConfig): WatchSet {
   const paths = new Set<string>();
 
   for (const doc of discoverDocs(config)) {
-    const content = readFileSync(join(config.repoRoot, doc.path), 'utf8');
+    const content = readFileSync(resolve(config.repoRoot, doc.path), 'utf8');
     const frontmatter = parseFrontmatter(content);
     const { valid } = validateAssertions(frontmatter?.assertions ?? []);
     for (const assertion of valid) {
@@ -698,8 +729,12 @@ export function computeWatchSet(config: ConformanceConfig): WatchSet {
     }
   }
 
-  const designPrefix = config.designRoot.endsWith('/') ? config.designRoot : `${config.designRoot}/`;
-  return { prefixes: [designPrefix], paths: [...paths].sort() };
+  // An out-of-tree design root can never match a repo-relative changed file, so
+  // it contributes assertion paths (above) but no prefix.
+  const rel = isAbsolute(config.designRoot) ? relative(config.repoRoot, config.designRoot) : config.designRoot;
+  const inTree = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  const designPrefix = rel.endsWith('/') ? rel : `${rel}/`;
+  return { prefixes: inTree ? [designPrefix] : [], paths: [...paths].sort() };
 }
 
 /** Whether a repo-root-relative changed file falls inside the watch set. */

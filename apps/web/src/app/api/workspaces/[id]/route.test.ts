@@ -552,6 +552,42 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.githubInstallationId).toBeUndefined();
   });
 
+  describe('gitConfig.crossWorkspaceDocs', () => {
+    const rows: Record<string, any> = {
+      'ws-kb': { teamId: 'team-1', gitConfig: {} },
+      'ws-other-team': { teamId: 'team-2', gitConfig: {} },
+    };
+    beforeEach(() => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockImplementation(((args: any) =>
+        Promise.resolve(rows[args?.where?.value] ?? { teamId: 'team-1', gitConfig: { autoMergePR: true, crossWorkspaceDocs: { sources: [{ workspaceId: 'ws-kb' }] } } })) as any);
+    });
+    const patch = (value: unknown) =>
+      PATCH(createMockRequest({ method: 'PATCH', body: { gitConfig: { crossWorkspaceDocs: value } } }), { params: mockParams });
+
+    it('stores a valid opt-in and keeps the rest of gitConfig', async () => {
+      const res = await patch({ sources: [{ workspaceId: 'ws-kb', acknowledgeSensitive: true }] });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({
+        autoMergePR: true,
+        crossWorkspaceDocs: { sources: [{ workspaceId: 'ws-kb', acknowledgeSensitive: true }] },
+      });
+    });
+
+    it('null removes the key', async () => {
+      const res = await patch(null);
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toEqual({ autoMergePR: true });
+    });
+
+    it('refuses a source of another team and writes nothing', async () => {
+      capturedUpdates = {};
+      const res = await patch({ sources: [{ workspaceId: 'ws-other-team' }] });
+      expect(res.status).toBe(400);
+      expect(capturedUpdates.gitConfig).toBeUndefined();
+    });
+  });
+
   it('accepts a valid gitConfig.mergePolicy', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

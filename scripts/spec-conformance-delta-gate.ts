@@ -46,7 +46,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeWatchSet, isWatched, resolveConformanceConfig } from '../packages/core/spec-conformance';
+import { computeWatchSet, describeDesignRoot, isWatched, resolveConformanceConfig } from '../packages/core/spec-conformance';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = join(__dirname, '..');
@@ -125,7 +125,9 @@ async function cmdCheck() {
     .map((f) => f.trim())
     .filter(Boolean);
 
-  const config = resolveConformanceConfig({ repoRoot: ROOT });
+  const config = resolveConformanceConfig({ repoRoot: ROOT, designRoot: argValue('--design-root') });
+  const designNotice = describeDesignRoot(config).notice;
+  if (designNotice) console.log(`[spec-conformance-delta-gate] ${designNotice}`);
   const watchSet = computeWatchSet(config);
   const watchedChanges = changedFiles.filter((f) => isWatched(f, watchSet));
 

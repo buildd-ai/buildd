@@ -309,6 +309,17 @@ export interface WorkspaceGitConfig {
   // See packages/core/memory-candidates.ts.
   memoryCandidateWrites?: boolean;
 
+  // Other workspaces of the SAME team whose `docs`/`spec` corpora this
+  // workspace's `recall` and `spec_compare` may also search. Absent / empty =
+  // own docs only. Explicit opt-in per source; `acknowledgeSensitive` is the
+  // owner's statement that this workspace may read a `sensitive` source.
+  // Written only through POST /api/workspaces/[id]/config (owner/admin).
+  // See packages/core/cross-workspace-docs.ts and
+  // docs/design/cross-workspace-retrieval.md.
+  crossWorkspaceDocs?: {
+    sources: Array<{ workspaceId: string; acknowledgeSensitive?: boolean }>;
+  };
+
   // Default agent backend for tasks in this workspace, when neither the task
   // (task.backend) nor its role (role.defaultBackend) specifies one. Resolution
   // precedence: task.backend → role.defaultBackend → workspace default → 'claude'.

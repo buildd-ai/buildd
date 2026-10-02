@@ -13,6 +13,7 @@ import {
   extractBoldStatus,
   declaredStatus,
   discoverDocs,
+  describeDesignRoot,
   evaluateDoc,
   evaluateAllDocs,
   resolveConformanceConfig,
@@ -645,5 +646,95 @@ describe('computeWatchSet', () => {
     const watchSet = computeWatchSet(config);
 
     expect(watchSet.paths).not.toContain('apps/should-not-be-watched.ts');
+  });
+});
+
+// ─── absent / out-of-tree design root ───────────────────────────────────────
+
+describe('design root that is absent, empty, or out-of-tree', () => {
+  function specOnlyRepo(name: string): string {
+    const dir = join(root, name);
+    mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
+    writeFileSync(
+      join(dir, 'docs', 'specs', 'widget.md'),
+      ['---', 'status: active', 'assertions:', '  - id: has-file', '    type: test_file', '    path: docs/specs/widget.md', '---', '# Widget', ''].join('\n'),
+    );
+    return dir;
+  }
+
+  test('a missing design root discovers only the spec docs and evaluates without throwing', () => {
+    const dir = specOnlyRepo('no-design-root');
+    const config = resolveConformanceConfig({ repoRoot: dir });
+
+    const docs = discoverDocs(config);
+    expect(docs.map((d) => d.docType)).toEqual(['spec']);
+    expect(() => evaluateAllDocs(config)).not.toThrow();
+    expect(evaluateAllDocs(config)[0].contradiction).toBeNull();
+  });
+
+  test('a missing design root still yields a usable watch set from spec assertions', () => {
+    const dir = specOnlyRepo('no-design-root-watch');
+    const watchSet = computeWatchSet(resolveConformanceConfig({ repoRoot: dir }));
+    expect(watchSet.paths).toContain('docs/specs/widget.md');
+    expect(isWatched('docs/specs/widget.md', watchSet)).toBe(true);
+  });
+
+  test('describeDesignRoot reports a one-line notice for a missing root', () => {
+    const dir = specOnlyRepo('notice-missing');
+    const info = describeDesignRoot(resolveConformanceConfig({ repoRoot: dir }));
+    expect(info.present).toBe(false);
+    expect(info.docCount).toBe(0);
+    expect(info.notice).toMatch(/no design docs/i);
+    expect(info.notice).not.toContain('\n');
+  });
+
+  test('describeDesignRoot reports a notice for an empty root and none when docs exist', () => {
+    const dir = specOnlyRepo('notice-empty');
+    mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'design', 'DESIGN-FORMAT.md'), '# meta');
+    const empty = describeDesignRoot(resolveConformanceConfig({ repoRoot: dir }));
+    expect(empty.present).toBe(true);
+    expect(empty.docCount).toBe(0);
+    expect(empty.notice).toMatch(/no design docs/i);
+
+    writeFileSync(join(dir, 'docs', 'design', 'thing.md'), '# Thing\n\n**Status:** Proposed\n');
+    const full = describeDesignRoot(resolveConformanceConfig({ repoRoot: dir }));
+    expect(full.docCount).toBe(1);
+    expect(full.notice).toBeNull();
+  });
+
+  test('an absolute design root outside the repo is discovered and evaluated against the repo checkout', () => {
+    const dir = specOnlyRepo('out-of-tree-repo');
+    writeFileSync(join(dir, 'present.ts'), 'export const x = 1;\n');
+    const external = join(root, 'out-of-tree-design');
+    mkdirSync(external, { recursive: true });
+    writeFileSync(
+      join(external, 'private-doc.md'),
+      ['---', 'status: implemented', 'assertions:', '  - id: p', '    type: test_file', '    path: present.ts', '---', '# Private', ''].join('\n'),
+    );
+
+    const config = resolveConformanceConfig({ repoRoot: dir, designRoot: external });
+    const docs = discoverDocs(config);
+    expect(docs.filter((d) => d.docType === 'design').map((d) => d.path)).toEqual([join(external, 'private-doc.md')]);
+
+    const evals = evaluateAllDocs(config);
+    const design = evals.find((e) => e.docType === 'design')!;
+    expect(design.derivedStatus).toBe('implemented');
+    expect(design.contradiction).toBeNull();
+  });
+
+  test('an out-of-tree design root contributes assertion paths but no path prefix to the watch set', () => {
+    const dir = specOnlyRepo('out-of-tree-watch');
+    const external = join(root, 'out-of-tree-watch-design');
+    mkdirSync(external, { recursive: true });
+    writeFileSync(
+      join(external, 'private-doc.md'),
+      ['---', 'status: proposed', 'assertions:', '  - id: p', '    type: test_file', '    path: apps/secret-thing.ts', '---', '# Private', ''].join('\n'),
+    );
+
+    const watchSet = computeWatchSet(resolveConformanceConfig({ repoRoot: dir, designRoot: external }));
+    expect(watchSet.paths).toContain('apps/secret-thing.ts');
+    expect(watchSet.prefixes.some((p) => p.startsWith('/'))).toBe(false);
+    expect(watchSet.prefixes).toEqual([]);
   });
 });

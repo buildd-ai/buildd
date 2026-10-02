@@ -36,6 +36,14 @@
 # instead of waiting on the next PR author to notice. Best-effort only: never
 # fails the build, no-ops on missing WORKSPACE_ID/BUILDD_API_KEY, and a cold
 # start (no prior recorded set) just records state without alerting.
+#
+# Private design docs: design docs may live in the private knowledge-base repo
+# rather than docs/design. When the KB_READ_TOKEN repo secret exists and the
+# run is not from a fork, `buildd/design` from that repo is checked out into a
+# scratch directory (.kb-design-src, untracked) and passed to every step as `--design-root`. Without the
+# secret (forks, contributors, fresh clones) those steps are skipped and the
+# check still passes on docs/specs and whatever design docs are in-tree — a
+# missing design root is "no design docs", never an error.
 name: Spec Conformance Check
 
 on:
@@ -55,11 +63,40 @@ jobs:
     env:
       WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
       BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+      # Secrets are not addressable from `if:`; expose presence as a flag only.
+      HAS_KB_READ_TOKEN: ${{ secrets.KB_READ_TOKEN != '' }}
+      IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
 
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Check out private design docs (only with KB_READ_TOKEN, never from a fork)
+        id: kb
+        continue-on-error: true
+        if: env.HAS_KB_READ_TOKEN == 'true' && env.IS_FORK != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: buildd-ai/knowledge-base
+          token: ${{ secrets.KB_READ_TOKEN }}
+          path: .kb-design-src
+          sparse-checkout: buildd/design
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve design root
+        id: design
+        run: |
+          if [ "${{ steps.kb.outcome }}" = "failure" ]; then
+            echo "::warning::KB_READ_TOKEN is set but the private design docs could not be checked out"
+          fi
+          if [ "${{ steps.kb.outcome }}" = "success" ] && [ -d "$GITHUB_WORKSPACE/.kb-design-src/buildd/design" ]; then
+            echo "args=--design-root $GITHUB_WORKSPACE/.kb-design-src/buildd/design" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "No private design docs mounted — checking docs/specs and in-tree design docs only"
+          fi
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -71,15 +108,15 @@ jobs:
 
       - name: Delta gate — decide whether anything watched changed
         id: gate
-        run: bun run scripts/spec-conformance-delta-gate.ts check
+        run: bun run scripts/spec-conformance-delta-gate.ts check ${{ steps.design.outputs.args }}
 
       - name: Run spec conformance checker
         if: steps.gate.outputs.skip != 'true'
-        run: bun run specs:conformance -- --fail-on-contradiction
+        run: bun run specs:conformance -- --fail-on-contradiction ${{ steps.design.outputs.args }}
 
       - name: Alert on new spec-conformance contradictions (push to dev only)
         if: always() && github.event_name == 'push' && steps.gate.outputs.skip != 'true'
-        run: bun run scripts/spec-conformance-contradiction-watch.ts
+        run: bun run scripts/spec-conformance-contradiction-watch.ts ${{ steps.design.outputs.args }}
 
       - name: Delta gate — record HEAD as last-checked (push to dev only)
         if: always() && github.event_name == 'push'

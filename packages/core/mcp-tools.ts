@@ -181,6 +181,10 @@ export interface ActionContext {
   // Jev decisions on memory writes (packages/core/memory-decisions.ts). The
   // web routes inject one; omitted (the runner), learn keeps today's rules.
   memoryDecider?: MemoryDecider;
+  // Workspaces whose docs this caller may also read (docs/design/cross-workspace-retrieval.md).
+  // Injected by the web route, which holds the opt-in config, the team boundary
+  // and the untrusted-input signal; omitted (the runner) means own docs only.
+  resolveCrossWorkspaceDocs?: () => Promise<ReadableWorkspace[]>;
 }
 
 export type ToolResult = {
@@ -5697,10 +5701,16 @@ export async function handleBuilddAction(
       // whole purpose — spotting documented-not-built and
       // shipped-not-documented — could only ever return the code half.
       // `docs` is where `docs/SPEC.md` and every `.md`/`.mdx` land.
-      const [specHits, directCodeHits] = await Promise.all([
-        ks.query(buildNamespace(wsId, 'docs'), { text: feature, mode: 'hybrid', topK }),
+      //
+      // The docs side also reads the docs of any workspace this one was opted
+      // into (the published docs repo, a private knowledge base). Code never
+      // crosses workspaces.
+      const readableDocs = await readableDocsWorkspaces(ctx);
+      const [docsRead, directCodeHits] = await Promise.all([
+        queryDocsAcrossWorkspaces(ks, wsId, readableDocs, 'docs', { text: feature, mode: 'hybrid', topK }),
         ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
       ]);
+      const specHits = docsRead.results;
 
       // Step 2: extract implementation anchors from spec chunks to bridge the vocabulary gap
       const anchors = extractImplementationAnchors(specHits);
@@ -5727,7 +5737,7 @@ export async function handleBuilddAction(
         .slice(0, topK);
 
       const fmt = (hits: QueryResult[]) => hits.length
-        ? hits.map((r, i) => `${i + 1}. [${r.score.toFixed(3)}] ${r.sourcePath ?? r.sourceType}\n   ${r.content.replace(/\s+/g, ' ').slice(0, 240)}`).join('\n')
+        ? hits.map((r, i) => `${i + 1}. [${r.score.toFixed(3)}] ${r.sourcePath ?? r.sourceType}\n   ${renderDocsResult(r, { maxChars: 240 })}`).join('\n')
         : '   (no matches)';
 
       const anchorSection = anchors.length > 0
@@ -5747,7 +5757,7 @@ export async function handleBuilddAction(
         `# spec_compare: "${feature}"\n\n` +
         anchorSection +
         `## CODE evidence (what is actually implemented)\n${codeSection}\n\n` +
-        `## SPEC evidence (what the spec/docs claim)\n${fmt(specHits)}\n\n` +
+        `## SPEC evidence (what the spec/docs claim)\n${fmt(specHits)}${formatForeignFailures(docsRead.failures)}\n\n` +
         `## How to judge\n` +
         `Scores SURFACE candidates; they do NOT decide. Read the CODE snippets: do they ` +
         `actually implement "${feature}" (a real table/route/impl), or are they only ` +
@@ -6080,6 +6090,15 @@ import { MemoryStore, type MemoryRecord } from './memory-store';
 import { MEMORY_CONTEXT_LIMIT, renderMemoryContext } from './memory-context';
 import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
+import {
+  CROSS_WORKSPACE_CORPORA,
+  formatForeignFailures,
+  queryDocsAcrossWorkspaces,
+  type ForeignQueryFailure,
+  renderDocsResult,
+  foreignOrigin,
+  type ReadableWorkspace,
+} from './cross-workspace-docs';
 import { getVoyageReranker } from './knowledge-store/reranker';
 import { buildAuthoringPriorWork } from './prior-work-render';
 import { keepOwnProjectMemoryHits, memoryOverfetchTopK, type MemoryHitScope } from './memory-hit-scope';
@@ -6197,6 +6216,7 @@ function formatKnowledgeResult(
   }
 
   // Non-memory: show corpus · path · timestamps · score breakdown
+  const origin = foreignOrigin(r);
   const path = r.sourcePath ?? parseSourcePath(r.id);
   const pathStr = path ? `\`${path}\`` : r.sourceType;
   const urlSuffix = r.sourceUrl ? ` [↗](${r.sourceUrl})` : '';
@@ -6220,7 +6240,9 @@ function formatKnowledgeResult(
     metaParts.push(r.supersededBy ? `⚠ superseded by \`${r.supersededBy}\`` : '⚠ superseded');
   }
 
-  return `${header}\n${metaParts.join(' · ')}\n\n${r.content}`;
+  // Another workspace's prose is fenced as data and named; see cross-workspace-docs.ts.
+  const body = origin ? renderDocsResult(r, { maxChars: Infinity, block: true }) : r.content;
+  return `${header}\n${metaParts.join(' · ')}\n\n${body}`;
 }
 
 // ── Shared memory action context type ────────────────────────────────────────
@@ -6255,7 +6277,24 @@ type MemoryActionCtx = {
    * never replace a memory an agent wrote.
    */
   memoryDedupeOnly?: boolean;
+  /** See ActionContext.resolveCrossWorkspaceDocs. Read by recall only. */
+  resolveCrossWorkspaceDocs?: () => Promise<ReadableWorkspace[]>;
 };
+
+/**
+ * The other workspaces' docs this caller may read. Any failure is "none": the
+ * caller still gets its own docs, and an unresolved opt-in must never widen reach.
+ */
+async function readableDocsWorkspaces(
+  ctx: { resolveCrossWorkspaceDocs?: () => Promise<ReadableWorkspace[]> },
+): Promise<ReadableWorkspace[]> {
+  if (!ctx.resolveCrossWorkspaceDocs) return [];
+  try {
+    return (await ctx.resolveCrossWorkspaceDocs()) ?? [];
+  } catch {
+    return [];
+  }
+}
 
 /** Whether this write lands as a candidate. Never throws; off on any doubt. */
 async function candidateWritesOn(ctx: MemoryActionCtx): Promise<boolean> {
@@ -6564,8 +6603,14 @@ async function fanOutCorpora(
   opts: { text: string; mode: 'lexical' | 'hybrid' | 'vector'; topK: number },
   caller: Extract<MemoryCaller, 'recall' | 'query_knowledge'>,
   memoryOpts: { includeCandidates?: boolean } = {},
-): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[] }> {
+): Promise<{ perCorpus: QueryResult[][]; failures: CorpusFailure[]; foreignFailures: ForeignQueryFailure[] }> {
   const failures: CorpusFailure[] = [];
+  const foreignFailures: ForeignQueryFailure[] = [];
+  // recall only: other workspaces' docs are a read for an agent's own retrieval,
+  // not for the admin knowledge-ops surface that shares this fan-out.
+  const readable = caller === 'recall' && ctx.workspaceId && corpora.some(c => CROSS_WORKSPACE_CORPORA.has(c))
+    ? await readableDocsWorkspaces(ctx)
+    : [];
   const perCorpus = await Promise.all(
     corpora.map(async (c): Promise<QueryResult[]> => {
       if (ctx.isSensitive && SENSITIVE_WITHHELD_CORPORA.has(c)) return [];
@@ -6595,6 +6640,11 @@ async function fanOutCorpora(
             onError: 'throw',
           })).results;
         }
+        if (readable.length > 0 && ctx.workspaceId && CROSS_WORKSPACE_CORPORA.has(c)) {
+          const read = await queryDocsAcrossWorkspaces(ks, ctx.workspaceId, readable, c, opts);
+          foreignFailures.push(...read.failures);
+          return read.results.filter(r => r.isCurrent !== false);
+        }
         const raw = await ks.query(ns, opts);
         return raw.filter(r => r.isCurrent !== false);
       } catch (e) {
@@ -6603,7 +6653,7 @@ async function fanOutCorpora(
       }
     }),
   );
-  return { perCorpus, failures };
+  return { perCorpus, failures, foreignFailures };
 }
 
 // ── recall — read ─────────────────────────────────────────────────────────────
@@ -6700,12 +6750,12 @@ export async function handleRecallAction(
     const mode = chooseModeForQuery(query);
     const ks = ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-    const { perCorpus, failures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall', { includeCandidates });
+    const { perCorpus, failures, foreignFailures } = await fanOutCorpora(ks, memoryClient, ctx, scopes, { text: query, mode, topK: fetchTopK }, 'recall', { includeCandidates });
 
     if (scopes.length > 0 && failures.length === scopes.length) {
       return errorResult(`All corpora failed: ${failures.map(f => `${f.corpus} (${f.reason})`).join(', ')}`);
     }
-    const failureNote = formatCorpusFailures(failures);
+    const failureNote = formatCorpusFailures(failures) + formatForeignFailures(foreignFailures);
 
     const k = 60;
     const fusionScores = new Map<string, { rrf: number; result: QueryResult }>();
@@ -6762,6 +6812,7 @@ export async function handleRecallAction(
   // caller limit. Memory goes through the one door, which over-fetches the
   // team-wide namespace and keeps the caller's project.
   let results: QueryResult[];
+  let foreignNote = '';
   if (scope === 'memory') {
     results = (await retrieveMemory({
       query,
@@ -6778,7 +6829,15 @@ export async function handleRecallAction(
       onError: 'throw',
     })).results;
   } else {
-    const raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+    let raw: QueryResult[];
+    const readable = ctx.workspaceId && CROSS_WORKSPACE_CORPORA.has(scope) ? await readableDocsWorkspaces(ctx) : [];
+    if (readable.length > 0 && ctx.workspaceId) {
+      const read = await queryDocsAcrossWorkspaces(ks, ctx.workspaceId, readable, scope, { text: query, mode, topK: fetchTopK });
+      raw = read.results;
+      foreignNote = formatForeignFailures(read.failures);
+    } else {
+      raw = await ks.query(ns, { text: query, mode, topK: fetchTopK });
+    }
     results = raw.filter(r => r.isCurrent !== false);
     if (isFiltered) results = results.filter(r => matchesRecallFilters(r, filterParams));
     results = results.slice(0, limit);
@@ -6793,7 +6852,7 @@ export async function handleRecallAction(
 
   const formatted = results.map((r, i) => formatKnowledgeResult(r, i)).join('\n\n---\n\n');
 
-  return text(`Found ${results.length} result(s)${filterNote}:\n\n${formatted}`);
+  return text(`Found ${results.length} result(s)${filterNote}:\n\n${formatted}${foreignNote}`);
 }
 
 // ── learn — write ─────────────────────────────────────────────────────────────

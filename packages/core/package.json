@@ -33,6 +33,8 @@
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./branch-names": "./branch-names.ts",
+    "./untrusted-text": "./untrusted-text.ts",
+    "./cross-workspace-docs": "./cross-workspace-docs.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",

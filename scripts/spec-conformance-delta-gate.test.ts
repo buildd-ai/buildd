@@ -175,6 +175,50 @@ describe('spec-conformance-delta-gate check', () => {
   });
 });
 
+describe('spec-conformance-delta-gate check — design root absent or out-of-tree', () => {
+  test('does not error when docs/design is gone; prints a one-line notice and still gates on assertion paths', async () => {
+    rmSync(join(repo, 'docs', 'design'), { recursive: true, force: true });
+    mkdirSync(join(repo, 'docs', 'specs'), { recursive: true });
+    writeFileSync(
+      join(repo, 'docs', 'specs', 'widget.md'),
+      ['---', 'status: active', 'assertions:', '  - id: sym', '    type: symbol', '    name: foo', '    path: apps/foo.ts', '---', '# Widget', ''].join('\n'),
+    );
+    const firstSha = commit('initial');
+    store.set('spec-conformance-last-sha', firstSha);
+
+    writeFileSync(join(repo, 'apps', 'unrelated.ts'), 'export function unrelated() { return 1; }\n');
+    commit('touch unrelated file');
+
+    const { code, outputs, stdout } = await runGate('check', { BUILDD_API_KEY: 'test-key' });
+    expect(code).toBe(0);
+    expect(outputs.skip).toBe('true');
+    expect(stdout.split('\n').filter((l) => /no design docs/i.test(l))).toHaveLength(1);
+  });
+
+  test('accepts --design-root pointing outside the repo and watches the assertion paths its docs reference', async () => {
+    rmSync(join(repo, 'docs', 'design'), { recursive: true, force: true });
+    const external = mkdtempSync(join(tmpdir(), 'delta-gate-external-'));
+    try {
+      writeFileSync(
+        join(external, 'private.md'),
+        ['---', 'status: proposed', 'assertions:', '  - id: sym', '    type: symbol', '    name: foo', '    path: apps/foo.ts', '---', '# Private', ''].join('\n'),
+      );
+      const firstSha = commit('initial');
+      store.set('spec-conformance-last-sha', firstSha);
+
+      writeFileSync(join(repo, 'apps', 'foo.ts'), 'export function foo() { return 1; }\n');
+      commit('touch file only the external doc references');
+
+      const { code, outputs } = await runGate('check', { BUILDD_API_KEY: 'test-key' }, ['--design-root', external]);
+      expect(code).toBe(0);
+      expect(outputs.skip).toBe('false');
+      expect(outputs['changed-count']).toBe('1');
+    } finally {
+      rmSync(external, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('spec-conformance-delta-gate record', () => {
   test('POSTs the current HEAD sha keyed as spec-conformance-last-sha', async () => {
     const sha = commit('initial');

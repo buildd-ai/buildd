@@ -2,12 +2,13 @@
 title: Knowledge Store Retrieval
 status: active
 owner: max
-last_verified: 2026-08-31
+last_verified: 2026-10-02
 summary: The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
 domain: knowledge
-surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/ingest.ts, packages/core/knowledge-store/chunker.ts, packages/core/mcp-tools.ts]
+surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/ingest.ts, packages/core/mcp-tools.ts, packages/core/cross-workspace-docs.ts]
 related: [mcp-action-contracts, mission-task-lifecycle]
-keywords: [knowledge_chunks, rrf, bm25, voyage-code-3, query_knowledge, spec_compare]
+verified_by: [packages/core/__tests__/cross-workspace-docs.test.ts, packages/core/__tests__/mcp-tools-cross-workspace-docs.test.ts, apps/web/src/lib/cross-workspace-docs.test.ts]
+keywords: [knowledge_chunks, rrf, bm25, voyage-code-3, query_knowledge, spec_compare, crossWorkspaceDocs, cross-workspace docs]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -186,6 +187,70 @@ retrieval over the workspace's knowledge store and return ranked results with
 - MCP handler: `packages/core/mcp-tools.ts` — `handleMemoryAction()`,
   `query_knowledge` branch
 - Store: `packages/core/knowledge-store/pg-vector-store.ts` — `query()`
+
+---
+
+## Cross-workspace docs reads
+
+**Capability statement**: A workspace MAY name other workspaces of its own team
+in `gitConfig.crossWorkspaceDocs`; `recall` with scope `docs` or `spec`, and
+`spec_compare`, then also search the `{sourceWorkspaceId}:docs` (or `:spec`)
+namespace of each. Nothing else crosses a workspace boundary, and every result
+that does is labelled with its workspace and fenced as untrusted text.
+
+**Invariants**:
+- Opt-in is explicit and per workspace: `gitConfig.crossWorkspaceDocs =
+  { sources: [{ workspaceId, acknowledgeSensitive? }] }`, at most 3 sources.
+  Absent or empty means own namespaces only. A source is never inferred from
+  team membership.
+- Only the `docs` and `spec` corpora cross. `code`, `memory`, `task` and the rest
+  are always the caller's own workspace, in single-scope, multi-scope and
+  `spec_compare` calls alike.
+- The team is the boundary. A source that is missing, in another team, the
+  workspace itself, or a duplicate is dropped at read time and refused at write
+  time with one message that does not say which.
+- Direction: a `standard` reader reads a `sensitive` source only when that source
+  entry carries `acknowledgeSensitive: true`, set by a workspace admin. A
+  `sensitive` reader may read either class (it cannot `learn`, so cannot write
+  back into a shared corpus). A source whose class cannot be resolved is denied.
+  A source is `sensitive` if `workspaces.dataClass` or the legacy
+  `gitConfig.dataClass` says so.
+- A caller holding untrusted external input gets no cross-workspace read. A
+  worker on a review task or in the reviewer role is such a caller; so is a worker
+  whose task cannot be resolved (fail closed).
+- A foreign hit is rendered as `[from workspace "<name>"]` followed by the body
+  inside the untrusted-data fence (`packages/core/untrusted-text.ts`). The origin
+  is written by the fan-out and overwrites any value found in stored metadata.
+- A foreign namespace that fails to query is reported in the result and skipped;
+  a failure of the caller's own namespace is unchanged. A resolver that throws
+  costs the foreign read only.
+- The setting is written only by a workspace admin: `POST
+  /api/workspaces/[id]/config` and the `gitConfig` merge of `PATCH
+  /api/workspaces/[id]` validate it and refuse other-team sources. An unrelated
+  config save does not clear it; `null` does.
+
+**Acceptance criteria**:
+- AC-18: GIVEN no `crossWorkspaceDocs` WHEN `recall` runs with `scope: docs`
+  THEN only `{workspaceId}:docs` is queried.
+- AC-19: GIVEN an opted-in source WHEN `recall` runs with `scope: ["docs",
+  "code"]` THEN the source's `docs` namespace is queried and its `code`
+  namespace is not.
+- AC-20: GIVEN a `standard` reader and a `sensitive` source without
+  `acknowledgeSensitive` WHEN the readable set is resolved THEN the source is
+  absent.
+- AC-21: GIVEN a foreign hit whose text contains an HTML comment or tag WHEN it
+  is rendered THEN the output names the source workspace and the text sits inside
+  the untrusted-data fence with the markup neutralised.
+- AC-22: GIVEN a reviewer worker WHEN the readable set is resolved THEN it is
+  empty regardless of configuration.
+
+**Code surface**:
+- Resolution and fan-out: `packages/core/cross-workspace-docs.ts`
+  (`resolveReadableWorkspaces`, `queryDocsAcrossWorkspaces`, `renderDocsResult`)
+- Row loading and write validation: `apps/web/src/lib/cross-workspace-docs.ts`,
+  `apps/web/src/lib/cross-workspace-docs-input.ts`
+- Call sites: `packages/core/mcp-tools.ts` (`recall`, `spec_compare`),
+  `apps/web/src/app/api/mcp/route.ts` (`resolveCrossWorkspaceDocs`)
 
 ---
 

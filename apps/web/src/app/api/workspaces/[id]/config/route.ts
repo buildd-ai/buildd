@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { validateCrossWorkspaceDocsInput } from '@/lib/cross-workspace-docs-input';
 import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 
@@ -342,7 +343,7 @@ export async function POST(
         // maxCiRetries, sandbox.credentials, ...) on every save.
         const existing = await db.query.workspaces.findFirst({
             where: eq(workspaces.id, id),
-            columns: { gitConfig: true },
+            columns: { gitConfig: true, teamId: true },
         });
         const previous: Partial<WorkspaceGitConfig> = existing?.gitConfig ?? {};
 
@@ -444,6 +445,19 @@ export async function POST(
             gitConfig.criteriaGrader = body.criteriaGrader === 'api' || body.criteriaGrader === 'runner'
                 ? body.criteriaGrader
                 : undefined;
+        }
+
+        // Cross-workspace docs opt-in: sources must be workspaces of this team.
+        // Absent keeps the stored value (spread above); null clears it.
+        if (body.crossWorkspaceDocs !== undefined) {
+            const checked = await validateCrossWorkspaceDocsInput(body.crossWorkspaceDocs, {
+                id,
+                teamId: existing?.teamId ?? '',
+            });
+            if (!checked.ok) {
+                return NextResponse.json({ error: checked.error }, { status: 400 });
+            }
+            gitConfig.crossWorkspaceDocs = checked.value;
         }
 
         // mergePolicy write-path validation: unknown keys rejected, not silently stripped

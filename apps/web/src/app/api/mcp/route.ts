@@ -31,6 +31,7 @@ import { callerReachesSensitiveWorkspace, isWorkerInCallerScope, isWorkspaceInCa
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
 import { eq } from "drizzle-orm";
+import { loadReadableDocsWorkspaces } from "@/lib/cross-workspace-docs";
 import { checkPathClaim, narrowPathClaim } from "@/lib/path-claim-check";
 import { gateCallerOrigin } from "@/lib/gate-ledger";
 import { enqueueWorkerMessage, type WorkerMessage } from "@buildd/core/worker-messages";
@@ -232,6 +233,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     appBaseUrl,
     knowledgeStore: ctxKnowledgeStore,
     embedder: ctxEmbedder,
+    resolveCrossWorkspaceDocs: async () =>
+      loadReadableDocsWorkspaces({ workspaceId: await getWorkspaceId(), teamId: accountTeamId, workerId }),
     getMemoryClient: async (targetWorkspaceId?: string) => {
       // A named workspace (the task claim_task just claimed) is checked
       // directly, and its store is its own team's — no account-team fallback,
@@ -333,6 +336,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         knowledgeStore,
         embedder,
         api,
+        resolveCrossWorkspaceDocs: async () =>
+          loadReadableDocsWorkspaces({ workspaceId: wsId, teamId: accountTeamId, workerId }),
         // Jev keep/type/update on writes; fails open to today's rules.
         memoryDecider: memoryDeciderFor(accountId),
         ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),

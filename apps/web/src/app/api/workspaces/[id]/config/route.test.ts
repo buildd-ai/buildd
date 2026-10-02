@@ -684,6 +684,50 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(written.agentInstructions).toBeUndefined();
     });
 
+    describe('crossWorkspaceDocs', () => {
+      const stored = { sources: [{ workspaceId: 'ws-kb', acknowledgeSensitive: true }] };
+      const rows: Record<string, any> = {
+        'ws-1': { teamId: 'team-1', gitConfig: { crossWorkspaceDocs: stored } },
+        'ws-kb': { teamId: 'team-1', gitConfig: {} },
+        'ws-other-team': { teamId: 'team-2', gitConfig: {} },
+      };
+      beforeEach(() => {
+        mockWorkspacesFindFirst.mockImplementation(((args: any) => Promise.resolve(rows[args?.where?.value] ?? null)) as any);
+      });
+
+      it('stores a valid opt-in', async () => {
+        const next = { sources: [{ workspaceId: 'ws-kb' }] };
+        const res = await post({ ...formBody, crossWorkspaceDocs: next });
+        expect(res.status).toBe(200);
+        expect(setArgs[0].gitConfig.crossWorkspaceDocs).toEqual(next);
+      });
+
+      it('keeps the stored opt-in when an unrelated save omits the field', async () => {
+        const res = await post(formBody);
+        expect(res.status).toBe(200);
+        expect(setArgs[0].gitConfig.crossWorkspaceDocs).toEqual(stored);
+      });
+
+      it('null clears it', async () => {
+        const res = await post({ ...formBody, crossWorkspaceDocs: null });
+        expect(res.status).toBe(200);
+        expect(setArgs[0].gitConfig.crossWorkspaceDocs).toBeUndefined();
+      });
+
+      it('refuses a source of another team and writes nothing', async () => {
+        const res = await post({ ...formBody, crossWorkspaceDocs: { sources: [{ workspaceId: 'ws-other-team' }] } });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatch(/crossWorkspaceDocs/);
+        expect(setArgs).toHaveLength(0);
+      });
+
+      it('refuses a malformed value and writes nothing', async () => {
+        const res = await post({ ...formBody, crossWorkspaceDocs: 'all' });
+        expect(res.status).toBe(400);
+        expect(setArgs).toHaveLength(0);
+      });
+    });
+
     describe('criteriaGrader', () => {
       it('persists api and runner', async () => {
         for (const value of ['api', 'runner']) {

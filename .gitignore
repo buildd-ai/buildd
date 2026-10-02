@@ -37,3 +37,4 @@ scripts/demo/out/
 # Local chat/MCP eval data (apps/web/scripts/chat-eval): real questions and
 # transcripts. Never commit it (this repo is public).
 .eval-data/
+.kb-design-src/

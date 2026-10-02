@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "cross-workspace-opt-in"
@@ -9,12 +9,12 @@ assertions:
   - id: "readable-workspace-resolution"
     type: "symbol_reachable"
     symbol: "resolveReadableWorkspaces"
-    entry: "packages/core/mcp-tools.ts"
+    entry: "apps/web/src/lib/cross-workspace-docs.ts"
     as: "read"
 ---
 # Cross-Workspace Retrieval
 
-**Status:** Proposed
+**Status:** Implemented (docs read path). The contract is `docs/specs/knowledge-store-retrieval.md`.
 **Related:** `packages/core/mcp-tools.ts` (`spec_compare`), `apps/web/src/lib/knowledge-context.ts`,
 `packages/core/knowledge-store/ingest-filter.ts` (`classifyIngestCorpus`),
 `packages/core/knowledge-store/pg-vector-store.ts` (`buildNamespace`),
@@ -119,6 +119,15 @@ So the rule is an asymmetry, not a sharing switch:
 | `standard` workspace | `standard` sibling | **yes** |
 | `standard` workspace | `sensitive` sibling | **no** |
 | `sensitive` workspace | `sensitive` sibling | **yes** |
+
+**As shipped:** the table's fourth-row denial gains one owner-controlled
+exception. A `standard` workspace may read a `sensitive` source when the source's
+entry in `crossWorkspaceDocs` carries `acknowledgeSensitive: true`, written by a
+workspace admin. Without it the table holds exactly as written. This exists so a
+private knowledge workspace (necessarily `sensitive`) can serve the public
+repo's drift checks; the cost is that the leak direction is now open for that
+pair, covered by the untrusted-input denial, origin labelling, and the review of
+the resulting PR. The contract is in `docs/specs/knowledge-store-retrieval.md`.
 
 If the crux is wrong — if publicity is not the right key — the failure is a
 private sentence appearing in a public artifact with no provenance trail, which

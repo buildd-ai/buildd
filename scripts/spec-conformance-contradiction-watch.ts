@@ -159,7 +159,7 @@ async function run() {
     return;
   }
 
-  const config = resolveConformanceConfig({ repoRoot: ROOT });
+  const config = resolveConformanceConfig({ repoRoot: ROOT, designRoot: argValue('--design-root') });
   const evaluations = evaluateAllDocs(config);
   const current = new Map(evaluations.filter((e) => e.contradiction).map((e) => [e.path, e]));
 

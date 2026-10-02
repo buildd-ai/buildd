@@ -123,7 +123,6 @@ export const VERIFIED_BY_DEBT = new Set([
   'credential-isolation',
   'db-migration-gates',
   'external-cron-triggers',
-  'knowledge-store-retrieval',
   'mcp-connectors-and-roles',
   'mission-task-lifecycle',
   'provider-failover',

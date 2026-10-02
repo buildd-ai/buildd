@@ -12,8 +12,13 @@
  * Usage:
  *   bun run scripts/check-spec-conformance.ts
  *   bun run scripts/check-spec-conformance.ts --specs-root docs/specs --design-root docs/design
+ *   bun run scripts/check-spec-conformance.ts --design-root /path/to/other/checkout/design
  *   bun run scripts/check-spec-conformance.ts --json
  *   bun run scripts/check-spec-conformance.ts --fail-on-contradiction
+ *
+ * --design-root may be repo-relative or an absolute path outside the repo. A
+ * missing or empty design root is "no design docs": the check passes on
+ * docs/specs alone and prints a one-line notice.
  *
  * Exit codes:
  *   0  always, unless --fail-on-contradiction is passed and at least one
@@ -22,10 +27,11 @@
 
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { evaluateAllDocs, resolveConformanceConfig, MISSING_ASSERTIONS_DEBT, type DocEvaluation } from '../packages/core/spec-conformance';
+import { describeDesignRoot, evaluateAllDocs, resolveConformanceConfig, MISSING_ASSERTIONS_DEBT, type DocEvaluation } from '../packages/core/spec-conformance';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dirname, '..');
+// --repo-root is overridable for tests only; CI always checks its own checkout.
+const ROOT = argValue('--repo-root') ?? join(__dirname, '..');
 
 function argValue(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -39,6 +45,9 @@ const config = resolveConformanceConfig({
 });
 
 const asJson = process.argv.includes('--json');
+const designNotice = describeDesignRoot(config).notice;
+// stderr under --json so stdout stays parseable.
+if (designNotice) (asJson ? console.error : console.log)(`[spec-conformance] ${designNotice}`);
 const failOnContradiction = process.argv.includes('--fail-on-contradiction');
 
 const evaluations = evaluateAllDocs(config);

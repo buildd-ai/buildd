@@ -12,6 +12,7 @@ import { mergePolicySchema } from '@/lib/merge-policy';
 import { findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
+import { validateCrossWorkspaceDocsInput } from '@/lib/cross-workspace-docs-input';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
 const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume']);
@@ -378,7 +379,19 @@ export async function PATCH(
         where: eq(workspaces.id, id),
         columns: { gitConfig: true },
       });
-      updates.gitConfig = { ...(current?.gitConfig ?? {}), ...gitConfig };
+      const merged: Record<string, unknown> = { ...(current?.gitConfig ?? {}), ...gitConfig };
+      if ('crossWorkspaceDocs' in gitConfig) {
+        const checked = await validateCrossWorkspaceDocsInput(
+          (gitConfig as Record<string, unknown>).crossWorkspaceDocs,
+          { id, teamId: workspaceTeamId ?? '' },
+        );
+        if (!checked.ok) {
+          return NextResponse.json({ error: checked.error }, { status: 400 });
+        }
+        if (checked.value === undefined) delete merged.crossWorkspaceDocs;
+        else merged.crossWorkspaceDocs = checked.value;
+      }
+      updates.gitConfig = merged;
     }
 
     // Read current repo before updating — needed to detect a change for auto-ingestion.
