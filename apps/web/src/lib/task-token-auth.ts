@@ -2,7 +2,8 @@ import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from './api-auth';
-import { isTaskToken, taskTokenKeyBinding, verifyTaskToken } from './task-token';
+import { isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 
 /**
  * Authentication for the few routes a cloud container's per-task token may
@@ -41,9 +42,11 @@ export async function authenticateTaskScopedCaller(
   const account = await db.query.accounts.findFirst({ where: eq(accounts.id, claims.accountId) });
   if (!account) return null;
   if (taskTokenKeyBinding(account.apiKey) !== claims.keyBinding) return null;
-  // A task token is never a scoped token: only legacy keys can mint one, so a
-  // scoped or expired minting account means the token is refused.
-  if (account.scopes != null) return null;
+  // The minting key's current scopes and workspace list still bound the
+  // token: narrowing the key below the runner capabilities, or dropping the
+  // task's workspace from its list, ends the tokens it minted.
+  if (missingTaskTokenScopes(account.scopes).length > 0) return null;
+  if (!tokenWorkspaceAllowed(account.workspaceIds, claims.workspaceId)) return null;
   if (account.expiresAt && new Date(account.expiresAt).getTime() <= Date.now()) return null;
   return {
     ...account,

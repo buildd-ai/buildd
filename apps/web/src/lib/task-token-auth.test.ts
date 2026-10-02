@@ -62,10 +62,30 @@ describe('authenticateTaskScopedCaller', () => {
     expect(mockAuthenticateApiKey).toHaveBeenCalledWith('bld_key', request);
   });
 
-  it('a task token is never a scoped token: one whose minting account has scopes, or has expired, is refused', async () => {
+  it('a task token minted by a scoped key works only while that key still holds the runner capabilities', async () => {
     const { token } = mintTaskToken(MINT)!;
+    const RUNNER = ['tasks:read', 'tasks:write', 'workers:write', 'analytics:read', 'knowledge:write'];
+    // The runner preset, or admin: the token is worker-level and confined to its task.
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: RUNNER, workspaceIds: null });
+    expect((await authenticateTaskScopedCaller(token))?.taskScope?.taskId).toBe('task-1');
     mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: ['admin'], workspaceIds: null });
+    expect(await authenticateTaskScopedCaller(token)).not.toBeNull();
+    // Narrowed below the preset after minting: refused, so the token never outranks its key.
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: ['tasks:read', 'workers:write'], workspaceIds: null });
     expect(await authenticateTaskScopedCaller(token)).toBeNull();
+  });
+
+  it("a scoped key's workspace list still applies to the tokens it minted", async () => {
+    const { token } = mintTaskToken(MINT)!;
+    const RUNNER = ['tasks:read', 'tasks:write', 'workers:write', 'analytics:read', 'knowledge:write'];
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: RUNNER, workspaceIds: ['ws-1'] });
+    expect(await authenticateTaskScopedCaller(token)).not.toBeNull();
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: RUNNER, workspaceIds: ['ws-other'] });
+    expect(await authenticateTaskScopedCaller(token)).toBeNull();
+  });
+
+  it('a task token whose minting account has expired is refused; a legacy key resolves with no scopes', async () => {
+    const { token } = mintTaskToken(MINT)!;
     mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: null, expiresAt: new Date(Date.now() - 1000) });
     expect(await authenticateTaskScopedCaller(token)).toBeNull();
     mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: null, expiresAt: null });
