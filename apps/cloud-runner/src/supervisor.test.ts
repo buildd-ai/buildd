@@ -417,6 +417,9 @@ describe('run report', () => {
     h.sup.recordEgress({ type: 'bytes', cls: 'model', bytes: 2048 });
     h.sup.recordEgress({ type: 'request', cls: 'github', at: 1, rejected: true });
     h.sup.recordEgress({ type: 'request', cls: 'github', url: 'https://x' } as unknown); // not an event
+    h.sup.recordEgress({ type: 'request', cls: 'github', at: 2, auth: 'grant_fetch_failed' });
+    h.sup.recordEgress({ type: 'status', cls: 'github', status: 429, auth: 'grant_fetch_failed' });
+    h.sup.recordEgress({ type: 'grant_failure', cls: 'github', status: 409 });
     h.fc.exits[0]!.resolve(0);
     await h.settle();
 
@@ -434,7 +437,13 @@ describe('run report', () => {
     expect(r.timestamps.firstModelRequestAt).toBe(123_456);
     expect(r.timestamps.exitedAt).toBeGreaterThanOrEqual(r.timestamps.claimedAt!);
     expect(r.egress.model).toEqual({ requests: 2, rejected: 0, responseBytes: 2048 });
-    expect(r.egress.github).toEqual({ requests: 1, rejected: 1, responseBytes: 0 });
+    expect(r.egress.github).toEqual({ requests: 2, rejected: 1, responseBytes: 0 });
+    // Unauthenticated GitHub forwards, their 429, and the agent's own token
+    // fetch failure (not a request) all reach the report.
+    expect(r.egressDetail.github).toMatchObject({
+      credentialed: 0, unauthenticated: { grant_fetch_failed: 1 },
+      unauthenticatedErrorStatuses: { '429': 1 }, grantFetchFailures: { '409': 1 },
+    });
 
     const p = posts(h);
     expect(p).toHaveLength(1);

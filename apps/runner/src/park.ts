@@ -23,6 +23,7 @@
 import { spawnSync } from 'child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve, sep } from 'path';
+import { WARM_BASE_REF, gitFailureText } from './warm-repo';
 
 export const PARK_ENV_FLAG = 'BUILDD_ONCE_PARK';
 /** At most this many parks per worker; the next wait holds the container as before. */
@@ -95,7 +96,7 @@ function git(cwd: string, args: string[], env?: Record<string, string>): string 
     ...(env ? { env: { ...process.env, ...env } } : {}),
   });
   if (r.status !== 0) {
-    throw new ParkRestoreError(`git ${args[0]} failed: ${(r.stderr ?? '').trim().split('\n').at(-1) ?? r.status}`);
+    throw new ParkRestoreError(`git ${args.slice(0, 2).join(' ')} failed: ${gitFailureText(r)}`);
   }
   return (r.stdout ?? '').trim();
 }
@@ -186,9 +187,16 @@ export function buildParkBundle(opts: {
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(join(stage, 'files'), { recursive: true });
 
-  // The branch only when it has commits origin's default branch lacks; the
-  // restored clone already has everything reachable from origin.
-  const base = tryGit(clonePath, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${defaultBranch}`]);
+  // Built against what the resuming clone is sure to have. After a warm
+  // restore that is the snapshot's tip (WARM_BASE_REF), not the origin this
+  // container fetched since: a task branched from (or merged) the newer
+  // origin would otherwise need commits the snapshot lacks, and the resume
+  // could only get them by fetching, which is exactly what may be failing
+  // (rate limited, unreachable). Without a warm restore, origin's default
+  // branch, as before. The branch only goes in when it has commits the base
+  // lacks.
+  const base = tryGit(clonePath, ['rev-parse', '--verify', '-q', `${WARM_BASE_REF}^{commit}`])
+    ?? tryGit(clonePath, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${defaultBranch}`]);
   const ahead = base ? Number(tryGit(clonePath, ['rev-list', '--count', `${base}..${headSha}`]) ?? '1') : 1;
   const bundleRefs = [...(ahead > 0 ? [`refs/heads/${branch}`] : []), ...(wipSha ? [wipRef] : [])];
   if (bundleRefs.length > 0) {
@@ -357,22 +365,112 @@ export function restoreParkFiles(opened: OpenedPark, paths: ParkPaths): void {
   }
 }
 
+/** Total time a resume may wait for origin to answer before giving up on missing prerequisites. */
+export const PARK_FETCH_RETRY_BUDGET_MS = 30_000;
+const PARK_FETCH_BACKOFF_BASE_MS = 2_000;
+
+/** A Retry-After value (seconds, or an HTTP date) as whole seconds from now, or null. */
+export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | null {
+  const v = (value ?? '').trim();
+  if (/^\d+$/.test(v)) return Number(v);
+  if (!/[a-z]/i.test(v)) return null;
+  const at = Date.parse(v);
+  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - now) / 1000)) : null;
+}
+
+/**
+ * How long to wait before fetching origin again, or null to stop. A 429
+ * waits for Retry-After when the server sent one; anything else that may be
+ * transient backs off exponentially; an answer that will not change (403,
+ * repository not found, bad credentials) is not retried. Never past
+ * PARK_FETCH_RETRY_BUDGET_MS in total.
+ */
+export function fetchRetryDelayMs(o: { attempt: number; stderr: string; retryAfterS: number | null; waitedMs: number }): number | null {
+  const remaining = PARK_FETCH_RETRY_BUDGET_MS - o.waitedMs;
+  if (remaining <= 0) return null;
+  const code = /returned error: (\d{3})/.exec(o.stderr)?.[1];
+  if (code && code.startsWith('4') && code !== '408' && code !== '429') return null;
+  if (/repository not found|authentication failed|could not read username/i.test(o.stderr)) return null;
+  if (o.retryAfterS !== null && /\b429\b/.test(o.stderr)) return Math.min(o.retryAfterS * 1000, remaining);
+  return Math.min(PARK_FETCH_BACKOFF_BASE_MS * 2 ** o.attempt, remaining);
+}
+
+/** Block this thread for `ms` (restore is synchronous, like the git calls around it). */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Retry-After from origin's smart-HTTP endpoint, for an https remote: one
+ * header read through the same egress as git (so it carries the same
+ * credential). Null on anything unexpected.
+ */
+export function probeRetryAfter(remoteUrl: string): number | null {
+  if (!/^https:\/\//i.test(remoteUrl)) return null;
+  const url = `${remoteUrl.replace(/\/+$/, '')}/info/refs?service=git-upload-pack`;
+  const r = spawnSync('curl', ['-s', '-o', '/dev/null', '-D', '-', '--max-time', '10', url], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+  const header = /^retry-after:\s*(.+)$/im.exec(r.stdout ?? '')?.[1];
+  return header ? parseRetryAfter(header) : null;
+}
+
+export interface ApplyParkRepoOptions {
+  sleep?(ms: number): void;
+  /** Retry-After (seconds) for origin after a 429, or null. */
+  retryAfter?(remoteUrl: string): number | null;
+}
+
+/** `git fetch origin`: git's reason on failure, null on success. */
+function fetchOrigin(clonePath: string): string | null {
+  const r = spawnSync('git', ['fetch', '-q', 'origin'], { cwd: clonePath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: GIT_TIMEOUT_MS });
+  return r.status === 0 ? null : gitFailureText(r);
+}
+
+/** `git bundle verify`, without -q (with it, missing prerequisites fail silently): the reason on failure. */
+function verifyBundle(clonePath: string, bundle: string): string | null {
+  const r = spawnSync('git', ['bundle', 'verify', bundle], { cwd: clonePath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: GIT_TIMEOUT_MS });
+  return r.status === 0 ? null : gitFailureText(r);
+}
+
 /**
  * Recreate the branch and the worktree at the same path in `clonePath` (a
  * warm restore or a clone of the same workspace), then lay the uncommitted
  * work back down, unstaged, as it was.
+ *
+ * Origin is fetched first, best effort. The bundle normally carries what it
+ * needs on top of the snapshot (buildParkBundle), so a failed fetch changes
+ * nothing; when it does lack prerequisites and the fetch failed, the fetch is
+ * retried (fetchRetryDelayMs) before giving up.
  */
-export function applyParkRepo(opened: OpenedPark, clonePath: string): void {
+export function applyParkRepo(opened: OpenedPark, clonePath: string, opts: ApplyParkRepoOptions = {}): void {
   const m = opened.manifest;
+  const sleep = opts.sleep ?? sleepSync;
+  const retryAfter = opts.retryAfter ?? probeRetryAfter;
   if (resolve(clonePath) !== m.clonePath) throw new ParkRestoreError('the clone is not where the parked worktree lived');
   if (!existsSync(join(clonePath, '.git'))) throw new ParkRestoreError('no clone to restore into');
-  tryGit(clonePath, ['fetch', '-q', 'origin']);
+  let fetchError = fetchOrigin(clonePath);
+  const fetchNote = () => (fetchError ? ` (fetching origin failed: ${fetchError})` : '');
   if (m.hasBundle) {
     const bundle = join(opened.stageDir, 'repo.bundle');
-    git(clonePath, ['bundle', 'verify', '-q', bundle]);
+    let invalid = verifyBundle(clonePath, bundle);
+    let waited = 0;
+    for (let attempt = 0; invalid && fetchError && /prerequisite/i.test(invalid); attempt++) {
+      const remote = /\b429\b/.test(fetchError) ? tryGit(clonePath, ['remote', 'get-url', 'origin']) : null;
+      const delay = fetchRetryDelayMs({ attempt, stderr: fetchError, retryAfterS: remote ? retryAfter(remote) : null, waitedMs: waited });
+      if (delay === null) break;
+      sleep(delay);
+      waited += delay;
+      fetchError = fetchOrigin(clonePath);
+      invalid = verifyBundle(clonePath, bundle);
+    }
+    if (invalid) throw new ParkRestoreError(`park bundle does not apply: ${invalid}${fetchNote()}`);
     git(clonePath, ['fetch', '-q', '--no-tags', bundle, ...m.bundleRefs.map(r => `+${r}:${r}`)]);
   }
-  if (!m.bundleRefs.includes(`refs/heads/${m.branch}`)) git(clonePath, ['branch', '-f', m.branch, m.headSha]);
+  if (!m.bundleRefs.includes(`refs/heads/${m.branch}`)) {
+    if (tryGit(clonePath, ['cat-file', '-e', `${m.headSha}^{commit}`]) === null) {
+      throw new ParkRestoreError(`the parked branch tip is not in this clone${fetchNote()}`);
+    }
+    git(clonePath, ['branch', '-f', m.branch, m.headSha]);
+  }
   if (git(clonePath, ['rev-parse', `refs/heads/${m.branch}`]) !== m.headSha) throw new ParkRestoreError('restored branch tip does not match');
 
   const exclude = join(clonePath, '.git', 'info', 'exclude');
