@@ -76,7 +76,7 @@ import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-p
 import { readDecisionModel, OPENROUTER_CHAT_BASE_URL, type DecisionModelConfig } from './decision-model';
 
 // The question/answer types, request and response validation, `gateChoice` and
-// the transport live in `@builddai/ai-kit/decide` (docs/design/shared-ai-kit.md
+// the transport live in `@builddai/ai-kit/decide` (knowledge-base: buildd/design/shared-ai-kit.md
 // P2). This module keeps buildd's policy check and key resolution, and pins the
 // transport to its original retry rule, so its behaviour is unchanged.
 export {

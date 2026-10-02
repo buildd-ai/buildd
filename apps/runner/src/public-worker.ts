@@ -115,6 +115,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   cbmSeedBaseMismatch: true,
   cbmToolCounts: true,
   cbmFileAccessCounts: true,
+  cbmInjection: true,
   toolCounts: true,
   bashCommandCounts: true,
   degradedConnectors: true,

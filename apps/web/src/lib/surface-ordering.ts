@@ -1,7 +1,7 @@
 /**
  * Surface merge ordering — Candidate 3's `mergeAfter` behaviour, built on the
  * existing open change intents rather than a second free-form dependency field
- * (docs/design/conflict-aware-orchestration.md §3).
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §3).
  *
  * Opt-in twice, so the default is a no-op with no reads at all:
  *   - `gitConfig.surfaceOrdering` is 'shadow' or 'enforce' (absent/'off' = off);

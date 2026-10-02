@@ -78,7 +78,7 @@ evaluate by hand.
   the same slug never applies, whichever workspaces the claiming runner serves.
 - A role whose model comes from **inference** (`context.roleInferred` present)
   contributes nothing to the model — not a pin, not a floor. Only a stated role
-  moves the model (`docs/design/role-routing.md` §4.1).
+  moves the model (`knowledge-base: buildd/design/role-routing.md` §4.1).
 - A role's `model` is a **floor, never a cap**: the clamp only fires when the
   computed tier is *below* it (`model-router.ts:152-157`). A role pinned to
   `opus`/`premium` therefore defeats every downshift the budget and spike gates

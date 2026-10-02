@@ -361,7 +361,7 @@ export interface FlightDetailSheetProps {
  * list). Renders the expanded four-row strip, derived stats, legend, a
  * plain-language steering summary, and "Open mission →". Selecting a bar
  * carries that task into the mission as its sheet
- * (docs/design/mission-feed-mobile-continuity.md, W1, AC-20). */
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W1, AC-20). */
 export function FlightDetailSheet({ open, onClose, data, missionId, missionTitle, from = null, initialTaskId = null, taskTitles }: FlightDetailSheetProps) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(initialTaskId);
   // The sheet stays mounted while closed; each opening starts from

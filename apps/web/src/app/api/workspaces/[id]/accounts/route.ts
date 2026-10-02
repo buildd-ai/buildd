@@ -5,6 +5,9 @@ import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
+import { canAdministerTeamKeys } from '@/lib/key-level-policy';
+
+const ADMIN_ONLY = 'Only team owners and admins can change which accounts a workspace is connected to.';
 
 export async function GET(
   req: NextRequest,
@@ -70,6 +73,9 @@ export async function POST(
   if (!postAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
+  if (!canAdministerTeamKeys(postAccess.role)) {
+    return NextResponse.json({ error: ADMIN_ONLY }, { status: 403 });
+  }
 
   try {
     const body = await req.json();
@@ -93,7 +99,8 @@ export async function POST(
       where: eq(accounts.id, accountId),
     });
 
-    if (!account) {
+    // An account from another team is reported as missing, not forbidden.
+    if (!account || account.teamId !== postAccess.teamId) {
       return NextResponse.json({ error: 'Account not found' }, { status: 404 });
     }
 
@@ -160,6 +167,9 @@ export async function DELETE(
   const deleteAccess = await verifyWorkspaceAccess(user.id, workspaceId);
   if (!deleteAccess) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+  if (!canAdministerTeamKeys(deleteAccess.role)) {
+    return NextResponse.json({ error: ADMIN_ONLY }, { status: 403 });
   }
 
   try {

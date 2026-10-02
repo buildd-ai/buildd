@@ -26,7 +26,7 @@
  *
  * Conversation is soft on desktop; on a phone the person's message is a
  * raised square block. Fleet objects stay hard and square
- * (docs/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
+ * (knowledge-base: buildd/design/chat-canvas.md). Styles: globals.css, "Thread on the kit".
  */
 import { memo, useMemo, useState } from 'react';
 import { ChatThread, ToolCallGroup, thinkingSteps, type ChatStatus, type ThreadMessageContext, type TurnFold } from '@builddai/ai-kit/chat/react';
@@ -136,7 +136,7 @@ const UserBubble = memo(function UserBubble({ text }: { text: string }) {
   );
 });
 
-/** Buildd speaks in the voice face, finished or thinking (docs/design/chat-v3-desktop.md, thinking frame). */
+/** Buildd speaks in the voice face, finished or thinking (knowledge-base: buildd/design/chat-v3-desktop.md, thinking frame). */
 function AgentText({ text, streaming }: { text: string; streaming: boolean }) {
   return (
     <div data-testid="feed-text" className="font-voice text-[17px] leading-[1.45] text-[var(--chat-text)] lg:max-w-[640px]">

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Backfill the default roles' routing text (docs/design/role-routing.md §2)
+ * Backfill the default roles' routing text (knowledge-base: buildd/design/role-routing.md §2)
  * onto seeded role rows that predate it. Seeding is onConflictDoNothing, so an
  * existing team never picks up a change to apps/web/src/lib/default-roles.ts.
  *

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The desktop right panel (docs/design/chat-v3-desktop.md, "Dock"): one solid
+ * The desktop right panel (knowledge-base: buildd/design/chat-v3-desktop.md, "Dock"): one solid
  * 420px slot beside the chat column that shows one thing at a time, the
  * object the conversation is about, the task that needs you, or the
  * conversation list. Opaque: the sea stays in the stage.

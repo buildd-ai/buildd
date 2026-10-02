@@ -5,7 +5,8 @@ import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
-import { mintTaskToken } from '@/lib/task-token';
+import { mintTaskToken, missingTaskTokenScopes } from '@/lib/task-token';
+import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 
 /**
  * POST /api/runner/task-token  { taskId, ttlMs? } -> { token, taskId, expiresAt }
@@ -23,12 +24,19 @@ export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   // authenticateApiKey never accepts a task token, so one cannot mint another.
-  const account = await authenticateApiKey(apiKey);
+  // Pass the request: without it a capability-scoped key is refused outright.
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   if (account.level === 'trigger') {
     return NextResponse.json({ error: 'Trigger tokens cannot mint task tokens.' }, { status: 403 });
+  }
+
+  // A token the key could not back would mint fine and then fail every call.
+  const missing = missingTaskTokenScopes(account.scopes);
+  if (missing.length > 0) {
+    return NextResponse.json({ error: `This key cannot mint task tokens: it lacks ${missing.join(', ')}. Use a key with the Task agent capabilities.` }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({})) as { taskId?: unknown; ttlMs?: unknown };
@@ -41,8 +49,13 @@ export async function POST(req: NextRequest) {
     where: eq(tasks.id, taskId),
     columns: { id: true, workspaceId: true },
   });
-  // Same answer for a missing task and one out of reach.
-  if (!task || !(await verifyAccountWorkspaceAccess(account.id, task.workspaceId, 'canClaim'))) {
+  // Same answer for a missing task and one out of reach. The body names a
+  // task, not a workspace, so auth's own workspace-list check never sees it.
+  if (
+    !task ||
+    !tokenWorkspaceAllowed(account.workspaceIds, task.workspaceId) ||
+    !(await verifyAccountWorkspaceAccess(account.id, task.workspaceId, 'canClaim'))
+  ) {
     return NextResponse.json({ error: 'Task not found' }, { status: 404 });
   }
 

@@ -15,6 +15,9 @@ import type { Env } from './env';
 import {
   classifyEgressHost,
   describeForwardForDebug,
+  endpointRejectedKey,
+  rewriteModelInBody,
+  isClaudeModelId,
   needsServerModelEndpoint,
   resolveModelRoute,
   rewriteOutbound,
@@ -61,8 +64,9 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       { model: resolveModelRoute(this.env, server), github },
     );
     if (decision.action === 'passthrough') return this.counted('passthrough', at, fetch(request));
+    if (decision.action === 'respond') return this.counted(cls, at, Promise.resolve(new Response(null, { status: decision.status })));
     if (decision.action === 'reject') {
-      this.record({ type: 'request', cls, at, rejected: true });
+      this.record({ type: 'request', cls, at, rejected: true, reason: decision.reason, ...(decision.pathLabel ? { pathLabel: decision.pathLabel } : {}) });
       return new Response(`${decision.message}\n`, { status: decision.status });
     }
     if (this.env.EGRESS_DEBUG_ECHO === '1') {
@@ -72,13 +76,27 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     // redirect: 'manual' so a redirect goes back to the container, which
     // follows it itself. The Worker never carries an injected credential to a
     // redirect target.
+    let body: BodyInit | null = request.body;
+    if (decision.mapModel) {
+      // The team endpoint's model names (aliases, or OpenRouter ids), as a
+      // host runner would send them. Only `model` changes.
+      const text = await request.text();
+      const mapped = rewriteModelInBody(text, decision.mapModel);
+      body = mapped ?? text;
+      if (mapped !== null) {
+        decision.headers.delete('content-length');
+        // Anthropic betas mean nothing to another vendor's model behind a proxy.
+        const target = (JSON.parse(mapped) as { model: string }).model;
+        if (!isClaudeModelId(target)) decision.headers.delete('anthropic-beta');
+      }
+    }
     const res = fetch(decision.url, {
       method: request.method,
       headers: decision.headers,
-      body: request.body,
+      body,
       redirect: 'manual',
     }).then((r) => {
-      if (viaServer && (r.status === 401 || r.status === 403)) {
+      if (viaServer && endpointRejectedKey(r.status)) {
         // The endpoint rejected its key: have the agent drop it and refetch
         // after a short backoff (a rotated key then takes effect mid-run).
         void this.agent().then(a => a?.reportModelEndpointAuthFailure()).catch(() => {});
@@ -91,7 +109,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
   /** An OTLP export: counted as passthrough in the run report (it is not model or GitHub traffic). */
   private async forwardOtlp(request: Request, decision: NonNullable<ReturnType<typeof rewriteOtlp>>, at: number): Promise<Response> {
     if (decision.action === 'reject') {
-      this.record({ type: 'request', cls: 'passthrough', at, rejected: true });
+      this.record({ type: 'request', cls: 'passthrough', at, rejected: true, reason: decision.reason });
       return new Response(`${decision.message}\n`, { status: decision.status });
     }
     if (decision.action !== 'forward') return this.counted('passthrough', at, fetch(request));
@@ -115,7 +133,9 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
    */
   private async counted(cls: EgressClass, at: number, response: Promise<Response>): Promise<Response> {
     this.record({ type: 'request', cls, at });
-    return countResponseBytes(await response, (bytes) => this.record({ type: 'bytes', cls, bytes }));
+    const res = await response;
+    if (res.status >= 400) this.record({ type: 'status', cls, status: res.status });
+    return countResponseBytes(res, (bytes) => this.record({ type: 'bytes', cls, bytes }));
   }
 
   /** Fire-and-forget: the report is best effort and must never slow a request. */

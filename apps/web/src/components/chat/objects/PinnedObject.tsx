@@ -2,7 +2,7 @@
 
 /**
  * The object the conversation is about, pinned at the top of the chat canvas
- * and live (docs/design/chat-canvas.md). A mission shows as a compact board,
+ * and live (knowledge-base: buildd/design/chat-canvas.md). A mission shows as a compact board,
  * one column per phase; anything else as its one-line title. It's a fleet
  * object, so it's hard and square even inside the soft conversation.
  *

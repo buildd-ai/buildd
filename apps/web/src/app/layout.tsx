@@ -23,7 +23,7 @@ const ibmPlexSans = IBM_Plex_Sans({
   display: 'swap',
 });
 
-// The chat's voice (docs/design/chat-canvas.md): what Buildd and the person say, in a serif.
+// The chat's voice (knowledge-base: buildd/design/chat-canvas.md): what Buildd and the person say, in a serif.
 const newsreader = Newsreader({
   subsets: ['latin'],
   style: ['normal', 'italic'],

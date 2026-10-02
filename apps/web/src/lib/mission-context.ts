@@ -768,7 +768,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
 
   // Screenshots the author may nominate in `shipped.heroShots` when it proposes
-  // completion (docs/design/mission-shipped-report.md). Read on demand and
+  // completion (knowledge-base: buildd/design/mission-shipped-report.md). Read on demand and
   // best-effort: no list just means no nomination, and the server picks.
   if (!missionWorkspaceSensitive) {
     try {

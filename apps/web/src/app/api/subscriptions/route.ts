@@ -4,7 +4,7 @@ import { createSubscription, listSubscriptions, type SubscriptionSubject } from 
 import { prSubject, taskSubject, TERMINAL_TASK_STATUSES, watchLabels } from '@/lib/watch-subjects';
 import { watchEventTypes } from '@/lib/watch-notice';
 
-/** Live watches per person (docs/design/subscriptions-and-notifications.md → Limits). */
+/** Live watches per person (knowledge-base: buildd/design/subscriptions-and-notifications.md → Limits). */
 export const MAX_ACTIVE_WATCHES = 25;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

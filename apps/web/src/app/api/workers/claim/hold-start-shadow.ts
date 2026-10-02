@@ -1,6 +1,6 @@
 /**
  * Hold versus start at claim, claim-route half
- * (docs/design/conflict-aware-orchestration.md §5b; pure logic in
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b; pure logic in
  * packages/core/orchestration-claim-decision.ts).
  *
  * Three pieces, each built so the hottest path in the system cannot slow

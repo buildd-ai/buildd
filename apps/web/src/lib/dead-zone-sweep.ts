@@ -29,9 +29,9 @@ import { and, eq, isNotNull, isNull, sql, desc } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import {
   buildConflictRetryTask,
-  DEFAULT_MAX_CONFLICT_ITERATIONS,
   isAutoResolveMergeConflictsEnabled,
 } from '@/lib/conflict-retry';
+import { policyValue } from '@/lib/policy-overrides';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import {
@@ -58,7 +58,7 @@ const TERMINAL_STATUSES = TERMINAL_TASK_STATUSES;
 export function classifyDeadZoneAction(
   activeRetryCount: number,
   completedRetryCount: number,
-  maxIterations: number = DEFAULT_MAX_CONFLICT_ITERATIONS,
+  maxIterations: number = policyValue('maxConflictIterations'),
 ): DeadZoneAction {
   if (activeRetryCount > 0) return 'skip';
   if (completedRetryCount >= maxIterations) return 'exhaust';
@@ -341,7 +341,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
         if (action === 'exhaust') {
           result.exhausted++;
           console.log(
-            `[dead-zone-sweep] PR #${worker.prNumber} in workspace ${wsId}: retries exhausted (${completedRetryCount}/${DEFAULT_MAX_CONFLICT_ITERATIONS}) — surfacing as BLOCKED`,
+            `[dead-zone-sweep] PR #${worker.prNumber} in workspace ${wsId}: retries exhausted (${completedRetryCount}/${policyValue('maxConflictIterations')}) — surfacing as BLOCKED`,
           );
           continue;
         }
@@ -359,7 +359,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
             context: {
               ...(task.context || {}),
               conflictIteration: completedRetryCount,
-              maxConflictIterations: DEFAULT_MAX_CONFLICT_ITERATIONS,
+              maxConflictIterations: policyValue('maxConflictIterations'),
             },
             missionId: task.missionId,
           },

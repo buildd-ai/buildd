@@ -5,7 +5,7 @@
  * Chat tools reuse `handleBuilddAction` from packages/core/mcp-tools.ts, which
  * reaches the platform through REST routes. `/api/mcp` hands it an HTTP client
  * with a bearer token. Chat doesn't: a second HTTP hop and a minted token per
- * turn are exactly what docs/design/agent-chat.md rules out. Instead each
+ * turn are exactly what knowledge-base: buildd/design/agent-chat.md rules out. Instead each
  * allowlisted (method, path) is dispatched straight to its route module. The
  * route runs inside the chat request, so `getCurrentUser()` resolves the same
  * session and the dashboard's own authorization applies — the approval card is

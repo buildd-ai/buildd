@@ -143,6 +143,15 @@ export interface BashClassification {
   searchShape?: SearchShape;
 }
 
+/**
+ * Internal: a classification that may carry the search term, set only when the
+ * shape is `identifier`. Never leaves this module except through
+ * `classifyBashSearch`, and never reaches a counter.
+ */
+interface Classified extends BashClassification {
+  identifier?: string;
+}
+
 /** Rank of each bucket for the dominance reduction (lower wins). */
 const RANK: Record<BashBucket, number> = BASH_BUCKETS.reduce(
   (acc, b, i) => { acc[b] = i; return acc; },
@@ -397,11 +406,11 @@ function classifyToolchain(name: string, rest: Token[]): BashBucket | null {
 }
 
 /** git subcommand dispatch: `grep` searches, `ls-files`/`ls-tree` discover, the rest is VCS work. */
-function classifyGit(rest: Token[]): BashClassification {
+function classifyGit(rest: Token[]): Classified {
   const sub = rest.find(t => !t.text.startsWith('-'))?.text ?? '';
   if (sub === 'grep') {
     const after = rest.slice(rest.findIndex(t => t.text === 'grep') + 1);
-    return { bucket: 'code_search', searchShape: searchShapeOf(after) };
+    return searchClassification(after);
   }
   if (sub === 'ls-files' || sub === 'ls-tree') return { bucket: 'file_find' };
   return { bucket: 'git' };
@@ -412,6 +421,19 @@ function classifyGit(rest: Token[]): BashClassification {
  * Returns `unknown` when no positional pattern can be found.
  */
 export function searchShapeOf(args: Token[]): SearchShape {
+  return searchPatternOf(args).shape;
+}
+
+/** A `code_search` classification, carrying the term only for the `identifier` shape. */
+function searchClassification(args: Token[]): Classified {
+  const { shape, text } = searchPatternOf(args);
+  return shape === 'identifier' && text !== undefined
+    ? { bucket: 'code_search', searchShape: shape, identifier: text }
+    : { bucket: 'code_search', searchShape: shape };
+}
+
+/** The pattern argument of a search command and its shape. */
+function searchPatternOf(args: Token[]): { shape: SearchShape; text?: string } {
   let pattern: Token | undefined;
   for (let i = 0; i < args.length; i++) {
     const tok = args[i];
@@ -429,12 +451,18 @@ export function searchShapeOf(args: Token[]): SearchShape {
     pattern = tok;
     break;
   }
-  if (!pattern) return 'unknown';
-  return shapeOfPattern(pattern.text);
+  if (!pattern) return { shape: 'unknown' };
+  return { shape: shapeOfSearchPattern(pattern.text), text: pattern.text.trim() };
 }
 
-/** Shape of a pattern string. Never returns or logs the string itself. */
-function shapeOfPattern(raw: string): SearchShape {
+/**
+ * Shape of a pattern string. Never returns or logs the string itself.
+ *
+ * Exported for the `Grep` TOOL, whose pattern arrives as a field rather than a
+ * command line: the same rule decides whether a Grep call is an identifier
+ * search (cbm-injection.ts), so the two triggers cannot drift.
+ */
+export function shapeOfSearchPattern(raw: string): SearchShape {
   const text = raw.trim();
   if (!text) return 'unknown';
   if (/\s/.test(text)) return 'quoted_phrase';
@@ -445,7 +473,7 @@ function shapeOfPattern(raw: string): SearchShape {
 }
 
 /** Classify one simple command (no pipes), after wrapper stripping. */
-function classifySimple(rawTokens: Token[], depth: number): BashClassification {
+function classifySimple(rawTokens: Token[], depth: number): Classified {
   let args = stripEnvAssignments(rawTokens);
 
   // Peel wrappers until a real binary is in front.
@@ -483,7 +511,7 @@ function classifySimple(rawTokens: Token[], depth: number): BashClassification {
   const name = baseName(args[0].text);
   const rest = args.slice(1);
 
-  if (SEARCH_BINS.has(name)) return { bucket: 'code_search', searchShape: searchShapeOf(rest) };
+  if (SEARCH_BINS.has(name)) return searchClassification(rest);
   if (name === 'git') return classifyGit(rest);
   if (name === 'gh') return { bucket: 'gh' };
   if (FIND_BINS.has(name)) return { bucket: 'file_find' };
@@ -505,9 +533,9 @@ function classifySimple(rawTokens: Token[], depth: number): BashClassification {
 }
 
 /** Parse a command string, classify every segment, reduce to the dominant intent. */
-function classifyParsed(src: string, depth: number): BashClassification {
+function classifyParsed(src: string, depth: number): Classified {
   const { pipelines, subs } = parse(src.slice(0, MAX_COMMAND_CHARS));
-  const candidates: BashClassification[] = [];
+  const candidates: Classified[] = [];
 
   for (const pipeline of pipelines) {
     const results = pipeline.map(tokens => classifySimple(tokens, depth));
@@ -539,9 +567,11 @@ function classifyParsed(src: string, depth: number): BashClassification {
   for (const candidate of candidates) {
     if (RANK[candidate.bucket] < RANK[best.bucket]) best = candidate;
   }
-  return best.bucket === 'code_search'
-    ? { bucket: 'code_search', searchShape: best.searchShape ?? 'unknown' }
-    : { bucket: best.bucket };
+  if (best.bucket !== 'code_search') return { bucket: best.bucket };
+  const shape = best.searchShape ?? 'unknown';
+  return shape === 'identifier' && best.identifier !== undefined
+    ? { bucket: 'code_search', searchShape: shape, identifier: best.identifier }
+    : { bucket: 'code_search', searchShape: shape };
 }
 
 /**
@@ -551,11 +581,28 @@ function classifyParsed(src: string, depth: number): BashClassification {
  * which number was wrong.
  */
 export function classifyBashCommand(command: string): BashClassification {
-  if (typeof command !== 'string' || !command.trim()) return { bucket: 'other' };
+  const { bucket, searchShape } = classifyBashSearch(command).classification;
+  return searchShape ? { bucket, searchShape } : { bucket };
+}
+
+/**
+ * Classify one Bash command AND, when it is an identifier-shaped code search,
+ * return the identifier it searched for.
+ *
+ * The one place the classifier hands back pattern text, for the CBM search
+ * injection trigger (cbm-injection.ts), which needs the symbol to ask the graph
+ * about it. Same parser, same dominance rule, so the trigger fires on exactly
+ * the calls `searchShapes.identifier` counts. The caller holds the identifier
+ * for the length of one lookup and stores none of it; `recordBashCommand`
+ * never sees this field.
+ */
+export function classifyBashSearch(command: string): { classification: BashClassification; identifier: string | null } {
+  if (typeof command !== 'string' || !command.trim()) return { classification: { bucket: 'other' }, identifier: null };
   try {
-    return classifyParsed(command, 0);
+    const { identifier, ...classification } = classifyParsed(command, 0);
+    return { classification, identifier: identifier ?? null };
   } catch {
-    return { bucket: 'other' };
+    return { classification: { bucket: 'other' }, identifier: null };
   }
 }
 

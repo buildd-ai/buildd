@@ -17,6 +17,7 @@ import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import {
   AGENT_ENDPOINT_PURPOSE,
+  agentEndpointProbeModel,
   parseAgentEndpointBlob,
   resolveEndpointFromBlob,
   serializeAgentEndpoint,
@@ -54,7 +55,11 @@ type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 /** Test seam: DNS for the verification call's public-address check. */
 type VerifyDeps = { fetcher?: Fetcher; lookup?: LookupAll };
 
-/** The model Verify sends: the budget tier, mapped by the endpoint (§4). */
+/**
+ * The model Verify sends: the budget tier, mapped by the endpoint (§4). With an
+ * alias table, agentEndpointProbeModel picks a model the endpoint will be asked
+ * for instead.
+ */
 export const VERIFY_MODEL = TIER_DEFAULTS.budget.model;
 
 /** Team-owned endpoint rows: never account- or person-scoped. */
@@ -162,9 +167,14 @@ export async function setTeamAgentEndpoint(
   const route = resolveEndpointFromBlob(v.blob, gateway);
   if (!route) return { ok: false, status: 400, error: 'That endpoint routes nothing.' };
 
-  const check = await verifyAgentEndpoint(route, VERIFY_MODEL, { fetcher: deps.fetcher, lookup: deps.lookup });
+  const check = await verifyAgentEndpoint(route, agentEndpointProbeModel(route, VERIFY_MODEL), { fetcher: deps.fetcher, lookup: deps.lookup });
   if (check.health === 'revoked') {
     return { ok: false, status: 400, error: `The endpoint rejected this key. ${check.error ?? ''}`.trim() };
+  }
+  if (check.refusedModel) {
+    // The key works but may not reach this model: not saved, since agents would
+    // be refused the same way. The fix is an alias, which the message names.
+    return { ok: false, status: 400, error: `The endpoint refused the model "${check.refusedModel}" for this key. Add a model alias that points it at a model this key is allowed to use, then save again.` };
   }
   if (check.blocked) {
     return { ok: false, status: 400, error: `This endpoint URL can't be used: ${check.error}.` };
@@ -223,7 +233,7 @@ export async function verifyAgentEndpointSecret(
   const gateway = blob?.kind === 'gateway' ? await gatewayFor(row.teamId, row.workspaceId) : null;
   const route = blob ? resolveEndpointFromBlob(blob, gateway) : null;
   const check = route
-    ? await verifyAgentEndpoint(route, VERIFY_MODEL, { fetcher: deps.fetcher, lookup: deps.lookup })
+    ? await verifyAgentEndpoint(route, agentEndpointProbeModel(route, VERIFY_MODEL), { fetcher: deps.fetcher, lookup: deps.lookup })
     : { health: 'unknown' as const, error: blob ? 'The team gateway this endpoint uses is not connected.' : 'Stored endpoint could not be read.' };
   await recordHealth(row.id, check);
   return { health: check.health, error: check.error };

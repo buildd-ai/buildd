@@ -1,5 +1,5 @@
 /**
- * Weight-based split shares for tier pools (docs/design/tier-weights.md §1, §2).
+ * Weight-based split shares for tier pools (knowledge-base: buildd/design/tier-weights.md §1, §2).
  *
  * An admin sets a weight level per arm — `off`/`low`/`med`/`high` — and buildd
  * computes the share. No admin arithmetic, no model call: `sharesFromWeights`

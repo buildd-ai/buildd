@@ -1,6 +1,6 @@
 /**
  * The mission page's feed derivation, lifted out of `page.tsx` so it is tested
- * without a database (docs/design/mission-feed-mobile-continuity.md, addendum
+ * without a database (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, addendum
  * D1). Pure.
  *
  * One `feedTasks` array feeds the header pulse, the list and the task sheet,

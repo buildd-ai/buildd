@@ -1,6 +1,6 @@
 /**
  * Creation-time manifest prediction — the stores and the orchestration
- * (docs/design/conflict-aware-orchestration.md §5a). Pure rules live in
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §5a). Pure rules live in
  * `./manifest-prediction.ts`.
  *
  * Runs in SHADOW, after the task-creation response (the web route schedules it

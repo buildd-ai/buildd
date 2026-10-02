@@ -6,7 +6,8 @@
  * pin the states that matter, using the shapes seen in production.
  */
 import { describe, it, expect } from 'bun:test';
-import { aggregateCbm, summarizeCbm, type CbmRow } from './cbm-insight';
+import { aggregateCbm, aggregateCbmInjection, summarizeCbm, type CbmRow } from './cbm-insight';
+import { emptyCbmInjectionMetrics, type CbmInjectionMetrics } from '@buildd/core/cbm-injection';
 import type { CbmMetrics } from '@buildd/core/db/schema';
 
 const WINDOW_START = new Date('2026-08-31T00:00:00Z');
@@ -253,5 +254,59 @@ describe('aggregateCbm — by-design skips', () => {
       row({ outcome: 'disabled', disableReason: 'binary_absent' }),
     ];
     expect(summarize(rows).eligibleFallbackRate).toBeCloseTo(0.25, 5);
+  });
+});
+
+describe('aggregateCbmInjection (cbm-search-injection.md, kill metric)', () => {
+  const block = (over: Partial<CbmInjectionMetrics>): CbmInjectionMetrics => ({ ...emptyCbmInjectionMetrics(true), ...over });
+
+  it('null rates and insufficient_n with nothing to read', () => {
+    const agg = aggregateCbmInjection([undefined]);
+    expect(agg).toMatchObject({ sessions: 0, injectedRate: null, uptakeRate: null, killMetric: { verdict: 'insufficient_n' } });
+  });
+
+  it('injectedRate drops cap/repeat/unsupported from the denominator; uptakeRate is taken over tracked', () => {
+    const agg = aggregateCbmInjection([
+      block({
+        triggers: 6, nonEmptyDiff: 2, injections: 2,
+        byOutcome: { empty_diff: 2, injected_callers: 1, jev_skip: 1, cap_reached: 1, repeat_symbol: 1 },
+        uptake: { window: 10, tracked: 2, taken: 1 },
+        events: [
+          { trigger: 'bash', outcome: 'injected_callers', hitCount: 1, hitFiles: 1, graphCount: 3, diffSize: 2, injectedCount: 2, symbolKind: 'Function', latencyMs: 300, jev: { label: 'inject_callers', confidence: 0.9, status: 'applied', latencyMs: 120, version: 'v' } },
+          { trigger: 'grep', outcome: 'jev_skip', hitCount: 9, hitFiles: 5, graphCount: 3, diffSize: 1, injectedCount: 0, symbolKind: 'Method', latencyMs: 500, jev: { label: 'skip', confidence: 0.4, status: 'below_threshold', latencyMs: 200, version: 'v' } },
+          { trigger: 'bash', outcome: 'cap_reached', hitCount: 0, hitFiles: 0, graphCount: 0, diffSize: 0, injectedCount: 0, symbolKind: null, latencyMs: 0 },
+        ],
+      }),
+      emptyCbmInjectionMetrics(false, 'kill_switch'),
+      { ...emptyCbmInjectionMetrics(false, 'unsupported_backend'), triggers: 3, byOutcome: { unsupported_backend: 3 } },
+    ]);
+    expect(agg.sessions).toBe(3);
+    expect(agg.enabledSessions).toBe(1);
+    expect(agg.disabledReasons).toEqual({ kill_switch: 1, unsupported_backend: 1 });
+    expect(agg.triggers).toBe(9);
+    expect(agg.eligibleTriggers).toBe(4);
+    expect(agg.injectedRate).toBe(0.5);
+    expect(agg.uptakeRate).toBe(0.5);
+    expect(agg.jev).toMatchObject({ calls: 2, labels: { inject_callers: 1, skip: 1 }, fallbackShare: 0.5 });
+    // Ineligible rows never count toward latency.
+    expect(agg.hookLatencyMs).toEqual({ p50: 500, p90: 500 });
+    expect(agg.killMetric.sessionsWithEligibleTrigger).toBe(1);
+  });
+
+  it('verdict kills below either threshold once n is reached, keeps otherwise', () => {
+    const good = block({ triggers: 10, nonEmptyDiff: 5, injections: 3, byOutcome: { empty_diff: 5, injected_callers: 3, jev_skip: 2 }, uptake: { window: 10, tracked: 3, taken: 2 } });
+    const thin = block({ triggers: 10, nonEmptyDiff: 0, byOutcome: { empty_diff: 10 } });
+    const kill = { sessions: 2, minInjectedRate: 0.1, minUptakeRate: 0.15 };
+    expect(aggregateCbmInjection([good, good], kill).killMetric.verdict).toBe('keep');
+    expect(aggregateCbmInjection([thin, thin], kill).killMetric.verdict).toBe('kill');
+    expect(aggregateCbmInjection([good], kill).killMetric.verdict).toBe('insufficient_n');
+  });
+
+  it('rides on aggregateCbm and leaves the adoption numbers alone', () => {
+    const cbm = { outcome: 'enforced' as const, sharedCache: true, toolCalls: {}, totalCbmCalls: 0, readCount: 0, grepCount: 1, globCount: 0, injection: block({ triggers: 1, injections: 1, nonEmptyDiff: 1, byOutcome: { injected_callers: 1 } }) };
+    const agg = aggregateCbm([{ inputTokens: 1, cbm }], '7d', new Date(0));
+    expect(agg.injection.injections).toBe(1);
+    expect(agg.cbmActive.adoptionRate).toBe(0);
+    expect(agg.cbmActive.totalGraphCalls).toBe(0);
   });
 });

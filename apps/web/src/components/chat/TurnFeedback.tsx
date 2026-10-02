@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Thumbs on an assistant turn (docs/design/tier-model-pools.md §9 "Chat").
+ * Thumbs on an assistant turn (knowledge-base: buildd/design/tier-model-pools.md §9 "Chat").
  * The thumbs, the one optional reason (a popover on desktop, a bottom sheet on
  * a phone) and the vote state are the kit's (`TurnFeedbackProvider` /
  * `TurnFeedback` from @builddai/ai-kit/chat/react). buildd owns the transport,

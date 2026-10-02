@@ -1,5 +1,5 @@
 /**
- * Realtime split for the mission page (docs/design/mission-feed-mobile-continuity.md,
+ * Realtime split for the mission page (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * "Realtime", slice S7, AC-17).
  *
  * The runner PATCHes every active worker about every 10s, and each PATCH

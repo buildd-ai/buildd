@@ -48,6 +48,9 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
+import { CbmInjector, createCbmInjectionHook, isCbmInjectionEnabled, recordUnsupportedTrigger } from './cbm-injection';
+import { CbmGraphClient } from './cbm-graph-client';
+import { emptyCbmInjectionMetrics } from '@buildd/core/cbm-injection';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
@@ -755,6 +758,14 @@ export class WorkerManager {
   // Call it for free text; use `.body()` for anything already parsed, so field
   // names (not string escaping) decide what the generic patterns may rewrite.
   private secretRedactors = new Map<string, SecretRedactor>();
+  /**
+   * CBM search injection, per live session (cbm-injection.ts). Kept off
+   * LocalWorker: the injector holds the session's searched symbols in memory,
+   * and LocalWorker is serialised to the UI. Only its counts reach the worker
+   * (`cbmInjection`) and resultMeta.
+   */
+  private cbmInjectors = new Map<string, CbmInjector>();
+  private cbmGraphClients = new Map<string, CbmGraphClient>();
   // Per-worker BYO evidence writers (command_output / test_report). Built next
   // to the redactor in startSession and dropped with it. Best-effort only.
   private evidenceWriters = new Map<string, EvidenceWriter>();
@@ -4136,6 +4147,50 @@ export class WorkerManager {
       });
       if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
 
+      // CBM search injection (docs/design/cbm-search-injection.md). Claude
+      // workers with CBM enforced get a PostToolUse hook that answers their
+      // identifier searches from the graph; the runner's own graph client starts
+      // here in the background so it never sits on the agent's critical path.
+      // Codex has no post-tool seam, so its searches are only counted. A closing
+      // turn keeps the counts it already has and gets no hook.
+      let cbmInjector: CbmInjector | undefined;
+      if (!isClosingTurn) {
+        worker.cbmInjection = undefined;
+        if (isCodexTask) {
+          if (worker.cbmOutcome !== 'disabled') worker.cbmInjection = emptyCbmInjectionMetrics(false, 'unsupported_backend');
+        } else if (cbmEnforced && !cbmMountBlocked && worker.cbmOutcome === 'enforced' && cbmCacheDir) {
+          if (!isCbmInjectionEnabled()) {
+            worker.cbmInjection = emptyCbmInjectionMetrics(false, 'kill_switch');
+          } else try {
+            const injectRuntimeDir = ensureCbmRuntimeDir(cbmCacheDir, join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`));
+            const client = new CbmGraphClient({
+              binaryPath: cbmBinaryPath ?? cbmActivation.cbmBinaryPath!,
+              env: buildCbmMcpEntry(cwd, cbmCacheDir, injectRuntimeDir).env,
+              worktreePath: cwd,
+              ...(cbmSharedCache && cbmActivation.cbmProject ? { project: cbmActivation.cbmProject } : {}),
+              log: msg => console.warn(`[Worker ${worker.id}] ${msg}`),
+            });
+            client.start();
+            this.cbmGraphClients.set(worker.id, client);
+            cbmInjector = new CbmInjector({
+              graph: client,
+              decide: (facts, timeoutMs) => this.buildd.decideCbmInjection(worker.id, facts, timeoutMs),
+              worktreePath: cwd,
+              task: { kind: task.kind ?? null, category: (task as { category?: string | null }).category ?? null, pathManifest: task.pathManifest ?? null },
+            });
+            this.cbmInjectors.set(worker.id, cbmInjector);
+            worker.cbmInjection = cbmInjector.snapshot();
+          } catch (err) {
+            // Injection is an accelerator; it must never cost the task.
+            cbmInjector = undefined;
+            this.cbmInjectors.delete(worker.id);
+            this.cbmGraphClients.get(worker.id)?.stop();
+            this.cbmGraphClients.delete(worker.id);
+            console.warn(`[Worker ${worker.id}] CBM injection unavailable: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+
       // Block CBM tools that write to the repo or delete indexes. Applied
       // unconditionally: a codebase-memory server can also arrive via the SDK's own
       // project .mcp.json load (settingSources includes 'project'), where it never
@@ -4247,7 +4302,14 @@ export class WorkerManager {
               }]
             : []),
         ],
-        PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
+        PostToolUse: [
+          { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
+          // CBM search injection. Runs after the tool, resolves within 1.5s by
+          // its own budget; the timeout here is only a backstop.
+          ...(cbmInjector
+            ? [{ matcher: 'Bash|Grep', timeout: 5, hooks: [createCbmInjectionHook(cbmInjector)] }]
+            : []),
+        ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
@@ -4822,6 +4884,8 @@ export class WorkerManager {
         const outputTokens = totals?.outputTokens;
 
         // CBM observability: attach per-task metrics to resultMeta before completion.
+        const liveInjector = this.cbmInjectors.get(worker.id);
+        if (liveInjector) worker.cbmInjection = liveInjector.snapshot();
         if (worker.cbmOutcome !== undefined) {
           const cbmMetrics = buildCbmMetrics(worker)!;
           // Merge into resultMeta so all metrics travel together to the server.
@@ -5250,6 +5314,22 @@ export class WorkerManager {
         // task's build wants. A no-op unless the wait budget expired.
         if (stopBackgroundCbmIndex(worker.id)) {
           console.log(`[Worker ${worker.id}] CBM: stopped the backgrounded index at teardown`);
+        }
+
+        // CBM search injection: keep its counts on the worker (a closing turn
+        // or a late completion still reports them), then end the runner's own
+        // graph server and its runtime dir. Before the cache dir goes, for the
+        // same reason as the indexer above.
+        const endedInjector = this.cbmInjectors.get(worker.id);
+        if (endedInjector) {
+          worker.cbmInjection = endedInjector.snapshot();
+          this.cbmInjectors.delete(worker.id);
+        }
+        const injectClient = this.cbmGraphClients.get(worker.id);
+        if (injectClient) {
+          injectClient.stop();
+          this.cbmGraphClients.delete(worker.id);
+          try { rmSync(join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`), { recursive: true, force: true }); } catch { /* best-effort */ }
         }
 
         // Clean up the per-worker CBM cache dir (ephemeral per design doc §4.2).
@@ -5781,6 +5861,15 @@ export class WorkerManager {
           if (builddAction) {
             if (!worker.pendingActionEvents) worker.pendingActionEvents = [];
             worker.pendingActionEvents.push({ action: builddAction, ts: Date.now() });
+          }
+
+          // CBM search injection: uptake windows and the already-edited set, or
+          // (Codex) the count of searches it could not answer. Never touches the
+          // CBM counters below — the runner's lookups are not agent calls.
+          const cbmInjector = this.cbmInjectors.get(worker.id);
+          if (cbmInjector) cbmInjector.observeToolCall(toolName, input);
+          else if (worker.cbmInjection?.disabledReason === 'unsupported_backend') {
+            recordUnsupportedTrigger(worker.cbmInjection, toolName, input);
           }
 
           // CBM observability: count per-tool CBM calls and file-access tool calls.

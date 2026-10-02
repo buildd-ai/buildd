@@ -25,11 +25,13 @@
  */
 
 import type { KitProvider, PlanEffort, ResolvedPlan } from './types';
+import { ROUTES, routeAttributionHeaders, routeModelId, type GatewayNaming } from './routes';
 
+/** Each vendor's own API root (`ROUTES[vendor].baseURL`). */
 export const PROVIDER_BASE_URLS: Record<KitProvider, string> = {
-  openrouter: 'https://openrouter.ai/api/v1',
-  anthropic: 'https://api.anthropic.com/v1',
-  openai: 'https://api.openai.com/v1',
+  openrouter: ROUTES.openrouter.baseURL!,
+  anthropic: ROUTES.anthropic.baseURL!,
+  openai: ROUTES.openai.baseURL!,
 };
 
 /**
@@ -38,20 +40,17 @@ export const PROVIDER_BASE_URLS: Record<KitProvider, string> = {
  * unmapped is sent as `provider/model`, LiteLLM's convention. `prefix: false`
  * sends the bare model id instead.
  */
-export interface GatewayConfig {
+export interface GatewayConfig extends GatewayNaming {
   kind: 'litellm';
   /** The proxy's OpenAI-compatible root, e.g. `https://litellm.example.com/v1`. */
   baseURL: string;
   /** The proxy's key (a LiteLLM virtual key). */
   apiKey?: string;
-  models?: Record<string, string>;
-  prefix?: boolean;
 }
 
 /** The model id a gateway is sent for a plan. Pure. */
-export function gatewayModel(gateway: GatewayConfig, provider: KitProvider, model: string): string {
-  const qualified = `${provider}/${model}`;
-  return gateway.models?.[qualified] ?? gateway.models?.[model] ?? (gateway.prefix === false ? model : qualified);
+export function gatewayModel(gateway: GatewayConfig | GatewayNaming, provider: KitProvider, model: string): string {
+  return routeModelId('litellm', provider, model, gateway);
 }
 
 export interface CallConfig {
@@ -100,16 +99,11 @@ export function toCallConfig(plan: Pick<ResolvedPlan, 'provider' | 'model' | 'ef
       maxTurns: plan.limits?.maxTurns ?? null,
     };
   }
-  const headers: Record<string, string> = {};
+  const route = ROUTES[plan.provider];
+  const headers: Record<string, string> = { ...route.headers, ...routeAttributionHeaders(plan.provider, opts) };
   const extraBody: Record<string, unknown> = {};
-  if (plan.provider === 'openrouter') {
-    if (opts.appName) headers['X-Title'] = opts.appName;
-    if (opts.appUrl) headers['HTTP-Referer'] = opts.appUrl;
-    // Ask OpenRouter to return the call's cost, so the receipt carries `costUsd`.
-    extraBody.usage = { include: true };
-  } else if (plan.provider === 'anthropic') {
-    headers['anthropic-version'] = '2023-06-01';
-  }
+  // Ask OpenRouter to return the call's cost, so the receipt carries `costUsd`.
+  if (route.reportsCost) extraBody.usage = { include: true };
   return {
     provider: plan.provider,
     via: 'direct',

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * A write the agent proposed, as the approval card itself (docs/design/agent-chat.md,
+ * A write the agent proposed, as the approval card itself (knowledge-base: buildd/design/agent-chat.md,
  * "Tool calls you can see"). Nothing is filed until Confirm, which echoes the
  * approval id back; the server checks the id, the input hash and the approver.
  * Once decided the card folds to its tool row, and the filed object renders
@@ -14,7 +14,7 @@
  * constraints, plan) buildd renders into the kit card's body and details. On
  * a phone the details fold behind "Show details".
  *
- * An approval is a fleet object in the v3 language (docs/design/chat-canvas.md,
+ * An approval is a fleet object in the v3 language (knowledge-base: buildd/design/chat-canvas.md,
  * "Mobile canvas"): a square card with a 1px rule and a 3px offset shadow, a
  * 2px copper top edge for "needs you", mono chrome, and what changes said in
  * Newsreader. Plain buttons. No keycaps: nothing here has a key.

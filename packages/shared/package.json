@@ -1,6 +1,6 @@
 {
   "name": "@buildd/shared",
-  "version": "0.260.0",
+  "version": "0.260.2",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
@@ -9,5 +9,6 @@
   "types": "./src/index.ts",
   "devDependencies": {
     "typescript": "^6.0.0"
-  }
+  },
+  "license": "Apache-2.0"
 }

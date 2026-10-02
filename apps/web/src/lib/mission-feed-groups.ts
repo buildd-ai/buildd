@@ -1,5 +1,5 @@
 /**
- * The mission feed's grouping model (docs/design/mission-feed-mobile-continuity.md,
+ * The mission feed's grouping model (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * "Grouping rules"). Pure: tasks in, ordered groups out.
  *
  * L-1: every deliverable renders as a row EXACTLY once. A row promoted into a

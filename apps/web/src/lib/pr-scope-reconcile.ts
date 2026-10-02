@@ -1,7 +1,7 @@
 /**
  * Reconcile PR-backed claim scope against the PR's actual diff.
  *
- * docs/design/conflict-aware-orchestration.md §1. A reviewer, CI or conflict
+ * knowledge-base: buildd/design/conflict-aware-orchestration.md §1. A reviewer, CI or conflict
  * fix attempt copies the original task's `pathManifest` when it is filed, and
  * that manifest is often far wider than what the PR touches: an undeclared or
  * branch-wide scope, or an accumulation of runtime declarations. Two views

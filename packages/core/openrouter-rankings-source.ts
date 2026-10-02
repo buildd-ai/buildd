@@ -1,5 +1,5 @@
 /**
- * Fetch and cache OpenRouter rankings per team (docs/design/tier-weights.md §4a).
+ * Fetch and cache OpenRouter rankings per team (knowledge-base: buildd/design/tier-weights.md §4a).
  *
  * Each team fetches with its own OpenRouter key and its scores feed only its
  * own pools: no tenant's credential serves another. At most one attempt per

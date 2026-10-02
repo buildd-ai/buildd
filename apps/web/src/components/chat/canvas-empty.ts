@@ -4,7 +4,7 @@
  * shortcuts). Pure.
  *
  * The mood is deterministic: `needs` when anything waits on the viewer, else
- * `calm` (docs/design/chat-canvas.md, "Empty canvas"). Every number shown comes
+ * `calm` (knowledge-base: buildd/design/chat-canvas.md, "Empty canvas"). Every number shown comes
  * from the pulse; nothing is invented, and a needs-you prompt is never offered
  * when nothing needs you.
  */
