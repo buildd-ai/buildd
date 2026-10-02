@@ -26,6 +26,8 @@ const union = (rs: Rect[]): Rect => {
 };
 const center = (r: Rect) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const ghost = (r: Rect): Rect => ({ ...center(r), w: 0, h: 0 });
+/** A tap on a control: the mark outlines the control (demo:review: a square at its centre cut through the label). */
+const press = (at: number, rect: Rect) => ({ at, ...center(rect), rect });
 const at = (k: CamKey, t: number): CamKey => ({ ...k, at: t });
 
 /**
@@ -129,7 +131,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     caption: 'It drafts the mission, and what done means.',
     spot: [key(0.2, [crit]), { ...key(3.0, [edit]), cross: true }],
     camera: [at(f('s02-thread', specCrop, 1.1), 0), at(f('s02-thread', specCrop, 1.06), 1)],
-    taps: [{ at: 3.9, ...center(edit) }],
+    taps: [press(3.9, edit)],
     controls: [edit, confirm],
   };
 
@@ -148,7 +150,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     caption: 'When it reads right, you confirm.',
     spot: [key(0.2, [crit]), { ...key(1.4, [confirm]), cross: true }],
     camera: [at(f('s02-thread', specCrop, 1.12), 0), at(f('s02-thread', specCrop, 1.12), 1)],
-    taps: [{ at: 2.6, ...center(confirm) }],
+    taps: [press(2.6, confirm)],
     controls: [confirm, edit],
   };
 
@@ -177,7 +179,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
       const g = (rect: Rect, pad: number) => aim({ ...o, minPx: Math.min(o.minPx, RULE_MIN_PX) }, s.img('s04-rule-card'), rect, pad);
       return [at(f('s04-rule-card', phrase.block, 2.0), 0), at(f('s04-rule-card', phrase.block, 2.0), 0.33), at(g(union([phrase.block, rcard]), 1.12), 0.55), at(g(rcard, 1.25), 1)];
     })(),
-    taps: [{ at: 4.3, ...center(save) }],
+    taps: [press(4.3, save)],
     controls: [save],
   };
 
@@ -222,7 +224,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     images: [s.img('s09-question', 'phone'), { ...s.img('s14-answered', 'phone', 3.3), fade: 0 }],
     caption: [{ at: 0, text: 'When a choice matters, it asks.' }, { at: 2.8, text: 'You answer from your phone.' }],
     camera: [{ at: 0, cx: 0.5, cy: 0.5, zoom: 1 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 1.04 }],
-    taps: [{ at: 3.1, ...center(opt) }],
+    taps: [press(3.1, opt)],
   };
   if (o.beat) {
     // A beat crops into the phone screen itself (no device): the question and its options.
@@ -248,8 +250,10 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
 
   const btn = s.box('s11-deck', 'deck-looks-right');
   const deck = s.box('s11-deck', 'visual-review-deck');
-  // For a beat: the buttons and the bottom of the desktop screenshot just above them.
-  const verdict: Rect = { x: btn.x - 0.12, y: btn.y - 0.18, w: btn.w + 0.12, h: btn.h + 0.18 };
+  // For a beat: the verdict, never cropped. Both buttons where they fit at a readable zoom (desktop),
+  // Looks right alone on a phone. The whole deck is too wide to read, so a beat does not light it.
+  const pair: Rect = { x: Math.max(0, btn.x - btn.w - 0.012), y: btn.y - 0.03, w: 2 * btn.w + 0.012, h: btn.h + 0.03 };
+  const verdict = o.frame.height > o.frame.width ? btn : pair;
   const review: Shot = {
     id: 'review', layout: 'screen', dur: 4.5,
     images: [s.img('s11-deck'), { ...s.img('s12-deck-agreed', 'desktop', 3.0), fade: 0 }],
@@ -257,11 +261,12 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     // Deck to button is a cross-fade: a glide would drag a lit band across both buttons.
     spot: [key(0.3, [deck], o.dim * 0.8), { ...key(1.8, [btn], o.dim * 0.8), cross: true }, key(3.2, [btn], 0)],
     camera: o.beat
-      ? [f('s11-deck', deck, 1.1, 0), f('s11-deck', deck, 1.1, 1.2 / 4.5), f('s11-deck', verdict, 1.1, 2.0 / 4.5), f('s11-deck', verdict, 1.1, 1)]
+      ? [f('s11-deck', verdict, 1.08, 0), f('s11-deck', verdict, 1.06, 1)]
       : [{ at: 0, cx: 0.5, cy: 0.5, zoom: 0.8 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 0.815 }],
-    taps: [{ at: 2.8, ...center(btn) }],
+    taps: [press(2.8, btn)],
     controls: [btn],
   };
+  if (o.beat) review.spot = [key(0.3, [verdict]), { ...key(1.6, [btn]), cross: true }, key(3.2, [btn], 0)];
 
   const rec = s.box('s13-complete', 'mission-completion-record');
   const band = s.box('s13-complete', 'goal-band');

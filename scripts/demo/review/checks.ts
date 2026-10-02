@@ -31,6 +31,8 @@ export type ClipMeta = { folded: boolean; loop: boolean; crossfades: number[] };
 export function clipMeta(name: string, cut: { loop: boolean; shots: Array<{ start: number; dur: number }> }, fade: number): ClipMeta {
   const folded = !name.startsWith('hero') && name !== 'full';
   const mids = cut.shots.slice(1).map((s) => s.start + fade / 2 - (folded ? fade : 0));
+  // A folded beat's seam is a transition too: the last `fade` of the encoded clip.
+  if (folded) mids.push(cut.shots.reduce((x, s) => x + s.dur, 0) - fade / 2);
   if (cut.loop && cut.shots.length > 1) {
     const total = cut.shots.reduce((a, s) => a + s.dur, 0);
     mids.push(total - fade / 2);

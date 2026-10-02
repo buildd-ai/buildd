@@ -178,7 +178,8 @@ function build(cut: Cut, root: HTMLElement): Built[] {
       position: 'absolute', width: '72px', height: '72px', marginLeft: '-36px', marginTop: '-36px',
       border: `4px solid ${ACCENT}`, boxShadow: `4px 4px 0 0 ${P.shadow}`, opacity: '0', boxSizing: 'border-box', zIndex: '6',
     }, layer);
-    el('div', { position: 'absolute', left: '50%', top: '50%', width: '14px', height: '14px', marginLeft: '-7px', marginTop: '-7px', background: ACCENT }, tap);
+    const dot = el('div', { position: 'absolute', left: '50%', top: '50%', width: '14px', height: '14px', marginLeft: '-7px', marginTop: '-7px', background: ACCENT }, tap);
+    dot.dataset.dot = '1';
     return { shot, layer, body, imgs, fx, fleet, motion, chips, tap, place: captionPlace(cut, shot) };
   });
 }
@@ -338,9 +339,17 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
     }
   });
   const tap = tapAt(shot.taps, local);
-  if (tap) {
+  const dot = b.tap.querySelector<HTMLElement>('[data-dot]');
+  if (tap?.rect) {
+    // Outline the control just outside its edge, pulsing in; nothing lands on the label.
+    const a = toFrame(tap.rect.x, tap.rect.y), z = toFrame(tap.rect.x + tap.rect.w, tap.rect.y + tap.rect.h);
+    const pad = 6 + 10 * (tap.scale - 1);
+    Object.assign(b.tap.style, { left: `${a.x - pad}px`, top: `${a.y - pad}px`, width: `${z.x - a.x + 2 * pad}px`, height: `${z.y - a.y + 2 * pad}px`, marginLeft: '0', marginTop: '0', opacity: String(tap.opacity), transform: 'none' });
+    if (dot) dot.style.display = 'none';
+  } else if (tap) {
     const f = toFrame(tap.x, tap.y);
-    Object.assign(b.tap.style, { left: `${f.x}px`, top: `${f.y}px`, opacity: String(tap.opacity), transform: `scale(${tap.scale})` });
+    Object.assign(b.tap.style, { left: `${f.x}px`, top: `${f.y}px`, width: '72px', height: '72px', marginLeft: '-36px', marginTop: '-36px', opacity: String(tap.opacity), transform: `scale(${tap.scale})` });
+    if (dot) dot.style.display = 'block';
   } else {
     b.tap.style.opacity = '0';
   }

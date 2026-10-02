@@ -69,7 +69,8 @@ export type CamKey = { at: number; cx: number; cy: number; zoom: number };
 /** `fade`: how long this still dissolves in over the last (default SWAP_FADE); 0 cuts, for a UI that jumps on a tap. */
 export type ShotImage = { src: string; at: number; width: number; height: number; fade?: number };
 
-export type Tap = { at: number; x: number; y: number };
+/** A tap at (x, y). With `rect` (the control tapped) the mark outlines the control, so it never sits on its label. */
+export type Tap = { at: number; x: number; y: number; rect?: Rect };
 
 export type Shot = {
   id: string;
@@ -270,12 +271,12 @@ export function captionsAt(shot: { dur: number; caption?: Shot['caption'] }, loc
 }
 
 /** A tap marker: a square that settles onto the target and fades. Null when no tap is live. */
-export function tapAt(taps: Tap[] | undefined, local: number): { x: number; y: number; opacity: number; scale: number } | null {
+export function tapAt(taps: Tap[] | undefined, local: number): { x: number; y: number; opacity: number; scale: number; rect?: Rect } | null {
   for (const tap of taps ?? []) {
     const u = (local - tap.at) / TAP_LIFE;
     if (u < 0 || u > 1) continue;
     const opacity = u < 0.2 ? ease(u / 0.2) : 1 - ease((u - 0.2) / 0.8);
-    return { x: tap.x, y: tap.y, opacity, scale: 1.6 - 0.6 * ease(u / 0.35) };
+    return { x: tap.x, y: tap.y, opacity, scale: 1.6 - 0.6 * ease(u / 0.35), ...(tap.rect ? { rect: tap.rect } : {}) };
   }
   return null;
 }

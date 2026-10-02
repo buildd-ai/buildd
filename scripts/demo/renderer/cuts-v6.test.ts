@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { layersAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { layersAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars, verifyAt } from './motion-model';
 
@@ -23,6 +23,8 @@ const BOXES: Record<string, Rect[]> = {
   'kit-approval-confirm': [R(0.16, 0.8, 0.07, 0.03)],
   'approval-card': [R(0.15, 0.55, 0.47, 0.29)],
   'approval-draft-criteria': [R(0.25, 0.62, 0.35, 0.1)],
+  // Real proportions (s11-deck at 1440x810 CSS): Looks right is 376 x 57.
+  'deck-looks-right': [R(724 / 1440, 715 / 810, 376 / 1440, 57 / 810)],
   'kit-approval-edit': [R(0.24, 0.8, 0.05, 0.03)],
 };
 const fake: Stills = {
@@ -172,6 +174,13 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
     const used = LOOKS[0].beats.flatMap((c) => c.shots.map((s) => s.id));
     expect(new Set(used).size).toBe(used.length);
     expect(film.shots.map((s) => s.id).filter((id) => !used.includes(id)).sort()).toEqual(['ask', 'board', 'edit', 'reads']);
+  });
+  test('review never crops what it lights: every lit rect fits the frame width at the camera\'s zoom', () => {
+    for (const look of LOOKS) {
+      const review = look.beats.find((c) => c.name.startsWith('beat-review'))!.shots.find((x) => x.id === 'review')!;
+      const zoom = Math.max(...review.camera!.map((k) => k.zoom));
+      for (const k of review.spot!) for (const r of k.rects) if (k.dim > 0) expect(r.w * zoom).toBeLessThanOrEqual(1 + 1e-6);
+    }
   });
   test('fleet holds the runner table (the machines), not a zoom onto the stat', () => {
     for (const look of LOOKS) {
@@ -328,6 +337,15 @@ describe('verifyAt', () => {
 test('v6x hero comes in both themes', () => {
   expect(v6xHero(fake).theme).toBe('dark');
   expect(v6xHero(fake, 'light').theme).toBe('light');
+});
+
+test('a tap on a control outlines the control instead of stamping a square over its label', () => {
+  for (const c of [v6aFilm(fake), ...v6aBeats(fake), ...v6aBeats(fake, { mobile: true })]) for (const sh of c.shots) for (const tap of sh.taps ?? []) {
+    const on = (sh.controls ?? []).find((r) => tap.x >= r.x && tap.x <= r.x + r.w && tap.y >= r.y && tap.y <= r.y + r.h);
+    if (on) expect(tap.rect).toEqual(on);
+  }
+  const t = tapAt([{ at: 1, x: 0.5, y: 0.5, rect: R(0.4, 0.45, 0.2, 0.1) }], 1.1)!;
+  expect(t.rect).toEqual(R(0.4, 0.45, 0.2, 0.1));
 });
 
 describe('dip transitions: two dense screens never share a frame', () => {

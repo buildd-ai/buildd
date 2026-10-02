@@ -24,7 +24,8 @@ describe('clipMeta: crossfade midpoints in the clip\'s own time', () => {
     const m = clipMeta('spec', { loop: false, shots }, 0.8);
     expect(m.folded).toBe(true);
     expect(m.loop).toBe(true);
-    expect(m.crossfades.map((x) => +x.toFixed(2))).toEqual([4.1]);
+    // Between the shots, and the folded seam's own midpoint (encoded length = sum of shots = 9).
+    expect(m.crossfades.map((x) => +x.toFixed(2))).toEqual([4.1, 8.6]);
   });
   test('a hero is a true loop from t = 0: crossfades at start + fade/2', () => {
     const m = clipMeta('hero', { loop: true, shots: [{ start: 0, dur: 13.2 }] }, 0.8);
