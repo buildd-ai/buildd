@@ -4,7 +4,11 @@
  *
  *   bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…]
  *       [--rotate] [--remove] [--dry-run] [--server <buildd url>] [--worker-server <url>]
- *       [--url <worker base url>] [--print-token] [--model-proxy-url <url>]
+ *       [--url <worker base url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>]
+ *
+ * --name deploys the Worker under another name, with its own snapshot bucket
+ * (<name>-snapshots), from a generated copy of wrangler.jsonc. Pass the same
+ * --name on every later run against that deployment.
  *
  * Env:
  *   BUILDD_API_KEY         admin-level buildd API key (reads the workspace, sets its webhook,
@@ -27,10 +31,12 @@
  */
 import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { SNAPSHOT_BUCKET, describePlan, planDeploy, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
+import { SNAPSHOT_BUCKET, deployNames, describePlan, planDeploy, renderWranglerConfig, type DeployNames, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 const APP_DIR = join(dirname(new URL(import.meta.url).pathname), '..');
-const WORKER_NAME = 'buildd-cloud-runner';
+/** Generated next to wrangler.jsonc so its relative image paths still resolve; gitignored. */
+const GENERATED_CONFIG = 'wrangler.generated.jsonc';
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
 interface Args {
@@ -44,11 +50,12 @@ interface Args {
   workerServer?: string;
   url?: string;
   modelProxyUrl?: string;
+  name?: string;
 }
 
 function parseArgs(argv: string[]): Args {
   const a: Args = { rotate: false, remove: false, dryRun: false, printToken: false };
-  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url', '--model-proxy-url']);
+  const takesValue = new Set(['--workspace', '--runner-key', '--server', '--worker-server', '--url', '--model-proxy-url', '--name']);
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (takesValue.has(k)) {
@@ -60,6 +67,7 @@ function parseArgs(argv: string[]): Args {
       if (k === '--worker-server') a.workerServer = v;
       if (k === '--url') a.url = v;
       if (k === '--model-proxy-url') a.modelProxyUrl = v;
+      if (k === '--name') a.name = v;
     } else if (k === '--rotate') a.rotate = true;
     else if (k === '--remove') a.remove = true;
     else if (k === '--dry-run') a.dryRun = true;
@@ -75,7 +83,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 function readUsage(): string {
-  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>]';
+  return 'usage: bun apps/cloud-runner/scripts/deploy.ts --workspace <id|name> [--runner-key bld_…] [--rotate] [--remove] [--dry-run] [--server <url>] [--worker-server <url>] [--url <worker url>] [--print-token] [--model-proxy-url <url>] [--name <worker name>]';
 }
 
 function die(msg: string): never {
@@ -138,8 +146,10 @@ function wranglerEnv(cf: { apiToken: string; accountId: string }): Record<string
   return env;
 }
 
+let configArgs: string[] = [];
+
 async function wrangler(args: string[], env: Record<string, string>, stdin?: string): Promise<{ code: number; out: string }> {
-  const proc = Bun.spawn(['bunx', 'wrangler', ...args], {
+  const proc = Bun.spawn(['bunx', 'wrangler', ...args, ...configArgs], {
     cwd: APP_DIR, env, stdin: stdin === undefined ? 'ignore' : new Blob([stdin]), stdout: 'pipe', stderr: 'pipe',
   });
   const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
@@ -158,14 +168,14 @@ async function listWorkerSecrets(env: Record<string, string>): Promise<string[] 
   return list.map((s) => s.name);
 }
 
-async function workersDevUrl(cf: { apiToken: string; accountId: string }): Promise<string> {
+async function workersDevUrl(cf: { apiToken: string; accountId: string }, worker: string): Promise<string> {
   const res = await fetch(`${CF_API}/accounts/${cf.accountId}/workers/subdomain`, {
     headers: { Authorization: `Bearer ${cf.apiToken}` },
   });
   const body = (await res.json().catch(() => ({}))) as { result?: { subdomain?: string } };
   const sub = body.result?.subdomain;
   if (!res.ok || !sub) die(`could not read the account's workers.dev subdomain (HTTP ${res.status}); pass --url`);
-  return `https://${WORKER_NAME}.${sub}.workers.dev`;
+  return `https://${worker}.${sub}.workers.dev`;
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -178,6 +188,14 @@ async function main() {
   const runnerKey = args.runnerKey ?? process.env.BUILDD_RUNNER_API_KEY;
   if (runnerKey && runnerKey === adminKey) die('the runner key must not be the admin key: containers run untrusted code');
 
+  let names: DeployNames;
+  try { names = deployNames(args.name); } catch (err) { die((err as Error).message); }
+  if (names.custom) {
+    writeFileSync(join(APP_DIR, GENERATED_CONFIG), renderWranglerConfig(readFileSync(join(APP_DIR, 'wrangler.jsonc'), 'utf8'), names));
+    configArgs = ['--config', GENERATED_CONFIG];
+    console.log(`worker: ${names.worker} (bucket ${names.bucket}, config ${GENERATED_CONFIG})`);
+  }
+
   const workspace = await resolveWorkspace(server, adminKey, args.workspace!);
   console.log(`workspace: ${workspace.name} (${workspace.id})`);
 
@@ -189,7 +207,7 @@ async function main() {
     console.log(`cloudflare: account ${cf.accountId.slice(0, 4)}…${cf.accountId.slice(-4)} (token from ${cf.source})`);
     env = wranglerEnv(cf);
     secretNames = await listWorkerSecrets(env);
-    workerUrl ??= await workersDevUrl(cf);
+    workerUrl ??= await workersDevUrl(cf, names.worker);
   }
   workerUrl ??= workspace.webhookConfig?.url?.replace(/\/dispatch$/, '') ?? 'https://unknown.invalid';
 
@@ -211,11 +229,11 @@ async function main() {
   });
 
   console.log(`${args.dryRun ? 'plan (dry run, nothing changed)' : 'plan'}:`);
-  for (const line of describePlan(plan)) console.log(`  ${line}`);
+  for (const line of describePlan(plan, names)) console.log(`  ${line}`);
   if (!plan.ok) process.exit(1);
   if (args.dryRun) return;
 
-  for (const step of plan.steps) await execute(step, { server, adminKey, env });
+  for (const step of plan.steps) await execute(step, { server, adminKey, env, bucket: names.bucket });
 
   const tokenStep = plan.steps.find((s): s is Extract<DeployStep, { kind: 'put_secret' }> => s.kind === 'put_secret' && s.name === 'DISPATCH_TOKEN');
   if (tokenStep && args.printToken) console.log(`DISPATCH_TOKEN=${tokenStep.value}`);
@@ -223,14 +241,14 @@ async function main() {
   console.log(args.remove ? 'done: workspace detached from the cloud runner' : `done: ${workspace.name} dispatches to ${workerUrl}/dispatch`);
 }
 
-async function execute(step: DeployStep, ctx: { server: string; adminKey: string; env: Record<string, string> | null }) {
+async function execute(step: DeployStep, ctx: { server: string; adminKey: string; env: Record<string, string> | null; bucket: string }) {
   switch (step.kind) {
     case 'ensure_snapshot_bucket': {
-      console.log(`→ ensure R2 bucket ${SNAPSHOT_BUCKET.name}`);
-      const created = await wrangler(['r2', 'bucket', 'create', SNAPSHOT_BUCKET.name], ctx.env!);
+      console.log(`→ ensure R2 bucket ${ctx.bucket}`);
+      const created = await wrangler(['r2', 'bucket', 'create', ctx.bucket], ctx.env!);
       if (created.code !== 0 && !/already exists|already own/i.test(created.out)) die(`wrangler r2 bucket create failed:\n${created.out}`);
       for (const rule of SNAPSHOT_BUCKET.lifecycle) {
-        const r = await wrangler(['r2', 'bucket', 'lifecycle', 'add', SNAPSHOT_BUCKET.name, rule.id, rule.prefix, '--expire-days', String(rule.expireDays), '--force'], ctx.env!);
+        const r = await wrangler(['r2', 'bucket', 'lifecycle', 'add', ctx.bucket, rule.id, rule.prefix, '--expire-days', String(rule.expireDays), '--force'], ctx.env!);
         if (r.code !== 0 && !/already exists/i.test(r.out)) console.log(`  lifecycle rule ${rule.id} not set (set it by hand): ${r.out.trim().split('\n').at(-1)}`);
       }
       return;

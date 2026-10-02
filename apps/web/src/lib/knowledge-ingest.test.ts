@@ -153,7 +153,10 @@ mock.module('@buildd/core/knowledge-store', () => ({
 }));
 
 // Import AFTER mocks
-import { enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES, enqueueFullIngestJob, enqueueFullIngestJobDetailed } from './knowledge-ingest';
+import {
+  enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES, enqueueFullIngestJob, enqueueFullIngestJobDetailed,
+  enqueuePushIngestJobs, docsPathsFromPush, isPrMergeCommitMessage,
+} from './knowledge-ingest';
 import { QUEUED_FULL_STALL_MS, FULL_LEASE_MS, MAX_INGEST_ATTEMPTS } from './knowledge-ingest-lease';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -750,3 +753,123 @@ describe('enqueueFullIngestJob', () => {
   });
 });
 
+
+
+// ── Direct pushes to the default branch ──────────────────────────────────────
+describe('push ingest', () => {
+  beforeEach(resetAll);
+
+  const bound = () => {
+    selectResults = (table: any) => {
+      if (table === githubRepos) return [{ id: 'repo-uuid-1' }];
+      if (table === workspaces) return [{ id: 'ws-1' }];
+      return [];
+    };
+  };
+  const event = (over: Record<string, unknown> = {}) => ({
+    repoFullName: 'test-org/test-repo',
+    after: 'push-sha-1',
+    commits: [{ added: ['docs/a.md'], modified: ['docs/b.md', 'src/x.ts'], removed: ['docs/c.md'] }],
+    headCommitMessage: 'docs: strategy',
+    ...over,
+  });
+
+  it('docsPathsFromPush keeps docs paths only, deduped across commits', () => {
+    expect(docsPathsFromPush([
+      { added: ['docs/a.md', 'src/x.ts'] },
+      { modified: ['docs/a.md', 'README.md'], removed: ['docs/gone.md', 'bun.lock'] },
+    ]).sort()).toEqual(['README.md', 'docs/a.md', 'docs/gone.md']);
+  });
+
+  it('isPrMergeCommitMessage matches squash and merge commits only', () => {
+    expect(isPrMergeCommitMessage('feat: thing (#12)\n\nbody')).toBe(true);
+    expect(isPrMergeCommitMessage('Merge pull request #12 from a/b')).toBe(true);
+    expect(isPrMergeCommitMessage('docs: strategy')).toBe(false);
+    expect(isPrMergeCommitMessage('fix #12 later')).toBe(false);
+    expect(isPrMergeCommitMessage(null)).toBe(false);
+  });
+
+  it('enqueues one push diff job per bound workspace, seeded with the docs paths', async () => {
+    bound();
+    const out = await enqueuePushIngestJobs(event());
+    expect(out).toEqual({ jobIds: ['new-job-1'], fullEnqueued: 0 });
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values).toMatchObject({
+      workspaceId: 'ws-1', repo: 'test-org/test-repo', trigger: 'push', sha: 'push-sha-1', scope: 'diff', status: 'queued',
+    });
+    expect([...insertCalls[0].values.changedFiles].sort()).toEqual(['docs/a.md', 'docs/b.md', 'docs/c.md']);
+    expect(insertCalls[0].values.prNumber).toBeUndefined();
+  });
+
+  it('enqueues nothing for: no docs, branch deletion, zero sha, PR merge commit, unbound repo', async () => {
+    bound();
+    expect(await enqueuePushIngestJobs(event({ commits: [{ modified: ['src/x.ts'] }] }))).toEqual({ jobIds: [], fullEnqueued: 0 });
+    expect(await enqueuePushIngestJobs(event({ deleted: true }))).toEqual({ jobIds: [], fullEnqueued: 0 });
+    expect(await enqueuePushIngestJobs(event({ after: '0000000000000000000000000000000000000000' }))).toEqual({ jobIds: [], fullEnqueued: 0 });
+    expect(await enqueuePushIngestJobs(event({ headCommitMessage: 'docs: strategy (#9)' }))).toEqual({ jobIds: [], fullEnqueued: 0 });
+    selectResults = () => [];
+    expect(await enqueuePushIngestJobs(event())).toEqual({ jobIds: [], fullEnqueued: 0 });
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('a truncated commit list falls back to a full job instead of a partial diff', async () => {
+    bound();
+    const out = await enqueuePushIngestJobs(event({ size: 50 }));
+    expect(out).toEqual({ jobIds: [], fullEnqueued: 1 });
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values).toMatchObject({ workspaceId: 'ws-1', trigger: 'push', scope: 'full', status: 'queued' });
+  });
+
+  it('more docs than the diff cap falls back to a full job', async () => {
+    bound();
+    const added = Array.from({ length: MAX_DIFF_FILES + 1 }, (_, i) => `docs/f${i}.md`);
+    const out = await enqueuePushIngestJobs(event({ commits: [{ added }] }));
+    expect(out.fullEnqueued).toBe(1);
+    expect(insertCalls[0].values.scope).toBe('full');
+  });
+
+  describe('executing a push job', () => {
+    const pushJob = (changedFiles: string[]) => ({
+      ...baseJob, trigger: 'push', prNumber: null, sha: 'push-sha-1', changedFiles,
+    });
+
+    it('ingests docs at the pushed sha, deletes a path that 404s, and does no PR or backfill work', async () => {
+      namespaces = []; // no code index: a PR job would enqueue a backfill here
+      claimResult = [pushJob(['docs/a.md', 'docs/gone.md', 'src/x.ts'])];
+      contentsByPath = { 'docs/a.md': { content: '# Strategy\nnotes' } };
+
+      const out = await runDiffIngestJob('job-1');
+
+      expect(out.claimed && out.status).toBe('done');
+      expect(githubApiCalls.some(p => p.includes('/pulls/'))).toBe(false);
+      expect(githubApiCalls.every(p => p.includes('ref=push-sha-1'))).toBe(true);
+      expect(githubApiCalls).toHaveLength(2); // src/x.ts is not a docs path: never fetched
+      expect(upsertCalls.map(c => c.namespace)).toEqual(['ws-1:docs']);
+      expect(deleteBySourceCalls.some(c => c.namespace === 'ws-1:docs' && c.sourcePath === 'docs/gone.md')).toBe(true);
+      expect(insertCalls).toHaveLength(0);
+      expect(finalUpdate()).toMatchObject({
+        status: 'done',
+        stats: expect.objectContaining({ filesIngested: 1, filesDeleted: 1, backfillEnqueued: false }),
+      });
+    });
+
+    it('a non-404 GitHub failure marks the job as error', async () => {
+      claimResult = [pushJob(['docs/a.md'])];
+      githubApiError = new Error('GitHub API error: 500 boom');
+      const out = await runDiffIngestJob('job-1');
+      expect(out.claimed && out.status).toBe('error');
+      expect(finalUpdate()?.status).toBe('error');
+    });
+
+    it('escalates to a full job when the fetched bytes exceed the cap', async () => {
+      const paths = Array.from({ length: 5 }, (_, i) => `docs/big${i}.md`);
+      claimResult = [pushJob(paths)];
+      contentsByPath = Object.fromEntries(paths.map(f => [f, { content: 'x', size: 500 * 1024 }]));
+      const out = await runDiffIngestJob('job-1');
+      expect((out as any).status).toBe('done');
+      expect((finalUpdate()?.stats as any).escalated).toBe(true);
+      expect(upsertCalls).toHaveLength(0);
+      expect(insertCalls.some(c => c.values.scope === 'full')).toBe(true);
+    });
+  });
+});

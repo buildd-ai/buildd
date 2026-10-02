@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { WorkspaceReleaseConfig, ReleaseTrigger, ReleaseStrategy } from '@buildd/core/db/schema';
 import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { Select } from '@/components/ui/Select';
+import Chip, { type ChipTone } from '@/components/ui/Chip';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -78,19 +79,14 @@ function DeployStateBadge({ state }: { state: string | null | undefined }) {
   );
 }
 
+const RELEASE_TONES: Record<string, ChipTone> = {
+  completed: 'success',
+  failed: 'error',
+};
+
 function StatusBadge({ status }: { status: string | null | undefined }) {
   if (!status) return <span className="text-text-muted text-xs">unknown</span>;
-  const colorMap: Record<string, string> = {
-    completed: 'bg-status-success/15 text-status-success',
-    failed: 'bg-status-error/15 text-status-error',
-    skipped: 'bg-surface-4 text-text-muted',
-  };
-  const cls = colorMap[status] ?? 'bg-surface-4 text-text-muted';
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium ${cls}`}>
-      {status}
-    </span>
-  );
+  return <Chip tone={RELEASE_TONES[status] ?? 'muted'} variant="soft">{status}</Chip>;
 }
 
 export default function ReleaseSection({ workspaceId, teamId, initialReleaseConfig, effectiveTrigger, hasRepo }: Props) {

@@ -337,6 +337,14 @@ describe('summarizePrFixAttempts', () => {
     expect(ciRetriesUsed).toBe(2);
   });
 
+  it('does not spend the budget on an attempt the CLI rejected for its model id', () => {
+    const { ciRetriesUsed } = summarizePrFixAttempts([
+      row({ id: 'real', status: 'failed' }),
+      row({ id: 'rejected', status: 'failed', context: { modelRejection: { model: 'claude-sonnet-5-5' } } }),
+    ], 42);
+    expect(ciRetriesUsed).toBe(1);
+  });
+
   it('a manual Fix CI click starts a fresh budget', () => {
     const { ciRetriesUsed } = summarizePrFixAttempts([
       row({ id: '1', createdAt: '2026-01-01T00:00:00Z' }),

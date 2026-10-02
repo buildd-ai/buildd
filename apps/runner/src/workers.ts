@@ -48,6 +48,9 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
+import { CbmInjector, createCbmInjectionHook, isCbmInjectionEnabled, recordUnsupportedTrigger } from './cbm-injection';
+import { CbmGraphClient } from './cbm-graph-client';
+import { emptyCbmInjectionMetrics } from '@buildd/core/cbm-injection';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
@@ -69,6 +72,7 @@ import {
   flushStderrTrace,
   uploadSessionDiagnostics,
 } from './session-diagnostics';
+import { EvidenceWriter, buildWorkerSecretValues } from './evidence-writer';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
@@ -754,6 +758,17 @@ export class WorkerManager {
   // Call it for free text; use `.body()` for anything already parsed, so field
   // names (not string escaping) decide what the generic patterns may rewrite.
   private secretRedactors = new Map<string, SecretRedactor>();
+  /**
+   * CBM search injection, per live session (cbm-injection.ts). Kept off
+   * LocalWorker: the injector holds the session's searched symbols in memory,
+   * and LocalWorker is serialised to the UI. Only its counts reach the worker
+   * (`cbmInjection`) and resultMeta.
+   */
+  private cbmInjectors = new Map<string, CbmInjector>();
+  private cbmGraphClients = new Map<string, CbmGraphClient>();
+  // Per-worker BYO evidence writers (command_output / test_report). Built next
+  // to the redactor in startSession and dropped with it. Best-effort only.
+  private evidenceWriters = new Map<string, EvidenceWriter>();
 
   constructor(config: LocalUIConfig, resolver?: WorkspaceResolver) {
     this.config = config;
@@ -2484,7 +2499,13 @@ export class WorkerManager {
     spanPayload: Record<string, unknown>,
     closingTurnOutcome: 'declined' | `skipped:${string}`,
   ): Promise<void> {
-    const errMsg = error instanceof Error ? error.message : 'Unknown error';
+    // The CLI's model-id rejection is only ever on stderr; the thrown error is
+    // just the exit code. Name the id so the failure says what to fix.
+    const modelRejection = stderrCollector.unrecognizedModel;
+    const rawErrMsg = error instanceof Error ? error.message : 'Unknown error';
+    const errMsg = modelRejection
+      ? `[claude-code:unrecognized_model] ${JSON.stringify({ model: modelRejection.model })} — this runner's Claude Code does not recognise the model id (${rawErrMsg})`
+      : rawErrMsg;
     const errStack = error instanceof Error ? error.stack : undefined;
     console.error(`Worker ${worker.id} error:`, error);
     sessionLog(worker.id, 'error', 'session_error', `${errMsg}${errStack ? '\n' + errStack : ''}`, worker.taskId);
@@ -2537,6 +2558,10 @@ export class WorkerManager {
       ...(isBudgetError && { budgetExhausted: true }),
       ...(isSessionBudgetCap && { sessionBudgetCapped: true }),
       ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
+      ...(modelRejection && {
+        unrecognizedModel: true,
+        ...(modelRejection.model ? { rejectedModel: modelRejection.model } : {}),
+      }),
       ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
       resultMeta: {
         ...(provisionFailure ? { provisionFailure } : {}),
@@ -2749,16 +2774,26 @@ export class WorkerManager {
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
-    // Build a secret redactor for this worker from the BUILDD_API_KEY and any
-    // MCP credential values delivered during claim. Applies to milestones,
-    // currentAction, error traces, and the history archive before persistence.
-    const secretValues = [
-      { label: 'BUILDD_API_KEY', value: this.config.apiKey },
-      ...Object.entries(worker.mcpSecrets ?? {}).map(([label, value]) => ({ label, value })),
-      ...Object.entries(worker.roleEnvSecrets ?? {}).map(([label, value]) => ({ label, value })),
-    ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
+    // Build a secret redactor for this worker from the BUILDD_API_KEY and every
+    // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
+    // credentials — see buildWorkerSecretValues). Applies to milestones,
+    // currentAction, error traces, evidence bodies and the history archive.
+    const secretValues = buildWorkerSecretValues(this.config.apiKey, worker);
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
+    // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
+    // on a client that does not have the method.
+    this.evidenceWriters.set(worker.id, new EvidenceWriter({
+      workerId: worker.id,
+      taskId: task.id,
+      redact: redactWorkerSecrets,
+      deps: {
+        requestEvidenceUploadUrl: async (workerId, req) =>
+          (await (this.buildd as any).requestEvidenceUploadUrl?.(workerId, req)) ?? null,
+        confirmEvidenceUpload: async (workerId, evidenceId) =>
+          (await (this.buildd as any).confirmEvidenceUpload?.(workerId, evidenceId)) ?? false,
+      },
+    }));
 
     const inputStream = new MessageStream();
     const abortController = new AbortController();
@@ -4112,6 +4147,50 @@ export class WorkerManager {
       });
       if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
 
+      // CBM search injection (docs/design/cbm-search-injection.md). Claude
+      // workers with CBM enforced get a PostToolUse hook that answers their
+      // identifier searches from the graph; the runner's own graph client starts
+      // here in the background so it never sits on the agent's critical path.
+      // Codex has no post-tool seam, so its searches are only counted. A closing
+      // turn keeps the counts it already has and gets no hook.
+      let cbmInjector: CbmInjector | undefined;
+      if (!isClosingTurn) {
+        worker.cbmInjection = undefined;
+        if (isCodexTask) {
+          if (worker.cbmOutcome !== 'disabled') worker.cbmInjection = emptyCbmInjectionMetrics(false, 'unsupported_backend');
+        } else if (cbmEnforced && !cbmMountBlocked && worker.cbmOutcome === 'enforced' && cbmCacheDir) {
+          if (!isCbmInjectionEnabled()) {
+            worker.cbmInjection = emptyCbmInjectionMetrics(false, 'kill_switch');
+          } else try {
+            const injectRuntimeDir = ensureCbmRuntimeDir(cbmCacheDir, join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`));
+            const client = new CbmGraphClient({
+              binaryPath: cbmBinaryPath ?? cbmActivation.cbmBinaryPath!,
+              env: buildCbmMcpEntry(cwd, cbmCacheDir, injectRuntimeDir).env,
+              worktreePath: cwd,
+              ...(cbmSharedCache && cbmActivation.cbmProject ? { project: cbmActivation.cbmProject } : {}),
+              log: msg => console.warn(`[Worker ${worker.id}] ${msg}`),
+            });
+            client.start();
+            this.cbmGraphClients.set(worker.id, client);
+            cbmInjector = new CbmInjector({
+              graph: client,
+              decide: (facts, timeoutMs) => this.buildd.decideCbmInjection(worker.id, facts, timeoutMs),
+              worktreePath: cwd,
+              task: { kind: task.kind ?? null, category: (task as { category?: string | null }).category ?? null, pathManifest: task.pathManifest ?? null },
+            });
+            this.cbmInjectors.set(worker.id, cbmInjector);
+            worker.cbmInjection = cbmInjector.snapshot();
+          } catch (err) {
+            // Injection is an accelerator; it must never cost the task.
+            cbmInjector = undefined;
+            this.cbmInjectors.delete(worker.id);
+            this.cbmGraphClients.get(worker.id)?.stop();
+            this.cbmGraphClients.delete(worker.id);
+            console.warn(`[Worker ${worker.id}] CBM injection unavailable: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+
       // Block CBM tools that write to the repo or delete indexes. Applied
       // unconditionally: a codebase-memory server can also arrive via the SDK's own
       // project .mcp.json load (settingSources includes 'project'), where it never
@@ -4223,7 +4302,14 @@ export class WorkerManager {
               }]
             : []),
         ],
-        PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
+        PostToolUse: [
+          { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
+          // CBM search injection. Runs after the tool, resolves within 1.5s by
+          // its own budget; the timeout here is only a backstop.
+          ...(cbmInjector
+            ? [{ matcher: 'Bash|Grep', timeout: 5, hooks: [createCbmInjectionHook(cbmInjector)] }]
+            : []),
+        ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
@@ -4798,6 +4884,8 @@ export class WorkerManager {
         const outputTokens = totals?.outputTokens;
 
         // CBM observability: attach per-task metrics to resultMeta before completion.
+        const liveInjector = this.cbmInjectors.get(worker.id);
+        if (liveInjector) worker.cbmInjection = liveInjector.snapshot();
         if (worker.cbmOutcome !== undefined) {
           const cbmMetrics = buildCbmMetrics(worker)!;
           // Merge into resultMeta so all metrics travel together to the server.
@@ -5165,6 +5253,12 @@ export class WorkerManager {
         // itself produced.
         return;
       }
+      // BYO evidence: read the session's test report BEFORE the worktree can be
+      // removed below (error/abort sessions lose it). Upload is awaited later by
+      // drain(). Best-effort; never touches worker.status.
+      if (!bwrapRetryAfterCleanup) {
+        this.evidenceWriters.get(worker.id)?.queueTestReport(cwd);
+      }
       // Clean up session
       const session = this.sessions.get(worker.id);
       if (session) {
@@ -5220,6 +5314,22 @@ export class WorkerManager {
         // task's build wants. A no-op unless the wait budget expired.
         if (stopBackgroundCbmIndex(worker.id)) {
           console.log(`[Worker ${worker.id}] CBM: stopped the backgrounded index at teardown`);
+        }
+
+        // CBM search injection: keep its counts on the worker (a closing turn
+        // or a late completion still reports them), then end the runner's own
+        // graph server and its runtime dir. Before the cache dir goes, for the
+        // same reason as the indexer above.
+        const endedInjector = this.cbmInjectors.get(worker.id);
+        if (endedInjector) {
+          worker.cbmInjection = endedInjector.snapshot();
+          this.cbmInjectors.delete(worker.id);
+        }
+        const injectClient = this.cbmGraphClients.get(worker.id);
+        if (injectClient) {
+          injectClient.stop();
+          this.cbmGraphClients.delete(worker.id);
+          try { rmSync(join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`), { recursive: true, force: true }); } catch { /* best-effort */ }
         }
 
         // Clean up the per-worker CBM cache dir (ephemeral per design doc §4.2).
@@ -5305,6 +5415,17 @@ export class WorkerManager {
           console.warn(`[Worker ${worker.id}] session diagnostics failed (non-fatal): ${err instanceof Error ? err.message : err}`);
         }
       }
+
+      // BYO evidence: wait for in-flight command_output / test_report uploads. Never throws, never touches worker.status.
+      const evidenceWriter = this.evidenceWriters.get(worker.id);
+      if (evidenceWriter && !bwrapRetryAfterCleanup) {
+        try {
+          await evidenceWriter.drain();
+        } catch (err) {
+          console.warn(`[Worker ${worker.id}] evidence write failed (non-fatal): ${err instanceof Error ? err.message : err}`);
+        }
+      }
+      this.evidenceWriters.delete(worker.id);
 
       // Clean up the per-worker secret redactor now that the session is fully done.
       this.secretRedactors.delete(worker.id);
@@ -5742,6 +5863,15 @@ export class WorkerManager {
             worker.pendingActionEvents.push({ action: builddAction, ts: Date.now() });
           }
 
+          // CBM search injection: uptake windows and the already-edited set, or
+          // (Codex) the count of searches it could not answer. Never touches the
+          // CBM counters below — the runner's lookups are not agent calls.
+          const cbmInjector = this.cbmInjectors.get(worker.id);
+          if (cbmInjector) cbmInjector.observeToolCall(toolName, input);
+          else if (worker.cbmInjection?.disabledReason === 'unsupported_backend') {
+            recordUnsupportedTrigger(worker.cbmInjection, toolName, input);
+          }
+
           // CBM observability: count per-tool CBM calls and file-access tool calls.
           if (toolName.startsWith('mcp__codebase-memory__')) {
             const cbmTool = toolName.slice('mcp__codebase-memory__'.length);
@@ -5998,6 +6128,13 @@ export class WorkerManager {
           // Without it, five in six firings landed on successful output.
           const traces = scanToolResult(worker.id, text, source, {
             isError: block.is_error === true,
+          });
+          // BYO evidence: full redacted output of a failing Bash call.
+          // Fire-and-forget; drained at session end.
+          this.evidenceWriters.get(worker.id)?.onToolResult({
+            source,
+            isError: block.is_error === true,
+            text,
           });
           // Every non-zero Bash exit, not just the known patterns — so a red
           // test run or tsc leaves a record. See scanBashResult.

@@ -8,6 +8,7 @@ import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } fr
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
+import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
 import {
   fetchPrRetryGate,
   fetchCIFailureLogs,
@@ -45,7 +46,7 @@ import {
 import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
-import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
+import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
@@ -2084,6 +2085,24 @@ async function handleCheckSuiteFailure(
         }
         await dispatchNewTask(newTask, workspace);
         console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
+        // ci_job_log evidence (byo-evidence-storage AC-3). After dispatch, and
+        // never throws: evidence is diagnostics, the retry is the product.
+        const captureEvidence = () => captureCiJobLogEvidence({
+          installationId,
+          repoFullName: repository.full_name,
+          failedJobId: ciLogs.failedJobId,
+          workspaceId: retryTask.workspaceId,
+          retryTaskId: newTask.id,
+          parentTaskId: retryTask.parentTaskId,
+          workerId: worker.id,
+          prNumber: pr.number,
+        });
+        try {
+          after(captureEvidence);
+        } catch {
+          // Outside a request scope (tests, direct invocation) — run inline.
+          await captureEvidence();
+        }
         await appendPrActivity({
           installationId,
           repoFullName: repository.full_name,
@@ -2893,15 +2912,24 @@ function isDefaultBranch(branch: string | null | undefined, defaultBranch: strin
 }
 
 /**
- * `push`: commit messages on the default branch go to the revert ledger (a
- * `git revert` of a merge commit names its sha). Inert unless the GitHub App
- * subscribes to push events; the push-triggered workflow_run covers the head
- * commit either way.
+ * `push` to the default branch does two things:
+ *  - commit messages go to the revert ledger (a `git revert` of a merge commit
+ *    names its sha);
+ *  - docs files the push touched are ingested into the bound workspaces' `docs`
+ *    corpus, so a repo that is committed to directly (no merged PR) stays
+ *    searchable. See enqueuePushIngestJobs in lib/knowledge-ingest.ts.
+ *
+ * Inert unless the GitHub App subscribes to push events; the push-triggered
+ * workflow_run still covers the head commit for the revert ledger either way.
  */
 async function handlePushEvent(event: {
   ref?: string;
+  after?: string;
+  deleted?: boolean;
+  size?: number;
   repository?: { full_name?: string; default_branch?: string };
-  commits?: Array<{ id?: string; message?: string }>;
+  commits?: Array<{ id?: string; message?: string; added?: string[]; modified?: string[]; removed?: string[] }>;
+  head_commit?: { message?: string } | null;
 }): Promise<void> {
   const repo = event.repository?.full_name;
   const branch = event.ref?.startsWith('refs/heads/') ? event.ref.slice('refs/heads/'.length) : null;
@@ -2910,6 +2938,37 @@ async function handlePushEvent(event: {
     if (!c.id || !c.message) continue;
     await recordPrReverts({ repoFullName: repo, revertedBy: c.id, text: c.message })
       .catch(err => console.error(`[webhook] recordPrReverts failed for ${c.id} on ${repo}:`, err));
+  }
+
+  // Best-effort, like the merged-PR enqueue: never fails the webhook. The jobs
+  // run in after(); a lost run is reclaimed through the lease (see the
+  // pull_request handler's note on durability).
+  try {
+    const { jobIds } = await enqueuePushIngestJobs({
+      repoFullName: repo,
+      after: event.after ?? '',
+      size: event.size,
+      commits: event.commits ?? [],
+      headCommitMessage: event.head_commit?.message ?? event.commits?.at(-1)?.message ?? null,
+      deleted: event.deleted,
+    });
+    if (jobIds.length > 0) {
+      try {
+        after(() =>
+          Promise.allSettled(
+            jobIds.map(id =>
+              runDiffIngestJob(id).catch(err =>
+                console.error(`[knowledge-ingest] job ${id} execution failed:`, err),
+              ),
+            ),
+          ),
+        );
+      } catch (err) {
+        console.warn('[knowledge-ingest] after() unavailable; jobs remain queued:', err);
+      }
+    }
+  } catch (err) {
+    console.error('[knowledge-ingest] push enqueue failed (non-fatal):', err);
   }
 }
 

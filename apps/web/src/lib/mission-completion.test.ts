@@ -1445,6 +1445,8 @@ describe('canCompleteMission — the surface-audit gate', () => {
     expect(d.reason).toContain('apps/web/src/components/Card.tsx');
     expect(d.reason).toContain('[surface audit]');
     expect(d.reason).toContain('surfaceAuditWaiver');
+    // The sheet shows the files without a second read of the diff.
+    expect(d.surfaceAuditPaths).toEqual(['apps/web/src/components/Card.tsx']);
   });
 
   it('completes a backend-only mission (gate not required)', async () => {

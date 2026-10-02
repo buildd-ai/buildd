@@ -186,6 +186,54 @@ export function isAuditStorageKey(key: unknown): boolean {
 }
 
 /**
+ * `{prefix}/{workspaceId}/{rootTaskId}/{taskId}/{workerId}/{kind}/{filename}`
+ *
+ * Evidence object key for task run diagnostics (transcripts, logs, test reports).
+ * All segments are validated: the filename must be a safe key segment, not a
+ * caller-supplied path. The prefix comes from the backend config.
+ *
+ * All evidence objects are server-derived and never accepted from a caller, so
+ * every segment is validated rather than sanitised.
+ */
+export function buildEvidenceObjectKey(
+  prefix: unknown,
+  workspaceId: unknown,
+  rootTaskId: unknown,
+  taskId: unknown,
+  workerId: unknown,
+  kind: unknown,
+  filename: unknown,
+): string {
+  const safePrefix = assertSafeKeySegment(prefix, 'prefix');
+  const ws = assertSafeKeySegment(workspaceId, 'workspaceId');
+  const rootTask = assertSafeKeySegment(rootTaskId, 'rootTaskId');
+  const task = assertSafeKeySegment(taskId, 'taskId');
+  const worker = assertSafeKeySegment(workerId, 'workerId');
+  const safeKind = assertSafeKeySegment(kind, 'kind');
+  const safeFilename = assertSafeKeySegment(filename, 'filename');
+  return assertNormalizedObjectKey(
+    `${safePrefix}/${ws}/${rootTask}/${task}/${worker}/${safeKind}/${safeFilename}`,
+  );
+}
+
+/**
+ * `{prefix}/.buildd-probe/{probeId}`
+ *
+ * The object a backend verification writes, reads back and deletes. The
+ * `.buildd-probe` segment starts with a dot on purpose: it cannot collide with
+ * a workspace id, and a lifecycle rule can target the prefix. It is therefore
+ * the one key `assertNormalizedObjectKey` would refuse, so it is asserted here
+ * segment by segment instead.
+ */
+export const EVIDENCE_PROBE_SEGMENT = '.buildd-probe';
+
+export function buildEvidenceProbeKey(prefix: unknown, probeId: unknown): string {
+  const safePrefix = assertSafeKeySegment(prefix, 'prefix');
+  const id = assertSafeKeySegment(probeId, 'probeId');
+  return `${safePrefix}/${EVIDENCE_PROBE_SEGMENT}/${id}`;
+}
+
+/**
  * `roles/<slug>/<configHash>.json`
  *
  * Runners fetch and load these bundles, so the slug must be a validated

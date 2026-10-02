@@ -55,6 +55,7 @@ import { secrets, teams } from './db/schema';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { decrypt } from './secrets';
 import { isInferenceKeyPolicy, type InferenceKeyPolicy } from './inference-key-policy';
+import { ROUTES, routeAuthHeaders } from '@builddai/ai-kit/models';
 
 /** Providers with an API-key form. */
 export type InferenceKeyProvider = 'anthropic' | 'openai' | 'openrouter';
@@ -273,15 +274,9 @@ export async function verifyProviderKey(
   opts: { fetcher?: Fetcher; timeoutMs?: number } = {},
 ): Promise<{ health: ProviderKeyHealth; error: string | null }> {
   const fetcher = opts.fetcher ?? ((u, i) => fetch(u, i));
-  const req: Record<InferenceKeyProvider, { url: string; headers: Record<string, string> }> = {
-    anthropic: {
-      url: 'https://api.anthropic.com/v1/models?limit=1',
-      headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-    },
-    openai: { url: 'https://api.openai.com/v1/models', headers: { Authorization: `Bearer ${key}` } },
-    openrouter: { url: 'https://openrouter.ai/api/v1/key', headers: { Authorization: `Bearer ${key}` } },
-  };
-  const { url, headers } = req[provider];
+  const route = ROUTES[provider];
+  const url = `${route.baseURL}${route.verifyPath}`;
+  const headers = { ...routeAuthHeaders(provider, key), ...route.headers };
   const scrub = (s: string) => (key ? s.split(key).join('[key]') : s).slice(0, 200);
   try {
     const res = await fetcher(url, { method: 'GET', headers, signal: AbortSignal.timeout(opts.timeoutMs ?? 5000) });

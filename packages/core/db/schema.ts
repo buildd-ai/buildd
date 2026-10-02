@@ -279,6 +279,13 @@ export interface WorkspaceGitConfig {
   // batched-PR default, not the legacy per-task one.
   branchStrategy?: BranchStrategy;
 
+  // Other same-team workspaces whose `docs` corpus this workspace's agents may
+  // also search (recall / query_knowledge and the claim-time knowledge context).
+  // A request, not a grant: resolveLinkedDocsWorkspaces (apps/web/src/lib/
+  // linked-knowledge.ts) only honours an id the calling account could reach
+  // anyway — same team, not sensitive, token restriction respected.
+  linkedKnowledgeWorkspaces?: string[];
+
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
   commitPrefix?: string;              // '[JIRA-123]', null
@@ -788,6 +795,13 @@ export interface CbmMetrics {
   grepCount: number;
   /** Glob tool call count for this task. */
   globCount: number;
+  /**
+   * CBM search injection (docs/design/cbm-search-injection.md): the runner's
+   * own graph lookups after an agent's identifier search, and what it appended.
+   * NOT agent CBM calls — never in `toolCalls` / `totalCbmCalls`. Counts and
+   * labels only. Absent on sessions where injection never ran.
+   */
+  injection?: import('../cbm-injection').CbmInjectionMetrics;
 }
 
 /**
@@ -2168,6 +2182,96 @@ export const visualShotReviews = pgTable('visual_shot_reviews', {
     .where(sql`superseded_at IS NULL`),
 }));
 
+// ── Evidence storage (docs/specs/byo-evidence-storage.md) ──────────────────
+
+/**
+ * BYO evidence storage backend configuration. Holds S3-compatible bucket
+ * settings and verification state. Credentials are stored separately in `secrets`
+ * with purpose `evidence_storage_credential`.
+ */
+export const evidenceBackends = pgTable('evidence_backends', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Nullable: team-scoped default when null, workspace-specific override when set
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  // Provider type: s3, r2, s3_compatible, or buildd_default (env-configured)
+  provider: text('provider').notNull().$type<'s3' | 'r2' | 's3_compatible' | 'buildd_default'>(),
+  // S3 endpoint URL; set for s3_compatible and some r2 setups
+  endpoint: text('endpoint'),
+  // AWS region or equivalent
+  region: text('region'),
+  // Bucket name
+  bucket: text('bucket').notNull(),
+  // Object key prefix within the bucket
+  prefix: text('prefix'),
+  // Whether to use path-style addressing (required for some S3-compatible services)
+  forcePathStyle: boolean('force_path_style').default(false).notNull(),
+  // Foreign key to secrets table, purpose = evidence_storage_credential
+  credentialSecretId: uuid('credential_secret_id').references(() => secrets.id, { onDelete: 'set null' }),
+  // Server-side encryption: none | AES256 | aws:kms
+  sse: text('sse').notNull().$type<'none' | 'AES256' | 'aws:kms'>().default('none'),
+  // KMS key ID (set only when sse = aws:kms)
+  kmsKeyId: text('kms_key_id'),
+  // Retention policy: days to keep objects before deletion
+  retentionDays: integer('retention_days').notNull().default(30),
+  // Maximum bytes per task's evidence before dropping middle segments
+  maxBytesPerTask: integer('max_bytes_per_task').notNull().default(8388608), // 8 MiB default
+  // Backend health: unverified | ok | failing
+  status: text('status').notNull().$type<'unverified' | 'ok' | 'failing'>().default('unverified'),
+  // Last successful verification
+  lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
+  // Last verification error message
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  teamIdx: index('evidence_backends_team_idx').on(t.teamId),
+  workspaceTeamIdx: index('evidence_backends_workspace_team_idx').on(t.workspaceId, t.teamId),
+}));
+
+/**
+ * Evidence objects: pointers to blobs in the configured evidence backend.
+ * The actual content (logs, transcripts, test reports) lives in the bucket;
+ * this table holds metadata, upload state, and indexing state.
+ */
+export const evidenceObjects = pgTable('evidence_objects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // Root task in a retry chain; for lineage and grouping
+  rootTaskId: uuid('root_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  // PR number if this evidence came from a CI failure on a buildd PR
+  prNumber: integer('pr_number'),
+  // Kind of evidence: command_output | test_report | ci_job_log | transcript | pr_diff
+  kind: text('kind').notNull().$type<'command_output' | 'test_report' | 'ci_job_log' | 'transcript' | 'pr_diff'>(),
+  // Foreign key to evidence_backends
+  backendId: uuid('backend_id').references(() => evidenceBackends.id, { onDelete: 'set null' }),
+  // Object key in the bucket (e.g., evidence/{workspaceId}/{rootTaskId}/{taskId}/{workerId}/{kind}/{ts}-{seq}.jsonl.gz)
+  objectKey: text('object_key').notNull(),
+  // Size in bytes
+  bytes: bigint('bytes', { mode: 'number' }).notNull(),
+  // SHA256 hash of the uncompressed object
+  sha256: text('sha256'),
+  // Upload state: pending | stored | failed | unreadable
+  uploadState: text('upload_state').notNull().$type<'pending' | 'stored' | 'failed' | 'unreadable'>().default('pending'),
+  // Indexing state: skipped | queued | indexed | failed
+  indexState: text('index_state').notNull().$type<'skipped' | 'queued' | 'indexed' | 'failed'>().default('skipped'),
+  // When the object will expire (created_at + retention_days)
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceIdx: index('evidence_objects_workspace_idx').on(t.workspaceId),
+  taskIdx: index('evidence_objects_task_idx').on(t.taskId),
+  rootTaskIdx: index('evidence_objects_root_task_idx').on(t.rootTaskId),
+  workerIdx: index('evidence_objects_worker_idx').on(t.workerId),
+  prNumberIdx: index('evidence_objects_pr_number_idx').on(t.prNumber),
+  backendIdx: index('evidence_objects_backend_idx').on(t.backendId),
+  // Task lineage: find all evidence for a task and its retry chain
+  taskLineageIdx: index('evidence_objects_task_lineage_idx').on(t.workspaceId, t.rootTaskId, t.taskId),
+}));
+
 // Mission notes — lightweight append-only feed for agent↔user communication
 /**
  * Review feedback on a PR, captured for RETRIEVAL rather than for the activity
@@ -2736,7 +2840,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -3186,7 +3290,7 @@ export const knowledgeEdges = pgTable('knowledge_edges', {
 
 // Workspace Knowledge Management v2 §3.2 — per-workspace ingest job queue.
 // One queue for incremental (diff) and full runs. Enqueued by the GitHub
-// webhook on merged PRs; diff jobs execute serverless via the contents API,
+// webhook on merged PRs and on direct pushes to the default branch; diff jobs execute serverless via the contents API,
 // full jobs (backfill / escalated large diffs) run on the runner fleet.
 // Idempotent enqueue via the partial unique index on (workspace_id, sha, scope)
 // — failed jobs (status = 'error') don't block a retry insert.
@@ -3201,13 +3305,17 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   /** "owner/name" — denormalized so jobs survive repo re-binding. */
   repo: text('repo').notNull(),
-  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
+  trigger: text('trigger').notNull().$type<'pr_merged' | 'push' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
   /** Merge SHA (diff jobs) or target SHA (full jobs). */
   sha: text('sha'),
   prNumber: integer('pr_number'),
   scope: text('scope').notNull().$type<'diff' | 'full'>(),
   status: text('status').default('queued').notNull().$type<'queued' | 'running' | 'done' | 'error'>(),
-  /** File paths considered by this job (kept + deleted), for the health UI. */
+  /**
+   * File paths considered by this job (kept + deleted), for the health UI.
+   * A `push` job is seeded with its docs paths at enqueue (the push payload is
+   * the only record of them) and the executor reads them back from here.
+   */
   changedFiles: jsonb('changed_files').$type<string[]>(),
   /** Run stats: filesIngested / filesSkipped / filesDeleted / chunksUpserted / escalated… */
   stats: jsonb('stats').$type<Record<string, unknown>>(),
@@ -3399,6 +3507,20 @@ export const initiativesRelations = relations(initiatives, ({ one, many }) => ({
   ownerUser: one(users, { fields: [initiatives.ownerUserId], references: [users.id] }),
   missions: many(missions),
   artifacts: many(artifacts),
+}));
+
+export const evidenceBackendsRelations = relations(evidenceBackends, ({ one }) => ({
+  team: one(teams, { fields: [evidenceBackends.teamId], references: [teams.id] }),
+  workspace: one(workspaces, { fields: [evidenceBackends.workspaceId], references: [workspaces.id] }),
+  credentialSecret: one(secrets, { fields: [evidenceBackends.credentialSecretId], references: [secrets.id] }),
+}));
+
+export const evidenceObjectsRelations = relations(evidenceObjects, ({ one }) => ({
+  workspace: one(workspaces, { fields: [evidenceObjects.workspaceId], references: [workspaces.id] }),
+  task: one(tasks, { fields: [evidenceObjects.taskId], references: [tasks.id] }),
+  rootTask: one(tasks, { fields: [evidenceObjects.rootTaskId], references: [tasks.id] }),
+  worker: one(workers, { fields: [evidenceObjects.workerId], references: [workers.id] }),
+  backend: one(evidenceBackends, { fields: [evidenceObjects.backendId], references: [evidenceBackends.id] }),
 }));
 
 export const missionNotesRelations = relations(missionNotes, ({ one }) => ({

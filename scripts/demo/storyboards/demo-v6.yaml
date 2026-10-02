@@ -62,7 +62,7 @@ steps:
     goto: /app/chat/{C1}
     waitFor: [approval-card, kit-approval-edit]
     click: kit-approval-edit
-    type: { into: '[data-testid="chat-composer"] textarea', text: "also done when a EUR invoice pays end to end.", frames: 14, append: true }
+    type: { into: '[data-testid="chat-composer"] textarea', text: "also done when receipts show the paid currency.", frames: 14, append: true }
     hold: 600
 
   # 3. Confirmed (t=0). Unclipped too: the rule is Maya's own words, so the

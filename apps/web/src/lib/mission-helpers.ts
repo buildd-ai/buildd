@@ -206,6 +206,29 @@ export function unmetDependencyIds(
   });
 }
 
+/**
+ * For `task`'s unmet dependencies that finished their work, the open PR each
+ * is waiting to merge (dependency id → PR number). What the task is really
+ * waiting on. A dependency still running, or missing, is absent here; it is
+ * still in `unmetDependencyIds`.
+ */
+export function unmetDependencyPrs(
+  task: { dependsOn?: string[] | null },
+  byId: ReadonlyMap<string, DependencyRow>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const id of unmetDependencyIds(task, byId)) {
+    for (const w of byId.get(id)?.workers ?? []) {
+      const n = (w as { prNumber?: number | null }).prNumber;
+      if (typeof n === 'number' && w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'closed') {
+        out[id] = n;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 function ms(d: Date | string | null | undefined): number | null {
   if (!d) return null;
   const t = new Date(d).getTime();
@@ -217,7 +240,7 @@ function ms(d: Date | string | null | undefined): number | null {
  * floor, and the moment its last dependency was satisfied. Null when the row
  * carries no timestamps (callers that did not select them get no grace).
  */
-function claimableSince(
+export function claimableSince(
   task: { createdAt?: Date | string | null; startAt?: Date | string | null; dependsOn?: string[] | null },
   byId: ReadonlyMap<string, DependencyRow>,
 ): number | null {
@@ -350,13 +373,16 @@ export function deriveTaskHealthSignal(
  * could not move. `deriveMissionStateView` (`lib/mission-state-view.ts`) is
  * the only producer of a `MissionDisplayState`.
  */
-export type MissionDisplayState = 'held' | 'local' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
+export type MissionDisplayState = 'held' | 'local' | 'stranded' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
 
 const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
   held: 'HELD',
   // executor='local': the tasks run in a person's own session. Active work,
   // never HELD — held is the pause, and a local mission is not paused.
   local: 'LOCAL',
+  // executor='local' with claimable work and no session for
+  // LOCAL_SESSION_QUIET_MS (lib/local-strand.ts): nothing will claim it.
+  stranded: 'STRANDED',
   blocked: 'BLOCKED',
   // "STALLED", not "IDLE" (docs/design/mission-feed-mobile-continuity.md, one
   // vocabulary): the Home/list health chip already said STALLED for the same

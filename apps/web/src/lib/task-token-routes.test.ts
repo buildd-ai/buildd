@@ -22,6 +22,8 @@ const OPTED_IN = [
   'apps/web/src/app/api/mcp/route.ts',
   'apps/web/src/app/api/tasks/[id]/route.ts',
   'apps/web/src/app/api/workers/[id]/artifacts/route.ts',
+  'apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts',
+  'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',
   'apps/web/src/app/api/workers/[id]/route.ts',

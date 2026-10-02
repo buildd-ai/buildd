@@ -10,6 +10,7 @@ import {
   isUiSurfacePath,
   isRenderedSurfaceChange,
   surfaceAuditMissingReason,
+  surfaceAuditHeadline,
   planSurfaceFixFollowUp,
   surfaceAuditRound,
   surfaceAuditTitle,
@@ -310,5 +311,17 @@ describe('surfaceAuditMissingReason', () => {
   it('caps the list and says how many more', () => {
     const r = surfaceAuditMissingReason(['1', '2', '3', '4', '5'], 'manifest');
     expect(r).toContain('its tasks declare 1, 2, 3 and 2 more');
+  });
+});
+
+describe('surfaceAuditHeadline', () => {
+  it('is one plain sentence with the file count and no API or tool names', () => {
+    expect(surfaceAuditHeadline(9)).toBe('This mission changed 9 UI files and no visual audit has run.');
+    expect(surfaceAuditHeadline(1)).toBe('This mission changed 1 UI file and no visual audit has run.');
+    for (const n of [0, 1, 9]) expect(surfaceAuditHeadline(n)).not.toMatch(/surfaceAuditWaiver|manage_missions|\[surface audit\]/);
+  });
+
+  it('does not claim a count when the files are unknown', () => {
+    expect(surfaceAuditHeadline(0)).toBe('This mission changed UI and no visual audit has run.');
   });
 });

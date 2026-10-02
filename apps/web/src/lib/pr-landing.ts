@@ -55,6 +55,7 @@ import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
 import type { LandingAlertInput } from '@/lib/pr-landing-alert';
+import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import {
   readLandingMarker,
   writeLandingMarker,
@@ -186,10 +187,13 @@ export interface LandPrDeps {
 
 // ── Constants and pure pieces ──────────────────────────────────────────────────
 
-/** A head a refresh produced lands if the base gained at most this many commits since. */
-export const TREADMILL_MAX_BASE_COMMITS = 3;
-/** Refreshes per landing cycle before a person is asked. */
-export const TREADMILL_MAX_REFRESHES = 3;
+/**
+ * A head a refresh produced lands if the base gained at most this many commits
+ * since. Public default; read the live value with `policyValue('treadmillMaxBaseCommits')`.
+ */
+export const TREADMILL_MAX_BASE_COMMITS = POLICY_DEFAULTS.treadmillMaxBaseCommits;
+/** Refreshes per landing cycle before a person is asked. Public default; live value via `policyValue('treadmillMaxRefreshes')`. */
+export const TREADMILL_MAX_REFRESHES = POLICY_DEFAULTS.treadmillMaxRefreshes;
 
 const LOCKFILE = /(^|\/)(bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$|\.lock$/;
 const SCHEMA_FILE = 'packages/core/db/schema.ts';
@@ -217,8 +221,9 @@ export function evaluateTreadmillBound(input: {
   if (!marker || marker.pendingHeadSha !== liveHeadSha) {
     return { accepted: false, reason: 'this head was not produced by a platform refresh' };
   }
-  if (baseCommitsSince > TREADMILL_MAX_BASE_COMMITS) {
-    return { accepted: false, reason: `the base gained ${baseCommitsSince} commits since the last refresh (limit ${TREADMILL_MAX_BASE_COMMITS})` };
+  const maxBaseCommits = policyValue('treadmillMaxBaseCommits');
+  if (baseCommitsSince > maxBaseCommits) {
+    return { accepted: false, reason: `the base gained ${baseCommitsSince} commits since the last refresh (limit ${maxBaseCommits})` };
   }
   if (!baseFiles || !prFiles) {
     return { accepted: false, reason: 'could not list the files on one side of the gap' };
@@ -782,7 +787,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
   /** One refresh: update the branch, key the marker to the head it produced. */
   async function refresh(why: string, base: string): Promise<LandingOutcome> {
     const count = marker?.refreshCount ?? 0;
-    if (count >= TREADMILL_MAX_REFRESHES) {
+    if (count >= policyValue('treadmillMaxRefreshes')) {
       return human('refresh_exhausted', `the base kept moving after ${count} refreshes (${why})`, { refreshCount: count });
     }
     if (!owner.taskId || !owner.workerId) {

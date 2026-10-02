@@ -316,6 +316,11 @@ mock.module('@/lib/migration-inspector', () => ({
   inspectPullRequestMigrations: mockInspectPullRequestMigrations,
 }));
 
+// The task "What shipped" record is its own module (lib/task-shipped-store);
+// here only that completion hands it the agent's output.
+const mockStoreTaskShippedRecord = mock((_input: unknown) => Promise.resolve(null));
+mock.module('@/lib/task-shipped-store', () => ({ storeTaskShippedRecord: mockStoreTaskShippedRecord }));
+
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mock(() => Promise.resolve()),
   // Include checkDependsOnResolved so this mock doesn't break downstream
@@ -10073,6 +10078,26 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedTaskSet.result.summary).toContain('PR #42');
     });
 
+    it('hands the completion output to the task What shipped store', async () => {
+      mockStoreTaskShippedRecord.mockClear();
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-sensitive' }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      setupSensitiveWorker({ branch: 'buildd/test-branch', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42, turns: 3 });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
+      const structuredOutput = { shipped: { lede: 'A plain sentence about what changed.' } };
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'done', summarySource: 'agent', structuredOutput },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockStoreTaskShippedRecord).toHaveBeenCalledTimes(1);
+      expect(mockStoreTaskShippedRecord.mock.calls[0][0]).toMatchObject({ structuredOutput, summarySource: 'agent' });
+    });
+
     it('standard workspace preserves currentAction prose unchanged', async () => {
       let capturedSet: any = null;
       mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' });
@@ -11157,6 +11182,80 @@ describe('PATCH /api/workers/[id]', () => {
         expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
         expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result?.errorType).toBe('infra_stalled');
       });
+    });
+
+    // The CLI rejecting the id itself is a config fault, not a transient: the
+    // same runner rejects the same id on every attempt, so a requeue only
+    // burns sessions, and as a CI-fix attempt it also burned the PR's budget.
+    describe('unrecognized model id (config failure)', () => {
+      const STDERR_LINE = '[claude-code:unrecognized_model] {"model":"claude-sonnet-5-5","query_source":"sdk"}';
+
+      function setupIdRejection(context: Record<string, unknown>) {
+        const taskSetCalls: any[] = [];
+        mockTasksUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            taskSetCalls.push(updates);
+            return { where: mock(() => Promise.resolve()) };
+          }),
+        });
+        const workerSetCalls: any[] = [];
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            workerSetCalls.push(updates);
+            return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue({
+          id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+          taskId: 'task-1', pendingInstructions: null,
+        });
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context });
+        return { taskSetCalls, workerSetCalls };
+      }
+
+      it('does not even take a mission task\'s one automatic retry', async () => {
+        const { taskSetCalls } = setupIdRejection({});
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: 'mission-1', outputRequirement: 'none', context: {} });
+        await PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'failed', error: STDERR_LINE },
+        }), { params: mockParams });
+
+        expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+        const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+        expect(failing?.context?.retryCount).toBeUndefined();
+        expect(failing?.context?.modelRejection?.model).toBe('claude-sonnet-5-5');
+      });
+
+      for (const [label, body] of [
+        ['from the error text', { status: 'failed', error: STDERR_LINE }],
+        ['from the runner flag when the error is only the process exit', {
+          status: 'failed', error: 'Claude Code process exited with code 1', unrecognizedModel: true, rejectedModel: 'claude-sonnet-5-5',
+        }],
+      ] as const) {
+        it(`fails the task once, uncharged, naming the id (${label})`, async () => {
+          const { taskSetCalls, workerSetCalls } = setupIdRejection({});
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          expect(workerSetCalls.find((u: any) => u.exitCause)?.exitCause).toBe('infra_failure');
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+          expect(failing).toBeDefined();
+          expect(failing.result.errorType).toBe('unrecognized_model');
+          expect(failing.result.rejectedModel).toBe('claude-sonnet-5-5');
+          expect(failing.result.error).toContain('claude-sonnet-5-5');
+          expect(failing.context.modelRejection.model).toBe('claude-sonnet-5-5');
+          expect(failing.context.retryCount).toBeUndefined();
+          expect(failing.context.infraRetryCount).toBeUndefined();
+        });
+      }
     });
   });
 

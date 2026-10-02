@@ -290,7 +290,7 @@ locally does not fail the suite for everyone else.
 - **Agent workflow**: `.claude/skills/buildd-workflow/` — Task lifecycle guide (claim → work → ship). Use `/buildd-workflow` when starting a task.
 - **Schema change**: `.claude/skills/schema-change/` — Ship a Drizzle migration without losing a column or a release. Migration index collisions happen several times a day with concurrent sessions and git does **not** conflict on the `.sql` files; read this before pushing anything that touches `packages/core/drizzle/`.
 - **Spec sync**: `.claude/skills/spec-sync/` — Keep `docs/SPEC.md` the source of truth and reconcile the doc/site repos against it.
-- **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
+- **UI designer**: `.claude/skills/ui_designer/` — Brand principles and UI review checklist; tokens, type scale and primitives live in `docs/design/design-system.md`
 - **Visual review**: `.claude/skills/visual-review/` — Phone- and desktop-width screenshots before calling UI work done: `scripts/qa/shoot.sh` locally (needs a DATABASE_URL), or dispatch `visual-qa.yml` on your branch and download the `qa-screenshots` artifact (workers, no DB). Also the preview recipe for workspaces with Vercel previews, and its two auth-wall failure modes.
 - **Buildd MCP consumer**: `.claude/skills/buildd-mcp-consumer/` — The consumer-facing counterpart to `buildd-workflow`, for any workspace's workers (not buildd's own contributor loop): task lifecycle, blocked-vs-question, friction dedupe, artifact/knowledge discipline, and the `direct`/`mission-branch` PR-base distinction. This is what the MCP server's trimmed `instructions` block and the `buildd://workspace/skills` resource both point to — see `apps/web/src/app/api/mcp/route.ts`.
 - **Delivery forensics**: `.claude/skills/delivery-forensics/` — Measure the delivery loop itself from raw sources: prod DB over the neon HTTP driver (direct `psql` to Neon times out), GitHub Actions job logs (`gh run view --log-failed` returns empty — go via `actions/jobs/<id>/logs`), the Coder runner, KB and CBM. Use for "why do PRs conflict / fail CI / get abandoned" questions, and for the base-drift metric neither source stores.
@@ -302,6 +302,7 @@ Keep the `docs/` namespace clean — each folder means exactly one thing:
 - **`docs/SPEC.md`** — canonical product/architecture spec (single source of truth). Code is truth → SPEC.md is its written form → doc/site repos are outputs.
 - **`docs/specs/*.md`** — living per-capability **contracts**, format defined by `docs/specs/SPEC-FORMAT.md`. Every file carries lifecycle frontmatter (`title / status / owner / last_verified`). Retire by setting `status: superseded` + `superseded_by`, not by deleting.
 - **`docs/design/*.md`** — design proposals (pre-implementation), format defined by `docs/design/DESIGN-FORMAT.md`.
+- **`docs/design/design-system.md`** — the one UI design reference (tokens, type scale, shared primitives, copy rules). Read it before any UI work; `globals.css` stays the executable truth.
 - **`docs/plans/*.md`** — ephemeral rollout plans; move to `docs/plans/archive/` once shipped.
 - **`docs/reports/*.md`** — generated audit/drift outputs; rebuildable, may be stale. Never a source of truth.
 

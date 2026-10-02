@@ -31,6 +31,8 @@ export interface ExperimentViewer {
   teamId: string;
   role: TeamRole;
   userId: string | null;
+  /** The API account behind a bearer request; null for a session. */
+  accountId: string | null;
 }
 
 export type ViewerResult =
@@ -65,9 +67,9 @@ export async function resolveExperimentViewer(req: NextRequest, workspaceId: str
       const claims = await verifyAccessTokenAnyAudience(bearer);
       const role = claims?.sub ? await memberRole(teamId, claims.sub) : null;
       if (!role) return notFound('Team');
-      return { ok: true, viewer: { teamId, role, userId: claims!.sub } };
+      return { ok: true, viewer: { teamId, role, userId: claims!.sub, accountId: account.id } };
     }
-    return { ok: true, viewer: { teamId, role: account.level === 'admin' ? 'admin' : 'member', userId: null } };
+    return { ok: true, viewer: { teamId, role: account.level === 'admin' ? 'admin' : 'member', userId: null, accountId: account.id } };
   }
 
   const user = await getCurrentUser();
@@ -79,12 +81,12 @@ export async function resolveExperimentViewer(req: NextRequest, workspaceId: str
     // verifyWorkspaceAccess answers 'member' for an open workspace without
     // looking at membership, which would demote a team admin; read the row.
     const role = (await memberRole(access.teamId, user.id)) ?? 'member';
-    return { ok: true, viewer: { teamId: access.teamId, role, userId: user.id } };
+    return { ok: true, viewer: { teamId: access.teamId, role, userId: user.id, accountId: null } };
   }
 
   const teamId = await resolveActiveTeamId(user.id, req.cookies.get('buildd-team')?.value ?? null);
   if (!teamId) return notFound('Team');
   const role = await memberRole(teamId, user.id);
   if (!role) return notFound('Team');
-  return { ok: true, viewer: { teamId, role, userId: user.id } };
+  return { ok: true, viewer: { teamId, role, userId: user.id, accountId: null } };
 }

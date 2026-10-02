@@ -301,22 +301,24 @@
       "_heartbeat": "none — created from the dashboard (UI-created missions run once, no heartbeat schedule)",
       "goalCriteria": [
         {
-          "type": "all_prs_merged",
-          "label": "every task PR merged"
-        },
-        {
-          "type": "no_open_tasks",
-          "label": "no open tasks"
+          "type": "command",
+          "command": "pnpm test --filter web -- invoice-currency",
+          "label": "invoices in the customer's currency"
         },
         {
           "type": "command",
-          "command": "pnpm test --filter @harborline/money --filter web -- currency",
-          "label": "currency suite green"
+          "command": "pnpm test --filter api -- contract-v2",
+          "label": "public API backward compatible"
+        },
+        {
+          "type": "artifact_exists",
+          "key": "e2e-eur-invoice",
+          "label": "a EUR invoice pays end to end"
         },
         {
           "type": "artifact_exists",
           "key": "fx-rounding-decision",
-          "label": "rounding policy recorded"
+          "label": "rounding rule written down"
         }
       ],
       "goalCriteriaState": null,
@@ -879,7 +881,7 @@
       "table": "tasks",
       "workspaceId": "ws",
       "missionId": "M1",
-      "title": "Verify goal criterion: currency suite green",
+      "title": "Verify goal criterion: invoices in the customer's currency",
       "description": "Run the command and report. Do not change code.",
       "status": "pending",
       "_statusAtEnd": "completed",
@@ -903,12 +905,48 @@
       "loopConfig": {
         "exitCondition": {
           "type": "command",
-          "command": "pnpm test --filter @harborline/money --filter web -- currency"
+          "command": "pnpm test --filter web -- invoice-currency"
         },
         "maxLoops": 1
       },
       "_kindNote": "real verify tasks set no kind; 'observation' is a demo choice for the glyph",
-      "label": "verify currency suite"
+      "label": "verify invoice currency"
+    },
+    {
+      "key": "V2",
+      "table": "tasks",
+      "workspaceId": "ws",
+      "missionId": "M1",
+      "title": "Verify goal criterion: public API backward compatible",
+      "description": "Run the command and report. Do not change code.",
+      "status": "pending",
+      "_statusAtEnd": "completed",
+      "priority": 2,
+      "mode": "execution",
+      "roleSlug": null,
+      "kind": "observation",
+      "complexity": "normal",
+      "missionPhaseIndex": null,
+      "missionPhaseLabel": null,
+      "dependsOn": [],
+      "outputRequirement": "none",
+      "creationSource": "orchestrator",
+      "createdByWorkerId": null,
+      "taskClass": "bookkeeping",
+      "backend": "claude",
+      "project": null,
+      "pathManifest": null,
+      "_idShort": "5a9d3e2b",
+      "tier": "budget",
+      "loopConfig": {
+        "exitCondition": {
+          "type": "command",
+          "command": "pnpm test --filter api -- contract-v2"
+        },
+        "maxLoops": 1
+      },
+      "_kindNote": "real verify tasks set no kind; 'observation' is a demo choice for the glyph",
+      "label": "verify API contract"
     },
     {
       "key": "H1",
@@ -1426,7 +1464,34 @@
       "accountId": "acct_fleet",
       "name": "harborline-fleet-8c1e4a7d",
       "runner": "cedar",
-      "branch": "buildd/8c1e4a7d-verify-goal-criterion-currency",
+      "branch": "buildd/8c1e4a7d-verify-goal-criterion-invoices",
+      "status": "idle",
+      "_statusAtEnd": "completed",
+      "waitingFor": null,
+      "currentAction": null,
+      "milestones": [],
+      "prUrl": null,
+      "prNumber": null,
+      "prLifecycleStatus": null,
+      "mergedAt": null,
+      "commitCount": 0,
+      "filesChanged": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "costUsd": "0",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "turns": 0
+    },
+    {
+      "key": "wv2",
+      "table": "workers",
+      "taskId": "V2",
+      "workspaceId": "ws",
+      "accountId": "acct_fleet",
+      "name": "harborline-fleet-5a9d3e2b",
+      "runner": "atlas",
+      "branch": "buildd/5a9d3e2b-verify-goal-criterion-public-a",
       "status": "idle",
       "_statusAtEnd": "completed",
       "waitingFor": null,
@@ -1521,7 +1586,7 @@
         "durationSec": 38
       },
       "key": "a_e2e_video",
-      "artifactKey": null,
+      "artifactKey": "e2e-eur-invoice",
       "_column_note": "artifactKey -> artifacts.key (unique per workspace). 'key' here is the dataset ref."
     },
     {
@@ -1531,7 +1596,7 @@
       "missionId": "M1",
       "type": "summary",
       "title": "Multi-currency invoices, shipped",
-      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · 1 decision from a human.",
+      "content": "Customers can pick a billing currency, see invoices and receipts in it, and pay in it. Rates are snapshotted at issue; checkout never waits on the rate provider. Line-level rounding matches the card charge; the export reconciles to base currency.\n\n11 PRs merged · 6 screens reviewed, all ok · you chose the rounding and approved the screens.",
       "visibility": "private",
       "metadata": {},
       "key": "a_summary",
@@ -2391,22 +2456,24 @@
                   "description": "Let customers see, pay, and get receipts for invoices in their own currency.\n\nConstraints:\n- Invoices API changes are additive (v2-safe). FX rate is snapshotted at issue.",
                   "goalCriteria": [
                     {
-                      "type": "all_prs_merged",
-                      "label": "every task PR merged"
-                    },
-                    {
-                      "type": "no_open_tasks",
-                      "label": "no open tasks"
+                      "type": "command",
+                      "command": "pnpm test --filter web -- invoice-currency",
+                      "label": "invoices in the customer's currency"
                     },
                     {
                       "type": "command",
-                      "command": "pnpm test --filter @harborline/money --filter web -- currency",
-                      "label": "currency suite green"
+                      "command": "pnpm test --filter api -- contract-v2",
+                      "label": "public API backward compatible"
+                    },
+                    {
+                      "type": "artifact_exists",
+                      "key": "e2e-eur-invoice",
+                      "label": "a EUR invoice pays end to end"
                     },
                     {
                       "type": "artifact_exists",
                       "key": "fx-rounding-decision",
-                      "label": "rounding policy recorded"
+                      "label": "rounding rule written down"
                     }
                   ],
                   "maxConcurrentTasks": 6
@@ -4653,37 +4720,38 @@
         "criteria": [
           {
             "index": 0,
-            "type": "all_prs_merged",
-            "label": "every task PR merged",
-            "verdict": "pass",
-            "evidence": "11 task PRs merged into main"
-          },
-          {
-            "index": 1,
-            "type": "no_open_tasks",
-            "label": "no open tasks",
-            "verdict": "pass",
-            "evidence": "All deliverable tasks closed"
-          },
-          {
-            "index": 2,
             "type": "command",
-            "label": "currency suite green",
+            "label": "invoices in the customer's currency",
             "verdict": "PENDING",
             "evidence": "verifying on runner…",
             "workerTaskId": "V1"
           },
           {
+            "index": 1,
+            "type": "command",
+            "label": "public API backward compatible",
+            "verdict": "PENDING",
+            "evidence": "verifying on runner…",
+            "workerTaskId": "V2"
+          },
+          {
+            "index": 2,
+            "type": "artifact_exists",
+            "label": "a EUR invoice pays end to end",
+            "verdict": "pass",
+            "evidence": "artifact e2e-eur-invoice"
+          },
+          {
             "index": 3,
             "type": "artifact_exists",
-            "label": "rounding policy recorded",
+            "label": "rounding rule written down",
             "verdict": "pass",
             "evidence": "artifact fx-rounding-decision"
           }
         ]
       },
       "api": "mission evaluate (auto on last task close) → missions.goalCriteriaState",
-      "db": "UPDATE missions.goalCriteriaState; INSERT tasks(V1, taskClass=bookkeeping)",
+      "db": "UPDATE missions.goalCriteriaState; INSERT tasks(V1, V2, taskClass=bookkeeping)",
       "beat": "Goal criteria go green one by one"
     },
     {
@@ -4696,6 +4764,15 @@
       "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
     },
     {
+      "t": 2048,
+      "op": "claim",
+      "task": "V2",
+      "worker": "wv2",
+      "runner": "atlas",
+      "api": "POST /api/workers/claim {runner, workspaceId, availableSkills}",
+      "db": "tasks.status=assigned,claimedBy,claimedAt; INSERT workers(status=idle, name, runner, branch)"
+    },
+    {
       "t": 2049,
       "op": "worker_status",
       "worker": "wv1",
@@ -4704,13 +4781,68 @@
       "db": "workers.status=running, startedAt; tasks.status=in_progress"
     },
     {
+      "t": 2051,
+      "op": "worker_status",
+      "worker": "wv2",
+      "status": "running",
+      "api": "PATCH /api/workers/wv2 {status:'running'}",
+      "db": "workers.status=running, startedAt; tasks.status=in_progress"
+    },
+    {
       "t": 2080,
       "op": "progress",
       "worker": "wv1",
       "pct": 50,
-      "message": "Running: pnpm test --filter @harborline/money --filter web -- currency",
+      "message": "Running: pnpm test --filter web -- invoice-currency",
       "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
       "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 2085,
+      "op": "progress",
+      "worker": "wv2",
+      "pct": 50,
+      "message": "Running: pnpm test --filter api -- contract-v2",
+      "api": "MCP buildd update_progress {progress, message} → PATCH /api/workers/:id {appendMilestones, currentAction}",
+      "db": "workers.currentAction=message; workers.milestones += {type:'status', label, progress, ts}"
+    },
+    {
+      "t": 2150,
+      "op": "complete",
+      "task": "V2",
+      "worker": "wv2",
+      "summary": "Command exited 0.",
+      "api": "MCP buildd complete_task {summary}",
+      "db": "workers.status=completed, completedAt; tasks.status=completed, tasks.result={summary, prUrl, prNumber, ...}; unblocks dependents"
+    },
+    {
+      "t": 2155,
+      "op": "criteria_eval",
+      "mission": "M1",
+      "state": {
+        "overall": "PENDING",
+        "criteria": [
+          {
+            "index": 0,
+            "verdict": "PENDING"
+          },
+          {
+            "index": 1,
+            "verdict": "pass",
+            "evidence": "Command exited with code 0"
+          },
+          {
+            "index": 2,
+            "verdict": "pass"
+          },
+          {
+            "index": 3,
+            "verdict": "pass"
+          }
+        ]
+      },
+      "api": "verification task result → missions.goalCriteriaState",
+      "db": "UPDATE missions.goalCriteriaState"
     },
     {
       "t": 2200,
@@ -4730,7 +4862,8 @@
         "criteria": [
           {
             "index": 0,
-            "verdict": "pass"
+            "verdict": "pass",
+            "evidence": "Command exited with code 0"
           },
           {
             "index": 1,
@@ -4738,8 +4871,7 @@
           },
           {
             "index": 2,
-            "verdict": "pass",
-            "evidence": "Command exited with code 0"
+            "verdict": "pass"
           },
           {
             "index": 3,

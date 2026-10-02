@@ -95,6 +95,8 @@ mock.module('@/lib/mission-pr', () => ({ evaluateMissionWorkState: mockEvaluateM
 import { explainMission, explainTask, explainPr, explainWorkspace, historyPrStateOf } from './explain';
 import { summarizeMissionForCard, type MissionCardRow } from './mission-card-view';
 
+const ACTOR = { userId: 'user-1' };
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function task(over: Partial<Row> = {}): Row {
@@ -394,7 +396,7 @@ describe('explainTask', () => {
   it('a pending task in a local mission is waiting for a local session to claim it', async () => {
     missionRow = { id: 'mission-1', executor: 'local', isHeld: false };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
-    const answer = (await explainTask('task-1'))!.subjects[0];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.chip.label).toBe('LOCAL');
     expect(answer.situation.headline).toBe('Waiting for a local session to claim the open task.');
     expect(answer.situation.headline).not.toMatch(/stall/i);
@@ -407,7 +409,7 @@ describe('explainTask', () => {
   it('the same pending task in a runner mission still reads as a stall', async () => {
     missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
-    const answer = (await explainTask('task-1'))!.subjects[0];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.chip.label).not.toBe('LOCAL');
     expect(answer.situation.headline).not.toContain('local session');
   });
@@ -415,7 +417,7 @@ describe('explainTask', () => {
   it('a held local mission is not read as local (held wins)', async () => {
     missionRow = { id: 'mission-1', executor: 'local', isHeld: true };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
-    const answer = (await explainTask('task-1'))!.subjects[0];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.chip.label).not.toBe('LOCAL');
   });
 
@@ -428,7 +430,7 @@ describe('explainTask', () => {
       }),
     ];
 
-    const result = await explainTask('task-1');
+    const result = await explainTask('task-1', ACTOR);
     const answer = result!.subjects[0];
     expect(answer.state).toBe('awaiting_merge');
     expect(answer.waitingOn?.kind).toBe('merge');
@@ -449,7 +451,7 @@ describe('explainTask', () => {
       }),
     ];
 
-    const result = await explainTask('task-1');
+    const result = await explainTask('task-1', ACTOR);
     const answer = result!.subjects[0];
     expect(answer.state).toBe('awaiting_merge');
     expect(answer.waitingOn?.kind).toBe('pr_closed_unmerged');
@@ -481,7 +483,7 @@ describe('explainTask', () => {
       }),
     ];
 
-    const answer = (await explainTask('task-1'))!.subjects[0];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.state).not.toBe('awaiting_merge');
     expect(answer.state).toBe('waiting');
     expect(answer.waitingOn?.kind).toBe('task');
@@ -512,7 +514,7 @@ describe('explainTask', () => {
       }),
     ];
 
-    const answer = (await explainTask('task-1'))!.subjects[0];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.state).toBe('running');
     expect(answer.situation.headline).toContain('fix 2 of 3 (in progress)');
     expect(answer.situation.headline).not.toContain('merge');
@@ -528,7 +530,7 @@ describe('explainTask', () => {
       task({ id: 'fix-1', status: 'completed', taskClass: 'attempt', parentTaskId: 'task-1', context: { iteration: 1, maxIterations: 3 } }),
     ];
 
-    const answer = (await explainTask('task-1'))!.subjects[0];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.state).toBe('awaiting_merge');
   });
 
@@ -537,7 +539,7 @@ describe('explainTask', () => {
       task({ id: 'task-1', status: 'completed', workers: [worker({ prNumber: 55, mergedAt: new Date() })] }),
     ];
 
-    const answer = (await explainTask('task-1'))!.subjects[0];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
     expect(answer.waitingOn).toBeNull();
     expect(answer.nextAction).toBeNull();
     expect(answer.derivedFrom.waitingOn).toBeNull();
@@ -606,7 +608,7 @@ describe('explainPr — a dirty mission PR', () => {
   };
 
   it('returns a populated because[] naming the conflicting path and the dev-side PR', async () => {
-    const result = await explainPr(subject);
+    const result = await explainPr(subject, ACTOR);
     const answer = result!.subjects[0];
 
     expect(answer.because.length).toBeGreaterThan(1);
@@ -629,7 +631,7 @@ describe('explainPr — a dirty mission PR', () => {
   });
 
   it('derives the touch set from stored rows — no merge attempt, no GitHub call', async () => {
-    await explainPr(subject);
+    await explainPr(subject, ACTOR);
     // Only the base-side merge query ran against workers; nothing shelled out.
     expect(mockWorkersFindMany).toHaveBeenCalled();
     const devSideCall = mockWorkersFindMany.mock.calls.length;
@@ -637,14 +639,14 @@ describe('explainPr — a dirty mission PR', () => {
   });
 
   it('labels the commits-behind count as a floor, not a rev-list', async () => {
-    const answer = (await explainPr(subject))!.subjects[0];
+    const answer = (await explainPr(subject, ACTOR))!.subjects[0];
     const countLink = answer.because.find(l => l.claim.includes('merged into `dev` after'));
     expect(countLink!.derivedFrom).toContain('floor');
   });
 
   it('skips the conflict chain for a PR that is not conflicted', async () => {
     taskRows[0].workers[0].prLifecycleStatus = 'pr_open';
-    const answer = (await explainPr({ ...subject, prLifecycleStatus: 'pr_open' }))!.subjects[0];
+    const answer = (await explainPr({ ...subject, prLifecycleStatus: 'pr_open' }, ACTOR))!.subjects[0];
     expect(answer.because.map(l => l.claim).join('\n')).not.toContain('merged into `dev` after');
   });
 
@@ -659,14 +661,14 @@ describe('explainPr — a dirty mission PR', () => {
         detail: null,
       },
     ];
-    const answer = (await explainPr(subject))!.subjects[0];
+    const answer = (await explainPr(subject, ACTOR))!.subjects[0];
     expect(answer.gateHistory).toHaveLength(1);
     expect(answer.gateHistory[0].gate).toBe('merge_base_freshness');
     expect(answer.derivedFrom.gateHistory).toBe('gate_events.taskId');
   });
 
   it('refuses a PR with no task attached rather than inventing a subject', async () => {
-    expect(await explainPr({ ...subject, taskId: null })).toBeNull();
+    expect(await explainPr({ ...subject, taskId: null }, ACTOR)).toBeNull();
   });
 });
 
@@ -685,7 +687,7 @@ describe('explainWorkspace', () => {
       awaitingMergeDetails: [],
     };
 
-    const result = await explainWorkspace('ws-1');
+    const result = await explainWorkspace('ws-1', ACTOR);
     expect(result.scope).toBe('workspace');
     expect(result.subjects.length).toBeGreaterThan(0);
     for (const s of result.subjects) {
@@ -699,7 +701,7 @@ describe('explainWorkspace', () => {
     missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
     taskRows = [];
 
-    await explainWorkspace('ws-1');
+    await explainWorkspace('ws-1', ACTOR);
 
     // The only findMany caller on `missions` — explainMission's own dependency
     // lookup goes through findFirst. A missing limit here means a workspace
@@ -714,7 +716,7 @@ describe('explainWorkspace', () => {
     missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
     taskRows = [task({ id: 'task-done', status: 'completed' })];
 
-    const result = await explainWorkspace('ws-1');
+    const result = await explainWorkspace('ws-1', ACTOR);
     expect(result.subjects).toEqual([]);
     expect(result.quiet).toBe(result.considered);
   });
@@ -731,7 +733,7 @@ describe('explainWorkspace', () => {
       task({ id: `task-${i}`, missionId: m.id, status: 'completed' }),
     );
 
-    await explainWorkspace('ws-1');
+    await explainWorkspace('ws-1', ACTOR);
 
     // A sequential `for...await` loop would never have more than one
     // `canCompleteMission` call in flight at once.
@@ -755,7 +757,7 @@ describe('explainWorkspace', () => {
       }),
     ];
 
-    const result = await explainWorkspace('ws-1');
+    const result = await explainWorkspace('ws-1', ACTOR);
     const openIdx = result.subjects.findIndex(s => s.subject.taskId === 'task-new-open');
     const closedIdx = result.subjects.findIndex(s => s.subject.taskId === 'task-old-closed');
     expect(openIdx).toBeGreaterThanOrEqual(0);
@@ -808,7 +810,7 @@ describe('explain — fix-attempt lineage', () => {
   });
 
   it('explain on the new-branch PR returns the predecessor PR and every attempt with its outcome', async () => {
-    const answer = (await explainPr(prSubject()))!.subjects[0];
+    const answer = (await explainPr(prSubject(), ACTOR))!.subjects[0];
     expect(answer.history.map(h => h.taskId)).toEqual(['root']);
     const root = answer.history[0];
     expect(root.prNumber).toBe(10);
@@ -820,21 +822,21 @@ describe('explain — fix-attempt lineage', () => {
   });
 
   it('carries each attempt\'s errorClass, first key lines and mismatch', async () => {
-    const fix1 = (await explainPr(prSubject()))!.subjects[0].history[0].attempts[0];
+    const fix1 = (await explainPr(prSubject(), ACTOR))!.subjects[0].history[0].attempts[0];
     expect(fix1.evidence?.errorClass).toBe('test_failure');
     expect(fix1.evidence?.keyLines).toEqual(['(fail) billing > rounds up', 'error: expected 2 received 3', 'line 3']);
     expect(fix1.mismatch?.[0].kind).toBe('last_command_failed');
   });
 
   it('answers the same history from the root task and from a nested attempt', async () => {
-    const fromRoot = (await explainTask('root'))!.subjects[0].history;
-    const fromNested = (await explainTask('fix-2'))!.subjects[0].history;
+    const fromRoot = (await explainTask('root', ACTOR))!.subjects[0].history;
+    const fromNested = (await explainTask('fix-2', ACTOR))!.subjects[0].history;
     expect(fromNested).toEqual(fromRoot);
     expect(fromRoot[0].attempts[0].attempts[0].taskId).toBe('fix-2');
   });
 
   it('omits evidence and mismatch on a clean attempt', async () => {
-    const fix2 = (await explainTask('root'))!.subjects[0].history[0].attempts[0].attempts[0];
+    const fix2 = (await explainTask('root', ACTOR))!.subjects[0].history[0].attempts[0].attempts[0];
     expect('evidence' in fix2).toBe(false);
     expect('mismatch' in fix2).toBe(false);
   });

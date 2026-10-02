@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import MarkdownContent from '@/components/MarkdownContent';
+import Sheet from '@/components/ui/Sheet';
 
 export interface ArtifactViewerItem {
   id: string;
@@ -47,19 +48,6 @@ const TYPE_LABELS: Record<string, string> = {
   screenshot: 'Screenshot',
 };
 
-const MD_BREAKPOINT = 768; // Tailwind `md`
-
-function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < MD_BREAKPOINT);
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
-  return isMobile;
-}
-
 function formatDate(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
@@ -76,9 +64,6 @@ export default function ArtifactViewer({
   onShareChange,
   fromContext,
 }: ArtifactViewerProps) {
-  const isMobile = useIsMobile();
-  const panelRef = useRef<HTMLDivElement>(null);
-
   const [selectedIndex, setSelectedIndex] = useState(initialIndex);
 
   // Local copy so share/unshare reflects immediately, even before the parent
@@ -101,13 +86,11 @@ export default function ArtifactViewer({
     [items.length],
   );
 
-  // Escape to close + arrow keys to move between artifacts.
+  // Arrow keys move between artifacts. Escape, scroll lock and focus are the Sheet's.
   useEffect(() => {
     if (!open) return;
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        onClose();
-      } else if (e.key === 'ArrowRight') {
+      if (e.key === 'ArrowRight') {
         setSelectedIndex((i) => clamp(i + 1));
       } else if (e.key === 'ArrowLeft') {
         setSelectedIndex((i) => clamp(i - 1));
@@ -115,22 +98,7 @@ export default function ArtifactViewer({
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [open, onClose, clamp]);
-
-  // Lock body scroll while open.
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [open]);
-
-  // Focus the panel on open.
-  useEffect(() => {
-    if (open) panelRef.current?.focus();
-  }, [open]);
+  }, [open, clamp]);
 
   const active = useMemo(() => items[clamp(selectedIndex)], [items, selectedIndex, clamp]);
 
@@ -279,52 +247,25 @@ export default function ArtifactViewer({
   );
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/50"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+    <Sheet
+      open
+      onClose={onClose}
+      title={active.title || 'Untitled'}
+      height="tall"
+      width="wide"
+      flush
+      trapFocus
+      testId="artifact-viewer"
     >
-      <div
-        ref={panelRef}
-        data-testid="artifact-viewer"
-        role="dialog"
-        aria-modal="true"
-        aria-label={active.title || 'Artifact'}
-        tabIndex={-1}
-        onClick={(e) => e.stopPropagation()}
-        className={
-          isMobile
-            ? // MOBILE: full-height bottom sheet, slides up.
-              'absolute inset-x-0 bottom-0 top-0 flex flex-col bg-card text-text-primary shadow-xl outline-none animate-slide-up'
-            : // DESKTOP: docked to the right edge, full height, slides in from the right.
-              'absolute inset-y-0 right-0 flex w-full max-w-xl bg-card text-text-primary shadow-xl outline-none animate-slide-in-right'
-        }
-      >
+      <div className="flex h-full min-h-0">
         {desktopRail}
 
         <div className="flex min-w-0 flex-1 flex-col min-h-0">
-          {/* Header */}
-          <header className="flex items-start justify-between gap-3 border-b border-card-border px-4 py-3">
-            <div className="min-w-0">
-              <h2 className="text-base font-semibold text-text-primary truncate">
-                {active.title || 'Untitled'}
-              </h2>
-              {active.taskTitle && (
-                <p className="text-xs text-text-muted truncate mt-0.5">
-                  Task: {active.taskTitle}
-                </p>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="shrink-0 p-1 text-text-muted hover:text-text-primary transition-colors"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </header>
+          {active.taskTitle && (
+            <p className="px-4 pt-3 text-xs text-text-muted truncate">
+              Task: {active.taskTitle}
+            </p>
+          )}
 
           {mobileChips}
 
@@ -399,7 +340,7 @@ export default function ArtifactViewer({
           </footer>
         </div>
       </div>
-    </div>
+    </Sheet>
   );
 }
 

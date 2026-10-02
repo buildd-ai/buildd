@@ -81,9 +81,41 @@ export function isConcurrencyConflictError(error: string | null | undefined): bo
  */
 const UNRECOGNIZED_MODEL_PATTERN = /does not support this model[\s\S]*?or newer is required/i;
 
+/**
+ * The CLI's other model rejection: it does not know the id at all. It is
+ * written to stderr as `[claude-code:unrecognized_model] {"model":"<id>",...}`
+ * and the process exits, so the error the SDK throws is often only the exit
+ * code — the runner forwards the marker (see SessionStderrCollector) and this
+ * matches it wherever it lands. Unlike the version gate, a requeue cannot route
+ * around it: the id comes from a tier row or a pin, and the same runner
+ * rejects it every time.
+ */
+const MODEL_ID_REJECTED_PATTERN = /\[claude-code:unrecognized_model\]/i;
+
+/** Task-context key stamped when the CLI rejected the model id; see ci-retry's budget count. */
+export const MODEL_REJECTION_CONTEXT_KEY = 'modelRejection';
+
+export function isModelIdRejectedError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  return MODEL_ID_REJECTED_PATTERN.test(error);
+}
+
+/** The id the CLI rejected, read from the marker's JSON payload; null when absent or unreadable. */
+export function rejectedModelId(error: string | null | undefined): string | null {
+  if (!error) return null;
+  const m = error.match(/\[claude-code:unrecognized_model\]\s*(\{[^\n]*\})/i);
+  if (!m) return null;
+  try {
+    const model = (JSON.parse(m[1]) as { model?: unknown }).model;
+    return typeof model === 'string' && model ? model : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isUnrecognizedModelError(error: string | null | undefined): boolean {
   if (!error) return false;
-  return UNRECOGNIZED_MODEL_PATTERN.test(error);
+  return UNRECOGNIZED_MODEL_PATTERN.test(error) || MODEL_ID_REJECTED_PATTERN.test(error);
 }
 
 /** Error text for a worker row that the claim route minted but no runner ever started. */

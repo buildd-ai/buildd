@@ -2,8 +2,14 @@
  * When a just-green PR still belongs to the platform. Pure and client-safe:
  * the reviewer gate (server) and the mission pulse (client-bundled) import it.
  */
-/** How long a `ci_green` auto-threshold PR may stay open before it counts as held. */
-export const AUTO_MERGE_GREEN_GRACE_MS = 5 * 60_000;
+import { POLICY_DEFAULTS, policyValue } from './policy-overrides';
+
+/**
+ * How long a `ci_green` auto-threshold PR may stay open before it counts as held.
+ * Public default; read the live value with `policyValue('autoMergeGreenGraceMs')`
+ * (a client bundle always gets this default).
+ */
+export const AUTO_MERGE_GREEN_GRACE_MS = POLICY_DEFAULTS.autoMergeGreenGraceMs;
 
 /**
  * THE "a green PR is still mid-merge" predicate. The check_suite webhook that
@@ -23,5 +29,5 @@ export function isGreenAutoMergePending(
   const at = new Date(prLifecycleUpdatedAt).getTime();
   if (!Number.isFinite(at)) return false;
   const nowMs = typeof now === 'number' ? now : now.getTime();
-  return nowMs - at < AUTO_MERGE_GREEN_GRACE_MS;
+  return nowMs - at < policyValue('autoMergeGreenGraceMs');
 }

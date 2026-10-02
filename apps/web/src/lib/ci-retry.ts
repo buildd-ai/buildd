@@ -12,9 +12,14 @@
 import { isOpenTaskStatus } from '@buildd/shared';
 import { formatAttemptTitle } from '@/lib/task-title';
 import { lineageStamp } from '@/lib/attempt-lineage';
+import { MODEL_REJECTION_CONTEXT_KEY } from '@/lib/worker-exit-taxonomy';
+import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 
-/** Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries. */
-export const DEFAULT_MAX_CI_RETRIES = 3;
+/**
+ * Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries.
+ * Public default; read the live value with `policyValue('maxCiRetries')`.
+ */
+export const DEFAULT_MAX_CI_RETRIES = POLICY_DEFAULTS.maxCiRetries;
 
 export interface CIRetryParams {
   originalTask: {
@@ -106,6 +111,8 @@ export function summarizePrFixAttempts(
     if (r.outputRequirement === 'artifact_required') return false;
     const ctx = (r.context && typeof r.context === 'object' ? r.context : {}) as Record<string, unknown>;
     if (ctx.foreign_head_sha === true) return false;
+    // The CLI refused the model before the agent took a turn: the PR was never attempted.
+    if (ctx[MODEL_REJECTION_CONTEXT_KEY]) return false;
     return time(r) > lastManual;
   }).length;
 
@@ -123,9 +130,9 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.iteration === 'number' ? ctx.iteration : 0;
-  // Priority: workspace gitConfig.maxCiRetries > task context.maxIterations > default 3.
+  // Priority: workspace gitConfig.maxCiRetries > task context.maxIterations > policy default.
   // maxCiRetries === 0 explicitly disables CI retries for the workspace.
-  const maxIterations = workspaceMaxCiRetries ?? (typeof ctx.maxIterations === 'number' ? ctx.maxIterations : DEFAULT_MAX_CI_RETRIES);
+  const maxIterations = workspaceMaxCiRetries ?? (typeof ctx.maxIterations === 'number' ? ctx.maxIterations : policyValue('maxCiRetries'));
 
   // Honor the "retries disabled" switch regardless of commit authorship.
   if (maxIterations <= 0) {

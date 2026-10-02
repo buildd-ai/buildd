@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useContext, createContext, useEffect, useId, type ReactNode, type JSX } from 'react';
 import { useConfirm } from './useConfirm';
+import Sheet from './ui/Sheet';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -495,6 +496,7 @@ export function SwipeableRow({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const menuBtnRef = useRef<HTMLButtonElement | null>(null);
   const menuId = useId();
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
 
   const gestureRef = useRef<{
     active: boolean;
@@ -514,13 +516,9 @@ export function SwipeableRow({
     const first = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]');
     first?.focus();
 
+    // Escape and focus return (§2.4: back to the ⋯ button) are the Sheet's.
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setMenuOpen(false);
-        // §2.4: focus must return to the ⋯ button that opened the sheet
-        menuBtnRef.current?.focus();
-      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         const items = Array.from(
           menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
@@ -804,60 +802,44 @@ export function SwipeableRow({
         </button>
       )}
 
-      {/* Bottom sheet menu — §2.4 accessibility fallback */}
-      {menuOpen && (
-        <div
-          className="fixed inset-0 z-50"
-          aria-modal="true"
-          onClick={() => setMenuOpen(false)}
+      {/* Bottom sheet menu — §2.4 accessibility fallback. The Sheet portals
+          out of the row, but React still bubbles its clicks here; stop them so a
+          menu tap never reaches a row-level click handler above. */}
+      <div className="contents" onClick={(e) => e.stopPropagation()}>
+        <Sheet
+          open={menuOpen}
+          onClose={closeMenu}
+          title={taskTitle}
+          flush
+          trapFocus
+          returnFocusRef={menuBtnRef}
         >
-          {/* Backdrop */}
-          <div className="absolute inset-0 bg-black/40" />
-
-          {/* Sheet */}
-          <div
-            className="absolute bottom-0 left-0 right-0 bg-surface-2 border-t border-border-default"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Handle + title */}
-            <div className="flex justify-center pt-2 pb-1">
-              <div className="w-10 h-1 rounded-full bg-border-default" />
-            </div>
-            <div className="px-4 py-2 border-b border-border-default">
-              <p className="font-mono text-[11px] text-text-muted truncate">{taskTitle}</p>
-            </div>
-
-            {/* Menu items */}
-            <div ref={menuRef} id={menuId} role="menu" aria-label={`More actions for ${taskTitle}`}>
-              {menuActions.map((item) => (
-                <button
-                  key={item.action}
-                  role="menuitem"
-                  type="button"
-                  className={`w-full text-left px-4 py-3.5 text-[14px] flex items-center min-h-[44px] transition-colors ${
-                    item.destructive
-                      ? 'text-status-error hover:bg-status-error/5'
-                      : 'text-text-primary hover:bg-surface-3'
-                  }`}
-                  onClick={() => {
-                    if (item.href) {
-                      window.open(item.href, '_blank', 'noopener,noreferrer');
-                      setMenuOpen(false);
-                    } else {
-                      fireAction(item.action);
-                    }
-                  }}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Safe-area bottom padding */}
-            <div style={{ height: 'env(safe-area-inset-bottom, 16px)' }} />
+          <div ref={menuRef} id={menuId} role="menu" aria-label={`More actions for ${taskTitle}`}>
+            {menuActions.map((item) => (
+              <button
+                key={item.action}
+                role="menuitem"
+                type="button"
+                className={`w-full text-left px-4 py-3.5 text-title flex items-center min-h-[44px] transition-colors ${
+                  item.destructive
+                    ? 'text-status-error hover:bg-status-error/5'
+                    : 'text-text-primary hover:bg-surface-3'
+                }`}
+                onClick={() => {
+                  if (item.href) {
+                    window.open(item.href, '_blank', 'noopener,noreferrer');
+                    setMenuOpen(false);
+                  } else {
+                    fireAction(item.action);
+                  }
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
-        </div>
-      )}
+        </Sheet>
+      </div>
 
       {/* Confirms an irreversible "Cancel task" (see runCancelTask). */}
       {confirmDialog}
