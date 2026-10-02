@@ -393,16 +393,18 @@ export interface AgentEndpointVerifyOutcome extends VerifyOutcome {
  * marks it dead. Through net/public-address verifyByFetch: public hosts only,
  * no redirects, and the error is fixed text plus a status code and the model id
  * we sent, never the reply. `blocked`: the URL itself may not be used.
+ * `wire`: `model` is already the name to send (agent-endpoint-models
+ * selectProbeModel picked it from the endpoint's list), so it is not mapped.
  */
 export async function verifyAgentEndpoint(
   route: AgentEndpointRoute,
   model: string,
-  opts: { fetcher?: Fetcher; timeoutMs?: number; lookup?: LookupAll } = {},
+  opts: { fetcher?: Fetcher; timeoutMs?: number; lookup?: LookupAll; wire?: boolean } = {},
 ): Promise<AgentEndpointVerifyOutcome> {
   const headers: Record<string, string> = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
   if (route.authHeader === 'x-api-key') headers['x-api-key'] = route.apiKey;
   else headers.authorization = `Bearer ${route.apiKey}`;
-  const wireModel = mapAgentModel(route, model);
+  const wireModel = opts.wire ? model : mapAgentModel(route, model);
   const shown = wireModel.length > 100 ? `${wireModel.slice(0, 100)}…` : wireModel;
   return verifyByFetch('endpoint', `${route.baseUrl}/v1/messages`, {
     method: 'POST',

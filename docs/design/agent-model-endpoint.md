@@ -246,9 +246,40 @@ like `verifyGateway`: 2xx `healthy`, 401 `revoked`, anything else `unknown`
 (an outage never marks it dead). A 403 is `unknown`, not `revoked`: a LiteLLM
 key restricted to some models answers 403 for the rest, so it means "this key
 may not use this model". A save with a 403 is refused with a message naming the
-model and pointing at the alias table. With an alias table the probe is a model
-the endpoint will actually be asked for: the budget model's alias target if it
-has one, else the first alias target (`agentEndpointProbeModel`).
+model, the few listed Claude models that look usable, and the alias table.
+
+**Model discovery.** Before that call, `GET {baseUrl}/v1/models` with the same
+header, through the same hardened fetch (public hosts, no redirects, 5s, a
+1 MB bounded read; only parsed ids come back, at most 500). OpenAI-style and
+Anthropic-style lists both parse (first page). A proxy key is often allowed
+only the proxy's names (`claude-haiku-4-5`, `anthropic/claude-haiku-4-5`),
+never the dated tier id, so the probe is picked from the list
+(`selectProbeModel`, `packages/core/agent-endpoint-models.ts`): (a) the budget
+model's alias target, if listed or there is no list; (b) the budget model, if
+listed; (c) the same model under another name (prefix, release date and
+`4.5`/`4-5` set aside); (d) the cheapest listed Claude model; (e) the first
+alias target; (f) the budget model. No list (404, 405, not JSON, any failure)
+is (a), (e), (f), which is what Verify did before. OpenRouter skips discovery.
+
+**One alias store.** On save, a tier model (each `TIER_DEFAULTS` model plus
+the team's Anthropic agent registry rows) that the endpoint lists only under
+another name of the same model gets that alias written into the same `models`
+map, under the person's own aliases, which always win. buildd never maps
+across families on its own. Since it is the ordinary alias map, the claim and
+the runner apply it through `mapAgentModel` unchanged, so a budget task is no
+longer refused at runtime either.
+
+**Editor mapping.** `POST /api/teams/[id]/agent-endpoint/models` (owner/admin;
+the saved key is used when none is typed, only for the same kind and URL)
+returns the listed ids and one row per model buildd will ask for, prefilled in
+this order: saved alias, the id as is when listed, a listed model the team's
+tier registry already routes that tier to on another provider or surface,
+the same model under another name. Rows still unmatched go to the team's
+decision model (`.../models/suggest`, capability `endpoint_model_match`, a
+labelled choice over at most 20 lexically close listed ids, receipts recorded
+like other decision calls); a confident pick is shown flagged as a suggestion
+and is saved only when the person saves. The person may map any row to any
+listed model. No list: typed aliases, behind "Enter model names manually".
 
 Both verifications go through `verifyByFetch` (`packages/core/net/public-address.ts`):
 the host must resolve only to public addresses, redirects are never followed
@@ -297,7 +328,7 @@ Settings → Model providers (`/app/settings/providers`), a new "Agent runs"
 card next to `GatewayAndDecisionModel`: **Anthropic (default)** / **Use the
 team gateway** (enabled only when a gateway exists) / **OpenRouter** /
 **Anthropic-compatible URL**. Scope selector (all workspaces, or one), header
-choice for the custom URL, optional alias map, Verify button, health line. It
+choice for the custom URL, a model mapping with one dropdown per model buildd asks for (§4), Verify button, health line. It
 also lists runners reporting `llmProviderOverride`. Owners/admins only, masked
 like the gateway (last four characters).
 

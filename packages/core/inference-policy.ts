@@ -37,6 +37,7 @@ export type InferenceCapability =
   | 'orchestration_claim'
   | 'mission_strand_choice'
   | 'cbm_search_injection'
+  | 'endpoint_model_match'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -145,6 +146,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Code graph search notes',
     description: 'When an agent\'s code search missed callers the code graph knows, a decision model picks which list to show it, or none. Facts only; never your code or text.',
     costHint: '~$0.00002 per note',
+  },
+  // Agent endpoint model mapping (apps/web/src/lib/endpoint-model-suggest.ts).
+  // Suggestion only, asked while an admin edits the endpoint; never saved
+  // without them.
+  endpoint_model_match: {
+    id: 'endpoint_model_match',
+    kind: 'built_in',
+    label: 'Endpoint model suggestions',
+    description: 'When an agent endpoint serves none of a model\'s names, a decision model suggests the closest model it does serve. Only a suggestion; you save the mapping.',
+    costHint: '~$0.00003 per model, while editing',
   },
   chat: {
     id: 'chat',

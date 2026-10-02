@@ -120,6 +120,18 @@ describe('mapAgentModel (§5)', () => {
       expect(mapAgentModel({ kind, models: {} }, 'claude-opus-4-8')).toBe('claude-opus-4-8');
     }
   });
+
+  it('a same-model alias stored at save (dated tier id → listed undated name) reaches the wire through the route', () => {
+    // Settings stores discovered aliases in the same `models` map as the
+    // person's; the claim and the runner map through resolveEndpointFromBlob's route.
+    const blob = parseAgentEndpointBlob(JSON.stringify({
+      kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: 'sk-agent-1', authHeader: 'authorization',
+      models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' },
+    }))!;
+    const route = resolveEndpointFromBlob(blob, null)!;
+    expect(mapAgentModel(route, 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5');
+    expect(mapAgentModel(route, 'claude-sonnet-5')).toBe('claude-sonnet-5');
+  });
 });
 
 describe('agentEndpointProbeModel', () => {
@@ -161,6 +173,13 @@ describe('verifyAgentEndpoint', () => {
     expect(down).toEqual({ health: 'unknown', error: 'endpoint returned 502' });
     const net = await verifyAgentEndpoint(route, 'm', { lookup: publicLookup, fetcher: async () => { throw new Error(body); } });
     expect(net).toEqual({ health: 'unknown', error: 'could not reach the endpoint' });
+  });
+
+  it('wire: the model is sent as given, not mapped again', async () => {
+    const aliased = { ...route, models: { 'claude-haiku-4-5': 'team-haiku' } };
+    let sent = '';
+    await verifyAgentEndpoint(aliased, 'claude-haiku-4-5', { lookup: publicLookup, wire: true, fetcher: async (_u, init) => { sent = JSON.parse(String(init?.body)).model; return new Response('{}'); } });
+    expect(sent).toBe('claude-haiku-4-5');
   });
 
   it('a 403 is the model refused for this key, not a dead key: unknown, naming the wire model', async () => {

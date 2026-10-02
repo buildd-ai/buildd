@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Select } from '@/components/ui/Select';
+import Chip, { type ChipTone } from '@/components/ui/Chip';
+import { EndpointModelMap } from './EndpointModelMap';
 
 /** Select value for the team-wide scope (a workspace id is never this). */
 const ALL_WORKSPACES = '__all__';
@@ -24,6 +26,8 @@ export interface MaskedAgentEndpointView {
   baseUrl: string;
   authHeader: 'authorization' | 'x-api-key';
   models: Record<string, string>;
+  /** Every model buildd asks for and the name sent (absent from an older server). */
+  mapping?: Array<{ model: string; tiers: string[]; sent: string }>;
   last4: string;
   gatewayMissing: boolean;
   health: 'healthy' | 'revoked' | 'unknown';
@@ -65,11 +69,11 @@ export function aliasLines(models: Record<string, string>): string {
   return Object.entries(models).map(([k, v]) => `${k} = ${v}`).join('\n');
 }
 
-function healthLine(e: MaskedAgentEndpointView): string {
-  if (e.gatewayMissing) return 'The team gateway it uses is not connected';
-  if (e.health === 'healthy') return `Working${e.lastVerifiedAt ? `, checked ${new Date(e.lastVerifiedAt).toLocaleString()}` : ''}`;
-  if (e.health === 'revoked') return `Rejected the key${e.lastVerificationError ? `: ${e.lastVerificationError}` : ''}`;
-  return `Not confirmed${e.lastVerificationError ? `: ${e.lastVerificationError}` : ''}`;
+function health(e: MaskedAgentEndpointView): { tone: ChipTone; label: string; detail: string | null } {
+  if (e.gatewayMissing) return { tone: 'error', label: 'Gateway missing', detail: 'The team gateway it uses is not connected.' };
+  if (e.health === 'healthy') return { tone: 'success', label: 'Working', detail: null };
+  if (e.health === 'revoked') return { tone: 'error', label: 'Key rejected', detail: e.lastVerificationError };
+  return { tone: 'warning', label: 'Not confirmed', detail: e.lastVerificationError };
 }
 
 export function endpointSummary(e: MaskedAgentEndpointView): string {
@@ -79,6 +83,8 @@ export function endpointSummary(e: MaskedAgentEndpointView): string {
   return parts.join(' · ');
 }
 
+const scopeName = (e: MaskedAgentEndpointView) => (e.scope === 'team' ? 'All workspaces' : e.workspaceName ?? 'Workspace');
+
 export default function AgentEndpointSection({ teamId, canManage, workspaces }: {
   teamId: string;
   canManage: boolean;
@@ -87,6 +93,8 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces }: 
   const [endpoints, setEndpoints] = useState<MaskedAgentEndpointView[] | undefined>(undefined);
   const [hasGateway, setHasGateway] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The scope being edited ('' = team-wide), or null when no editor is open.
+  const [editing, setEditing] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -106,115 +114,146 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces }: 
   useEffect(() => { void load(); }, [load]);
 
   const team = endpoints?.find((e) => e.scope === 'team') ?? null;
-  const scoped = endpoints?.filter((e) => e.scope === 'workspace') ?? [];
-  const status = endpoints === undefined
-    ? 'Loading…'
-    : team
-      ? endpointSummary(team)
-      : 'Anthropic (default)';
+  // Team-wide first, then workspaces by name (the server's order).
+  const routes = endpoints ?? [];
 
   return (
     <section aria-labelledby="agent-endpoint-h" data-testid="agent-endpoint">
       <h2 id="agent-endpoint-h" className="section-label mb-3">Agent model endpoint</h2>
       <div className="card p-4 space-y-3 text-xs">
-        <div className="space-y-1">
-          <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">{status}</p>
-          {team && <p className="text-text-secondary" data-testid="agent-endpoint-health">{healthLine(team)}</p>}
-        </div>
-        {endpoints !== undefined && endpoints.length > 0 ? (
-          <p className="notice notice-info text-xs" data-testid="agent-endpoint-metered">
-            Agent runs are metered through this endpoint: they spend its key&apos;s budget, not a Claude seat, and the
-            per-run dollar cap applies.
-          </p>
-        ) : (
-          <p className="text-text-muted">
-            Runner agents use the team&apos;s Anthropic key or Claude seat. Set an endpoint to send every agent run
-            through one proxy instead, for host and cloud runners alike.
+        {endpoints === undefined && <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Loading…</p>}
+        {endpoints !== undefined && routes.length === 0 && (
+          <div className="space-y-1">
+            <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>
+            <p className="text-text-muted">
+              Runner agents use the team&apos;s Anthropic key or Claude seat. Set an endpoint to send every agent run
+              through one proxy instead, for host and cloud runners alike.
+            </p>
+          </div>
+        )}
+        {routes.map((e) => (
+          <RouteCard key={e.id} endpoint={e} teamId={teamId} canManage={canManage && editing === null}
+            onEdit={() => setEditing(e.workspaceId ?? '')} onChanged={load} />
+        ))}
+        {routes.length > 0 && !team && (
+          <p className="text-text-secondary" data-testid="agent-endpoint-default">All other workspaces: Anthropic (default).</p>
+        )}
+        {routes.length > 0 && (
+          <p className="text-text-muted" data-testid="agent-endpoint-metered">
+            Runs through an endpoint are metered: they spend its key&apos;s budget, not a Claude seat, and the per-run
+            dollar cap applies.
           </p>
         )}
         <p className="text-text-muted">
           A workspace&apos;s own Anthropic key or seat beats a team-wide endpoint. A runner with its own
           <span className="font-mono"> LLM_PROVIDER</span> keeps using it.
         </p>
-
-        {scoped.length > 0 && (
-          <ul className="border-t border-border-default pt-2 space-y-2" data-testid="agent-endpoint-workspaces">
-            {scoped.map((e) => (
-              <li key={e.id} className="space-y-0.5">
-                <p className="text-text-primary"><span className="font-semibold">{e.workspaceName ?? 'Workspace'}</span>: {endpointSummary(e)}</p>
-                <p className="text-text-secondary">{healthLine(e)}</p>
-                {canManage && <RowActions endpoint={e} teamId={teamId} onChanged={load} />}
-              </li>
-            ))}
-          </ul>
-        )}
-        {team && canManage && <RowActions endpoint={team} teamId={teamId} onChanged={load} />}
         {error && <p role="alert" className="text-status-error">{error}</p>}
-        {canManage && endpoints !== undefined && (
-          <Editor teamId={teamId} workspaces={workspaces} endpoints={endpoints} hasGateway={hasGateway} onChanged={load} />
-        )}
+        {canManage && endpoints !== undefined && (editing !== null ? (
+          <Editor teamId={teamId} workspaces={workspaces} endpoints={endpoints} hasGateway={hasGateway} initialScope={editing}
+            onClose={() => setEditing(null)} onChanged={load} />
+        ) : (
+          <div className="pt-1">
+            <button className="btn" onClick={() => setEditing(team ? (workspaces.find((w) => !routes.some((r) => r.workspaceId === w.id))?.id ?? '') : '')}>
+              {routes.length === 0 ? 'Set up an endpoint' : 'Add an endpoint'}
+            </button>
+          </div>
+        ))}
         {!canManage && <p className="text-text-muted">Only a team owner or admin can change the agent endpoint.</p>}
       </div>
     </section>
   );
 }
 
-function RowActions({ endpoint, teamId, onChanged }: { endpoint: MaskedAgentEndpointView; teamId: string; onChanged: () => Promise<void> }) {
+/** One saved endpoint: what it is, where it applies, whether it works, what it sends, and its actions. */
+function RouteCard({ endpoint: e, teamId, canManage, onEdit, onChanged }: {
+  endpoint: MaskedAgentEndpointView;
+  teamId: string;
+  canManage: boolean;
+  onEdit: () => void;
+  onChanged: () => Promise<void>;
+}) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const h = health(e);
 
-  async function verify() {
+  async function run(label: string, url: string, method: 'POST' | 'DELETE') {
     setBusy(true);
     setMsg(null);
     try {
-      const res = await fetch(`/api/secrets/${endpoint.id}/verify`, { method: 'POST' });
+      const res = await fetch(url, { method });
       if (!res.ok) throw new Error(await errorText(res));
       await onChanged();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Could not verify');
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : `Could not ${label}`);
     } finally {
       setBusy(false);
     }
   }
 
-  async function remove() {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const qs = endpoint.workspaceId ? `?workspaceId=${encodeURIComponent(endpoint.workspaceId)}` : '';
-      const res = await fetch(`/api/teams/${teamId}/agent-endpoint${qs}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await errorText(res));
-      await onChanged();
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Could not remove');
-    } finally {
-      setBusy(false);
-    }
-  }
+  const detail = [e.baseUrl, e.last4 ? `key …${e.last4}` : ''].filter(Boolean).join(' · ');
+  const removeUrl = `/api/teams/${teamId}/agent-endpoint${e.workspaceId ? `?workspaceId=${encodeURIComponent(e.workspaceId)}` : ''}`;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 pt-1">
-      <button className="btn" onClick={verify} disabled={busy}>Verify</button>
-      <button className="btn btn-quiet" onClick={remove} disabled={busy}>Remove</button>
-      {msg && <span role="alert" className="text-status-error">{msg}</span>}
+    <div className="space-y-2 border-b border-border-default pb-3" data-testid="agent-endpoint-route" data-scope={e.scope}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-sm text-text-primary" data-testid="agent-endpoint-heading">{KIND_LABEL[e.kind]} · {scopeName(e)}</p>
+        <Chip tone={h.tone} data-testid="agent-endpoint-health">{h.label}</Chip>
+        {e.lastVerifiedAt && <span className="text-text-muted">checked {new Date(e.lastVerifiedAt).toLocaleString()}</span>}
+      </div>
+      {detail && <p className="font-mono text-text-secondary break-all" data-testid="agent-endpoint-detail">{detail}</p>}
+      <p className="text-text-muted">
+        {e.scope === 'team' ? 'Used by every workspace without its own endpoint.' : 'This workspace only. Overrides the team-wide setting.'}
+      </p>
+      {h.detail && <p className="text-text-secondary">{h.detail}</p>}
+      {e.kind !== 'openrouter' && e.mapping && e.mapping.length > 0 && (
+        <ul className="border-t border-border-default" data-testid="agent-endpoint-mapping" aria-label="Model mapping">
+          {e.mapping.map((m) => (
+            <li key={m.model} data-testid="endpoint-mapping-row" data-model={m.model}
+              className="flex flex-col md:flex-row md:items-center gap-1 md:gap-2 py-1.5 border-b border-border-default">
+              <div className="md:w-60 min-w-0">
+                <p className="font-mono text-text-primary truncate" title={m.model}>{m.model}</p>
+                <p className="text-text-muted">{m.tiers.length > 0 ? m.tiers.join(', ') : 'saved alias'}</p>
+              </div>
+              {m.sent === m.model
+                ? <p className="flex-1 min-w-0 text-text-muted">sent as is</p>
+                : <p className="flex-1 min-w-0 font-mono text-text-primary truncate" title={m.sent}><span className="font-sans text-text-muted">sent as </span>{m.sent}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {canManage && (
+        <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="agent-endpoint-actions">
+          <button className="btn" onClick={onEdit} disabled={busy}>Edit</button>
+          <button className="btn btn-quiet" onClick={() => run('verify', `/api/secrets/${e.id}/verify`, 'POST')} disabled={busy}>Verify</button>
+          <button className="btn btn-quiet" onClick={() => run('remove', removeUrl, 'DELETE')} disabled={busy}>Remove</button>
+          {msg && <span role="alert" className="text-status-error">{msg}</span>}
+        </div>
+      )}
     </div>
   );
 }
 
-function Editor({ teamId, workspaces, endpoints, hasGateway, onChanged }: {
+function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClose, onChanged }: {
   teamId: string;
   workspaces: EndpointWorkspace[];
   endpoints: MaskedAgentEndpointView[];
   hasGateway: boolean;
+  /** '' = team-wide, else a workspace id. */
+  initialScope: string;
+  onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
-  const [open, setOpen] = useState(false);
-  const [scope, setScope] = useState<string>('');
-  const [choice, setChoice] = useState<Choice>('anthropic');
-  const [baseUrl, setBaseUrl] = useState('');
+  const initial = endpoints.find((x) => (initialScope ? x.workspaceId === initialScope : x.scope === 'team')) ?? null;
+  const [scope, setScope] = useState<string>(initialScope);
+  const [choice, setChoice] = useState<Choice>(initial?.kind ?? 'anthropic');
+  const [baseUrl, setBaseUrl] = useState(initial?.kind === 'anthropic-compatible' ? initial.baseUrl : '');
   const [apiKey, setApiKey] = useState('');
-  const [authHeader, setAuthHeader] = useState<'authorization' | 'x-api-key'>('authorization');
-  const [aliases, setAliases] = useState('');
+  const [authHeader, setAuthHeader] = useState<'authorization' | 'x-api-key'>(initial?.authHeader ?? 'authorization');
+  const [aliases, setAliases] = useState(aliasLines(initial?.models ?? {}));
+  // The rows' mapping when the endpoint listed its models; null = typed aliases.
+  const [listMapping, setListMapping] = useState<Record<string, string> | null>(null);
+  const [manual, setManual] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -227,9 +266,22 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, onChanged }: {
     setBaseUrl(e?.kind === 'anthropic-compatible' ? e.baseUrl : '');
     setAuthHeader(e?.authHeader ?? 'authorization');
     setAliases(aliasLines(e?.models ?? {}));
+    setListMapping(null);
+    setManual(false);
     setApiKey('');
     setMsg(null);
   }
+
+  // What to ask the server to list: the team gateway, or a URL plus a key (or
+  // the saved key, which the server uses only for the same endpoint).
+  const modelsRequest = useMemo((): Record<string, unknown> | null => {
+    if (choice === 'gateway') return hasGateway ? { kind: 'gateway' } : null;
+    if (choice !== 'anthropic-compatible') return null;
+    const url = baseUrl.trim();
+    const key = apiKey.trim();
+    if (!url || (!key && current?.kind !== 'anthropic-compatible')) return null;
+    return key ? { kind: choice, baseUrl: url, apiKey: key, authHeader } : { kind: choice, baseUrl: url, authHeader };
+  }, [choice, hasGateway, baseUrl, apiKey, authHeader, current?.kind]);
 
   const needsKey = choice === 'openrouter' || choice === 'anthropic-compatible';
   // Replacing an endpoint of the same kind still needs the key: it is never read back.
@@ -248,13 +300,17 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, onChanged }: {
         const res = await fetch(`/api/teams/${teamId}/agent-endpoint${qs}`, { method: 'DELETE' });
         if (!res.ok) throw new Error(await errorText(res));
       } else {
-        const parsed = parseAliasLines(aliases);
-        if (!parsed.ok) throw new Error(parsed.error);
+        let models = listMapping;
+        if (!models) {
+          const parsed = parseAliasLines(aliases);
+          if (!parsed.ok) throw new Error(parsed.error);
+          models = parsed.models;
+        }
         const body: Record<string, unknown> = { kind: choice };
         if (scope) body.workspaceId = scope;
         if (choice === 'openrouter') body.apiKey = apiKey.trim();
         if (choice === 'anthropic-compatible') Object.assign(body, { baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), authHeader });
-        if (choice !== 'openrouter' && Object.keys(parsed.models).length > 0) body.models = parsed.models;
+        if (choice !== 'openrouter' && Object.keys(models).length > 0) body.models = models;
         const res = await fetch(`/api/teams/${teamId}/agent-endpoint`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -263,7 +319,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, onChanged }: {
         if (!res.ok) throw new Error(await errorText(res));
       }
       setApiKey('');
-      setOpen(false);
+      onClose();
       await onChanged();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Could not save');
@@ -271,14 +327,6 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, onChanged }: {
       setApiKey('');
       setBusy(false);
     }
-  }
-
-  if (!open) {
-    return (
-      <div className="pt-1">
-        <button className="btn" onClick={() => { reset(''); setOpen(true); }}>Change</button>
-      </div>
-    );
   }
 
   const radio = (value: Choice, label: string, hint?: string, disabled = false) => (
@@ -334,16 +382,23 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, onChanged }: {
         </div>
       )}
       {(choice === 'gateway' || choice === 'anthropic-compatible') && (
+        <EndpointModelMap teamId={teamId} workspaceId={scope} request={modelsRequest} disabled={busy} onMapping={setListMapping} />
+      )}
+      {(choice === 'gateway' || choice === 'anthropic-compatible') && listMapping === null && (manual ? (
         <div className="space-y-1">
-          <label className="field-label" htmlFor="agent-endpoint-aliases">Model aliases (optional)</label>
+          <label className="field-label" htmlFor="agent-endpoint-aliases">Model names (optional)</label>
           <textarea id="agent-endpoint-aliases" rows={3} value={aliases} onChange={(e) => setAliases(e.target.value)}
             placeholder="native-model-id = proxy-alias" className="w-full px-3 py-2 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs" spellCheck={false} />
-          <p className="text-text-muted">One per line. Models without an alias are sent by their own id.</p>
+          <p className="text-text-muted">This endpoint did not list its models. One per line; models without a name are sent by their own id.</p>
         </div>
-      )}
+      ) : (
+        <div>
+          <button className="btn btn-quiet" onClick={() => setManual(true)} disabled={busy}>Enter model names manually</button>
+        </div>
+      ))}
       <div className="flex flex-wrap items-center gap-2">
         <button className="btn btn-primary" onClick={save} disabled={!canSave}>{choice === 'anthropic' ? 'Use Anthropic' : 'Save'}</button>
-        <button className="btn btn-quiet" onClick={() => { setOpen(false); setApiKey(''); setMsg(null); }} disabled={busy}>Cancel</button>
+        <button className="btn btn-quiet" onClick={() => { setApiKey(''); setMsg(null); onClose(); }} disabled={busy}>Cancel</button>
       </div>
       {msg && <p role="alert" className="text-status-error">{msg}</p>}
     </div>
