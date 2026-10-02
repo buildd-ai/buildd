@@ -17,6 +17,7 @@ import {
   describeForwardForDebug,
   endpointRejectedKey,
   rewriteModelInBody,
+  isClaudeModelId,
   needsServerModelEndpoint,
   resolveModelRoute,
   rewriteOutbound,
@@ -82,7 +83,12 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       const text = await request.text();
       const mapped = rewriteModelInBody(text, decision.mapModel);
       body = mapped ?? text;
-      if (mapped !== null) decision.headers.delete('content-length');
+      if (mapped !== null) {
+        decision.headers.delete('content-length');
+        // Anthropic betas mean nothing to another vendor's model behind a proxy.
+        const target = (JSON.parse(mapped) as { model: string }).model;
+        if (!isClaudeModelId(target)) decision.headers.delete('anthropic-beta');
+      }
     }
     const res = fetch(decision.url, {
       method: request.method,

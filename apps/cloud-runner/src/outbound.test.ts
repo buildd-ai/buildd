@@ -14,6 +14,7 @@ import {
   parseServerModelEndpoint,
   mapEndpointModel,
   rewriteModelInBody,
+  isClaudeModelId,
   isModelRewritePath,
   endpointRejectedKey,
   type ServerModelEndpoint,
@@ -866,5 +867,27 @@ describe("Claude Code's connectivity check is answered by the Worker, not refuse
     // Only that exact probe: anything else under /api is still refused.
     expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello', method: 'POST', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
     expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello/x', method: 'GET', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
+  });
+});
+
+describe('a call mapped to a non-Claude model keeps only standard Messages API fields', () => {
+  const body = { model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }], system: 's', max_tokens: 10, stream: true,
+    tools: [], thinking: { type: 'enabled', budget_tokens: 5 }, metadata: { user_id: 'u' },
+    context_management: { edits: [] }, output_config: { effort: 'high' }, diagnostics: { x: 1 } };
+  test('non-Claude target: Claude-only fields dropped', () => {
+    const out = JSON.parse(rewriteModelInBody(JSON.stringify(body), () => 'fireworks_ai/deepseek-v4p1-flash')!);
+    expect(Object.keys(out).sort()).toEqual(['max_tokens', 'messages', 'metadata', 'model', 'stream', 'system', 'thinking', 'tools']);
+    expect(out.model).toBe('fireworks_ai/deepseek-v4p1-flash');
+  });
+  test('Claude target: everything kept', () => {
+    const out = JSON.parse(rewriteModelInBody(JSON.stringify(body), () => 'claude-sonnet-5-alias-claude')!);
+    expect(out.context_management).toEqual({ edits: [] });
+    expect(out.diagnostics).toEqual({ x: 1 });
+  });
+  test('isClaudeModelId', () => {
+    expect(isClaudeModelId('claude-haiku-4-5')).toBe(true);
+    expect(isClaudeModelId('anthropic/claude-sonnet-4.5')).toBe(true);
+    expect(isClaudeModelId('bedrock/us.anthropic.claude-sonnet-5')).toBe(true);
+    expect(isClaudeModelId('fireworks_ai/deepseek-v4p1-flash')).toBe(false);
   });
 });

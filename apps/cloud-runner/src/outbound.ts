@@ -669,7 +669,27 @@ export function isModelRewritePath(method: string | undefined, rawUrl: string): 
   }
 }
 
-/** The body with only its top-level `model` mapped; null when it is not a JSON object or nothing changes. */
+/** Whether an endpoint model id names a Claude model (any provider prefix). */
+export function isClaudeModelId(id: string): boolean {
+  return /(^|[/.])claude-/i.test(id) || /^claude/i.test(id);
+}
+
+/**
+ * The Messages API's standard top-level fields. Claude Code also sends
+ * Anthropic-only ones (`context_management`, `output_config`, `diagnostics`,
+ * ...), which a proxy passes through and a non-Anthropic model behind it
+ * rejects ("Extra inputs are not permitted").
+ */
+const STANDARD_MESSAGE_FIELDS = new Set([
+  'model', 'messages', 'system', 'max_tokens', 'metadata', 'stop_sequences', 'stream',
+  'temperature', 'top_p', 'top_k', 'tools', 'tool_choice', 'thinking',
+]);
+
+/**
+ * The body with its top-level `model` mapped; null when it is not a JSON
+ * object or nothing changes. When the target is not a Claude model, only the
+ * standard Messages API fields are kept.
+ */
 export function rewriteModelInBody(text: string, map: (id: string) => string): string | null {
   let body: unknown;
   try { body = JSON.parse(text); } catch { return null; }
@@ -678,7 +698,9 @@ export function rewriteModelInBody(text: string, map: (id: string) => string): s
   if (typeof model !== 'string') return null;
   const mapped = map(model);
   if (mapped === model) return null;
-  return JSON.stringify({ ...(body as Record<string, unknown>), model: mapped });
+  const fields = Object.entries(body as Record<string, unknown>)
+    .filter(([k]) => isClaudeModelId(mapped) || STANDARD_MESSAGE_FIELDS.has(k));
+  return JSON.stringify({ ...Object.fromEntries(fields), model: mapped });
 }
 
 /**
