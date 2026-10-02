@@ -282,6 +282,8 @@ export interface SnapshotWorker {
   mergedAt: Date | null;
   /** Supersession edge (task fcaf83d5) — set only on a closed, unmerged PR. */
   supersededByPrNumber: number | null;
+  /** Declared abandoned with a reason: settled, no longer an unresolved PR. */
+  abandonedAt?: Date | null;
   commitCount: number | null;
   createdAt: Date;
   startedAt: Date | null;
@@ -978,7 +980,7 @@ export const INVARIANTS: Invariant[] = [
       const taskById = new Map(s.tasks.map(t => [t.id, t]));
       const out: InvariantViolation[] = [];
       for (const w of s.workers) {
-        if (!w.taskId || !w.prUrl || w.mergedAt || w.prLifecycleStatus !== 'closed' || w.supersededByPrNumber) continue;
+        if (!w.taskId || !w.prUrl || w.mergedAt || w.prLifecycleStatus !== 'closed' || w.supersededByPrNumber || w.abandonedAt) continue;
         const t = taskById.get(w.taskId);
         if (!t || t.taskClass !== 'work' || t.status !== 'completed') continue;
         const ageMs = olderThan(now, t.updatedAt, UNRESOLVED_PR_SUPERSESSION_MS);

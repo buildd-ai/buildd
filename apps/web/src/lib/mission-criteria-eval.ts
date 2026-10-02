@@ -324,7 +324,7 @@ export async function evaluateCriteriaNow(
       // predicate `canCompleteMission` uses, so the two cannot disagree.
       columns: {
         taskId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true, prNumber: true,
-        prLifecycleStatus: true, supersededByPrNumber: true,
+        prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true,
       },
     });
   }
