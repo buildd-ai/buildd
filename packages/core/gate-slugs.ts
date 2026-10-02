@@ -158,6 +158,17 @@ export const GATE_SLUGS = {
    * never recorded here as an operational failure — it goes to the conflict agent.
    */
   BASE_REFRESH: 'base_refresh',
+  /**
+   * A red CI result on a buildd PR that got no CI-fix task
+   * (`lib/ci-failure-retry.ts`), from the `check_suite` webhook or the red-PR
+   * sweep (`lib/ci-red-sweep.ts`). `detail.skipReason` is the stable code:
+   * owner_stopped, pr_terminal, no_workspace, draft, pr_merged, pr_closed,
+   * fix_in_flight, head_already_retried, retries_exhausted, retries_disabled,
+   * duplicate. `deferred` = someone still owes a push (a fix in flight);
+   * `rejected` = nothing will act on this head; `stranded` = the sweep found a
+   * head an attempt already ran on with nothing pushed, and escalated it.
+   */
+  CI_RETRY_SKIPPED: 'ci_retry_skipped',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

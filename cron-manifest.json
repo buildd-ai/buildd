@@ -150,6 +150,13 @@
       "method": "GET"
     },
     {
+      "$comment": "Redis-gated fast tick for the red-PR sweep (lib/ci-red-sweep.ts; knowledge-base: buildd/design/pr-merge-reliability.md M3): an open buildd PR whose CI is red, with no live fix attempt and no escalation, past a short window, gets the CI retry the check_suite webhook would have filed (under the existing per-PR cap), or one escalation to a human per PR + head. The webhook feeds buildd:due:ci-red whenever it skips a retry someone must come back to: a fix attempt in flight that may finish without pushing, which GitHub never reports again. Reads one sorted set and returns without querying Postgres unless a PR is due, so it costs no extra Neon wake while nothing is waiting. Offset to :07/:17/... so it never shares a minute with the landing tick (:05) or the :10 merge-state pass, which is the floor: that pass enumerates ci_failed PRs from Postgres and re-seeds the set. Fail-open on Redis like the landing tick. Separate cron_runs slug (pr-reconcile:ci-red).",
+      "title": "Buildd: Red PR Sweep (gated)",
+      "path": "/api/cron/pr-reconcile?scope=ci-red&gate=due",
+      "schedule": "7-57/10 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Full PR reconcile: merge-state plus the dead-zone sweep, which CREATES conflict-resolution tasks and therefore stays daily. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 02:00 into the working day (EST). (was 0 2 * * *)",
       "title": "Buildd: PR Reconcile",
       "path": "/api/cron/pr-reconcile",
