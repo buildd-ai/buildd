@@ -569,6 +569,44 @@ describe('PATCH /api/workspaces/[id]/skills/[skillId]', () => {
     });
   });
 
+  // claude.ai artifact access lives in metadata (@buildd/shared claude-ai-artifacts.ts).
+  describe('claudeAiArtifacts', () => {
+    const existingSkill = {
+      id: 'skill-1', workspaceId: 'ws-1', name: 'Builder', slug: 'builder',
+      content: '# Builder', isRole: false, enabled: true, metadata: { routing: { whenToUse: 'w' } },
+    };
+    async function patch(body: Record<string, unknown>) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue(true);
+      mockWorkspaceSkillsFindFirst.mockResolvedValue(existingSkill);
+      let captured: any = null;
+      const mockWhere = mock(() => ({ returning: mock(() => [{ ...existingSkill, ...captured }]) }));
+      mockSkillsUpdate.mockReturnValue({ set: mock((u: any) => { captured = u; return { where: mockWhere }; }) });
+      const response = await PATCH(
+        createMockRequest({ method: 'PATCH', body }),
+        { params: Promise.resolve({ id: 'ws-1', skillId: 'skill-1' }) },
+      );
+      return { response, captured };
+    }
+
+    it('sets the flag in metadata and keeps the rest', async () => {
+      const { response, captured } = await patch({ claudeAiArtifacts: 'read' });
+      expect(response.status).toBe(200);
+      expect(captured.metadata).toEqual({ routing: { whenToUse: 'w' }, claudeAiArtifacts: 'read' });
+    });
+
+    it('rejects an unknown value', async () => {
+      const { response } = await patch({ claudeAiArtifacts: 'delete' });
+      expect(response.status).toBe(400);
+    });
+
+    it('leaves metadata untouched when omitted', async () => {
+      const { captured } = await patch({ name: 'Builder 2' });
+      expect('metadata' in captured).toBe(false);
+    });
+  });
+
   it('persists connectorRefs on PATCH (spec §2)', async () => {
     const existingSkill = {
       id: 'skill-1',

@@ -12,7 +12,7 @@ export interface WaitingTask {
   workspaceId: string;
   /** The task's mission, so a link can open it in mission context. */
   missionId?: string | null;
-  waitingFor: { type: string; prompt: string; options?: string[] } | null;
+  waitingFor: { type: string; prompt: string; options?: string[]; context?: string; recommended?: { label: string; reason?: string } } | null;
   /** Answered; the worker has not picked the answer up yet. Not counted as waiting. */
   answerSent?: boolean;
 }

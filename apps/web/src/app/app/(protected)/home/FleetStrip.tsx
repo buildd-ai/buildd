@@ -159,6 +159,7 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
   return (
     <div
       data-testid="fleet-runner"
+      data-elastic={runner.elastic ? 'true' : undefined}
       className={`grid ${TABLE_COLS} ${first ? '' : 'border-t-[1.5px] border-t-[var(--fleet-border-mid)]'}`}
     >
       <div
@@ -169,8 +170,20 @@ function RunnerBlock({ runner, rows, first, now }: { runner: FleetRunner; rows: 
         <span title={runner.name} className="min-w-0 font-mono text-[13px] font-semibold leading-tight text-text-primary [overflow-wrap:anywhere] md:line-clamp-2 md:text-[14px]">
           {runner.name}
         </span>
-        {runner.machine && <span className={`truncate font-mono text-[11px] text-text-muted md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
-        <span className={roomy ? '' : 'md:hidden'}><SlotMeterSquares runner={runner} rows={rows} /></span>
+        {runner.elastic ? (
+          // An elastic group has no fixed size to draw: its slots are its live
+          // runs. One line under the name ("Cloudflare · elastic · 2 running")
+          // so a one-run group still fits a single slot row's height.
+          <span className="truncate font-mono text-[11px] text-text-muted md:text-[12px]">
+            {runner.machine && <>{runner.machine}{' · '}</>}
+            <b data-testid="fleet-elastic-running" className="font-semibold tabular-nums text-accent-text">{runner.elastic.running} running</b>
+          </span>
+        ) : (
+          <>
+            {runner.machine && <span className={`truncate font-mono text-[11px] text-text-muted md:text-[12px] ${roomy ? '' : 'md:hidden'}`}>{runner.machine}</span>}
+            <span className={roomy ? '' : 'md:hidden'}><SlotMeterSquares runner={runner} rows={rows} /></span>
+          </>
+        )}
         {!runner.online && <span className="font-mono text-[11px] text-status-warning">offline</span>}
       </div>
       {rows.map((row) => row.kind === 'slot' ? (

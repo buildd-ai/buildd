@@ -236,6 +236,17 @@ describe('storeClaudeCredential', () => {
     expect(decoded.account_id).toBeUndefined();
   });
 
+  it('stores the granted scopes when the credential carries them', async () => {
+    const insertValues = mock(() => Promise.resolve());
+    mockInsert.mockReturnValue({ values: insertValues });
+    await storeClaudeCredential({ teamId: 'team-1' }, {
+      access_token: 'my-at', refresh_token: 'my-rt', scopes: ['user:inference', 'user:mcp_servers'],
+    });
+    const row = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
+    const decoded = JSON.parse((row.encryptedValue as string).replace(/^enc:/, ''));
+    expect(decoded.scopes).toEqual(['user:inference', 'user:mcp_servers']);
+  });
+
   it('writes seatId to all OAuth accounts in team when access_token is a JWT with sub', async () => {
     const insertValues = mock(() => Promise.resolve());
     mockInsert.mockReturnValue({ values: insertValues });
@@ -284,6 +295,16 @@ describe('resolveClaudeCredential', () => {
     const result = await resolveClaudeCredential({ teamId: 'team-1' });
     expect(result).not.toBeNull();
     expect(result?.accessToken).toBe('at');
+  });
+
+  it('returns the recorded scopes, or null when none were recorded', async () => {
+    mockFindMany.mockResolvedValue([makeRow({
+      encryptedValue: `enc:${JSON.stringify({ access_token: 'at', refresh_token: 'rt', scopes: ['user:inference', 'user:mcp_servers'] })}`,
+    })]);
+    expect((await resolveClaudeCredential({ teamId: 'team-1' }))?.scopes).toEqual(['user:inference', 'user:mcp_servers']);
+
+    mockFindMany.mockResolvedValue([makeRow()]);
+    expect((await resolveClaudeCredential({ teamId: 'team-1' }))?.scopes).toBeNull();
   });
 
   it('prefers workspace-scoped over team-wide', async () => {
@@ -467,6 +488,33 @@ describe('refreshClaudeCredential', () => {
 
     const result = await refreshClaudeCredential('secret-1');
     expect(result).toBe('refreshed');
+  });
+
+  // Recorded scopes ride the blob; a refresh must not drop them, or the
+  // runner silently falls back to inference-only and connectors vanish.
+  it('keeps the recorded scopes through a refresh', async () => {
+    const encryptedValue = `enc:${JSON.stringify({ access_token: 'old-at', refresh_token: 'old-rt', scopes: ['user:inference', 'user:mcp_servers'] })}`;
+    const sets: Array<Record<string, unknown>> = [];
+    let callCount = 0;
+    mockUpdate.mockImplementation(() => ({
+      set: mock((setObj: Record<string, unknown>) => {
+        sets.push(setObj);
+        const returning = callCount++ === 0
+          ? mock(() => Promise.resolve([{ id: 'secret-1', encryptedValue, purpose: 'claude_credential' }]))
+          : mock(() => Promise.resolve([{ id: 'secret-1' }]));
+        return { where: mock(() => ({ returning })) };
+      }),
+    }));
+    global.fetch = mock(async () => ({
+      ok: true,
+      json: async () => ({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+    })) as any;
+
+    expect(await refreshClaudeCredential('secret-1')).toBe('refreshed');
+    const written = sets.find(x => typeof x.encryptedValue === 'string');
+    const decoded = JSON.parse((written!.encryptedValue as string).replace(/^enc:/, ''));
+    expect(decoded.access_token).toBe('new-at');
+    expect(decoded.scopes).toEqual(['user:inference', 'user:mcp_servers']);
   });
 
   it('returns error on network failure and resets lock so the credential can retry sooner', async () => {

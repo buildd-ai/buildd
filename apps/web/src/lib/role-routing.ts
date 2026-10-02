@@ -1,5 +1,5 @@
 /**
- * A role's routing text (docs/design/role-routing.md §2): `whenToUse` and
+ * A role's routing text (knowledge-base: buildd/design/role-routing.md §2): `whenToUse` and
  * `notFor`, stored in `workspaceSkills.metadata.routing`. They are the Choice
  * criteria of the role decision — the model reads nothing else about a role —
  * so they are validated to the §2 limits and never truncated silently.

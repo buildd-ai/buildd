@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The md-and-up list-header toggle (docs/design/mission-feed-mobile-continuity.md,
+ * The md-and-up list-header toggle (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * "Desktop adaptation"): Timeline or Structure. That is all that is left of
  * the mission tabs — the Summary tab was absorbed into NEEDS YOU and the Feed
  * tab became the Notes sheet. Below md the page renders `MissionFeedList`

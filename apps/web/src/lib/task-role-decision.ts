@@ -1,5 +1,5 @@
 /**
- * The task role shadow (docs/design/role-routing.md §3, §5, §6(a)).
+ * The task role shadow (knowledge-base: buildd/design/role-routing.md §3, §5, §6(a)).
  *
  * Most tasks are filed with no `roleSlug`. This asks a decision model (Jev)
  * which of the workspace's roles should do the work, and — when the task has no
@@ -13,11 +13,13 @@
  * unusable connector, unable to produce the task's required output, or on a
  * different backend from the task. Fewer than two candidates ⇒ no call.
  *
- * Runs only for teams that list `task_role_shadow` in
- * `teams.enabledDecisionShadows` (an `opt_in` capability,
+ * Runs only for teams that list `task_role_shadow` or `task_role_apply` in
+ * `teams.enabledDecisionShadows` (`opt_in` capabilities,
  * packages/core/inference-policy.ts), and only when a decision key resolves.
  * The policy check runs before the candidate query, so a team that has not
- * opted in costs one team-row read.
+ * opted in costs a team-row read or two. When the call was made under
+ * `task_role_apply` the result says so (`applyEnabled`), and
+ * `task-role-apply.ts` decides whether to write; this module never does.
  *
  * Telemetry: one `[decision-shadow]` line per look, ids, slugs, labels and
  * numbers only — never the task's text or a role's routing text.
@@ -41,6 +43,9 @@ export const SHADOW_DESCRIPTION_CHARS = 1_500;
 export const SHADOW_MAX_PATHS = 20;
 export const DECISION_SHADOW_LOG_PREFIX = '[decision-shadow]';
 export const TASK_ROLE_CAPABILITY = 'task_role_shadow' as const;
+/** The separate opt-in that lets the answer be written (§6(c), task-role-apply.ts). */
+export const TASK_ROLE_APPLY_CAPABILITY = 'task_role_apply' as const;
+export type TaskRoleCapability = typeof TASK_ROLE_CAPABILITY | typeof TASK_ROLE_APPLY_CAPABILITY;
 /** One in this many tasks that STATED a role is shadowed too, for free labels (§6(a)). */
 export const STATED_ROLE_SAMPLE_EVERY = 5;
 
@@ -345,7 +350,7 @@ export interface TaskRoleShadowInput extends TaskRoleStateInput, CandidateTask {
 }
 
 type DecideFn = typeof decisionCall<TaskRoleQuestions>;
-type ResolveAccess = (opts: { capability: typeof TASK_ROLE_CAPABILITY; teamId: string; workspaceId: string; accountId: string | null }) => Promise<DecisionAccess>;
+type ResolveAccess = (opts: { capability: TaskRoleCapability; teamId: string; workspaceId: string; accountId: string | null }) => Promise<DecisionAccess>;
 export type ReadClaimedAt = (taskId: string) => Promise<Date | null>;
 
 async function dbReadClaimedAt(taskId: string): Promise<Date | null> {
@@ -398,19 +403,32 @@ export interface TaskRoleShadowRecord {
  * Look at one task and log what role (and kind) the model would give it.
  * Never throws, never writes.
  */
-export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRoleShadowDeps = {}): Promise<{ outcome: TaskRoleShadowOutcome; record?: TaskRoleShadowRecord }> {
+export interface TaskRoleShadowResult {
+  outcome: TaskRoleShadowOutcome;
+  record?: TaskRoleShadowRecord;
+  /** The call was made under `task_role_apply`: the team allows this answer to be written. */
+  applyEnabled?: boolean;
+}
+
+export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRoleShadowDeps = {}): Promise<TaskRoleShadowResult> {
   const log = deps.log ?? ((line: string) => console.log(line));
   try {
     if (input.statedRoleSlug && !inStatedRoleSample(input.taskId)) return { outcome: 'not_sampled' };
     if (input.dataClass === 'sensitive') return { outcome: 'sensitive' };
 
     // Policy and key first: a team that has not opted in pays no candidate query.
+    // A role-less task asks under the apply capability when the team turned it
+    // on, so apply works without the shadow listed too; a stated-role task is
+    // never an apply candidate and only ever asks as the shadow.
     const client = deps.decide && deps.resolveAccess ? null : await import('@buildd/core/decision-client');
     const resolveAccess = deps.resolveAccess ?? (client!.resolveDecisionAccess as ResolveAccess);
-    const access = await resolveAccess({
-      capability: TASK_ROLE_CAPABILITY, teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null,
-    });
+    const scope = { teamId: input.teamId, workspaceId: input.workspaceId, accountId: input.accountId ?? null };
+    let capability: TaskRoleCapability = TASK_ROLE_CAPABILITY;
+    let access = input.statedRoleSlug ? null : await resolveAccess({ capability: TASK_ROLE_APPLY_CAPABILITY, ...scope });
+    if (access?.ok) capability = TASK_ROLE_APPLY_CAPABILITY;
+    else access = await resolveAccess({ capability: TASK_ROLE_CAPABILITY, ...scope });
     if (!access.ok) return { outcome: 'disabled' };
+    const applyEnabled = capability === TASK_ROLE_APPLY_CAPABILITY;
 
     const { candidates, excluded } = await buildRoleCandidates(input, deps);
     const roleQ = buildRoleQuestion(candidates);
@@ -423,7 +441,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
 
     const decide = deps.decide ?? (client!.decisionCall as DecideFn);
     const res: DecisionResult<TaskRoleQuestions> = await decide({
-      capability: TASK_ROLE_CAPABILITY,
+      capability,
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       accountId: input.accountId ?? null,
@@ -468,7 +486,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     };
     // Ids, slugs and numbers only: never the task's text or a role's routing text.
     log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify(record)}`);
-    return { outcome: 'logged', record };
+    return { outcome: 'logged', record, applyEnabled };
   } catch (err) {
     console.error(`${DECISION_SHADOW_LOG_PREFIX} task_role failed (non-fatal, task unaffected):`, err);
     return { outcome: 'error' };

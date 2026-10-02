@@ -676,11 +676,16 @@ stored — it is derived on read from the state of associated tasks via
   - An `approved` verdict is the opposite default — it passes unless a later
     push is PROVABLY a different commit from the one approved, in which case
     it blocks as `stale_approval`. Unlike the block kinds above, this is not
-    paired with an automatic re-dispatch (re-reviewing every push after every
-    approval would fire far more often, since most approved PRs merge before
-    another push lands) — the gate itself is the explicit recorded decision
-    that the approval no longer covers what would merge; a human or a fresh
-    re-review request clears it. Exception: a push that leaves the PR's own
+    re-dispatched on push (re-reviewing every push after every approval would
+    fire far more often, since most approved PRs merge before another push
+    lands) — the gate itself is the explicit recorded decision that the
+    approval no longer covers what would merge. The re-review is sent at merge
+    time instead: when an unattended merge attempt (`tryAutoMergeWorkerPr`, or
+    `landPr`'s `re_review` fix) hits `stale_approval` after carry-forward
+    failed, it dispatches a delta re-review through `resolveReReviewPlan` and
+    `createReviewerTask` (`stale-approval-re-review.ts`), single-flight per PR
+    and head. A human or a fresh re-review request can still clear it sooner.
+    Exception: a push that leaves the PR's own
     diff unchanged (rebase or base merge — `base...sha` compared at both
     commits, hunk positions ignored) is recorded on the approving review as
     `context.equivalentHeadShas`, and the gate treats those heads as covered
@@ -766,7 +771,8 @@ stored — it is derived on read from the state of associated tasks via
   GIVEN an `approve` recorded at an EARLIER head than the one being merged
   THEN it is refused as `stale_approval` instead — an approval is not silently
   re-used past the commit it was made against, and (unlike request-changes) is
-  not paired with an automatic re-dispatch — UNLESS the PR diff at the merged
+  not re-dispatched on push but at the next unattended merge attempt, which
+  sends one delta re-review per PR head — UNLESS the PR diff at the merged
   head is identical to the diff at the approved head, in which case the
   approval carries forward and the merge proceeds once CI is green.
 - AC-11za: GIVEN a blocking verdict WHEN a human merges from the dashboard with

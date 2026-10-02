@@ -1,7 +1,7 @@
 /**
  * GET /api/cron/tier-pools
  *
- * The daily step for tier model pools (docs/design/tier-weights.md §3c, §4).
+ * The daily step for tier model pools (knowledge-base: buildd/design/tier-weights.md §3c, §4).
  * Hourly at :00; the work inside is once per day:
  *
  * - After 03:00 UTC, each team with an explore pool fetches its OpenRouter

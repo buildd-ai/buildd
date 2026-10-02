@@ -31,7 +31,7 @@ const deps: AccountBudgetDeps = {
 };
 
 // PATCH /api/accounts/[id]/ai-budget — body { aiDailyBudgetUsd: number | null }.
-// The cap POST /api/ai/plan reads for this account (docs/design/shared-ai-kit.md §2).
+// The cap POST /api/ai/plan reads for this account (knowledge-base: buildd/design/shared-ai-kit.md §2).
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isUuid(id)) {

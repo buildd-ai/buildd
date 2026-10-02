@@ -18,6 +18,12 @@ export type PrShipState =
   | 'merged'
   /** Closed unmerged, but the work landed under `supersededByPrNumber`. */
   | 'superseded'
+  /**
+   * Closed unmerged, and a person recorded that the work is deliberately not
+   * shipping (`abandonedReason`). Not shipped — but settled, so it no longer
+   * blocks completion the way an unexplained dead PR does.
+   */
+  | 'abandoned'
   /** Not merged and not closed: merging it is the remedy. */
   | 'open'
   /** Closed unmerged with no edge: it never shipped, and GitHub won't reopen it. */
@@ -28,6 +34,7 @@ export interface PrShipInput {
   mergedAt?: string | Date | null;
   prLifecycleStatus?: string | null;
   supersededByPrNumber?: number | null;
+  abandonedAt?: string | Date | null;
 }
 
 export function prShipState(w: PrShipInput | null | undefined): PrShipState {
@@ -36,8 +43,37 @@ export function prShipState(w: PrShipInput | null | undefined): PrShipState {
   // `recordPrSupersession` verifies the target is merged at write time, and a
   // merge is permanent — a stored edge is trusted without a GitHub round-trip.
   if (w.supersededByPrNumber) return 'superseded';
-  if (w.prLifecycleStatus === 'closed') return 'closed_unsuperseded';
+  if (w.prLifecycleStatus === 'closed') return w.abandonedAt ? 'abandoned' : 'closed_unsuperseded';
   return 'open';
+}
+
+// ─── Unverified supersession suggestions ─────────────────────────────────────
+
+/** Where a supersession candidate came from. A signal, never a verdict. */
+export type SupersessionSignal = 'claim' | 'cross_reference' | 'sibling_task' | 'file_overlap';
+
+export interface SupersessionSuggestion {
+  repo: string;
+  prNumber: number;
+  prUrl: string;
+  signal: SupersessionSignal;
+  /** One line a person can judge the suggestion by. */
+  why: string;
+  /** Rank among the candidates found, 0–1. Not a probability. */
+  score: number;
+}
+
+/**
+ * The last automatic supersession scan of a closed PR (`workers.supersessionScan`).
+ * `suggestion` is the best candidate that could NOT be content-verified; a
+ * verified one is written as a real edge instead and never lands here.
+ */
+export interface SupersessionScan {
+  scannedAt: string;
+  candidatesChecked: number;
+  suggestion: SupersessionSuggestion | null;
+  /** Candidate prUrls a person rejected ("Not this") — never suggested again. */
+  dismissed?: string[];
 }
 
 /** True when the row has a PR and that PR's work shipped (merged or superseded). */
@@ -162,7 +198,7 @@ export interface PrShipSummary {
  */
 export function summarizePrShipStates(workers: ReadonlyArray<LineageWorker>): PrShipSummary[] {
   const RANK: Record<PrShipSummary['state'], number> = {
-    merged: 0, superseded: 1, closed_unsuperseded: 2, open: 3,
+    merged: 0, superseded: 1, abandoned: 2, closed_unsuperseded: 3, open: 4,
   };
   const byUrl = new Map<string, PrShipSummary>();
   for (const w of workers) {

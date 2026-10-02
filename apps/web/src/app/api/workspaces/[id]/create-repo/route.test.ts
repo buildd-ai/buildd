@@ -147,6 +147,36 @@ describe('POST /api/workspaces/[id]/create-repo', () => {
     expect(mockGithubApi.mock.calls[0][1]).toBe('/user/repos');
   });
 
+  it('returns 403 naming the Administration permission when the App cannot create repos', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      githubInstallationId: 'inst-1',
+      githubInstallation: { id: 'inst-1', installationId: 1234, accountLogin: 'acme', accountType: 'Organization' },
+    });
+    mockGithubApi.mockRejectedValue(
+      new Error('GitHub API error: 403 {"message":"Resource not accessible by integration"}'),
+    );
+    const res = await POST(postReq({ name: 'new-repo' }), { params });
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toContain('Resource not accessible by integration');
+    expect(data.hint).toContain('Administration');
+    expect(data.hint).toContain('gh repo create');
+  });
+
+  it('keeps 500 for other GitHub failures', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      githubInstallationId: 'inst-1',
+      githubInstallation: { id: 'inst-1', installationId: 1234, accountLogin: 'acme', accountType: 'Organization' },
+    });
+    mockGithubApi.mockRejectedValue(new Error('GitHub API error: 502 bad gateway'));
+    const res = await POST(postReq({ name: 'new-repo' }), { params });
+    expect(res.status).toBe(500);
+  });
+
   it('returns 422 when workspace has no linked installation and no org match', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubInstallationId: null });

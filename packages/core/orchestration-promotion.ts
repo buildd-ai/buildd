@@ -1,6 +1,6 @@
 /**
  * The promotion guard for orchestration decisions
- * (docs/design/conflict-aware-orchestration.md §6, "Rollout, evaluation and
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §6, "Rollout, evaluation and
  * safety bounds").
  *
  * An applying cohort above zero exists only behind recorded evidence: a

@@ -17,6 +17,7 @@ import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
+import AnswerStatesFixture from './AnswerStatesFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
     FIXTURE_VIEWS,
@@ -27,6 +28,7 @@ import {
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
+    ANSWER_STATES_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -87,6 +89,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_CHECK_INS_FIXTURE_STATE) {
         return <MissionCheckInsFixture />;
+    }
+
+    if (state === ANSWER_STATES_FIXTURE_STATE) {
+        return <AnswerStatesFixture />;
     }
 
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {

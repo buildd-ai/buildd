@@ -1,5 +1,5 @@
 /**
- * The chat feed's view of the wire contract (docs/design/agent-chat.md,
+ * The chat feed's view of the wire contract (knowledge-base: buildd/design/agent-chat.md,
  * "Objects in the feed").
  *
  * Every buildd tool the chat can call returns `{ data, objects }`: `data` is

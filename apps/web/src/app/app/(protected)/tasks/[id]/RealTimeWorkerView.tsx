@@ -16,6 +16,7 @@ import { unifyWorkerQuestion, type QuestionNoteLike } from './question-hero';
 import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
 import { useNeedsInput } from '@/components/needs-input-context';
 import { isAnswerableWaitingFor, type NotWaitingReason } from '@/lib/answer-resume';
+import { answerOutcomeLines, classifyRespondReply } from './respond/submit-answer';
 import type { WorkerMilestone, WorkerWaitingFor } from '@buildd/core/db/schema';
 
 // Exported for testing: whether a worker-channel event should bypass the
@@ -161,6 +162,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
   // degradation this whole flow exists to avoid.
   const [answerOutcome, setAnswerOutcome] = useState<string | null>(null);
   const answeredPromptRef = useRef<string | null>(null);
+  const answerInFlightRef = useRef(false);
   const [showMetricsDetail, setShowMetricsDetail] = useState(false);
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   // The question is this page's hero: the global "…needs your input" banner
@@ -244,6 +246,9 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
   // docs/specs/answered-question-resume.md. The response's `message` is the
   // owner-facing sentence for whichever path ran.
   const handleAnswer = useCallback(async (option: string) => {
+    // A ref, not state: a second tap in the same frame still sees no answer in flight.
+    if (answerInFlightRef.current) return;
+    answerInFlightRef.current = true;
     setAnswerSending(option);
     setAnswerError(null);
     try {
@@ -253,6 +258,20 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
         body: JSON.stringify({ message: option }),
       });
       const data = await res.json().catch(() => null);
+      // Already answered (a double tap, or another surface got there first)
+      // is an answer on record, not a failure: show what was recorded.
+      const classified = classifyRespondReply(res.status, data, option);
+      if (classified.kind === 'already_answered') {
+        const lines = answerOutcomeLines(classified);
+        setAnswerOutcome(lines.detail ? `${lines.headline}. ${lines.detail}` : `${lines.headline}. Answer sent, waiting for the agent.`);
+        answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
+        // A cold answer moved the work to a follow-up task: link it, as a sent one does.
+        const next = (data as { nextAction?: { kind?: string; taskId?: unknown } } | null)?.nextAction;
+        setContinuationTaskId(next?.kind === 'open_task' && typeof next.taskId === 'string' ? next.taskId : null);
+        setAnswerSent(true);
+        markAnswerSent?.(taskId);
+        return;
+      }
       if (!res.ok) {
         // The worker stopped waiting after this page rendered: say what
         // happened, and refetch so the stale card goes away.
@@ -295,6 +314,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
       console.error('Failed to send answer:', err);
       setAnswerError({ message: err instanceof Error ? err.message : 'Failed to send answer' });
     } finally {
+      answerInFlightRef.current = false;
       setAnswerSending(null);
     }
   }, [worker.id, worker.waitingFor?.prompt, noteId, taskId, markAnswerSent, router]);

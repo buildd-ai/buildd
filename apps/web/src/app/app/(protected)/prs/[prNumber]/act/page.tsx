@@ -16,6 +16,7 @@ const ACTION_HINTS: Record<LandingAction, string> = {
   retry_landing: 'Runs the landing check again with a fresh budget.',
   merge_anyway: 'Merges now, overriding the rule that stopped it.',
   close_superseded: 'Closes the PR; its change is already upstream.',
+  review_on_github: 'buildd will not merge this one. Review the diff and merge it on GitHub yourself.',
 };
 
 export default async function LandingActionPage({
@@ -39,7 +40,7 @@ export default async function LandingActionPage({
   const verdict = token ? verifyLandingActionToken(token) : null;
   const workspaceHint = verdict?.ok ? verdict.payload.workspaceId : undefined;
   const resolved = await resolveOpenWorkerForUser(user.id, prNumber, workspaceHint);
-  const worker = typeof resolved.status === 'number' ? null : (resolved as { id: string; taskId: string | null; workspaceId: string });
+  const worker = typeof resolved.status === 'number' ? null : (resolved as { id: string; taskId: string | null; workspaceId: string; prUrl: string | null });
 
   const view =
     token && worker?.taskId
@@ -65,7 +66,12 @@ export default async function LandingActionPage({
             workspaceId={worker.workspaceId}
             token={token}
             proposed={view.proposed}
-            options={view.options.map((a) => ({ action: a, label: LANDING_ACTION_LABELS[a], hint: ACTION_HINTS[a] }))}
+            options={view.options.map((a) => ({
+              action: a,
+              label: LANDING_ACTION_LABELS[a],
+              hint: ACTION_HINTS[a],
+              ...(a === 'review_on_github' && worker.prUrl ? { href: `${worker.prUrl}/files` } : {}),
+            }))}
             headMoved={view.headMoved}
             fallbackHref={fallbackHref}
           />

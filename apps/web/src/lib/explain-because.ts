@@ -20,6 +20,10 @@ import type { CausalLink, ExplainRefs, TouchSource } from './explain-types';
 import { orderChain } from './explain-types';
 import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
+import { suggestionRef } from './mission-state-view';
+import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
+
+const repoOf = (url: string | null | undefined) => url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
 
 export type { TouchSource } from './explain-types';
 
@@ -74,6 +78,8 @@ export interface StateBecauseExtras {
      * not "wait for it to merge" (task fcaf83d5).
      */
     closedUnsuperseded?: boolean;
+    /** Unverified candidate from automatic detection — a hint, not an edge. */
+    suggestion?: SupersessionSuggestion;
   }>;
   /** Upstream mission title, when it was loaded. */
   dependencyTitle?: string | null;
@@ -291,9 +297,15 @@ function causeLinksFor(
         .slice(0, 10)
         .map(p =>
           link(
-            `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
-              + 'work shipped elsewhere. If it did, record it with record_pr_supersession.',
-            'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber',
+            p.suggestion
+              ? `Task "${p.title}" is completed but its PR closed without merging. It is likely superseded by `
+                + `${suggestionRef(p.suggestion, repoOf(p.prUrl))} (${p.suggestion.why}), but the content did not verify, `
+                + 'so nothing was recorded. Confirm it, or mark the PR abandoned with a reason.'
+              : `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
+                + 'work shipped elsewhere. If it did, record it with record_pr_supersession; if it is not shipping, mark it abandoned.',
+            p.suggestion
+              ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
+              : 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber',
             {
               ...base,
               taskId: p.taskId,

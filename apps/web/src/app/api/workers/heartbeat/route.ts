@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
-import { WORKER_LEASE_TTL_MS } from '@buildd/shared';
+import { WORKER_LEASE_TTL_MS, runnerFleetIdentity, storedHeartbeatEnvironment } from '@buildd/shared';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { randomBytes } from 'crypto';
 import { getLatestVersion } from '@/lib/version-cache';
@@ -83,6 +83,15 @@ export async function POST(req: NextRequest) {
     // Heartbeat is just a ping - no workspace resolution needed
     // Workspaces are resolved on-demand in /api/workers/active
 
+    // A `--once` run (its per-task URL says so; nothing else uses that shape)
+    // holds one task and exits: one slot, not the account's default, and its
+    // fleet identity normalised so the fleet can fold it into its group. A
+    // long-lived runner's environment is stored exactly as sent, minus any
+    // `fleet` it claims (it cannot report itself out of the fleet).
+    const fleet = runnerFleetIdentity({ localUiUrl: String(localUiUrl), environment });
+    const storedEnvironment = storedHeartbeatEnvironment(environment, fleet);
+    const maxConcurrentWorkers = fleet.ephemeral ? 1 : account.maxConcurrentWorkers;
+
     const now = new Date();
 
     // Check if this instance already has a viewerToken
@@ -118,9 +127,9 @@ export async function POST(req: NextRequest) {
         localUiUrl,
         viewerToken,
         workspaceIds: [], // Deprecated - computed on-demand in /api/workers/active
-        maxConcurrentWorkers: account.maxConcurrentWorkers,
+        maxConcurrentWorkers,
         activeWorkerCount,
-        environment: environment || null,
+        environment: storedEnvironment,
         sandboxEnabled: sandboxEnabled as boolean | null,
         sandboxProbeAt: sandboxProbeDate,
         runnerCommit: runnerCommit as string | null,
@@ -137,9 +146,9 @@ export async function POST(req: NextRequest) {
       .onConflictDoUpdate({
         target: [workerHeartbeats.accountId, workerHeartbeats.localUiUrl],
         set: {
-          maxConcurrentWorkers: account.maxConcurrentWorkers,
+          maxConcurrentWorkers,
           activeWorkerCount,
-          environment: environment || null,
+          environment: storedEnvironment,
           ...(sandboxProbeDate !== null ? { sandboxEnabled: sandboxEnabled as boolean | null, sandboxProbeAt: sandboxProbeDate } : {}),
           ...(runnerCommit !== null ? { runnerCommit: runnerCommit as string | null } : {}),
           ...(runnerVersion !== null ? { runnerVersion: runnerVersion as string | null } : {}),

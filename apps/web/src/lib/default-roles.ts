@@ -18,6 +18,8 @@ import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
+import type { RoleOverride } from './policy-overrides';
+import { loadPolicyOverrides } from './policy-overrides-source';
 
 const BUILDD_MCP = {
   type: 'http',
@@ -26,7 +28,7 @@ const BUILDD_MCP = {
 };
 
 /**
- * Choice criteria for role inference (docs/design/role-routing.md §2). This
+ * Choice criteria for role inference (knowledge-base: buildd/design/role-routing.md §2). This
  * text IS the routing prompt: the model reads nothing else about the role.
  * whenToUse is 20–300 chars, notFor ≤ 200 chars and names the neighbouring
  * role. `disabled` keeps a role out of the candidate set on purpose — used for
@@ -61,6 +63,12 @@ interface DefaultRoleDefinition {
   mcpServers: Record<string, unknown>;
   requiredEnvVars: Record<string, string>;
   routing: DefaultRoleRouting;
+  /**
+   * claude.ai artifact access for sessions under this role, seeded into
+   * `metadata.claudeAiArtifacts` (@buildd/shared claude-ai-artifacts.ts).
+   * Absent = off. Only design-consuming roles read; no seeded role publishes.
+   */
+  claudeAiArtifacts?: 'read';
 }
 
 interface DefaultRole extends DefaultRoleDefinition {
@@ -212,6 +220,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
   },
   {
     slug: 'builder',
+    // Builds UI from claude.ai Design canvases cited in context.designSource.
+    claudeAiArtifacts: 'read',
     name: 'Builder',
     description: 'Core engineering — features, bug fixes, refactoring, releases',
     content: `# Builder
@@ -541,6 +551,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // workflow, never a role). It is one of EXPLICIT_ROLE_SLUGS, so only a
     // runner whose env-scan found a browser can claim it.
     slug: VISUAL_AUDITOR_ROLE_SLUG,
+    // Compares shipped pages against the design the mission cited.
+    claudeAiArtifacts: 'read',
     // v2 (visual-qa-human-review.md): no note for unsure, update_artifact
     // sends only qa.fixTaskId, later rounds report prior-finding resolution.
     // v3: explicit block-in-foreground instruction for the dispatched run — a
@@ -818,7 +830,11 @@ If a near-duplicate exists, update it instead of creating a new entry.
  * `metadata.routing` (role-routing.md §2), so it needs no migration.
  */
 export function defaultRoleMetadata(role: DefaultRole, now: Date): Record<string, unknown> {
-  return { routing: { ...role.routing, updatedAt: now.toISOString() }, defaultRoleVersion: role.version };
+  return {
+    routing: { ...role.routing, updatedAt: now.toISOString() },
+    defaultRoleVersion: role.version,
+    ...(role.claudeAiArtifacts ? { claudeAiArtifacts: role.claudeAiArtifacts } : {}),
+  };
 }
 
 export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
@@ -829,6 +845,35 @@ export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
 
 export function roleContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * The default roles with the deployment's private overrides applied
+ * (lib/policy-overrides.ts, `roles` in the record). An override replaces
+ * `content` / `description`, may raise `version`, and adds to the hashes a
+ * resync may overwrite. A slug with no default role is logged and ignored.
+ * `DEFAULT_ROLES` itself stays the public text.
+ */
+export function resolveDefaultRoles(overrides: Record<string, RoleOverride> = {}): DefaultRole[] {
+  const known = new Set(DEFAULT_ROLES.map(r => r.slug));
+  for (const slug of Object.keys(overrides)) {
+    if (!known.has(slug)) console.warn(`[policy-overrides] role override for unknown slug "${slug}" ignored`);
+  }
+  return DEFAULT_ROLES.map(role => {
+    const o = overrides[role.slug];
+    if (!o) return role;
+    return {
+      ...role,
+      content: o.content ?? role.content,
+      description: o.description ?? role.description,
+      version: Math.max(role.version, o.version ?? 0),
+      supersededContentHashes: [...new Set([...role.supersededContentHashes, ...(o.supersededContentHashes ?? [])])],
+    };
+  });
+}
+
+async function currentDefaultRoles(): Promise<DefaultRole[]> {
+  return resolveDefaultRoles((await loadPolicyOverrides()).roles);
 }
 
 export interface SeededRoleRow {
@@ -853,8 +898,8 @@ export interface DefaultRoleResync {
  * = 1), whose content is exactly an earlier shipped version. A row a team
  * edited keeps its edit. Pure; `resyncDefaultRolesForTeam` applies it.
  */
-export function planDefaultRoleResync(rows: readonly SeededRoleRow[]): DefaultRoleResync[] {
-  const bySlug = new Map(DEFAULT_ROLES.map(r => [r.slug, r]));
+export function planDefaultRoleResync(rows: readonly SeededRoleRow[], roles: readonly DefaultRole[] = DEFAULT_ROLES): DefaultRoleResync[] {
+  const bySlug = new Map(roles.map(r => [r.slug, r]));
   const out: DefaultRoleResync[] = [];
   for (const row of rows) {
     const role = bySlug.get(row.slug);
@@ -878,7 +923,7 @@ export async function resyncDefaultRolesForTeam(teamId: string): Promise<number>
     where: and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.source, 'system')),
     columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
   }) as SeededRoleRow[];
-  const plan = planDefaultRoleResync(rows);
+  const plan = planDefaultRoleResync(rows, await currentDefaultRoles());
   const now = new Date();
   for (const p of plan) {
     const row = rows.find(r => r.id === p.id)!;
@@ -945,13 +990,15 @@ export async function backfillDefaultRoleRouting(opts: { dryRun?: boolean } = {}
 
 /**
  * Seed Tier 1 default roles for a newly created team (team-level, workspaceId=null).
+ * Uses the deployment's role overrides when a record is present, else the public text.
  * Safe to call multiple times — uses onConflictDoNothing on (teamId, slug) WHERE workspaceId IS NULL.
  */
 export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
   const now = new Date();
+  const roles = await currentDefaultRoles();
 
   await db.insert(workspaceSkills)
-    .values(DEFAULT_ROLES.map(role => ({
+    .values(roles.map(role => ({
       id: crypto.randomUUID(),
       teamId,
       workspaceId: null,

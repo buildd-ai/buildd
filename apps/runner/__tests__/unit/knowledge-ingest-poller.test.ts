@@ -132,6 +132,62 @@ describe('KnowledgeIngestPoller', () => {
     expect(await first).toBe('ran');
   });
 
+  // Regression: a checkout whose remote the runner cannot fetch (an SSH remote
+  // with no key, a dead token) used to fall back silently to its stale HEAD, or
+  // simply never make progress, and nothing said why. The runner now hands the
+  // job back with the reason, and stops offering that repo for a while, so the
+  // server-side fallback can take it.
+  test('releases the job with the reason when its checkout cannot fetch', async () => {
+    const released: Array<{ id: string; reason: string }> = [];
+    const { api, calls } = fakeApi(job, {
+      releaseJob: async (id, reason) => {
+        released.push({ id, reason });
+      },
+    });
+    let ran = false;
+    const poller = new KnowledgeIngestPoller({
+      enabled: true,
+      api,
+      scanRepos: () => [{ path: '/repos/test-repo', normalizedUrl: 'test-org/test-repo' }],
+      executeJob: async () => {
+        ran = true;
+        return { status: 'done' };
+      },
+      checkCheckout: async () => ({ ok: false, reason: 'Permission denied (publickey).' }),
+      log: () => {},
+    });
+
+    expect(await poller.poll()).toBe('released');
+    expect(ran).toBe(false);
+    expect(released).toEqual([{ id: 'job-1', reason: expect.stringContaining('Permission denied (publickey).') }]);
+    expect(calls.completions.length).toBe(0);
+
+    // The unfetchable repo is no longer offered on the next poll.
+    expect(await poller.poll()).toBe('idle');
+    expect(calls.claim.length).toBe(1);
+    expect(poller.unfetchableRepos()).toEqual([
+      expect.objectContaining({ repo: 'test-org/test-repo', reason: expect.stringContaining('publickey') }),
+    ]);
+  });
+
+  test('runs the job when the checkout check passes', async () => {
+    const { api } = fakeApi(job, { releaseJob: async () => {} });
+    const checked: Array<{ path: string; sha: string | null | undefined }> = [];
+    const poller = new KnowledgeIngestPoller({
+      enabled: true,
+      api,
+      scanRepos: () => [{ path: '/repos/test-repo', normalizedUrl: 'test-org/test-repo' }],
+      executeJob: async () => ({ status: 'done' }),
+      checkCheckout: async (path, sha) => {
+        checked.push({ path, sha });
+        return { ok: true };
+      },
+      log: () => {},
+    });
+    expect(await poller.poll()).toBe('ran');
+    expect(checked).toEqual([{ path: '/repos/test-repo', sha: null }]);
+  });
+
   test('reports error outcome when execution fails', async () => {
     const { api } = fakeApi(job);
     const poller = makePoller({

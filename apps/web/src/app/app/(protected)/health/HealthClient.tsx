@@ -24,6 +24,7 @@ import { getModelDisplayName } from '@buildd/core/model-display';
 import { Stat } from '@/components/StatTile';
 import { byModelAbsence, divergenceSummary, scanCaveat } from '@/lib/model-presentation';
 import { shortToolName, usageDrilldownHref } from '@/lib/usage-drilldown';
+import { CONSUMPTION_TOP_TOOLS, formatShare, groupToolsByServer } from '@/lib/usage-breakdowns';
 import {
   coverageLabel,
   depletionProjection,
@@ -1214,7 +1215,8 @@ function ConsumptionSection({
   now: number;
 }) {
   const { totals, tools, groups, window, byModel, modelDivergence, scan } = stats;
-  const topTools = tools.byTool.slice(0, 5);
+  const topTools = tools.byTool.slice(0, CONSUMPTION_TOP_TOOLS);
+  const toolGroups = groupToolsByServer(tools.byTool);
   const maxToolCalls = topTools[0]?.calls ?? 0;
   const coverageGap = tools.coverage.tasks - tools.coverage.histogram;
   const topModels = byModel.slice(0, 6);
@@ -1279,10 +1281,10 @@ function ConsumptionSection({
             {topTools.map((t) => (
               <div key={t.name} className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-text-primary flex-1 truncate" title={t.name}>
+                  <span className="text-xs text-text-primary flex-1 min-w-0 truncate" title={t.name}>
                     {shortToolName(t.name)}
                   </span>
-                  <span className="text-xs text-text-muted tabular-nums">
+                  <span className="text-xs text-text-muted tabular-nums shrink-0">
                     {t.calls} · {Math.round(t.share * 100)}%
                   </span>
                 </div>
@@ -1294,6 +1296,44 @@ function ConsumptionSection({
                 </div>
               </div>
             ))}
+
+            {/* Every tool, not just the head: anything below the top rows —
+                the graph, recall, ToolSearch — was invisible before. Same
+                task-keyed counts and coverage as the rows above. */}
+            {tools.byTool.length > topTools.length && (
+              <details data-testid="consumption-all-tools" className="pt-1 group">
+                <summary className="text-xs text-primary cursor-pointer select-none list-none">
+                  <span className="group-open:hidden">Show all {tools.byTool.length} tools</span>
+                  <span className="hidden group-open:inline">Hide the full list</span>
+                </summary>
+                <div className="mt-3 space-y-3">
+                  {toolGroups.map((g) => (
+                    <div key={g.key} data-testid="consumption-tool-group" className="space-y-1">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-[11px] uppercase tracking-wide text-text-muted">{g.label}</span>
+                        <span className="text-[11px] text-text-muted tabular-nums">{g.calls.toLocaleString('en-US')}</span>
+                      </div>
+                      {g.tools.map((t) => (
+                        <div key={t.name} data-testid="consumption-all-tools-row" className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs text-text-primary flex-1 min-w-0 truncate" title={t.name}>
+                            {shortToolName(t.name)}
+                          </span>
+                          <span className="text-[11px] text-text-muted tabular-nums shrink-0">
+                            {t.calls.toLocaleString('en-US')} · {formatShare(t.share)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                  <a
+                    href={usageDrilldownHref({ window, workspaceId })}
+                    className="block text-[11px] text-primary hover:underline"
+                  >
+                    Shell buckets, graph tools and buildd actions on the usage page →
+                  </a>
+                </div>
+              </details>
+            )}
           </div>
         )}
 

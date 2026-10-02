@@ -1,156 +1,160 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 let workerRow: any = null;
-const updateCalls: Array<{ data: any; where: any }> = [];
-const mockGithubApi = mock((_installationId: number, _path: string) => Promise.resolve({} as any));
+let missionTask: any = null;
+let missionSiblings: any[] = [];
+const updates: Array<{ set: any }> = [];
+const githubCalls: string[] = [];
+let githubResponse: (path: string) => any = () => ({ merged: true, html_url: 'https://github.com/org/repo/pull/2' });
+let installationForRepo: Record<string, number> = {};
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      workers: { findFirst: () => Promise.resolve(workerRow) },
-    },
-    update: () => ({
-      set: (data: any) => ({
-        where: (where: any) => {
-          updateCalls.push({ data, where });
-          return Promise.resolve();
-        },
-      }),
-    }),
-  },
-}));
-
-mock.module('@buildd/core/db/schema', () => ({
-  workers: { id: 'id' },
-}));
-
-mock.module('drizzle-orm', () => ({
-  eq: (a: any, b: any) => ({ type: 'eq', a, b }),
-}));
-
-mock.module('@/lib/github', () => ({
-  githubApi: mockGithubApi,
-}));
-
-import { recordPrSupersession } from './pr-supersession';
-
-function baseWorker(overrides: Record<string, unknown> = {}) {
-  return {
-    id: 'w-1',
-    prNumber: 2287,
-    prUrl: 'https://github.com/org/repo/pull/2287',
-    mergedAt: null,
-    workspace: {
-      githubRepo: {
-        fullName: 'org/repo',
-        installation: { installationId: 123 },
+      workers: { findFirst: mock(() => Promise.resolve(workerRow)) },
+      tasks: {
+        findFirst: mock(() => Promise.resolve(missionTask)),
+        findMany: mock(() => Promise.resolve(missionSiblings)),
       },
     },
-    ...overrides,
+    update: () => ({ set: (set: any) => ({ where: () => { updates.push({ set }); return Promise.resolve(); } }) }),
+  },
+}));
+mock.module('@/lib/github', () => ({
+  githubApi: mock((_inst: number, path: string) => {
+    githubCalls.push(path);
+    return Promise.resolve(githubResponse(path));
+  }),
+}));
+mock.module('@/lib/workspace-installation', () => ({
+  installationIdForRepo: mock((repo: string) => Promise.resolve(installationForRepo[repo.toLowerCase()] ?? null)),
+}));
+
+import { recordPrSupersession, recordPrAbandonment, dismissSupersessionSuggestion } from './pr-supersession';
+
+function closedWorker(over: Record<string, unknown> = {}) {
+  return {
+    id: 'w-1',
+    taskId: 't-1',
+    prNumber: 6,
+    prUrl: 'https://github.com/org/kb/pull/6',
+    mergedAt: null,
+    prLifecycleStatus: 'closed',
+    supersededByPrNumber: null,
+    workspace: { githubRepo: { fullName: 'org/kb', installation: { installationId: 11 } } },
+    ...over,
   };
 }
 
-function reset() {
-  workerRow = baseWorker();
-  updateCalls.length = 0;
-  mockGithubApi.mockReset();
-  mockGithubApi.mockImplementation(() => Promise.resolve({ merged: true, html_url: 'https://github.com/org/repo/pull/2293', state: 'closed' }) as any);
-}
+beforeEach(() => {
+  workerRow = closedWorker();
+  missionTask = { missionId: 'm-1' };
+  missionSiblings = [];
+  updates.length = 0;
+  githubCalls.length = 0;
+  installationForRepo = { 'org/buildd': 22 };
+  githubResponse = (path: string) => ({ merged: true, html_url: `https://github.com${path.replace('/repos', '').replace('/pulls/', '/pull/')}` });
+});
 
-describe('recordPrSupersession', () => {
-  beforeEach(reset);
-
-  it('rejects a blank reason', async () => {
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 2293, reason: '   ', recordedBy: 'agent:t-1' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.status).toBe(400);
-    expect(updateCalls.length).toBe(0);
+describe('recordPrSupersession — same repo (unchanged rule)', () => {
+  it('records a merged target in the same repo', async () => {
+    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'moved', recordedBy: 'me' });
+    expect(r.ok).toBe(true);
+    expect(githubCalls).toEqual(['/repos/org/kb/pulls/9']);
+    expect(updates[0].set.supersededByPrNumber).toBe(9);
   });
 
-  it('rejects a non-positive-integer supersedingPrNumber', async () => {
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 0, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.status).toBe(400);
+  it('refuses an unmerged target', async () => {
+    githubResponse = () => ({ merged: false, state: 'open' });
+    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 9, reason: 'x', recordedBy: 'me' });
+    expect(r).toMatchObject({ ok: false, status: 409 });
+    expect(updates).toHaveLength(0);
   });
 
-  it('rejects when the worker is not found', async () => {
-    workerRow = null;
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 2293, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.status).toBe(404);
+  it('refuses the PR itself as its own target', async () => {
+    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 6, reason: 'x', recordedBy: 'me' });
+    expect(r).toMatchObject({ ok: false, status: 400 });
   });
+});
 
-  it('rejects a worker with no PR to supersede', async () => {
-    workerRow = baseWorker({ prNumber: null, prUrl: null });
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 2293, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.status).toBe(400);
-  });
-
-  it('rejects when the worker PR is already merged — nothing to supersede', async () => {
-    workerRow = baseWorker({ mergedAt: new Date() });
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 2293, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.status).toBe(409);
-    expect(updateCalls.length).toBe(0);
-  });
-
-  it('rejects a supersedingPrNumber equal to the PR being superseded', async () => {
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 2287, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.status).toBe(400);
-  });
-
-  it('rejects when the workspace has no GitHub installation', async () => {
-    workerRow = baseWorker({ workspace: { githubRepo: null } });
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 2293, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.status).toBe(422);
-  });
-
-  it('rejects a nonexistent target PR (GitHub 404)', async () => {
-    mockGithubApi.mockImplementation(() => Promise.reject(new Error('GitHub API error: 404 Not Found')));
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 999999, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.status).toBe(404);
-      expect(r.error).toContain('999999');
-    }
-    expect(updateCalls.length).toBe(0);
-  });
-
-  it('rejects an UNMERGED target PR — write time, not discovered later', async () => {
-    mockGithubApi.mockImplementation(() => Promise.resolve({ merged: false, state: 'open' }) as any);
-    const r = await recordPrSupersession({ workerId: 'w-1', supersedingPrNumber: 2293, reason: 'because', recordedBy: 'a' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.status).toBe(409);
-      expect(r.error).toContain('not merged');
-    }
-    expect(updateCalls.length).toBe(0);
-  });
-
-  it('records the edge when the target PR is merged, scoped to the same repo/installation', async () => {
+describe('recordPrSupersession — cross-repo target', () => {
+  it('allows a merged target in a repo another task of the same mission works in', async () => {
+    missionSiblings = [{ id: 't-2', workspace: { repo: null, githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
     const r = await recordPrSupersession({
-      workerId: 'w-1',
-      supersedingPrNumber: 2293,
-      reason: 'branch deleted out from under it; re-landed via #2293',
-      recordedBy: 'agent:t-1',
+      workerId: 'w-1', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'docs moved', recordedBy: 'me',
+    });
+    expect(r).toMatchObject({ ok: true, supersedingRepo: 'org/buildd', supersedingPrUrl: 'https://github.com/org/buildd/pull/3366' });
+    expect(githubCalls).toEqual(['/repos/org/buildd/pulls/3366']);
+    // Same number, different repo: not "the PR itself".
+  });
+
+  it('allows a repo a sibling task opened a PR in, even with no workspace bound to it', async () => {
+    missionSiblings = [{ id: 't-2', workspace: null, workers: [{ prUrl: 'https://github.com/org/buildd/pull/6' }] }];
+    const r = await recordPrSupersession({
+      workerId: 'w-1', supersedingPrNumber: 6, supersedingRepo: 'org/buildd', reason: 'same number, other repo', recordedBy: 'me',
     });
     expect(r.ok).toBe(true);
-    if (r.ok) {
-      expect(r.supersededPrNumber).toBe(2287);
-      expect(r.supersedingPrNumber).toBe(2293);
-      expect(r.supersedingPrUrl).toBe('https://github.com/org/repo/pull/2293');
-    }
-    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/org/repo/pulls/2293');
-    expect(updateCalls.length).toBe(1);
-    expect(updateCalls[0].data).toMatchObject({
-      supersededByPrNumber: 2293,
-      supersededByPrUrl: 'https://github.com/org/repo/pull/2293',
-      supersededReason: 'branch deleted out from under it; re-landed via #2293',
-      supersededRecordedBy: 'agent:t-1',
+  });
+
+  it('refuses a repo outside the workspace and mission, without asking GitHub', async () => {
+    missionSiblings = [{ id: 't-2', workspace: { githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
+    const r = await recordPrSupersession({
+      workerId: 'w-1', supersedingPrNumber: 1, supersedingRepo: 'someone/else', reason: 'x', recordedBy: 'me',
     });
-    expect(updateCalls[0].data.supersededAt).toBeInstanceOf(Date);
+    expect(r).toMatchObject({ ok: false, status: 403 });
+    expect(githubCalls).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+  });
+
+  it('refuses a cross-repo target when the task has no mission', async () => {
+    missionTask = { missionId: null };
+    const r = await recordPrSupersession({
+      workerId: 'w-1', supersedingPrNumber: 1, supersedingRepo: 'org/buildd', reason: 'x', recordedBy: 'me',
+    });
+    expect(r).toMatchObject({ ok: false, status: 403 });
+  });
+
+  it('still requires the cross-repo target to be merged', async () => {
+    missionSiblings = [{ id: 't-2', workspace: { githubRepo: { fullName: 'org/buildd' } }, workers: [] }];
+    githubResponse = () => ({ merged: false, state: 'closed' });
+    const r = await recordPrSupersession({
+      workerId: 'w-1', supersedingPrNumber: 3366, supersedingRepo: 'org/buildd', reason: 'x', recordedBy: 'me',
+    });
+    expect(r).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
+describe('recordPrAbandonment', () => {
+  it('requires a reason', async () => {
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: '  ', recordedBy: 'me' })).toMatchObject({ ok: false, status: 400 });
+    expect(updates).toHaveLength(0);
+  });
+
+  it('records abandonment on a closed PR', async () => {
+    const r = await recordPrAbandonment({ workerId: 'w-1', reason: 'plan changed', recordedBy: 'me' });
+    expect(r.ok).toBe(true);
+    expect(updates[0].set).toMatchObject({ abandonedReason: 'plan changed', abandonedRecordedBy: 'me' });
+    expect(updates[0].set.abandonedAt).toBeInstanceOf(Date);
+  });
+
+  it('refuses an open PR', async () => {
+    workerRow = closedWorker({ prLifecycleStatus: 'pr_open' });
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it('refuses a PR already recorded as superseded', async () => {
+    workerRow = closedWorker({ supersededByPrNumber: 9 });
+    expect(await recordPrAbandonment({ workerId: 'w-1', reason: 'x', recordedBy: 'me' })).toMatchObject({ ok: false, status: 409 });
+  });
+});
+
+describe('dismissSupersessionSuggestion', () => {
+  it('clears the matching suggestion and remembers the candidate', async () => {
+    const url = 'https://github.com/org/kb/pull/9';
+    workerRow = closedWorker({
+      supersessionScan: { scannedAt: '2026-10-01T00:00:00Z', candidatesChecked: 1, suggestion: { prUrl: url, prNumber: 9 } },
+    });
+    expect((await dismissSupersessionSuggestion({ workerId: 'w-1', candidatePrUrl: url })).ok).toBe(true);
+    expect(updates[0].set.supersessionScan).toMatchObject({ suggestion: null, dismissed: [url] });
   });
 });

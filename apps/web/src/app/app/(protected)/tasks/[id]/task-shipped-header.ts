@@ -1,6 +1,6 @@
 /**
  * What a completed task's page leads with: the mission "What shipped" header
- * (docs/design/mission-shipped-report.md), one task wide. Pure: the page loads
+ * (knowledge-base: buildd/design/mission-shipped-report.md), one task wide. Pure: the page loads
  * the record, the PR state and the traces; this decides every branch.
  *
  * Top to bottom: eyebrow + plain title + status chips; the lede card (lede,

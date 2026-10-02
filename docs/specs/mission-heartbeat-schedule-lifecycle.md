@@ -46,7 +46,7 @@ or existing beyond what the four documented transitions in `docs/SPEC.md`
 This spec does not restate the ownership rule for the four transitions
 `docs/SPEC.md` already documents and that are already correctly implemented —
 see the audit at
-`docs/reports/mission-heartbeat-schedule-lifecycle-audit.md` §1 for the
+`knowledge-base: buildd/reports/mission-heartbeat-schedule-lifecycle-audit.md` §1 for the
 verbatim clause and its verification. It exists to (a) close the one
 transition that clause omitted, (b) state the mission-state-not-schedule
 principle explicitly since nothing else does, and (c) define a retirement
@@ -233,7 +233,7 @@ completes to fire that trigger via the existing task-completion-driven path
 - Rewriting the four transitions `docs/SPEC.md`'s `scheduleId` Lifecycle
   clause already documents correctly — not re-specified here.
 - Any UI change beyond what shipped — this document is a contract, not an
-  implementation log; see `docs/plans/archive/mission-heartbeat-schedule-lifecycle-fixes.md`
+  implementation log; see `knowledge-base: buildd/plans/archive/mission-heartbeat-schedule-lifecycle-fixes.md`
   for the slices that closed AC-2/AC-3 and PR #2300 for what landed.
 - `budget_exhausted`'s schedule handling — already correct by design
   (deferred, not disabled, so a budget-raise auto-resume doesn't strand the

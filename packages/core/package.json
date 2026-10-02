@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.260.0",
+  "version": "0.263.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -43,7 +43,9 @@
     "./net/public-address": "./net/public-address.ts",
     "./net/fetch-public-gateway": "./net/fetch-public-gateway.ts",
     "./agent-endpoint": "./agent-endpoint.ts",
+    "./agent-endpoint-models": "./agent-endpoint-models.ts",
     "./openrouter-id": "./openrouter-id.ts",
+    "./inference-route": "./inference-route.ts",
     "./inference-keys": "./inference-keys.ts",
     "./inference-key-policy": "./inference-key-policy.ts",
     "./conversation-title": "./conversation-title.ts",
@@ -52,6 +54,11 @@
     "./describe-error": "./describe-error.ts",
     "./runner-health": "./runner-health.ts",
     "./cbm-health": "./cbm-health.ts",
+    "./cbm-injection": "./cbm-injection.ts",
+    "./cbm-injection-decision": "./cbm-injection-decision.ts",
+    "./question-brief": "./question-brief.ts",
+    "./question-gate": "./question-gate.ts",
+    "./question-gate-source": "./question-gate-source.ts",
     "./secrets": "./secrets/index.ts",
     "./secrets/team-scope": "./secrets/team-scope.ts",
     "./memory-scope": "./memory-scope.ts",
@@ -208,5 +215,6 @@
     "@types/bun": "latest",
     "drizzle-kit": "^0.31.0",
     "typescript": "^6.0.0"
-  }
+  },
+  "license": "FSL-1.1-ALv2"
 }

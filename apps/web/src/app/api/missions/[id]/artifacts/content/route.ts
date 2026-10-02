@@ -11,7 +11,7 @@ import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 
 /**
  * GET /api/missions/[id]/artifacts/content?ids=a,b — artifact bodies for the
- * mission Records sheet, fetched on open (docs/design/mission-feed-mobile-continuity.md,
+ * mission Records sheet, fetched on open (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * slice S7, AC-18). The mission page selects artifact metadata only.
  *
  * Scoped to the mission: an artifact is returned only when it is linked to this

@@ -51,7 +51,7 @@ masthead that stays on screen while the list scrolls.
 
 This spec supersedes `timeline-mobile-rail.md`: the rail is no longer rendered.
 The design and its rationale are in
-`docs/design/mission-feed-mobile-continuity.md` (slice S3). The md-and-up
+`knowledge-base: buildd/design/mission-feed-mobile-continuity.md` (slice S3). The md-and-up
 Timeline and Structure views are unchanged and are covered by
 `mission-structure-view.md` and `timeline-dependency-geometry.md`.
 

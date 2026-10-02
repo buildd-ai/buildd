@@ -204,6 +204,8 @@ export interface NotWaitingExplanation {
 export function explainNotWaiting(input: {
   workerStatus: string | null;
   continuationTaskId: string | null | undefined;
+  /** An answer is queued on this worker for its resume (see `isAnswerQueued`). */
+  answerQueued?: boolean;
 }): NotWaitingExplanation {
   // `superseded` is written only by an answer (cold path) or a reassign.
   if (input.workerStatus === 'superseded') {
@@ -222,11 +224,53 @@ export function explainNotWaiting(input: {
       nextAction: { kind: 'follow_up' },
     };
   }
+  // The resume path clears the question but leaves the status `waiting_input`
+  // until the runner picks the answer up. A second tap in that window is a
+  // duplicate of an answer on its way, not an agent that moved on.
+  if (input.workerStatus === 'waiting_input' && input.answerQueued) {
+    return {
+      reasonCode: 'already_answered',
+      message: 'This was already answered. The agent picks the answer up when it resumes.',
+      nextAction: { kind: 'refresh' },
+    };
+  }
   return {
     reasonCode: 'no_longer_waiting',
     message: 'The agent is no longer waiting on this. It was answered elsewhere or the agent moved on.',
     nextAction: { kind: 'refresh' },
   };
+}
+
+interface HistoryEntryLike { type?: string; message?: string; deliveryState?: string }
+
+const historyOf = (v: unknown): HistoryEntryLike[] => (Array.isArray(v) ? (v as HistoryEntryLike[]) : []);
+const lastInstruction = (v: unknown): HistoryEntryLike | undefined =>
+  historyOf(v).filter(e => e?.type === 'instruction').at(-1);
+
+/** An answer sits on this worker waiting for its session to pick it up. */
+export function isAnswerQueued(worker: { pendingInstructions?: string | null; instructionHistory?: unknown }): boolean {
+  if (worker.pendingInstructions) return true;
+  return lastInstruction(worker.instructionHistory)?.deliveryState === 'pending';
+}
+
+/**
+ * The answer an already-answered question took, for the reply to a duplicate:
+ * the card says what was recorded, and whether it differs from the new tap.
+ * A superseded worker's answer became its continuation's brief; a resumed
+ * one's is the newest instruction queued on it. Null when nothing kept the
+ * text (a sensitive workspace stores no message).
+ */
+export function recordedAnswerOf(input: {
+  workerStatus: string | null;
+  instructionHistory: unknown;
+  continuationContext?: unknown;
+}): string | null {
+  if (input.workerStatus === 'superseded') {
+    const answer = (input.continuationContext as { userInput?: unknown } | null | undefined)?.userInput;
+    return typeof answer === 'string' && answer ? answer : null;
+  }
+  const message = lastInstruction(input.instructionHistory)?.message;
+  return typeof message === 'string' && message ? message : null;
 }
 
 /**

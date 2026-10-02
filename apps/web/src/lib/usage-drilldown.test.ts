@@ -69,6 +69,7 @@ const cbm = (over: Partial<CbmHealthSummary> = {}): CbmHealthSummary => ({
   fileAccessDeltaPct: null,
   deltasSuppressedBecause: null,
   topTools: [],
+  tools: { sessions: 0, totalCalls: 0, tools: [] },
   ...over,
 });
 
@@ -350,5 +351,31 @@ describe('buildUsageDrilldownView', () => {
     expect(view.totals.workers).toBe(3);
     // The adoption line keeps its own, larger population.
     expect(view.adoption.sessions).toBe(16);
+  });
+});
+
+describe('buildUsageDrilldownView — fine-grained breakdowns', () => {
+  it('carries the Bash breakdown from the usage rollup and the CBM tool list from the session summary', () => {
+    const v = buildUsageDrilldownView({
+      resolution: resolveDrilldownWindow('7d'),
+      current: computeUsageStats([]),
+      previous: null,
+      scan: { rows: 0, limit: 5000, truncated: false, completeSince: '2026-09-01T00:00:00.000Z' },
+      cbm: cbm({ activeCount: 2, tools: { sessions: 2, totalCalls: 3, tools: [{ tool: 'search_graph', calls: 3, sessions: 2, share: 1 }] } }),
+    });
+    expect(v.bashBuckets.classifiedCalls).toBe(0);
+    expect(v.searchShapes.codeSearchCalls).toBe(0);
+    expect(v.cbmTools?.tools[0].tool).toBe('search_graph');
+  });
+
+  it('has no CBM tool list when no session had the graph', () => {
+    const v = buildUsageDrilldownView({
+      resolution: resolveDrilldownWindow('7d'),
+      current: computeUsageStats([]),
+      previous: null,
+      scan: { rows: 0, limit: 5000, truncated: false, completeSince: '2026-09-01T00:00:00.000Z' },
+      cbm: null,
+    });
+    expect(v.cbmTools).toBeNull();
   });
 });

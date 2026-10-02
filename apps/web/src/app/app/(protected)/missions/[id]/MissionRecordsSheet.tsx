@@ -2,7 +2,7 @@
 
 /**
  * `Records · N` — the mission's review-worthy artifacts, in a sheet
- * (docs/design/mission-feed-mobile-continuity.md, W3 footer rows, AC-16,
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, W3 footer rows, AC-16,
  * addendum D5). The count and the list are the same `selectMissionRecords`
  * output; everything else is behind "All artifacts" at the bottom of the same
  * sheet. It replaces the unfiltered artifact dump that used to close the page.

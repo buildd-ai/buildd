@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The completed mission's "What shipped" header (docs/design/mission-shipped-report.md,
+ * The completed mission's "What shipped" header (knowledge-base: buildd/design/mission-shipped-report.md,
  * "Surface"): the plain-language lede, the change-type chip, up to three hero
  * shots that open the review deck, and at most two off-plan lines. The branch
  * (record, no shots, mechanical-only) is decided by `buildShippedHeaderView`.

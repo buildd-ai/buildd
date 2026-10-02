@@ -16,6 +16,7 @@ import { join } from 'path';
 import {
   WARM_FETCH_REFRESH_BYTES,
   WARM_MAX_AGE_MS,
+  WARM_BASE_REF,
   WarmRepoSession,
   assertSnapshotSafe,
   createCacheTarball,
@@ -219,6 +220,31 @@ describe('restore before clone', () => {
     expect(git(path, 'rev-parse', '--abbrev-ref', 'main@{upstream}')).toBe('origin/main');
     expect(git(path, 'status', '--porcelain')).toBe('');
     expect(readFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
+  });
+
+  test('records the snapshot tip it restored (before the fetch) under WARM_BASE_REF, so a park bundle can be built against it', () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    first.refresh('completed');
+    const snapshotTip = git(seedClone, 'rev-parse', 'HEAD');
+    pushCommit('LATER.md', 'landed after the snapshot\n');
+    const path = cloneThrough(session());
+    expect(git(path, 'rev-parse', WARM_BASE_REF)).toBe(snapshotTip);
+    expect(git(path, 'rev-parse', 'origin/main')).not.toBe(snapshotTip);
+  });
+
+  test('a failed fetch after restore is logged with git\'s own error text', () => {
+    const first = session();
+    cloneThrough(first, 'ws-seed');
+    first.refresh('completed');
+    const logs: string[] = [];
+    const s = new WarmRepoSession({ ...session().d, log: (m) => logs.push(m) });
+    // The restored clone's origin points at a repo that is not there.
+    ensureIsolatedClone({ id: 'ws-1', repo: join(dir, 'gone.git') }, join(dir, 'iso'), s.cloneHooks());
+    const line = logs.find(l => l.startsWith('[warm] fetch after restore failed'));
+    expect(line).toBeDefined();
+    // The `fatal:` line that names the cause, not the trailing advice line.
+    expect(line).toContain('gone.git');
   });
 
   test('disabled: no store call, reason disabled', () => {

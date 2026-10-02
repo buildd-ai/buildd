@@ -14,6 +14,14 @@
 import type { ResultMeta } from '@buildd/core/db/schema';
 import { derivedValue, derivedUnavailable, type DerivedMetric } from '@buildd/core/derived-metric';
 import { compareAssignedActual, primaryModelFromUsage } from '@buildd/core/model-display';
+import {
+  addBashCounts,
+  buildBashBreakdown,
+  emptyTaskBashCounts,
+  type BashBucketsBlock,
+  type SearchShapesBlock,
+  type TaskBashCounts,
+} from './usage-breakdowns';
 
 /** Max entries the runner keeps in `workers.mcpCalls` (api/workers/[id]/route.ts). */
 const MCP_CALLS_CAP = 100;
@@ -31,8 +39,16 @@ export const UNASSIGNED_ROLE = '(unassigned)';
  * A task that is a role-routing gap: no `roleSlug`, and not bookkeeping. A
  * bookkeeping row (an adopted PR's placeholder, an orchestrator slot) is not
  * work a role picks up, so its missing role is not a gap
- * (docs/design/role-routing.md §1 row 7).
+ * (knowledge-base: buildd/design/role-routing.md §1 row 7).
  */
+/**
+ * Suffix on a `groupBy: 'role'` key for tasks whose role was inferred
+ * (`context.roleInferred`, lib/task-role-apply.ts) rather than stated, so
+ * `builder` and `builder · inferred` are separate groups (role-routing.md
+ * §6(d)): a routing change must not move Builder's success rate unseen.
+ */
+export const INFERRED_ROLE_SUFFIX = ' · inferred';
+
 export function isUnassignedWork(t: { roleSlug?: string | null; taskClass?: string | null }): boolean {
   return !t.roleSlug && t.taskClass !== 'bookkeeping';
 }
@@ -55,6 +71,11 @@ export interface UsageWorkerRow {
   /** Task status, used for the per-group success rate. Null when the task is gone. */
   taskStatus: string | null;
   roleSlug: string | null;
+  /** `tasks.context.roleInferred` present: the role was routed by the decision model, not stated. */
+  roleInferred?: boolean;
+  /** `tasks.created_at` and `tasks.claimed_at`, for claim latency. */
+  taskCreatedAt?: Date | string | null;
+  taskClaimedAt?: Date | string | null;
   /** `tasks.creation_source` — where the task was filed from (dashboard, api, mcp, github, ...). */
   creationSource?: string | null;
   /**
@@ -211,6 +232,15 @@ export interface GroupEntry extends MetricBlock {
   /** completed / (completed + failed), or null when no task reached a terminal state. */
   successRate: number | null;
   perTask: PerTaskBlock;
+  /** `groupBy: 'role'` only: the role slug, and whether the group's role was stated or inferred. */
+  roleSlug?: string | null;
+  roleSource?: 'stated' | 'inferred';
+  /**
+   * `groupBy: 'role'` only: `claimedAt − createdAt` per task, in ms, over the
+   * group's tasks that were claimed. A routed (`· inferred`) group waiting
+   * longer than `(unassigned)` points at a role no runner picks up.
+   */
+  claimLatencyMs?: DerivedMetric<Distribution>;
 }
 
 export type PerTaskMetric = 'inputTokens' | 'outputTokens' | 'costUsd' | 'turns' | 'toolCalls';
@@ -260,6 +290,14 @@ export interface UsageStats {
   modelDivergence: DerivedMetric<ModelDivergence>;
   groupBy: GroupDimension;
   groups: GroupEntry[];
+  /**
+   * What the `Bash` calls were for, from `resultMeta.bashCommandCounts`.
+   * Stated over `tools.coverage.histogram` tasks ONLY — reconstructed rows
+   * never contain a shell call — and never with a cross-window delta.
+   */
+  bashBuckets: BashBucketsBlock;
+  /** Pattern shapes of the `code_search` bucket above. Same population. */
+  searchShapes: SearchShapesBlock;
 }
 
 /** Bounds of what a capped scan actually read. */
@@ -412,6 +450,8 @@ export interface TaskAgg {
   taskId: string;
   status: string | null;
   roleSlug: string | null;
+  /** `claimedAt − createdAt` of the canonical task row, when both are known. */
+  claimLatencyMs: number | null;
   workspaceId: string;
   workers: number;
   inputTokens: number;
@@ -427,6 +467,14 @@ export interface TaskAgg {
   truncatedWorkers: number;
   /** True once the canonical (non-attempt) task row has been folded in. */
   canonicalSeen: boolean;
+  /** `resultMeta.bashCommandCounts` summed across the task's workers. */
+  bash: TaskBashCounts;
+}
+
+function claimLatencyOf(row: UsageWorkerRow): number | null {
+  if (!row.taskCreatedAt || !row.taskClaimedAt) return null;
+  const ms = new Date(row.taskClaimedAt).getTime() - new Date(row.taskCreatedAt).getTime();
+  return Number.isFinite(ms) && ms >= 0 ? ms : null;
 }
 
 /**
@@ -448,6 +496,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
         taskId: key,
         status: row.taskStatus,
         roleSlug: row.roleSlug,
+        claimLatencyMs: row.taskId === key ? claimLatencyOf(row) : null,
         workspaceId: row.workspaceId,
         workers: 0,
         inputTokens: 0,
@@ -461,6 +510,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
         counts: {},
         truncatedWorkers: 0,
         canonicalSeen: false,
+        bash: emptyTaskBashCounts(),
       };
       byTask.set(key, agg);
     }
@@ -470,6 +520,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
     if (row.taskId === key) {
       agg.status = row.taskStatus;
       agg.roleSlug = row.roleSlug;
+      agg.claimLatencyMs = claimLatencyOf(row);
       agg.canonicalSeen = true;
     } else if (!agg.canonicalSeen && row.taskStatus === 'completed') {
       // Parent is outside the window and we only have attempts. Row order is
@@ -496,6 +547,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
       agg.toolCalls += n;
     }
     if (truncated) agg.truncatedWorkers++;
+    addBashCounts(agg.bash, row.resultMeta?.bashCommandCounts);
     // A task's source is the weakest of its workers' — one derived worker makes
     // the task total a floor, so 'derived' outranks 'histogram' here.
     if (source === 'derived') agg.toolSource = 'derived';
@@ -811,8 +863,22 @@ export function aggregateByExecutor(rows: UsageWorkerRow[]): Map<string, TaskAgg
   return out;
 }
 
+/** The `groupBy: 'role'` key: the slug, `<slug> · inferred` for a routed role, or `(unassigned)`. */
+export function roleGroupKey(row: { roleSlug: string | null; roleInferred?: boolean }): string {
+  if (!row.roleSlug) return UNASSIGNED_ROLE;
+  return row.roleInferred ? `${row.roleSlug}${INFERRED_ROLE_SUFFIX}` : row.roleSlug;
+}
+
+/** Inverse of `roleGroupKey`, for labelling. */
+export function parseRoleGroupKey(key: string): { roleSlug: string | null; roleSource: 'stated' | 'inferred' } {
+  if (key === UNASSIGNED_ROLE) return { roleSlug: null, roleSource: 'stated' };
+  return key.endsWith(INFERRED_ROLE_SUFFIX)
+    ? { roleSlug: key.slice(0, -INFERRED_ROLE_SUFFIX.length), roleSource: 'inferred' }
+    : { roleSlug: key, roleSource: 'stated' };
+}
+
 export function aggregateByRole(rows: UsageWorkerRow[]): Map<string, TaskAgg[]> {
-  return aggregateByOwnTaskField(rows, row => row.roleSlug ?? UNASSIGNED_ROLE);
+  return aggregateByOwnTaskField(rows, roleGroupKey);
 }
 
 /** Same fold-by-own-task-attribution as `aggregateByRole`, keyed on `creationSource` instead. */
@@ -849,7 +915,7 @@ function buildGroups(
       const completed = groupTasks.filter(t => t.status === 'completed').length;
       const failed = groupTasks.filter(t => t.status === 'failed').length;
       const terminal = completed + failed;
-      return {
+      const entry: GroupEntry = {
         key,
         ...metricBlock(groupTasks),
         completed,
@@ -857,6 +923,15 @@ function buildGroups(
         successRate: terminal > 0 ? completed / terminal : null,
         perTask: perTaskBlock(groupTasks),
       };
+      if (groupBy === 'role') {
+        const latencies = groupTasks.map(t => t.claimLatencyMs).filter((v): v is number => v !== null);
+        Object.assign(entry, parseRoleGroupKey(key), {
+          claimLatencyMs: latencies.length > 0
+            ? derivedValue(distribution(latencies))
+            : derivedUnavailable<Distribution>('no_scope', 'no claimed task with a recorded claim time'),
+        });
+      }
+      return entry;
     })
     .sort((a, b) => b.inputTokens - a.inputTokens || a.key.localeCompare(b.key));
 }
@@ -875,6 +950,13 @@ export function computeUsageStats(
     modelDivergence: buildModelDivergence(rows),
     groupBy,
     groups: buildGroups(tasks, groupBy, rows),
+    // Exact-histogram tasks only: a task with one reconstructed worker is not
+    // in `coverage.histogram`, so its Bash calls must not be counted against it.
+    ...buildBashBreakdown(
+      tasks
+        .filter(t => t.toolSource === 'histogram')
+        .map(t => ({ bash: t.bash, bashCalls: t.counts.Bash ?? 0 })),
+    ),
   };
 }
 

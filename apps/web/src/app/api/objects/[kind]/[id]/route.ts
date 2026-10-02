@@ -1,6 +1,6 @@
 /**
  * GET /api/objects/[kind]/[id] — one live buildd object as the chat feed
- * renders it (docs/design/agent-chat.md, "Objects in the feed").
+ * renders it (knowledge-base: buildd/design/agent-chat.md, "Objects in the feed").
  *
  * A message part stores a `BuilddObjectRef`, never a snapshot; the inline card
  * and the docked pane fetch the object's current view here and refetch when its

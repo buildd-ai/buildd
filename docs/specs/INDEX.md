@@ -33,7 +33,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### knowledge (2)
 
-- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-08-30
+- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-10-02
   Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 - [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-08-31
   The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
@@ -107,7 +107,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 - [Base Refresh Classification](./base-refresh-classification.md) · @max — verified 2026-10-01
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
-- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-09-20
+- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-02
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-09-27
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.

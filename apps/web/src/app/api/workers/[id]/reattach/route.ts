@@ -27,7 +27,7 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
   // A per-task token may take over only its own task's worker (reattachWhere's taskId).
-  const account = await authenticateTaskScopedCaller(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (account.level === 'trigger') return NextResponse.json({ error: 'Trigger tokens cannot re-attach workers' }, { status: 403 });
 

@@ -218,7 +218,7 @@ export const accounts = pgTable('accounts', {
   // (ai_usage receipts, day in the team's timezone). POST /api/ai/plan answers
   // `downgrade` from 80% of it and `deny` at 100%. NULL = no buildd-side cap:
   // the app's own provider-key limit is the hard ceiling
-  // (docs/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
+  // (knowledge-base: buildd/design/shared-ai-kit.md §2). Never touches maxCostPerDay (runner work).
   aiDailyBudgetUsd: decimal('ai_daily_budget_usd', { precision: 10, scale: 2 }),
 
   // A long-lived host runner key, flagged explicitly by a team owner/admin.
@@ -278,6 +278,13 @@ export interface WorkspaceGitConfig {
   // replacing `autoMergePR` below: an unconfigured workspace gets the newer,
   // batched-PR default, not the legacy per-task one.
   branchStrategy?: BranchStrategy;
+
+  // Other same-team workspaces whose `docs` corpus this workspace's agents may
+  // also search (recall / query_knowledge and the claim-time knowledge context).
+  // A request, not a grant: resolveLinkedDocsWorkspaces (apps/web/src/lib/
+  // linked-knowledge.ts) only honours an id the calling account could reach
+  // anyway — same team, not sensitive, token restriction respected.
+  linkedKnowledgeWorkspaces?: string[];
 
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
@@ -373,7 +380,7 @@ export interface WorkspaceGitConfig {
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' };
   effort?: 'low' | 'medium' | 'high' | 'max';
 
-  // Path-claim enforcement (docs/design/conflict-aware-orchestration.md §2). Off by
+  // Path-claim enforcement (knowledge-base: buildd/design/conflict-aware-orchestration.md §2). Off by
   // default ('advisory' or absent). 'enforce': a confirmed live holder denies
   // Edit/Write/MultiEdit before the write, and a checkpoint sweep that finds a
   // collision (Bash/untracked/Codex writes) stops push/completion and defers the task.
@@ -480,7 +487,7 @@ export interface WorkspaceGitConfig {
   autoResolveMergeConflicts?: boolean;
 
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
-  // docs/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
+  // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and
   // recorded on the gate ledger beside the legacy action, which still runs.
   // `enforce`: doors act on the landing outcome.
@@ -698,7 +705,7 @@ export interface TaskScheduleTemplate {
   complexity?: 'simple' | 'normal' | 'complex';
   // The role every task this schedule spawns runs as, stated once. Applied at
   // fire time only if the slug still resolves to a role in the task's
-  // workspace (docs/design/role-routing.md §3.1); otherwise the task files
+  // workspace (knowledge-base: buildd/design/role-routing.md §3.1); otherwise the task files
   // role-less.
   roleSlug?: string;
 }
@@ -791,6 +798,13 @@ export interface CbmMetrics {
   grepCount: number;
   /** Glob tool call count for this task. */
   globCount: number;
+  /**
+   * CBM search injection (docs/design/cbm-search-injection.md): the runner's
+   * own graph lookups after an agent's identifier search, and what it appended.
+   * NOT agent CBM calls — never in `toolCalls` / `totalCbmCalls`. Counts and
+   * labels only. Absent on sessions where injection never ran.
+   */
+  injection?: import('../cbm-injection').CbmInjectionMetrics;
 }
 
 /**
@@ -1572,13 +1586,21 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
  * AskUserQuestion options as objects; older rows and hand-written callers still
  * send bare strings, so readers must accept both.
  */
-export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean };
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string };
 
+/**
+ * `context`, `recommended` and `where` are the question brief
+ * (module header: packages/core/question-brief.ts). All optional: rows written before
+ * it carry none and still render.
+ */
 export type WorkerWaitingFor = {
   type: string;
   prompt: string;
   options?: WaitingForOption[];
   toolUseId?: string;
+  context?: string;
+  recommended?: { label: string; reason?: string };
+  where?: { taskTitle?: string; branch?: string; file?: string };
 };
 
 /**
@@ -1721,6 +1743,21 @@ export const workers = pgTable('workers', {
   // the account being deleted.
   supersededRecordedBy: text('superseded_recorded_by'),
   supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  // A closed-unmerged PR a person declared abandoned: the work is deliberately
+  // not shipping, and the reason says why. Not a supersession (nothing landed)
+  // and not a fake one — `prShipState` reads it as its own `abandoned` state,
+  // which no longer blocks mission completion. Reason required at write time
+  // (lib/pr-supersession.ts `recordPrAbandonment`).
+  abandonedReason: text('abandoned_reason'),
+  abandonedRecordedBy: text('abandoned_recorded_by'),
+  abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+  // Where automatic supersession detection (lib/pr-supersession-detect.ts)
+  // looked last, and the unverified candidate it found, if any. A suggestion
+  // here is NEVER an edge: only content verification writes the columns above.
+  // `supersessionScannedAt` mirrors `supersessionScan.scannedAt` so the backfill
+  // sweep can select stale rows without a jsonb cast.
+  supersessionScan: jsonb('supersession_scan').$type<import('../pr-shipped').SupersessionScan | null>(),
+  supersessionScannedAt: timestamp('supersession_scanned_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -2687,7 +2724,7 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
@@ -2907,7 +2944,7 @@ export const secrets = pgTable('secrets', {
 }));
 
 
-// ── Agent chat (docs/design/agent-chat.md) ───────────────────────────────────
+// ── Agent chat (knowledge-base: buildd/design/agent-chat.md) ───────────────────────────────────
 
 // One conversation with the buildd agent. Same conversation on web and phone.
 export const conversations = pgTable('conversations', {
@@ -2951,7 +2988,7 @@ export const conversationMessages = pgTable('conversation_messages', {
   authorCreatedIdx: index('conversation_messages_author_created_idx').on(t.authorUserId, t.createdAt),
 }));
 
-// Chat session retro lessons (experiment; docs/design/chat-session-retro.md,
+// Chat session retro lessons (experiment; knowledge-base: buildd/design/chat-session-retro.md,
 // code in apps/web/src/lib/chat-retro/, removal in its REMOVAL.md). One row per
 // conversation window the daily pass looked at. Content-free by construction:
 // every text column holds a label from a fixed vocabulary, a buildd tool name,
@@ -3164,7 +3201,7 @@ export const memoryUses = pgTable('memory_uses', {
 }));
 
 // Memory decision log: one row per Jev verdict on a memory decision
-// (packages/core/memory-decisions.ts, docs/design/memory-done-right.md "Where
+// (packages/core/memory-decisions.ts, knowledge-base: buildd/design/memory-done-right.md "Where
 // Jev helps"). Every row carries the verdict, its confidence, what the current
 // rule said and whether the verdict was acted on, so the offline readout
 // (packages/core/scripts/memory-decision-readout.ts) can compare Jev, the rule
@@ -3279,7 +3316,7 @@ export const knowledgeEdges = pgTable('knowledge_edges', {
 
 // Workspace Knowledge Management v2 §3.2 — per-workspace ingest job queue.
 // One queue for incremental (diff) and full runs. Enqueued by the GitHub
-// webhook on merged PRs; diff jobs execute serverless via the contents API,
+// webhook on merged PRs and on direct pushes to the default branch; diff jobs execute serverless via the contents API,
 // full jobs (backfill / escalated large diffs) run on the runner fleet.
 // Idempotent enqueue via the partial unique index on (workspace_id, sha, scope)
 // — failed jobs (status = 'error') don't block a retry insert.
@@ -3294,13 +3331,17 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   /** "owner/name" — denormalized so jobs survive repo re-binding. */
   repo: text('repo').notNull(),
-  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
+  trigger: text('trigger').notNull().$type<'pr_merged' | 'push' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
   /** Merge SHA (diff jobs) or target SHA (full jobs). */
   sha: text('sha'),
   prNumber: integer('pr_number'),
   scope: text('scope').notNull().$type<'diff' | 'full'>(),
   status: text('status').default('queued').notNull().$type<'queued' | 'running' | 'done' | 'error'>(),
-  /** File paths considered by this job (kept + deleted), for the health UI. */
+  /**
+   * File paths considered by this job (kept + deleted), for the health UI.
+   * A `push` job is seeded with its docs paths at enqueue (the push payload is
+   * the only record of them) and the executor reads them back from here.
+   */
   changedFiles: jsonb('changed_files').$type<string[]>(),
   /** Run stats: filesIngested / filesSkipped / filesDeleted / chunksUpserted / escalated… */
   stats: jsonb('stats').$type<Record<string, unknown>>(),
@@ -3609,7 +3650,7 @@ export const notificationPreferencesRelations = relations(notificationPreference
   team: one(teams, { fields: [notificationPreferences.teamId], references: [teams.id] }),
 }));
 
-// ── Subscriptions and the delivery ledger (docs/design/subscriptions-and-notifications.md) ──
+// ── Subscriptions and the delivery ledger (knowledge-base: buildd/design/subscriptions-and-notifications.md) ──
 //
 // A subscription is "who wants to hear about what". Exactly one owner column is
 // set: a person (owner_user_id), a waiting worker (owner_task_id) or an MCP
@@ -4042,7 +4083,7 @@ export const modelTierRegistryRelations = relations(modelTierRegistry, ({ one })
   workspace: one(workspaces, { fields: [modelTierRegistry.workspaceId], references: [workspaces.id] }),
 }));
 
-// ── Tier model pools (docs/design/tier-model-pools.md) ──────────────────────
+// ── Tier model pools (knowledge-base: buildd/design/tier-model-pools.md) ──────────────────────
 //
 // A tier is served by a pool of one to four arms per surface. With no row here
 // a tier resolves exactly as before (model_tier_registry). Pools are created
@@ -4063,7 +4104,7 @@ export const tierPools = pgTable('tier_pools', {
   // Bumped by every allocation write; writes are compare-and-set on it.
   allocationVersion: integer('allocation_version').notNull().default(1),
   // { [tier_pool_arms.id]: 'off'|'low'|'med'|'high' }. `split` only — the
-  // input `allocation` is derived from it (docs/design/tier-weights.md §1). A
+  // input `allocation` is derived from it (knowledge-base: buildd/design/tier-weights.md §1). A
   // pool created before this shipped has `weights = {}`; see
   // `packages/core/tier-weights.ts` `backfillWeights`.
   weights: jsonb('weights').$type<Record<string, 'off' | 'low' | 'med' | 'high'>>().notNull().default({}),
@@ -4127,7 +4168,7 @@ export const tierPoolChanges = pgTable('tier_pool_changes', {
 }));
 
 // Model plans served to sibling apps by POST /api/ai/plan
-// (docs/design/shared-ai-kit.md §2). One row per plan: which model buildd
+// (knowledge-base: buildd/design/shared-ai-kit.md §2). One row per plan: which model buildd
 // chose for an app account, and the may-spend decision it returned. The model
 // call itself runs in the app; buildd never sees its content. Metadata only:
 // `kind` is the app's free attribution label, no other text is stored.
@@ -4471,7 +4512,7 @@ export const memories = pgTable('memories', {
   // Consecutive failed reconcile attempts to mirror this row into the index.
   // Rows past the cap drop out of reconcile so they cannot block the backlog.
   indexFailures: integer('index_failures').notNull().default(0),
-  // Lifecycle (docs/design/memory-done-right.md, "Write: candidates, then
+  // Lifecycle (knowledge-base: buildd/design/memory-done-right.md, "Write: candidates, then
   // promotion"; packages/core/memory-candidates.ts). Every row written before
   // this existed is 'active', and writes stay 'active' unless the workspace
   // flag `memoryCandidateWrites` is on. Only 'active' is pushed at claim time;
@@ -4656,7 +4697,7 @@ export type NewCronRun = typeof cronRuns.$inferInsert;
 
 // ── Orchestration decision / outcome ledger ──────────────────────────────────
 //
-// docs/design/conflict-aware-orchestration.md §5–§6. One row per look by an
+// knowledge-base: buildd/design/conflict-aware-orchestration.md §5–§6. One row per look by an
 // orchestration decision (creation-time scope prediction, claim-time
 // hold/start), written by packages/core/orchestration-decision.ts. Content-free:
 // ids, versions, the definition fingerprint, a candidate-set digest, opaque
@@ -4754,7 +4795,7 @@ export const orchestrationTouchLabels = pgTable('orchestration_touch_labels', {
 export type OrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferSelect;
 export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferInsert;
 
-// Creation-time manifest predictions (docs/design/conflict-aware-orchestration.md
+// Creation-time manifest predictions (knowledge-base: buildd/design/conflict-aware-orchestration.md
 // §5a, packages/core/manifest-prediction.ts). One row per task per candidate
 // policy, written in shadow AFTER the creation response for teams that opted in
 // to `orchestration_manifest`. Each pick also writes a content-free

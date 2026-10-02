@@ -4,6 +4,8 @@ import {
   splitHeldOut,
   summarizeBenchmark,
   formatBenchmarkSummary,
+  pickGateThreshold,
+  type ScoredExample,
 } from '../decision-benchmark';
 
 describe('parseLabeledJsonl', () => {
@@ -87,5 +89,42 @@ describe('summarizeBenchmark', () => {
     const out = formatBenchmarkSummary('held-out', summarizeBenchmark(scored));
     expect(out).toContain('held-out');
     expect(out).toContain('baseline');
+  });
+});
+
+describe('parseLabeledJsonl — labelField', () => {
+  it('reads the gold from another key and keeps the plain label as a field', () => {
+    const { examples } = parseLabeledJsonl('{"id":"a","label":"feature","role":"builder","title":"x"}', { labelField: 'role' });
+    expect(examples[0]).toEqual({ id: 'a', label: 'builder', fields: { label: 'feature', title: 'x' } });
+  });
+});
+
+describe('pickGateThreshold', () => {
+  const s = (gold: string, predicted: string, confidence: number, i: number): ScoredExample => ({ id: `${gold}-${i}`, gold, predicted, confidence });
+
+  it('picks the lowest threshold where every label with enough picks is precise', () => {
+    const scored: ScoredExample[] = [
+      // builder: right at high confidence, a few wrong at 0.8
+      ...Array.from({ length: 20 }, (_, i) => s('builder', 'builder', 0.97, i)),
+      ...Array.from({ length: 4 }, (_, i) => s('researcher', 'builder', 0.8, 100 + i)),
+      // researcher: always right at 0.92
+      ...Array.from({ length: 10 }, (_, i) => s('researcher', 'researcher', 0.92, 200 + i)),
+      // none-labelled rows: harmless below the gate
+      ...Array.from({ length: 5 }, (_, i) => s('none', 'writer', 0.6, 300 + i)),
+    ];
+    const { threshold, rows } = pickGateThreshold(scored, { thresholds: [0.5, 0.8, 0.85, 0.9, 0.95] });
+    expect(threshold).toBe(0.85);
+    expect(rows.find(r => r.threshold === 0.8)!.passes).toBe(false);
+    expect(rows.find(r => r.threshold === 0.85)).toMatchObject({ applied: 30, precision: 1 });
+  });
+
+  it('one weak label fails the gate even when the average is high', () => {
+    const scored: ScoredExample[] = [
+      ...Array.from({ length: 100 }, (_, i) => s('builder', 'builder', 0.95, i)),
+      ...Array.from({ length: 8 }, (_, i) => s('writer', 'writer', 0.95, 200 + i)),
+      ...Array.from({ length: 2 }, (_, i) => s('researcher', 'writer', 0.95, 300 + i)),
+    ];
+    // 108/110 overall (98%), but writer is 8/10 (80%).
+    expect(pickGateThreshold(scored, { thresholds: [0.9] }).threshold).toBeNull();
   });
 });

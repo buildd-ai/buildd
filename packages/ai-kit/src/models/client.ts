@@ -3,7 +3,7 @@
  * call cost. No framework dependencies: `fetch`, `AbortController` and
  * `setTimeout` only, so it runs on Node, Bun and edge runtimes.
  *
- * Plans (docs/design/shared-ai-kit.md §1a):
+ * Plans (knowledge-base: buildd/design/shared-ai-kit.md §1a):
  * - cached per (tier, surface, workspace, budget) until buildd's `expiresAt`;
  * - buildd slower than 800ms, a 5xx, a network error or an unusable answer:
  *   serve the last good plan for up to `maxStaleSeconds` past its expiry

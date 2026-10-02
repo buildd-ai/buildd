@@ -4,7 +4,7 @@ A small daemon whose defining property is that **it does not depend on the
 system it watches.** It detects three conditions, records evidence, and pages.
 It takes no action of any kind.
 
-Design: `docs/design/autonomous-incident-responder.md` (items 3 and 4 of the
+Design: `knowledge-base: buildd/design/autonomous-incident-responder.md` (items 3 and 4 of the
 implementation sketch).
 
 ## Why it exists

@@ -30,8 +30,14 @@ export interface ScoredExample {
   error?: string;
 }
 
-/** Parse JSONL. Each line: `{ "label": "...", "id"?: "...", ...fields }`. */
-export function parseLabeledJsonl(text: string): { examples: LabeledExample[]; skipped: number } {
+/**
+ * Parse JSONL. Each line: `{ "label": "...", "id"?: "...", ...fields }`.
+ * `labelField` reads the gold from another key, so one file can carry two
+ * labels for the same sample (role-routing §6(b): role and category are
+ * labelled together); the other label stays in `fields`.
+ */
+export function parseLabeledJsonl(text: string, opts: { labelField?: string } = {}): { examples: LabeledExample[]; skipped: number } {
+  const labelField = opts.labelField ?? 'label';
   const examples: LabeledExample[] = [];
   let skipped = 0;
   text.split(/\r?\n/).forEach((line, i) => {
@@ -39,8 +45,9 @@ export function parseLabeledJsonl(text: string): { examples: LabeledExample[]; s
     if (!trimmed || trimmed.startsWith('//')) return;
     try {
       const row = JSON.parse(trimmed) as Record<string, unknown>;
-      if (typeof row.label !== 'string' || row.label === '') { skipped++; return; }
-      const { id, label, ...fields } = row;
+      const label = row[labelField];
+      if (typeof label !== 'string' || label === '') { skipped++; return; }
+      const { id, [labelField]: _gold, ...fields } = row;
       examples.push({ id: typeof id === 'string' && id ? id : `line-${i + 1}`, label, fields });
     } catch {
       skipped++;
@@ -170,4 +177,64 @@ export function formatBenchmarkSummary(title: string, s: BenchmarkSummary): stri
       `${label.padEnd(14)} ${String(r.gold).padStart(4)}  ${String(r.predicted).padStart(4)}   ${pct(r.precision)}   ${pct(r.recall)}`),
   ];
   return lines.join('\n');
+}
+
+/** One row of the gate table: what applying at `threshold` would do. */
+export interface GateRow {
+  threshold: number;
+  /** Answers at or above the threshold: the ones that would be written. */
+  applied: number;
+  /** applied / all examples. */
+  coverage: number;
+  /** Share of applied answers that match the gold, or null when nothing applies. */
+  precision: number | null;
+  /** Per predicted label, among applied answers. */
+  perLabel: Record<string, { applied: number; correct: number; precision: number }>;
+  /** Every predicted label with at least `minN` applied answers clears `minPrecision`. */
+  passes: boolean;
+}
+
+/**
+ * Pick an apply gate where a wrong answer is worse than no answer
+ * (role-routing §6(b)): the LOWEST threshold at which every predicted label
+ * with at least `minN` applied answers has precision ≥ `minPrecision`, and the
+ * overall applied precision does too. One weak label cannot hide inside a good
+ * average. A gold label no option can produce (e.g. `none`) is never "correct"
+ * when applied, and is harmless below the threshold — that is the point of the
+ * gate. Null when no threshold passes with anything applied.
+ */
+export function pickGateThreshold(
+  scored: ScoredExample[],
+  opts: { minPrecision?: number; minN?: number; thresholds?: readonly number[] } = {},
+): { threshold: number | null; rows: GateRow[] } {
+  const minPrecision = opts.minPrecision ?? 0.95;
+  const minN = opts.minN ?? 10;
+  const thresholds = opts.thresholds ?? [0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.93, 0.95, 0.97, 0.99];
+  const total = scored.length;
+  const rows: GateRow[] = thresholds.map(threshold => {
+    const applied = scored.filter(s => s.predicted !== null && (s.confidence ?? 0) >= threshold);
+    const perLabel: GateRow['perLabel'] = {};
+    for (const s of applied) {
+      const r = (perLabel[s.predicted!] ??= { applied: 0, correct: 0, precision: 0 });
+      r.applied++;
+      if (s.predicted === s.gold) r.correct++;
+    }
+    for (const r of Object.values(perLabel)) r.precision = r.correct / r.applied;
+    const correct = applied.filter(s => s.predicted === s.gold).length;
+    const precision = applied.length ? correct / applied.length : null;
+    const passes = precision !== null && precision >= minPrecision
+      && Object.values(perLabel).every(r => r.applied < minN || r.precision >= minPrecision);
+    return { threshold, applied: applied.length, coverage: total ? applied.length / total : 0, precision, perLabel, passes };
+  });
+  const first = rows.find(r => r.passes);
+  return { threshold: first ? first.threshold : null, rows };
+}
+
+export function formatGateTable(rows: GateRow[], picked: number | null): string {
+  const pct = (v: number | null) => (v === null ? '   -  ' : `${(v * 100).toFixed(1).padStart(5)}%`);
+  return [
+    'gate   applied  coverage  precision  passes',
+    ...rows.map(r => `${r.threshold.toFixed(2)}   ${String(r.applied).padStart(7)}   ${pct(r.coverage)}    ${pct(r.precision)}   ${r.passes ? 'yes' : 'no'}`),
+    `picked: ${picked === null ? 'none passes' : picked.toFixed(2)}`,
+  ].join('\n');
 }

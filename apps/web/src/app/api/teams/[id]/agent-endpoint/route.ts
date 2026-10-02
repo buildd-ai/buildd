@@ -13,7 +13,8 @@ import { deleteTeamAgentEndpoint, listTeamAgentEndpoints, setTeamAgentEndpoint }
  *          → { endpoint }                                             owner/admin; one real call first
  *   DELETE ?workspaceId= (omit for the team-wide row) → { deleted }   owner/admin
  *
- * Session only. The key never leaves the server. Verify an existing row with
+ * A blank apiKey keeps the saved key, for the same kind and URL at that scope
+ * only (else 400). Session only. The key never leaves the server. Verify an existing row with
  * POST /api/secrets/[id]/verify.
  */
 

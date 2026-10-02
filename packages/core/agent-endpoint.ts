@@ -366,25 +366,60 @@ export async function resolveAgentModelRoute(opts: {
 type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
- * One real Messages call through the endpoint: the budget model after mapping,
- * `max_tokens: 1`, with the configured header. 2xx ⇒ healthy, 401/403 ⇒
- * revoked, anything else (an outage, an unknown alias) ⇒ unknown, so an outage
- * never marks it dead. Through net/public-address verifyByFetch: public hosts
- * only, no redirects, and the error is fixed text plus a status code, never
- * the reply. `blocked`: the URL itself may not be used.
+ * The native model id Verify should probe. With an alias table, a model the
+ * endpoint will actually be asked for: the fallback when it is aliased, else
+ * the first aliased model (a key restricted to the aliased targets would refuse
+ * the unaliased fallback). OpenRouter ignores aliases (mapAgentModel), so it
+ * always probes the fallback.
+ */
+export function agentEndpointProbeModel(route: { kind: AgentEndpointKind; models?: AgentModelMap }, fallback: string): string {
+  if (route.kind === 'openrouter') return fallback;
+  const aliased = Object.keys(route.models ?? {});
+  if (aliased.length === 0 || aliased.includes(fallback)) return fallback;
+  return aliased[0];
+}
+
+export interface AgentEndpointVerifyOutcome extends VerifyOutcome {
+  /** 403: the wire model id the endpoint refused for this key. */
+  refusedModel?: string;
+}
+
+/**
+ * One real Messages call through the endpoint: `model` after mapping,
+ * `max_tokens: 1`, with the configured header. 2xx ⇒ healthy, 401 ⇒ revoked,
+ * 403 ⇒ unknown with `refusedModel` (a LiteLLM key restricted to some models
+ * answers 403 for the others, so a 403 says "not this model", not "dead key"),
+ * anything else (an outage, an unknown alias) ⇒ unknown, so an outage never
+ * marks it dead. Through net/public-address verifyByFetch: public hosts only,
+ * no redirects, and the error is fixed text plus a status code and the model id
+ * we sent, never the reply. `blocked`: the URL itself may not be used.
+ * `wire`: `model` is already the name to send (agent-endpoint-models
+ * selectProbeModel picked it from the endpoint's list), so it is not mapped.
  */
 export async function verifyAgentEndpoint(
   route: AgentEndpointRoute,
   model: string,
-  opts: { fetcher?: Fetcher; timeoutMs?: number; lookup?: LookupAll } = {},
-): Promise<VerifyOutcome> {
+  opts: { fetcher?: Fetcher; timeoutMs?: number; lookup?: LookupAll; wire?: boolean } = {},
+): Promise<AgentEndpointVerifyOutcome> {
   const headers: Record<string, string> = { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' };
   if (route.authHeader === 'x-api-key') headers['x-api-key'] = route.apiKey;
   else headers.authorization = `Bearer ${route.apiKey}`;
+  const wireModel = opts.wire ? model : mapAgentModel(route, model);
+  const shown = wireModel.length > 100 ? `${wireModel.slice(0, 100)}…` : wireModel;
   return verifyByFetch('endpoint', `${route.baseUrl}/v1/messages`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model: mapAgentModel(route, model), max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+    body: JSON.stringify({ model: wireModel, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
     signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
-  }, { fetcher: opts.fetcher, lookup: opts.lookup });
+  }, {
+    fetcher: opts.fetcher,
+    lookup: opts.lookup,
+    classify: (status): AgentEndpointVerifyOutcome | null => status === 403
+      ? {
+          health: 'unknown',
+          refusedModel: shown,
+          error: `endpoint refused model "${shown}" for this key (403). The key may not be allowed to use it: add a model alias pointing it at a model the key allows`,
+        }
+      : null,
+  });
 }

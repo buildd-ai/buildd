@@ -1,5 +1,5 @@
 /**
- * The chat notification tools (docs/design/subscriptions-and-notifications.md
+ * The chat notification tools (knowledge-base: buildd/design/subscriptions-and-notifications.md
  * → Chat tool surface): `watch`, `unwatch`, `list_watches`. Registered in
  * registry.ts (CHAT_NATIVE_TOOL_SPECS, group `notifications`) and run by
  * tools.ts through the in-process API, so each reaches only the routes its op

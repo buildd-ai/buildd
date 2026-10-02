@@ -2,7 +2,7 @@
 
 /**
  * Settings -> Profile -> "Standing rules": the rules chat loads into every one
- * of your turns (docs/design/memory-done-right.md, "Chat"). Saved from a card
+ * of your turns (knowledge-base: buildd/design/memory-done-right.md, "Chat"). Saved from a card
  * in the thread ("Remember this") or added here; edited and removed here.
  * Yours only: nobody else on the team sees them. Square and mobile-first: one
  * rule per row, the rule in Newsreader, its scope in mono under it.

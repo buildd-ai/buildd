@@ -1,5 +1,5 @@
 /**
- * The desktop right panel (docs/design/chat-v3-desktop.md, "Dock"): which one
+ * The desktop right panel (knowledge-base: buildd/design/chat-v3-desktop.md, "Dock"): which one
  * thing it shows, what a task card in it says, and who is at work on a mission.
  * Pure, so the panel and its tests agree.
  */

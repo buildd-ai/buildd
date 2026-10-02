@@ -976,3 +976,82 @@ describe('POST /api/workers/heartbeat — per-task token', () => {
     expect(JSON.stringify(leaseUpdateCalls[0].where)).toContain('"value":"task-1"');
   });
 });
+
+describe('POST /api/workers/heartbeat — fleet identity of a --once run', () => {
+  let capturedValues: any;
+  let capturedConflictSet: any;
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsInsert.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+    mockGetLatestVersion.mockResolvedValue({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' });
+    leaseUpdateCalls = [];
+    leaseRenewedRows = [];
+    leaseUpdateThrows = null;
+    capturedValues = null;
+    capturedConflictSet = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { onConflictDoUpdate: mock((opts: any) => { capturedConflictSet = opts.set; return Promise.resolve(); }) };
+      }),
+    });
+  });
+  const labels = { type: 'local', os: 'linux', arch: 'x64', hostname: 'container' };
+  const env = (fleet?: unknown) => ({ tools: [], envKeys: [], mcp: [], labels, scannedAt: '2026-01-01T00:00:00.000Z', ...(fleet === undefined ? {} : { fleet }) });
+
+  it('a cloud container run is stored as one slot, ephemeral, in its group, not with the account default', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5, level: 'worker', taskScope: { taskId: 'task-1', expiresAt: Date.now() + 60_000 } });
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://container/once/task-1', environment: env({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' }) },
+    }));
+    expect(res.status).toBe(200);
+    expect(capturedValues.maxConcurrentWorkers).toBe(1);
+    expect(capturedConflictSet.maxConcurrentWorkers).toBe(1);
+    expect(capturedValues.environment.fleet).toEqual({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' });
+    expect(capturedConflictSet.environment.fleet).toEqual({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' });
+  });
+
+  it('an older --once build that reports no identity is still stored as ephemeral with one slot', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://container/once/task-9', environment: env() },
+    }));
+    expect(res.status).toBe(200);
+    expect(capturedValues.maxConcurrentWorkers).toBe(1);
+    expect(capturedValues.environment.fleet).toEqual({ executor: null, ephemeral: true, concurrency: 1, group: null });
+  });
+
+  it('drops a malformed identity rather than storing it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'headless://container/once/task-9', environment: env({ executor: 'mainframe', group: '<script>', concurrency: 99 }) },
+    }));
+    expect(capturedValues.environment.fleet).toEqual({ executor: null, ephemeral: true, concurrency: 1, group: null });
+  });
+
+  it('a host runner is unchanged: account slots, environment exactly as sent', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    const sent = env();
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://atlas.local:8766', environment: sent },
+    }));
+    expect(capturedValues.maxConcurrentWorkers).toBe(5);
+    expect(capturedValues.environment).toEqual(sent);
+  });
+
+  it('a host runner cannot report itself ephemeral and shrink out of the fleet', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5 });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://atlas.local:8766', environment: env({ ephemeral: true, executor: 'cloud', group: 'x' }) },
+    }));
+    expect(capturedValues.maxConcurrentWorkers).toBe(5);
+    expect(capturedValues.environment.fleet).toBeUndefined();
+  });
+});

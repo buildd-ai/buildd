@@ -23,6 +23,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { hasTokenScope, requiredScopeForAction, tokenWorkspaceAllowed } from "@buildd/core/token-scopes";
+import { resolveLinkedDocsWorkspaces } from "@/lib/linked-knowledge";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
@@ -342,6 +343,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     const embedder = getVoyageEmbedder();
     const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
     const memTeamId = await resolveTeamId(wsId, accountTeamId);
+    // Docs of other same-team workspaces this one links to. Read arms only: the
+    // admin knowledge-ops arm never searches.
+    const linkedDocsWorkspaceIds = opts.forwardIsSensitive && wsId && accountId && accountTeamId
+      ? await resolveLinkedDocsWorkspaces({
+          workspaceId: wsId,
+          account: { id: accountId, teamId: accountTeamId, workspaceIds: tokenWorkspaceIds },
+        })
+      : [];
 
     return {
       ok: true as const,
@@ -357,6 +366,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         // Jev keep/type/update on writes; fails open to today's rules.
         memoryDecider: memoryDeciderFor(accountId),
         ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
+        ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
       },
     };
   };

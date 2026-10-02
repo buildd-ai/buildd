@@ -2,13 +2,13 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-09-20
+last_verified: 2026-10-02
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts]
+surfaces: [apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts, answered-question-resume]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
-verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts]
+verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -25,6 +25,11 @@ assertions:
   - id: "durable-answer-tests"
     type: "test_file"
     path: "apps/web/src/app/api/workers/[id]/respond/route.test.ts"
+  - id: "question-gate-check"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/question-check"
+    file: "apps/web/src/app/api/workers/[id]/question-check/route.ts"
 ---
 # Human-in-the-Loop Protocol
 
@@ -144,6 +149,30 @@ path unchanged.
   same write. The flag is a boolean, not prose, so it survives the
   `sensitive`-workspace redaction that otherwise drops `prompt` to `{ type }`
   alone.
+- **A question carries an optional decision brief** (`packages/core/question-brief.ts`):
+  `context` (at most two sentences: the task and the exact decision), a
+  one-line `consequence` per option, `recommended` (`{ label, reason }`) and
+  `where` (task title, branch, last edited file). The runner derives it
+  deterministically from the AskUserQuestion input (framing sentences before
+  the final question, each option's description, a `(Recommended)` label
+  suffix) and its own facts; it never invents text. The PATCH route sanitizes
+  and caps every brief field and drops malformed ones rather than refusing the
+  park. Every question surface renders it, and a question without one renders
+  as before. The notification is the question, one line of context and the
+  recommended default.
+- **The question gate is an opt-in experiment (`question_gate`), off unless a
+  team runs one.** A runner whose claim carries a `questionGate` marker asks
+  `POST /api/workers/[id]/question-check` before parking; handleMessage then
+  leaves parking to the PreToolUse hook. In the treatment arm a confident
+  `needs_context` from the decision model (default threshold 0.7, unmeasured,
+  `config.minConfidence`) is NOT parked or notified: the pushback text is the
+  AskUserQuestion tool result and the agent asks again. At most
+  `config.maxPushbacks` (default 2) per worker, then the question is sent
+  as-is. Control is shadow. Every failure (no experiment, sensitive workspace,
+  no key, gateway decision model, timeout, error) sends the question
+  unchanged. Each check is recorded content-free on the task's
+  `experiment_assignments` row (`eligibility.questionGateChecks`) plus its
+  `ai_usage` receipt.
 
 **Acceptance criteria**:
 - AC-HITL-1: GIVEN a runner PATCH with `status: 'waiting_input'` and
@@ -181,6 +210,18 @@ path unchanged.
   WHEN the PATCH route persists it THEN the stored `waitingFor` carries
   `contractViolation: true`; GIVEN a real question text THEN the field is
   absent.
+- AC-HITL-37: GIVEN a question PATCH with brief fields WHEN the route persists
+  it THEN well-formed `context` / `recommended` / `where` / option
+  `consequence` are stored capped, malformed ones are dropped, and the
+  notification message is the prompt, one context line and
+  `Recommended: <label>. <reason>`.
+- AC-HITL-38: GIVEN a gated worker WHEN the gate returns `pushback` and the
+  worker has pushbacks left THEN the PreToolUse hook denies AskUserQuestion
+  with the pushback text and nothing is parked; GIVEN the cap is reached, a
+  `send`, or any gate failure THEN the question is parked.
+- AC-HITL-39: GIVEN no running `question_gate` experiment WHEN a question is
+  checked THEN it is sent and nothing is recorded; GIVEN the control arm THEN
+  a confident `needs_context` is recorded as `shadow_needs_context` and sent.
 
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/route.ts:450` (persist + redact,

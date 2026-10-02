@@ -1,5 +1,5 @@
 /**
- * The "What shipped" store (docs/design/mission-shipped-report.md, "Storage").
+ * The "What shipped" store (knowledge-base: buildd/design/mission-shipped-report.md, "Storage").
  *
  * Called by the winner of the atomic completion claim in
  * `completeMissionIfVerified` and by the human-completion route, never anywhere

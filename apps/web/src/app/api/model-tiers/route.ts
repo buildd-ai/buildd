@@ -43,7 +43,7 @@ type TeamResolution = { teamId: string } | { error: NextResponse };
  *
  * Session writes also need owner or admin in the resolved team: which model
  * backs a tier sets spend for the whole team, so it is an admin call
- * (docs/design/agent-chat.md → Models). API keys are already held to admin level
+ * (knowledge-base: buildd/design/agent-chat.md → Models). API keys are already held to admin level
  * by each handler.
  */
 async function resolveTeam(

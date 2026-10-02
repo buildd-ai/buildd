@@ -71,7 +71,10 @@
  * approved PRs merge before another push ever lands) — it is the "explicit
  * recorded decision" half of closing the gap: the gate stops silently
  * trusting a superseded approval, and a human or a fresh `re-review` request
- * clears it from there.
+ * clears it from there. The unattended merge doors (`tryAutoMergeWorkerPr`,
+ * and `landPr`'s `re_review` fix) send that re-review themselves once
+ * carry-forward has failed — at merge time, not on every push — through
+ * stale-approval-re-review.ts, single-flight per PR + head.
  *
  * A caller that passes `carryForward` (installationId/repoFullName/baseRef)
  * to `guardReviewVerdict` gets that "clears it from there" step run inline,
@@ -382,7 +385,7 @@ const CLEARED_BY: Record<ReviewGateBlockKind, string> = {
     'Act on the escalation, or merge past it with an explicit human override, which is recorded as a bypass.',
   in_flight: 'Wait for the verdict, then merge on an approve. A human can merge past it with an explicit override, which is recorded as a bypass.',
   stale_approval:
-    'Request a re-review of the new commit, or merge past it with an explicit human override, which is recorded as a bypass.',
+    'The next unattended merge attempt sends a reviewer for the new commit; you can also request a re-review now, or merge past it with an explicit human override, which is recorded as a bypass.',
 };
 
 /** A 40-hex commit id, lowercased, or null for anything that is not one. */

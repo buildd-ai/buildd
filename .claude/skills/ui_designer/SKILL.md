@@ -29,7 +29,7 @@ Brutalist/editorial: warm paper and charcoal surfaces, hard ink outlines, hard o
 
 1. **Color earns its place.** Every colour communicates state or invites action. Status colours go on chips, dots, left borders and text, never as a button, card or page fill.
 2. **Borders and hard shadows carry hierarchy.** 2px `--border-strong` frames, 1px `--border` hairlines, `--card-shadow` hard offsets. Never a blurred shadow.
-3. **Square everything.** Radius 0; the Tailwind scale is zeroed. Don't write `rounded-[Npx]` arbitrary values. The chat canvas conversation is the one sanctioned soft surface (`docs/design/chat-canvas.md`).
+3. **Square everything.** Radius 0; the Tailwind scale is zeroed. Don't write `rounded-[Npx]` arbitrary values. The chat canvas conversation is the one sanctioned soft surface (`knowledge-base: buildd/design/chat-canvas.md`).
 4. **Mono is the voice.** IBM Plex Mono everywhere app-owned. Fraunces never appears in product UI.
 5. **Use the type scale, not `text-[Npx]`.** Pick a role from design-system §3; nothing under 11px below `md`.
 6. **Reuse primitives.** Don't hand-roll a status chip or a bottom sheet; see design-system §4.

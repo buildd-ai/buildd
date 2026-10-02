@@ -1,6 +1,6 @@
 /**
  * History model for the task sheet over a mission
- * (docs/design/mission-feed-mobile-continuity.md, "Interaction, URL and scroll
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "Interaction, URL and scroll
  * model", W5).
  *
  * | Action                  | Call                           | Back does        |

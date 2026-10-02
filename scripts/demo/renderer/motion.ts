@@ -76,8 +76,8 @@ function buildVerify(m: Extract<Motion, { kind: 'verify' }>, root: HTMLElement, 
     const v = verifyAt(m, t);
     v.checks.forEach((c, i) => ticks[i](c));
     fills.forEach((f, i) => { f.style.width = `${(v.bars[i] * 100).toFixed(2)}%`; });
-    // Done takes the bars' place: they leave entirely, so nothing shows through it.
-    barsBox.style.opacity = String(1 - v.done);
+    // Done takes the bars' place, never over them (verifyAt keeps the two apart in time).
+    barsBox.style.opacity = String(v.barsShown);
     done.style.opacity = String(v.done);
     done.style.transform = `translateY(${20 * (1 - v.done)}px)`;
   };

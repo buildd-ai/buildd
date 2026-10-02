@@ -73,6 +73,13 @@ jobs:
       - name: Lint specs (frontmatter + dead paths + index)
         run: bun run scripts/check-specs.ts --check
 
+      # Open-core boundary: design/strategy prose lives in the private
+      # knowledge-base repo. docs/design keeps only frontmatter stubs (plus
+      # design-system.md and DESIGN-FORMAT.md); docs/plans and docs/reports
+      # (bar gate-audit.md) stay empty. See scripts/check-public-docs.ts.
+      - name: Lint public docs boundary (design stubs only)
+        run: bun run public-docs:check
+
       # Bootstrappability gate: the repo's own .buildd/env.yaml must be satisfiable.
       # Catches a broken/unparseable manifest, lockfile drift (the manifest declares
       # `bun install --frozen-lockfile`, which the non-frozen install above does not

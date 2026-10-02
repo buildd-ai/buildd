@@ -5,6 +5,8 @@ import {
   GITHUB_TOKEN_FAILURE_BACKOFF_MS,
   GITHUB_TOKEN_REFRESH_MARGIN_MS,
   GithubTokenCache,
+  GrantFetchError,
+  lookupGithubGrant,
   INTERCEPTED_HOSTS,
   MODEL_ENDPOINT_FAILURE_BACKOFF_MS,
   ModelEndpointCache,
@@ -12,6 +14,12 @@ import {
   modelEndpointRequest,
   needsServerModelEndpoint,
   parseServerModelEndpoint,
+  mapEndpointModel,
+  rewriteModelInBody,
+  isClaudeModelId,
+  rejectedPathLabel,
+  isModelRewritePath,
+  endpointRejectedKey,
   type ServerModelEndpoint,
   classifyEgressHost,
   describeForwardForDebug,
@@ -378,6 +386,44 @@ describe('rewriteOutbound: GitHub', () => {
   });
 });
 
+describe('rewriteOutbound: why a GitHub request went out without our credential', () => {
+  const url = 'https://github.com/acme/widget.git/info/refs?service=git-upload-pack';
+  const go = (c: Partial<Parameters<typeof rewriteOutbound>[1]>, u = url) =>
+    forwarded(rewriteOutbound({ url: u, headers: {} }, { model: gateway, now: NOW, ...c }));
+
+  test('credentialed: no reason', () => {
+    const d = go({ github: GRANT });
+    expect(d.injected).toBe('github_basic');
+    expect(d.unauthenticated).toBeUndefined();
+  });
+
+  test('no live run on the agent: no_grant', () => {
+    expect(go({ github: null, githubUnavailable: 'no_run' }).unauthenticated).toBe('no_grant');
+  });
+
+  test('the token fetch failed (or is backing off): grant_fetch_failed', () => {
+    expect(go({ github: null, githubUnavailable: 'fetch_failed' }).unauthenticated).toBe('grant_fetch_failed');
+  });
+
+  test('no grant and no stated cause is still counted, as no_grant', () => {
+    expect(go({ github: null }).unauthenticated).toBe('no_grant');
+  });
+
+  test('an expired grant: grant_expired', () => {
+    expect(go({ github: { ...GRANT, expiresAt: NOW - 1 } }).unauthenticated).toBe('grant_expired');
+  });
+
+  test('a path outside the task repo: out_of_scope (codeload included)', () => {
+    expect(go({ github: GRANT }, 'https://github.com/acme/other.git/info/refs').unauthenticated).toBe('out_of_scope');
+    expect(go({ github: GRANT }, 'https://codeload.github.com/acme/widget/tar.gz/main').unauthenticated).toBe('out_of_scope');
+  });
+
+  test('model forwards never carry a GitHub reason', () => {
+    const d = forwarded(rewriteOutbound({ url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: {} }, { model: gateway, github: null }));
+    expect(d.unauthenticated).toBeUndefined();
+  });
+});
+
 describe('rewriteOutbound: everything else', () => {
   test('passes through untouched (the handler forwards the original request)', () => {
     expect(rewriteOutbound({ url: 'https://registry.npmjs.org/left-pad', headers: hostileHeaders() }, { model: gateway }).action).toBe('passthrough');
@@ -462,6 +508,26 @@ describe('GithubTokenCache', () => {
     expect(s.calls()).toBe(2);
   });
 
+  test('a failure is reported once per fetch, with the endpoint status (0 when nothing answered), and logged with it', async () => {
+    let now = NOW;
+    const failures: number[] = [];
+    const logs: string[] = [];
+    let next: Error = new GrantFetchError(409, 'Task has no live worker claimed by this account');
+    const cache = new GithubTokenCache({
+      fetchGrant: async () => { throw next; },
+      now: () => now,
+      log: (m) => logs.push(m),
+      onFailure: (status) => failures.push(status),
+    });
+    expect(await cache.get()).toBeNull();
+    expect(await cache.get()).toBeNull(); // backing off: no new fetch, no new failure
+    now += GITHUB_TOKEN_FAILURE_BACKOFF_MS;
+    next = new Error('network down');
+    expect(await cache.get()).toBeNull();
+    expect(failures).toEqual([409, 0]);
+    expect(logs[0]).toContain('409');
+  });
+
   test('reset drops the token and an in-flight fetch from the previous run', async () => {
     let resolve!: (g: GithubGrant) => void;
     const s = setup(() => new Promise(r => { resolve = r; }));
@@ -469,6 +535,19 @@ describe('GithubTokenCache', () => {
     s.cache.reset();
     resolve(GRANT);
     expect(await stale).toBeNull();
+  });
+});
+
+describe('lookupGithubGrant: the agent RPC says why there is no grant', () => {
+  test('no live run: no_run, and the cache is never asked', async () => {
+    let asked = 0;
+    expect(await lookupGithubGrant(false, async () => { asked++; return GRANT; })).toEqual({ grant: null, unavailable: 'no_run' });
+    expect(asked).toBe(0);
+  });
+
+  test('live run: the grant, or fetch_failed when the cache has none', async () => {
+    expect(await lookupGithubGrant(true, async () => GRANT)).toEqual({ grant: GRANT });
+    expect(await lookupGithubGrant(true, async () => null)).toEqual({ grant: null, unavailable: 'fetch_failed' });
   });
 });
 
@@ -609,8 +688,15 @@ describe('needsServerModelEndpoint', () => {
 describe('parseServerModelEndpoint', () => {
   test('accepts the route shape and defaults the header', () => {
     expect(parseServerModelEndpoint({ kind: 'gateway', baseUrl: 'https://litellm.example.com/', key: 'k', authHeader: 'authorization', models: {} }))
-      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+      .toEqual({ baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization', kind: 'gateway', models: {} });
     expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k' }).authHeader).toBe('authorization');
+  });
+  test('keeps the model mapping and kind, dropping anything that is not a string-to-string pair', () => {
+    const e = parseServerModelEndpoint({ kind: 'url', baseUrl: 'https://litellm.example.com', key: 'k',
+      models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5', bad: 5, '': 'x', ok: '' } });
+    expect(e.kind).toBe('url');
+    expect(e.models).toEqual({ 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' });
+    expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k', models: 'nope' }).models).toEqual({});
   });
   test('throws on anything unexpected', () => {
     for (const b of [null, {}, { baseUrl: 'http://litellm.example.com', key: 'k' }, { baseUrl: 'https://u:p@litellm.example.com', key: 'k' },
@@ -787,5 +873,121 @@ describe('api.anthropic.com: only the model API paths are forwarded', () => {
   test('the egress handler passes the request method', async () => {
     const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
     expect(src).toMatch(/rewriteOutbound\(\s*\{ url: request\.url, method: request\.method, headers: request\.headers \}/);
+  });
+
+  test('the egress handler passes why there is no grant, and labels every GitHub forward and its status', async () => {
+    const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
+    expect(src).toContain('githubUnavailable: lookup.unavailable');
+    expect(src).toContain("kind === 'github' ? (decision.unauthenticated ?? 'credentialed') : undefined");
+    expect(src).toMatch(/type: 'status', cls, status: res\.status, \.\.\.\(auth \? \{ auth \} : \{\}\)/);
+    const agent = await Bun.file(new URL('./worker-agent.ts', import.meta.url)).text();
+    expect(agent).toContain("recordEgress({ type: 'grant_failure', cls: 'github', status })");
+    expect(agent).toContain('throw new GrantFetchError(res.status, detail)');
+  });
+});
+
+describe('endpoint model mapping (the cloud path applies what host runners apply via env)', () => {
+  test('aliases map listed ids and leave the rest unchanged', () => {
+    const e = { kind: 'url', models: { 'claude-haiku-4-5-20251001': 'claude-haiku-4-5' } };
+    expect(mapEndpointModel(e, 'claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5');
+    expect(mapEndpointModel(e, 'claude-sonnet-5')).toBe('claude-sonnet-5');
+  });
+  test('openrouter names Anthropic models anthropic/<undated, dotted>, as buildd core does', () => {
+    const e = { kind: 'openrouter', models: {} };
+    expect(mapEndpointModel(e, 'claude-haiku-4-5-20251001')).toBe('anthropic/claude-haiku-4.5');
+    expect(mapEndpointModel(e, 'claude-sonnet-5')).toBe('anthropic/claude-sonnet-5');
+    expect(mapEndpointModel(e, 'anthropic/claude-opus-5')).toBe('anthropic/claude-opus-5');
+  });
+  test('only the message endpoints carry a model to rewrite', () => {
+    expect(isModelRewritePath('POST', 'https://api.anthropic.com/v1/messages?beta=true')).toBe(true);
+    expect(isModelRewritePath('POST', 'https://api.anthropic.com/v1/messages/count_tokens')).toBe(true);
+    expect(isModelRewritePath('GET', 'https://api.anthropic.com/v1/models')).toBe(false);
+  });
+  test('rewrites the model field and nothing else; non-JSON or no change returns null', () => {
+    const map = (id: string) => (id === 'claude-haiku-4-5-20251001' ? 'claude-haiku-4-5' : id);
+    const out = rewriteModelInBody(JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 5, messages: [{ role: 'user', content: 'model: x' }] }), map);
+    expect(JSON.parse(out!)).toEqual({ model: 'claude-haiku-4-5', max_tokens: 5, messages: [{ role: 'user', content: 'model: x' }] });
+    expect(rewriteModelInBody(JSON.stringify({ model: 'claude-sonnet-5' }), map)).toBeNull();
+    expect(rewriteModelInBody('not json', map)).toBeNull();
+    expect(rewriteModelInBody(JSON.stringify([1]), map)).toBeNull();
+  });
+  test('the forward decision for a server endpoint carries its model mapper', () => {
+    const server = { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' as const, kind: 'url', models: { a: 'b' } };
+    const d = rewriteOutbound({ url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: new Headers() }, { model: resolveModelRoute({}, server) });
+    expect(d.action).toBe('forward');
+    if (d.action !== 'forward') return;
+    expect(d.mapModel?.('a')).toBe('b');
+    const g = rewriteOutbound({ url: 'https://api.anthropic.com/v1/models', method: 'GET', headers: new Headers() }, { model: resolveModelRoute({}, server) });
+    expect(g.action === 'forward' && g.mapModel).toBeFalsy();
+  });
+});
+
+describe('endpointRejectedKey: only a 401 means the key is bad', () => {
+  test('401 drops the key; a 403 is a per-request refusal (e.g. a model this key may not use)', () => {
+    expect(endpointRejectedKey(401)).toBe(true);
+    expect(endpointRejectedKey(403)).toBe(false);
+    expect(endpointRejectedKey(200)).toBe(false);
+  });
+});
+
+describe('reject decisions name a reason (counted in the run report, no URL)', () => {
+  test('path, plain http, port, unconfigured', () => {
+    const route = resolveModelRoute({}, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    const r = (url: string, method = 'POST', model: ModelRoute = route) => rewriteOutbound({ url, method, headers: new Headers() }, { model });
+    expect(r('https://api.anthropic.com/api/event_logging/batch')).toMatchObject({ action: 'reject', reason: 'path' });
+    expect(r('http://api.anthropic.com/v1/messages')).toMatchObject({ action: 'reject', reason: 'plain_http' });
+    expect(r('https://api.anthropic.com:8443/v1/messages')).toMatchObject({ action: 'reject', reason: 'port' });
+    expect(r('https://api.anthropic.com/v1/messages', 'POST', resolveModelRoute({}))).toMatchObject({ action: 'reject', reason: 'unconfigured' });
+  });
+});
+
+describe("Claude Code's connectivity check is answered by the Worker, not refused or forwarded", () => {
+  test('HEAD/GET /api/hello on api.anthropic.com is answered locally with 200', () => {
+    const route = resolveModelRoute({}, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    for (const method of ['HEAD', 'GET']) {
+      const d = rewriteOutbound({ url: 'https://api.anthropic.com/api/hello', method, headers: new Headers() }, { model: route });
+      expect(d).toEqual({ action: 'respond', status: 200 });
+    }
+    // Only that exact probe: anything else under /api is still refused.
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello', method: 'POST', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello/x', method: 'GET', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
+  });
+});
+
+describe('a call mapped to a non-Claude model keeps only standard Messages API fields', () => {
+  const body = { model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }], system: 's', max_tokens: 10, stream: true,
+    tools: [], thinking: { type: 'enabled', budget_tokens: 5 }, metadata: { user_id: 'u' },
+    context_management: { edits: [] }, output_config: { effort: 'high' }, diagnostics: { x: 1 } };
+  test('non-Claude target: Claude-only fields dropped', () => {
+    const out = JSON.parse(rewriteModelInBody(JSON.stringify(body), () => 'fireworks_ai/deepseek-v4p1-flash')!);
+    expect(Object.keys(out).sort()).toEqual(['max_tokens', 'messages', 'metadata', 'model', 'stream', 'system', 'thinking', 'tools']);
+    expect(out.model).toBe('fireworks_ai/deepseek-v4p1-flash');
+  });
+  test('Claude target: everything kept', () => {
+    const out = JSON.parse(rewriteModelInBody(JSON.stringify(body), () => 'claude-sonnet-5-alias-claude')!);
+    expect(out.context_management).toEqual({ edits: [] });
+    expect(out.diagnostics).toEqual({ x: 1 });
+  });
+  test('isClaudeModelId', () => {
+    expect(isClaudeModelId('claude-haiku-4-5')).toBe(true);
+    expect(isClaudeModelId('anthropic/claude-sonnet-4.5')).toBe(true);
+    expect(isClaudeModelId('bedrock/us.anthropic.claude-sonnet-5')).toBe(true);
+    expect(isClaudeModelId('fireworks_ai/deepseek-v4p1-flash')).toBe(false);
+  });
+});
+
+describe('rejectedPathLabel: a fixed vocabulary, never the raw path', () => {
+  test('known Claude Code endpoints get their label; anything else a coarse bucket', () => {
+    const l = (u: string) => rejectedPathLabel(u);
+    expect(l('https://api.anthropic.com/api/hello')).toBe('api_hello');
+    expect(l('https://api.anthropic.com/api/event_logging/batch')).toBe('event_logging');
+    expect(l('https://api.anthropic.com/api/oauth/profile')).toBe('oauth');
+    expect(l('https://api.anthropic.com/api/claude_code/settings')).toBe('claude_code_api');
+    expect(l('https://api.anthropic.com/api/claude_cli_feedback')).toBe('other_api');
+    expect(l('https://api.anthropic.com/v1/files')).toBe('files');
+    expect(l('https://api.anthropic.com/v1/messages/batches')).toBe('batches');
+    expect(l('https://api.anthropic.com/v1/skills')).toBe('other_v1');
+    expect(l('https://api.anthropic.com/secret-token-in-path')).toBe('other');
+    expect(l('not a url')).toBe('other');
   });
 });

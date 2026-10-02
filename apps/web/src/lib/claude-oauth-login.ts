@@ -103,7 +103,7 @@ export async function exchangeClaudeOAuthCode(
     return { ok: false, error: `${detail}. The code is single-use and expires quickly — re-run the connect flow.` };
   }
 
-  const t = await res.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+  const t = await res.json() as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string };
   if (!t.access_token || !t.refresh_token) {
     return { ok: false, error: 'Token response missing access_token/refresh_token' };
   }
@@ -113,6 +113,8 @@ export async function exchangeClaudeOAuthCode(
       access_token: t.access_token,
       refresh_token: t.refresh_token,
       ...(typeof t.expires_in === 'number' ? { expires_at: Math.floor(Date.now() / 1000) + t.expires_in } : {}),
+      // What was granted, not what was asked for: the runner declares these to the CLI.
+      ...(typeof t.scope === 'string' && t.scope.trim() ? { scopes: t.scope.trim().split(/\s+/) } : {}),
     },
   };
 }

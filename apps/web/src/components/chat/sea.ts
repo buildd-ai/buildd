@@ -1,5 +1,5 @@
 /**
- * The sea (docs/design/chat-canvas.md, "The sea"): the one soft element on the
+ * The sea (knowledge-base: buildd/design/chat-canvas.md, "The sea"): the one soft element on the
  * chat surface. Round, blurred pools of colour drift slowly behind the canvas,
  * like water seen from above. They carry the mood (calm teal, one copper pool
  * when something needs the person, blue and violet while a turn streams) and
