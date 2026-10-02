@@ -10,6 +10,8 @@ import {
   createGitRepoReader,
   MAX_BATCH_FILES,
   MAX_BATCH_BYTES,
+  isRetryableBatchError,
+  checkCheckoutFetchable,
   type FullIngestJob,
   type RepoReader,
   type FullIngestApiClient,
@@ -189,6 +191,68 @@ describe('runFullIngestJob', () => {
   });
 });
 
+// ── Adaptive batches ─────────────────────────────────────────────────────────
+//
+// Regression: the default batch (40 files / 1.5 MB) timed out on the server's
+// files endpoint for a repo with large markdown, and a single timeout failed
+// the whole job. Batches now default far smaller, and a batch that times out or
+// gets a 5xx is halved and retried before the job is failed.
+
+describe('runFullIngestJob — adaptive batches', () => {
+  it('defaults to a byte cap well under the old 1.5 MB that timed out', () => {
+    expect(MAX_BATCH_BYTES).toBeLessThanOrEqual(400_000);
+    expect(MAX_BATCH_FILES).toBeLessThanOrEqual(20);
+  });
+
+  it('classifies timeouts and 5xx as retryable, other errors as fatal', () => {
+    const timeout = new Error('The operation timed out.');
+    timeout.name = 'TimeoutError';
+    expect(isRetryableBatchError(timeout)).toBe(true);
+    expect(isRetryableBatchError(new Error('ingest API error 500: {"error":"Batch ingest failed"}'))).toBe(true);
+    expect(isRetryableBatchError(new Error('ingest API error 504: gateway'))).toBe(true);
+    expect(isRetryableBatchError(new Error('ingest API error 409: Job is done'))).toBe(false);
+    expect(isRetryableBatchError(new Error('server exploded'))).toBe(false);
+  });
+
+  it('halves a batch that times out and still ingests every file', async () => {
+    const attempts: number[] = [];
+    const { api, pushed, completions } = fakeApi();
+    const inner = api.pushFiles;
+    api.pushFiles = async (jobId, files) => {
+      attempts.push(files.length);
+      if (files.length > 2) {
+        const err = new Error('The operation timed out.');
+        err.name = 'TimeoutError';
+        throw err;
+      }
+      return inner(jobId, files);
+    };
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 8; i++) files[`src/f${i}.ts`] = `export const v${i} = ${i};`;
+
+    const result = await runFullIngestJob(job, fakeReader(files), api, { maxFiles: 8, maxBytes: 1_000_000 });
+    expect(result.status).toBe('done');
+    expect(pushed.flat().map(f => f.path).sort()).toEqual(Object.keys(files).sort());
+    // 8 fails -> 4 fails -> 2 ok, 2 ok -> 4 fails -> 2 ok, 2 ok
+    expect(attempts).toEqual([8, 4, 2, 2, 4, 2, 2]);
+    const stats = completions[0].stats as Record<string, unknown>;
+    expect(stats.filesIngested).toBe(8);
+    expect(stats.batchRetries).toBe(3);
+  });
+
+  it('fails the job when a single file still gets a 5xx', async () => {
+    const { api, completions } = fakeApi({
+      pushFiles: async () => {
+        throw new Error('ingest API error 502: bad gateway');
+      },
+    });
+    const result = await runFullIngestJob(job, fakeReader({ 'src/a.ts': 'a', 'src/b.ts': 'b' }), api);
+    expect(result.status).toBe('error');
+    expect(completions[0].status).toBe('error');
+    expect(String(completions[0].error)).toContain('502');
+  });
+});
+
 // ── SCIP precise-graph enrichment (stream B2b) ────────────────────────────────
 
 const fakeGraph = {
@@ -341,6 +405,53 @@ describe('createGitRepoReader', () => {
       const reader = createGitRepoReader(dir, firstSha);
       expect(await reader.readFile('src/app.ts')).toBe('export const app = 1;\n');
       expect(reader.resolvedSha).toBe(firstSha);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('checkCheckoutFetchable', () => {
+  function makeRepoWithDeadRemote(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'kfi-fetch-'));
+    const run = (...args: string[]) => execFileSync('git', args, { cwd: dir });
+    run('init', '-q');
+    run('config', 'user.email', 'test@example.com');
+    run('config', 'user.name', 'Test');
+    writeFileSync(join(dir, 'a.ts'), 'export const a = 1;\n');
+    run('add', '.');
+    run('commit', '-q', '-m', 'init');
+    // A remote that can never be fetched — stands in for an SSH remote with no key.
+    run('remote', 'add', 'origin', join(dir, 'does-not-exist.git'));
+    return dir;
+  }
+
+  it('passes without fetching when the sha is already present', async () => {
+    const dir = makeRepoWithDeadRemote();
+    try {
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim();
+      expect(await checkCheckoutFetchable(dir, head)).toEqual({ ok: true });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the fetch error when the sha is missing and the remote cannot be fetched', async () => {
+    const dir = makeRepoWithDeadRemote();
+    try {
+      const res = await checkCheckoutFetchable(dir, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toMatch(/fetch/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the fetch error for a job with no sha when the remote cannot be fetched', async () => {
+    const dir = makeRepoWithDeadRemote();
+    try {
+      const res = await checkCheckoutFetchable(dir, null);
+      expect(res.ok).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -2,13 +2,13 @@
 title: Knowledge Ingest Pipeline
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-10-02
 summary: Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 domain: knowledge
-surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, packages/core/knowledge-store/full-ingest.ts, apps/web/src/lib/knowledge-ingest.ts, packages/core/db/schema.ts]
+surfaces: [apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts, packages/core/knowledge-store/full-ingest.ts, apps/web/src/lib/knowledge-ingest.ts, apps/web/src/lib/knowledge-full-ingest-fallback.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.ts, packages/core/db/schema.ts]
 related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers, codebase-memory-graph]
 keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash]
-verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts]
+verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts, apps/web/src/lib/knowledge-full-ingest-fallback.test.ts, apps/web/src/app/api/cron/knowledge-ingest-fallback/route.test.ts, apps/web/src/lib/knowledge-ingest-stalls.test.ts, packages/core/__tests__/voyage-embedder-batching.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -39,11 +39,11 @@ main way this pipeline goes quiet:
 | Scope | Enqueued by | Executor | Transport |
 |---|---|---|---|
 | `diff` | merged-PR webhook (`enqueueMergedPrIngestJobs`) | the same Vercel request, via `after()` | GitHub contents API — no checkout |
-| `full` | repo link, first-index backfill, diff escalation, manual `POST` | runner fleet poller, or any CI holding a checkout | `claim` → `/files` (→ `/graph`) → `/complete` |
+| `full` | repo link, first-index backfill, diff escalation, manual `POST` | runner fleet poller, or any CI holding a checkout; once stalled, the serverless fallback cron | runner: `claim` → `/files` (→ `/graph`) → `/complete`; fallback: GitHub tree + blob API, a slice per tick |
 
 `diff` jobs are never offered to the claim route (it filters
 `scope = 'full'`), and no cron re-drives them. `full` jobs are never executed
-in-request.
+in-request; the fallback runs them from `/api/cron/knowledge-ingest-fallback`.
 
 ## Invariants
 
@@ -81,12 +81,23 @@ in-request.
   The `/graph` route forces every entity, edge, and alias into the job's
   workspace, so a claimed job cannot be used to write into another workspace's
   namespace.
-- **Batches MUST fit the serverless body cap.** The client plans batches at
-  `MAX_BATCH_FILES = 40` / `MAX_BATCH_BYTES = 1_500_000`; the server rejects
-  above `MAX_BATCH_FILE_COUNT = 64` files or `MAX_BATCH_TOTAL_BYTES = 4 MiB`
-  with HTTP 413. The client caps are strictly below the server caps, so a
-  correct client never provokes a 413. A single file over the byte budget still
-  ships alone rather than being dropped.
+- **Batches MUST fit the serverless body cap and its time budget.** The client
+  plans batches at `MAX_BATCH_FILES = 16` / `MAX_BATCH_BYTES = 300_000`; the
+  server rejects above `MAX_BATCH_FILE_COUNT = 64` files or
+  `MAX_BATCH_TOTAL_BYTES = 4 MiB` with HTTP 413. The client caps are strictly
+  below the server caps, so a correct client never provokes a 413. They are
+  sized for time, not just bytes: the route embeds everything before it
+  answers, and a 1.5 MB batch of large markdown outran the client timeout. A
+  batch that times out or gets a 5xx is halved and retried
+  (`isRetryableBatchError`), down to a single file, before the job fails; a 4xx
+  is never retried. A single file over the byte budget still ships alone rather
+  than being dropped.
+- **An embeddings request MUST stay under the provider's per-request token
+  cap.** `VoyageEmbedder.embed` splits its input with `planEmbedRequests`
+  (estimated tokens, at most `DEFAULT_MAX_TOKENS_PER_REQUEST`, and at most
+  `VOYAGE_MAX_TEXTS_PER_REQUEST` inputs) and halves a request the API still
+  rejects as `TOO_MANY_TOKENS_IN_BATCH`. Before this, a diff with many chunks
+  went out as one request and the job failed with a 400.
 - **The ingest filter runs on both sides.** `shouldIngestFile` /
   `classifyIngestCorpus` are applied by the client before sending and again by
   the server before chunking (defense in depth). Tests, lockfiles,
@@ -124,6 +135,33 @@ in-request.
   checkout, the poller completes it as `error` instead of leaving it `running`.
   Concurrent polls are refused (`busy`) so one runner holds at most one job.
   `KNOWLEDGE_INGEST_JOBS=0` disables the poller per runner.
+- **A checkout that cannot fetch says so.** Before running a job the poller
+  checks `checkCheckoutFetchable`: the sha is present locally, or `origin`
+  fetches. If not (an SSH remote with no key, a revoked token), it releases the
+  job with `/complete` `status: 'released'` and the fetch error, and leaves
+  that repo out of its offers for `UNFETCHABLE_BACKOFF_MS`. A release puts the
+  job back to `queued` with `stats.checkoutReport` and a NULL heartbeat, so its
+  queued age keeps counting from `created_at` toward the fallback.
+- **A stalled full job still runs, with no runner.** Once a queued full job is
+  `stalled` (`classifyIngestJobLiveness`, `QUEUED_FULL_STALL_MS`), the hourly
+  `/api/cron/knowledge-ingest-fallback` takes it (`runFullIngestFallbackTick`):
+  it reads the tree at the job's sha (the default branch head when the job has
+  none) through the GitHub API, and ingests files in path order, in small
+  batches, through the same `ingestFileBatch` the `/files` route uses, until
+  the tick's time budget is spent. Progress is a cursor in `stats.fallback`;
+  the next tick resumes there. While it owns a job, the row is `running` under
+  lease owner `FALLBACK_LEASE_OWNER` with a lease longer than the cron
+  interval, and ticks take it by CAS on `heartbeat_at`, so two overlapping
+  ticks never both proceed. On the last slice it sweeps
+  (`sweepUnrefreshedFileChunks`, anchored on the run's first claim, not the
+  latest) and completes `done`. A failing slice is retried next tick; after
+  `FALLBACK_MAX_FAILURES` consecutive failing ticks, or at once for a repo with
+  no GitHub installation or a truncated tree listing, the job ends `error`.
+- **Stalled ingest is visible where failures are read.**
+  `GET /api/health/failures` (and so `get_failure_analytics`) carries
+  `stalledIngest` in its overview: stalled and fallback-run full jobs, their
+  age, a runner's release reason and the fallback's progress
+  (`getStalledIngestReport`). It is omitted when nothing is stuck.
 - **A full job's target sha degrades to HEAD, never to nothing.**
   `createGitRepoReader` resolves the job sha, fetches it once if the clone is
   behind, and falls back to `HEAD` — an index at HEAD beats no index. Reads use
@@ -134,8 +172,9 @@ in-request.
   when a claimed job completes with `error`. It needs no `DATABASE_URL` /
   `VOYAGE_API_KEY` because embedding happens server-side. This is the opposite
   of the legacy direct-DB script (see Verification gaps).
-- **Nothing schedules a periodic full ingest.** No `cron-manifest.json` job, no
-  `vercel.json` cron, and no producer of `trigger: 'scheduled'` exists. Freshness
+- **Nothing schedules a periodic full ingest.** The fallback cron only runs
+  jobs that already exist; no `cron-manifest.json` job, no `vercel.json` cron,
+  and no producer of `trigger: 'scheduled'` enqueues one. Freshness
   is therefore a side effect of merged PRs: `computeFreshness` marks a workspace
   `stale` after `DEFAULT_STALE_AFTER_DAYS = 14` days without a `done` job, and
   nothing in the system acts on that verdict.
@@ -187,6 +226,20 @@ in-request.
 - AC-15: GIVEN a claimed job for a repo the runner has no checkout of WHEN the
   poller processes it THEN it calls `/complete` with `status: 'error'` and the
   job does not remain `running`.
+- AC-15a: GIVEN a claimed job whose checkout cannot fetch `origin` WHEN the
+  poller processes it THEN it releases the job with the fetch error, the job is
+  `queued` again with `stats.checkoutReport`, and the repo is not offered on
+  the next poll.
+- AC-15b: GIVEN a full job queued past `QUEUED_FULL_STALL_MS` WHEN the
+  fallback cron ticks THEN it ingests the repo at the job's sha from the GitHub
+  API and, across as many ticks as it takes, completes `done` having sent every
+  ingestible file exactly once.
+- AC-15c (failure path): GIVEN a batch push that times out WHEN the runner
+  retries THEN it halves the batch and every file still lands; a single file
+  that still fails fails the job.
+- AC-15d (failure path): GIVEN texts whose total exceeds the embeddings
+  request token cap WHEN embedded THEN they go out as several requests and come
+  back in input order.
 - AC-16: GIVEN a graph payload whose entities name a different `workspaceId`
   than the job WHEN posted to `.../{id}/graph` THEN every entity, edge, and
   alias is written under the **job's** `workspaceId`.
@@ -217,7 +270,16 @@ in-request.
   skip-unresolvable edges (`:136`).
 - Completion + sweep:
   `apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.ts` — atomic
-  transition (`:69`), sweep predicate (`:85`).
+  transition, `released` requeue; the sweep predicate and the shared batch
+  ingest live in `apps/web/src/lib/knowledge-ingest-batch.ts`
+  (`sweepUnrefreshedFileChunks`, `ingestFileBatch`).
+- Serverless fallback: `apps/web/src/lib/knowledge-full-ingest-fallback.ts`
+  (`runFullIngestFallbackTick`, `fallbackClaimGuard`), triggered by
+  `apps/web/src/app/api/cron/knowledge-ingest-fallback/route.ts`.
+- Stalled-job report: `apps/web/src/lib/knowledge-ingest-stalls.ts`, read by
+  `apps/web/src/app/api/health/failures/route.ts`.
+- Embedding request planning: `packages/core/knowledge-store/voyage-embedder.ts`
+  (`planEmbedRequests`).
 - Server-side job logic: `apps/web/src/lib/knowledge-ingest.ts` —
   `enqueueFullIngestJob` (`:56`), `enqueueMergedPrIngestJobs` (`:116`),
   `runDiffIngestJob` (`:154`), `executeDiffJob` (`:195`), `escalateToFullJob`
