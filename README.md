@@ -135,4 +135,12 @@ See the [self-hosting guide](https://docs.buildd.dev/docs/deployment/self-hostin
 
 ## License
 
-[Apache License 2.0](LICENSE) — Copyright 2026 Max Jacubowsky.
+Copyright 2026 Max Jacubowsky. Licensing is per directory:
+
+| Path | License |
+|---|---|
+| Everything not listed below — the server (`apps/web`), `packages/core`, `apps/cloud-runner`, `apps/responder` | [FSL-1.1-ALv2](LICENSE) |
+| `apps/runner`, `packages/shared`, `packages/ai-kit` | [Apache 2.0](apps/runner/LICENSE) |
+| `packages/openclaw-skill` | MIT |
+
+The Functional Source License lets you read, modify, self-host and use buildd for anything except offering a competing product or service. Each release converts to Apache 2.0 two years after it ships. Releases before this change stay under Apache 2.0.
