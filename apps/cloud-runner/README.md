@@ -297,6 +297,7 @@ accepted only for `localhost`, `127.0.0.1` and `host.docker.internal`.
 | `--remove` | `webhookConfig = null`: clears the dispatch keys (`url`, `token`, `enabled`, `runnerPreference`, `events`); the workspace goes back to Pusher-notified runners (Coder, local). The Worker stays deployed |
 | `--print-token` | Print the `DISPATCH_TOKEN` it set |
 | `--url` | Worker base URL, for a custom domain |
+| `--name <worker>` | Deploy under another Worker name, with its own bucket `<worker>-snapshots`. The script writes `wrangler.generated.jsonc` (gitignored; only `name` and `bucket_name` differ) and passes it to every wrangler call. Pass the same `--name` on every later run against that deployment |
 | `--model-proxy-url <url>` | Route model traffic through your Anthropic-compatible proxy (see Model routes). Also read from `MODEL_PROXY_URL`; the key comes from `MODEL_PROXY_KEY` (required the first time, never printed) and the header from `MODEL_PROXY_AUTH_HEADER`. All three are put as Worker secrets so a later deploy keeps them. A re-run without the flag leaves an existing proxy in place; `bunx wrangler secret delete MODEL_PROXY_URL` goes back to AI Gateway |
 
 A second workspace on an existing Worker needs the current token
