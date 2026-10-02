@@ -830,6 +830,12 @@ export async function POST(req: NextRequest) {
               not(eq(tasks.creationSource, 'orchestrator')),
               not(eq(tasks.mode, 'planning')),
               gt(tasks.createdAt, callingTask.createdAt),
+              // Exclude the organizer's own earlier creates in this same
+              // decomposition pass — those stamp creationSource 'mcp' and
+              // mode 'execution' just like a creator-filed task, so without
+              // this the organizer's 2nd/3rd create_task call would see its
+              // own 1st call's task and wrongly refuse itself.
+              not(eq(tasks.createdByWorkerId, createdByWorkerId)),
             ),
             columns: { id: true },
             limit: 20,

@@ -218,6 +218,7 @@ mock.module('@buildd/core/db/schema', () => ({
     missionId: 'missionId',
     mode: 'mode',
     creationSource: 'creationSource',
+    createdByWorkerId: 'createdByWorkerId',
   },
   taskSubjectReports: 'taskSubjectReports',
   workspaceSkills: {
@@ -4284,6 +4285,83 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
 
       expect(response.status).toBe(200);
       expect(mockTasksInsert).toHaveBeenCalled();
+    });
+
+    // Collect the bound literal values out of this file's own mocked
+    // drizzle-orm shapes (`and: (...args) => ({ args, type })`,
+    // `not: (expr) => ({ expr, type })`, `eq/gt: (field, value) => ({ field,
+    // value, type })` — see the drizzle-orm mock above). Unlike the real
+    // query builder's `queryChunks`, these are plain nested objects.
+    function sqlLiterals(node: any, out: string[] = []): string[] {
+      if (node === null || node === undefined) return out;
+      if (typeof node !== 'object') return out;
+      if (Array.isArray(node)) {
+        for (const item of node) sqlLiterals(item, out);
+        return out;
+      }
+      if ('args' in node) sqlLiterals(node.args, out);
+      if ('expr' in node) sqlLiterals(node.expr, out);
+      if ('value' in node) out.push(String(node.value));
+      return out;
+    }
+
+    it('does not refuse the organizer\'s own second decomposition create over its own first create (same pass, no creator-filed siblings)', async () => {
+      // The organizer calls create_task twice in one decomposition pass. The
+      // first call's task would match every OTHER predicate the pre-filed
+      // query uses (same mission, creationSource 'mcp' != 'orchestrator',
+      // mode 'execution' != 'planning', createdAt after the planning task) —
+      // so unless the query also excludes rows made by the calling worker
+      // itself, the second call would wrongly see its own sibling and refuse.
+      organizerCallSetup();
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => [{ id: 'build-task-1', workspaceId: 'ws-1', title: 'First build task', missionId: 'mission-1' }]),
+        })),
+      });
+      mockTasksFindMany.mockResolvedValue([]);
+
+      const first = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'First build task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+      expect(first.status).toBe(200);
+
+      // Simulate the DB honestly: whether the organizer's own first task
+      // comes back from the pre-filed query depends on whether the where
+      // clause actually excludes rows created by the calling worker. A where
+      // clause missing that exclusion (the bug) returns the sibling and the
+      // route refuses; one that includes it (the fix) returns nothing.
+      mockTasksFindMany.mockImplementationOnce((args: any) => {
+        const literals = sqlLiterals(args?.where);
+        const excludesCallingWorker = literals.includes('worker-organizer');
+        return Promise.resolve(excludesCallingWorker ? [] : [{ id: 'build-task-1' }]);
+      });
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => [{ id: 'build-task-2', workspaceId: 'ws-1', title: 'Second build task', missionId: 'mission-1' }]),
+        })),
+      });
+
+      const second = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Second build task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+
+      expect(second.status).toBe(200);
+      const secondData = await second.json();
+      expect(secondData.id).toBe('build-task-2');
     });
   });
 });
