@@ -41,8 +41,29 @@ describe('planning prompt: what shipped', () => {
     expect(promptText).not.toContain('also fill `shipped`');
   });
 
-  test('an execution task is unchanged', () => {
+  test('an execution task does not get the mission instruction', () => {
     const { promptText } = buildPromptWithComposition(ctx({ mode: 'execution', outputRequirement: 'pr_required' }));
-    expect(promptText).not.toContain('`shipped.lede`');
+    expect(promptText).not.toContain('also fill `shipped`');
+  });
+});
+
+describe('PR task prompt: what shipped', () => {
+  test('a PR task is told to return a task-wide `shipped` lede', () => {
+    const { promptText } = buildPromptWithComposition(ctx({ mode: 'execution', outputRequirement: 'pr_required' }));
+    expect(promptText).toContain('## What shipped');
+    expect(promptText).toContain('`shipped.lede`');
+    expect(promptText).toContain('`shipped.offPlan`');
+  });
+
+  test('a task with a fixed output schema is not asked for an extra key', () => {
+    const { promptText } = buildPromptWithComposition(ctx({
+      mode: 'execution', outputRequirement: 'pr_required', outputSchema: { type: 'object' },
+    }));
+    expect(promptText).not.toContain('## What shipped');
+  });
+
+  test('a task with no PR requirement is unchanged', () => {
+    const { promptText } = buildPromptWithComposition(ctx({ mode: 'execution', outputRequirement: 'artifact_required' }));
+    expect(promptText).not.toContain('## What shipped');
   });
 });

@@ -1,6 +1,8 @@
 import { Fragment } from 'react';
 import { derivePrLifecycle, isPrMerged } from '@/lib/pr-presentation';
 import { countOf } from '@/lib/plural';
+import Disclosure from '@/components/ui/Disclosure';
+import { buildCommitChecksView, checkOutcome } from './commit-checks-view';
 
 const ExternalIcon = () => (
   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
@@ -79,6 +81,11 @@ export interface PrCardProps {
    * mission drawer keeps the compact card).
    */
   outcome?: PrOutcome | null;
+  /**
+   * The task page's "What shipped" header already offers the one action
+   * (Review & merge); the outcome card then shows none of its own.
+   */
+  hideAction?: boolean;
 }
 
 const isFailingRun = (r: CiCheckRun) =>
@@ -306,9 +313,83 @@ function CheckPill({ run }: { run: CiCheckRun }) {
   );
 }
 
+/** The failing job, its excerpt and what the next attempt did about it. */
+function CommitFailureNote({ c, className = '' }: { c: PrCommitChecks; className?: string }) {
+  if (!(c.failure?.excerpt || c.fix || c.fixEvidence)) return null;
+  return (
+    <div className={`border-l-4 border-status-error bg-surface-2 px-4 py-3 font-mono text-[12px] md:text-[13px] leading-relaxed ${className}`}>
+      {(c.failure?.job || c.failure?.test) && (
+        <div className="text-text-muted">{[c.failure.job, c.failure.test].filter(Boolean).join(' · ')}</div>
+      )}
+      {c.failure?.excerpt && <div className="mt-1 text-text-primary [overflow-wrap:anywhere]">{c.failure.excerpt}</div>}
+      {c.fix && <div className="mt-2 text-text-secondary [overflow-wrap:anywhere]">Fix: {c.fix}</div>}
+      {c.fixEvidence && (
+        <div data-testid="pr-fix-evidence" className="mt-2 text-text-secondary [overflow-wrap:anywhere]">
+          Fix attempt ended: <span className="text-status-error">{c.fixEvidence.errorClass}</span>
+          {c.fixEvidence.keyLines[0] ? `: ${c.fixEvidence.keyLines[0]}` : ''}
+        </div>
+      )}
+      {c.fixEvidence?.mismatch.map(m => (
+        <div key={m.kind} data-testid="pr-fix-mismatch" className="mt-1 text-status-warning [overflow-wrap:anywhere]">⚠ {m.detail}</div>
+      ))}
+    </div>
+  );
+}
+
+const CHECK_GLYPH = { failed: '✗', pending: '…', passed: '✓' } as const;
+const CHECK_TEXT = { failed: 'text-status-error', pending: 'text-status-info', passed: 'text-status-success' } as const;
+const SUMMARY_TEXT = { error: 'text-status-error', running: 'text-status-info', success: 'text-status-success', muted: 'text-text-muted' } as const;
+
+/**
+ * Below md: each attempt stacks (header row, then its checks), checks are
+ * full-width rows rather than boxed chips, and an all-green attempt is one
+ * row. Rules in `commit-checks-view.ts`.
+ */
+export function CommitChecksMobile({ commits, className = '' }: { commits: PrCommitChecks[]; className?: string }) {
+  const views = buildCommitChecksView(commits);
+  return (
+    <div data-testid="pr-commit-checks-mobile" className={className}>
+      {views.map((v, i) => (
+        <div key={v.key} data-testid="pr-commit-attempt" data-open={v.defaultOpen ? 'true' : 'false'} className="border-b border-border-default last:border-b-0 py-3">
+          <div className="font-mono text-meta uppercase tracking-[1.5px] text-text-muted">{v.heading}</div>
+          <Disclosure defaultOpen={v.defaultOpen} summary={<span className={`font-mono text-body ${SUMMARY_TEXT[v.tone]}`}>{v.summary}</span>}>
+            {v.runs.length > 0 && (
+              <ul className="pb-2">
+                {v.runs.map((r, j) => {
+                  const o = checkOutcome(r);
+                  const body = (
+                    <>
+                      <span aria-hidden="true" className={`w-4 shrink-0 ${CHECK_TEXT[o]}`}>{CHECK_GLYPH[o]}</span>
+                      <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${o === 'failed' ? 'text-status-error font-semibold' : 'text-text-primary'}`}>{r.name}</span>
+                      {r.detailsUrl && o === 'failed' && <span className="shrink-0 text-meta text-accent-text">log ↗</span>}
+                    </>
+                  );
+                  const cls = 'flex min-h-11 items-center gap-2 border-t border-border-default/50 font-mono text-body';
+                  return (
+                    <li key={`${r.name}-${j}`} data-testid="pr-check-row" data-outcome={o}>
+                      {r.detailsUrl ? (
+                        <a href={r.detailsUrl} target="_blank" rel="noopener noreferrer" aria-label={`${r.name}: ${o}, open its log`} className={`${cls} hover:bg-surface-2`}>{body}</a>
+                      ) : (
+                        <div className={cls}>{body}</div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <CommitFailureNote c={commits[i]} className="mb-2" />
+          </Disclosure>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function CommitChecksList({ commits }: { commits: PrCommitChecks[] }) {
   return (
-    <div data-testid="pr-commit-checks">
+    <>
+    <CommitChecksMobile commits={commits} className="md:hidden" />
+    <div data-testid="pr-commit-checks" className="hidden md:block">
       {commits.map(c => {
         const runs = c.runs ?? [];
         const failed = runs.filter(isFailingRun).length;
@@ -331,28 +412,12 @@ export function CommitChecksList({ commits }: { commits: PrCommitChecks[] }) {
               </div>
               <span className={`shrink-0 font-mono text-[13px] ${c.state === 'failed' ? 'text-status-error' : c.state === 'passed' ? 'text-status-success' : 'text-text-muted'}`}>{verdict}</span>
             </div>
-            {(c.failure?.excerpt || c.fix || c.fixEvidence) && (
-              <div className="mt-3 md:ml-[184px] border-l-4 border-status-error bg-surface-2 px-4 py-3 font-mono text-[12px] md:text-[13px] leading-relaxed">
-                {(c.failure?.job || c.failure?.test) && (
-                  <div className="text-text-muted">{[c.failure.job, c.failure.test].filter(Boolean).join(' · ')}</div>
-                )}
-                {c.failure?.excerpt && <div className="mt-1 text-text-primary [overflow-wrap:anywhere]">{c.failure.excerpt}</div>}
-                {c.fix && <div className="mt-2 text-text-secondary [overflow-wrap:anywhere]">Fix: {c.fix}</div>}
-                {c.fixEvidence && (
-                  <div data-testid="pr-fix-evidence" className="mt-2 text-text-secondary [overflow-wrap:anywhere]">
-                    Fix attempt ended: <span className="text-status-error">{c.fixEvidence.errorClass}</span>
-                    {c.fixEvidence.keyLines[0] ? `: ${c.fixEvidence.keyLines[0]}` : ''}
-                  </div>
-                )}
-                {c.fixEvidence?.mismatch.map(m => (
-                  <div key={m.kind} data-testid="pr-fix-mismatch" className="mt-1 text-status-warning [overflow-wrap:anywhere]">⚠ {m.detail}</div>
-                ))}
-              </div>
-            )}
+            <CommitFailureNote c={c} className="mt-3 md:ml-[184px]" />
           </div>
         );
       })}
     </div>
+    </>
   );
 }
 
@@ -398,7 +463,7 @@ function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
   );
 }
 
-function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable, mergeableState, reviews, outcome }: PrCardProps & { outcome: PrOutcome }) {
+function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false }: PrCardProps & { outcome: PrOutcome }) {
   const lifecycle = derivePrLifecycle(prLifecycleStatus, true);
   const merged = isPrMerged(prLifecycleStatus);
   const ciRed = isCiRed(prLifecycleStatus, ciChecks);
@@ -416,7 +481,8 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable
   return (
     <div data-testid="pr-outcome" className="space-y-8">
       <section className="bg-card border-2 border-border-strong shadow-[var(--card-shadow)] p-5 md:p-8">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        {/* Stacked below md: beside the action the summary wrapped at ~20 characters. */}
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="font-mono text-[12px] md:text-[13px] text-text-muted [overflow-wrap:anywhere]">
               <a href={prUrl} target="_blank" rel="noopener noreferrer" data-testid="pr-outcome-number" className="text-accent-text font-semibold hover:underline">#{prNumber}</a>
@@ -427,15 +493,17 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable
             </p>
             {outcome.summary && <p className="mt-2 text-[14px] md:text-[16px] text-text-primary leading-relaxed [overflow-wrap:anywhere]">{outcome.summary}</p>}
           </div>
-          <a
-            href={action.href}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-testid="pr-outcome-action"
-            className={`shrink-0 inline-flex items-center gap-1.5 min-h-11 px-4 border-2 text-[13px] font-medium hover:bg-surface-3 ${ciRed ? 'border-status-error text-status-error' : 'border-border-strong text-text-primary'}`}
-          >
-            {action.label} <ExternalIcon />
-          </a>
+          {!hideAction && (
+            <a
+              href={action.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="pr-outcome-action"
+              className={`shrink-0 inline-flex items-center justify-center gap-1.5 min-h-11 px-4 border-2 text-[13px] font-medium hover:bg-surface-3 w-full md:w-auto ${ciRed ? 'border-status-error text-status-error' : 'border-border-strong text-text-primary'}`}
+            >
+              {action.label} <ExternalIcon />
+            </a>
+          )}
         </div>
 
         <div className="mt-6 flex flex-wrap items-end gap-x-8 md:gap-x-12 gap-y-5">

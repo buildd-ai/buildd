@@ -81,6 +81,12 @@ import { lineageDisplayStatus, lineageWorkerHistory } from './lineage-status';
 import { sidePanelPeers } from './also-running';
 import { loadAlsoRunningWorkers } from './also-running-loader';
 import type { PrOutcome } from '@/components/task/PrCard';
+import { buildHeroPool, pickHeroShots } from '@/lib/mission-shipped';
+import { toVisualShots } from '@/lib/mission-visual-review';
+import { parseTaskShippedRecord } from '@/lib/task-shipped';
+import { buildTaskShippedView } from './task-shipped-header';
+import { TaskShippedBody, TaskShippedTitle, type RunDetail } from './TaskShippedHeader';
+import { formatElapsed } from './format-elapsed';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -410,11 +416,15 @@ export default async function TaskDetailPage({
     a => a.type !== 'impl_plan'
   );
 
+  // A completed task leads with "What shipped"; its raw handoff moves behind
+  // the Technical summary disclosure instead of the Deliverables block.
+  const leadsWithShipped = task.status === 'completed' && task.mode !== 'planning';
+
   // Dedupe: find if exactly one summary-type artifact duplicates result.summary
   const resultSummary = (task.result as any)?.summary as string | undefined;
   const summaryArtifacts = deliverableArtifacts.filter(a => a.type === 'summary');
   const suppressedSummaryArtifact =
-    resultSummary && summaryArtifacts.length === 1 && isSummaryDuplicate(summaryArtifacts[0].content, resultSummary)
+    !leadsWithShipped && resultSummary && summaryArtifacts.length === 1 && isSummaryDuplicate(summaryArtifacts[0].content, resultSummary)
       ? summaryArtifacts[0]
       : null;
   const visibleArtifacts = suppressedSummaryArtifact
@@ -931,6 +941,46 @@ export default async function TaskDetailPage({
       : []),
   ];
 
+  // "What shipped" (completed tasks): the stored lede record, this task's own
+  // audit screenshots as hero shots, the PR's state for "Your move".
+  const conventionalType = /^(?:\[[^\]]*\]\s*)?([a-z]+)(?:\([^)]*\))?!?:/i.exec(task.title.trim())?.[1] ?? null;
+  const shippedResult = (task.result ?? null) as { summary?: string; summarySource?: string; shipped?: unknown; structuredOutput?: Record<string, unknown> } | null;
+  const shippedView = buildTaskShippedView({
+    taskStatus: task.status,
+    taskMode: task.mode,
+    conventionalType,
+    category: task.category ?? null,
+    record: parseTaskShippedRecord(shippedResult?.shipped),
+    summary: shippedResult?.summary ?? null,
+    summarySource: shippedResult?.summarySource ?? null,
+    pr: prWorker?.prUrl && prWorker.prNumber
+      ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt }
+      : null,
+    heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
+    errorTraceCount: errorTraces.length,
+    inRelease: !!shippedRelease,
+  });
+  const runDetails: RunDetail[] = [];
+  if (shippedView) {
+    const runWorkers = workerHistory.map(h => h.worker);
+    const runners = [...new Set(runWorkers.map(w => runnerLabel(w)).filter((n): n is string => !!n))];
+    if (runners.length > 0) runDetails.push({ label: 'Runner', value: runners.join(', ') });
+    if (runWorkers.length > 1) runDetails.push({ label: 'Attempts', value: String(runWorkers.length) });
+    const turns = runWorkers.reduce((n, w) => n + (w.turns ?? 0), 0);
+    if (turns > 0) runDetails.push({ label: 'Turns', value: String(turns) });
+    const starts = runWorkers.map(w => w.startedAt?.getTime()).filter((t): t is number => t != null);
+    const ends = runWorkers.map(w => w.completedAt?.getTime()).filter((t): t is number => t != null);
+    if (starts.length > 0 && ends.length > 0) {
+      runDetails.push({ label: 'Took', value: formatElapsed(Math.max(...ends) - Math.min(...starts)) });
+    }
+    const cost = runWorkers.reduce((n, w) => n + parseFloat(w.costUsd?.toString() || '0'), 0);
+    const tokens = runWorkers.reduce((n, w) => n + (w.inputTokens || 0) + (w.outputTokens || 0), 0);
+    if (cost > 0) runDetails.push({ label: 'Spend', value: `$${cost.toFixed(2)}` });
+    else if (tokens > 0) runDetails.push({ label: 'Tokens', value: tokens.toLocaleString() });
+    if (modelSummary.tierLabel) runDetails.push({ label: 'Tier', value: modelSummary.tierLabel });
+    const branch = prWorker?.branch ?? taskWorkers[0]?.branch;
+    if (branch) runDetails.push({ label: 'Branch', value: <span className="font-mono text-meta" title={branch}>{displayBranchName(branch)}</span> });
+  }
 
   return (
     <DisplayTimezoneProvider teamTimezone={teamTimezone}>
@@ -981,6 +1031,11 @@ export default async function TaskDetailPage({
             used to crowd the title line sit on the quiet meta line below. */}
         <div className="mb-5 md:mb-6" data-testid="task-header">
           <div className="flex flex-col-reverse md:flex-row md:items-start md:justify-between gap-3 md:gap-4">
+            {shippedView ? (
+              <div className="min-w-0 flex-1">
+                <TaskShippedTitle view={shippedView} title={heading.heading} status={displayStatus} />
+              </div>
+            ) : (
             <div className="min-w-0 flex-1">
               {heading.eyebrow.length > 0 && (
                 <p data-testid="task-eyebrow" className="font-mono text-[11px] uppercase tracking-[2px] text-text-muted font-medium">
@@ -989,13 +1044,16 @@ export default async function TaskDetailPage({
               )}
               <h1 className="mt-1.5 text-[22px] md:text-[24px] font-semibold leading-snug tracking-[-0.2px] break-words max-w-[760px]">{heading.heading}</h1>
             </div>
-            <div className="flex items-center justify-between md:justify-start gap-2 shrink-0 md:mt-0.5">
-              <span data-testid="task-header-status" data-status={displayStatus}>
-                <HeaderStatusPill
-                  status={displayStatus}
-                  merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
-                />
-              </span>
+            )}
+            <div className={`flex items-center gap-2 shrink-0 md:mt-0.5 ${shippedView ? 'justify-end' : 'justify-between md:justify-start'}`}>
+              {!shippedView && (
+                <span data-testid="task-header-status" data-status={displayStatus}>
+                  <HeaderStatusPill
+                    status={displayStatus}
+                    merged={!!(prWorker && (prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged')) && isTerminal}
+                  />
+                </span>
+              )}
               <AskAboutLink kind="task" id={task.id} teamId={(task.workspace as { teamId?: string } | null)?.teamId ?? null} workspaceId={task.workspaceId} />
               <TaskOverflowMenu>
                 <EditTaskButton
@@ -1039,7 +1097,9 @@ export default async function TaskDetailPage({
                 startAt={task.startAt?.toISOString() ?? null}
               />
             )}
-            {errorTraces.length > 0 && (
+            {/* On a completed task, matched errors are a hiccup the run got
+                past (the quiet row under "Your move"), not a red chip. */}
+            {errorTraces.length > 0 && !shippedView && (
               <a
                 href="#agent-error-traces"
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
@@ -1112,6 +1172,14 @@ export default async function TaskDetailPage({
           excludeNoteId={questionNote?.id ?? null}
           roleName={roleName}
         />
+
+        {shippedView && (
+          <TaskShippedBody
+            view={shippedView}
+            runDetails={runDetails}
+            structuredOutput={shippedResult?.structuredOutput ?? null}
+          />
+        )}
 
         <div className="flex flex-col">
         {/* Triage metadata — only foregrounded in the pending family, where runner / backend
@@ -1268,8 +1336,10 @@ export default async function TaskDetailPage({
         {errorTraces.length > 0 && (
           <div className="mb-6" id="agent-error-traces">
             <details className="card">
-              <summary className="cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] text-red-400 hover:text-red-300 select-none">
-                Agent errors · {errorTraces.length}
+              {/* Red only where the errors may have cost the result; a done
+                  task got past them. */}
+              <summary className={`cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] select-none ${shippedView ? 'text-text-muted hover:text-text-secondary' : 'text-red-400 hover:text-red-300'}`}>
+                {shippedView ? 'Handled errors' : 'Agent errors'} · {errorTraces.length}
               </summary>
               <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
                 <p className="text-xs text-text-muted mb-2">
@@ -1484,7 +1554,9 @@ export default async function TaskDetailPage({
             linesAdded: prWorker.linesAdded,
             linesRemoved: prWorker.linesRemoved,
             filesChanged: prWorker.filesChanged,
-            outcome: prOutcome,
+            // The header carries the summary and the one action.
+            outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
+            hideAction: !!shippedView,
           };
           return (
             <div className={`mb-10 ${activeWorker ? '' : 'order-first'}`} data-testid="task-pr-section">
@@ -1519,7 +1591,7 @@ export default async function TaskDetailPage({
         )}
 
         {/* Deliverables */}
-        {(task.result as any) && (
+        {(task.result as any) && !shippedView && (
           (() => {
             const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
             const hasCodeDeliverables = hasTaskCodeDeliverables(result);
