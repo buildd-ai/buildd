@@ -204,6 +204,8 @@ export interface ContainerEnvSource {
   WARM_REPOS?: string;
   /** `1` turns on parking a waiting worker (see resumableRunsEnabled). */
   RESUMABLE_RUNS?: string;
+  /** This deployment's runner group (its Worker name); see RUNNER_GROUP_CONTAINER_ENV. */
+  RUNNER_GROUP?: string;
 }
 
 /**
@@ -236,6 +238,16 @@ export const ANTHROPIC_API_KEY_PLACEHOLDER = 'sk-ant-placeholder-replaced-at-egr
  * (apps/web/src/app/api/workers/claim/cloud-executor.ts).
  */
 export const CLOUD_EXECUTOR = 'cloud';
+
+/**
+ * The runner group every container of this deployment reports on its
+ * heartbeat (packages/shared/src/runner-fleet.ts), so the fleet shows one
+ * elastic group per dispatcher instead of one "machine" per run. The value is
+ * the Worker name: wrangler.jsonc sets the var, and deploy.ts --name rewrites
+ * it with the name. The default covers a Worker deployed before the var.
+ */
+export const RUNNER_GROUP_CONTAINER_ENV = 'BUILDD_RUNNER_GROUP';
+export const DEFAULT_RUNNER_GROUP = 'buildd-cloud-runner';
 
 /** Prefix of a per-task token (apps/web/src/lib/task-token.ts). */
 export const TASK_TOKEN_PREFIX = 'bldt_';
@@ -284,6 +296,7 @@ export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): R
     ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
     BUILDD_DISABLE_AUTO_UPDATE: '1',
     BUILDD_EXECUTOR: CLOUD_EXECUTOR,
+    [RUNNER_GROUP_CONTAINER_ENV]: env.RUNNER_GROUP || DEFAULT_RUNNER_GROUP,
   };
   const optional = ['MODEL', 'PUSHER_KEY', 'PUSHER_CLUSTER', 'BUILDD_ONCE_MAX_WAIT_MS'] as const;
   for (const key of optional) {

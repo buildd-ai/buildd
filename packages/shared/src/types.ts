@@ -1,4 +1,5 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
+import type { RunnerFleetIdentity } from './runner-fleet';
 
 // ============================================================================
 // UTILS
@@ -1125,6 +1126,13 @@ export interface WorkerEnvironment {
    * runner rolled itself back.
    */
   updateCanary?: RunnerUpdateCanaryReport;
+  /**
+   * What this runner is in the fleet (./runner-fleet): a `--once` run reports
+   * `ephemeral: true`, concurrency 1, its executor and, in a cloud container,
+   * the dispatcher's group. Absent on host runners and on older builds; the
+   * server then derives it from the heartbeat URL.
+   */
+  fleet?: RunnerFleetIdentity;
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -3011,6 +3019,17 @@ export interface FleetRunner {
   maxSlots: number;
   online: boolean;
   slots: FleetSlot[];
+  /**
+   * Set when this row is an elastic group of ephemeral `--once` runs (one cloud
+   * dispatcher, lib/fleet-view.ts) rather than one machine. Its slots are its
+   * live runs, one each; finished runs leave the group.
+   */
+  elastic?: {
+    executor: 'host' | 'cloud' | null;
+    group: string | null;
+    /** Live runs in the group now (== slots.length). */
+    running: number;
+  };
 }
 
 export interface FleetSnapshot {

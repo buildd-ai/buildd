@@ -118,6 +118,44 @@ describe('FleetStrip', () => {
   });
 });
 
+describe('FleetStrip — a cloud dispatcher is one elastic group', () => {
+  const onceUrl = (t: string) => `headless://container/once/${t}`;
+  const cloudHb = (t: string) => ({
+    id: `hb-${t}`, accountId: 'a', localUiUrl: onceUrl(t), maxConcurrentWorkers: 1, lastHeartbeatAt: new Date(NOW), activeWorkerCount: 1,
+    environment: { labels: { hostname: 'container', os: 'linux', arch: 'x64' }, fleet: { executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' } },
+  });
+  const run = (t: string, status = 'running') => ({
+    id: `w-${t}`, accountId: 'a', runner: onceUrl(t), localUiUrl: onceUrl(t), status, startedAt: min(4), completedAt: status === 'running' ? null : min(1),
+    task: { id: `t-${t}`, title: `feat(${t}): cloud work`, roleSlug: 'builder', missionId: 'm1' },
+  });
+  const f = buildFleetSnapshot(
+    [{ id: 'h1', accountId: 'a', localUiUrl: 'http://atlas.local:8766', maxConcurrentWorkers: 2, lastHeartbeatAt: new Date(NOW) }, cloudHb('a'), cloudHb('b'), cloudHb('c')],
+    [run('a'), run('b'), run('c', 'completed')],
+    { now: NOW },
+  );
+  const html = renderToStaticMarkup(<FleetStrip fleet={f} roles={[]} now={NOW} timeZone="UTC" />);
+  const t = html.replace(/<!-- -->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+  it('two runner rows, not one per container: the host and the group', () => {
+    expect(html.match(/data-testid="fleet-runner"/g)?.length).toBe(2);
+    expect(html.match(/data-elastic="true"/g)?.length).toBe(1);
+  });
+  it('the group reads Cloudflare · elastic · N running, with one row per live run and no idle slots', () => {
+    expect(t).toContain('my-dispatcher');
+    expect(t).toContain('Cloudflare · elastic');
+    expect(html).toContain('data-testid="fleet-elastic-running"');
+    expect(t).toContain('2 running');
+    // Group: its 2 live runs, both busy. The finished run is not a row. The
+    // host's 2 quiet slots fold into its own "2 idle slots" row as before.
+    expect(html.match(/data-testid="fleet-slot"/g)?.length).toBe(2);
+    expect(html.match(/data-busy="true"/g)?.length).toBe(2);
+    expect(html.match(/data-testid="fleet-idle-slots"/g)?.length).toBe(1);
+  });
+  it('the section label counts the group apart from the machines', () => {
+    expect(t).toContain('Fleet · 1 runner × 2 slots + 1 elastic group');
+  });
+});
+
 describe('FleetStrip — Steer', () => {
   it('a running slot offers Steer when the chat canvas is available; a waiting-on-you slot does not (the question hero owns that)', () => {
     const html = renderToStaticMarkup(

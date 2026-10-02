@@ -57,6 +57,9 @@
   "vars": {
     // Must equal containers[0].instance_type above (run report; run-report.test.ts checks).
     "CONTAINER_INSTANCE_TYPE": "standard-1",
+    // Must equal "name" above: every container reports it, so the fleet shows
+    // this deployment as one elastic group (deploy.ts --name rewrites both).
+    "RUNNER_GROUP": "buildd-cloud-runner",
     "CONTAINER_INACTIVITY_TIMEOUT_MS": "1800000",
     "CONTAINER_START_TIMEOUT_MS": "300000"
   }

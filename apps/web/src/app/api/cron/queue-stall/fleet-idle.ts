@@ -65,7 +65,7 @@ import {
 import { hasBypassFlag, BYPASS_DEPS_GATE_KEY } from '@/lib/bypass-flags';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { missionNotHeld, missionNotLocal, taskNotHeld } from '@/app/api/workers/claim/held-gate';
-import { RUNNER_RECENTLY_SEEN_MS } from '@buildd/shared';
+import { RUNNER_RECENTLY_SEEN_MS, isOnceRunnerUrl } from '@buildd/shared';
 
 /**
  * How long a live fleet may hold claimable work without starting anything.
@@ -151,6 +151,16 @@ interface LiveAccount {
 }
 
 /**
+ * A runner with a free slot it would fill by claiming. An ephemeral `--once`
+ * run (a cloud container) never claims anything but its own task, so it is
+ * never spare capacity, whatever slot count its row carries.
+ */
+export function heartbeatHasSpareCapacity(hb: { localUiUrl: string; activeWorkerCount: number | null; maxConcurrentWorkers: number | null }): boolean {
+  if (isOnceRunnerUrl(hb.localUiUrl)) return false;
+  return (hb.activeWorkerCount ?? 0) < (hb.maxConcurrentWorkers ?? 0);
+}
+
+/**
  * Accounts whose runners are alive AND able to accept work.
  *
  * The capacity half matters: a runner at `maxConcurrentWorkers` is refusing
@@ -163,6 +173,7 @@ async function liveAccounts(now: Date): Promise<Map<string, LiveAccount>> {
     where: gt(workerHeartbeats.lastHeartbeatAt, cutoff),
     columns: {
       accountId: true,
+      localUiUrl: true,
       lastHeartbeatAt: true,
       activeWorkerCount: true,
       maxConcurrentWorkers: true,
@@ -173,6 +184,7 @@ async function liveAccounts(now: Date): Promise<Map<string, LiveAccount>> {
   const live = new Map<string, LiveAccount>();
   for (const hb of rows as Array<{
     accountId: string;
+    localUiUrl: string;
     lastHeartbeatAt: Date | string;
     activeWorkerCount: number | null;
     maxConcurrentWorkers: number | null;
@@ -184,7 +196,7 @@ async function liveAccounts(now: Date): Promise<Map<string, LiveAccount>> {
     // runner-offline one, and a predicate that lives only in a query builder
     // is invisible to every test that mocks the query builder.
     if (!(beat.getTime() > cutoff.getTime())) continue;
-    const spare = (hb.activeWorkerCount ?? 0) < (hb.maxConcurrentWorkers ?? 0);
+    const spare = heartbeatHasSpareCapacity(hb);
     const prev = live.get(hb.accountId);
     live.set(hb.accountId, {
       lastHeartbeatAt: prev && prev.lastHeartbeatAt > beat ? prev.lastHeartbeatAt : beat,

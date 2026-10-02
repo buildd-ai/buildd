@@ -2,7 +2,7 @@ import type { RoleConfig, RoleInstructions } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { SkillBundle } from '@buildd/shared';
+import type { RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -806,4 +806,8 @@ export interface LocalUIConfig {
   // knowledge-ingest jobs, no restore of other workers from disk, no worktree
   // sweeps or server cleanup. Heartbeats, sync and Pusher commands still run.
   singleTask?: boolean;
+  // What this runner is in the fleet, sent on every heartbeat as
+  // environment.fleet. Set only by `--once` (run-once.ts buildOnceConfig):
+  // ephemeral, one slot, executor and, in a cloud container, the group.
+  fleetIdentity?: RunnerFleetIdentity;
 }

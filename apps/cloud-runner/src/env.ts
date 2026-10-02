@@ -29,6 +29,11 @@ export interface Env extends EgressEnv, OtelEgressEnv {
   PUSHER_KEY?: string;
   PUSHER_CLUSTER?: string;
   BUILDD_ONCE_MAX_WAIT_MS?: string;
+  /**
+   * The fleet group this deployment's runs report (lifecycle.ts
+   * RUNNER_GROUP_CONTAINER_ENV). Set in wrangler.jsonc to the Worker name.
+   */
+  RUNNER_GROUP?: string;
   CONTAINER_INACTIVITY_TIMEOUT_MS?: string;
   CONTAINER_START_TIMEOUT_MS?: string;
   /** Mirrors `containers[].instance_type` in wrangler.jsonc, for the run report (not readable at runtime otherwise). */

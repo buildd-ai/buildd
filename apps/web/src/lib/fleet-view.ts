@@ -8,7 +8,7 @@
  * with `SlotLanes`' own `assignSlots` (components/fleet/slot-lanes-layout.ts),
  * so the slot a row describes here is the slot the lanes chart draws.
  */
-import type { FleetRunner, FleetSlot, FleetSnapshot, LaneBar } from '@buildd/shared';
+import { executorDisplayName, fleetGroupKey, isEphemeralRunner, isOnceRunnerUrl, runnerFleetIdentity, type FleetRunner, type FleetSlot, type FleetSnapshot, type LaneBar, type RunnerFleetIdentity } from '@buildd/shared';
 import { assignSlots, fitLaneWindowStart } from '@/components/fleet/slot-lanes-layout';
 import { runnerIdentity, runnerNameFromUrl } from './runner-display';
 import { missionTaskHref } from './mission-task-href';
@@ -23,8 +23,19 @@ export interface FleetHeartbeatRow {
   accountId: string;
   localUiUrl: string;
   maxConcurrentWorkers: number;
-  environment?: { labels?: Record<string, string> | null } | null;
+  /** `fleet`: a `--once` run's identity (@buildd/shared runner-fleet). */
+  environment?: { labels?: Record<string, string> | null; fleet?: unknown } | null;
   lastHeartbeatAt: DateLike;
+  /** What the runner last reported running. Decides an ephemeral run's share of capacity. */
+  activeWorkerCount?: number | null;
+}
+
+interface FleetGroup {
+  hb: FleetHeartbeatRow | null;
+  key: string;
+  workers: FleetWorkerRow[];
+  /** Set for a group of ephemeral `--once` runs (one cloud dispatcher). */
+  elastic: { identity: RunnerFleetIdentity; heartbeats: FleetHeartbeatRow[] } | null;
 }
 
 export interface FleetWorkerRow {
@@ -80,13 +91,24 @@ function barState(status: string): LaneBar['state'] {
  * "LIVE n/N slots" both read this, so the two denominators cannot disagree.
  */
 export function fleetCapacity(
-  heartbeats: readonly Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'>[],
+  heartbeats: readonly (Pick<FleetHeartbeatRow, 'maxConcurrentWorkers' | 'lastHeartbeatAt'> & Partial<Pick<FleetHeartbeatRow, 'localUiUrl' | 'environment' | 'activeWorkerCount'>>)[],
   opts: { now?: number; onlineThresholdMs?: number } = {},
 ): number {
   const now = opts.now ?? Date.now();
   const onlineMs = opts.onlineThresholdMs ?? 90_000;
   let n = 0;
-  for (const hb of heartbeats) if (now - ms(hb.lastHeartbeatAt) <= onlineMs) n += hb.maxConcurrentWorkers ?? 0;
+  for (const hb of heartbeats) {
+    if (now - ms(hb.lastHeartbeatAt) > onlineMs) continue;
+    // An ephemeral `--once` run is one slot while it runs and none after: it
+    // never takes a second task, and its container is gone once it is done.
+    // Rows written before the server stored 1 for these still say the
+    // account default, so the stored number is not trusted here.
+    if (hb.localUiUrl && isEphemeralRunner({ localUiUrl: hb.localUiUrl, environment: hb.environment })) {
+      n += (hb.activeWorkerCount ?? 0) > 0 ? 1 : 0;
+      continue;
+    }
+    n += hb.maxConcurrentWorkers ?? 0;
+  }
   return n;
 }
 
@@ -103,14 +125,35 @@ export function buildFleetSnapshot(
   // reports the same URL on the worker; heartbeats are unique per (account, URL).
   const hbByUrl = new Map<string, FleetHeartbeatRow[]>();
   for (const hb of heartbeats) hbByUrl.set(hb.localUiUrl, [...(hbByUrl.get(hb.localUiUrl) ?? []), hb]);
-  const groups = new Map<string, { hb: FleetHeartbeatRow | null; key: string; workers: FleetWorkerRow[] }>();
-  for (const hb of heartbeats) groups.set(hb.id, { hb, key: hb.localUiUrl, workers: [] });
+  // An ephemeral `--once` run (one container per cloud task) is not a machine:
+  // every run of one dispatcher folds into one elastic group (fleetGroupKey).
+  const groups = new Map<string, FleetGroup>();
+  const groupOf = (hb: FleetHeartbeatRow): string => {
+    const elasticKey = fleetGroupKey(hb);
+    if (!elasticKey) {
+      groups.set(hb.id, groups.get(hb.id) ?? { hb, key: hb.localUiUrl, workers: [], elastic: null });
+      return hb.id;
+    }
+    const g = groups.get(elasticKey) ?? { hb: null, key: hb.localUiUrl, workers: [], elastic: { identity: runnerFleetIdentity(hb), heartbeats: [] } };
+    g.elastic!.heartbeats.push(hb);
+    groups.set(elasticKey, g);
+    return elasticKey;
+  };
+  const gidByHb = new Map<string, string>();
+  for (const hb of heartbeats) gidByHb.set(hb.id, groupOf(hb));
   for (const w of workerRows) {
     const key = w.localUiUrl || w.runner;
     const candidates = hbByUrl.get(key) ?? [];
     const hb = candidates.find(h => !w.accountId || h.accountId === w.accountId) ?? null;
-    const gid = hb ? hb.id : `runner:${key}`;
-    if (!groups.has(gid)) groups.set(gid, { hb: null, key, workers: [] });
+    // A run whose heartbeat already aged out still belongs to its group.
+    const orphanElastic = !hb && isOnceRunnerUrl(key) ? fleetGroupKey({ accountId: w.accountId ?? null, localUiUrl: key }) : null;
+    const gid = hb ? gidByHb.get(hb.id)! : orphanElastic ?? `runner:${key}`;
+    if (!groups.has(gid)) {
+      groups.set(gid, {
+        hb: null, key, workers: [],
+        elastic: orphanElastic ? { identity: runnerFleetIdentity({ localUiUrl: key }), heartbeats: [] } : null,
+      });
+    }
     groups.get(gid)!.workers.push(w);
   }
 
@@ -118,7 +161,63 @@ export function buildFleetSnapshot(
   let live = 0;
   const capacity = fleetCapacity(heartbeats, { now, onlineThresholdMs: onlineMs });
 
+  /** One run onto its slot: the lane bar, and the live worker or the slot's last run. */
+  const place = (slot: FleetSlot, w: FleetWorkerRow, iv: { start: number; end: number | null }) => {
+    const t = w.task ?? null;
+    const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
+    // The task's own short label ("reconcile exports spec") names the run;
+    // the one-word pick is only a chip beside it. "untitled" names nothing.
+    const shown = t ? taskDisplayLabel({ title: t.title ?? '', label: t.label ?? null }).label : null;
+    const taskLabel = shown && shown !== 'untitled' ? shown : null;
+    const role = t?.roleSlug ? roles.get(t.roleSlug) : undefined;
+    slot.lane.bars.push({
+      id: w.id, start: iv.start, end: iv.end, label: taskLabel ?? label,
+      scope: taskLabel && label !== taskLabel.split(/\s+/)[0]?.toLowerCase() ? label : null,
+      title: t?.title ?? null,
+      color: role?.color ?? null, roleSlug: t?.roleSlug ?? null, state: barState(w.status),
+      href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
+    });
+    if (LIVE.has(w.status)) {
+      live++;
+      slot.worker = {
+        workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
+        label, rest, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
+        status: w.status, progress: w.progress ?? null,
+        startedAt: new Date(iv.start).toISOString(),
+        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Waiting on you' : null,
+      };
+    } else {
+      slot.last = {
+        label: taskLabel, scope: label || null, prNumber: w.prNumber ?? null, fix: t?.taskClass === 'attempt',
+        failed: barState(w.status) === 'failed', at: iv.end,
+      };
+    }
+  };
+
   for (const [gid, g] of groups) {
+    if (g.elastic) {
+      // Only what is running now: a finished run's container is gone, so it
+      // is neither a slot nor a runner (its heartbeat may still be fresh).
+      const running = g.workers
+        .filter(w => LIVE.has(w.status))
+        .map(w => ({ w, start: Number.isFinite(ms(w.startedAt)) ? ms(w.startedAt) : now }))
+        .sort((a, b) => a.start - b.start || a.w.id.localeCompare(b.w.id));
+      if (running.length === 0) continue;
+      const slots: FleetSlot[] = running.map((_, index) => ({ index, worker: null, last: null, lane: { id: `${gid}:${index}`, bars: [] } }));
+      running.forEach(({ w, start }, i) => place(slots[i], w, { start, end: null }));
+      const { identity, heartbeats: hbs } = g.elastic;
+      const first = hbs[0] ?? null;
+      const name = identity.group ?? (first ? runnerIdentity(first).name : runnerNameFromUrl(g.key));
+      const machine = [executorDisplayName(identity.executor), 'elastic'].filter(Boolean).join(' · ');
+      runners.push({
+        id: gid, name, machine, maxSlots: slots.length,
+        // A live run is the proof the group is up; a fresh beat from any run confirms it.
+        online: hbs.length === 0 ? false : hbs.some(hb => now - ms(hb.lastHeartbeatAt) <= onlineMs),
+        slots,
+        elastic: { executor: identity.executor, group: identity.group, running: running.length },
+      });
+      continue;
+    }
     const liveHere = g.workers.filter(w => LIVE.has(w.status));
     // A runner we have no heartbeat for is shown only while it holds live work.
     if (!g.hb && liveHere.length === 0) continue;
@@ -140,37 +239,7 @@ export function buildFleetSnapshot(
 
     const byId = new Map(g.workers.map(w => [w.id, w]));
     for (const iv of [...intervals].sort((a, b) => a.start - b.start)) {
-      const w = byId.get(iv.id)!;
-      const slot = slots[laneOf.get(iv.id) ?? 0];
-      const t = w.task ?? null;
-      const { label, rest } = t ? taskShortLabel(t) : { label: 'task', rest: '' };
-      // The task's own short label ("reconcile exports spec") names the run;
-      // the one-word pick is only a chip beside it. "untitled" names nothing.
-      const shown = t ? taskDisplayLabel({ title: t.title ?? '', label: t.label ?? null }).label : null;
-      const taskLabel = shown && shown !== 'untitled' ? shown : null;
-      const role = t?.roleSlug ? roles.get(t.roleSlug) : undefined;
-      slot.lane.bars.push({
-        id: w.id, start: iv.start, end: iv.end, label: taskLabel ?? label,
-        scope: taskLabel && label !== taskLabel.split(/\s+/)[0]?.toLowerCase() ? label : null,
-        title: t?.title ?? null,
-        color: role?.color ?? null, roleSlug: t?.roleSlug ?? null, state: barState(w.status),
-        href: t ? missionTaskHref({ missionId: t.missionId ?? null, taskId: t.id, from: 'home', mode: 'sheet' }) : null,
-      });
-      if (LIVE.has(w.status)) {
-        live++;
-        slot.worker = {
-          workerId: w.id, taskId: t?.id ?? null, missionId: t?.missionId ?? null,
-          label, rest, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
-          status: w.status, progress: w.progress ?? null,
-          startedAt: new Date(iv.start).toISOString(),
-          question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Waiting on you' : null,
-        };
-      } else {
-        slot.last = {
-          label: taskLabel, scope: label || null, prNumber: w.prNumber ?? null, fix: t?.taskClass === 'attempt',
-          failed: barState(w.status) === 'failed', at: iv.end,
-        };
-      }
+      place(slots[laneOf.get(iv.id) ?? 0], byId.get(iv.id)!, iv);
     }
     runners.push({ id: gid, name: identity.name, machine: identity.machine, maxSlots: cap, online, slots });
   }
@@ -255,10 +324,15 @@ export function fleetSummary(fleet: FleetSnapshot): FleetSummary {
  * both print it, so the two pages name the fleet the same way.
  */
 export function fleetLabel(fleet: Pick<FleetSnapshot, 'runners'>): string {
-  const n = fleet.runners.length;
-  const sizes = new Set(fleet.runners.map(r => r.maxSlots));
+  // An elastic group has no fixed size; it is counted apart from the machines.
+  const hosts = fleet.runners.filter(r => !r.elastic);
+  const groups = fleet.runners.length - hosts.length;
+  const n = hosts.length;
+  const sizes = new Set(hosts.map(r => r.maxSlots));
   const each = sizes.size === 1 && n > 0 ? ` × ${[...sizes][0]} slots` : '';
-  return `Fleet · ${n} runner${n === 1 ? '' : 's'}${each}`;
+  const elastic = groups > 0 ? `${groups} elastic group${groups === 1 ? '' : 's'}` : '';
+  if (n === 0 && elastic) return `Fleet · ${elastic}`;
+  return `Fleet · ${n} runner${n === 1 ? '' : 's'}${each}${elastic ? ` + ${elastic}` : ''}`;
 }
 
 export type HeadlinePart = { text: string; tone?: 'accent' | 'success' };
