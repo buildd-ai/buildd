@@ -70,6 +70,7 @@ import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
 import { attachCbmExperimentArm } from './cbm-experiment';
+import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
 import {
@@ -2500,6 +2501,11 @@ export async function POST(req: NextRequest) {
   // graph mention for a withheld task). No-op without a running experiment.
   await attachCbmExperimentArm(claimedWorkers, {
     cliVersion: body.environment?.claudeCliVersion,
+    features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
+  });
+  // Question-gate experiment: marks workers whose questions go through
+  // /api/workers/[id]/question-check. No-op without a running experiment.
+  await attachQuestionGate(claimedWorkers, {
     features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
   });
 

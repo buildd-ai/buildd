@@ -107,3 +107,37 @@ describe('linkQuestionNote', () => {
     expect(linkQuestionNote([{ ...note, workerId: null }, { ...note, id: 'n3', workerId: null }], 'w1')).toBeNull();
   });
 });
+
+describe('question brief', () => {
+  const briefed = {
+    type: 'question',
+    prompt: 'Should it use local time or UTC?',
+    context: 'isWeekend() decides weekend surcharges.',
+    options: [
+      { label: 'Local time', description: 'agent prose', consequence: 'Customers are charged by their own calendar.' },
+      { label: 'UTC' },
+    ],
+    recommended: { label: 'local time', reason: 'Matches what customers see.' },
+    where: { taskTitle: 'Weekend surcharge', branch: 'buildd/abc-weekend' },
+  };
+
+  test('carries context and where; consequence beats description; the brief marks the default', () => {
+    const q = unifyWorkerQuestion(briefed, null);
+    expect(q.context).toBe('isWeekend() decides weekend surcharges.');
+    expect(q.where).toEqual({ taskTitle: 'Weekend surcharge', branch: 'buildd/abc-weekend' });
+    expect(q.options).toEqual([
+      { label: 'Local time', description: 'Customers are charged by their own calendar.', recommended: true },
+      { label: 'UTC', recommended: false },
+    ]);
+  });
+
+  test('the recommendation reason fills an option that has no line of its own', () => {
+    const q = unifyWorkerQuestion({ ...briefed, options: [{ label: 'Local time' }, { label: 'UTC' }] }, null);
+    expect(q.options[0]).toEqual({ label: 'Local time', recommended: true, description: 'Matches what customers see.' });
+  });
+
+  test('an old question without a brief is unchanged', () => {
+    const q = unifyWorkerQuestion({ type: 'question', prompt: 'Which?', options: ['A', 'B'] }, null);
+    expect(q).toEqual({ headline: 'Which?', body: null, noteId: null, options: [{ label: 'A', recommended: false }, { label: 'B', recommended: false }] });
+  });
+});

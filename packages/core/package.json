@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.262.0",
+  "version": "0.263.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -56,6 +56,9 @@
     "./cbm-health": "./cbm-health.ts",
     "./cbm-injection": "./cbm-injection.ts",
     "./cbm-injection-decision": "./cbm-injection-decision.ts",
+    "./question-brief": "./question-brief.ts",
+    "./question-gate": "./question-gate.ts",
+    "./question-gate-source": "./question-gate-source.ts",
     "./secrets": "./secrets/index.ts",
     "./secrets/team-scope": "./secrets/team-scope.ts",
     "./memory-scope": "./memory-scope.ts",

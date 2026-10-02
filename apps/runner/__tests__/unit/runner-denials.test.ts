@@ -66,6 +66,21 @@ const CASES: Case[] = [
       pre('AskUserQuestion', { questions: [{ question: 'Which one?', options: [{ label: 'a' }, { label: 'b' }] }] }), undefined, signal)),
   },
   {
+    name: 'permission hook: AskUserQuestion pushed back by the question gate',
+    run: async () => {
+      const gated = { ...worker, questionGate: { experimentId: 'e', policyVersion: 1, arm: 'treatment', maxPushbacks: 2 } } as unknown as LocalWorker;
+      const f = new HookFactory({
+        config: {},
+        buildd: { updateWorker: mock(async () => ({})), checkQuestion: async () => ({ verdict: 'pushback', outcome: 'pushback', reason: 'Not sent: add context. Then ask again.', version: 'v', latencyMs: 1 }) } as any,
+        addMilestone: () => {},
+        emit: () => {},
+        pendingPermissionRequests: new Map(),
+      });
+      return reasonOf(await f.createPermissionHook(gated, { inputPolicy: 'allow' })(
+        pre('AskUserQuestion', { questions: [{ question: 'Local or UTC?', options: [{ label: 'a' }, { label: 'b' }] }] }), undefined, signal));
+    },
+  },
+  {
     name: 'permission hook: dangerous Bash command',
     run: async () => reasonOf(await makeFactory().createPermissionHook(worker)(pre('Bash', { command: 'rm -rf /' }), undefined, signal)),
   },

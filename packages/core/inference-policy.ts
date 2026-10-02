@@ -38,6 +38,7 @@ export type InferenceCapability =
   | 'mission_strand_choice'
   | 'cbm_search_injection'
   | 'endpoint_model_match'
+  | 'question_gate'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -156,6 +157,15 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Endpoint model suggestions',
     description: 'When an agent endpoint serves none of a model\'s names, a decision model suggests the closest model it does serve. Only a suggestion; you save the mapping.',
     costHint: '~$0.00003 per model, while editing',
+  },
+  // Question gate (packages/core/question-gate.ts). Runs only while the team
+  // has a running `question_gate` experiment; the experiment is the opt-in.
+  question_gate: {
+    id: 'question_gate',
+    kind: 'built_in',
+    label: 'Question review',
+    description: 'While your question-gate experiment runs, a decision model checks that an agent\'s question can be answered with no other context before it reaches you, and sends unclear ones back to the agent.',
+    costHint: '~$0.00003 per question',
   },
   chat: {
     id: 'chat',
