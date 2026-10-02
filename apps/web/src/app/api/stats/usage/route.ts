@@ -14,6 +14,15 @@ import {
   type GroupDimension,
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
+import { fetchCbmSummary } from '@/lib/cbm-insight-query';
+import {
+  ACTION_EVENTS_CAPTURED_SINCE,
+  ACTION_EVENTS_ROW_LIMIT,
+  countWorkersInWindow,
+  fetchActionEvents,
+} from '@/lib/action-events';
+import { buildActionBreakdownPanel, type ActionBreakdownPanel } from '@/lib/usage-drilldown';
+import type { CbmToolsBlock } from '@/lib/usage-breakdowns';
 
 const GROUP_DIMENSIONS: GroupDimension[] = ['role', 'workspace', 'creationSource', 'none', 'executor'];
 
@@ -41,6 +50,16 @@ const EXECUTOR_LABELS: Record<string, string> = {
  * it cost" — median/p90 tokens per task, cost, turns, and which tools agents
  * actually reach for. Read every tool number against `tools.coverage`: exact
  * histograms only exist for workers that ran after the histogram shipped.
+ *
+ * Four finer breakdowns, each on its OWN population (never one ratio across
+ * two of them):
+ *   bashBuckets / searchShapes — what the Bash calls were for, over tasks with
+ *     an exact histogram only (`tools.coverage.histogram`).
+ *   buildActions — per-action buildd MCP calls from worker_action_events, over
+ *     workers in the window; recorded since `capturedSince`, no backfill.
+ *   cbmTools — per-tool codebase-graph calls over CBM-enabled COMPLETED worker
+ *     sessions (session-keyed, the index-adoption population).
+ * `buildActions` / `cbmTools` are null when their read failed or found nothing.
  */
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
@@ -88,7 +107,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(emptyResponse(windowParam, windowStart, groupBy));
   }
 
-  const usageRows = await fetchUsageRows({ workspaceIds, windowStart });
+  const [usageRows, buildActions, cbmTools] = await Promise.all([
+    fetchUsageRows({ workspaceIds, windowStart }),
+    // Each guarded on its own: a failure costs that breakdown, not the response.
+    readBuildActions(workspaceIds, windowStart).catch(() => null),
+    readCbmTools(workspaceIds, windowParam, windowStart).catch(() => null),
+  ]);
   const stats = computeUsageStats(usageRows, groupBy);
   const labels = await groupLabels(stats.groups.map(g => g.key), groupBy, workspaceIds, scopedWorkspaces);
   const scan = describeScan(usageRows, windowStart, USAGE_ROW_LIMIT);
@@ -109,7 +133,28 @@ export async function GET(req: NextRequest) {
     scan,
     ...stats,
     groups: stats.groups.map(g => ({ ...g, label: labels[g.key] ?? g.key })),
+    buildActions,
+    cbmTools,
   });
+}
+
+async function readBuildActions(workspaceIds: string[], windowStart: Date): Promise<ActionBreakdownPanel> {
+  const [rows, workers] = await Promise.all([
+    fetchActionEvents({ workspaceIds, windowStart }),
+    countWorkersInWindow({ workspaceIds, windowStart }),
+  ]);
+  return buildActionBreakdownPanel({
+    rows,
+    workers,
+    windowStart,
+    capturedSince: ACTION_EVENTS_CAPTURED_SINCE,
+    rowLimit: ACTION_EVENTS_ROW_LIMIT,
+  });
+}
+
+async function readCbmTools(workspaceIds: string[], window: string, windowStart: Date): Promise<CbmToolsBlock | null> {
+  const cbm = await fetchCbmSummary({ workspaceIds, window, windowStart });
+  return cbm && cbm.activeCount > 0 ? cbm.tools : null;
 }
 
 /**
@@ -156,5 +201,7 @@ function emptyResponse(window: string, windowStart: Date, groupBy: GroupDimensio
     scan: { rows: 0, limit: USAGE_ROW_LIMIT, truncated: false, completeSince: windowStart.toISOString() },
     ...stats,
     groups: [] as unknown[],
+    buildActions: null,
+    cbmTools: null,
   };
 }

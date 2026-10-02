@@ -19,6 +19,7 @@ import {
   type CbmInjectionMetrics,
   type CbmInjectionOutcome,
 } from '@buildd/core/cbm-injection';
+import { buildCbmToolsBlock, type CbmToolsBlock } from './usage-breakdowns';
 
 export interface CbmRow {
   inputTokens: number;
@@ -255,6 +256,8 @@ export function aggregateCbm(rows: CbmRow[], windowParam: string, windowStart: D
       adoptionRate,
       /** Absolute graph calls in the window — 0 is the number worth alarming on. */
       totalGraphCalls,
+      /** Every graph tool's call total over these same sessions. */
+      tools: buildCbmToolsBlock(active.map(r => r.cbm)),
     },
     cbmDisabled: {
       count: disabled.length,
@@ -437,6 +440,11 @@ export interface CbmHealthSummary {
   fileAccessDeltaPct: number | null;
   deltasSuppressedBecause: string | null;
   topTools: { tool: string; avgCalls: number }[];
+  /**
+   * Every graph tool, not a top five: calls and sessions per tool over the
+   * same CBM-enabled completed sessions as `activeCount`. Session-keyed.
+   */
+  tools: CbmToolsBlock;
 }
 
 /**
@@ -493,5 +501,6 @@ export function summarizeCbm(agg: CbmAggregate): CbmHealthSummary {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
       .map(([tool, avgCalls]) => ({ tool, avgCalls })),
+    tools: active.tools,
   };
 }
