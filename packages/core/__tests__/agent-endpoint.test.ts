@@ -8,6 +8,7 @@ import {
   AGENT_ENDPOINT_PURPOSE,
   OPENROUTER_AGENT_BASE_URL,
   agentBaseUrlFromGateway,
+  agentEndpointProbeModel,
   mapAgentModel,
   parseAgentEndpointBlob,
   resolveEndpointFromBlob,
@@ -121,6 +122,24 @@ describe('mapAgentModel (§5)', () => {
   });
 });
 
+describe('agentEndpointProbeModel', () => {
+  const fallback = 'claude-haiku-4-5';
+  it('no alias table: the fallback', () => {
+    expect(agentEndpointProbeModel({ kind: 'gateway', models: {} }, fallback)).toBe(fallback);
+  });
+  it('the fallback itself is aliased: the fallback (so its alias target is what goes on the wire)', () => {
+    const r = { kind: 'gateway' as const, models: { 'claude-sonnet-5': 'team-sonnet', [fallback]: 'team-haiku' } };
+    expect(mapAgentModel(r, agentEndpointProbeModel(r, fallback))).toBe('team-haiku');
+  });
+  it('aliases that skip the fallback: the first aliased model', () => {
+    const r = { kind: 'anthropic-compatible' as const, models: { 'claude-sonnet-5': 'team-sonnet', 'claude-opus-4-8': 'team-opus' } };
+    expect(mapAgentModel(r, agentEndpointProbeModel(r, fallback))).toBe('team-sonnet');
+  });
+  it('openrouter ignores aliases, so it probes the fallback', () => {
+    expect(agentEndpointProbeModel({ kind: 'openrouter', models: { 'claude-sonnet-5': 'x' } }, fallback)).toBe(fallback);
+  });
+});
+
 describe('verifyAgentEndpoint', () => {
   const route = { kind: 'anthropic-compatible' as const, baseUrl: 'https://llm.example.com', apiKey: 'sk-agent-example', authHeader: 'authorization' as const, models: {} };
   const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
@@ -142,6 +161,23 @@ describe('verifyAgentEndpoint', () => {
     expect(down).toEqual({ health: 'unknown', error: 'endpoint returned 502' });
     const net = await verifyAgentEndpoint(route, 'm', { lookup: publicLookup, fetcher: async () => { throw new Error(body); } });
     expect(net).toEqual({ health: 'unknown', error: 'could not reach the endpoint' });
+  });
+
+  it('a 403 is the model refused for this key, not a dead key: unknown, naming the wire model', async () => {
+    const aliased = { ...route, models: { 'claude-haiku-4-5': 'team-haiku' } };
+    const r = await verifyAgentEndpoint(aliased, 'claude-haiku-4-5', { lookup: publicLookup, fetcher: async () => new Response('key not allowed sk-agent-example', { status: 403 }) });
+    expect(r.health).toBe('unknown');
+    expect(r.refusedModel).toBe('team-haiku');
+    expect(r.error).toContain('team-haiku');
+    expect(r.error).toContain('(403)');
+    expect(r.error).toMatch(/alias/);
+    expect(r.error).not.toContain('sk-agent-example');
+    expect(r.error).not.toContain('not allowed sk');
+  });
+
+  it('a 401 is still a rejected key', async () => {
+    const r = await verifyAgentEndpoint(route, 'm', { lookup: publicLookup, fetcher: async () => new Response('', { status: 401 }) });
+    expect(r).toEqual({ health: 'revoked', error: 'endpoint rejected the key (401)' });
   });
 
   it('private and metadata addresses are refused without a request', async () => {

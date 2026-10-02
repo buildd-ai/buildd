@@ -242,8 +242,13 @@ Messages call through the endpoint: `POST {baseUrl}/v1/messages`, the budget
 tier model after mapping (§5), `max_tokens: 1`, with the configured header.
 This proves the key, the Anthropic route, and that the alias resolves, which
 LiteLLM's free `GET /models` (what `verifyGateway` uses) does not. Results map
-like `verifyGateway`: 2xx `healthy`, 401/403 `revoked`, anything else `unknown`
-(an outage never marks it dead).
+like `verifyGateway`: 2xx `healthy`, 401 `revoked`, anything else `unknown`
+(an outage never marks it dead). A 403 is `unknown`, not `revoked`: a LiteLLM
+key restricted to some models answers 403 for the rest, so it means "this key
+may not use this model". A save with a 403 is refused with a message naming the
+model and pointing at the alias table. With an alias table the probe is a model
+the endpoint will actually be asked for: the budget model's alias target if it
+has one, else the first alias target (`agentEndpointProbeModel`).
 
 Both verifications go through `verifyByFetch` (`packages/core/net/public-address.ts`):
 the host must resolve only to public addresses, redirects are never followed

@@ -109,6 +109,48 @@ describe('setTeamAgentEndpoint', () => {
     expect(JSON.stringify([rejected, saved, updates])).not.toContain('internal detail');
   });
 
+  it('probes the alias target of the verify model when it is aliased', async () => {
+    const bodies: any[] = [];
+    gateway = { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gateway-example-9876' };
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'gateway', models: { 'claude-sonnet-5': 'team-sonnet', [VERIFY_MODEL]: 'team-haiku' } } }, {
+      lookup: publicLookup,
+      fetcher: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response('{}'); },
+    });
+    expect(r.ok).toBe(true);
+    expect(bodies.map((b) => b.model)).toEqual(['team-haiku']);
+  });
+
+  it('probes the first alias target when the verify model is not aliased', async () => {
+    const bodies: any[] = [];
+    gateway = { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gateway-example-9876' };
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'gateway', models: { 'claude-sonnet-5': 'team-sonnet' } } }, {
+      lookup: publicLookup,
+      fetcher: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response('{}'); },
+    });
+    expect(r.ok).toBe(true);
+    expect(bodies.map((b) => b.model)).toEqual(['team-sonnet']);
+  });
+
+  it('a 403 names the refused model and suggests an alias, does not blame the key, and saves nothing', async () => {
+    gateway = { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gateway-example-9876' };
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: { kind: 'gateway' } }, {
+      lookup: publicLookup,
+      fetcher: async () => new Response('key not allowed to access model', { status: 403 }),
+    });
+    expect(r).toMatchObject({ ok: false, status: 400 });
+    if (r.ok) return;
+    expect(r.error).toContain(VERIFY_MODEL);
+    expect(r.error).toMatch(/alias/i);
+    expect(r.error).not.toMatch(/rejected this key/);
+    expect(r.error).not.toContain('sk-gateway-example-9876');
+    expect(stored).toHaveLength(0);
+  });
+
+  it('a 401 still says the key was rejected', async () => {
+    const r = await setTeamAgentEndpoint({ teamId: 't', endpoint: custom }, { lookup: publicLookup, fetcher: async () => new Response('', { status: 401 }) });
+    expect(r).toEqual({ ok: false, status: 400, error: 'The endpoint rejected this key. endpoint rejected the key (401)' });
+  });
+
   it('a workspace scope must be one of this team\'s workspaces', async () => {
     workspaceRow = { id: 'ws-1', teamId: 'other', name: 'x' };
     expect(await setTeamAgentEndpoint({ teamId: 't', workspaceId: 'ws-1', endpoint: custom }, { lookup: publicLookup, fetcher: ok })).toMatchObject({ ok: false, status: 404 });
@@ -164,6 +206,14 @@ describe('verifyAgentEndpointSecret', () => {
     expect(r.health).toBe('revoked');
     expect(r.error).not.toContain(KEY);
     expect(updates[0]).toMatchObject({ healthStatus: 'revoked' });
+  });
+
+  it('403 (model refused for this key) is recorded unknown, not revoked, so the row keeps routing', async () => {
+    secretRow = { id: 's-1', teamId: 't', workspaceId: null, purpose: 'agent_endpoint', encryptedValue: JSON.stringify({ ...custom, models: { [VERIFY_MODEL]: 'team-haiku' } }) };
+    const r = await verifyAgentEndpointSecret('s-1', { lookup: publicLookup, fetcher: async () => new Response('', { status: 403 }) });
+    expect(r.health).toBe('unknown');
+    expect(r.error).toContain('team-haiku');
+    expect(updates[0]).toMatchObject({ healthStatus: 'unknown' });
   });
 
   it('a stored endpoint whose host is not public is recorded unknown without a request', async () => {
