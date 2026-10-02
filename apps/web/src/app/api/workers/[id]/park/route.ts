@@ -31,7 +31,7 @@ export const dynamic = 'force-dynamic';
 
 async function authorize(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateTaskScopedCaller(apiKey);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
   if (account.level === 'trigger') return { error: NextResponse.json({ error: 'Trigger tokens cannot park workers' }, { status: 403 }) };
   return { account };
