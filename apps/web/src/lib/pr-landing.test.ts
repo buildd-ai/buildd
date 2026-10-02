@@ -524,12 +524,41 @@ describe('landPr — review verdict', () => {
     expect(landingEvents()[0].outcome).toBe('deferred');
   });
 
-  it('a stale approval with no dispatcher wired still names the gap instead of going silent', async () => {
+  it('a stale approval with no dispatchFix wired sends a reviewer through the shared re-review dispatcher', async () => {
     verdict = 'stale';
-    const out = await land({}, { ...deps(), dispatchFix: undefined });
+    const reReview = mock(async (_i: any) => ({ outcome: 'dispatched', reviewTaskId: 'review-new', plan: 'delta' }) as any);
+    const out = await land({ policy: agentReview }, { ...deps(), dispatchFix: undefined, dispatchStaleApprovalReReview: reReview });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'review-new' });
+    expect(reReview).toHaveBeenCalledTimes(1);
+    expect(reReview.mock.calls[0]![0]).toMatchObject({
+      workspaceId: 'ws-1', installationId: 7, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head1', baseRef: 'dev', taskId: 'task-1', workerId: 'worker-1', policy: agentReview,
+    });
+    expect(landingEvents()[0].detail.fixDispatched).toBe(true);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a reviewer already on the PR is named, not stacked', async () => {
+    verdict = 'stale';
+    const reReview = mock(async (_i: any) => ({ outcome: 'already_reviewing', reviewTaskId: 'review-live' }) as any);
+    const out = await land({}, { ...deps(), dispatchFix: undefined, dispatchStaleApprovalReReview: reReview });
+    expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review', taskId: 'review-live' });
+  });
+
+  it('a stale approval the dispatcher could not act on still names the gap instead of going silent', async () => {
+    verdict = 'stale';
+    const reReview = mock(async (_i: any) => ({ outcome: 'skipped', reason: 'no reviewer role in this workspace' }) as any);
+    const out = await land({}, { ...deps(), dispatchFix: undefined, dispatchStaleApprovalReReview: reReview });
     expect(out).toMatchObject({ kind: 'needs_fix', fix: 're_review' });
     expect((out as any).taskId).toBeUndefined();
-    expect(landingEvents()[0].detail.fixDispatched).toBe(false);
+    expect(landingEvents()[0].detail).toMatchObject({ fixDispatched: false, fixSkipped: 'no reviewer role in this workspace' });
+  });
+
+  it('shadow never sends a reviewer', async () => {
+    verdict = 'stale';
+    const reReview = mock(async (_i: any) => ({ outcome: 'dispatched', reviewTaskId: 'review-new', plan: 'delta' }) as any);
+    await land({ mode: 'shadow' }, { ...deps(), dispatchFix: undefined, dispatchStaleApprovalReReview: reReview });
+    expect(reReview).not.toHaveBeenCalled();
   });
 
   it('a fix dispatcher that throws becomes needs_human, not a silent needs_fix', async () => {
