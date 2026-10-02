@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
-const mockAuthenticateApiKey = mock((_key: string | null) => Promise.resolve(null as any));
+const mockAuthenticateApiKey = mock((_key: string | null, _req?: unknown) => Promise.resolve(null as any));
 const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
 const mockVerifyAccess = mock((_a: string, _w: string, _p?: string) => Promise.resolve(true));
 
@@ -54,6 +54,25 @@ describe('POST /api/runner/task-token', () => {
       accountId: 'acct-1', taskId: TASK_ID, workspaceId: WORKSPACE_ID, keyBinding: taskTokenKeyBinding('hash-1'),
     });
     expect(mockVerifyAccess).toHaveBeenCalledWith('acct-1', WORKSPACE_ID, 'canClaim');
+  });
+
+  it('passes the request to auth, so a capability-scoped runner key is checked rather than refused', async () => {
+    // authenticateApiKey returns null for any key with scopes when it gets no
+    // request to check them against; the cloud runner's dispatcher key is
+    // typically such a key.
+    const r = req({ taskId: TASK_ID });
+    await POST(r);
+    expect(mockAuthenticateApiKey).toHaveBeenCalledWith('bld_dispatcher', r);
+  });
+
+  it('answers 404 when a workspace-restricted key does not list the task\'s workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, workspaceIds: ['33333333-3333-4333-8333-333333333333'] });
+    expect((await POST(req({ taskId: TASK_ID }))).status).toBe(404);
+  });
+
+  it('mints for a workspace-restricted key that lists the task\'s workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, workspaceIds: [WORKSPACE_ID] });
+    expect((await POST(req({ taskId: TASK_ID }))).status).toBe(200);
   });
 
   it('returns 401 without a valid account key', async () => {

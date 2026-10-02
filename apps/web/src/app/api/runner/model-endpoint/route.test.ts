@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
-const mockAuthenticateApiKey = mock((_key: string | null) => Promise.resolve(null as any));
+const mockAuthenticateApiKey = mock((_key: string | null, _req?: unknown) => Promise.resolve(null as any));
 const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockGetPermissions = mock(() => Promise.resolve([] as any[]));
@@ -124,6 +124,12 @@ describe('POST /api/runner/model-endpoint', () => {
     mockTasksFindFirst.mockResolvedValue(taskRow({ task: { backend: 'codex' } }));
     expect((await POST(req())).status).toBe(404);
     expect(mockResolveRoute).not.toHaveBeenCalled();
+  });
+
+  it('passes the request to auth, so a capability-scoped runner key is checked rather than refused', async () => {
+    const r = req();
+    expect((await POST(r)).status).toBe(200);
+    expect(mockAuthenticateApiKey).toHaveBeenCalledWith('bld_key', r);
   });
 
   it('401 without an API key, 401 with a bad one', async () => {
