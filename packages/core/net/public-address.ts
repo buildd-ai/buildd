@@ -211,16 +211,18 @@ export interface VerifyOutcome {
  * 401/403 ⇒ revoked, any other status or a network failure ⇒ unknown (an
  * outage never marks a credential dead). The response body is never read.
  * `label` names the thing in the error ("endpoint", "gateway").
+ * `classify` may claim a non-2xx status first (status only, never the body);
+ * returning null falls through to the default mapping.
  */
 export async function verifyByFetch(
   label: string,
   url: string,
   init: RequestInit,
-  opts: { fetcher?: Fetcher; lookup?: LookupAll; allowLocal?: boolean } = {},
+  opts: { fetcher?: Fetcher; lookup?: LookupAll; allowLocal?: boolean; classify?: (status: number) => VerifyOutcome | null } = {},
 ): Promise<VerifyOutcome> {
   let res: Response;
   try {
-    res = await fetchPublicNoRedirect(url, init, { ...opts, allowLocal: opts.allowLocal ?? localDevHostsAllowed() });
+    res = await fetchPublicNoRedirect(url, init, { fetcher: opts.fetcher, lookup: opts.lookup, allowLocal: opts.allowLocal ?? localDevHostsAllowed() });
   } catch (e) {
     if (e instanceof NonPublicAddressError) {
       return e.unresolved
@@ -235,6 +237,8 @@ export async function verifyByFetch(
   }
   await res.body?.cancel().catch(() => {});
   if (res.ok) return { health: 'healthy', error: null };
+  const claimed = opts.classify?.(res.status);
+  if (claimed) return claimed;
   if (res.status === 401 || res.status === 403) return { health: 'revoked', error: `${label} rejected the key (${res.status})` };
   return { health: 'unknown', error: `${label} returned ${res.status}` };
 }
