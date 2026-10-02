@@ -256,12 +256,29 @@ export const TASK_TOKEN_PREFIX = 'bldt_';
  * handler and arrive with only the placeholder key. For the same reason the
  * proxy settings (MODEL_PROXY_*) stay in the Worker.
  */
+/**
+ * apps/runner/Dockerfile.once's ENV, passed explicitly with every exec: a
+ * process exec'd in a Cloudflare container starts with only the env it is
+ * given, so the image ENV (sandbox off, non-essential Claude Code traffic off,
+ * the buildd paths) never reached the runner. lifecycle.test.ts keeps this
+ * equal to the Dockerfile.
+ */
+export const IMAGE_ENV: Readonly<Record<string, string>> = {
+  HOME: '/home/bun',
+  BUILDD_HOME: '/home/bun/.buildd',
+  BUILDD_REPO_ROOT: '/opt/buildd',
+  BUILDD_DISABLE_AUTO_UPDATE: '1',
+  BUILDD_DISABLE_SANDBOX: '1',
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+};
+
 export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): Record<string, string> {
   if (!env.BUILDD_SERVER) throw new Error('BUILDD_SERVER is not set');
   if (typeof taskToken !== 'string' || !taskToken.startsWith(TASK_TOKEN_PREFIX)) {
     throw new Error('the container credential must be a per-task token');
   }
   const out: Record<string, string> = {
+    ...IMAGE_ENV,
     BUILDD_SERVER: env.BUILDD_SERVER,
     BUILDD_API_KEY: taskToken,
     ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,

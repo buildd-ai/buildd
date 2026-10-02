@@ -16,6 +16,7 @@ import {
   WORKER_ID_LINE_PREFIX,
   appendTail,
   buildContainerEnv,
+  IMAGE_ENV,
   warmReposEnabled,
   crashReportAction,
   parseTaskTokenResponse,
@@ -178,6 +179,7 @@ describe('container env', () => {
   test('minimal env with a placeholder model key, the cloud marker and no GitHub token', () => {
     const env = buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' }, 'bldt_task');
     expect(env).toEqual({
+      ...IMAGE_ENV,
       BUILDD_SERVER: 'http://127.0.0.1:9',
       BUILDD_API_KEY: 'bldt_task',
       ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
@@ -283,5 +285,26 @@ describe('config', () => {
     for (let i = 0; i < 50; i++) tail = appendTail(tail, `line ${i}`, 5);
     expect(tail).toEqual(['line 45', 'line 46', 'line 47', 'line 48', 'line 49']);
     expect(appendTail([], 'x'.repeat(1000))[0]!.length).toBeLessThan(500);
+  });
+});
+
+describe('IMAGE_ENV: the image ENV, passed explicitly (a Cloudflare exec does not inherit it)', () => {
+  test('matches every ENV variable in apps/runner/Dockerfile.once', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const text = readFileSync(join(import.meta.dir, '..', '..', 'runner', 'Dockerfile.once'), 'utf8');
+    const block = text.match(/^ENV ((?:.*\\\n)*.*)$/m)![1];
+    const vars = Object.fromEntries(block.split(/\\\n/).map(l => l.trim()).filter(Boolean).map(l => {
+      const i = l.indexOf('=');
+      return [l.slice(0, i), l.slice(i + 1)];
+    }));
+    expect(IMAGE_ENV).toEqual(vars);
+    expect(IMAGE_ENV.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+  });
+
+  test('the container env carries it, and the run values win', () => {
+    const env = buildContainerEnv({ BUILDD_SERVER: 'https://buildd.example' }, 'bldt_x');
+    for (const [k, v] of Object.entries(IMAGE_ENV)) expect(env[k]).toBe(v);
+    expect(env.BUILDD_API_KEY).toBe('bldt_x');
   });
 });
