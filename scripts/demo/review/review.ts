@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { basename, dirname, join, relative, resolve } from 'path';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, type AcceptRule,
   type Finding, type Severity, type Word,
 } from './checks';
 
@@ -247,7 +247,7 @@ function nearest(c: ClipReport, t: number | undefined) {
 
 function report(clips: ClipReport[], clipsDir: string, out: string, copy: Record<string, Copy>) {
   const all = clips.flatMap((c) => [...c.findings, ...(c.judge?.findings ?? [])]);
-  const count = (fs: Finding[], s: Severity) => fs.filter((f) => f.severity === s).length;
+  const count = (fs: Finding[], s: Severity) => fs.filter((f) => f.severity === s && !f.accepted).length;
   const judged = clips.filter((c) => c.judge && !c.judge.cached);
   const cost = clips.reduce((a, c) => a + (c.judge?.costUsd ?? 0), 0);
   const tokens = clips.reduce((a, c) => { const t = c.judge?.tokens; return t ? { i: a.i + t.input + t.cacheRead + t.cacheWrite, o: a.o + t.output } : a; }, { i: 0, o: 0 });
@@ -260,7 +260,7 @@ function report(clips: ClipReport[], clipsDir: string, out: string, copy: Record
   const clipBlock = (c: ClipReport) => {
     const fs = [...c.findings, ...(c.judge?.findings ?? [])].sort((a, b) => ['high', 'medium', 'low'].indexOf(a.severity) - ['high', 'medium', 'low'].indexOf(b.severity));
     const flagged = new Map<number, Finding[]>();
-    for (const f of fs) { const s = nearest(c, f.t); if (s) (flagged.get(s.t) ?? flagged.set(s.t, []).get(s.t)!).push(f); }
+    for (const f of fs) { if (f.accepted) continue; const s = nearest(c, f.t); if (s) (flagged.get(s.t) ?? flagged.set(s.t, []).get(s.t)!).push(f); }
     const strip = c.samples.map((s) => {
       const hit = flagged.get(s.t);
       const worst = hit?.[0]?.severity;
@@ -269,7 +269,7 @@ function report(clips: ClipReport[], clipsDir: string, out: string, copy: Record
       void k;
       return `<figure class="${worst ?? ''}" title="${esc((hit ?? []).map((f) => `[${f.severity}] ${f.issue}`).join('\n'))}"><div class="im"><img src="${b64(s.thumb)}">${boxes}</div><figcaption>${s.t.toFixed(2)}s${s.kind !== 'step' ? ` · ${s.kind}` : ''}${hit ? `<br><b>${esc(hit[0].issue.slice(0, 90))}</b>` : ''}</figcaption></figure>`;
     }).join('');
-    const list = fs.length ? `<ul class="fs">${fs.map((f) => `<li><span class="sev ${f.severity}">${f.severity}</span> <code>${f.check}</code> ${f.t !== undefined ? `<code>${f.t.toFixed(2)}s</code> ` : ''}${esc(f.issue)}</li>`).join('')}</ul>` : '<p class="ok">No findings.</p>';
+    const list = fs.length ? `<ul class="fs">${fs.map((f) => `<li${f.accepted ? ' class="acc"' : ''}><span class="sev ${f.accepted ? 'accepted' : f.severity}">${f.accepted ? 'accepted' : f.severity}</span> <code>${f.check}</code> ${f.t !== undefined ? `<code>${f.t.toFixed(2)}s</code> ` : ''}${esc(f.issue)}${f.accepted ? `<br><i>accepted: ${esc(f.accepted)}</i>` : ''}</li>`).join('')}</ul>` : '<p class="ok">No findings.</p>';
     return `<div class="clip" id="${c.name}"><h4>${c.name} <small>${c.theme} · ${c.width}×${c.height} shown at ${c.display}px</small></h4>
 <video src="${esc(rel(c.file))}" width="${c.display}" autoplay muted loop playsinline controls></video>
 <div class="strip">${strip}</div>${list}${c.judge?.error ? `<p class="err">${esc(c.judge.error)}</p>` : ''}</div>`;
@@ -292,10 +292,10 @@ figure{margin:0;width:min-content;border:2px solid transparent}figure.high{borde
 .im{position:relative}.im img{display:block}.box{position:absolute;border:2px solid #d0021b;box-sizing:border-box}
 figcaption{font:11px/1.3 ui-monospace,Menlo,monospace;color:#6b6760;max-width:220px;padding:2px}figcaption b{color:#1c1b19;font-weight:600}
 .sev{display:inline-block;padding:0 6px;color:#fff;font:11px ui-monospace,monospace;text-transform:uppercase}${(['high', 'medium', 'low'] as Severity[]).map((s) => `.sev.${s}{background:${SEV_COLOR[s]}}`).join('')}
-ul.fs{padding-left:18px;max-width:900px}.ok{color:#1f7a4d}.err{color:#d0021b}code{font:12px ui-monospace,monospace}
+ul.fs{padding-left:18px;max-width:900px}li.acc{color:#8a857c}.sev.accepted{background:#a8a29a}.ok{color:#1f7a4d}.err{color:#d0021b}code{font:12px ui-monospace,monospace}
 </style></head><body>
 <h1>demo:review <small style="font-weight:400">${esc(clipsDir)}</small></h1>
-<p><b>${count(all, 'high')}</b> high · <b>${count(all, 'medium')}</b> medium · <b>${count(all, 'low')}</b> low across ${clips.length} clips.
+<p><b>${count(all, 'high')}</b> high · <b>${count(all, 'medium')}</b> medium · <b>${count(all, 'low')}</b> low across ${clips.length} clips (${all.filter((f) => f.accepted).length} accepted as known false positives, listed under each clip with the reason).
 Judge: ${judged.length} clip(s) judged this run, ${clips.filter((c) => c.judge?.cached).length} cached; ${(ms / 1000).toFixed(0)}s of judge time; ${tokens.i.toLocaleString()} input + ${tokens.o.toLocaleString()} output tokens; $${cost.toFixed(2)} at list price (billed to the subscription, not an API key).</p>
 <table><tr><th>clip</th><th>theme</th><th>shown at</th><th>length</th><th>high</th><th>medium</th><th>low</th><th>judge</th></tr>${rows}</table>
 ${sections}
@@ -330,9 +330,13 @@ async function main() {
       console.log(`[review] judge ${c.name}: ${c.judge.error ? 'ERROR ' + c.judge.error : `${c.judge.findings.length} finding(s)${c.judge.cached ? ' (cached)' : ` in ${(c.judge.ms / 1000).toFixed(0)}s`}`}`);
     });
   }
+  const acceptFile = arg('accept') ?? join(import.meta.dir, 'accepted.json');
+  const rules: AcceptRule[] = existsSync(acceptFile) ? JSON.parse(readFileSync(acceptFile, 'utf8')).rules ?? [] : [];
+  for (const c of clips) c.findings = applyAccepted(c.findings, rules);
   report(clips, clipsDir, out, copy);
   const all = clips.flatMap((c) => [...c.findings, ...(c.judge?.findings ?? [])]);
-  const high = all.filter((f) => f.severity === 'high');
+  const high = all.filter((f) => f.severity === 'high' && !f.accepted);
+  console.log(`[review] ${all.filter((f) => f.accepted).length} finding(s) accepted by ${relative(process.cwd(), acceptFile)}`);
   console.log(`[review] ${high.length} high, ${all.filter((f) => f.severity === 'medium').length} medium, ${all.filter((f) => f.severity === 'low').length} low → ${join(out, 'index.html')}`);
   for (const f of high) console.log(`  HIGH ${f.clip} ${f.t !== undefined ? f.t.toFixed(2) + 's ' : ''}[${f.check}] ${f.issue}`);
   process.exit(exitCode(all));

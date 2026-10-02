@@ -10,7 +10,7 @@
  */
 
 export type Severity = 'high' | 'medium' | 'low';
-export type Finding = { clip?: string; t?: number; severity: Severity; check: string; issue: string; box?: { x: number; y: number; w: number; h: number } };
+export type Finding = { clip?: string; t?: number; severity: Severity; check: string; issue: string; box?: { x: number; y: number; w: number; h: number }; accepted?: string };
 export type Word = { text: string; x: number; y: number; w: number; h: number; conf: number; line: number };
 
 /** The width the site shows a clip at (site-landing-v2: beats in a 700px column, 360 on a phone; heroes and the film full-bleed). */
@@ -315,6 +315,21 @@ export function numberContradictions(frames: Array<{ t: number; text: string }>)
   return out;
 }
 
-export function exitCode(findings: Array<{ severity: Severity }>): number {
-  return findings.some((f) => f.severity === 'high') ? 1 : 0;
+export function exitCode(findings: Array<{ severity: Severity; accepted?: string }>): number {
+  return findings.some((f) => f.severity === 'high' && !f.accepted) ? 1 : 0;
+}
+
+/**
+ * Known false positives, reviewed by a person: each rule names the clip
+ * (regex), the check and the issue text (regex) it covers, and why. A match
+ * keeps its finding in the report, marked accepted with the reason, and stops
+ * counting toward the exit code. Rules never apply to the judge.
+ */
+export type AcceptRule = { clip: string; check: string; match: string; reason: string };
+export function applyAccepted<T extends Finding>(findings: T[], rules: AcceptRule[]): T[] {
+  return findings.map((f) => {
+    if (f.check === 'judge') return f;
+    const r = rules.find((x) => x.check === f.check && new RegExp(x.clip).test(f.clip ?? '') && new RegExp(x.match).test(f.issue));
+    return r ? { ...f, accepted: r.reason } : f;
+  });
 }

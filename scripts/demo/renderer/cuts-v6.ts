@@ -214,27 +214,37 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
   };
   if (o.beat) {
     // A beat stays on the runner table (the machines its headline names); the push onto "6/8" is film-only.
-    fleet.spot = [key(0, [fleetBox])];
-    fleet.camera = [at(f('s08-home', fleetBox, 1.1), 0), at(f('s08-home', fleetBox, 1.07), 1)];
+    // It lights the runner column (each machine and its two slots), sized to read and never cropped:
+    // the whole table left its text ~7px tall at 700 wide (demo:review).
+    const runners = union(s.boxes('s08-home', 'fleet-runner'));
+    const img = s.img('s08-home');
+    const css = img.width / 2;
+    const fits = o.frame.width / (runners.w * css * 1.01);
+    const g = (pad: number, t: number) => aim({ ...o, minPx: Math.min(o.minPx, fits) }, img, runners, pad, t);
+    fleet.spot = [key(0, [runners])];
+    fleet.camera = [g(1.03, 0), g(1.02, 1)];
   }
 
   const opt = s.box('s09-question', 'question-option', 0, 'phone');
   const question: Shot = {
     id: 'question', layout: 'phone', dur: 5.5,
     images: [s.img('s09-question', 'phone'), { ...s.img('s14-answered', 'phone', 3.3), fade: 0 }],
-    caption: [{ at: 0, text: 'When a choice matters, it asks.' }, { at: 2.8, text: 'You answer from your phone.' }],
+    caption: [{ at: 0, text: 'When a choice matters, it asks.' }, { at: 2.2, text: 'You answer from your phone.' }],
     camera: [{ at: 0, cx: 0.5, cy: 0.5, zoom: 1 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 1.04 }],
-    taps: [press(3.1, opt)],
+    // The tap ends before the still swaps to the answered layout at 3.3s.
+    taps: [press(2.3, opt)],
   };
   if (o.beat) {
-    // A beat crops into the phone screen itself (no device): the question and its options.
+    // A beat crops into the phone screen itself (no device): the question and its options. After the
+    // swap the light lets go: the spotlight's boxes belong to the question layout, not the answered one.
+    // (The film keeps the device, with its caption beside it; demo:review notes its text is small.)
     const all = union(s.boxes('s09-question', 'question-option', 'phone'));
     const lift = Math.min(all.y, 0.3); // up to the question itself, not just its options
     const ask = { x: all.x, y: all.y - lift, w: all.w, h: all.h + lift };
     const phone = s.img('s09-question', 'phone');
     Object.assign(question, {
       layout: 'screen',
-      spot: [key(0.3, [ask]), key(2.6, [opt])],
+      spot: [key(0.3, [ask]), key(1.4, [opt]), { ...key(3.3, [ask], 0), cross: true }],
       camera: [aim(o, phone, ask, 1.15, 0), aim(o, phone, ask, 1.1, 1)],
     });
   }

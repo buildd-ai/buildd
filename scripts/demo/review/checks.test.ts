@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, type Word,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, type Word,
 } from './checks';
 
 const W = (text: string, x: number, y: number, w: number, h: number, conf = 90, line = 1): Word => ({ text, x, y, w, h, conf, line });
@@ -243,6 +243,20 @@ test('stackedLabels: a header line that carries numbers itself is not a stat lab
 test('stackedLabels: a stat value gets the caps label stacked above it', () => {
   const words = [W('YOUR', 400, 100, 40, 12, 90, 1), W('ANSWERS', 445, 100, 70, 12, 90, 1), W('WORK', 600, 100, 40, 12, 90, 1), W('2', 400, 125, 14, 22, 90, 2), W('31m', 600, 125, 40, 22, 90, 2)];
   expect(stackedLabels(words)).toEqual(['YOUR ANSWERS 2']);
+});
+
+describe('applyAccepted: a known false positive stays in the report, with its reason, but does not fail the run', () => {
+  const rules = [{ clip: '^review', check: 'legibility', match: '3\\.763|¥', reason: 'text inside the invoice screenshot' }];
+  test('a matching finding is marked accepted with the reason; exitCode ignores it', () => {
+    const f = applyAccepted([{ clip: 'review-light', severity: 'high' as const, check: 'legibility', issue: 'lit text set under 9px: "3.763,97" 5.8px' }], rules);
+    expect(f[0].accepted).toBe('text inside the invoice screenshot');
+    expect(exitCode(f)).toBe(0);
+  });
+  test('anything else is untouched', () => {
+    const f = applyAccepted([{ clip: 'spec', severity: 'high' as const, check: 'legibility', issue: '"3.763" 5px' }, { clip: 'review', severity: 'high' as const, check: 'judge', issue: '3.763 tiny' }], rules);
+    expect(f.every((x) => !x.accepted)).toBe(true);
+    expect(exitCode(f)).toBe(1);
+  });
 });
 
 test('exitCode: non-zero on any high finding', () => {

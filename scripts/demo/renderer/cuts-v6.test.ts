@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { layersAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { TAP_LIFE, layersAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars, verifyAt } from './motion-model';
 
@@ -23,6 +23,8 @@ const BOXES: Record<string, Rect[]> = {
   'kit-approval-confirm': [R(0.16, 0.8, 0.07, 0.03)],
   'approval-card': [R(0.15, 0.55, 0.47, 0.29)],
   'approval-draft-criteria': [R(0.25, 0.62, 0.35, 0.1)],
+  // Real proportions (s08-home at 1440 CSS): four runner rows, 469 wide.
+  'fleet-runner': [0, 1, 2, 3].map((i) => R(90 / 1440, (599 + i * 101) / 1620 * 2, 469 / 1440, 100 / 1620 * 2)),
   // Real proportions (s11-deck at 1440x810 CSS): Looks right is 376 x 57.
   'deck-looks-right': [R(724 / 1440, 715 / 810, 376 / 1440, 57 / 810)],
   'kit-approval-edit': [R(0.24, 0.8, 0.05, 0.03)],
@@ -182,11 +184,23 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
       for (const k of review.spot!) for (const r of k.rects) if (k.dim > 0) expect(r.w * zoom).toBeLessThanOrEqual(1 + 1e-6);
     }
   });
+  test('decide: nothing placed on the question layout outlives the swap to the answered one', () => {
+    for (const c of [film, ...LOOKS.map((l) => l.beats.find((b) => b.name.startsWith('beat-decide'))!)]) {
+      const q = c.shots.find((x) => x.id === 'question')!;
+      const swap = q.images[1].at;
+      for (const tap of q.taps ?? []) expect(tap.at + TAP_LIFE).toBeLessThanOrEqual(swap);
+      const after = (q.spot ?? []).filter((k) => k.at >= swap);
+      if (q.spot?.length) expect(after.length && after.every((k) => k.dim === 0)).toBe(true);
+    }
+  });
   test('fleet holds the runner table (the machines), not a zoom onto the stat', () => {
     for (const look of LOOKS) {
       const fleet = look.beats.find((c) => c.name.startsWith('beat-fleet'))!.shots[0];
       const cs = fleet.camera!;
       expect(Math.abs(cs[cs.length - 1].zoom - cs[0].zoom) / cs[0].zoom).toBeLessThan(0.1);
+      // It lights the runner column (names + their slots) and never crops it.
+      const lit = fleet.spot![0].rects[0];
+      for (const k of cs) expect(lit.w * k.zoom).toBeLessThanOrEqual(1 + 1e-6);
     }
   });
   test('the spec poster is a frame with the criteria list lit, not the typing', () => {
