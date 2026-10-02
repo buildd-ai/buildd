@@ -171,6 +171,14 @@ one route that returns a stored value: `bld_` admin API keys only, own team
 only, `no-store`, for `apps/cloud-runner/scripts/deploy.ts`. The token is never
 sent to a runner.
 
+## Tuning is not a credential
+
+Private tuning (role prompt bodies, merge/retry thresholds) is configuration, so it
+does **not** get a `secrets` purpose or a table. It is read at runtime from a private
+git path named by `BUILDD_TUNING_SOURCE`, through the GitHub App installation that
+already covers the repo, and falls back to a public default on any failure. See
+`docs/specs/private-tuning.md` and `packages/core/tuning/`.
+
 ## Adding a new backend (checklist)
 
 1. Add a `purpose` value to `SecretPurpose` in `packages/core/secrets/types.ts` **and** the

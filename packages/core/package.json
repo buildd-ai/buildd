@@ -33,6 +33,7 @@
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./branch-names": "./branch-names.ts",
+    "./tuning": "./tuning/index.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",
