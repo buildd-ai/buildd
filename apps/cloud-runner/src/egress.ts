@@ -63,6 +63,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       { model: resolveModelRoute(this.env, server), github },
     );
     if (decision.action === 'passthrough') return this.counted('passthrough', at, fetch(request));
+    if (decision.action === 'respond') return this.counted(cls, at, Promise.resolve(new Response(null, { status: decision.status })));
     if (decision.action === 'reject') {
       this.record({ type: 'request', cls, at, rejected: true, reason: decision.reason });
       return new Response(`${decision.message}\n`, { status: decision.status });

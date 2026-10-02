@@ -300,6 +300,8 @@ export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'un
 
 export type EgressDecision =
   | { action: 'passthrough' }
+  /** Answered by the handler itself; nothing leaves the Worker. */
+  | { action: 'respond'; status: number }
   | {
       action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none';
       /** Set for a message request to a team endpoint with a model mapping: the egress handler rewrites the body's `model`. */
@@ -407,6 +409,13 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   url.password = '';
 
   if (kind === 'anthropic') {
+    // Claude Code's connectivity check (HEAD /api/hello at start-up). It
+    // carries nothing and needs no credential: answer it here rather than
+    // refuse it (a refusal reads as "offline") or forward it to an endpoint
+    // that does not serve it.
+    if ((req.method === 'HEAD' || req.method === 'GET') && url.pathname === '/api/hello' && !url.search) {
+      return { action: 'respond', status: 200 };
+    }
     // Judged on the original URL string, before anything is added.
     if (!modelApiPathAllowed(req.method, req.url)) {
       return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded`, reason: 'path' };

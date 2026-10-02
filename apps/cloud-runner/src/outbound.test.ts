@@ -855,3 +855,16 @@ describe('reject decisions name a reason (counted in the run report, no URL)', (
     expect(r('https://api.anthropic.com/v1/messages', 'POST', resolveModelRoute({}))).toMatchObject({ action: 'reject', reason: 'unconfigured' });
   });
 });
+
+describe("Claude Code's connectivity check is answered by the Worker, not refused or forwarded", () => {
+  test('HEAD/GET /api/hello on api.anthropic.com is answered locally with 200', () => {
+    const route = resolveModelRoute({}, { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 'authorization' });
+    for (const method of ['HEAD', 'GET']) {
+      const d = rewriteOutbound({ url: 'https://api.anthropic.com/api/hello', method, headers: new Headers() }, { model: route });
+      expect(d).toEqual({ action: 'respond', status: 200 });
+    }
+    // Only that exact probe: anything else under /api is still refused.
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello', method: 'POST', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
+    expect(rewriteOutbound({ url: 'https://api.anthropic.com/api/hello/x', method: 'GET', headers: new Headers() }, { model: route })).toMatchObject({ action: 'reject', reason: 'path' });
+  });
+});
