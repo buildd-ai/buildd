@@ -34,6 +34,7 @@ const mockTasksUpdateWhere = mock(() => Promise.resolve());
 const mockTasksUpdateSet = mock(() => ({ where: mockTasksUpdateWhere }));
 const mockTasksUpdate = mock(() => ({ set: mockTasksUpdateSet }));
 const mockMissionsFindFirst = mock(() => null as any);
+const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindFirst = mock(() => null as any);
 const mockWorkspaceSkillsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockTriggerEvent = mock(() => Promise.resolve());
@@ -168,6 +169,7 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findMany: mockWorkspacesFindMany, findFirst: mockWorkspacesFindFirst },
       tasks: { findMany: mockTasksFindMany, findFirst: mockTasksFindFirst },
       missions: { findFirst: mockMissionsFindFirst },
+      workers: { findFirst: mockWorkersFindFirst },
       workspaceSkills: { findFirst: mockWorkspaceSkillsFindFirst, findMany: mockWorkspaceSkillsFindMany },
     },
     insert: mockTasksInsert,
@@ -182,9 +184,11 @@ mock.module('drizzle-orm', () => ({
   asc: (field: any) => ({ field, type: 'asc' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
   or: (...args: any[]) => ({ args, type: 'or' }),
+  not: (expr: any) => ({ expr, type: 'not' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
+  gt: (field: any, value: any) => ({ field, value, type: 'gt' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
   like: (field: any, pattern: any) => ({ field, pattern, type: 'like' }),
@@ -211,6 +215,9 @@ mock.module('@buildd/core/db/schema', () => ({
     subjectHeadSha: 'subjectHeadSha',
     subjectErrorSignature: 'subjectErrorSignature',
     subjectMissionId: 'subjectMissionId',
+    missionId: 'missionId',
+    mode: 'mode',
+    creationSource: 'creationSource',
   },
   taskSubjectReports: 'taskSubjectReports',
   workspaceSkills: {
@@ -221,7 +228,9 @@ mock.module('@buildd/core/db/schema', () => ({
     teamId: 'teamId',
     isRole: 'isRole',
   },
-  missions: { id: 'id', teamId: 'teamId' },
+  missions: { id: 'id', teamId: 'teamId', decompositionSkipped: 'decompositionSkipped', orchestrationMode: 'orchestrationMode' },
+  workers: { id: 'id', taskId: 'taskId' },
+  missionNotes: { id: 'id', missionId: 'missionId' },
 }));
 
 // Import handlers AFTER mocks
@@ -438,6 +447,11 @@ describe('POST /api/tasks', () => {
     mockMissionsFindFirst.mockReset();
     // Mission links are team-scoped; default to a mission in the test workspace's team.
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
+    mockWorkersFindFirst.mockReset();
+    // Default: no calling-worker context — the decomposition re-check guard
+    // (missionId + no parentTaskId + createdByWorkerId resolves to the
+    // mission's own organizer task) stays a no-op unless a test wires it up.
+    mockWorkersFindFirst.mockResolvedValue(null);
     mockResolveWorkspace.mockReset();
     mockAutoResolveAccountWorkspace.mockReset();
     mockFindIntakeWarnings.mockReset();
@@ -4080,5 +4094,196 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
     await settleFireAndForget();
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(0);
+  });
+
+  // The organizer's own planning task is created in the SAME request as
+  // mission creation (manage_missions create -> runMission()), before the
+  // creator who files tasks right after create gets a chance to — so the
+  // pre-filed-task heuristic that prompt was frozen with is always stale by
+  // the time the organizer actually tries to decompose. This gate re-runs
+  // that same check at decomposition time, inside POST /api/tasks itself.
+  describe('decomposition re-check gate', () => {
+    function organizerCallSetup(overrides: {
+      missionRow?: Partial<{ decompositionSkipped: boolean; orchestrationMode: string }>;
+      callingTask?: Partial<{ missionId: string; mode: string; creationSource: string; createdAt: Date }> | null;
+    } = {}) {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', gitConfig: {} });
+      mockMissionsFindFirst.mockResolvedValue({
+        id: 'mission-1',
+        teamId: 'team-1',
+        defaultOutputRequirement: 'none',
+        defaultBackend: null,
+        startAt: null,
+        decompositionSkipped: false,
+        orchestrationMode: 'auto',
+        ...overrides.missionRow,
+      });
+      mockWorkersFindFirst.mockResolvedValue({ taskId: 'organizer-task-1' });
+      const callingTaskOverride = overrides.callingTask;
+      mockTasksFindFirst.mockResolvedValue(
+        callingTaskOverride === null
+          ? null
+          : {
+              id: 'organizer-task-1',
+              missionId: 'mission-1',
+              mode: 'planning',
+              creationSource: 'orchestrator',
+              createdAt: new Date('2026-01-01T00:00:00Z'),
+              ...callingTaskOverride,
+            },
+      );
+    }
+
+    it('refuses a decomposition create when sibling tasks were pre-filed after the organizer planning task started', async () => {
+      organizerCallSetup();
+      mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }, { id: 'sibling-2' }]);
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Decomposed build task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+
+      // 409 (rather than the 200 a successful create_task returns) is itself
+      // the proof the task was never inserted — db.insert is one shared mock
+      // for every table this route writes (tasks AND missionNotes), so a call
+      // count on it conflates "the guard's own note insert ran" with "a task
+      // insert ran" and can't distinguish them.
+      expect(response.status).toBe(409);
+      const data = await response.json();
+      expect(data.error).toMatch(/decomposition refused/i);
+      expect(data.decompositionSkipped).toBe(true);
+      expect(data.preFiledTaskIds).toEqual(['sibling-1', 'sibling-2']);
+    });
+
+    it('keeps refusing later decomposition creates in the same pass even after decompositionSkipped is already set', async () => {
+      // The exact shape of the original incident: the organizer creates
+      // several sibling build tasks back to back in one decomposition pass.
+      // The first refusal persists decompositionSkipped=true; a naive guard
+      // that re-reads the flag before deciding whether to check at all would
+      // let every create AFTER the first one through.
+      organizerCallSetup({ missionRow: { decompositionSkipped: true } });
+      mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Second decomposed build task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+
+      expect(response.status).toBe(409);
+    });
+
+    it('allows a retry child even when sibling tasks exist, as long as parentTaskId is explicit', async () => {
+      organizerCallSetup();
+      mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => [{ id: 'retry-task', workspaceId: 'ws-1', title: 'Retry failed build', missionId: 'mission-1' }]),
+        })),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Retry failed build',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+          parentTaskId: 'failed-task-1',
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(mockTasksInsert).toHaveBeenCalled();
+    });
+
+    it('does not refuse a creator filing their own pre-filed tasks (calling worker is not the organizer)', async () => {
+      // The guard must only fire when the CALLER is the mission's own
+      // planning/organizer task — otherwise the creator's own second and
+      // third pre-filed tasks would trip over the first one they just filed.
+      organizerCallSetup({ callingTask: { mode: 'execution', creationSource: 'mcp' } });
+      mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => [{ id: 'creator-task-2', workspaceId: 'ws-1', title: 'Second pre-filed task', missionId: 'mission-1' }]),
+        })),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Second pre-filed task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'creator-worker',
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(mockTasksInsert).toHaveBeenCalled();
+    });
+
+    it('does not refuse on a manual-orchestration mission', async () => {
+      organizerCallSetup({ missionRow: { orchestrationMode: 'manual' } });
+      mockTasksFindMany.mockResolvedValue([{ id: 'sibling-1' }]);
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => [{ id: 'manual-task', workspaceId: 'ws-1', title: 'Manual mission task', missionId: 'mission-1' }]),
+        })),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Manual mission task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(mockTasksInsert).toHaveBeenCalled();
+    });
+
+    it('allows decomposition when no sibling tasks were pre-filed (regression)', async () => {
+      organizerCallSetup();
+      mockTasksFindMany.mockResolvedValue([]);
+      mockTasksInsert.mockReturnValue({
+        values: mock(() => ({
+          returning: mock(() => [{ id: 'first-build-task', workspaceId: 'ws-1', title: 'First build task', missionId: 'mission-1' }]),
+        })),
+      });
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'First build task',
+          missionId: 'mission-1',
+          createdByWorkerId: 'worker-organizer',
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(mockTasksInsert).toHaveBeenCalled();
+    });
   });
 });
