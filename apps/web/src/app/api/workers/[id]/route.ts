@@ -12,7 +12,7 @@ import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
+import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
@@ -188,7 +188,7 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
     }, { status: 409 });
   }
 
-  const artifactCount = await getWorkerArtifactCount(id);
+  const artifactCount = await getWorkerDeliverableArtifactCount(id);
   const deliverables = checkWorkerDeliverables(current as any, { artifactCount });
   return NextResponse.json({
     error: 'Worker was terminated - task may have been reassigned',
@@ -235,7 +235,7 @@ async function applyMetricsOnlyPatch(
   body: Record<string, any>,
 ) {
   if (isNonReactivatableError(worker.error)) {
-    const artifactCount = await getWorkerArtifactCount(id);
+    const artifactCount = await getWorkerDeliverableArtifactCount(id);
     const deliverables = checkWorkerDeliverables(worker as any, { artifactCount });
     return NextResponse.json({
       error: 'Worker was terminated - task may have been reassigned',
@@ -708,7 +708,7 @@ export async function PATCH(
     if (body.status !== 'running' || !reactivateRequested || isNonReactivatableTermination) {
       // Enrich 409 with deliverable info so the runner can distinguish
       // "already completed successfully" from "genuinely terminated/reassigned"
-      const artifactCount = await getWorkerArtifactCount(id);
+      const artifactCount = await getWorkerDeliverableArtifactCount(id);
       const deliverables = checkWorkerDeliverables(worker, { artifactCount });
       return NextResponse.json({
         error: (worker.status === 'failed' || worker.status === 'error')

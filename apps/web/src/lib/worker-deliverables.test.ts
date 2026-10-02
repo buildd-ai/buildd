@@ -160,4 +160,17 @@ describe('checkWorkerDeliverables', () => {
     expect(result.hasArtifacts).toBe(false);
     expect(result.hasAny).toBe(false);
   });
+
+  it('treats cloud-run-report artifacts as telemetry, not deliverables', () => {
+    // A worker that crashed mid-task with only telemetry should NOT be marked as completed.
+    // Cloud run reports (machine-generated telemetry) should not count as deliverables.
+    // The reaper uses getWorkerDeliverableArtifactCount which filters these out,
+    // so a count of 0 is passed even if the worker has a cloud-run-report artifact.
+    const result = checkWorkerDeliverables({}, {
+      artifactCount: 0, // Cloud-run-report filtered out by getWorkerDeliverableArtifactCount
+    });
+    expect(result.hasArtifacts).toBe(false);
+    expect(result.hasAny).toBe(false);
+    expect(result.details).toBe('none');
+  });
 });

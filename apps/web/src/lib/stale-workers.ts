@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
-import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
+import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
 import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, RUNNER_STALE_CUTOFF_MS, VISUAL_AUDITOR_ROLE_SLUG, INTERACTIVE_WORKER_RUNNER, type LoopConfig } from '@buildd/shared';
@@ -207,15 +207,17 @@ async function resolveStaleTask(
   }
 
   // Check if the stale worker produced deliverables.
-  // IMPORTANT: getWorkerArtifactCount is tried separately so a transient DB error
+  // IMPORTANT: getWorkerDeliverableArtifactCount is tried separately so a transient DB error
   // does NOT prevent the prUrl/commitCount check — those fields live on the worker
   // row itself and require no extra query. Swallowing the whole block (old pattern)
   // would leave hasDeliverables=false even when prUrl was already registered.
+  // getWorkerDeliverableArtifactCount filters out telemetry artifacts (cloud-run-report:*)
+  // so only meaningful deliverables count toward task completion.
   let deliverables: ReturnType<typeof checkWorkerDeliverables> | undefined;
   if (staleWorker) {
     let artifactCount = 0;
     try {
-      artifactCount = await getWorkerArtifactCount(staleWorker.id);
+      artifactCount = await getWorkerDeliverableArtifactCount(staleWorker.id);
     } catch { /* non-fatal — artifact count defaults to 0; prUrl still checked below */ }
     deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
   }
