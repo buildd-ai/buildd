@@ -115,6 +115,9 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `instanceType` | `CONTAINER_INSTANCE_TYPE` |
 | `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
 | `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
+| `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
+| `egressDetail.github.unauthenticatedErrorStatuses` | Upstream 4xx/5xx on the unauthenticated forwards only, by code. A 429 here is an anonymous rate limit; a 429 only in `errorStatuses` was sent with the token |
+| `egressDetail.github.grantFetchFailures` | The github-token endpoint's refusals by status (`error`: nothing answered). The Worker log has the same line with the task ID |
 | `exitCode`, `outcome`, `crashReport`, `attempt`, `taskId`, `workerId` | As in the state |
 
 The report is built from an allowlist of typed fields; identifiers that do not
@@ -397,6 +400,15 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
 - **Orphan park.** A container still running when the agent restarts gets
   `buildd-once --park-orphan <id>`, and the agent marks the park and resumes it
   at once.
+- **Bundle base.** The park bundle is built against the warm snapshot's tip
+  as restored (`refs/buildd/warm-base`, set before the post-restore fetch),
+  not the origin the container fetched since, so a resume onto that snapshot
+  needs no fetch. When the bundle still lacks commits and fetching origin
+  fails, the resume retries the fetch (a 429 waits for `Retry-After`, other
+  transient errors back off; at most 30 s in all) before giving up.
+- **Failed restore.** The runner clears the park. A worker waiting on an
+  answer is left to the server's ack-deadline sweep (cold continuation); an
+  orphan park (still `running`, nothing queued) is reported `failed`.
 - **Bounds.** At most 3 parks per worker. `parkedUntil` is 24 h, or 4 h for a
   mission task. The lifecycle rule `park/` at 2 days is the storage backstop.
 - **Local smoke.** `bun run smoke:resume` covers both paths: a question and a mid-run agent restart.

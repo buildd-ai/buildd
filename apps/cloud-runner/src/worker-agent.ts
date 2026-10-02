@@ -22,14 +22,17 @@ import {
 } from './lifecycle';
 import {
   GithubTokenCache,
+  GrantFetchError,
   INTERCEPTED_HOSTS,
   ModelEndpointCache,
   NoModelEndpointError,
   githubTokenRequest,
+  lookupGithubGrant,
   modelEndpointRequest,
   parseGithubGrant,
   parseServerModelEndpoint,
   type GithubGrant,
+  type GithubGrantLookup,
   type ServerModelEndpoint,
   type ServerModelEndpointState,
 } from './outbound';
@@ -131,17 +134,20 @@ export class WorkerAgent extends Agent<Env, RunState> {
   private readonly githubTokens = new GithubTokenCache({
     fetchGrant: () => this.fetchGithubGrant(),
     now: () => Date.now(),
-    log: (m) => console.log(m),
+    log: (m) => console.log(`${m} (task ${this.name})`),
+    // Into the run report (egressDetail.github.grantFetchFailures): status only.
+    onFailure: (status) => { if (this.ctx.container) this.supervisor.recordEgress({ type: 'grant_failure', cls: 'github', status }); },
   });
 
   /**
    * RPC from EgressHandler when the container talks to GitHub. Only while a
    * run is live: an exited run's container is gone, and nothing else should
-   * be able to pull a token out of this agent.
+   * be able to pull a token out of this agent. Says why when there is no
+   * grant, so the run report can count unauthenticated GitHub requests.
    */
-  async getGithubGrant(): Promise<GithubGrant | null> {
-    if (this.state.status !== 'starting' && this.state.status !== 'running') return null;
-    return this.githubTokens.get();
+  async getGithubGrant(): Promise<GithubGrantLookup> {
+    const live = this.state.status === 'starting' || this.state.status === 'running';
+    return lookupGithubGrant(live, () => this.githubTokens.get());
   }
 
   /**
@@ -170,8 +176,9 @@ export class WorkerAgent extends Agent<Env, RunState> {
     const { url, init } = githubTokenRequest(this.env, this.name, this.state.workerId);
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(GITHUB_TOKEN_TIMEOUT_MS) });
     if (!res.ok) {
+      // The refusal's body is buildd's fixed error text, never a token.
       const detail = (await res.text().catch(() => '')).slice(0, 200);
-      throw new Error(`POST ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
+      throw new GrantFetchError(res.status, detail);
     }
     return parseGithubGrant(await res.json());
   }
