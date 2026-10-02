@@ -17,6 +17,7 @@ import {
 } from '@/lib/failure-analytics';
 import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-query';
 import { getLandingMetrics } from '@/lib/pr-landing-metrics';
+import { getStalledIngestReport } from '@/lib/knowledge-ingest-stalls';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import type {
   FailureAnalytics,
@@ -145,7 +146,10 @@ async function lookupSignature(
  * Auth: API key (scope = the key's team) or the dashboard session (scope = the
  * user's teams, or the pinned one). A key, when present, is authoritative.
  *
- * Response: { analytics, lookup?, family?, gates?, gateFamily? }
+ * Response: { analytics, lookup?, family?, gates?, gateFamily?, stalledIngest? }
+ *
+ * `stalledIngest` (overview only, omitted when empty): full knowledge-ingest
+ * jobs no runner has taken, and those the serverless fallback is running.
  *
  * `analytics` is always present, including under `family=gate` — the gate block
  * is additive, so an existing caller's parse never breaks.
@@ -263,7 +267,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(body);
     }
 
-    return NextResponse.json({ analytics });
+    // Full ingest jobs no runner takes never become failed workers; the
+    // overview names them so they are not only visible in a claim response.
+    const stalledIngest = await getStalledIngestReport(scopedWsIds);
+    return NextResponse.json(stalledIngest ? { analytics, stalledIngest } : { analytics });
   } catch (err) {
     console.error('[GET /api/health/failures] Unhandled error:', err);
     const message = err instanceof Error ? err.message : 'Internal server error';
