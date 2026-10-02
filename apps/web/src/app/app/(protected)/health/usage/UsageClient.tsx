@@ -20,6 +20,12 @@ import {
   type UsageDrilldownView,
 } from '@/lib/usage-drilldown';
 import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
+import {
+  BASH_BUCKET_HINTS,
+  formatShare,
+  SEARCH_SHAPE_HINTS,
+  type CountRow,
+} from '@/lib/usage-breakdowns';
 
 interface Props {
   view: UsageDrilldownView;
@@ -288,11 +294,7 @@ function ShellPanelView({ view }: { view: UsageDrilldownView }) {
           </p>
         )}
 
-        <p className="text-[11px] text-text-muted">
-          One tool name covers every shell use: <span className="font-mono">rg</span>,{' '}
-          <span className="font-mono">git</span>, test runs and builds are indistinguishable here,
-          because nothing records the command inside the call.
-        </p>
+        <BashBucketsView view={view} />
         <p data-testid="usage-shell-no-delta" className="text-[11px] text-text-muted">
           Stated over {shell.histogramTasks} of {shell.allTasks} tasks. Reconstructed rows can&apos;t
           contain a shell call, so they&apos;re left out. No delta: older workers age out of the
@@ -300,6 +302,99 @@ function ShellPanelView({ view }: { view: UsageDrilldownView }) {
         </p>
       </div>
     </section>
+  );
+}
+
+/**
+ * What the shell calls were for: the runner's intent buckets, then the pattern
+ * shapes inside `code_search`.
+ *
+ * Same population as the panel it sits in — tasks with an exact histogram —
+ * and the same no-delta rule. Workers that predate the classifier have Bash on
+ * their histogram but no buckets; those calls are counted as unclassified, not
+ * guessed into `other`.
+ */
+function BashBucketsView({ view }: { view: UsageDrilldownView }) {
+  const b = view.bashBuckets;
+  const s = view.searchShapes;
+
+  if (b.classifiedCalls === 0) {
+    return (
+      <p data-testid="usage-bash-buckets-empty" className="text-[11px] text-text-muted">
+        {b.bashCalls > 0
+          ? `None of the ${b.bashCalls.toLocaleString('en-US')} shell calls in this window were classified: every worker here predates the command classifier, so what they were for is unknown.`
+          : 'No classified shell calls in this window, so there is no breakdown of what the shell was used for.'}
+      </p>
+    );
+  }
+
+  const unclassified = Math.max(b.bashCalls - b.classifiedCalls, 0);
+
+  return (
+    <div data-testid="usage-bash-buckets" className="space-y-3 pt-3 border-t border-border-default">
+      <div className="space-y-1">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-xs text-text-secondary">What the shell was for</span>
+          <span className="text-[11px] text-text-muted tabular-nums shrink-0">share of shell</span>
+        </div>
+        <CountRows rows={b.buckets} hints={BASH_BUCKET_HINTS} testId="usage-bash-bucket-row" />
+        <p data-testid="usage-bash-buckets-coverage" className="text-[11px] text-text-muted">
+          {b.classifiedCalls.toLocaleString('en-US')} of {b.bashCalls.toLocaleString('en-US')} shell calls
+          classified, across {b.classifiedTasks} of {b.histogramTasks} tasks with an exact histogram.
+          {unclassified > 0 && ` ${unclassified.toLocaleString('en-US')} came from workers older than the classifier and are left out rather than guessed.`}
+        </p>
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-xs text-text-secondary">Code search patterns</span>
+          <span className="text-[11px] text-text-muted tabular-nums shrink-0">
+            share of {s.codeSearchCalls.toLocaleString('en-US')} searches
+          </span>
+        </div>
+        {s.codeSearchCalls === 0 ? (
+          <p className="text-[11px] text-text-muted">No shell code search in this window.</p>
+        ) : (
+          <CountRows rows={s.shapes} hints={SEARCH_SHAPE_HINTS} testId="usage-search-shape-row" />
+        )}
+        <p data-testid="usage-search-shapes-note" className="text-[11px] text-text-muted">
+          <span className="font-mono">identifier</span> searches look up a bare symbol name: the
+          ones a structural index could answer. This count is the baseline for intercepting them.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Name, calls, share. One line per row; long names truncate with the full key and hint in the title. */
+function CountRows({
+  rows,
+  hints,
+  testId,
+}: {
+  rows: CountRow[];
+  hints?: Record<string, string>;
+  testId: string;
+}) {
+  return (
+    <div className="space-y-1">
+      {rows.map((r) => (
+        <div key={r.key} data-testid={testId} className="flex items-center gap-2 min-w-0">
+          <span
+            className={`font-mono text-[11px] flex-1 min-w-0 truncate ${r.calls > 0 ? 'text-text-primary' : 'text-text-muted'}`}
+            title={hints?.[r.key] ? `${r.key}: ${hints[r.key]}` : r.key}
+          >
+            {r.key}
+          </span>
+          <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
+            {r.calls.toLocaleString('en-US')}
+          </span>
+          <span className="w-10 text-right text-[11px] text-text-muted tabular-nums shrink-0">
+            {formatShare(r.share)}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -353,8 +448,59 @@ function IndexAdoptionView({ view }: { view: UsageDrilldownView }) {
         <p data-testid="usage-adoption-caveat" className="text-[11px] text-text-muted">
           {INDEX_ADOPTION_CAVEAT}
         </p>
+
+        <CbmToolsView view={view} />
       </div>
     </section>
+  );
+}
+
+/**
+ * Every graph tool, over the adoption line's own population: CBM-enabled
+ * completed SESSIONS. Placed under that line, not in the task-keyed code
+ * navigation panel, so the two populations are never read as one.
+ */
+function CbmToolsView({ view }: { view: UsageDrilldownView }) {
+  const t = view.cbmTools;
+  if (!t) return null;
+
+  return (
+    <div data-testid="usage-cbm-tools" className="space-y-1 pt-3 border-t border-border-default">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-xs text-text-secondary">Graph calls by tool</span>
+        <span data-testid="usage-cbm-tools-denominator" className="text-[11px] text-text-muted shrink-0">
+          {sectionDenominator(t.sessions, t.sessions === 1 ? 'session' : 'sessions')}
+        </span>
+      </div>
+      {t.tools.length === 0 ? (
+        <p className="text-[11px] text-text-muted">No graph tool was called in these sessions.</p>
+      ) : (
+        <>
+          <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
+            <span className="flex-1">tool</span>
+            <span className="w-14 text-right">calls</span>
+            <span className="w-14 text-right" title="Sessions that called this tool at least once">sessions</span>
+            <span className="w-10 text-right">share</span>
+          </div>
+          {t.tools.map((row) => (
+            <div key={row.tool} data-testid="usage-cbm-tool-row" className="flex items-center gap-2 min-w-0">
+              <span className="font-mono text-[11px] text-text-primary flex-1 min-w-0 truncate" title={row.tool}>
+                {row.tool}
+              </span>
+              <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
+                {row.calls.toLocaleString('en-US')}
+              </span>
+              <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
+                {row.sessions}
+              </span>
+              <span className="w-10 text-right text-[11px] text-text-muted tabular-nums shrink-0">
+                {formatShare(row.share)}
+              </span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -428,9 +574,6 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
   // Absence renders nothing, never a zero — see derived-metric-availability.
   if (!p) return null;
 
-  const TOP = 8;
-  const shown = p.actions.slice(0, TOP);
-  const rest = p.actions.length - shown.length;
 
   return (
     <div data-testid="usage-section-actions" className="mb-6">
@@ -442,33 +585,47 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
       </div>
 
       <div className="card p-4 space-y-4">
-        {shown.length === 0 ? (
-          <p className="text-[11px] text-text-muted">
-            No actions recorded in this window.
+        {p.actions.length === 0 ? (
+          <p data-testid="usage-actions-empty" className="text-[11px] text-text-muted">
+            {p.windowPredatesCapture
+              ? 'No actions recorded in this window. It opens before capture began, so that may mean "not yet recorded" rather than "none".'
+              : 'No actions recorded in this window.'}
           </p>
         ) : (
-          <div className="space-y-2">
-            {shown.map(a => (
-              <div key={a.action} className="flex items-center gap-3">
-                <span className="font-mono text-[11px] text-text-secondary w-44 shrink-0 truncate">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
+              <span className="flex-1">action</span>
+              <span className="w-14 text-right">calls</span>
+              <span className="w-10 text-right">share</span>
+            </div>
+            {p.actions.map(a => (
+              <div key={a.action} data-testid="usage-action-row" className="flex items-center gap-2 min-w-0">
+                <span
+                  className="font-mono text-[11px] text-text-secondary w-28 sm:w-44 shrink-0 truncate"
+                  title={a.action}
+                >
                   {a.action}
                 </span>
                 {/* One hue at a fixed step, never a categorical ramp: identity
                     lives in the label and every row is direct-labelled. */}
-                <span className="h-1.5 flex-1 bg-surface-3 rounded-sm overflow-hidden">
+                <span className="h-1.5 flex-1 min-w-0 bg-surface-3 rounded-sm overflow-hidden">
                   <span
                     className="block h-full bg-primary"
                     style={{ width: `${Math.max(a.share, 1)}%` }}
                   />
                 </span>
-                <span className="text-[11px] text-text-muted tabular-nums w-20 text-right">
-                  {a.calls.toLocaleString()}
+                <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
+                  {a.calls.toLocaleString('en-US')}
+                </span>
+                <span className="w-10 text-right text-[11px] text-text-muted tabular-nums shrink-0">
+                  {formatShare(a.share / 100)}
                 </span>
               </div>
             ))}
-            {rest > 0 && (
-              <p className="text-[11px] text-text-muted">+{rest} more</p>
-            )}
+            <p data-testid="usage-actions-total" className="text-[11px] text-text-muted">
+              {p.totalCalls.toLocaleString('en-US')} buildd calls across {p.actions.length} action
+              {p.actions.length === 1 ? '' : 's'}.
+            </p>
           </div>
         )}
 

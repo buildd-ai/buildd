@@ -14,6 +14,14 @@
 import type { ResultMeta } from '@buildd/core/db/schema';
 import { derivedValue, derivedUnavailable, type DerivedMetric } from '@buildd/core/derived-metric';
 import { compareAssignedActual, primaryModelFromUsage } from '@buildd/core/model-display';
+import {
+  addBashCounts,
+  buildBashBreakdown,
+  emptyTaskBashCounts,
+  type BashBucketsBlock,
+  type SearchShapesBlock,
+  type TaskBashCounts,
+} from './usage-breakdowns';
 
 /** Max entries the runner keeps in `workers.mcpCalls` (api/workers/[id]/route.ts). */
 const MCP_CALLS_CAP = 100;
@@ -260,6 +268,14 @@ export interface UsageStats {
   modelDivergence: DerivedMetric<ModelDivergence>;
   groupBy: GroupDimension;
   groups: GroupEntry[];
+  /**
+   * What the `Bash` calls were for, from `resultMeta.bashCommandCounts`.
+   * Stated over `tools.coverage.histogram` tasks ONLY — reconstructed rows
+   * never contain a shell call — and never with a cross-window delta.
+   */
+  bashBuckets: BashBucketsBlock;
+  /** Pattern shapes of the `code_search` bucket above. Same population. */
+  searchShapes: SearchShapesBlock;
 }
 
 /** Bounds of what a capped scan actually read. */
@@ -427,6 +443,8 @@ export interface TaskAgg {
   truncatedWorkers: number;
   /** True once the canonical (non-attempt) task row has been folded in. */
   canonicalSeen: boolean;
+  /** `resultMeta.bashCommandCounts` summed across the task's workers. */
+  bash: TaskBashCounts;
 }
 
 /**
@@ -461,6 +479,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
         counts: {},
         truncatedWorkers: 0,
         canonicalSeen: false,
+        bash: emptyTaskBashCounts(),
       };
       byTask.set(key, agg);
     }
@@ -496,6 +515,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
       agg.toolCalls += n;
     }
     if (truncated) agg.truncatedWorkers++;
+    addBashCounts(agg.bash, row.resultMeta?.bashCommandCounts);
     // A task's source is the weakest of its workers' — one derived worker makes
     // the task total a floor, so 'derived' outranks 'histogram' here.
     if (source === 'derived') agg.toolSource = 'derived';
@@ -875,6 +895,13 @@ export function computeUsageStats(
     modelDivergence: buildModelDivergence(rows),
     groupBy,
     groups: buildGroups(tasks, groupBy, rows),
+    // Exact-histogram tasks only: a task with one reconstructed worker is not
+    // in `coverage.histogram`, so its Bash calls must not be counted against it.
+    ...buildBashBreakdown(
+      tasks
+        .filter(t => t.toolSource === 'histogram')
+        .map(t => ({ bash: t.bash, bashCalls: t.counts.Bash ?? 0 })),
+    ),
   };
 }
 
