@@ -203,13 +203,27 @@ reviews one, but nothing buildd runs may push to its branch.
 
 | # | file:line | gate | outcome | note |
 |---|---|---|---|---|
-| 53 | `webhook/route.ts:handleCheckSuiteFailure` | `dependency_bot_pr` | rejected | CI failed on a bot PR buildd does not own — not adopted, no CI-fix task |
-| 54 | `webhook/route.ts:handleCheckSuiteFailure` | `dependency_bot_pr` | rejected | a bot PR buildd already owns (explicit review) — no CI-fix task |
+| 53 | `ci-failure-retry.ts:retryCiFailureForPr` | `dependency_bot_pr` | rejected | CI failed on a bot PR buildd does not own — not adopted, no CI-fix task |
+| 54 | `ci-failure-retry.ts:retryCiFailureForPr` | `dependency_bot_pr` | rejected | a bot PR buildd already owns (explicit review) — no CI-fix task |
 | 55 | `prs/[prNumber]/retry-ci/route.ts` | `dependency_bot_pr` | rejected | dashboard "fix CI" on a bot PR |
 | 56 | `conflict-retry.ts:dispatchConflictRetry` | `dependency_bot_pr` | rejected | no update-branch and no conflict-resolution agent on a bot branch |
 | 57 | `github/pr/route.ts` (merge) | `dependency_bot_pr` | rejected | behind-base merge refusal does not update a bot branch |
 | 58 | `workers/[id]/route.ts` (reviewer request-changes) | `dependency_bot_pr` | rejected | no `[builder · after review]` follow-up on a bot branch |
 | 59 | `pr/review/route.ts` | `dependency_bot_pr` | bypassed | explicit `request_pr_review` adopted a bot PR — reviewed, never pushed to |
+
+### Skipped CI retries (`lib/ci-failure-retry.ts`, `lib/ci-red-sweep.ts`)
+
+Every red CI result on a buildd PR that does not get a CI-fix task writes one
+row, from the `check_suite` webhook (`surface: webhook:check_suite`) or the
+red-PR sweep (`surface: cron:ci-red`). `detail.skipReason` is the stable code;
+`detail.prNumber` / `detail.headSha` / `detail.repo` say which PR and head. The
+reason text is fixed per code so repeats coalesce.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 59a | `ci-failure-retry.ts:retryCiFailureForPr` | `ci_retry_skipped` | rejected | `owner_stopped` (owner task failed or cancelled), `pr_terminal` (lifecycle merged/closed/unresolvable), `no_workspace`, `draft`, `pr_merged`, `pr_closed`, `head_already_retried` (an attempt already ran on this head), `retries_exhausted`, `retries_disabled`, `duplicate` (the insert lost a race for this PR + head) |
+| 59b | `ci-failure-retry.ts:retryCiFailureForPr` | `ci_retry_skipped` | deferred | `fix_in_flight` — a review, conflict or CI fix attempt for the PR is still pending or running; `detail.inFlightTaskId` names it and the red-PR sweep is scheduled to look again |
+| 59c | `ci-failure-retry.ts:escalateCiRedHead` | `ci_retry_skipped` | stranded | the red-PR sweep found a head an attempt already ran on, nothing pushed and nothing in flight: escalated to a human once per PR + head (`detail.escalated: true`) |
 
 ### Retry-lineage PR supersession (`lib/retry-pr-supersession.ts`)
 
