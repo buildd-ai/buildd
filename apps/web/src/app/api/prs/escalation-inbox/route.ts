@@ -17,7 +17,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import { policyValue } from '@/lib/policy-overrides';
 import { loadPrAttention } from '@/lib/pr-attention';
 
 export const dynamic = 'force-dynamic';
@@ -71,7 +71,7 @@ export async function GET(_req: NextRequest) {
         policyTier: policy.tier,
         leaseState,
         escalationReason: deadZoneInfo
-          ? `Agents failed ${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts. Resolve the conflict yourself.`
+          ? `Agents failed ${policyValue('maxConflictIterations')} conflict-resolution attempts. Resolve the conflict yourself.`
           : (escalation?.reason ?? (policy.tier === 'human' ? 'Human Gate policy: merge this PR yourself.' : null)),
         verdictSummary: approval?.summary ?? null,
         waitingMinutes,
