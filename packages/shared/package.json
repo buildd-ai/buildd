@@ -9,5 +9,6 @@
   "types": "./src/index.ts",
   "devDependencies": {
     "typescript": "^6.0.0"
-  }
+  },
+  "license": "Apache-2.0"
 }

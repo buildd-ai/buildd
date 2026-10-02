@@ -1,7 +1,7 @@
 {
   "name": "buildd",
   "private": true,
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-ALv2",
   "workspaces": [
     "apps/*",
     "packages/*"
