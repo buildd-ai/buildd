@@ -279,6 +279,13 @@ export interface WorkspaceGitConfig {
   // batched-PR default, not the legacy per-task one.
   branchStrategy?: BranchStrategy;
 
+  // Other same-team workspaces whose `docs` corpus this workspace's agents may
+  // also search (recall / query_knowledge and the claim-time knowledge context).
+  // A request, not a grant: resolveLinkedDocsWorkspaces (apps/web/src/lib/
+  // linked-knowledge.ts) only honours an id the calling account could reach
+  // anyway — same team, not sensitive, token restriction respected.
+  linkedKnowledgeWorkspaces?: string[];
+
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';
   commitPrefix?: string;              // '[JIRA-123]', null
@@ -3283,7 +3290,7 @@ export const knowledgeEdges = pgTable('knowledge_edges', {
 
 // Workspace Knowledge Management v2 §3.2 — per-workspace ingest job queue.
 // One queue for incremental (diff) and full runs. Enqueued by the GitHub
-// webhook on merged PRs; diff jobs execute serverless via the contents API,
+// webhook on merged PRs and on direct pushes to the default branch; diff jobs execute serverless via the contents API,
 // full jobs (backfill / escalated large diffs) run on the runner fleet.
 // Idempotent enqueue via the partial unique index on (workspace_id, sha, scope)
 // — failed jobs (status = 'error') don't block a retry insert.
@@ -3298,13 +3305,17 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   /** "owner/name" — denormalized so jobs survive repo re-binding. */
   repo: text('repo').notNull(),
-  trigger: text('trigger').notNull().$type<'pr_merged' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
+  trigger: text('trigger').notNull().$type<'pr_merged' | 'push' | 'backfill' | 'manual' | 'scheduled' | 'repo_link'>(),
   /** Merge SHA (diff jobs) or target SHA (full jobs). */
   sha: text('sha'),
   prNumber: integer('pr_number'),
   scope: text('scope').notNull().$type<'diff' | 'full'>(),
   status: text('status').default('queued').notNull().$type<'queued' | 'running' | 'done' | 'error'>(),
-  /** File paths considered by this job (kept + deleted), for the health UI. */
+  /**
+   * File paths considered by this job (kept + deleted), for the health UI.
+   * A `push` job is seeded with its docs paths at enqueue (the push payload is
+   * the only record of them) and the executor reads them back from here.
+   */
   changedFiles: jsonb('changed_files').$type<string[]>(),
   /** Run stats: filesIngested / filesSkipped / filesDeleted / chunksUpserted / escalated… */
   stats: jsonb('stats').$type<Record<string, unknown>>(),

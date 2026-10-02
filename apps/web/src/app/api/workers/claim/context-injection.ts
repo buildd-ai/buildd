@@ -22,6 +22,7 @@ import { selectExecCluster } from '@buildd/core/retrieval-clusters';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { componentTablePaths, extractExcerptPaths } from '@buildd/core/friction-manifest';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
+import { resolveLinkedDocsWorkspaces, type LinkedDocsAccount } from '@/lib/linked-knowledge';
 import { findDispatchDiscrepancyBlock } from '@buildd/core/spec-discrepancy-dispatch';
 import {
   TASK_AREA_CONTEXT_KEY,
@@ -307,6 +308,8 @@ export async function attachKnowledgeContext(
   predictions?: ReadonlyMap<string, TaskAreaPrediction>,
   handoffExcludedSources?: Set<string>,
   sink: ContextBlockSink = appendContextBlock,
+  /** Caller of the claim; linked docs workspaces are authorised against it. */
+  account?: LinkedDocsAccount | null,
 ): Promise<void> {
   // Independent per worker — each iteration only reads the shared predictions
   // map and excluded-sources set (both fully populated by the time this runs)
@@ -390,8 +393,12 @@ export async function attachKnowledgeContext(
       const declared = manifestPaths((task as any).pathManifest);
       const hint = declared.length === 0 ? taskAreaHint(predictions?.get(task.id)) : null;
       const paths = declared.length > 0 ? declared : (hint?.paths ?? []);
+      const linkedDocsWorkspaceIds = sensitive
+        ? []
+        : await resolveLinkedDocsWorkspaces({ workspaceId: task.workspaceId, account });
       parts = await buildKnowledgeContext(seedQuery, task.workspaceId, teamId, undefined, {
         sensitive,
+        ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
         paths,
         excludedSourceIds: handoffExcludedSources,
         memoryScope,
