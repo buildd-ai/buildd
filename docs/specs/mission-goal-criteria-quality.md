@@ -66,6 +66,12 @@ the first two as the author's statement of done.
 - The verdict (§2) grades Outcome and Proof criteria. Bookkeeping criteria
   (`all_prs_merged`, `no_open_tasks`) are never warned as weak for failing the
   "would a user notice" question; they are graded only as Bookkeeping.
+- Bookkeeping already holds for every mission without being listed:
+  `canCompleteMission` (`apps/web/src/lib/mission-completion.ts`) refuses
+  completion while any work row is open and while any completed deliverable has
+  an unmerged PR. Listing `all_prs_merged` / `no_open_tasks` adds the stricter
+  reads only (`no_open_tasks` does not let pending housekeeping rows through;
+  `all_prs_merged` can require the branch deleted).
 - **Later, separately scoped — NOT built by this mission:** Bookkeeping becomes
   an implicit platform gate on mission completion, applied whether or not it is
   listed, and stops being a listed criterion type an author writes. Until that
@@ -245,6 +251,40 @@ Modelled exactly on `mission_strand_choice`
   rendered rewrite suggestion. Never raised by configuration, workspace setting
   or request flag.
 
+**Readout and graduation** (shadow → surface). Every bar must hold on a single
+`promptVersion`; a miss means tune the questions or rubric and bump the
+version, never lower the bar:
+
+| Measure | Bar |
+|---|---|
+| Labelled criteria | ≥ 60, from ≥ 15 distinct missions |
+| Agreement (weak / not weak vs the owner's blind label) | ≥ 85 % |
+| Precision of `weak` (owner also says weak) — a false "weak" is the annoying error | ≥ 90 % |
+| Coverage (answered at or above the confidence floor) | ≥ 70 % |
+| Fail-open rate (no verdict / all graded writes) | ≤ 10 % |
+| Suggestion acceptable to the owner as is or lightly edited | ≥ 70 % of weak verdicts |
+
+- Labels are blind (the owner sees the criteria, not the verdict) and stored as
+  private DB state, never in the repo. A labelled criterion is not written as a
+  rubric entry until the readout for that prompt version is published, or the
+  judge is graded on its own examples.
+- **Demotion**: once in `surface`, a 30-day bypass rate above 35 % means the
+  next readout either fixes the prompt or rubric or moves the constant back to
+  `shadow`.
+
+**Computing the readout** (no UI):
+
+- *Bypass rate*: `get_failure_analytics family="gate"`, row
+  `goal_criteria_quality` — `bypassed / warned`. Split by `detail.mode`
+  (`shadow` rows are the keep-as-written base rate; only `surface` rows are real
+  overrides).
+- *Shadow agreement*: the `[decision-shadow]` lines with
+  `site: goal_criteria_quality` carry, per graded criterion, `fp`, the two labels
+  (`noticeable`, `checkable`), their confidences and `weak`; join on `fp` to the
+  owner's label for that criterion and count matches over labelled criteria.
+  Group by `v` (prompt version, model) and `rubric` (rubric version), since a
+  rubric change is a different judge.
+
 ---
 
 ## 6. Removal: the cheap-default suggestion
@@ -361,6 +401,12 @@ Planned (does not exist yet):
 - Dashboard UI for the `advisory` field; the surface PR specifies its own
   rendering.
 - Moving the mode constant to `surface`; that is its own PR after the readout.
+- Learning negatives automatically: a bypassed criterion on a mission that
+  later fails or escalates writes nothing. The failure may be the work's, not
+  the criterion's; escalation already asks the owner which reading holds.
+- Tightening the "at least one mechanical criterion" rule so bookkeeping alone
+  no longer satisfies it; that would be the hard rejection this contract rules
+  out. The surface bypass rate says whether it is wanted.
 
 ## Related
 
