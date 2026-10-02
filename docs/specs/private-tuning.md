@@ -9,6 +9,35 @@ surfaces: [packages/core/tuning/index.ts, packages/core/tuning/loader.ts, packag
 related: [credential-isolation]
 keywords: [BUILDD_TUNING_SOURCE, tuning bundle, role prompts, policy thresholds, public default]
 verified_by: [packages/core/__tests__/tuning.test.ts, packages/core/__tests__/tuning-github-source.test.ts, packages/core/__tests__/tuning-server-only.test.ts, apps/web/src/lib/tuning.test.ts]
+assertions:
+  - id: get-tuning
+    type: symbol
+    name: getTuning
+    path: packages/core/tuning/index.ts
+  - id: load-tuning-bundle
+    type: symbol
+    name: loadTuningBundle
+    path: packages/core/tuning/index.ts
+  - id: tuning-diagnostics
+    type: symbol
+    name: getTuningDiagnostics
+    path: packages/core/tuning/index.ts
+  - id: tuning-loader
+    type: symbol
+    name: createTuningLoader
+    path: packages/core/tuning/loader.ts
+  - id: github-fetcher
+    type: symbol
+    name: createGitHubTuningFetcher
+    path: packages/core/tuning/github-source.ts
+  - id: clamped-int
+    type: symbol
+    name: clampedInt
+    path: packages/core/tuning/validators.ts
+  - id: web-token-provider
+    type: symbol
+    name: tuningInstallationToken
+    path: apps/web/src/lib/tuning.ts
 ---
 # Private Tuning Loader
 
