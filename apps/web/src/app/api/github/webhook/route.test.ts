@@ -74,6 +74,9 @@ mock.module('@/lib/subscriptions', () => ({
 // in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
 const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
 mock.module('@/lib/pr-reverts', () => ({ recordPrReverts: mockRecordPrReverts }));
+// Supersession detection: what it decides is covered in lib/pr-supersession-detect.test.ts.
+const mockDetectPrSupersession = mock((_a: any) => Promise.resolve({ outcome: 'none', candidatesChecked: 0 } as any));
+mock.module('@/lib/pr-supersession-detect', () => ({ detectPrSupersession: mockDetectPrSupersession }));
 mock.module('@/lib/task-cancel', () => ({
   applyTaskCancelSideEffects: mockApplyTaskCancelSideEffects,
   applyTaskReopenSideEffects: mockApplyTaskReopenSideEffects,
@@ -3611,6 +3614,22 @@ describe('POST /api/github/webhook', () => {
       // The task must NOT be auto-completed on a non-merged close
       const taskUpdate = updateCalls.find((c) => (c.setValues as any).status === 'completed');
       expect(taskUpdate).toBeUndefined();
+    });
+
+    it('looks for where a closed-unmerged PR\'s work landed (detection, not a recorded edge)', async () => {
+      mockDetectPrSupersession.mockClear();
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-closed-2', workspaceId: 'ws1', taskId: 'task-closed-2', prNumber: 61,
+        task: { id: 'task-closed-2', status: 'completed', workspaceId: 'ws1', release: 'false', missionId: null },
+      });
+      const res = await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: { number: 61, merged: false, draft: false, head: { ref: 'buildd/x', sha: 'sha-61' }, html_url: 'https://github.com/test-org/test-repo/pull/61' },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+      expect(res.status).toBe(200);
+      expect(mockDetectPrSupersession).toHaveBeenCalledWith({ workerId: 'w-closed-2', via: 'webhook' });
     });
 
     it('resolves the sticky activity comment when the PR merges', async () => {

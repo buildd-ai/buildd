@@ -29,6 +29,7 @@
  * The decision logic below takes its collaborators as arguments; the real
  * wiring is `runOnceFromCli` at the bottom.
  */
+import { onceFleetIdentity } from '@buildd/shared';
 import type { LocalUIConfig, WorkerStatus } from './types';
 import type { WorkspaceResolver } from './workspace';
 
@@ -120,14 +121,22 @@ export function resolveOnceMaxWaitMs(env: Record<string, string | undefined>): n
  * shut every claim path in the WorkerManager and keep Pusher off the workspace
  * channels. The heartbeat key is per-task so a --once process on a host that
  * also runs a long-lived runner does not overwrite that runner's record.
+ *
+ * `fleetIdentity` tells the dashboard what this is: one ephemeral run with one
+ * slot and, in a cloud container, the dispatcher group it belongs to — so the
+ * fleet shows the dispatcher once instead of one runner per container.
  */
-export function buildOnceConfig(base: LocalUIConfig, opts: { taskId: string; host: string }): LocalUIConfig {
+export function buildOnceConfig(
+  base: LocalUIConfig,
+  opts: { taskId: string; host: string; env?: Record<string, string | undefined> },
+): LocalUIConfig {
   return {
     ...base,
     singleTask: true,
     acceptRemoteTasks: false,
     maxConcurrent: 1,
     localUiUrl: `headless://${opts.host}/once/${opts.taskId}`,
+    fleetIdentity: onceFleetIdentity(opts.env ?? {}),
   };
 }
 
@@ -213,6 +222,12 @@ export interface OnceWorkerManager {
   hasLiveSession(id: string): boolean;
   abort(id: string, reason?: string): Promise<unknown>;
   flushToServer(): Promise<void>;
+  /**
+   * One heartbeat now. Teardown sends a last one once the worker is done, so
+   * the run's record says "nothing running" instead of the last periodic
+   * beat's count while it ages out (the fleet hides a finished run either way).
+   */
+  sendHeartbeatNow?(): Promise<void>;
   destroy(): void;
 }
 
@@ -310,6 +325,7 @@ async function teardown(d: RunOnceDeps, code: number): Promise<void> {
   if (remaining !== 0) {
     d.log(`[once] WARNING: ${remaining < 0 ? 'outbox flush failed' : `${remaining} report(s) still undelivered`} — exiting with code ${code} anyway`);
   }
+  await wm.sendHeartbeatNow?.().catch(() => { /* best effort */ });
   try { wm.destroy(); } catch { /* best effort */ }
   await d.shutdown?.().catch(() => {});
 }
@@ -481,7 +497,7 @@ export async function runOnceFromCli(opts: {
   const { emitMetric, emitPhase } = await import('./phase-lines');
   const { loadWorker } = await import('./worker-store');
 
-  const config = buildOnceConfig(opts.config, { taskId: opts.taskId || opts.resumeWorkerId || 'resume', host: opts.host });
+  const config = buildOnceConfig(opts.config, { taskId: opts.taskId || opts.resumeWorkerId || 'resume', host: opts.host, env: opts.env });
   const client = new BuilddClient(config);
   const log = (m: string) => console.log(m);
 

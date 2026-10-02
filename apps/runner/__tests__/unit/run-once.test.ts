@@ -32,6 +32,7 @@ import {
   type RunOnceDeps,
   type OnceWorkerManager,
 } from '../../src/run-once';
+import { withFleetIdentity } from '../../src/fleet-identity';
 
 const TASK_ID = 'task-1234abcd';
 const TASK = { id: TASK_ID, title: 'Example task', workspaceId: 'ws-1', workspace: { name: 'example', repo: 'https://github.com/example/repo' } };
@@ -538,6 +539,61 @@ describe('buildOnceConfig', () => {
     expect(c.localUiUrl).toContain(TASK_ID);
     // Input is not mutated.
     expect(base.acceptRemoteTasks).toBe(true);
+  });
+
+  test('a cloud container reports executor cloud, its dispatcher group, one slot, ephemeral', () => {
+    const c = buildOnceConfig(base, { taskId: TASK_ID, host: 'box', env: { BUILDD_EXECUTOR: 'cloud', BUILDD_RUNNER_GROUP: 'my-dispatcher' } });
+    expect(c.fleetIdentity).toEqual({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' });
+  });
+
+  test('a host --once run is ephemeral too, with no group', () => {
+    const c = buildOnceConfig(base, { taskId: TASK_ID, host: 'box', env: { BUILDD_RUNNER_GROUP: 'ignored-off-cloud' } });
+    expect(c.fleetIdentity).toEqual({ executor: 'host', ephemeral: true, concurrency: 1, group: null });
+  });
+
+  test('an unusable group name is dropped, not sent', () => {
+    const c = buildOnceConfig(base, { taskId: TASK_ID, host: 'box', env: { BUILDD_EXECUTOR: 'cloud', BUILDD_RUNNER_GROUP: 'has spaces/and slashes' } });
+    expect(c.fleetIdentity?.group).toBeNull();
+  });
+});
+
+describe('heartbeat environment of a --once run', () => {
+  test('the identity rides on the scanned environment', () => {
+    const scanned: any = { tools: [], envKeys: ['browser'], mcp: [], labels: { hostname: 'box' }, scannedAt: 't' };
+    const fleet = { executor: 'cloud' as const, ephemeral: true, concurrency: 1, group: 'g' };
+    expect(withFleetIdentity(scanned, fleet)).toEqual({ ...scanned, fleet });
+    expect(scanned.fleet).toBeUndefined();
+  });
+
+  test('before the scan finishes the identity is still sent', () => {
+    const fleet = { executor: 'cloud' as const, ephemeral: true, concurrency: 1, group: 'g' };
+    expect(withFleetIdentity(undefined, fleet)?.fleet).toEqual(fleet);
+  });
+
+  test('a long-lived runner sends its environment unchanged', () => {
+    const scanned: any = { tools: [], envKeys: [], mcp: [], labels: {}, scannedAt: 't' };
+    expect(withFleetIdentity(scanned, undefined)).toBe(scanned);
+    expect(withFleetIdentity(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('runOnce — leaving the fleet', () => {
+  test('sends a last heartbeat after the final sync and before teardown, so the run reads as ended', async () => {
+    const { wm, calls } = fakeManager({ statuses: ['working', 'done'] });
+    (wm as any).sendHeartbeatNow = async () => { calls.push('heartbeat'); };
+    const { d } = deps(wm);
+    await runOnce({ taskId: TASK_ID }, d);
+    expect(calls).toContain('heartbeat');
+    expect(calls.indexOf('flushToServer')).toBeLessThan(calls.indexOf('heartbeat'));
+    expect(calls.indexOf('heartbeat')).toBeLessThan(calls.indexOf('destroy'));
+  });
+
+  test('a failing last heartbeat never blocks teardown', async () => {
+    const { wm, calls } = fakeManager({ statuses: ['working', 'done'] });
+    (wm as any).sendHeartbeatNow = async () => { throw new Error('offline'); };
+    const { d } = deps(wm);
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_COMPLETED);
+    expect(calls).toContain('destroy');
   });
 });
 

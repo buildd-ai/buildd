@@ -236,6 +236,17 @@ happen is recorded rather than logged, and the hourly pr-reconcile sweep retries
 | 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
 | 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
 
+### Automatic supersession of closed PRs (`lib/pr-supersession-detect.ts`)
+
+A closed-unmerged PR is checked for where its work landed (webhook on close,
+hourly pr-reconcile backfill). Claims and sibling tasks only nominate; an edge
+is recorded only when the content verifies.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 61a | `pr-supersession-detect.ts:recordVerified` | `auto_pr_supersession` | accepted | candidate's merged diff carries the closed PR's changes; edge recorded with `detail.method` (patch-id or content) and `detail.confidence` |
+| 61b | `pr-supersession-detect.ts:detectPrSupersession` | `auto_pr_supersession` | deferred | candidate found but not content-verified: suggestion stored for the mission card, no edge |
+
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 
 Every reason the unattended path did not merge a PR, so "why didn't this green

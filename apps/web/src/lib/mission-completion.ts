@@ -5,7 +5,7 @@ import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mis
 import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
-import { deriveLineageSupersession, isPrUnshipped, prShipState } from '@buildd/core/pr-shipped';
+import { deriveLineageSupersession, isPrUnshipped, prShipState, type SupersessionScan, type SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { MISSION_COMPLETED_NOTE_TITLE } from '@/lib/mission-helpers';
 import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -120,6 +120,12 @@ export interface MissionCompletionDecision {
      * conflicted/CI-failing) and merging it directly is the remedy.
      */
     closedUnsuperseded?: boolean;
+    /**
+     * Closed-unsuperseded only: the best candidate automatic detection found
+     * but could NOT content-verify (lib/pr-supersession-detect.ts). A hint for
+     * a person to confirm — it never clears the gate on its own.
+     */
+    suggestion?: SupersessionSuggestion;
   }>;
   /**
    * Terminal deliverables whose PR closed unmerged but is recorded as
@@ -135,6 +141,17 @@ export interface MissionCompletionDecision {
     supersededByPrNumber: number;
     supersededByPrUrl: string | null;
     supersededReason: string | null;
+  }>;
+  /**
+   * Terminal deliverables whose closed-unmerged PR a person declared abandoned
+   * with a reason. Settled, so they do not block, but they did not ship either
+   * — reported so a closed mission still says what was dropped and why.
+   */
+  abandonedDetails: Array<{
+    taskId: string;
+    title: string;
+    prNumber: number | null;
+    abandonedReason: string | null;
   }>;
   /**
    * The visual review wants a human (docs/design/visual-qa-human-review.md,
@@ -279,6 +296,7 @@ export async function canCompleteMission(
     awaitingMergeDetails: [] as MissionCompletionDecision['awaitingMergeDetails'],
     supersededCount: 0,
     supersededDetails: [] as MissionCompletionDecision['supersededDetails'],
+    abandonedDetails: [] as MissionCompletionDecision['abandonedDetails'],
     visualReviewHold: null as VisualReviewHold | null,
   };
 
@@ -334,6 +352,7 @@ export async function canCompleteMission(
         columns: {
           prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true,
           supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
+          abandonedAt: true, abandonedReason: true, supersessionScan: true,
         },
         orderBy: (w, { desc: d }) => [d(w.startedAt)],
         limit: 1,
@@ -414,6 +433,9 @@ export async function canCompleteMission(
     supersededByPrNumber: number | null;
     supersededByPrUrl: string | null;
     supersededReason: string | null;
+    abandonedAt?: Date | string | null;
+    abandonedReason?: string | null;
+    supersessionScan?: SupersessionScan | null;
   };
   // The shipped predicate is shared with the `all_prs_merged` criterion
   // (`@buildd/core/pr-shipped`), and so is lineage-derived supersession: a
@@ -461,6 +483,13 @@ export async function canCompleteMission(
     });
   }
 
+  base.abandonedDetails = deliverables
+    .filter(t => t.status === 'completed' && prShipState(latestWorker(t)) === 'abandoned')
+    .map(t => {
+      const w = latestWorker(t)!;
+      return { taskId: t.id, title: t.title, prNumber: w.prNumber, abandonedReason: w.abandonedReason ?? null };
+    });
+
   const awaitingMerge = deliverables.filter(t => {
     if (t.status !== 'completed') return false;
     return isPrUnshipped(latestWorker(t));
@@ -474,12 +503,14 @@ export async function canCompleteMission(
       // GitHub won't reopen it) or a supersession claim naming where the work
       // actually landed.
       const closedUnsuperseded = prShipState(w) === 'closed_unsuperseded';
+      const suggestion = closedUnsuperseded ? w?.supersessionScan?.suggestion : null;
       return {
         taskId: t.id,
         title: t.title,
         prNumber: w?.prNumber ?? null,
         prUrl: w?.prUrl ?? null,
         ...(closedUnsuperseded ? { closedUnsuperseded: true as const } : {}),
+        ...(suggestion ? { suggestion } : {}),
       };
     });
     const named = base.awaitingMergeDetails

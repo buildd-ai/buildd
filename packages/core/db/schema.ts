@@ -1732,6 +1732,21 @@ export const workers = pgTable('workers', {
   // the account being deleted.
   supersededRecordedBy: text('superseded_recorded_by'),
   supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  // A closed-unmerged PR a person declared abandoned: the work is deliberately
+  // not shipping, and the reason says why. Not a supersession (nothing landed)
+  // and not a fake one — `prShipState` reads it as its own `abandoned` state,
+  // which no longer blocks mission completion. Reason required at write time
+  // (lib/pr-supersession.ts `recordPrAbandonment`).
+  abandonedReason: text('abandoned_reason'),
+  abandonedRecordedBy: text('abandoned_recorded_by'),
+  abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+  // Where automatic supersession detection (lib/pr-supersession-detect.ts)
+  // looked last, and the unverified candidate it found, if any. A suggestion
+  // here is NEVER an edge: only content verification writes the columns above.
+  // `supersessionScannedAt` mirrors `supersessionScan.scannedAt` so the backfill
+  // sweep can select stale rows without a jsonb cast.
+  supersessionScan: jsonb('supersession_scan').$type<import('../pr-shipped').SupersessionScan | null>(),
+  supersessionScannedAt: timestamp('supersession_scanned_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),

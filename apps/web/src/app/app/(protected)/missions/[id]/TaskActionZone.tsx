@@ -13,7 +13,21 @@
 import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
+import AnswerRecorded from '@/components/AnswerRecorded';
+import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import type { TaskPhase } from '@/lib/task-presentation';
+
+/** Phases that mean the agent took the answer and moved on: the confirmation stands down. */
+const MOVED_ON: ReadonlySet<TaskPhase> = new Set<TaskPhase>(['running', 'completed', 'failed', 'plan_review']);
+
+/**
+ * What clears an answer's confirmation: another worker, or the agent moving
+ * on. Not the question disappearing: the refetch after an answer drops it
+ * (the resume path keeps the worker `waiting_input`, so the phase holds).
+ */
+export function answerResetKey(workerId: string | null | undefined, phase: TaskPhase): string {
+  return `${workerId ?? ''}:${MOVED_ON.has(phase) ? phase : ''}`;
+}
 
 export interface TaskActionZoneProps {
   taskId: string;
@@ -64,7 +78,19 @@ export default function TaskActionZone({
     }
   }, [onChanged]);
 
+  // Owned here, not by the input: the refetch below drops the question, and
+  // with it the input, but the answer stays on screen until the agent moves.
+  const answer = useAnswerSubmit({
+    workerId: worker?.id ?? null,
+    taskId,
+    resetKey: answerResetKey(worker?.id, phase),
+    onAnswered: onChanged,
+  });
+
   const isWaiting = phase === 'waiting_input';
+  // Server-derived: answered (the question is gone) but the worker has not
+  // resumed yet. Covers an answer sent from another surface too.
+  const answeredAwaitingAgent = isWaiting && !!worker && !worker.waitingFor;
   const isFailed = phase === 'failed';
   const isQueued = phase === 'pending';
   const otherBackend = backend === 'codex' ? 'claude' : backend === 'claude' ? 'codex' : null;
@@ -72,13 +98,17 @@ export default function TaskActionZone({
   return (
     <div data-testid="task-action-zone" data-phase={phase} className="space-y-3 empty:hidden">
       {/* Needs input → respond inline */}
-      {isWaiting && worker?.waitingFor && (
+      {answer.outcome || answeredAwaitingAgent ? (
+        <AnswerRecorded outcome={answer.outcome} awaitingAgent={!MOVED_ON.has(phase)} />
+      ) : isWaiting && worker?.waitingFor && (
         <div className="border-2 border-status-warning p-4">
           <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-status-warning">Needs input</span>
           <WorkerRespondInput
             workerId={worker.id}
+            taskId={taskId}
             question={worker.waitingFor.prompt}
             options={worker.waitingFor.options}
+            answer={answer}
           />
         </div>
       )}

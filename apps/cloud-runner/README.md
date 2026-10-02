@@ -79,6 +79,7 @@ it as above).
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
 | `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
+| `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |

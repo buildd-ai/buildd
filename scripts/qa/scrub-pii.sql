@@ -328,8 +328,10 @@ UPDATE connectors c SET
   assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c.id = s.id;
 
+-- Distinct per row: (account_id, local_ui_url) is unique, so one constant URL
+-- fails as soon as an account has two runners.
 UPDATE worker_heartbeats SET
-  local_ui_url = 'http://localhost:8766',
+  local_ui_url = 'http://localhost:8766/#' || left(md5(id::text), 12),
   viewer_token = CASE WHEN viewer_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(id::text) END,
   environment = pg_temp.qa_json(environment);
 
@@ -404,6 +406,9 @@ UPDATE workers w SET
   superseded_by_pr_url = pg_temp.qa_pr_url(w.superseded_by_pr_url),
   superseded_reason = pg_temp.qa_text(w.superseded_reason),
   superseded_recorded_by = pg_temp.qa_str(w.superseded_recorded_by),
+  abandoned_reason = pg_temp.qa_text(w.abandoned_reason),
+  abandoned_recorded_by = pg_temp.qa_str(w.abandoned_recorded_by),
+  supersession_scan = pg_temp.qa_json(w.supersession_scan),
   pending_instructions = pg_temp.qa_text(w.pending_instructions),
   instruction_history = pg_temp.qa_json(w.instruction_history),
   result_meta = pg_temp.qa_json(w.result_meta),

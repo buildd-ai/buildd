@@ -78,6 +78,8 @@ export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds:
       accountId: workerHeartbeats.accountId,
       localUiUrl: workerHeartbeats.localUiUrl,
       maxConcurrentWorkers: workerHeartbeats.maxConcurrentWorkers,
+      // An ephemeral run's share of capacity (fleetCapacity).
+      activeWorkerCount: workerHeartbeats.activeWorkerCount,
       environment: workerHeartbeats.environment,
       lastHeartbeatAt: workerHeartbeats.lastHeartbeatAt,
     })
