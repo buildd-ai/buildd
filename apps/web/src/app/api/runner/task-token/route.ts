@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
-import { mintTaskToken } from '@/lib/task-token';
+import { mintTaskToken, missingTaskTokenScopes } from '@/lib/task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 
 /**
@@ -31,6 +31,12 @@ export async function POST(req: NextRequest) {
   }
   if (account.level === 'trigger') {
     return NextResponse.json({ error: 'Trigger tokens cannot mint task tokens.' }, { status: 403 });
+  }
+
+  // A token the key could not back would mint fine and then fail every call.
+  const missing = missingTaskTokenScopes(account.scopes);
+  if (missing.length > 0) {
+    return NextResponse.json({ error: `This key cannot mint task tokens: it lacks ${missing.join(', ')}. Use a key with the Task agent capabilities.` }, { status: 403 });
   }
 
   const body = await req.json().catch(() => ({})) as { taskId?: unknown; ttlMs?: unknown };
