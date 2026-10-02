@@ -54,6 +54,8 @@ export interface TaskActionZoneProps {
   missionExecutor?: MissionExecutor | null;
   /** Offer runner targeting before a start (the full page only: it polls runner health). */
   runnerPicker?: boolean;
+  /** The host already says why the task is waiting (the mission drawer's reason line). */
+  hideQueuedNote?: boolean;
   onChanged?: () => void | Promise<void>;
 }
 
@@ -73,6 +75,7 @@ export default function TaskActionZone({
   roleSlug,
   missionExecutor = null,
   runnerPicker = false,
+  hideQueuedNote = false,
   onChanged,
 }: TaskActionZoneProps) {
   const displayTz = useDisplayTimezone();
@@ -187,11 +190,11 @@ export default function TaskActionZone({
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
         <div className="space-y-3 border border-border-default p-4">
-          <p className="font-mono text-[12px] text-text-secondary">
+          {!hideQueuedNote && <p className="font-mono text-[12px] text-text-secondary">
             {local
               ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
               : 'Waiting for a runner to claim it.'}
-          </p>
+          </p>}
           {has('claim_hint') && <ClaimTaskHint taskId={taskId} />}
           {runnerPicker && workspaceId && (
             <RunnerPicker workspaceId={workspaceId} value={target} onChange={setTarget} disabled={starting} />

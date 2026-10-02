@@ -279,6 +279,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, index, n, tone, ca
             historyHref={taskPageHref({ taskId: t.id, missionId: link.missionId })}
             roleSlug={t.roleSlug}
             missionExecutor={executor}
+            hideQueuedNote={!!why}
             onChanged={onChanged}
           />
         )}
