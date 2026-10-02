@@ -236,7 +236,8 @@ export function validateGoalCriteria(
       return (
         `goalCriteria must include at least one mechanical criterion — one of ` +
         `${MECHANICAL_CRITERION_TYPES.join(', ')} — so the mission has a verdict that does not ` +
-        `depend on a live LLM. A cheap default: all_prs_merged + no_open_tasks.`
+        `depend on a live LLM. Prove the outcome: a command criterion whose command exits 0 only ` +
+        `when the outcome holds, or artifact_exists for a named deliverable.`
       );
     }
   }

@@ -5,19 +5,21 @@ owner: max
 last_verified: 2026-10-01
 summary: A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal, failing open and shadow-only until promoted in code.
 domain: missions
-surfaces: [packages/core/mission-helpers.ts, packages/core/gate-slugs.ts, apps/web/src/app/api/missions/route.ts, apps/web/src/app/api/missions/[id]/route.ts]
+surfaces: [packages/core/mission-helpers.ts, packages/core/gate-slugs.ts, apps/web/src/app/api/missions/route.ts, apps/web/src/app/api/missions/[id]/route.ts, apps/web/src/lib/goal-criteria-quality-decision.ts, apps/web/src/lib/goal-criteria-quality-shadow.ts]
 related: [mission-task-lifecycle, orchestration-decisions-shadow]
 keywords: [goalCriteria, goal_criteria_quality, criteria quality, outcome sentence, proof, bookkeeping, advisory, decision-shadow, weak criterion, accepted pattern, rubric, notMechanizableReason, NOT_EVALUATED, at least one mechanical criterion]
-verified_by: []
+verified_by: [apps/web/src/lib/goal-criteria-quality-decision.test.ts, apps/web/src/lib/goal-criteria-quality-shadow.test.ts]
 supersedes: []
 ---
 
 # Mission Goal Criteria Quality (Advisory Verdict)
 
-**Status: draft.** Nothing below is built except what the Code surface section
-marks as existing. The contract is written ahead of the build so the build
-tasks and their tests have one target. It is promoted to `active` once tests
-assert the acceptance criteria.
+**Status: draft.** Built so far: the shadow verdict and its `warned` rows
+(§2, §3 `warned`, §5 shadow), and the §6 message change — AC-1 to AC-7,
+AC-12 to AC-14. Not built yet: `bypassed` rows (AC-8, AC-9), the rubric and
+accepted patterns in memory (§4, AC-10, AC-11; the rubric is the code default
+for now). It is promoted to `active` once tests assert every acceptance
+criterion.
 
 ## Why
 
@@ -223,8 +225,9 @@ the shadow readout.
 Modelled exactly on `mission_strand_choice`
 (`apps/web/src/lib/strand-choice-decision.ts`, `docs/design/decision-calls.md`):
 
-- A new `opt_in` capability in `INFERENCE_CAPABILITIES`
-  (`packages/core/inference-policy.ts`), off by default, so a team that has not
+- A new `opt_in` capability, `mission_goal_quality`, in `INFERENCE_CAPABILITIES`
+  (`packages/core/inference-policy.ts`), off by default (a team turns it on by
+  listing it in `teams.enabledDecisionShadows`), so a team that has not
   opted in makes no call and writes no `warned` row.
 - **Shadow**: the result is logged as one `DECISION_SHADOW_LOG_PREFIX`
   (`[decision-shadow]`) line — mission short id, per-criterion labels and
@@ -335,12 +338,18 @@ Existing:
 - `packages/core/db/schema.ts` — `memories`, `gateEvents`,
   `missions.criteriaEscalatedAt`.
 
+- `apps/web/src/lib/goal-criteria-quality-decision.ts` — the verdict: facts
+  builder (`buildGoalQualityState`), questions, the code-default rubric,
+  `adviseGoalQuality`, the shadow line, `GOAL_QUALITY_MODE`, and the `warned`
+  rows (`goalQualityWarnings`).
+- `apps/web/src/lib/goal-criteria-quality-shadow.ts` —
+  `scheduleGoalQualityShadow`, which runs it after the response from both
+  routes and reads the workspace's data class, failing closed.
+
 Planned (does not exist yet):
 
-- apps/web/src/lib/goal-criteria-quality-decision.ts — the verdict: facts
-  builder, questions, rubric fetch and bound, suppression, shadow line, mode
-  constant, `warned` / `bypassed` recording.
-- Its co-located test file, which becomes this spec's `verified_by`.
+- Rubric fetch and bound from memory, accepted-pattern suppression, and
+  `bypassed` recording.
 
 ## Out of scope
 

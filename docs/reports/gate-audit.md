@@ -68,6 +68,7 @@ validation (which would change which error a doubly-invalid request gets).
 | 12 | `missions/route.ts:232` | `goal_criteria` | rejected | create: `validateGoalCriteria`, including the `notMechanizableReason` requirement on prose criteria |
 | 13 | `missions/[id]/route.ts:228` | `branch_strategy` | rejected | update: invalid `branchStrategy` |
 | 14 | `missions/[id]/route.ts:478` | `goal_criteria` | rejected | update: same validator, plus the stored-criteria comparison |
+| 14a | `goal-criteria-quality-shadow.ts:runGoalQualityShadow` (from `missions/route.ts` POST, `missions/[id]/route.ts` PATCH) | `goal_criteria_quality` | warned | advisory only, after the response: one row per new criterion the `mission_goal_quality` decision graded weak (no user-noticeable outcome, or not checkable without reading prose). `detail` is fingerprint, type, labels and confidences, never criterion text. See `docs/specs/mission-goal-criteria-quality.md` |
 
 ### PATCH /api/workers/[id] — `apps/web/src/app/api/workers/[id]/route.ts`
 
