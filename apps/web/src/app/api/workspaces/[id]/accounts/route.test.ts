@@ -19,19 +19,23 @@ const saved = {
 const USERS = [
   { id: 'user-a', email: 'a@example.test', name: 'A', image: null, timezone: null },
   { id: 'user-b', email: 'b@example.test', name: 'B', image: null, timezone: null },
+  { id: 'user-m', email: 'm@example.test', name: 'M', image: null, timezone: null },
 ];
 
 const mockAuth = mock(async () => null as any);
 const mockAuthenticateApiKey = mock(async () => ({ id: 'acct-key', name: 'k', teamId: 't', level: 'admin' }) as any);
 const mockUsersFindFirst = mock(async ({ where }: any) => USERS.find((u) => (u as any)[where.field] === where.value) ?? null);
-const mockVerifyWorkspaceAccess = mock(async (userId: string, wsId: string) =>
-  userId === 'user-a' && wsId === 'ws-a' ? ({ teamId: 'team-a' } as any) : null,
-);
+const mockVerifyWorkspaceAccess = mock(async (userId: string, wsId: string) => {
+  if (wsId !== 'ws-a') return null;
+  if (userId === 'user-a') return { teamId: 'team-a', role: 'owner' } as any;
+  if (userId === 'user-m') return { teamId: 'team-a', role: 'member' } as any;
+  return null;
+});
 const mockConnectionsFindMany = mock(async () => [
   { accountId: 'acct-1', canClaim: true, canCreate: false, account: { name: 'Runner', type: 'user' } },
 ]);
 const mockWorkspacesFindFirst = mock(async () => ({ id: 'ws-a' }) as any);
-const mockAccountsFindFirst = mock(async () => ({ id: 'acct-1' }) as any);
+const mockAccountsFindFirst = mock(async () => ({ id: 'acct-1', teamId: 'team-a' }) as any);
 const mockConnectionFindFirst = mock(async () => null as any);
 const mockInsert = mock(() => ({ values: async () => undefined }));
 const mockUpdate = mock(() => ({ set: () => ({ where: async () => undefined }) }));
@@ -207,6 +211,20 @@ describe('POST / DELETE', () => {
     expect(mockInsert).toHaveBeenCalled();
     expect((await DELETE(del(), params())).status).toBe(200);
     expect(mockDelete).toHaveBeenCalled();
+  });
+
+  it('production: a plain team member cannot change connections', async () => {
+    mockAuth.mockImplementation(async () => ({ user: { id: 'user-m' } }));
+    expect((await POST(post(), params())).status).toBe(403);
+    expect((await DELETE(del(), params())).status).toBe(403);
+    expectNoWrites();
+  });
+
+  it("production: an owner cannot connect another team's account", async () => {
+    mockAuth.mockImplementation(async () => ({ user: { id: 'user-a' } }));
+    mockAccountsFindFirst.mockImplementationOnce(async () => ({ id: 'acct-1', teamId: 'team-other' }) as any);
+    expect((await POST(post(), params())).status).toBe(404);
+    expectNoWrites();
   });
 
   it('development: never writes, even with a DATABASE_URL and DEV_USER_EMAIL', async () => {
