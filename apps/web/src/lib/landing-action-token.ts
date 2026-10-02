@@ -20,7 +20,9 @@ export type LandingAction =
   | 're_review'
   | 'retry_landing'
   | 'merge_anyway'
-  | 'close_superseded';
+  | 'close_superseded'
+  /** A link to the PR's diff on GitHub, never run by the server: the rule needs a person to merge there. */
+  | 'review_on_github';
 
 export const LANDING_ACTIONS: readonly LandingAction[] = [
   'ci_fix',
@@ -29,6 +31,7 @@ export const LANDING_ACTIONS: readonly LandingAction[] = [
   'retry_landing',
   'merge_anyway',
   'close_superseded',
+  'review_on_github',
 ];
 
 export interface LandingActionPayload {
