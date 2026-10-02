@@ -788,6 +788,13 @@ export interface CbmMetrics {
   grepCount: number;
   /** Glob tool call count for this task. */
   globCount: number;
+  /**
+   * CBM search injection (docs/design/cbm-search-injection.md): the runner's
+   * own graph lookups after an agent's identifier search, and what it appended.
+   * NOT agent CBM calls — never in `toolCalls` / `totalCbmCalls`. Counts and
+   * labels only. Absent on sessions where injection never ran.
+   */
+  injection?: import('../cbm-injection').CbmInjectionMetrics;
 }
 
 /**

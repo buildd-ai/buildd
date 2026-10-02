@@ -36,6 +36,7 @@ export type InferenceCapability =
   | 'orchestration_manifest'
   | 'orchestration_claim'
   | 'mission_strand_choice'
+  | 'cbm_search_injection'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -134,6 +135,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Stranded mission shadow',
     description: 'A decision model says whether a stranded local mission should continue on a runner or wait for your session. Logged only; you always choose.',
     costHint: '~$0.00003 per stranded mission, cached',
+  },
+  // CBM search injection (docs/design/cbm-search-injection.md). Live: the
+  // decision only picks between two factual lists the runner already
+  // computed, or neither; any failure shows the direct callers.
+  cbm_search_injection: {
+    id: 'cbm_search_injection',
+    kind: 'built_in',
+    label: 'Code graph search notes',
+    description: 'When an agent\'s code search missed callers the code graph knows, a decision model picks which list to show it, or none. Facts only; never your code or text.',
+    costHint: '~$0.00002 per note',
   },
   chat: {
     id: 'chat',
