@@ -13,6 +13,7 @@ import {
   type CriterionDraft,
   type SelectableCriterionType,
 } from '@/lib/goal-criteria-form';
+import { initialWorkspaceId } from '@/lib/onboarding-view';
 
 const LAST_WORKSPACE_KEY = 'buildd:lastWorkspaceId';
 
@@ -288,12 +289,9 @@ export default function NewMissionForm({
 
   // Default to last-used workspace from localStorage
   useEffect(() => {
-    const stored = localStorage.getItem(LAST_WORKSPACE_KEY);
-    if (stored && workspaces.some(ws => ws.id === stored)) {
-      setWorkspaceId(stored);
-    } else if (workspaces.length === 1) {
-      setWorkspaceId(workspaces[0].id);
-    }
+    // `?workspace=<id>` (the onboarding flow's last step) beats the last-used one.
+    const picked = initialWorkspaceId(workspaces, searchParams.get('workspace'), localStorage.getItem(LAST_WORKSPACE_KEY));
+    if (picked) setWorkspaceId(picked);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleWorkspaceChange(id: string) {

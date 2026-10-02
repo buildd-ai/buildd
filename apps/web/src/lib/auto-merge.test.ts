@@ -2408,6 +2408,9 @@ describe('tryAutoMergeWorkerPr — tasks that require human review', () => {
     mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
     mockTasksFindMany = mock(() => [] as any[]);
     mockWorkersFindMany = mock(() => [] as any[]);
+    mockCheckSurfaceOrder = mock(async () => ({ blocks: false, slot: null }) as any);
+    mockMergeInSurfaceSlot = mock(async (_v: any, merge: () => Promise<any>) => ({ result: await merge() }) as any);
+    mockCheckBaseRefreshHold = mock(async (_input: any) => ({ blocks: false }) as any);
   });
 
   it('does not merge a green, in-bounds PR, and says why', async () => {
