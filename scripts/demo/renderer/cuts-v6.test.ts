@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { layersAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars, verifyAt } from './motion-model';
 
@@ -168,10 +168,17 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
     expect(LOOKS[0].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}`));
     expect(LOOKS[1].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}-mobile`));
   });
-  test('no shot is in two beats; only the opening typing and thread stay film-only', () => {
+  test('no shot is in two beats; the typing, the thread, the edit and the Board stay film-only', () => {
     const used = LOOKS[0].beats.flatMap((c) => c.shots.map((s) => s.id));
     expect(new Set(used).size).toBe(used.length);
-    expect(film.shots.map((s) => s.id).filter((id) => !used.includes(id)).sort()).toEqual(['ask', 'reads']);
+    expect(film.shots.map((s) => s.id).filter((id) => !used.includes(id)).sort()).toEqual(['ask', 'board', 'edit', 'reads']);
+  });
+  test('fleet holds the runner table (the machines), not a zoom onto the stat', () => {
+    for (const look of LOOKS) {
+      const fleet = look.beats.find((c) => c.name.startsWith('beat-fleet'))!.shots[0];
+      const cs = fleet.camera!;
+      expect(Math.abs(cs[cs.length - 1].zoom - cs[0].zoom) / cs[0].zoom).toBeLessThan(0.1);
+    }
   });
   test('the spec poster is a frame with the criteria list lit, not the typing', () => {
     for (const look of LOOKS) {
@@ -200,8 +207,9 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
   });
   test('spec is the criteria then the edit; plan is Confirm then the Board', () => {
     const by = Object.fromEntries(LOOKS[0].beats.map((c) => [c.name, c.shots.map((s) => s.id)]));
-    expect(by['beat-spec']).toEqual(['criteria', 'edit']);
-    expect(by['beat-plan']).toEqual(['confirm', 'board']);
+    // demo:review: half of spec was the chat edit, not the checklist; plan's Board read as unrelated to "you press go".
+    expect(by['beat-spec']).toEqual(['criteria']);
+    expect(by['beat-plan']).toEqual(['confirm', 'filed']);
     expect(by['beat-review']).toEqual(['screens', 'review']);
   });
   for (const look of LOOKS) describe(look.name, () => {
@@ -320,6 +328,31 @@ describe('verifyAt', () => {
 test('v6x hero comes in both themes', () => {
   expect(v6xHero(fake).theme).toBe('dark');
   expect(v6xHero(fake, 'light').theme).toBe('light');
+});
+
+describe('dip transitions: two dense screens never share a frame', () => {
+  const two = { fade: 0.8, shots: [{ dur: 4 }, { dur: 4 }] as any, dip: true };
+  test('between shots: the outgoing shot is gone before the incoming one appears', () => {
+    for (let t = 3.9; t <= 5; t += 0.01) {
+      const ls = layersAt({ ...two, loop: false }, t).filter((l) => l.opacity > 0.001);
+      expect(ls.length).toBeLessThanOrEqual(1);
+    }
+  });
+  test('at a loop seam too', () => {
+    for (let t = 7; t <= 8; t += 0.01) {
+      const ls = layersAt({ ...two, loop: true }, t).filter((l) => l.opacity > 0.001);
+      expect(ls.length).toBeLessThanOrEqual(1);
+    }
+  });
+  test('without dip a crossfade still blends both', () => {
+    expect(layersAt({ ...two, dip: false, loop: false }, 4.4).filter((l) => l.opacity > 0.1).length).toBe(2);
+  });
+  test('v6a film and beats dip; the seam of a folded beat dips through the theme ground', () => {
+    expect(v6aFilm(fake).dip).toBe(true);
+    for (const c of [...v6aBeats(fake), ...v6aBeats(fake, { theme: 'light' })]) expect(c.dip).toBe(true);
+    expect(seamlessLoopFilter(10.8, 0.8, '', 'black')).toContain('transition=fadeblack');
+    expect(seamlessLoopFilter(10.8, 0.8, '', 'white')).toContain('transition=fadewhite');
+  });
 });
 
 describe('seamlessLoopFilter', () => {

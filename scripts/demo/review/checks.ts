@@ -101,6 +101,11 @@ export function contrastFloor(s: { mean: number; rms: number }, _theme: 'dark' |
   return null;
 }
 
+/** A clip that does not loop (the film) fades to black over its last second, by design. */
+export function inFadeOut(t: number, duration: number, loop: boolean): boolean {
+  return !loop && t > duration - 1;
+}
+
 export const SEAM = { high: 0.85, medium: 0.93 };
 export function seamCheck(ssim: number, loop: boolean): Finding | null {
   if (!loop) return null;
@@ -125,10 +130,12 @@ export function fontPx(w: Word): number {
  */
 export const GLYPH = { high: 7, medium: 9, minConf: 70 };
 const isWord = (t: string) => (t.match(/[A-Za-z0-9]/g) ?? []).length >= 2;
-export function legibility(words: Word[], o: { sourceWidth: number; displayWidth: number; lit?: Set<Word> }): Finding[] {
+export function legibility(words: Word[], o: { sourceWidth: number; displayWidth: number; sourceHeight?: number; lit?: Set<Word> }): Finding[] {
   const k = o.displayWidth / o.sourceWidth;
+  // A word the frame edge cuts is part of the crop, not a size: the judge looks at clipping.
+  const cut = (w: Word) => w.x <= 2 || w.x + w.w >= o.sourceWidth - 2 || w.y <= 2 || (o.sourceHeight !== undefined && w.y + w.h >= o.sourceHeight - 2);
   const small = words
-    .filter((w) => w.conf >= GLYPH.minConf && isWord(w.text))
+    .filter((w) => w.conf >= GLYPH.minConf && isWord(w.text) && !cut(w))
     .map((w) => ({ w, px: fontPx(w) * k }))
     .filter((x) => x.px < GLYPH.medium)
     .sort((a, b) => a.px - b.px);
@@ -190,7 +197,7 @@ export function collisions(words: Word[]): Finding[] {
  * neighbours, so it is left to the overprint and OCR checks. `gray` is the
  * frame in 8-bit luma at `scale` x the OCR'd frame's pixels.
  */
-export const DISPLAY_TYPE_PX = 24;
+export const DISPLAY_TYPE_PX = 32;
 export function textOverShape(words: Word[], f: { gray: Uint8Array; width: number; height: number; scale: number; displayWidth: number }): Finding[] {
   const out: Finding[] = [];
   const toDisplay = f.displayWidth / (f.width / f.scale);

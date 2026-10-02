@@ -112,6 +112,12 @@ export type Cut = {
   fade: number;
   /** Seamless: the last shot fades into the first, and the cut is exactly sum(dur) long. */
   loop?: boolean;
+  /**
+   * Dip instead of crossfade: the outgoing shot fades to the ground over the
+   * first half of `fade`, then the next fades in. Two dense screens blended
+   * at 50% read as text printed over text (demo:review's judge, every beat).
+   */
+  dip?: boolean;
   captions?: boolean;
   theme?: 'dark' | 'light';
   /** Caption chip font size in px (default 32). */
@@ -162,7 +168,7 @@ export type Layer = { index: number; local: number; opacity: number };
  * the last during the final `fade`, held at its first frame, so t = duration
  * lands exactly on t = 0.
  */
-export function layersAt(cut: Pick<Cut, 'shots' | 'fade' | 'loop'>, t: number): Layer[] {
+export function layersAt(cut: Pick<Cut, 'shots' | 'fade' | 'loop' | 'dip'>, t: number): Layer[] {
   const starts = shotStarts(cut);
   const n = cut.shots.length;
   const total = cutDuration(cut);
@@ -172,13 +178,23 @@ export function layersAt(cut: Pick<Cut, 'shots' | 'fade' | 'loop'>, t: number): 
   const local = tt - starts[i];
   const layers: Layer[] = [];
   const inFade = i > 0 && local < cut.fade;
-  if (inFade) layers.push({ index: i - 1, local: local + cut.shots[i - 1].dur, opacity: 1 });
-  layers.push({ index: i, local, opacity: inFade ? ease(local / cut.fade) : 1 });
+  const half = cut.fade / 2;
+  // Dip: out over the first half, in over the second; the two never overlap.
+  const out = (u: number) => (cut.dip ? 1 - ease(u / half) : 1);
+  const inn = (u: number) => (cut.dip ? ease((u - half) / half) : ease(u / cut.fade));
+  if (inFade) layers.push({ index: i - 1, local: local + cut.shots[i - 1].dur, opacity: out(local) });
+  let own = inFade ? inn(local) : 1;
   if (cut.loop && i === n - 1 && n > 1) {
     const into = local - (cut.shots[i].dur - cut.fade);
-    if (into > 0) layers.push({ index: 0, local: 0, opacity: ease(into / cut.fade) });
+    if (into > 0) {
+      if (cut.dip) own = Math.min(own, out(into));
+      layers.push({ index: i, local, opacity: own });
+      layers.push({ index: 0, local: 0, opacity: inn(into) });
+      return layers.filter((l) => l.opacity > 0 || !cut.dip);
+    }
   }
-  return layers;
+  layers.push({ index: i, local, opacity: own });
+  return cut.dip ? layers.filter((l, k) => l.opacity > 0 || k === layers.length - 1) : layers;
 }
 
 export function cameraAt(keys: CamKey[] | undefined, u: number): { cx: number; cy: number; zoom: number } {

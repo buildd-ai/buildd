@@ -22,14 +22,14 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { basename, dirname, join, relative, resolve } from 'path';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut,
   type Finding, type Severity, type Word,
 } from './checks';
 
 const arg = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 const flag = (name: string) => process.argv.includes(`--${name}`);
 const MENLO = '/System/Library/Fonts/Menlo.ttc';
-const PROMPT_VERSION = 'v2';
+const PROMPT_VERSION = 'v3';
 
 function sh(cmd: string[], opts: { stdout?: 'pipe' } = {}): { out: Buffer; err: string; code: number } {
   const r = Bun.spawnSync(cmd, { stdout: 'pipe', stderr: 'pipe', ...opts });
@@ -128,7 +128,8 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
     const blending = meta.crossfades.some((c) => Math.abs(c - t) < 0.45);
     const lit = litWords(words, px);
     const layered = blending ? [] : [...collisions(words), ...textOverShape(words, { ...px, displayWidth: display })];
-    for (const f of [contrastFloor(luma, theme), ...legibility(words, { sourceWidth: p.width, displayWidth: display, lit }), ...layered]) if (f) findings.push({ ...f, t });
+    const floor = inFadeOut(t, p.duration, meta.loop) ? null : contrastFloor(luma, theme);
+    for (const f of [floor, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit }), ...layered]) if (f) findings.push({ ...f, t });
     // Numbers only from words OCR read confidently: a misread checkbox row ("000006") is not a claim.
     const sure = words.filter((w) => w.conf >= 80);
     const lines = new Map<number, Word[]>();
@@ -174,7 +175,7 @@ Read these images with the Read tool (they are at the clip's real display size; 
 1. ${images[0]}: frames every 0.5s across the clip.
 ${images[1] ? `2. ${images[1]}: the transition frames (crossfade midpoints), then the loop seam (the last frame, then the first).` : ''}
 
-How these clips are made (so you judge the right things): each is a crop of a real product screen, zoomed onto one element. Everything outside that element is dimmed on purpose, so dimmed text cut off at the frame edge is expected. Flag cut-off text only when it is in the lit (bright) element, or is the thing the headline names. The clips are silent loops with no captions, because the page's headline sits beside them; a missing caption is not a finding. A loop's last frame should look like its first.
+${c.name === 'full' ? 'This is the full film: it plays once, in a dialog, with a soundtrack you cannot hear from frames (do not judge the sound), and it ends on a deliberate fade to black. It is NOT a loop, so do not compare its last frame with its first.\n\n' : ''}How these clips are made (so you judge the right things): each is a crop of a real product screen, zoomed onto one element. Everything outside that element is dimmed on purpose, so dimmed text cut off at the frame edge is expected. Flag cut-off text only when it is in the lit (bright) element, or is the thing the headline names. The clips are silent loops with no captions, because the page's headline sits beside them; a missing caption is not a finding. A loop's last frame should look like its first.
 
 Judge:
 - Does the clip show what the headline claims?

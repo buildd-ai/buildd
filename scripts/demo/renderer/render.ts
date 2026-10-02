@@ -146,11 +146,12 @@ function sh(cmd: string[], quiet = true) {
  * ffmpeg filtergraph closing a loop: the cut's last `fade` seconds cross-fade
  * onto its first, so a clip `total` long plays back seamless at total - fade.
  */
-export function seamlessLoopFilter(total: number, fade: number, scale = ''): string {
+/** `dip` turns the seam's crossfade into a dip through black (dark theme) or white (light). */
+export function seamlessLoopFilter(total: number, fade: number, scale = '', dip?: 'black' | 'white'): string {
   const r = (n: number) => +n.toFixed(3);
   return `[0:v]split[a][b];[a]trim=start=${r(fade)}:end=${r(total)},setpts=PTS-STARTPTS[main];` +
     `[b]trim=start=0:end=${r(fade)},setpts=PTS-STARTPTS[head];` +
-    `[main][head]xfade=transition=fade:duration=${r(fade)}:offset=${r(total - 2 * fade)}${scale ? ',' + scale : ''}[v]`;
+    `[main][head]xfade=transition=${dip ? `fade${dip}` : 'fade'}:duration=${r(fade)}:offset=${r(total - 2 * fade)}${scale ? ',' + scale : ''}[v]`;
 }
 
 /** Cuts from this run replace same-named ones; the rest are kept, in their order. */
@@ -282,7 +283,7 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
 
         if (cut.name.startsWith('beat-')) {
           // Beats render at their own frame (1280x720, 720x900): no scaling here.
-          const loopFilter = seamlessLoopFilter(duration, cut.fade);
+          const loopFilter = seamlessLoopFilter(duration, cut.fade, '', cut.dip ? (cut.theme === 'light' ? 'white' : 'black') : undefined);
           const out = (fmt: string[], file: string) => ff(...input, '-filter_complex', loopFilter, '-map', '[v]', ...fmt, '-an', join(outDir, file));
           // Each beat steps its CRF up until it fits BEAT_MAX_BYTES (a busy screen, like the rules list, runs large).
           const under = (ladder: number[], fmt: (crf: number) => string[], file: string) => {

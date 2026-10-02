@@ -152,6 +152,15 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     controls: [confirm, edit],
   };
 
+  // After Confirm: the thread shows the filed mission (its object card). The plan beat ends here.
+  const obj = s.box('s04-rule-card', 'object-card');
+  const filed: Shot = {
+    id: 'filed', layout: 'screen', dur: 4, images: [s.img('s04-rule-card')],
+    caption: 'Filed. Now the agents start.',
+    spot: [key(0.2, [obj])],
+    camera: [at(f('s04-rule-card', obj, 1.25), 0), at(f('s04-rule-card', obj, 1.18), 1)],
+  };
+
   const phrase = s.text('s04-rule-card', 'From now on, keep the public API backward compatible.');
   const rcard = s.box('s04-rule-card', 'directive-card');
   const saved = s.box('s05-rule-saved', 'directive-card');
@@ -201,6 +210,11 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     camera: [at(f('s08-home', fleetBox, 1.1), 0), at(f('s08-home', fleetBox, 1.1), 3.4 / 5.5), at(f('s08-home', agents, 2.2), 1)],
     plucks: live.map((_, i) => ({ at: 0.5 + i * 0.42, note: i })),
   };
+  if (o.beat) {
+    // A beat stays on the runner table (the machines its headline names); the push onto "6/8" is film-only.
+    fleet.spot = [key(0, [fleetBox])];
+    fleet.camera = [at(f('s08-home', fleetBox, 1.1), 0), at(f('s08-home', fleetBox, 1.07), 1)];
+  }
 
   const opt = s.box('s09-question', 'question-option', 0, 'phone');
   const question: Shot = {
@@ -273,7 +287,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     done.camera = [big(1.1, 0), big(1.07, 1)];
   }
 
-  return [ask, reads, criteria, editing, confirming, rule, rules, board, fleet, question, screens, review, done];
+  return [ask, reads, criteria, editing, confirming, filed, rule, rules, board, fleet, question, screens, review, done];
 }
 
 /**
@@ -327,7 +341,7 @@ function keyStills(shots: Shot[], want: Record<string, [string, number]>): Recor
 }
 
 /** Shots only the site's beats use: the film goes straight from the rule card to the Board. */
-const BEAT_ONLY = ['rules'];
+const BEAT_ONLY = ['rules', 'filed'];
 
 export function v6aFilm(s: Stills): Cut {
   const shots = v6aShots(s).filter((x) => !BEAT_ONLY.includes(x.id));
@@ -335,7 +349,7 @@ export function v6aFilm(s: Stills): Cut {
     'fanout-mid': ['board', 1.6], approval: ['confirm', 2.9], 'visual-review': ['review', 2.2], done: ['done', 3.0],
     'chat-read': ['reads', 2.8], criteria: ['criteria', 2.0], edit: ['edit', 3.8], 'rule-origin': ['rule', 1.6], 'fleet-mid': ['fleet', 2.2],
   });
-  return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: true, theme: 'dark', keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
+  return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: true, theme: 'dark', dip: true, keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
 }
 
 export function v6aHero(s: Stills): Cut {
@@ -454,8 +468,8 @@ export function askButtonShots(manifest: any): string[] {
 export const BEATS = ['spec', 'plan', 'rules', 'fleet', 'decide', 'review', 'done'] as const;
 export type Beat = (typeof BEATS)[number];
 const BEAT_SHOTS: Record<Beat, string[]> = {
-  spec: ['criteria', 'edit'],
-  plan: ['confirm', 'board'],
+  spec: ['criteria'],
+  plan: ['confirm', 'filed'],
   rules: ['rule', 'rules'],
   fleet: ['fleet'],
   decide: ['question'],
@@ -475,7 +489,7 @@ export function v6aBeats(s: Stills, opts: { mobile?: boolean; theme?: 'dark' | '
   // Taps stay: they are also the on-screen tap ring. Beats are encoded silent.
   const quiet = (x: Shot): Shot => ({ ...x, caption: undefined, chime: undefined });
   return BEATS.map((beat) => ({
-    name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme,
+    name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme, dip: true,
     shots: BEAT_SHOTS[beat].map((id) => quiet(all.find((x) => x.id === id)!)),
     // The spec poster is the criteria list fully lit (render.ts otherwise takes 60% in, mid-typing).
     ...(beat === 'spec' ? { poster: 2.0 } : {}),

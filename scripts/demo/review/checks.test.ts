@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, type Word,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, type Word,
 } from './checks';
 
 const W = (text: string, x: number, y: number, w: number, h: number, conf = 90, line = 1): Word => ({ text, x, y, w, h, conf, line });
@@ -89,6 +89,12 @@ describe('lumaStats + contrastFloor: a "dark rectangle" fails', () => {
   });
 });
 
+test('inFadeOut: the last second of a clip that does not loop is its fade-out', () => {
+  expect(inFadeOut(56.5, 56.8, false)).toBe(true);
+  expect(inFadeOut(50, 56.8, false)).toBe(false);
+  expect(inFadeOut(8.9, 9, true)).toBe(false);
+});
+
 describe('seamCheck', () => {
   test('a loop whose last frame is not its first fails', () => {
     expect(seamCheck(0.62, true)?.severity).toBe('high');
@@ -106,13 +112,17 @@ describe('fontPx: a word\'s font size from its box, by its letter shapes', () =>
 });
 
 describe('legibility: glyph height at display size', () => {
-  const words = [W('Invoices', 0, 0, 120, 22), W('tiny', 0, 40, 30, 9)];
+  const words = [W('Invoices', 10, 10, 120, 22), W('tiny', 10, 40, 30, 9)];
   test('scales source px to display px and flags readable-meant text that falls under the floor', () => {
     // 1280 source shown at 700: "Invoices" 22px box (an ascender word, ~23px font) -> 12.6px ok; "tiny" 9px box -> ~6px font, too small.
     const f = legibility(words, { sourceWidth: 1280, displayWidth: 700 });
     expect(f).toHaveLength(1);
     expect(f[0].issue).toContain('tiny');
     expect(f[0].severity).toBe('high');
+  });
+  test('a word the frame edge cuts ("lling" of "billing") is a crop, not a font size: skipped', () => {
+    expect(legibility([W('lling', 0, 300, 40, 9)], { sourceWidth: 1280, displayWidth: 700, sourceHeight: 720 })).toEqual([]);
+    expect(legibility([W('lling', 1250, 300, 30, 9)], { sourceWidth: 1280, displayWidth: 700, sourceHeight: 720 })).toEqual([]);
   });
   test('ignores words OCR barely read (dimmed context is meant to recede)', () => {
     expect(legibility([W('tiny', 0, 0, 30, 9, 40)], { sourceWidth: 1280, displayWidth: 700 })).toEqual([]);
@@ -131,7 +141,7 @@ describe('litWords: which words the spotlight lights (the rest is dimmed context
     expect(lit.has(words[1])).toBe(false);
   });
   test('legibility: small lit text is high; small dimmed context is only low', () => {
-    const f = legibility([W('lit', 0, 0, 30, 9), W('ctx', 0, 40, 30, 9)], { sourceWidth: 1280, displayWidth: 700, lit: new Set([]) });
+    const f = legibility([W('lit', 10, 10, 30, 9), W('ctx', 10, 40, 30, 9)], { sourceWidth: 1280, displayWidth: 700, lit: new Set([]) });
     expect(f.every((x) => x.severity === 'low')).toBe(true);
   });
 });
@@ -216,7 +226,7 @@ describe('numberContradictions', () => {
     expect(numberContradictions([{ t: 3, text: '6 screens reviewed · SCREENS REVIEWED 6 · SCREENS YOU 2 · SCREENS 6' }])).toEqual([]);
   });
   test('legibility for lit text keeps its severity', () => {
-    const w = W('tiny', 0, 40, 30, 9);
+    const w = W('tiny', 10, 40, 30, 9);
     expect(legibility([w], { sourceWidth: 1280, displayWidth: 700, lit: new Set([w]) })[0].severity).toBe('high');
   });
   test('consistent numbers pass', () => {
