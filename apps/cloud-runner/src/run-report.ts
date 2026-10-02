@@ -146,13 +146,16 @@ export function egressClassForKind(kind: 'anthropic' | 'github' | 'passthrough')
 /** Why the handler refused a request. Mirrors outbound.ts RejectReason. */
 export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'other'] as const;
 export type RejectReason = typeof REJECT_REASONS[number];
+/** Mirrors outbound.ts RejectedPathLabel: where a `path` refusal was going, as a fixed label. */
+export const REJECTED_PATH_LABELS = ['api_hello', 'event_logging', 'oauth', 'claude_code_api', 'other_api', 'files', 'batches', 'other_v1', 'other'] as const;
+export type RejectedPathLabelName = typeof REJECTED_PATH_LABELS[number];
 
 /**
  * The only shape the handler sends the agent. No URL, no headers: a refusal
  * carries only its reason, and an upstream answer only its status code.
  */
 export type EgressEvent =
-  | { type: 'request'; cls: EgressClass; at: number; rejected?: boolean; reason?: RejectReason }
+  | { type: 'request'; cls: EgressClass; at: number; rejected?: boolean; reason?: RejectReason; pathLabel?: RejectedPathLabelName }
   | { type: 'bytes'; cls: EgressClass; bytes: number }
   | { type: 'status'; cls: EgressClass; status: number };
 
@@ -168,15 +171,17 @@ export function isEgressEvent(v: unknown): v is EgressEvent {
 /** Per class: refusals by reason, and upstream 4xx/5xx answers by code. Counts only. */
 export interface EgressClassDetail {
   rejectReasons: Partial<Record<RejectReason, number>>;
+  /** `path` refusals by where they were going (fixed labels). */
+  rejectedPaths: Partial<Record<RejectedPathLabelName, number>>;
   errorStatuses: Record<string, number>;
 }
 export type EgressDetail = Record<EgressClass, EgressClassDetail>;
 
 export function emptyEgressDetail(): EgressDetail {
   return {
-    model: { rejectReasons: {}, errorStatuses: {} },
-    github: { rejectReasons: {}, errorStatuses: {} },
-    passthrough: { rejectReasons: {}, errorStatuses: {} },
+    model: { rejectReasons: {}, rejectedPaths: {}, errorStatuses: {} },
+    github: { rejectReasons: {}, rejectedPaths: {}, errorStatuses: {} },
+    passthrough: { rejectReasons: {}, rejectedPaths: {}, errorStatuses: {} },
   };
 }
 
@@ -188,6 +193,10 @@ export function applyEgressDetail(detail: EgressDetail, e: EgressEvent): void {
   if (e.type === 'request' && e.rejected) {
     const reason: RejectReason = REJECT_REASONS.includes(e.reason as RejectReason) ? e.reason as RejectReason : 'other';
     d.rejectReasons[reason] = (d.rejectReasons[reason] ?? 0) + 1;
+    if (e.pathLabel !== undefined) {
+      const label: RejectedPathLabelName = REJECTED_PATH_LABELS.includes(e.pathLabel) ? e.pathLabel : 'other';
+      d.rejectedPaths[label] = (d.rejectedPaths[label] ?? 0) + 1;
+    }
   } else if (e.type === 'status' && isErrorStatus(e.status)) {
     const key = String(e.status);
     if (key in d.errorStatuses || Object.keys(d.errorStatuses).length < MAX_STATUS_KEYS) {
@@ -198,11 +207,13 @@ export function applyEgressDetail(detail: EgressDetail, e: EgressEvent): void {
 
 function normalizeEgressDetail(input: unknown): EgressDetail {
   const out = emptyEgressDetail();
-  const src = (input ?? {}) as Partial<Record<EgressClass, { rejectReasons?: unknown; errorStatuses?: unknown }>>;
+  const src = (input ?? {}) as Partial<Record<EgressClass, { rejectReasons?: unknown; rejectedPaths?: unknown; errorStatuses?: unknown }>>;
   const n = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : 0);
   for (const cls of EGRESS_CLASSES) {
     const reasons = (src[cls]?.rejectReasons ?? {}) as Record<string, unknown>;
     for (const r of REJECT_REASONS) if (n(reasons[r])) out[cls].rejectReasons[r] = n(reasons[r]);
+    const paths = (src[cls]?.rejectedPaths ?? {}) as Record<string, unknown>;
+    for (const l of REJECTED_PATH_LABELS) if (n(paths[l])) out[cls].rejectedPaths[l] = n(paths[l]);
     const statuses = (src[cls]?.errorStatuses ?? {}) as Record<string, unknown>;
     for (const [k, v] of Object.entries(statuses).slice(0, MAX_STATUS_KEYS)) {
       if (/^\d{3}$/.test(k) && isErrorStatus(Number(k)) && n(v)) out[cls].errorStatuses[k] = n(v);

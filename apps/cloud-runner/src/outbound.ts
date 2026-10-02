@@ -298,6 +298,23 @@ export function modelApiPathAllowed(method: string | undefined, rawUrl: string):
 /** Why a request was refused (run-report.ts REJECT_REASONS). */
 export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'unparseable' | 'other';
 
+/** Where a refused api.anthropic.com request was going, as a fixed label (no raw path leaves the handler). */
+export type RejectedPathLabel = 'api_hello' | 'event_logging' | 'oauth' | 'claude_code_api' | 'other_api' | 'files' | 'batches' | 'other_v1' | 'other';
+
+export function rejectedPathLabel(rawUrl: string): RejectedPathLabel {
+  let p: string;
+  try { p = new URL(rawUrl).pathname; } catch { return 'other'; }
+  if (p === '/api/hello') return 'api_hello';
+  if (p.startsWith('/api/event_logging')) return 'event_logging';
+  if (p.startsWith('/api/oauth/') || p === '/api/oauth') return 'oauth';
+  if (p.startsWith('/api/claude_code/') || p === '/api/claude_code') return 'claude_code_api';
+  if (p.startsWith('/api/')) return 'other_api';
+  if (p.startsWith('/v1/files')) return 'files';
+  if (p.startsWith('/v1/messages/batches')) return 'batches';
+  if (p.startsWith('/v1/')) return 'other_v1';
+  return 'other';
+}
+
 export type EgressDecision =
   | { action: 'passthrough' }
   /** Answered by the handler itself; nothing leaves the Worker. */
@@ -307,7 +324,7 @@ export type EgressDecision =
       /** Set for a message request to a team endpoint with a model mapping: the egress handler rewrites the body's `model`. */
       mapModel?: (id: string) => string;
     }
-  | { action: 'reject'; status: number; message: string; reason: RejectReason };
+  | { action: 'reject'; status: number; message: string; reason: RejectReason; pathLabel?: RejectedPathLabel };
 
 export interface RewriteContext {
   model: ModelRoute;
@@ -418,7 +435,7 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
     }
     // Judged on the original URL string, before anything is added.
     if (!modelApiPathAllowed(req.method, req.url)) {
-      return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded`, reason: 'path' };
+      return { action: 'reject', status: 403, message: `${ANTHROPIC_HOST}: only the model API paths are forwarded`, reason: 'path', pathLabel: rejectedPathLabel(req.url) };
     }
     const route = ctx.model;
     if (route.kind === 'unconfigured') {

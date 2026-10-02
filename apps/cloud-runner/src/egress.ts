@@ -66,7 +66,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     if (decision.action === 'passthrough') return this.counted('passthrough', at, fetch(request));
     if (decision.action === 'respond') return this.counted(cls, at, Promise.resolve(new Response(null, { status: decision.status })));
     if (decision.action === 'reject') {
-      this.record({ type: 'request', cls, at, rejected: true, reason: decision.reason });
+      this.record({ type: 'request', cls, at, rejected: true, reason: decision.reason, ...(decision.pathLabel ? { pathLabel: decision.pathLabel } : {}) });
       return new Response(`${decision.message}\n`, { status: decision.status });
     }
     if (this.env.EGRESS_DEBUG_ECHO === '1') {

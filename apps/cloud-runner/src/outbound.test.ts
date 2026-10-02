@@ -15,6 +15,7 @@ import {
   mapEndpointModel,
   rewriteModelInBody,
   isClaudeModelId,
+  rejectedPathLabel,
   isModelRewritePath,
   endpointRejectedKey,
   type ServerModelEndpoint,
@@ -889,5 +890,21 @@ describe('a call mapped to a non-Claude model keeps only standard Messages API f
     expect(isClaudeModelId('anthropic/claude-sonnet-4.5')).toBe(true);
     expect(isClaudeModelId('bedrock/us.anthropic.claude-sonnet-5')).toBe(true);
     expect(isClaudeModelId('fireworks_ai/deepseek-v4p1-flash')).toBe(false);
+  });
+});
+
+describe('rejectedPathLabel: a fixed vocabulary, never the raw path', () => {
+  test('known Claude Code endpoints get their label; anything else a coarse bucket', () => {
+    const l = (u: string) => rejectedPathLabel(u);
+    expect(l('https://api.anthropic.com/api/hello')).toBe('api_hello');
+    expect(l('https://api.anthropic.com/api/event_logging/batch')).toBe('event_logging');
+    expect(l('https://api.anthropic.com/api/oauth/profile')).toBe('oauth');
+    expect(l('https://api.anthropic.com/api/claude_code/settings')).toBe('claude_code_api');
+    expect(l('https://api.anthropic.com/api/claude_cli_feedback')).toBe('other_api');
+    expect(l('https://api.anthropic.com/v1/files')).toBe('files');
+    expect(l('https://api.anthropic.com/v1/messages/batches')).toBe('batches');
+    expect(l('https://api.anthropic.com/v1/skills')).toBe('other_v1');
+    expect(l('https://api.anthropic.com/secret-token-in-path')).toBe('other');
+    expect(l('not a url')).toBe('other');
   });
 });
