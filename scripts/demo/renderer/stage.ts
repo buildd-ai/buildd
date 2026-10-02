@@ -163,7 +163,7 @@ function build(cut: Cut, root: HTMLElement): Built[] {
     } else if (shot.layout === 'fleet' && shot.fleet) {
       fleet = buildFleet(shot, layer);
     } else if (shot.layout === 'motion' && shot.motion) {
-      motion = buildMotion(shot.motion, layer, P);
+      motion = buildMotion(shot.motion, layer, P, { width: cut.width, height: cut.height });
       imgs.push(...motionImages(layer));
     } else if (shot.card) {
       const box = el('div', { position: 'absolute', inset: '0', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '22px' }, layer);
