@@ -35,8 +35,10 @@ import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/depend
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
+import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 
-export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
+/** Public default; read the live value with `policyValue('maxConflictIterations')`. */
+export const DEFAULT_MAX_CONFLICT_ITERATIONS = POLICY_DEFAULTS.maxConflictIterations;
 
 // ── Classification ────────────────────────────────────────────────────────────
 
@@ -202,7 +204,7 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
   const maxIterations = maxConflictIterations ?? (
-    typeof ctx.maxConflictIterations === 'number' ? ctx.maxConflictIterations : DEFAULT_MAX_CONFLICT_ITERATIONS
+    typeof ctx.maxConflictIterations === 'number' ? ctx.maxConflictIterations : policyValue('maxConflictIterations')
   );
 
   if (maxIterations <= 0 || currentIteration >= maxIterations) {
@@ -722,7 +724,7 @@ export async function dispatchConflictRetry(
           maxConflictIterations:
             (typeof (task.context as Record<string, unknown> | null)?.conflictIteration === 'number'
               ? ((task.context as Record<string, unknown>).conflictIteration as number)
-              : 0) + DEFAULT_MAX_CONFLICT_ITERATIONS,
+              : 0) + policyValue('maxConflictIterations'),
         }
       : {}),
   });
