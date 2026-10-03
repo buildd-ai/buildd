@@ -3,12 +3,12 @@
  * for a goal-criteria write that POST /api/missions or PATCH
  * /api/missions/[id] has already committed.
  *
- * In `shadow` (the shipped mode) always after the response: `after()` when a
- * request scope exists, else an unawaited promise. So it can never slow or fail
- * the write, and nothing it finds reaches the response. In `surface` the route
- * awaits it for at most `GOAL_QUALITY_TIMEOUT_MS` and attaches an `advisory`
- * when it lands in time (`withGoalQualityAdvisory`); the mode is a parameter
- * here so tests can drive it while the constant stays `shadow`.
+ * In `shadow` always after the response: `after()` when a request scope
+ * exists, else an unawaited promise. So it can never slow or fail the write,
+ * and nothing it finds reaches the response. In `surface` (the shipped mode
+ * since 2026-10-03) the route awaits it for at most `GOAL_QUALITY_TIMEOUT_MS`
+ * and attaches an `advisory` when it lands in time (`withGoalQualityAdvisory`);
+ * the mode is a parameter here so tests can still drive `shadow` directly.
  *
  * Weak criteria are recorded as `warned` rows in the gate ledger. On a PATCH, a
  * criterion that was warned before and is still present is recorded once as

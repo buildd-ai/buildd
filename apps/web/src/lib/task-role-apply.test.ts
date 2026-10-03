@@ -25,7 +25,7 @@ const JEV = 'typesafe/jev-1.13-20260917';
 
 function record(over: Partial<TaskRoleShadowRecord> = {}): TaskRoleShadowRecord {
   return {
-    site: 'task_role', v: `tr1|${JEV}`, taskId: 'task-1', workspaceId: 'ws-1',
+    site: 'task_role', v: `tr1|${JEV}`, fingerprint: 'fp-abc123', taskId: 'task-1', workspaceId: 'ws-1',
     candidates: ['builder', 'researcher'], excluded: {},
     decision: 'builder', confidence: 0.97, probabilities: { builder: 0.97, researcher: 0.03 },
     kindDecision: null, kindConfidence: null, kindHeuristic: null, claimedBeforeDecision: false,
@@ -35,7 +35,7 @@ function record(over: Partial<TaskRoleShadowRecord> = {}): TaskRoleShadowRecord 
 }
 
 const NOW = () => new Date('2026-10-02T12:00:00Z');
-const INPUT = { taskId: 'task-1', statedRoleSlug: null };
+const INPUT = { taskId: 'task-1', statedRoleSlug: null, teamId: 'team-1', workspaceId: 'ws-1' };
 
 describe('applyTaskRoleDecision', () => {
   it('writes a confident in-set answer once, with the roleInferred stamp', async () => {
@@ -120,6 +120,45 @@ describe('applyTaskRoleDecision', () => {
     expect(res.outcome).toBe('error');
   });
 
+  it('writes a decision-ledger row on every path that actually asked, and none for upstream skips', async () => {
+    const write = mock(async () => true);
+    const recordDecision = mock(async () => {});
+
+    await applyTaskRoleDecision(INPUT, { outcome: 'logged', record: record(), applyEnabled: true }, {
+      write, log: () => {}, minConfidence: 0.9, recordDecision,
+    });
+    expect(recordDecision).toHaveBeenCalledTimes(1);
+    expect(recordDecision.mock.calls[0][0]).toMatchObject({
+      teamId: 'team-1', workspaceId: 'ws-1', capability: 'task_role_shadow', fingerprint: 'fp-abc123',
+      verdict: 'builder', confidence: 0.97, appliedAnswer: 'builder', applied: true, status: 'applied',
+    });
+
+    recordDecision.mockClear();
+    await applyTaskRoleDecision(INPUT, { outcome: 'logged', record: record({ confidence: 0.5 }), applyEnabled: true }, {
+      write, log: () => {}, minConfidence: 0.9, recordDecision,
+    });
+    expect(recordDecision.mock.calls[0][0]).toMatchObject({ applied: false, status: 'suggested', reason: 'below_threshold', appliedAnswer: null });
+
+    recordDecision.mockClear();
+    await applyTaskRoleDecision(INPUT, { outcome: 'error', fingerprint: 'fp-err', applyEnabled: true }, { write, log: () => {}, recordDecision });
+    expect(recordDecision.mock.calls[0][0]).toMatchObject({ applied: false, status: 'fallback', fingerprint: 'fp-err', ruleAnswer: null });
+
+    recordDecision.mockClear();
+    await applyTaskRoleDecision(INPUT, { outcome: 'logged', record: record(), applyEnabled: false }, { write, log: () => {}, recordDecision });
+    expect(recordDecision).not.toHaveBeenCalled();
+
+    recordDecision.mockClear();
+    await applyTaskRoleDecision({ taskId: 'task-1', statedRoleSlug: 'researcher', teamId: 'team-1' }, { outcome: 'logged', record: record(), applyEnabled: true }, { write, log: () => {}, recordDecision });
+    expect(recordDecision).not.toHaveBeenCalled();
+  });
+
+  it('never throws when the ledger write fails', async () => {
+    const res = await applyTaskRoleDecision(INPUT, { outcome: 'logged', record: record(), applyEnabled: true }, {
+      write: async () => true, log: () => {}, minConfidence: 0.9, recordDecision: async () => { throw new Error('db down'); },
+    });
+    expect(res.outcome).toBe('applied');
+  });
+
   it('the guarded write only touches an unclaimed, pending, role-less row', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
@@ -184,7 +223,7 @@ describe('runTaskRoleRouting', () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the shadow when apply is off, and writes nothing', async () => {
+  it('applies even when only task_role_shadow is enabled — apply is the default now, not a second opt-in', async () => {
     const asked: string[] = [];
     const write = mock(async () => true);
     const res = await runTaskRoleRouting(TASK, {
@@ -196,12 +235,12 @@ describe('runTaskRoleRouting', () => {
       },
       decide: decide as never, loadRoles: async () => [routed('builder'), routed('researcher')],
       readClaimedAt: async () => null, log: () => {},
-      apply: { write, log: () => {} },
+      apply: { write, log: () => {}, minConfidence: 0.9 },
     });
     expect(asked).toEqual([TASK_ROLE_APPLY_CAPABILITY, TASK_ROLE_CAPABILITY]);
     expect(res.shadow.outcome).toBe('logged');
-    expect(res.apply.outcome).toBe('not_enabled');
-    expect(write).not.toHaveBeenCalled();
+    expect(res.apply.outcome).toBe('applied');
+    expect(write).toHaveBeenCalledTimes(1);
   });
 
   it('a stated-role task never asks under the apply capability', async () => {
