@@ -29,7 +29,7 @@ import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
-import { scheduleGoalQualityShadow } from '@/lib/goal-criteria-quality-shadow';
+import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -502,22 +502,6 @@ export async function POST(req: NextRequest) {
       maybePostWorkTrackerNote(mission.id, resolvedWorkspaceId).catch(() => {});
     }
 
-    // Advisory goal-criteria verdict (docs/specs/mission-goal-criteria-quality.md):
-    // after the response, never awaited, and in shadow mode it changes nothing
-    // the caller sees. Only runs once validation passed and the row exists.
-    if (Array.isArray(goalCriteria) && goalCriteria.length > 0) {
-      scheduleGoalQualityShadow({
-        missionId: mission.id,
-        teamId,
-        workspaceId: resolvedWorkspaceId,
-        criteria: goalCriteria,
-        accountId: apiAccount?.id ?? null,
-        userId: user?.id ?? null,
-        surface: 'POST /api/missions',
-        callerOrigin: gateCaller,
-      });
-    }
-
     // Build informative creation response
     const nextRunInfo = mission.scheduleId
       ? (() => {
@@ -528,18 +512,33 @@ export async function POST(req: NextRequest) {
         })()
       : null;
 
-    return NextResponse.json(
-      {
-        ...mission,
-        organizerTask,
-        ...(deferredStart.startAt ? {
-          startAt: deferredStart.startAt.toISOString(),
-          startResolution: deferredStart.resolution,
-        } : {}),
-        ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}),
-      },
-      { status: 201 }
-    );
+    const created = {
+      ...mission,
+      organizerTask,
+      ...(deferredStart.startAt ? {
+        startAt: deferredStart.startAt.toISOString(),
+        startResolution: deferredStart.resolution,
+      } : {}),
+      ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}),
+    };
+
+    // Advisory goal-criteria verdict (docs/specs/mission-goal-criteria-quality.md).
+    // Only once validation passed and the row exists. In shadow mode it runs
+    // after the response and the body is unchanged; it never blocks or rewrites.
+    const responseBody = Array.isArray(goalCriteria) && goalCriteria.length > 0
+      ? await withGoalQualityAdvisory(created, {
+          missionId: mission.id,
+          teamId,
+          workspaceId: resolvedWorkspaceId,
+          criteria: goalCriteria,
+          accountId: apiAccount?.id ?? null,
+          userId: user?.id ?? null,
+          surface: 'POST /api/missions',
+          callerOrigin: gateCaller,
+        })
+      : created;
+
+    return NextResponse.json(responseBody, { status: 201 });
   } catch (error) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });

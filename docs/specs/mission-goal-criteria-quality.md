@@ -1,25 +1,68 @@
 ---
 title: Mission Goal Criteria Quality (Advisory Verdict)
-status: draft
+status: active
 owner: max
-last_verified: 2026-10-01
+last_verified: 2026-10-02
 summary: A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal, failing open and shadow-only until promoted in code.
 domain: missions
 surfaces: [packages/core/mission-helpers.ts, packages/core/gate-slugs.ts, apps/web/src/app/api/missions/route.ts, apps/web/src/app/api/missions/[id]/route.ts, apps/web/src/lib/goal-criteria-quality-decision.ts, apps/web/src/lib/goal-criteria-quality-shadow.ts]
 related: [mission-task-lifecycle, orchestration-decisions-shadow]
 keywords: [goalCriteria, goal_criteria_quality, criteria quality, outcome sentence, proof, bookkeeping, advisory, decision-shadow, weak criterion, accepted pattern, rubric, notMechanizableReason, NOT_EVALUATED, at least one mechanical criterion]
-verified_by: [apps/web/src/lib/goal-criteria-quality-decision.test.ts, apps/web/src/lib/goal-criteria-quality-shadow.test.ts]
+verified_by: [apps/web/src/lib/goal-criteria-quality-decision.test.ts, apps/web/src/lib/goal-criteria-quality-shadow.test.ts, apps/web/src/lib/goal-criteria-rubric.test.ts, apps/web/src/lib/goal-criteria-accepted.test.ts, apps/web/src/app/api/missions/[id]/route.test.ts]
 supersedes: []
+assertions:
+  - id: "advise-goal-quality"
+    type: "symbol"
+    name: "adviseGoalQuality"
+    path: "apps/web/src/lib/goal-criteria-quality-decision.ts"
+  - id: "mode-constant"
+    type: "symbol"
+    name: "GOAL_QUALITY_MODE"
+    path: "apps/web/src/lib/goal-criteria-quality-decision.ts"
+  - id: "criterion-fingerprint"
+    type: "symbol"
+    name: "criterionFingerprint"
+    path: "packages/core/mission-helpers.ts"
+  - id: "gate-slug"
+    type: "symbol_reachable"
+    symbol: "GOAL_CRITERIA_QUALITY"
+    entry: "packages/core/gate-slugs.ts"
+  - id: "rubric-from-memory"
+    type: "symbol"
+    name: "loadGoalQualityRubric"
+    path: "apps/web/src/lib/goal-criteria-rubric.ts"
+  - id: "bypass-ledger"
+    type: "symbol_reachable"
+    symbol: "goalQualityBypasses"
+    entry: "apps/web/src/lib/goal-criteria-quality-shadow.ts"
+  - id: "accepted-on-completion"
+    type: "symbol_reachable"
+    symbol: "recordAcceptedGoalCriteriaPatterns"
+    entry: "apps/web/src/lib/mission-completion.ts"
+  - id: "create-advisory"
+    type: "symbol_reachable"
+    symbol: "withGoalQualityAdvisory"
+    entry: "apps/web/src/app/api/missions/route.ts"
+    as: "import"
+  - id: "update-advisory"
+    type: "symbol_reachable"
+    symbol: "withGoalQualityAdvisory"
+    entry: "apps/web/src/app/api/missions/[id]/route.ts"
+    as: "import"
+  - id: "decision-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/goal-criteria-quality-decision.test.ts"
+  - id: "shadow-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/goal-criteria-quality-shadow.test.ts"
 ---
 
 # Mission Goal Criteria Quality (Advisory Verdict)
 
-**Status: draft.** Built so far: the shadow verdict and its `warned` rows
-(§2, §3 `warned`, §5 shadow), and the §6 message change — AC-1 to AC-7,
-AC-12 to AC-14. Not built yet: `bypassed` rows (AC-8, AC-9), the rubric and
-accepted patterns in memory (§4, AC-10, AC-11; the rubric is the code default
-for now). It is promoted to `active` once tests assert every acceptance
-criterion.
+**Status: active.** Every acceptance criterion is asserted by a test. The
+mode constant ships `shadow`; the `surface` response path (§5) is built and
+tested with the mode passed as a parameter, and goes live only when the
+constant is raised in its own PR after the readout.
 
 ## Why
 
@@ -66,6 +109,12 @@ the first two as the author's statement of done.
 - The verdict (§2) grades Outcome and Proof criteria. Bookkeeping criteria
   (`all_prs_merged`, `no_open_tasks`) are never warned as weak for failing the
   "would a user notice" question; they are graded only as Bookkeeping.
+- Bookkeeping already holds for every mission without being listed:
+  `canCompleteMission` (`apps/web/src/lib/mission-completion.ts`) refuses
+  completion while any work row is open and while any completed deliverable has
+  an unmerged PR. Listing `all_prs_merged` / `no_open_tasks` adds the stricter
+  reads only (`no_open_tasks` does not let pending housekeeping rows through;
+  `all_prs_merged` can require the branch deleted).
 - **Later, separately scoped — NOT built by this mission:** Bookkeeping becomes
   an implicit platform gate on mission completion, applied whether or not it is
   listed, and stops being a listed criterion type an author writes. Until that
@@ -160,7 +209,12 @@ the judge's false-positive rate is readable without new storage.
   one `bypassed` row is recorded for that (mission, fingerprint) pair, once.
   `detail` carries the fingerprint and the `mode` of the warning it answers.
   Bypass detection is a deterministic ledger lookup; it makes no model call and
-  runs even when the decision capability is off.
+  runs even when the decision capability is off. It runs on every PATCH
+  carrying `goalCriteria` (a byte-identical re-save included), reads the
+  mission's prior `warned` / `bypassed` rows for this gate, matches by
+  `criterionFingerprint` (never array index), and runs before the same write's
+  own `warned` rows are recorded. No new column: the fingerprint each `warned`
+  row already carries is the match key.
 - `reason` is a fixed per-outcome string (no criterion text), so rows coalesce
   cleanly in `get_failure_analytics`.
 
@@ -191,21 +245,32 @@ canonical scope key written via `normalizeProject`):
   verdict. The team-wide memory row, when present, replaces it for that team;
   absent, the code default is used. The default is what every team starts
   from.
-- An **accepted pattern** stores the criterion's `fingerprint` and type (in
-  `content` as a single line, plus the fingerprint as a tag) and the
-  criterion's label text. It is written when a criterion that has a
-  `bypassed` row is on a mission that then completes cleanly: mission status
-  `completed`, goal-criteria overall `pass`, `criteriaEscalatedAt` null.
-  Writes go through the memory store with `sourceKind` naming the mission
-  completion, and are not written for a sensitive workspace.
+- An **accepted pattern** stores the criterion's `fingerprint` (as the tag
+  `fp:<fingerprint>` and in `content`) and its shape — type and how it is built
+  (labelled, artifact type, branch-deleted) — never its label, command or
+  description text, and no id. It is written when a criterion that has a
+  `bypassed` row is still in the final goal of a mission that then completes
+  cleanly: mission status `completed`, goal-criteria overall `pass`,
+  `criteriaEscalatedAt` null. It is scheduled from the completion claim winner
+  in `completeMissionIfVerified` and never affects completion. Writes go
+  through the memory store with `sourceKind` `mission_completion` and are not
+  written for a workspace with no memory scope (a sensitive one). Recall
+  before save: an existing row tagged with the same fingerprint in the scope is
+  updated, not duplicated.
 
 **Fetch and bound**:
 
 - Only `state = 'active'` rows. At most one baseline, the 5 most recently
   updated workspace rubric notes, and the 20 most recently updated accepted
-  patterns for the workspace. Each entry is truncated to 500 characters; the
-  rubric block is capped at 4,000 characters in total, dropping oldest accepted
-  patterns first.
+  patterns for the workspace. Each workspace note and accepted pattern is
+  truncated to 500 characters, a team baseline (which replaces the longer code
+  default) to 1,500; the rubric block is capped at 4,000 characters in total,
+  dropping oldest accepted patterns first, then oldest notes.
+- The rubric is read only when the capability resolves for the team, with a
+  1-second bound. Its version (`base` for the code default, else a digest of
+  the text and accepted fingerprints) is part of the verdict cache key, the
+  `rubric` field of the `[decision-shadow]` line and the `warned` row's
+  `detail.rubricVersion`.
 - A criterion whose fingerprint matches an accepted pattern for the workspace
   is **suppressed**: it is not sent to the call, and no `warned` row is written
   for it. Suppression is a deterministic fingerprint match, not something the
@@ -240,10 +305,49 @@ Modelled exactly on `mission_strand_choice`
   `STRAND_CHOICE_TIMEOUT_MS`).
 - **Surface**: a code constant (shaped like `STRAND_CHOICE_MODE`, values
   `shadow` | `surface`) moves from `shadow` to `surface` in its own PR after the
-  readout. Only then do the POST and PATCH responses carry an `advisory` field:
-  per weak criterion its index, fingerprint, which question was weak, and the
-  rendered rewrite suggestion. Never raised by configuration, workspace setting
-  or request flag.
+  readout. Only then do the POST and PATCH responses carry an `advisory` field,
+  and only when something is weak: for each criterion the write added or
+  changed its index, fingerprint, type and `outcome` / `checkable` / `weak`
+  flags, plus exactly one rendered `suggestion` (when the model picked `none`
+  while grading something weak, the code picks `state-outcome` or
+  `command-proof` from the first weak criterion). In `surface` the route awaits
+  the verdict for at most `GOAL_QUALITY_TIMEOUT_MS`; a miss omits the field and
+  the work finishes after the response, so its ledger rows still land. Never
+  raised by configuration, workspace setting or request flag.
+
+**Readout and graduation** (shadow → surface). Every bar must hold on a single
+`promptVersion`; a miss means tune the questions or rubric and bump the
+version, never lower the bar:
+
+| Measure | Bar |
+|---|---|
+| Labelled criteria | ≥ 60, from ≥ 15 distinct missions |
+| Agreement (weak / not weak vs the owner's blind label) | ≥ 85 % |
+| Precision of `weak` (owner also says weak) — a false "weak" is the annoying error | ≥ 90 % |
+| Coverage (answered at or above the confidence floor) | ≥ 70 % |
+| Fail-open rate (no verdict / all graded writes) | ≤ 10 % |
+| Suggestion acceptable to the owner as is or lightly edited | ≥ 70 % of weak verdicts |
+
+- Labels are blind (the owner sees the criteria, not the verdict) and stored as
+  private DB state, never in the repo. A labelled criterion is not written as a
+  rubric entry until the readout for that prompt version is published, or the
+  judge is graded on its own examples.
+- **Demotion**: once in `surface`, a 30-day bypass rate above 35 % means the
+  next readout either fixes the prompt or rubric or moves the constant back to
+  `shadow`.
+
+**Computing the readout** (no UI):
+
+- *Bypass rate*: `get_failure_analytics family="gate"`, row
+  `goal_criteria_quality` — `bypassed / warned`. Split by `detail.mode`
+  (`shadow` rows are the keep-as-written base rate; only `surface` rows are real
+  overrides).
+- *Shadow agreement*: the `[decision-shadow]` lines with
+  `site: goal_criteria_quality` carry, per graded criterion, `fp`, the two labels
+  (`noticeable`, `checkable`), their confidences and `weak`; join on `fp` to the
+  owner's label for that criterion and count matches over labelled criteria.
+  Group by `v` (prompt version, model) and `rubric` (rubric version), since a
+  rubric change is a different judge.
 
 ---
 
@@ -346,10 +450,15 @@ Existing:
   `scheduleGoalQualityShadow`, which runs it after the response from both
   routes and reads the workspace's data class, failing closed.
 
-Planned (does not exist yet):
-
-- Rubric fetch and bound from memory, accepted-pattern suppression, and
-  `bypassed` recording.
+- `apps/web/src/lib/goal-criteria-rubric.ts` — the code-default baseline
+  (`GOAL_QUALITY_BASELINE_RUBRIC`), `loadGoalQualityRubric` (fetch, bound, fail
+  open) and the accepted-pattern memory shape.
+- `apps/web/src/lib/goal-criteria-accepted.ts` —
+  `recordAcceptedGoalCriteriaPatterns`, called from
+  `apps/web/src/lib/mission-completion.ts` on a clean completion.
+- `goalQualityBypasses` (decision module) and `withGoalQualityAdvisory` /
+  `goalQualityAdvisory` (shadow module) — the `bypassed` rows, and the
+  response body in each mode.
 
 ## Out of scope
 
@@ -361,6 +470,12 @@ Planned (does not exist yet):
 - Dashboard UI for the `advisory` field; the surface PR specifies its own
   rendering.
 - Moving the mode constant to `surface`; that is its own PR after the readout.
+- Learning negatives automatically: a bypassed criterion on a mission that
+  later fails or escalates writes nothing. The failure may be the work's, not
+  the criterion's; escalation already asks the owner which reading holds.
+- Tightening the "at least one mechanical criterion" rule so bookkeeping alone
+  no longer satisfies it; that would be the hard rejection this contract rules
+  out. The surface bypass rate says whether it is wanted.
 
 ## Related
 

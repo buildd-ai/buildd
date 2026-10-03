@@ -134,6 +134,15 @@ mock.module('@/lib/mission-shipped-report', () => ({
   },
 }));
 
+const acceptedPatternCalls: string[] = [];
+let acceptedPatternImpl: (missionId: string) => Promise<number> = async () => 0;
+mock.module('@/lib/goal-criteria-accepted', () => ({
+  recordAcceptedGoalCriteriaPatterns: (missionId: string) => {
+    acceptedPatternCalls.push(missionId);
+    return acceptedPatternImpl(missionId);
+  },
+}));
+
 // The surface-audit gate has its own suite; here it is a controllable verdict.
 let surfaceGate: any = { required: false, why: 'no_ui_change' };
 const mockEvaluateSurfaceAuditGate = mock(async (_m: any, _t: any) => surfaceGate);
@@ -1497,5 +1506,49 @@ describe('canCompleteMission — the surface-audit gate', () => {
     const r = await completeMissionIfVerified('m1', { path: 'heartbeat' } as any);
     expect(r.completed).toBe(false);
     expect(r.decision.code).toBe('surface_audit_missing');
+  });
+});
+
+describe('completeMissionIfVerified — accepted goal-criteria patterns', () => {
+  beforeEach(() => {
+    reset();
+    afterQueue = null;
+    acceptedPatternCalls.length = 0;
+    acceptedPatternImpl = async () => 0;
+  });
+
+  it('a completion whose criteria pass schedules the accepted-pattern write', async () => {
+    activeMission({ goalCriteria: [{ type: 'command', command: 'bun test' }] });
+    taskRows = [work('completed')];
+    mockEnsureCriteriaVerdict.mockImplementation(() => Promise.resolve(PASSING_STATE) as any);
+
+    const r = await completeMissionIfVerified('m1', { path: 'heartbeat' });
+    await new Promise(res => setTimeout(res, 0));
+
+    expect(r.completed).toBe(true);
+    expect(acceptedPatternCalls).toEqual(['m1']);
+  });
+
+  it('no criteria verdict of pass: not scheduled', async () => {
+    activeMission();
+    taskRows = [work('completed')];
+
+    await completeMissionIfVerified('m1', { path: 'dormancy' });
+    await new Promise(res => setTimeout(res, 0));
+
+    expect(acceptedPatternCalls).toEqual([]);
+  });
+
+  it('a throwing accepted-pattern write cannot affect completion', async () => {
+    activeMission({ goalCriteria: [{ type: 'command', command: 'bun test' }] });
+    taskRows = [work('completed')];
+    mockEnsureCriteriaVerdict.mockImplementation(() => Promise.resolve(PASSING_STATE) as any);
+    acceptedPatternImpl = async () => { throw new Error('memory down'); };
+
+    const r = await completeMissionIfVerified('m1', { path: 'heartbeat' });
+    await new Promise(res => setTimeout(res, 0));
+
+    expect(r.completed).toBe(true);
+    expect(acceptedPatternCalls).toEqual(['m1']);
   });
 });

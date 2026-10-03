@@ -310,3 +310,71 @@ describe('goalQualityWarnings: the warned rows', () => {
     expect(goalQualityWarnings(verdict!, { missionId: MISSION_ID, workspaceId: 'ws-1', surface: 'POST /api/missions' })).toEqual([]);
   });
 });
+
+describe('adviseGoalQuality — the rubric from memory', () => {
+  const yes = (name: string): [string, number] => (name === 'rewrite' ? ['none', 0.9] : ['yes', 0.9]);
+  const memoryRubric = { text: 'Team rubric: outcomes name a customer.', version: 'mdeadbeef', acceptedFingerprints: [] as string[] };
+
+  it('the rubric read from memory is the rule every question carries, and its version is logged', async () => {
+    const { decide, calls } = answering(yes);
+    const lines: string[] = [];
+    const r = await adviseGoalQuality(facts([outcome]), {
+      resolveAccess: allowed as any, decide, cache: new Map(), log: l => lines.push(l),
+      loadRubric: async () => memoryRubric,
+    });
+    for (const q of Object.values(calls[0].questions) as any[]) expect(q.instructions.rule).toBe(memoryRubric.text);
+    expect(r!.rubricVersion).toBe('mdeadbeef');
+    expect(JSON.parse(lines[0].slice('[decision-shadow] '.length)).rubric).toBe('mdeadbeef');
+  });
+
+  it('a different rubric version is a cache miss', async () => {
+    const { decide, calls } = answering(yes);
+    const cache = new Map();
+    await adviseGoalQuality(facts([outcome]), { resolveAccess: allowed as any, decide, cache, log: () => {}, loadRubric: async () => memoryRubric });
+    await adviseGoalQuality(facts([outcome]), { resolveAccess: allowed as any, decide, cache, log: () => {}, loadRubric: async () => ({ ...memoryRubric, version: 'm00000000' }) });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('a throwing rubric read still makes the call, with the code default (AC-11)', async () => {
+    const { decide, calls } = answering(yes);
+    const r = await adviseGoalQuality(facts([outcome]), {
+      resolveAccess: allowed as any, decide, cache: new Map(), log: () => {},
+      loadRubric: async () => { throw new Error('memory down'); },
+    });
+    expect(calls).toHaveLength(1);
+    expect((Object.values(calls[0].questions)[0] as any).instructions.rule).toContain('Bookkeeping is all PRs merged');
+    expect(r!.rubricVersion).toBe('base');
+  });
+
+  it('the rubric is not read when the capability is off', async () => {
+    const { decide } = answering(yes);
+    let reads = 0;
+    await adviseGoalQuality(facts([outcome]), {
+      resolveAccess: async () => ({ ok: false as const, error: { kind: 'capability_disabled' as const, capability: 'mission_goal_quality' as const } }),
+      decide, cache: new Map(), log: () => {},
+      loadRubric: async () => { reads++; return memoryRubric; },
+    });
+    expect(reads).toBe(0);
+  });
+
+  it('an accepted pattern suppresses its criterion: not sent, not in the verdict, never warned (AC-10)', async () => {
+    const { decide, calls } = answering(name => (name === 'rewrite' ? ['state-outcome', 0.9] : ['no', 0.95]));
+    const loadRubric = async () => ({ ...memoryRubric, acceptedFingerprints: [criterionFingerprint(weakCommand)] });
+    const r = await adviseGoalQuality(facts([outcome, weakCommand]), { resolveAccess: allowed as any, decide, cache: new Map(), log: () => {}, loadRubric });
+    expect(calls[0].state.criteria).toHaveLength(1);
+    expect(JSON.stringify(calls[0].state)).not.toContain('tests pass');
+    expect(r!.criteria.map(c => c.fingerprint)).toEqual([criterionFingerprint(outcome)]);
+    const rows = goalQualityWarnings(r!, { missionId: MISSION_ID, workspaceId: 'ws-1', surface: 'POST /api/missions' });
+    expect(rows.map(x => x.detail!.fingerprint)).not.toContain(criterionFingerprint(weakCommand));
+  });
+
+  it('when every gradeable criterion is accepted, no call is made', async () => {
+    const { decide, calls } = answering(yes);
+    const r = await adviseGoalQuality(facts([weakCommand, prs]), {
+      resolveAccess: allowed as any, decide, cache: new Map(), log: () => {},
+      loadRubric: async () => ({ ...memoryRubric, acceptedFingerprints: [criterionFingerprint(weakCommand)] }),
+    });
+    expect(r).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+});

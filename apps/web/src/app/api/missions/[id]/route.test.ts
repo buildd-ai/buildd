@@ -171,8 +171,21 @@ mock.module('@/lib/schedule-helpers', () => ({
   },
 }));
 
+// The goal-criteria quality bypass check reads this mission's prior
+// `goal_criteria_quality` rows; the only `db.select` the PATCH path makes.
+let gateLedgerRows: Array<{ outcome: string; detail: unknown }> = [];
+const gateLedgerReads: any[] = [];
 mock.module('@buildd/core/db', () => ({
   db: {
+    select: () => ({
+      from: (table: any) => ({
+        where: (cond: any) => ({
+          orderBy: () => ({
+            limit: () => { gateLedgerReads.push({ table, cond }); return Promise.resolve(gateLedgerRows); },
+          }),
+        }),
+      }),
+    }),
     query: {
       missions: { findFirst: mockMissionsFindFirst },
       taskSchedules: { findFirst: mockScheduleFindFirst },
@@ -228,9 +241,11 @@ mock.module('@buildd/core/db/schema', () => ({
   initiatives: 'initiatives',
   missionNotes: 'missionNotes',
   workers: 'workers',
+  gateEvents: { gate: 'gate', missionId: 'missionId', outcome: 'outcome', detail: 'detail', occurredAt: 'occurredAt' },
 }));
 
 import { PATCH } from './route';
+import { criterionFingerprint } from '@buildd/core/mission-helpers';
 
 const makeParams = (id: string) => Promise.resolve({ id });
 
@@ -1997,6 +2012,8 @@ describe('PATCH /api/missions/[id] — goal-criteria quality shadow (docs/specs/
   beforeEach(() => {
     recordedGateEvents.length = 0;
     goalQualityDecideCalls.length = 0;
+    gateLedgerRows = [];
+    gateLedgerReads.length = 0;
     goalQualityAccess = allowed;
     goalQualityDecide = grading;
     mockGetCurrentUser.mockReset();
@@ -2027,6 +2044,43 @@ describe('PATCH /api/missions/[id] — goal-criteria quality shadow (docs/specs/
     expect(res.status).toBe(200);
     await flush();
     expect(goalQualityDecideCalls).toHaveLength(0);
+  });
+
+  it('keeping a warned criterion records one bypassed row, matched by fingerprint, even with the capability off (AC-8)', async () => {
+    const weak = { type: 'command', command: 'bun run test', label: 'kept: tests pass' };
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null,
+      status: 'active', priority: 0, goalCriteria: [strong, weak],
+    });
+    goalQualityAccess = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+    gateLedgerRows = [{ outcome: 'warned', detail: { fingerprint: criterionFingerprint(weak as any), mode: 'shadow' } }];
+    // Reordered: index is not identity.
+    const res = await patch({ goalCriteria: [weak, strong] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('advisory');
+    await flush();
+    expect(gateLedgerReads).toHaveLength(1);
+    expect(goalQualityDecideCalls).toHaveLength(0);
+    const rows = quality();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ outcome: 'bypassed', surface: 'PATCH /api/missions/[id]', missionId: MID, detail: { fingerprint: criterionFingerprint(weak as any), mode: 'shadow' } });
+    expect(JSON.stringify(rows[0])).not.toContain('tests pass');
+
+    // A further PATCH that still keeps it: the ledger now holds the bypass.
+    recordedGateEvents.length = 0;
+    gateLedgerRows = [...gateLedgerRows, { outcome: 'bypassed', detail: { fingerprint: criterionFingerprint(weak as any) } }];
+    await patch({ goalCriteria: [weak, strong] });
+    await flush();
+    expect(quality()).toEqual([]);
+  });
+
+  it('changing a warned criterion records no bypassed row (AC-9)', async () => {
+    const weak = { type: 'command', command: 'bun run test', label: 'changed: tests pass' };
+    gateLedgerRows = [{ outcome: 'warned', detail: { fingerprint: criterionFingerprint(weak as any), mode: 'shadow' } }];
+    goalQualityAccess = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+    await patch({ goalCriteria: [strong, { ...weak, label: 'changed: an owner can export a CSV' }] });
+    await flush();
+    expect(quality()).toEqual([]);
   });
 
   it('a PATCH without goalCriteria makes no decision call', async () => {
