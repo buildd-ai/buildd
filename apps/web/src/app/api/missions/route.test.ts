@@ -1273,17 +1273,22 @@ describe('POST /api/missions — goalCriteria validation', () => {
       expect(quality()).toEqual([]);
     });
 
-    it('shadow: the response body is identical to capability off, and the stored goal is the submitted one (AC-3, AC-4, AC-12)', async () => {
-      const criteria = [{ type: 'command', command: 'bun run test', label: 'same body: tests pass' }, { type: 'all_prs_merged' }];
+    it('surface (default): the response includes advisory, the stored goal is the submitted one, and shadow verdict is logged (AC-3, AC-4, AC-10, AC-11)', async () => {
+      const criteria = [{ type: 'command', command: 'bun run test', label: 'surface: tests pass' }, { type: 'all_prs_merged' }];
       const off = await (await create(criteria)).json();
       await flush();
       goalQualityAccess = allowed;
       const res = await create(criteria);
       expect(res.status).toBe(201);
       const on = await res.json();
-      expect(on).toEqual(off);
-      expect(on).not.toHaveProperty('advisory');
+      // Surface mode: response includes advisory field
+      expect(on.advisory).toBeDefined();
+      expect(typeof on.advisory.suggestion).toBe('string');
+      expect(Array.isArray(on.advisory.criteria)).toBe(true);
+      // But the stored goal criteria is untouched
       expect(insertedMissionValues.goalCriteria).toEqual(criteria);
+      // Goal criteria itself is unchanged in response
+      expect(on.goalCriteria).toEqual(criteria);
       await flush();
       expect(goalQualityDecideCalls).toHaveLength(1);
     });

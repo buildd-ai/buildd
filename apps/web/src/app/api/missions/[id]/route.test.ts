@@ -2098,10 +2098,14 @@ describe('PATCH /api/missions/[id] — goal-criteria quality shadow (docs/specs/
     const res = await patch({ goalCriteria: criteria });
     expect(res.status).toBe(200);
     const on = await res.json();
-    // updatedAt is the clock, not the shadow.
-    expect({ ...on, updatedAt: null }).toEqual({ ...off, updatedAt: null });
-    expect(on).not.toHaveProperty('advisory');
+    // Surface mode: response includes advisory field
+    expect(on.advisory).toBeDefined();
+    expect(typeof on.advisory.suggestion).toBe('string');
+    expect(Array.isArray(on.advisory.criteria)).toBe(true);
+    // But the stored goal criteria is untouched
     expect(updatedSetData.goalCriteria).toEqual(criteria);
+    // Goal criteria itself is unchanged in response
+    expect(on.goalCriteria).toEqual(criteria);
     await flush();
     expect(goalQualityDecideCalls).toHaveLength(1);
     expect(goalQualityDecideCalls[0].state.criteria).toEqual([{ type: 'command', label: 'patch: tests pass' }]);

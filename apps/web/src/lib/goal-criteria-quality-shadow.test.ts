@@ -203,8 +203,8 @@ describe('withGoalQualityAdvisory — surface, driven by parameter', () => {
   const body = () => ({ id: MISSION, goalCriteria: structuredClone(criteria) });
   const noSchedule = { schedule: () => {} };
 
-  it('the shipped mode is shadow', () => {
-    expect(GOAL_QUALITY_MODE).toBe('shadow');
+  it('the shipped mode is surface', () => {
+    expect(GOAL_QUALITY_MODE).toBe('surface');
   });
 
   it('shadow: the response is the same object, unchanged, and the verdict is scheduled (AC-12)', async () => {

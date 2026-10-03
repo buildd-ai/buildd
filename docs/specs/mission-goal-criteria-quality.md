@@ -60,9 +60,10 @@ assertions:
 # Mission Goal Criteria Quality (Advisory Verdict)
 
 **Status: active.** Every acceptance criterion is asserted by a test. The
-mode constant ships `shadow`; the `surface` response path (§5) is built and
-tested with the mode passed as a parameter, and goes live only when the
-constant is raised in its own PR after the readout.
+mode constant is `surface` for single-user teams with the `mission_goal_quality`
+capability enabled (promotion from shadow via enabledDecisionShadows). The
+readout (§5) shows advisory verdicts in the mission create/patch response when
+surface is live for a team, and logs only in shadow mode.
 
 ## Why
 

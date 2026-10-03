@@ -113,8 +113,8 @@ describe('the question', () => {
     expect(GOAL_QUALITY_REWRITES['artifact-proof']).toContain('artifact_exists');
   });
 
-  it('ships shadow, versioned, on its own opt-in capability', () => {
-    expect(GOAL_QUALITY_MODE).toBe('shadow');
+  it('ships surface, versioned, on its own opt-in capability', () => {
+    expect(GOAL_QUALITY_MODE).toBe('surface');
     expect(GOAL_QUALITY_CAPABILITY).toBe('mission_goal_quality');
     expect(GOAL_QUALITY_PROMPT_VERSION).toBeTruthy();
   });
@@ -243,7 +243,7 @@ describe('adviseGoalQuality — the verdict', () => {
       site: 'goal_criteria_quality',
       v: `${GOAL_QUALITY_PROMPT_VERSION}|jev-test`,
       mission: '11111111',
-      mode: 'shadow',
+      mode: 'surface',
       graded: 2,
       weak: 2,
       rewrite: 'command-proof',
@@ -295,7 +295,7 @@ describe('goalQualityWarnings: the warned rows', () => {
         rewrite: 'state-outcome',
         promptVersion: GOAL_QUALITY_PROMPT_VERSION,
         model: 'jev-test',
-        mode: 'shadow',
+        mode: 'surface',
       },
     });
     const json = JSON.stringify(rows);
