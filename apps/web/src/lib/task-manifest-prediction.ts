@@ -1,6 +1,6 @@
 /**
  * The creation-manifest shadow's one post-insert hook (knowledge-base:
- * buildd/design/conflict-aware-orchestration.md §5a; jev-scheduling.md §3).
+ * buildd/design/conflict-aware-orchestration.md §5a; jev-scheduling.md §3, §5).
  * Every path that files work calls it with the row it just inserted: POST
  * /api/tasks (MCP and chat land there too), plan approval (approve-plan.ts)
  * and schedule-filed tasks (cron/schedules). The hook decides eligibility, so
@@ -14,10 +14,18 @@
  * Opt-in per team (`orchestration_manifest` in `teams.enabledDecisionShadows`);
  * a team that has not opted in costs one team-row read, after the response.
  *
+ * Once the new task's own prediction is recorded, the SAME after() callback
+ * asks about its soft pairs (jev-scheduling §5, `orchestration_ordering`):
+ * other in-flight tasks whose declared or predicted scope overlaps the new
+ * task's predicted scope. That check never runs when the prediction was
+ * skipped (a concrete manifest needs no prediction, and there is then no
+ * predicted scope to pair from).
+ *
  * The core module is imported lazily inside the run, so the callers' static
  * import graphs gain nothing.
  */
 import type { CreationManifestDeps, CreationManifestInput } from '@buildd/core/manifest-prediction-source';
+import type { OverlapRealShadowDeps } from '@buildd/core/orchestration-overlap-source';
 import { hasConcretePathManifest } from '@buildd/core/path-overlap';
 
 export type CreationManifestShadowInput = CreationManifestInput;
@@ -55,6 +63,7 @@ export function creationManifestEligibility(
 export async function runCreationManifestShadow(
   input: CreationManifestShadowInput,
   deps: CreationManifestDeps = {},
+  overlapDeps: OverlapRealShadowDeps = {},
 ): Promise<void> {
   try {
     const { predictCreationManifest } = await import('@buildd/core/manifest-prediction-source');
@@ -62,7 +71,22 @@ export async function runCreationManifestShadow(
       const { insertDecisionReceipts } = await import('./memory-decisions');
       await insertDecisionReceipts([receipt], { teamId: input.teamId, accountId: input.accountId ?? null });
     });
-    await predictCreationManifest(input, { ...deps, onReceipt });
+    const outcome = await predictCreationManifest(input, { ...deps, onReceipt });
+    if ('row' in outcome && outcome.row.selected.length > 0) {
+      const { runOverlapRealShadow } = await import('@buildd/core/orchestration-overlap-source');
+      await runOverlapRealShadow(
+        {
+          taskId: input.taskId,
+          title: input.title,
+          description: input.description ?? null,
+          declaredScope: null,
+          predictedScope: outcome.row.selected,
+          setConfidence: outcome.row.setConfidence ?? null,
+        },
+        { teamId: input.teamId, workspaceId: input.workspaceId, missionId: input.missionId ?? null, accountId: input.accountId ?? null, userId: input.userId ?? null },
+        overlapDeps,
+      );
+    }
   } catch (err) {
     console.warn('[manifest-shadow] failed (non-fatal):', (err as Error)?.message ?? err);
   }
@@ -77,6 +101,7 @@ export function scheduleCreationManifestShadow(
   ctx: { teamId: string | null | undefined; accountId?: string | null; userId?: string | null },
   schedule: (fn: () => Promise<unknown>) => void,
   deps: CreationManifestDeps = {},
+  overlapDeps: OverlapRealShadowDeps = {},
 ): boolean {
   let input: CreationManifestShadowInput;
   try {
@@ -103,7 +128,7 @@ export function scheduleCreationManifestShadow(
     console.warn('[manifest-shadow] not scheduled (non-fatal):', (err as Error)?.message ?? err);
     return false;
   }
-  const run = () => runCreationManifestShadow(input, deps);
+  const run = () => runCreationManifestShadow(input, deps, overlapDeps);
   try {
     schedule(run);
   } catch {
