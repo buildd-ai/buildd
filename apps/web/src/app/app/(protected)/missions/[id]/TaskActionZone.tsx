@@ -73,8 +73,8 @@ export interface TaskActionZoneProps {
   onChanged?: () => void | Promise<void>;
 }
 
-const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-[12px] font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
-const QUIET_BTN = 'inline-flex min-h-11 items-center px-3 font-mono text-[12px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50';
+const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
+const QUIET_BTN = 'inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50';
 
 export default function TaskActionZone({
   taskId,
@@ -204,7 +204,7 @@ export default function TaskActionZone({
               </Link>
             )}
           </div>
-          {retryError && <p className="font-mono text-[12px] text-status-error">{retryError}</p>}
+          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
         </div>
       )}
 
@@ -223,7 +223,7 @@ export default function TaskActionZone({
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
         <div className="space-y-3 border border-border-default p-4">
-          {!hideQueuedNote && <p className="font-mono text-[12px] text-text-secondary">
+          {!hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
               ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
               : 'Waiting for a runner to claim it.'}
@@ -252,10 +252,10 @@ export default function TaskActionZone({
               ? <span aria-hidden="true" className="font-mono text-status-success">✓</span>
               : <Spinner size="sm" className={start.status === 'queued' ? 'text-status-warning' : 'text-status-success'} aria-label="Start requested" />}
             <div className="font-mono">
-              <p className="text-[12px] font-medium text-text-primary">
+              <p className="text-meta font-medium text-text-primary">
                 {start.status === 'accepted' ? 'Task started' : start.status === 'queued' ? 'Queued at front' : 'Start requested'}
               </p>
-              <p className="text-[11px] text-text-secondary">
+              <p className="text-eyebrow text-text-secondary">
                 {start.status === 'accepted'
                   ? 'A worker claimed the task.'
                   : start.status === 'queued'
@@ -265,7 +265,7 @@ export default function TaskActionZone({
             </div>
           </div>
           {start.status === 'queued' && start.fleet && (
-            <p className={`border border-border-default bg-surface-3 p-2 font-mono text-[11px] ${start.fleet.count === 0 ? 'text-status-warning' : 'text-text-secondary'}`}>
+            <p className={`border border-border-default bg-surface-3 p-2 font-mono text-eyebrow ${start.fleet.count === 0 ? 'text-status-warning' : 'text-text-secondary'}`}>
               {formatFleetStatus(start.fleet, roleSlug)}
             </p>
           )}
@@ -276,19 +276,19 @@ export default function TaskActionZone({
       {start.status === 'gated' && refusal && (
         <div data-testid="task-start-refusal" data-gate={refusal.gateReason} className="space-y-3 border border-status-warning p-4">
           <div>
-            <p className="mb-1 font-mono text-[12px] font-medium text-status-warning">
+            <p className="mb-1 font-mono text-meta font-medium text-status-warning">
               {getGateReasonTitle(refusal, { deferredStartLabel: deferredLabel })}
             </p>
-            <p className="font-mono text-[11px] text-text-muted">
+            <p className="font-mono text-eyebrow text-text-muted">
               {getGateReasonSubtitle(refusal, { blockingCount: refusal.blockingDeps?.length })}
             </p>
             {refusal.error && refusal.error !== getGateReasonSubtitle(refusal) && (
-              <p className="mt-1 font-mono text-[11px] text-text-secondary">{refusal.error}</p>
+              <p className="mt-1 font-mono text-eyebrow text-text-secondary">{refusal.error}</p>
             )}
             {refusal.gateReason === 'unmerged_dep_pr' && (refusal.blockingDeps?.length ?? 0) > 0 && (
               <ul className="mt-2 space-y-1">
                 {refusal.blockingDeps!.map((dep, i) => (
-                  <li key={i} className="font-mono text-[11px]">
+                  <li key={i} className="font-mono text-eyebrow">
                     {dep.taskTitle && <span className="mr-1.5 text-text-secondary">{dep.taskTitle}</span>}
                     {dep.prUrl
                       ? <a href={dep.prUrl} target="_blank" rel="noopener noreferrer" className="text-accent-text hover:underline">PR #{dep.prNumber ?? '?'} ↗</a>
@@ -298,13 +298,13 @@ export default function TaskActionZone({
               </ul>
             )}
             {canOfferForce(refusal) && start.fleet && (
-              <p className="mt-2 border border-border-default bg-surface-3 p-2 font-mono text-[11px] text-text-muted">
+              <p className="mt-2 border border-border-default bg-surface-3 p-2 font-mono text-eyebrow text-text-muted">
                 {formatFleetStatus(start.fleet, roleSlug)}
               </p>
             )}
           </div>
           {refusal.gateReason === 'workspace_cap_reached' && (
-            <div className="flex flex-wrap items-center gap-2 font-mono text-[12px]">
+            <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
               <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
               <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
@@ -331,7 +331,7 @@ export default function TaskActionZone({
                 data-action="force_start"
                 onClick={() => start.start({ forceOverride: true, targetLocalUiUrl: target || undefined })}
                 disabled={starting}
-                className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-meta font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
                 {start.pending === 'force' ? 'Force starting…' : refusal.gateReason === 'deferred_start' ? 'Start now anyway' : 'Force start'}
               </button>
@@ -345,7 +345,7 @@ export default function TaskActionZone({
 
       {start.status === 'failed' && start.error && (
         <div className="flex flex-wrap items-center gap-2">
-          <p role="alert" className="font-mono text-[12px] text-status-error">{start.error}</p>
+          <p role="alert" className="font-mono text-meta text-status-error">{start.error}</p>
           <button type="button" onClick={start.dismiss} className={QUIET_BTN}>Try again</button>
         </div>
       )}

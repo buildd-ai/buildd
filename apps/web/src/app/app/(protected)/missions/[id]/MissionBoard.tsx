@@ -276,7 +276,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
                 <LandedMeter model={model} variant="band" compact={compact} />
               </>
             ) : (
-              <span data-testid="landed-empty" className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
+              <span data-testid="landed-empty" className="font-mono text-meta text-text-muted">
                 No tasks yet
               </span>
             )}

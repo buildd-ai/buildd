@@ -141,7 +141,7 @@ export function ProviderKeyCard({
           data-tone={loading ? 'muted' : keyHealthTone(status)}
           aria-hidden
         />
-        <b className="min-w-0 break-words text-[13px] font-semibold text-text-primary">{info.label}</b>
+        <b className="min-w-0 break-words text-body font-semibold text-text-primary">{info.label}</b>
         {recommended && <span className="text-[11px] font-semibold uppercase tracking-[1px] text-accent-text">recommended</span>}
         <span className={`status-pill status-pill-${pill.tone} shrink-0 ml-auto`} data-testid="provider-key-health">{pill.label}</span>
       </div>

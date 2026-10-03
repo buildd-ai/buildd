@@ -151,7 +151,7 @@ function ArmLine({ arm, minGraded }: { arm: PoolArmView; minGraded: number }) {
           {arm.role === 'incumbent' && <span className="font-mono text-[11px] text-text-muted">base</span>}
           {arm.status === 'paused' && <span className="font-mono text-[11px] text-status-warning">paused</span>}
         </span>
-        <span className="max-w-full truncate font-mono text-[13px] font-semibold text-text-primary" title={arm.model} data-testid="pool-model">{arm.model}</span>
+        <span className="max-w-full truncate font-mono text-body font-semibold text-text-primary" title={arm.model} data-testid="pool-model">{arm.model}</span>
       </span>
       <span className="hidden md:block" data-testid="pool-share"><TrafficBar share={arm.share} base={arm.role === 'incumbent'} /></span>
       <span className={`hidden md:block text-right font-mono text-[12.5px] tabular-nums ${win.learning ? 'text-text-muted' : 'text-text-primary'}`} data-testid="pool-win">{win.text}</span>

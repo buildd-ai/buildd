@@ -120,7 +120,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
             type="button"
             data-testid="landed-strip-open-jump"
             onClick={() => target != null && select(order[target])}
-            className="-mr-3 inline-flex h-11 items-center px-3 font-mono text-[13px] font-semibold text-accent-text hover:underline"
+            className="-mr-3 inline-flex h-11 items-center px-3 font-mono text-body font-semibold text-accent-text hover:underline"
           >
             {`${open.length} open ›`}
           </button>
@@ -159,14 +159,14 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
           data-testid="landed-strip-next-open"
           disabled={target == null}
           onClick={() => target != null && select(order[target])}
-          className={`${STEP_BTN} order-2 flex-1 text-[13px] font-medium ${compact ? '' : 'md:order-3'}`}
+          className={`${STEP_BTN} order-2 flex-1 text-body font-medium ${compact ? '' : 'md:order-3'}`}
         >
           {nextOpenLabel}
         </button>
         <button type="button" data-testid="landed-strip-next" aria-label="Next task" onClick={() => select(order[stepIndex(sel, 1, n)])} className={`${STEP_BTN} order-3 w-11 text-[18px] ${compact ? '' : 'md:order-2'}`}>›</button>
       </div>
       {!compact && (
-        <span className="hidden font-mono text-[11px] text-text-muted md:block">← → to move between tasks</span>
+        <span className="hidden font-mono text-eyebrow text-text-muted md:block">← → to move between tasks</span>
       )}
     </div>
   );
@@ -252,17 +252,17 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, index, n, tone, ca
       />
       <div aria-live="polite" className="flex min-w-0 flex-col gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[12px] font-semibold tabular-nums text-text-primary">{`${stripTick(index)} / ${n}`}</span>
-          <span data-testid="landed-strip-drawer-status" className={`border px-1.5 py-0.5 font-mono text-[11px] md:text-[10.5px] font-semibold uppercase tracking-[1.4px] ${TONE_BORDER[tone]} ${TONE_TEXT[tone]}`}>{pill}</span>
+          <span className="font-mono text-meta font-semibold tabular-nums text-text-primary">{`${stripTick(index)} / ${n}`}</span>
+          <span data-testid="landed-strip-drawer-status" className={`border px-1.5 py-0.5 font-mono text-chip font-semibold uppercase tracking-[1.4px] ${TONE_BORDER[tone]} ${TONE_TEXT[tone]}`}>{pill}</span>
           {t.roleName && (
-            <span className="inline-flex items-center gap-1 border border-border-default px-1.5 py-0.5 font-mono text-[11px] md:text-[10.5px] uppercase tracking-[1.4px] text-text-muted">
+            <span className="inline-flex items-center gap-1 border border-border-default px-1.5 py-0.5 font-mono text-chip uppercase tracking-[1.4px] text-text-muted">
               <RoleGlyph task={t} />{t.roleName}
             </span>
           )}
         </div>
         <p className={`font-mono font-semibold leading-snug text-text-primary [overflow-wrap:anywhere] ${compact ? 'text-[15px]' : 'text-[15px] md:text-[18px]'}`}>{t.title}</p>
-        {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-[13px] leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
-        <p className="font-mono text-[12px] text-text-muted">{meta}</p>
+        {why && <p data-testid="landed-strip-drawer-reason" className="font-mono text-body leading-normal text-text-secondary [overflow-wrap:anywhere]">{why}</p>}
+        <p className="font-mono text-meta text-text-muted">{meta}</p>
       </div>
       <div className={`mt-3 flex min-w-0 flex-col gap-2 ${compact ? '' : 'md:mt-0'}`}>
         {!landed && (
@@ -285,7 +285,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, index, n, tone, ca
         )}
         <div className="flex flex-wrap gap-2">
           {landed && t.pr?.url && (
-            <a href={t.pr.url} target="_blank" rel="noopener noreferrer" className="inline-flex h-11 flex-1 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-3">
+            <a href={t.pr.url} target="_blank" rel="noopener noreferrer" className="inline-flex h-11 flex-1 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3">
               {`PR #${t.pr.number} ↗`}
             </a>
           )}
@@ -293,7 +293,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, index, n, tone, ca
             href={taskSheetHref(link, t.id)}
             data-task-id={t.id}
             data-testid="landed-strip-drawer-open"
-            className="inline-flex h-11 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-[13px] font-semibold text-text-primary hover:bg-surface-3"
+            className="inline-flex h-11 items-center justify-center border-[1.5px] border-border-strong px-3.5 font-mono text-body font-semibold text-text-primary hover:bg-surface-3"
           >
             Task →
           </a>

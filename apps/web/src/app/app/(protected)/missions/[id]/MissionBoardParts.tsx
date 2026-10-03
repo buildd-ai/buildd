@@ -277,7 +277,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               key={id}
               data-testid="landed-strip-tick"
               data-open={open ? 'true' : undefined}
-              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-[11px] tabular-nums ${open ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
+              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${open ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
             >
               {numbered || i === sel ? stripTick(i) : open ? <i className="block h-1 w-1 bg-accent" /> : null}
             </span>
