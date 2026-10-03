@@ -185,6 +185,10 @@ export class MemoryStore {
     includeSuperseded?: boolean;
     /** Only rows a merged PR flagged for re-verification. */
     reverifyFlagged?: boolean;
+    /** Only rows carrying this tag. */
+    tag?: string;
+    /** Only team-wide rows (`project` null). Ignored when `project` is given. */
+    teamWide?: boolean;
     limit?: number;
     offset?: number;
   } = {}): Promise<{ results: MemorySearchResult[]; total: number; limit: number; offset: number }> {
@@ -210,6 +214,11 @@ export class MemoryStore {
     const scope = normalizeProject(params.project);
     if (scope) {
       conditions.push(eq(memories.project, scope));
+    } else if (params.teamWide) {
+      conditions.push(isNull(memories.project));
+    }
+    if (params.tag) {
+      conditions.push(sql`${memories.tags} @> ARRAY[${params.tag}]::text[]`);
     }
     // Tokenized OR match: a phrase-only ILIKE against a multi-word query (a task
     // title, say) almost never appears verbatim in a memory's title/content, so
