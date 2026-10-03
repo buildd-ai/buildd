@@ -5918,7 +5918,7 @@ describe('entity catalog injection at claim time', () => {
   });
   // OAuth budget pacing (packages/core/oauth-budget.ts). Seat auth reports no
   // cost, so pressure is learned from past exhaustion episodes. Its only effect
-  // is a lower per-seat concurrency cap (never below one) — see
+  // is a lower per-seat concurrency cap (retaining half the slots) — see
   // oauthParallelismCap.
   describe('oauth budget pacing', () => {
     // Several task UPDATEs can fire per claim (claim + post-claim bookkeeping),
@@ -5945,7 +5945,7 @@ describe('entity catalog injection at claim time', () => {
     /** Five episodes at 600 sonnet-equivalent turns → 'good' confidence, p25 = 600. */
     function learnedWindow() {
       return Array.from({ length: 5 }, (_, i) => ({
-        exhaustedAt: new Date(Date.now() - (24 + i) * 60 * 60 * 1000),
+        exhaustedAt: new Date(Date.now() - (1 + i) * 60 * 60 * 1000),
         resetsAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
         workerCount: 10,
         turns: 600,
@@ -6041,11 +6041,40 @@ describe('entity catalog injection at claim time', () => {
       expect(claimPayload()).not.toBeNull();
     });
 
+    it('keeps a ten-slot healthy seat claiming when saturated forecast has one busy worker', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 10, type: 'user',
+        authType: 'oauth', maxConcurrentSessions: null,
+      });
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ turns: 600, weightedTurns: 600 }));
+      mockCountLiveSeatWorkers.mockResolvedValue(1);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+      }));
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics?.deferrals?.oauth_parallelism).toBeUndefined();
+    });
+
+    it('fails open when the newest forecast observation belongs to a prior window', async () => {
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().map(e => ({
+        ...e, exhaustedAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+      })));
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({weightedTurns: 99_999}));
+      mockCountLiveSeatWorkers.mockResolvedValue(4);
+      const res = await POST(createMockRequest({
+        headers: {Authorization: 'Bearer bld_test'}, body: {runner: 'test-runner'},
+      }));
+      expect((await res.json()).workers).toHaveLength(1);
+      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
+    });
+
     it('narrows seat parallelism at high pressure instead of pausing', async () => {
       mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // Full window → cap of one session; the seat is already running one.
+      // Full forecast -> cap of three; the seat already has three Claude sessions.
       mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(1);
+      mockCountLiveSeatWorkers.mockResolvedValue(3);
 
       const res = await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
@@ -6088,12 +6117,12 @@ describe('entity catalog injection at claim time', () => {
           accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
         });
         mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-        // Full window → Claude cap of one session.
+        // Full forecast -> Claude cap of three sessions.
         mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
       });
 
       it('claims a failed-over task on Codex even when the Claude seat is at its cap', async () => {
-        mockCountLiveSeatWorkers.mockResolvedValue(1);
+        mockCountLiveSeatWorkers.mockResolvedValue(3);
         mockTasksFindMany.mockResolvedValue([
           pendingTask({ backend: 'claude', workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }),
         ]);
@@ -6112,9 +6141,9 @@ describe('entity catalog injection at claim time', () => {
 
     it('claims only up to the narrowed cap in one batch', async () => {
       mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // 75% → cap 3 of 5; two already live on the seat → one more slot.
+      // 75% → cap 4 of 5; three already live on the seat → one more slot.
       mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 3, turns: 450, weightedTurns: 450 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(2);
+      mockCountLiveSeatWorkers.mockResolvedValue(3);
       mockTasksFindMany.mockResolvedValue([pendingTask(), pendingTask({ id: 'task-2' })]);
 
       const res = await POST(createMockRequest({
