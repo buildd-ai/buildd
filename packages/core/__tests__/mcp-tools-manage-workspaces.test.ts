@@ -63,6 +63,27 @@ describe('manage_workspaces get', () => {
     expect(mockApi.mock.calls[0][0]).toBe(`/api/workspaces/${WORKSPACE_ID}/config`);
   });
 
+  it('passes gitConfig through verbatim whether or not onboarding config is present (AC-16)', async () => {
+    for (const gitConfig of [
+      { autoMergePR: true },
+      { autoMergePR: true, onboarding: { waived: { 'build-command': { reason: 'no build step', at: '2026-01-01T00:00:00Z' } } } },
+    ]) {
+      const config = { gitConfig, configStatus: 'configured', releaseConfig: null };
+      mockApi = mock().mockResolvedValue(config);
+
+      const result = await handleBuilddAction(
+        mockApi as unknown as ApiFn,
+        'manage_workspaces',
+        { action: 'get', workspaceId: WORKSPACE_ID },
+        createContext(),
+      );
+
+      expect(result.content[0].text).toBe(
+        `Workspace ${WORKSPACE_ID} config:\n${JSON.stringify(config, null, 2)}`,
+      );
+    }
+  });
+
   it('requires a resolvable workspace', async () => {
     await expect(
       handleBuilddAction(

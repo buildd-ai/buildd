@@ -379,6 +379,34 @@ describe('waivers', () => {
   });
 });
 
+// ─── AC-16: the new gitConfig.onboarding field is a no-op when absent ───────
+
+describe('gitConfig.onboarding absence changes nothing (AC-16)', () => {
+  it('an entirely absent gitConfig reads identically to an explicit empty one', () => {
+    const noGitConfig = computeReadiness({ files: ['package.json'], manifests: { 'package.json': '{}' } });
+    const emptyGitConfig = computeReadiness({ files: ['package.json'], manifests: { 'package.json': '{}' }, gitConfig: {} });
+    expect(noGitConfig).toEqual(emptyGitConfig);
+  });
+
+  it('gitConfig with no onboarding key reads identically to onboarding present but empty', () => {
+    const withoutOnboarding = computeReadiness({ ...buildddShaped, gitConfig: { defaultBranch: 'dev' } });
+    const withEmptyOnboarding = computeReadiness({
+      ...buildddShaped,
+      gitConfig: { defaultBranch: 'dev', onboarding: {} },
+    });
+    expect(withoutOnboarding).toEqual(withEmptyOnboarding);
+  });
+
+  it('a pre-existing workspace with other gitConfig fields set, but no onboarding key, is unaffected', () => {
+    const r = computeReadiness({
+      ...buildddShaped,
+      gitConfig: { defaultBranch: 'dev', specConformance: { specsRoot: 'docs/specs' } },
+    });
+    expect(item(r, 'merge-policy').waived).toBeUndefined();
+    expect(r.nextStep).not.toBe('link-repo');
+  });
+});
+
 // ─── AC-1: no buildd-shaped output for non-buildd repos ──────────────────────
 
 const BUILDD_SHAPED = [
