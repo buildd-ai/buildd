@@ -3640,6 +3640,7 @@ export const notificationPreferences = pgTable('notification_preferences', {
   taskFailed: boolean('task_failed').default(true).notNull(),
   credentialExpired: boolean('credential_expired').default(true).notNull(),
   connectorBlocked: boolean('connector_blocked').default(true).notNull(),
+  artifactReady: boolean('artifact_ready').default(false).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -4804,6 +4805,19 @@ export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferI
 // pick's dynamic-definition fingerprint and offered-index map, the selection,
 // truncation/unknown-scope markers, candidate coverage and the same-task
 // baselines. It never feeds tasks.path_manifest or dependsOn.
+/** A task's expected size, from its completed neighbours (packages/core/task-size-estimate.ts). */
+export interface ExpectedTaskSize {
+  /** Median files changed. */
+  files: number;
+  /** Median session minutes, start to completion. */
+  minutes: number;
+  source: 'neighbours';
+  /** Neighbours required. */
+  k: number;
+  /** Neighbours with a size that were used. */
+  n: number;
+}
+
 export const orchestrationManifestPredictions = pgTable('orchestration_manifest_predictions', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
@@ -4833,6 +4847,13 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
   pickCap: integer('pick_cap').notNull(),
   regexPaths: jsonb('regex_paths').$type<string[]>().notNull(),
   neighbourUnionPaths: jsonb('neighbour_union_paths').$type<string[]>().notNull(),
+  // Confidence the selected set is right (jev-scheduling §3): the product of
+  // the pick confidences, recalibrated later by the readout. Null when there
+  // were no picks or any pick carried no confidence.
+  setConfidence: real('set_confidence'),
+  // { files, minutes, source, k, n } from completed neighbours
+  // (task-size-estimate.ts). Null when fewer than k neighbours had a size.
+  expectedSize: jsonb('expected_size').$type<ExpectedTaskSize>(),
   latencyMs: integer('latency_ms').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -4842,3 +4863,6 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
+
+export type Artifact = typeof artifacts.$inferSelect;
+export type NewArtifact = typeof artifacts.$inferInsert;

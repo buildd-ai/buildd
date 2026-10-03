@@ -1585,27 +1585,14 @@ export async function POST(req: NextRequest) {
     // The creation-manifest shadow (lib/task-manifest-prediction.ts, design
     // §5a): which files the decision model would declare for a missing-scope
     // task. Opt-in per team, after the response, record only — the manifest,
-    // dependsOn and every rejection above are already final. Explicit (or
-    // deterministically inferred) concrete manifests win, so none is scheduled.
-    if (
-      intake.outcome.action !== 'attached'
-      && (task.taskClass ?? 'work') === 'work'
-      && targetWorkspace.teamId
-      && !hasConcretePathManifest(task.pathManifest ?? null)
-    ) {
+    // dependsOn and every rejection above are already final. The hook decides
+    // eligibility: explicit (or deterministically inferred) concrete manifests
+    // win, and only work rows of a file-shaped kind are predicted.
+    if (intake.outcome.action !== 'attached') {
       try {
-        const taskContext = (task.context ?? null) as Record<string, unknown> | null;
-        scheduleCreationManifestShadow({
-          taskId: task.id,
+        scheduleCreationManifestShadow(task, {
           teamId: targetWorkspace.teamId,
-          workspaceId,
-          missionId: task.missionId ?? null,
           accountId: creatorContext.createdByAccountId ?? null,
-          title: task.title,
-          description: task.description ?? null,
-          createdAt: task.createdAt instanceof Date ? task.createdAt : new Date(),
-          callerManifest: task.pathManifest ?? null,
-          baseRef: typeof taskContext?.baseBranch === 'string' ? taskContext.baseBranch : null,
         }, after);
       } catch (err) {
         console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);

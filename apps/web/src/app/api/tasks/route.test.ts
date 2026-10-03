@@ -3060,22 +3060,21 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(200);
       expect(captured().pathManifest).toEqual(['**']);
       expect(mockScheduleCreationManifestShadow).toHaveBeenCalledTimes(1);
-      const [input, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
-      expect(input).toMatchObject({
-        taskId: captured().id,
-        teamId: 'team-1',
+      // The inserted row goes to the one post-insert hook, which decides eligibility.
+      const [row, ctx, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row).toMatchObject({
+        id: captured().id,
         workspaceId: 'ws-1',
         missionId: 'mission-1',
-        accountId: 'account-123',
         title: 'Build feature X',
         description: 'Do it',
-        callerManifest: ['**'],
+        pathManifest: ['**'],
       });
-      expect(input.createdAt instanceof Date).toBe(true);
+      expect(ctx).toEqual({ teamId: 'team-1', accountId: 'account-123' });
       expect(typeof schedule).toBe('function');
     });
 
-    it('explicit caller manifests win: no prediction is scheduled', async () => {
+    it('an explicit caller manifest reaches the hook as stored (the hook declines it: caller manifests win)', async () => {
       missionPathManifestSetup();
       mockTasksFindMany.mockResolvedValue([]);
       const response = await POST(createMockRequest({
@@ -3084,7 +3083,8 @@ describe('POST /api/tasks', () => {
         body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/feature.ts'] },
       }));
       expect(response.status).toBe(200);
-      expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
+      const [row] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row.pathManifest).toEqual(['apps/web/src/lib/feature.ts']);
     });
 
     it('shadow leaves the manifest_required rejection byte-for-byte unchanged and schedules nothing', async () => {
