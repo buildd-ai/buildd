@@ -17,6 +17,8 @@ const mockArtifactsFindFirst = mock(() => null as any);
 const mockArtifactsFindMany = mock(() => [] as any[]);
 const mockArtifactsInsert = mock(() => [] as any);
 const mockArtifactsUpdate = mock(() => [] as any);
+const mockNotifyTeamOf = mock(async () => {});
+const mockIsReviewArtifact = mock(() => false);
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -33,6 +35,17 @@ mock.module('@/lib/team-access', () => ({
 
 mock.module('@/lib/app-url', () => ({
   appBaseUrl: () => 'https://buildd.test',
+}));
+
+mock.module('@/lib/notify', () => ({
+  notifyTeamOf: mockNotifyTeamOf,
+}));
+
+mock.module('@/lib/artifact-prominence', () => ({
+  isReviewArtifact: mockIsReviewArtifact,
+  BYPRODUCT_ARTIFACT_TYPES: [],
+  REVIEW_ARTIFACT_TYPES: [],
+  WORKING_ARTIFACT_TYPES: [],
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -66,6 +79,7 @@ mock.module('drizzle-orm', () => ({
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   like: (field: any, value: any) => ({ field, value, type: 'like' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
