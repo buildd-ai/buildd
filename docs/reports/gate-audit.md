@@ -338,6 +338,6 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 | `apps/web/src/lib/path-claim-check.ts:checkPathClaim` | `path_claim` | accepted | Each successful call, including an already-held-path no-op; excluded from friction rankings and bypass rates. |
 | `apps/web/src/app/api/tasks/route.ts:POST` | `decomposition_refused` | rejected | Re-checks, at the moment the organizer's own planning task tries to create a non-retry child, whether sibling tasks were pre-filed against the mission after that planning task was created. `runMission()`'s own pre-filed-task detection only runs once, inside the SAME request that creates the mission — too early to see tasks a creator files right after. `detail.preFiledTaskIds`, `detail.organizerTaskId`; persists `missions.decompositionSkipped=true` and a mission note on the first trip. Exempt: manual-orchestration missions, and any create with an explicit `parentTaskId` (a retry naming the failing task). |
 
-`get_manifest_coverage` and `get_path_claim_stats` read aggregate REST metrics.
+`get_manifest_coverage`, `get_path_claim_stats` and `get_decision_stats` read aggregate REST metrics.
 Use `get_failure_analytics` with `family=gate` and
 `errorPrefix="Change intent conflict"` to count delivered change-intent warnings.
