@@ -650,6 +650,7 @@ export interface TouchedObservation {
 
 export type ManifestPredictionLabel =
   | { status: 'missing'; reason: 'no_terminal_observation' }
+  | { status: 'missing'; reason: 'incomplete_observation'; observedPaths: string[]; reasons: string[] }
   /** Every session failed: what it touched is failed work, not the task's scope. */
   | { status: 'missing'; reason: 'failed_work_only'; failedWork: string[] }
   | {

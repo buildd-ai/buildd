@@ -13,6 +13,7 @@ const fake = {
   executed: [] as any[],
   executeRows: [] as any[],
   selectRows: [] as any[],
+  tableRows: {} as Record<string, any[]>,
   selects: [] as { table: string; where: any }[],
   throwOnInsert: false,
 };
@@ -33,9 +34,10 @@ mock.module('../db/client', () => ({
       from: (table: any) => ({
         where: (where: any) => {
           fake.selects.push({ table: nameOf(table), where });
-          const res: any = Promise.resolve(fake.selectRows);
+          const rows = fake.tableRows[nameOf(table)] ?? fake.selectRows;
+          const res: any = Promise.resolve(rows);
           res.groupBy = async () => fake.selectRows;
-          res.limit = async () => fake.selectRows;
+          res.limit = async () => rows;
           return res;
         },
       }),
@@ -67,6 +69,7 @@ beforeEach(() => {
   fake.executed = [];
   fake.executeRows = [];
   fake.selectRows = [];
+  fake.tableRows = {};
   fake.selects = [];
   fake.throwOnInsert = false;
 });
@@ -371,5 +374,55 @@ describe('readout predicates', () => {
     expect(w.sql).toContain('"orchestration_manifest_predictions"."workspace_id" = $1');
     expect(w.sql).toContain('"orchestration_manifest_predictions"."created_at" >= $2');
     expect(w.sql).toContain('"orchestration_manifest_predictions"."created_at" < $3');
+  });
+});
+
+
+describe('manifest outcome PR union', () => {
+  const setup = () => {
+    fake.tableRows.orchestration_manifest_predictions = [{ id: 'prediction', taskId: TASK, candidates: ['session.ts', 'pr.ts'], selected: ['pr.ts'], picks: [], stopReason: 'done', complete: true, unknownScope: false, allApplied: false, regexPaths: [], neighbourUnionPaths: [] }];
+    fake.tableRows.orchestration_touch_labels = [{ taskId: TASK, workerStatus: 'completed', touchedPaths: ['session.ts'] }];
+    fake.tableRows.workers = [{ taskId: TASK, prNumber: 1, mergedAt: AFTER }];
+  };
+  it('unions the pinned PR files into terminal session observations', async () => {
+    setup();
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'complete', files: ['pr.ts'], headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'observed', actual: ['pr.ts', 'session.ts'], landed: true, unknownScope: false });
+    expect(rows[0].prDiffs[0]).toMatchObject({ status: 'complete', headSha: 'head', baseSha: 'base' });
+  });
+  it('grades a complete PR even when no terminal label exists', async () => {
+    setup(); fake.tableRows.orchestration_touch_labels = [];
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'complete', files: ['pr.ts'], headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'observed', actual: ['pr.ts'] });
+  });
+  it('keeps failed session work out of the PR truth', async () => {
+    setup(); fake.tableRows.orchestration_touch_labels[0].workerStatus = 'failed';
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'complete', files: ['pr.ts'], headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'observed', actual: ['pr.ts'], failedWork: ['session.ts'], failed: true });
+  });
+  it('does not grade truncated successful touch observations', async () => {
+    setup(); fake.tableRows.orchestration_touch_labels[0].truncated = true;
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, { loadPrDiffs: async () => new Map() });
+    expect(rows[0].label).toMatchObject({ status: 'missing', reason: 'incomplete_observation', reasons: ['touch_labels_truncated'] });
+  });
+  it('loads the label PR when the worker no longer carries it', async () => {
+    setup(); fake.tableRows.workers = []; fake.tableRows.orchestration_touch_labels[0].prNumber = 1;
+    const loadPrDiffs = mock(async () => new Map());
+    await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, { loadPrDiffs });
+    expect(loadPrDiffs).toHaveBeenCalledWith(WS, [{ taskId: TASK, prNumber: 1 }]);
+  });
+  it('records truncated PR data and withholds complete-scope grading', async () => {
+    setup();
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'incomplete', reason: 'truncated', detail: 'partial file list', headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'missing', reason: 'incomplete_observation', observedPaths: ['session.ts'], reasons: ['pr_diff_truncated'] });
+    expect(rows[0].prDiffs[0]).toMatchObject({ status: 'incomplete', reason: 'truncated' });
   });
 });
