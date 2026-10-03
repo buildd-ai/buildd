@@ -138,7 +138,9 @@ function BoardView({
                 >
                   {p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
                 </SectionLabel>
-                <span aria-hidden="true" className="ml-auto flex shrink-0 gap-0.5">
+                {/* The squares give way first (clipped) so a long phase never
+                    pushes the label to "1 TA…" or the count off the screen. */}
+                <span aria-hidden="true" data-testid="board-phase-progress" className="ml-auto flex min-w-0 shrink-[100] gap-0.5 overflow-hidden">
                   {p.taskIds.map((id, k) => (
                     <i key={id} className={`block h-2 w-2 border ${k < p.done ? 'border-status-success bg-status-success' : 'border-[var(--fleet-border-mid)]'}`} />
                   ))}
@@ -237,7 +239,8 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
         <div className="flex flex-wrap gap-3">
           {model.runners.map(r => (
-            <span key={r.id} className="flex items-center gap-1" title={r.machine ? `${r.name} · ${r.machine}` : r.name}>
+            // Wraps: a ten-slot runner overran the half-width phone cell onto Needs you.
+            <span key={r.id} data-testid="fleet-runner" className="flex min-w-0 flex-wrap items-center gap-1" title={r.machine ? `${r.name} · ${r.machine}` : r.name}>
               <RunnerAvatar runner={r.name} />
               {r.slots.map((s, i) => (
                 <span
