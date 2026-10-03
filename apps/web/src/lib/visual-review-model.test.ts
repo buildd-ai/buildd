@@ -461,7 +461,7 @@ describe('buildVisualReviewModel: phase', () => {
     const copy = describeVisualPhase(m);
     expect(copy.label).toBe('1 of 1 ok');
     expect(copy.detail).not.toMatch(/issue/);
-    expect(copy.detail).toContain('1 decided by you');
+    expect(copy.detail).toContain('1 reviewed');
   });
 
   it('every phase has copy with no dash placeholders', () => {
