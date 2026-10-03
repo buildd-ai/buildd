@@ -19,6 +19,8 @@
 #   QA_PORT          — port to serve the app on (default: 3100, to avoid clashing with `bun dev`)
 #   QA_OUTPUT        — screenshot output dir (default: /tmp/qa)
 #   QA_ROUTES        — comma-separated ad-hoc paths (CLI args override this)
+#   QA_PLAN          — capture plan (path or inline JSON) instead of routes: states opened
+#                      by steps before a shot. See docs/specs/qa-capture-steps.md.
 #   QA_VIEWPORT      — "mobile" (390x844 touch phone) or WIDTHxHEIGHT (default: 1280x900)
 #   DISABLE_WRITES   — default "true" here, so a capture pass can't mutate the DB
 #   DATABASE_URL     — inherited from your .env; point it at a dev clone to be safe
@@ -38,7 +40,7 @@ if [ "$#" -gt 0 ]; then
 fi
 
 echo "[shoot] repo=$ROOT port=$QA_PORT output=$QA_OUTPUT"
-echo "[shoot] routes=${QA_ROUTES:-<manifest>}"
+if [ -n "${QA_PLAN:-}" ]; then echo "[shoot] plan=QA_PLAN"; else echo "[shoot] routes=${QA_ROUTES:-<manifest>}"; fi
 echo "[shoot] dev user=${DEV_USER_EMAIL:-<mock dev@localhost>}"
 
 # --- start the app ---
@@ -82,6 +84,7 @@ done
 QA_BASE_URL="$BASE_URL" \
 QA_OUTPUT="$QA_OUTPUT" \
 QA_ROUTES="${QA_ROUTES:-}" \
+QA_PLAN="${QA_PLAN:-}" \
 QA_NO_LOGIN=1 \
   bun run scripts/qa/capture.ts
 

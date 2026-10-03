@@ -180,6 +180,32 @@ describe('DEFAULT_ROLES', () => {
       expect(role().supersededContentHashes).not.toContain(roleContentHash(role().content));
     });
 
+    // docs/specs/qa-capture-steps.md.
+    it('prompt captures modals, menus and gated states with a QA_PLAN, and never commits', () => {
+      const c = role().content;
+      const plan = c.slice(c.indexOf('### Modals, menus and gated states'), c.indexOf('## 3. Judge'));
+      expect(plan).toContain('write a `QA_PLAN` state and capture it');
+      for (const a of ['click', 'hover', 'fill', 'press', 'select', 'waitFor', 'waitMs']) expect(plan).toContain(`\`${a}\``);
+      expect(plan).toContain('**Steps never commit.**');
+      expect(plan).toContain('`commit: true`');
+      expect(plan).toContain('QA_PAGE_SOURCE=sandbox');
+      expect(plan).toContain('stepFailed');
+      // The outside-repo kit and both sandbox recipes carry the plan too.
+      expect(c).toContain('/tmp/qa-kit/plan.json');
+      expect(c).toContain("-f plan='<plan JSON>'");
+      expect(c).toMatch(/state: "<the QA_PLAN state key/);
+    });
+
+    it('prompt keeps unsure for states the data cannot produce, with a fixture task linked', () => {
+      const c = role().content;
+      const act = c.slice(c.indexOf('## 4. Act on verdicts'), c.indexOf('## Rounds'));
+      const unsure = act.slice(act.indexOf('- **unsure**'));
+      expect(unsure).toMatch(/cannot produce with the data available/);
+      expect(unsure).toContain('add a ?state= fixture for <state>');
+      expect(unsure).toContain('fixTaskId');
+      expect(unsure).toMatch(/no follow-up task is not done/);
+    });
+
     // docs/design/visual-qa-auditor.md, "Page source".
     it('prompt asks for the page source first, records it on each shot, and parks the auth walls', () => {
       const c = role().content;

@@ -28,18 +28,23 @@ on:
         type: string
         required: false
         default: ""
+      plan:
+        description: "QA_PLAN capture plan, instead of routes: the JSON itself, or a repo path to it. Steps open dialogs/menus before a shot (docs/specs/qa-capture-steps.md)."
+        type: string
+        required: false
+        default: ""
       viewport:
         description: "'mobile' (390x844 touch), 'desktop', or WIDTHxHEIGHT. Empty = 1280x900 desktop."
         type: string
         required: false
         default: ""
       mission_id:
-        description: "Resolves /app/missions/:id in the manifest (manifest mode only)."
+        description: "Resolves /app/missions/:id in the manifest or a plan (not in routes)."
         type: string
         required: false
         default: ""
       task_id:
-        description: "Resolves /app/tasks/:id in the manifest (manifest mode only)."
+        description: "Resolves /app/tasks/:id in the manifest or a plan (not in routes)."
         type: string
         required: false
         default: ""
@@ -315,6 +320,8 @@ jobs:
           QA_MANIFEST: ${{ env.QA_MANIFEST }}
           # Inputs pass through env, never interpolated into the script.
           QA_ROUTES: ${{ inputs.routes }}
+          # Empty unless dispatched with a plan; capture.ts ignores an empty one.
+          QA_PLAN: ${{ inputs.plan }}
           QA_VIEWPORT: ${{ inputs.viewport }}
           QA_THEME: ${{ inputs.theme }}
           QA_MISSION_ID: ${{ inputs.mission_id }}
