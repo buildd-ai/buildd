@@ -247,7 +247,7 @@ describe('deciding', () => {
     expect(q('deck-toast-label')!.textContent).toContain('/app/settings, desktop');
     await act(async () => { resolve({ ok: true, reviewIds: ['g1'], fixTaskId: null, cancelledFixTaskId: null, guidanceTaskId: 'fix-a', outcome: 'fix_started' }); });
     await flush();
-    expect(q('deck-toast-outcome')!.textContent).toBe('Not a bug. Fix already started, so it got a note.');
+    expect(q('deck-toast-outcome')!.textContent).toBe('Not a bug. Fix already started; note sent to it.');
 
     // An older server sends no outcome: a cancel still reads as one, anything else as saved.
     const dropped = mock(async (input: DecideInput): Promise<DecideResult> => ({ ok: true, reviewIds: input.cells.map(() => 'd1'), fixTaskId: null, cancelledFixTaskId: 'fix-a', guidanceTaskId: null, outcome: null }));

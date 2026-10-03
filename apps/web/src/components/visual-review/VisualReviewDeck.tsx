@@ -111,7 +111,7 @@ export const OUTCOME_COPY: Record<VisualReviewOutcome, string> = {
   fix_noted: 'Fix kept. Note sent to it.',
   fix_done: 'Fix already finished. Re-checked on the next screenshot.',
   fix_cancelled: 'Not a bug. Fix cancelled.',
-  fix_started: 'Not a bug. Fix already started, so it got a note.',
+  fix_started: 'Not a bug. Fix already started; note sent to it.',
   fix_still_linked: 'Not a bug here. Fix stays open for the other screen.',
   not_a_bug: 'Marked not a bug.',
   marked_fixed: 'Marked fixed.',
