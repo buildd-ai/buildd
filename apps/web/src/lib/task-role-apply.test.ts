@@ -35,7 +35,7 @@ function record(over: Partial<TaskRoleShadowRecord> = {}): TaskRoleShadowRecord 
 }
 
 const NOW = () => new Date('2026-10-02T12:00:00Z');
-const INPUT = { taskId: 'task-1', statedRoleSlug: null, teamId: 'team-1' };
+const INPUT = { taskId: 'task-1', statedRoleSlug: null, teamId: 'team-1', workspaceId: 'ws-1' };
 
 describe('applyTaskRoleDecision', () => {
   it('writes a confident in-set answer once, with the roleInferred stamp', async () => {
@@ -129,7 +129,7 @@ describe('applyTaskRoleDecision', () => {
     });
     expect(recordDecision).toHaveBeenCalledTimes(1);
     expect(recordDecision.mock.calls[0][0]).toMatchObject({
-      teamId: 'team-1', capability: 'task_role_shadow', fingerprint: 'fp-abc123',
+      teamId: 'team-1', workspaceId: 'ws-1', capability: 'task_role_shadow', fingerprint: 'fp-abc123',
       verdict: 'builder', confidence: 0.97, appliedAnswer: 'builder', applied: true, status: 'applied',
     });
 

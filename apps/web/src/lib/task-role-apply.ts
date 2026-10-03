@@ -131,7 +131,7 @@ async function safeRecordDecision(record: RecordDecisionFn, input: DecisionLedge
  * on this task's behalf.
  */
 export async function applyTaskRoleDecision(
-  input: Pick<TaskRoleShadowInput, 'taskId' | 'statedRoleSlug'> & { teamId?: string },
+  input: Pick<TaskRoleShadowInput, 'taskId' | 'statedRoleSlug'> & { teamId?: string; workspaceId?: string },
   shadow: TaskRoleShadowResult,
   deps: ApplyDeps = {},
 ): Promise<{ outcome: ApplyOutcome; stamp?: RoleInferredStamp }> {
@@ -146,6 +146,7 @@ export async function applyTaskRoleDecision(
     if (!input.teamId || !fingerprint) return;
     await safeRecordDecision(recordFn, {
       teamId: input.teamId,
+      workspaceId: input.workspaceId ?? null,
       taskId: input.taskId,
       capability: TASK_ROLE_CAPABILITY,
       fingerprint,
