@@ -1340,6 +1340,11 @@ async function handlePullRequestEvent(event: {
             console.error(`[webhook] resolveCompletedTask failed for task ${worker.task!.id}:`, e),
           );
         }
+        // An attempt task's completion deliberately does not re-plan
+        // (mission-loop.ts). The merge it carried still should.
+        if (worker.task.taskClass === 'attempt' && worker.task.missionId && mergeIsNew) {
+          wakeMissionAfterResponse(worker.task.missionId, 'pr_merged');
+        }
       }
     } else if (mergeIsNew && worker.task.missionId) {
       // The task was already completed (its worker finished with the PR open),
