@@ -101,8 +101,15 @@ export interface ChatThreadProps {
    * called with an empty assistant message.
    */
   steps?(message: ChatMessage, streaming: boolean): readonly StepData[];
-  /** The thinking panel's summary while it streams (0.9.0). Default "Thinking". */
+  /** @deprecated 0.17.0: the live line has no header, so this is not drawn. */
   thinkingTitle?: ReactNode;
+  /** The live line's accessible name before its label (0.17.0), e.g. "Buildd is working". Default "Working". */
+  thinkingName?: string;
+  /**
+   * Draw the step pinned under the live line (0.17.0), e.g. a write as the
+   * object it returned. Undefined keeps the default row.
+   */
+  renderPinnedStep?(step: StepData, message: ChatMessage): ReactNode | undefined;
   /**
    * Fold a finished turn (0.13.0): its steps and its tool-call runs collapse
    * under one line, e.g. "Did 6 steps · filed 2 tasks", that unfolds on tap.
@@ -153,7 +160,7 @@ function eventOf(m: ChatMessage, type: string): EventData | null {
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
   renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
-  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingTitle, turnFold,
+  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingName, renderPinnedStep, turnFold,
   viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
   const handoffs = useMemo(() => latestHandoffs(messages), [messages]);
@@ -295,12 +302,21 @@ export function ChatThread({
         const steps = m.role === 'assistant' ? (stepsOf ? stepsOf(m, streaming) : thinkingSteps(m.parts, streaming)) : [];
         const foldLine = m.role === 'assistant' && !streaming && turnFold ? turnFold.summary(m, steps) : null;
         const foldOpen = foldLine != null && turnFold!.isOpen(m);
+        // An app checklist with no steps while the answer streams: nothing left to show working.
+        const answering = streaming && steps.length === 0 && m.parts.some(p => isTextPart(p) && !!p.text.trim());
         return (
           <div key={m.id} className="kit-msg" data-role={m.role} data-message-id={m.id} data-streaming={streaming || undefined} data-folded={(foldLine != null && !foldOpen) || undefined}>
             {head(m, ctx)}
             {m.role === 'assistant' && (foldLine != null
               ? <ThinkingPanel steps={steps} streaming={false} summary={foldLine} open={foldOpen} onToggle={open => turnFold!.onToggle(m, open)} />
-              : <ThinkingPanel steps={steps} streaming={streaming} title={thinkingTitle} />)}
+              : !answering && (
+                <ThinkingPanel
+                  steps={steps}
+                  streaming={streaming}
+                  name={thinkingName}
+                  renderPinned={renderPinnedStep ? s => renderPinnedStep(s, m) : undefined}
+                />
+              ))}
             {partsOf(m, ctx, foldLine != null && !foldOpen)}
             {foot(m, ctx)}
           </div>
@@ -308,7 +324,7 @@ export function ChatThread({
       })}
       {waitingForFirstChunk && (
         <div className="kit-msg" data-role="assistant" data-streaming>
-          <ThinkingPanel steps={stepsOf ? stepsOf(PENDING, true) : thinkingSteps([], true)} streaming title={thinkingTitle} />
+          <ThinkingPanel steps={stepsOf ? stepsOf(PENDING, true) : thinkingSteps([], true)} streaming name={thinkingName} />
         </div>
       )}
       {error && !lastHasTurnError && <div className="kit-error" role="alert">{error}</div>}

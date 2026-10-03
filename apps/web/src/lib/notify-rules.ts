@@ -6,7 +6,7 @@
  */
 
 /** Toggleable per-team event types. Mirrors the boolean columns on `notification_preferences`. */
-export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired' | 'connectorBlocked';
+export type NotifyEvent = 'taskClaimed' | 'taskCompleted' | 'taskFailed' | 'credentialExpired' | 'connectorBlocked' | 'artifactReady';
 
 /**
  * Every alert a team can receive on its own channel. `needsAttention` is the
@@ -24,6 +24,7 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: Record<NotifyEvent, boolean> = {
   taskFailed: true,
   credentialExpired: true,
   connectorBlocked: true,
+  artifactReady: false,
 };
 
 /**

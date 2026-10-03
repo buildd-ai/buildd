@@ -1,0 +1,1 @@
+ALTER TABLE "notification_preferences" ADD COLUMN "artifact_ready" boolean DEFAULT false NOT NULL;

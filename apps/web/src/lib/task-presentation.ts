@@ -512,8 +512,15 @@ export function deriveChainPosition({
  * If reduction would eliminate every blocker — only possible with a dependency
  * cycle, which is malformed data — the full list is returned rather than
  * leaving a BLOCKED task with no visible reason.
+ *
+ * Exported for the mission Landed strip (mission-progress-strip-ordering.md
+ * ADJ-3), which feeds it the shared adjacency's edges so the Timeline rail,
+ * the Activity grid and the strip name the same frontier.
  */
-function reduceToFrontier(blockedBy: BlockRef[], deps: ChainPositionDep[]): BlockRef[] {
+export function reduceToFrontier<B extends Pick<BlockRef, 'id'>>(
+  blockedBy: B[],
+  deps: ReadonlyArray<Pick<ChainPositionDep, 'id' | 'dependsOn'>>,
+): B[] {
   if (blockedBy.length < 2) return blockedBy;
 
   const edges = new Map<string, string[]>();

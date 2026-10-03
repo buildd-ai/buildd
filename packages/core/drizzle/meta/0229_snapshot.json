@@ -1,6 +1,6 @@
 {
-  "id": "6a203d2e-8785-4574-af37-4b9fc0d4d8e7",
-  "prevId": "cb4473e9-473f-4820-82f7-e0cc3aad2588",
+  "id": "12f35c58-ba23-444d-a92d-74dd46097e6a",
+  "prevId": "71aee5c4-60b8-4dea-b25a-d92ac83e2e5d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -9065,6 +9065,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "artifact_ready": {
+          "name": "artifact_ready",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",
