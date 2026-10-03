@@ -5,6 +5,12 @@
  *   &variant=mid-open     nine landed, one open in the middle (a local mission)
  *   &variant=all-landed   everything landed: the drawer opens on the last task
  *   &variant=states       one task per action state: queued, failed, blocked, landed
+ *   &variant=linear       A→B→C→D→E (strip spec §7.1)
+ *   &variant=fan-out      A→{B, C, D} (§7.2)
+ *   &variant=fan-in       {B, C}→D (§7.3)
+ *   &variant=field        the 14-cell field case (§7.8)
+ *   &variant=wide         one root, 30 dependents (§7.10)
+ *   &select=<letter>      a DAG variant opens with that task selected
  *
  * Illustrative rows only (made-up ids and titles), built through the real
  * `buildMissionBoard`, so the strip reads exactly what the mission page reads.
@@ -14,7 +20,7 @@ import type { MissionExecutor } from '@/lib/task-actions';
 import { MISSION_TASK_STRIP_FIXTURE_STATE } from './visual-review-fixtures';
 
 export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
-export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states'] as const;
+export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states', 'linear', 'fan-out', 'fan-in', 'field', 'wide'] as const;
 export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
 
 export function parseMissionTaskStripVariant(q: URLSearchParams): MissionTaskStripVariant {
@@ -87,6 +93,9 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
       executor: 'runner',
     };
   }
+  if (isDagVariant(variant)) {
+    return { model: buildMissionBoard({ ...base, tasks: dagTasks(DAG_SPECS[variant]) }), executor: 'runner' };
+  }
   if (variant === 'states') {
     return {
       model: buildMissionBoard({
@@ -112,4 +121,86 @@ export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = 
     }),
     executor: 'local',
   };
+}
+
+// ── Dependency shapes (docs/specs/mission-progress-strip-ordering.md §7) ─────
+
+export type DagState = 'landed' | 'review' | 'running' | 'pending' | 'failed';
+
+export interface DagSpec {
+  /** Tasks in creation order, one letter (or token) each. */
+  tasks: readonly string[];
+  /** Task → the tasks it depends on. */
+  edges?: Readonly<Record<string, readonly string[]>>;
+  /** Task → state; absent is pending. */
+  states?: Readonly<Record<string, DagState>>;
+  /** Task → dependency ids outside the mission. */
+  external?: Readonly<Record<string, readonly string[]>>;
+}
+
+/** The fixture id of a DAG task, by its token's index in `spec.tasks`. */
+export const dagId = (spec: Pick<DagSpec, 'tasks'>, name: string) => stripFixtureId(spec.tasks.indexOf(name) + 1);
+
+/** One board row per token, built through the real `buildMissionBoard` inputs. */
+export function dagTasks(spec: DagSpec): BoardTaskInput[] {
+  return spec.tasks.map((name, i) => {
+    const n = i + 1;
+    const dependsOn = [...(spec.edges?.[name] ?? []).map(d => dagId(spec, d)), ...(spec.external?.[name] ?? [])];
+    const over: Partial<BoardTaskInput> = { label: name, dependsOn: dependsOn.length ? dependsOn : null };
+    const title = `feat: task ${name}`;
+    switch (spec.states?.[name] ?? 'pending') {
+      case 'landed':
+        return { ...landed(n, title), ...over };
+      case 'review': {
+        const pr = 400 + n;
+        return task(n, title, {
+          ...over,
+          status: 'completed',
+          workers: [worker(`w${n}`, { prNumber: pr, prUrl: `https://github.com/example/app/pull/${pr}`, prLifecycleStatus: 'ci_green' })],
+        });
+      }
+      case 'running':
+        return task(n, title, { ...over, status: 'in_progress', workers: [worker(`w${n}`, { status: 'running', completedAt: null, currentAction: 'Editing files' })] });
+      case 'failed':
+        return task(n, title, { ...over, status: 'failed', workers: [worker(`w${n}`, { status: 'failed' })] });
+      default:
+        return task(n, title, over);
+    }
+  });
+}
+
+export function dagBoard(spec: DagSpec, extra: Partial<Parameters<typeof buildMissionBoard>[0]> = {}): MissionBoardModel {
+  return buildMissionBoard({ now: min(60), missionCreatedAt: T0, missionStatus: 'active', tasks: dagTasks(spec), ...extra });
+}
+
+const letters = (s: string) => s.split('');
+
+export const DAG_SPECS = {
+  linear: { tasks: letters('ABCDE'), edges: { B: ['A'], C: ['B'], D: ['C'], E: ['D'] }, states: { A: 'landed', B: 'running' } },
+  'fan-out': { tasks: letters('ABCD'), edges: { B: ['A'], C: ['A'], D: ['A'] }, states: { A: 'running' } },
+  'fan-in': { tasks: letters('BCD'), edges: { D: ['B', 'C'] }, states: { B: 'review', C: 'running' } },
+  field: {
+    tasks: letters('ABCDEFGHIJKLMN'),
+    edges: {
+      B: ['A'], C: ['B'], F: ['A'], E: ['C'], G: ['C'], H: ['E'], I: ['G'], J: ['H'], L: ['I'], K: ['J'], M: ['K', 'L'],
+      D: letters('CEFGHIJKLM'), N: ['D'],
+    },
+    states: { A: 'landed', B: 'landed', C: 'landed', F: 'landed', E: 'running' },
+  },
+  wide: {
+    tasks: ['A', ...Array.from({ length: 30 }, (_, i) => `B${i + 1}`)],
+    edges: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`B${i + 1}`, ['A']])),
+    states: { A: 'running' },
+  },
+} satisfies Record<string, DagSpec>;
+
+export type DagVariant = keyof typeof DAG_SPECS;
+export const isDagVariant = (v: string): v is DagVariant => v in DAG_SPECS;
+
+/** The task a DAG variant opens on (`&select=`), or null. */
+export function dagSelection(variant: MissionTaskStripVariant, q: URLSearchParams): string | null {
+  const name = q.get('select');
+  if (!name || !isDagVariant(variant)) return null;
+  const spec: DagSpec = DAG_SPECS[variant];
+  return spec.tasks.includes(name) ? dagId(spec, name) : null;
 }
