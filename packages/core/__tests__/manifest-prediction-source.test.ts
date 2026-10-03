@@ -126,6 +126,80 @@ describe('the CBM candidate adapter', () => {
   });
 });
 
+describe('the tree-pinned candidate adapter (§1d)', () => {
+  const REPO = 'acme/widgets';
+  const SHA = 'a'.repeat(40);
+  const treeBody = { truncated: false, tree: [
+    { path: 'src/a.ts', type: 'blob' }, { path: 'src/b.ts', type: 'blob' }, { path: 'src', type: 'tree' }, { path: 'lib/rank.ts', type: 'blob' },
+  ] };
+  const setup = (over: { github?: (path: string) => Promise<any>; queryCode?: (text: string, topK: number) => Promise<any[]> } = {}) => {
+    const paths: string[] = [];
+    const github = mock(async (path: string) => {
+      paths.push(path);
+      if (over.github) return over.github(path);
+      if (path === `/repos/${REPO}`) return { default_branch: 'dev' };
+      if (path.startsWith(`/repos/${REPO}/commits/`)) return { sha: SHA };
+      if (path.startsWith(`/repos/${REPO}/git/trees/`)) return treeBody;
+      throw new Error(`unexpected ${path}`);
+    });
+    const queryCode = mock(over.queryCode ?? (async () => [
+      { sourcePath: 'lib/rank.ts', metadata: {} }, { sourcePath: 'lib/rank.ts', metadata: {} }, { sourcePath: null, metadata: { path: 'src/a.ts' } },
+    ]));
+    const adapter = src.createTreeCandidateAdapter({
+      resolveRepo: async () => ({ repo: REPO, github: (p: string) => github(p) }),
+      queryCode: (_ws: string, text: string, topK: number) => queryCode(text, topK),
+      cache: new Map(),
+    });
+    return { adapter, github, queryCode, paths };
+  };
+
+  it('reads the tree at the base commit and ranks files by the workspace code corpus', async () => {
+    const { adapter, paths } = setup();
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'feature/x', seedText: 'rank things', limit: 64 });
+    expect(r).toEqual({ status: 'ok', revision: SHA, paths: ['lib/rank.ts', 'src/a.ts', 'src/b.ts'], ranked: ['lib/rank.ts', 'src/a.ts'] });
+    expect(paths).toContain(`/repos/${REPO}/commits/feature%2Fx`);
+    expect(paths).toContain(`/repos/${REPO}/git/trees/${SHA}?recursive=1`);
+  });
+
+  it('with no base ref, resolves the default branch first', async () => {
+    const { adapter, paths } = setup();
+    await adapter.lookup({ workspaceId: WS, baseRef: null, seedText: 'x', limit: 64 });
+    expect(paths[0]).toBe(`/repos/${REPO}`);
+    expect(paths).toContain(`/repos/${REPO}/commits/dev`);
+  });
+
+  it('caches the tree per commit: a second lookup at the same commit reads no tree', async () => {
+    const { adapter, paths } = setup();
+    await adapter.lookup({ workspaceId: WS, baseRef: SHA, seedText: 'x', limit: 64 });
+    await adapter.lookup({ workspaceId: WS, baseRef: SHA, seedText: 'y', limit: 64 });
+    expect(paths.filter(p => p.includes('/git/trees/'))).toHaveLength(1);
+    // A full SHA needs no ref resolution.
+    expect(paths.some(p => p.includes('/commits/'))).toBe(false);
+  });
+
+  it('a truncated tree listing is unavailable (absence cannot be verified)', async () => {
+    const { adapter } = setup({ github: async (p) => (p.includes('/git/trees/') ? { truncated: true, tree: [] } : { sha: SHA }) });
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'dev', seedText: 'x', limit: 64 });
+    expect(r.status).toBe('unavailable');
+  });
+
+  it('a corpus failure makes the whole source unavailable (degrades to neighbour-diff only)', async () => {
+    const { adapter } = setup({ queryCode: async () => { throw new Error('vector store down'); } });
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'dev', seedText: 'x', limit: 64 });
+    expect(r.status).toBe('unavailable');
+  });
+
+  it('no installation or repository is unavailable, not an error', async () => {
+    const adapter = src.createTreeCandidateAdapter({ resolveRepo: async () => null, queryCode: async () => [], cache: new Map() });
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'dev', seedText: 'x', limit: 64 });
+    expect(r).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('the server adapter is the tree-pinned one', () => {
+    expect(typeof src.getServerTreeCandidateAdapter().lookup).toBe('function');
+  });
+});
+
 describe('leakage-safe neighbour reads', () => {
   it('completion lookup is workspace-scoped over the neighbour ids', () => {
     const w = render(src.neighbourCompletionWhere({ workspaceId: WS, taskIds: [N1, N2] }));
@@ -265,6 +339,50 @@ describe('predictCreationManifest', () => {
     });
     expect(rows.length).toBeGreaterThan(0);
     for (const r of rows) expect(r).toMatchObject({ applyingFraction: 0, experimentArm: 'observe', applied: false });
+  });
+
+  it('tree-pinned: candidates come from the tree at the base commit and omissions are no longer unknown by construction', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    const tree = { lookup: mock(async () => ({ status: 'ok' as const, revision: 'sha1', paths: ['a.ts', 'c.ts', 'apps/web/src/app/api/workers/claim/route.ts'], ranked: ['c.ts'] })) };
+    await src.predictCreationManifest(input({ baseRef: 'dev' }), {
+      resolveAccess: async () => okAccess, loadNeighbours: neighbours, tree, call: pickFirst(0) as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    // b.ts is absent at the commit: dropped. c.ts is corpus-ranked; the nested route file is no sibling of a.ts.
+    expect(row.candidates).toEqual(['a.ts', 'c.ts']);
+    expect(row.coverage.droppedAbsent).toBe(1);
+    expect(row.coverage.source).toBe('tree_pinned');
+    expect(row.coverage.revision).toBe('sha1');
+    expect(row.stopReason).toBe('done');
+    expect(row.unknownScope).toBe(false);
+    expect((tree.lookup.mock.calls[0] as any)[0]).toMatchObject({ workspaceId: WS, baseRef: 'dev' });
+  });
+
+  it('tree-pinned: a described file the tree lacks keeps unknown scope', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    const tree = { lookup: async () => ({ status: 'ok' as const, revision: 'sha1', paths: ['a.ts'], ranked: [] }) };
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess, loadNeighbours: neighbours, tree, call: pickFirst(0) as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.coverage.namedMissing).toEqual(['apps/web/src/app/api/workers/claim/route.ts']);
+    expect(row.unknownScope).toBe(true);
+  });
+
+  it('a throwing tree source degrades to neighbour_diff_only', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess, loadNeighbours: neighbours,
+      tree: { lookup: async () => { throw new Error('github down'); } }, call: pickFirst(0) as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.candidates).toEqual(['a.ts', 'b.ts']);
+    expect(row.coverage.source).toBe('neighbour_diff_only');
+    expect(row.coverage.tree).toBe('unavailable');
+    expect(row.unknownScope).toBe(true);
   });
 
   it('access is resolved once for all picks', async () => {

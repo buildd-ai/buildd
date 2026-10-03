@@ -325,6 +325,49 @@ describe('buildManifestReadout', () => {
     expect(g.verdict.reasons.join(' ')).toMatch(/unknown scope/);
   });
 
+  it('grades ordering and lease eligibility separately: ordering-eligible while lease-ineligible on unknown scope', async () => {
+    // Model selects exactly the actual file; baselines over-select. Every prediction has unknown scope.
+    const preds = Array.from({ length: 40 }, (_, i) => manifestPrediction(i, {
+      createdAt: day(1 + (i % 30)),
+      selected: ['src/a.ts'],
+      picks: [pickRow(0, [0, 1, 2], candidateLabel(0), 0.95), pickRow(1, [1, 2], DONE_LABEL, 0.9)],
+      regexPaths: ['lib'],
+      neighbourUnionPaths: CANDS,
+      label: { status: 'observed', actual: ['src/a.ts'], landed: true, failed: false, failedWork: [], unknownScope: true, model: {} as any, baselines: {} as any },
+    }));
+    const [g] = await buildManifestReadout({ predictions: preds, links: new Map(), plan: PLAN, minN: 2 });
+    const e = g.verdict.eligibility!;
+    // Lease (gated manifest application) still refuses unknown scope.
+    expect(e.lease.verdict).not.toBe('eligible_for_gated');
+    expect(e.lease.verdict).toBe(g.verdict.verdict);
+    expect(e.lease.reasons.join(' ')).toMatch(/unknown scope/);
+    // Ordering is graded on set precision/recall; unknown scope is a covariate, not a disqualifier.
+    expect(e.ordering.verdict).toBe('eligible_for_ordering');
+    expect(e.ordering.reasons).toEqual([]);
+    for (const s of ['train', 'held_out', 'later'] as const) {
+      expect(e.ordering.splits[s].model.precision).toBe(1);
+      expect(e.ordering.splits[s].model.recall).toBe(1);
+      expect(e.ordering.splits[s].unknownScope.n).toBe(e.ordering.splits[s].model.n);
+      expect(e.ordering.splits[s].knownScope.n).toBe(0);
+    }
+  });
+
+  it('ordering is worse_than_baseline when the selection loses to a baseline on set F1', async () => {
+    const preds = Array.from({ length: 40 }, (_, i) => manifestPrediction(i, {
+      createdAt: day(1 + (i % 30)),
+      selected: ['src/c.ts'],
+      regexPaths: ['src/a.ts'],
+      label: { status: 'observed', actual: ['src/a.ts'], landed: true, failed: false, failedWork: [], unknownScope: false, model: {} as any, baselines: {} as any },
+    }));
+    const [g] = await buildManifestReadout({ predictions: preds, links: new Map(), plan: PLAN, minN: 2 });
+    expect(g.verdict.eligibility!.ordering.verdict).toBe('worse_than_baseline');
+  });
+
+  it('ordering is insufficient_n below the per-split floor', async () => {
+    const [g] = await buildManifestReadout({ predictions: [manifestPrediction(1)], links: new Map(), plan: PLAN, minN: 5 });
+    expect(g.verdict.eligibility!.ordering.verdict).toBe('insufficient_n');
+  });
+
   it('counts missing and failed-only labels as missing, not as truth', async () => {
     const preds = [
       manifestPrediction(1, { label: { status: 'missing', reason: 'no_terminal_observation' } }),
