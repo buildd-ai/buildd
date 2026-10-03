@@ -41,6 +41,7 @@ export type InferenceCapability =
   | 'cbm_search_injection'
   | 'endpoint_model_match'
   | 'question_gate'
+  | 'post_session_triage'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -187,6 +188,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Question review',
     description: 'While your question-gate experiment runs, a decision model checks that an agent\'s question can be answered with no other context before it reaches you, and sends unclear ones back to the agent.',
     costHint: '~$0.00003 per question',
+  },
+  // Post-session quality triage (packages/core/post-session-triage.ts). Runs
+  // in the background after a session ends, on bounded facts only; a
+  // workspace turns the whole loop off with gitConfig.postSessionQuality.mode.
+  post_session_triage: {
+    id: 'post_session_triage',
+    kind: 'built_in',
+    label: 'Session quality triage',
+    description: 'After an agent session ends, a decision model reads counts and outcomes (never code or text) and picks which sessions deserve a closer look. Never changes the task or its PR.',
+    costHint: '~$0.00005 per session',
   },
   chat: {
     id: 'chat',

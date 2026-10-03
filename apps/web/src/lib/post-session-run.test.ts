@@ -6,6 +6,7 @@ import {
   type StageAFacts,
   type StageASource,
 } from '@buildd/core/post-session-quality';
+import type { TriageOutcome } from '@buildd/core/post-session-triage';
 import {
   processPostSessionRun,
   sweepPostSessionRuns,
@@ -27,7 +28,19 @@ interface FakeRow {
   errorStage: string | null;
   lastError: string | null;
   updatedAt: Date;
+  triage?: TriageOutcome;
 }
+
+/** Stage B decision stub: a routine skip, so sweeps never reach a real provider. */
+const skipDecide = (async () => ({
+  ok: true, model: 'm-1', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 5, attempts: 1,
+  answers: {
+    decision: { type: 'choice', choice: 'skip', confidence: 0.9, probabilities: {} },
+    focus: { type: 'choice', choice: 'general', confidence: 0.9, probabilities: {} },
+    reasonCode: { type: 'choice', choice: 'routine_success', confidence: 0.9, probabilities: {} },
+  },
+})) as any;
+const triage = { decide: skipDecide, recordReceipts: async () => {} };
 
 function worker(over: Partial<PostSessionWorkerRef> = {}): PostSessionWorkerRef {
   return {
@@ -135,6 +148,24 @@ function fakeStore(workers: PostSessionWorkerRef[], opts: { failSource?: (n: num
         })
         .slice(0, limit)
         .map(w => w.id);
+    },
+    async loadTriageInput(runId) {
+      const row = [...rows.values()].find(r => r.id === runId);
+      if (!row) return null;
+      return { runId, state: row.state as never, facts: row.facts, teamId: 'team-1', workspaceId: 'ws-1', dataClass: 'standard' };
+    },
+    async recordTriage(runId, outcome) {
+      const row = [...rows.values()].find(r => r.id === runId);
+      if (!row || row.state !== 'collected') return false;
+      row.triage = outcome;
+      row.state = outcome.finalDecision === 'analyse' ? 'triaged' : 'skipped';
+      return true;
+    },
+    async listUntriaged({ policyVersion, limit }) {
+      return [...rows.values()]
+        .filter(r => r.policyVersion === policyVersion && r.state === 'collected')
+        .slice(0, limit)
+        .map(r => r.id);
     },
   };
   return store;
@@ -260,9 +291,9 @@ describe('processPostSessionRun', () => {
 describe('sweepPostSessionRuns', () => {
   it('processes each eligible worker once; a second sweep is a no-op', async () => {
     const store = fakeStore([worker({ id: 'a' }), worker({ id: 'b' }), worker({ id: 'c' })]);
-    const first = await sweepPostSessionRuns({ store, now: NOW });
+    const first = await sweepPostSessionRuns({ store, now: NOW, triage });
     expect(first).toMatchObject({ candidates: 3, collected: 3, duplicate: 0, failed: 0 });
-    const second = await sweepPostSessionRuns({ store, now: NOW });
+    const second = await sweepPostSessionRuns({ store, now: NOW, triage });
     expect(second).toMatchObject({ candidates: 0, collected: 0 });
     expect(store.rows.size).toBe(3);
     expect(store.sourceCalls()).toBe(3);
@@ -271,8 +302,8 @@ describe('sweepPostSessionRuns', () => {
   it('two overlapping sweeps produce one run per worker', async () => {
     const store = fakeStore([worker({ id: 'a' }), worker({ id: 'b' })]);
     const [s1, s2] = await Promise.all([
-      sweepPostSessionRuns({ store, now: NOW }),
-      sweepPostSessionRuns({ store, now: NOW }),
+      sweepPostSessionRuns({ store, now: NOW, triage }),
+      sweepPostSessionRuns({ store, now: NOW, triage }),
     ]);
     expect(s1.collected + s2.collected).toBe(2);
     expect(s1.duplicate + s2.duplicate).toBe(2);
@@ -281,14 +312,53 @@ describe('sweepPostSessionRuns', () => {
 
   it('keeps going past one failing worker and reports it', async () => {
     const store = fakeStore([worker({ id: 'a' }), worker({ id: 'b' })], { failSource: n => n === 1 });
-    const res = await sweepPostSessionRuns({ store, now: NOW });
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage });
     expect(res).toMatchObject({ candidates: 2, collected: 1, failed: 1 });
   });
 
   it('returns an error summary instead of throwing when listing fails', async () => {
     const store = fakeStore([]);
     store.listCandidates = async () => { throw new Error('db down'); };
-    const res = await sweepPostSessionRuns({ store, now: NOW });
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage });
     expect(res).toMatchObject({ candidates: 0, errors: 1 });
+  });
+});
+
+describe('sweepPostSessionRuns — Stage B triage', () => {
+  it('triages each collected run once, settling it as skipped or triaged', async () => {
+    const store = fakeStore([worker({ id: 'a' }), worker({ id: 'b' })]);
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage });
+    expect(res).toMatchObject({ collected: 2, triaged: 2, selected: 0, triageUnavailable: 0 });
+    for (const row of store.rows.values()) {
+      expect(row.state).toBe('skipped');
+      expect(row.triage).toMatchObject({ finalDecision: 'skip', rule: 'triage', hardTriggered: false });
+      expect(row.triage?.triage).toMatchObject({ status: 'ok', decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
+    }
+    // Replay: nothing left to collect or triage.
+    expect(await sweepPostSessionRuns({ store, now: NOW, triage })).toMatchObject({ candidates: 0, triaged: 0 });
+  });
+
+  it('an unavailable decision fails open: the sweep completes and the run skips', async () => {
+    const store = fakeStore([worker({ id: 'a' })]);
+    const decide = (async () => ({ ok: false, error: { kind: 'timeout' }, latencyMs: 5000, attempts: 2 })) as any;
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage: { decide } });
+    expect(res).toMatchObject({ collected: 1, triaged: 1, selected: 0, triageUnavailable: 1, triageErrors: 0 });
+    const row = [...store.rows.values()][0];
+    expect(row.triage?.triage).toMatchObject({ status: 'unavailable', reasonCode: 'triage_unavailable' });
+  });
+
+  it('picks up a run a previous sweep collected but did not triage', async () => {
+    const store = fakeStore([worker({ id: 'a' })]);
+    await processPostSessionRun('a', { store, now: NOW });
+    expect([...store.rows.values()][0].state).toBe('collected');
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage });
+    expect(res).toMatchObject({ candidates: 0, triaged: 1 });
+  });
+
+  it('a triage listing failure is reported, not thrown, and collection still counted', async () => {
+    const store = fakeStore([worker({ id: 'a' })]);
+    store.listUntriaged = async () => { throw new Error('db down'); };
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage });
+    expect(res).toMatchObject({ collected: 1, triaged: 0, triageErrors: 1 });
   });
 });

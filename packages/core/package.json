@@ -190,6 +190,7 @@
     "./error-signature": "./error-signature.ts",
     "./role-outcomes-feed": "./role-outcomes-feed.ts",
     "./post-session-quality": "./post-session-quality.ts",
+    "./post-session-triage": "./post-session-triage.ts",
     "./gate-events": "./gate-events.ts",
     "./gate-slugs": "./gate-slugs.ts",
     "./gate-friction-signature": "./gate-friction-signature.ts",
