@@ -7,8 +7,8 @@
  * same features: did it agree, what would it have cost, how slow was it. It
  * never changes what was applied, and it never mutates the response it reads.
  *
- * A challenger that cannot run says why (`skipReason`), so a readout can tell
- * "no challenger was asked" apart from "the challenger was asked and failed".
+ * A challenger that cannot run says why (`skipReason`), so a readout can
+ * separate "no challenger was asked" and "the challenger was asked and failed".
  *
  * Agreement is not correctness. Whether either answer was right comes from an
  * outcome label attached later against the decision record.
