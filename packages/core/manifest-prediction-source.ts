@@ -54,6 +54,7 @@ import {
 } from './orchestration-decision';
 import { loadTaskPrDiffs, type LoadTaskPrDiffs } from './task-pr-diffs';
 import { estimateTaskSize, type EstimateTaskSizeArgs, type ExpectedTaskSize } from './task-size-estimate';
+import { estimateExpectedSize, type EstimateExpectedSizeDeps } from './task-size-bucket-source';
 import type { DecisionAccess } from './decision-client';
 import { manifestPickIdentity, resolveApplyingFraction, type PromotionEvidence } from './orchestration-promotion';
 import {
@@ -389,6 +390,8 @@ export interface CreationManifestDeps {
   tree?: TreeCandidateAdapter;
   /** Expected size from the same neighbours (jev-scheduling §3). Default: `estimateTaskSize`. */
   estimateSize?: (args: EstimateTaskSizeArgs & { signal: AbortSignal }) => Promise<ExpectedTaskSize | null>;
+  /** The Jev S/M/L fallback when `estimateSize` has fewer than k neighbours (jev-scheduling §3). Default: the real `orchestration_ordering` decision call. */
+  sizeBucketDeps?: EstimateExpectedSizeDeps;
   now?: () => number;
   deadlineMs?: number;
   /** The REQUESTED applying fraction (default `MANIFEST_APPLYING_FRACTION`); the promotion guard grants it. */
@@ -516,17 +519,25 @@ export async function predictCreationManifest(
       const [[neighbours, expectedSize], cbmResult, treeResult] = await Promise.all([
         loadNeighbours({ workspaceId: input.workspaceId, taskId: input.taskId, seedText, cutoff: input.createdAt, signal: controller.signal })
           .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; })
-          // The size reads the same neighbours: no second retrieval.
+          // The size reads the same neighbours: no second retrieval. Fewer
+          // than k ⇒ the Jev S/M/L bucket fallback (jev-scheduling §3).
           .then(async (found): Promise<[NeighbourEvidence[], ExpectedTaskSize | null]> => [
             found,
-            await estimateSize({
+            await estimateExpectedSize({
               workspaceId: input.workspaceId,
               taskId: input.taskId,
               seedText,
               cutoff: input.createdAt,
               neighbourTaskIds: found.map(n => n.taskId),
               signal: controller.signal,
-            }).catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; }),
+              teamId: input.teamId,
+              missionId: input.missionId ?? null,
+              accountId: input.accountId ?? null,
+              userId: input.userId ?? null,
+              title: input.title,
+              description: input.description ?? null,
+            }, { estimateSize, ...deps.sizeBucketDeps })
+              .catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; }),
           ]),
         cbm.lookup({ workspaceId: input.workspaceId, revision: input.baseRef ?? null, seedText, limit: MANIFEST_CBM_CANDIDATE_LIMIT, signal: controller.signal })
           .catch((err): CbmCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),

@@ -8,12 +8,18 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
  */
 const calls: any[] = [];
 let throwIt = false;
+let predictResult: any = { skipped: 'capability_disabled' };
 mock.module('@buildd/core/manifest-prediction-source', () => ({
   predictCreationManifest: async (input: any, deps: any) => {
     calls.push({ input, deps });
     if (throwIt) throw new Error('boom');
-    return { skipped: 'capability_disabled' };
+    return predictResult;
   },
+}));
+
+const overlapCalls: any[] = [];
+mock.module('@buildd/core/orchestration-overlap-source', () => ({
+  runOverlapRealShadow: async (newTask: any, input: any, deps: any) => { overlapCalls.push({ newTask, input, deps }); },
 }));
 
 const { scheduleCreationManifestShadow, runCreationManifestShadow, creationManifestEligibility } = await import('./task-manifest-prediction');
@@ -43,7 +49,7 @@ async function scheduleAndRun(t: ReturnType<typeof task>, c: any = ctx) {
   return { ok, scheduled };
 }
 
-beforeEach(() => { calls.length = 0; throwIt = false; });
+beforeEach(() => { calls.length = 0; overlapCalls.length = 0; throwIt = false; predictResult = { skipped: 'capability_disabled' }; });
 
 describe('creationManifestEligibility', () => {
   it('work with no kind, or an engineering/writing/design kind, is eligible', () => {
@@ -129,5 +135,44 @@ describe('scheduleCreationManifestShadow', () => {
   it('a failing prediction is swallowed', async () => {
     throwIt = true;
     await expect(runCreationManifestShadow(calls[0]?.input ?? { taskId: 't' } as any)).resolves.toBeUndefined();
+  });
+});
+
+describe('the overlap-real shadow runs from the same after() callback (jev-scheduling §5)', () => {
+  it('asks about soft pairs once the new task has a non-empty predicted scope', async () => {
+    predictResult = { row: { taskId: 'x', selected: ['apps/web/src/a.ts'], setConfidence: 0.8 } };
+    await scheduleAndRun(task());
+    expect(overlapCalls).toHaveLength(1);
+    expect(overlapCalls[0].newTask).toEqual({
+      taskId: task().id,
+      title: 'T',
+      description: 'D',
+      declaredScope: null,
+      predictedScope: ['apps/web/src/a.ts'],
+      setConfidence: 0.8,
+    });
+    expect(overlapCalls[0].input).toEqual({
+      teamId: TEAM, workspaceId: task().workspaceId, missionId: task().missionId, accountId: 'acct', userId: null,
+    });
+  });
+
+  it('a null setConfidence is passed through as null, not undefined', async () => {
+    predictResult = { row: { taskId: 'x', selected: ['a.ts'], setConfidence: null } };
+    await scheduleAndRun(task());
+    expect(overlapCalls[0].newTask.setConfidence).toBeNull();
+  });
+
+  it('skipped predictions (capability off, caller-declared, error) never trigger the overlap check', async () => {
+    for (const skip of [{ skipped: 'capability_disabled' }, { skipped: 'caller_declared' }, { skipped: 'error' }]) {
+      predictResult = skip;
+      await scheduleAndRun(task());
+    }
+    expect(overlapCalls).toHaveLength(0);
+  });
+
+  it('an empty predicted selection never triggers the overlap check (nothing to pair from)', async () => {
+    predictResult = { row: { taskId: 'x', selected: [], setConfidence: null } };
+    await scheduleAndRun(task());
+    expect(overlapCalls).toHaveLength(0);
   });
 });

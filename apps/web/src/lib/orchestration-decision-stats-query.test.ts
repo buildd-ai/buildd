@@ -53,6 +53,7 @@ it('reports opt-in state so zero rows are distinguishable from a disabled capabi
  expect(stats.decisionCapabilities).toEqual([
   { workspaceId: 'ws', capability: 'orchestration_manifest', status: 'capability_disabled' },
   { workspaceId: 'ws', capability: 'orchestration_claim', status: 'capability_disabled' },
+  { workspaceId: 'ws', capability: 'orchestration_ordering', status: 'capability_disabled' },
  ]);
  expect(stats.coverage.note).toContain('enabledDecisionShadows');
 });

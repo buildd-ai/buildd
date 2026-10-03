@@ -32,6 +32,7 @@ it('distinguishes disabled orchestration capabilities from empty evidence', asyn
  expect(stats.manifestCoverage.decisionCapabilities).toEqual([
   { workspaceId: 'ws', capability: 'orchestration_manifest', status: 'capability_disabled' },
   { workspaceId: 'ws', capability: 'orchestration_claim', status: 'enabled' },
+  { workspaceId: 'ws', capability: 'orchestration_ordering', status: 'capability_disabled' },
  ]);
  expect(stats.pathClaims.decisionCapabilities).toEqual(stats.manifestCoverage.decisionCapabilities);
 });
@@ -45,5 +46,6 @@ it('reports each workspace independently when a team has never opted in', async 
  expect(stats.manifestCoverage.decisionCapabilities?.filter(c => c.workspaceId === 'other')).toEqual([
   { workspaceId: 'other', capability: 'orchestration_manifest', status: 'capability_disabled' },
   { workspaceId: 'other', capability: 'orchestration_claim', status: 'capability_disabled' },
+  { workspaceId: 'other', capability: 'orchestration_ordering', status: 'capability_disabled' },
  ]);
 });
