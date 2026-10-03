@@ -144,7 +144,8 @@ export function MissionBoardHeader({ back, title, chip, verified, actions, goal,
       </header>
       {(goal || description) && (
         <div className="mt-1.5 flex min-w-0 max-w-[110ch] flex-wrap items-baseline gap-x-3 gap-y-0.5 md:flex-nowrap">
-          {goal && <p data-testid="mission-goal-line" className="min-w-0 font-mono text-[12.5px] text-text-secondary md:truncate">{goal}</p>}
+          {/* Clamped at every width: a full goal on a phone pushes the strip several screens down. The full text is behind Description. */}
+          {goal && <p data-testid="mission-goal-line" title={goal} className="min-w-0 break-words font-mono text-[12.5px] text-text-secondary max-md:line-clamp-3 md:truncate">{goal}</p>}
           {description && (
             <MissionSheetRow inline label="Description" title="Description" testId="mission-description-open" sheetTestId="mission-description-sheet">
               {description}
