@@ -189,6 +189,7 @@
     "./derived-metric": "./derived-metric.ts",
     "./error-signature": "./error-signature.ts",
     "./role-outcomes-feed": "./role-outcomes-feed.ts",
+    "./post-session-quality": "./post-session-quality.ts",
     "./gate-events": "./gate-events.ts",
     "./gate-slugs": "./gate-slugs.ts",
     "./gate-friction-signature": "./gate-friction-signature.ts",
