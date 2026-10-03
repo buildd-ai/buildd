@@ -37,7 +37,8 @@ describe('visualReviewForRound', () => {
     expect(r2.cells.map(c => c.key)).toEqual(['/app/tasks/:id|mobile|']);
     expect(r2.cells[0].current.round).toBe(2);
     expect(r2.summary.shots).toBe(1);
-    expect(r2.queue).toEqual(['/app/tasks/:id|mobile|']);
+    // The queue is the round's screens awaiting a decision, by their standing in that round.
+    expect(r2.queue).toEqual(r2.cells.filter(c => c.standing === 'to_review').map(c => c.key));
   });
 
   it('round 1 shows the round-1 shots, never a later round\'s', () => {

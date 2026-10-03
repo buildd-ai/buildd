@@ -10,6 +10,8 @@ import { appBaseUrl } from '@/lib/app-url';
 import { reviewArtifactScope } from '@/lib/artifact-scope';
 import { ARTIFACT_TYPES, isArtifactType } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
+import { notifyTeamOf, type NotifyPayload } from '@/lib/notify';
+import { isReviewArtifact } from '@/lib/artifact-prominence';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -26,6 +28,37 @@ async function authenticateRequest(req: NextRequest) {
   }
 
   return null;
+}
+
+async function notifyWorkspaceArtifact(
+  artifact: Record<string, unknown>,
+  workspaceId: string
+): Promise<void> {
+  try {
+    // Only notify for review artifacts; don't expose content in push.
+    const typedArtifact = artifact as { title?: string; id?: string; type?: string };
+    if (!isReviewArtifact(typedArtifact as any)) return;
+
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
+    const artifactUrl = `${baseUrl}/app/workspaces/${workspaceId}/artifacts?artifact=${typedArtifact.id}`;
+
+    const payload: NotifyPayload = {
+      title: `Artifact ready: ${typedArtifact.title}`,
+      message: `A ${typedArtifact.type} artifact is ready for review.`,
+      url: artifactUrl,
+      urlTitle: 'View artifact',
+      priority: -1,
+    };
+
+    await notifyTeamOf(
+      { workspaceId },
+      'artifactReady',
+      payload
+    );
+  } catch (err) {
+    // Non-fatal: notifications must never block artifact creation.
+    console.error('[workspace-artifact-notify] Failed to notify:', err instanceof Error ? err.message : 'unknown');
+  }
 }
 
 function parseTime(raw: string | null): Date | null | 'invalid' {
@@ -145,7 +178,7 @@ export async function POST(
   }
 
   const body = await req.json();
-  const { type, title, content, url, metadata, key } = body;
+  const { type, title, content, url, metadata, key, notifyOnCreate } = body;
 
   if (!isArtifactType(type)) {
     return NextResponse.json(
@@ -182,6 +215,11 @@ export async function POST(
       .where(eq(artifacts.id, existing.id))
       .returning();
 
+    // Notify if opted in and content or title changed (not on every upsert).
+    if (notifyOnCreate && (existing.content !== (content || null) || existing.title !== title)) {
+      await notifyWorkspaceArtifact(updated, id);
+    }
+
     return NextResponse.json({ artifact: { ...updated, shareUrl: null }, upserted: true });
   }
 
@@ -200,6 +238,11 @@ export async function POST(
       metadata: artifactMetadata,
     })
     .returning();
+
+  // Notify if opted in.
+  if (notifyOnCreate) {
+    await notifyWorkspaceArtifact(artifact, id);
+  }
 
   return NextResponse.json({ artifact: { ...artifact, shareUrl: null } });
 }
