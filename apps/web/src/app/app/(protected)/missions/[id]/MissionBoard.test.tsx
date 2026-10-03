@@ -34,6 +34,29 @@ describe('MissionBoard — running', () => {
     expect(html).toContain('1/4');
   });
 
+  // Regression (surface audit, 390px/320px): a runner with ten slots ran its
+  // boxes past the Fleet cell's divider onto "nothing waiting", and a phase's
+  // progress squares pushed its count past the viewport. The slot row wraps
+  // inside its cell; the squares give way before the label and count do.
+  it('keeps a wide slot row inside the Fleet cell', () => {
+    const rows = [...html.matchAll(/data-testid="fleet-runner"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const cls of rows) {
+      expect(cls).toContain('flex-wrap');
+      expect(cls).toContain('min-w-0');
+    }
+  });
+
+  it('lets the phase progress squares shrink so the count stays in view', () => {
+    const bars = [...html.matchAll(/data-testid="board-phase-progress"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
+    expect(bars.length).toBeGreaterThan(0);
+    for (const cls of bars) {
+      expect(cls).toContain('min-w-0');
+      expect(cls).toContain('overflow-hidden');
+      expect(cls).not.toContain('shrink-0');
+    }
+  });
+
   // Regression (UX review, board at 390px): the band's 2x2 phone grid put the
   // goal beside Landed at half width, so criteria read "open ta…", "roundi…".
   // On a phone Landed and Goal each take the full row; Fleet and Needs you pair.
