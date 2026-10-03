@@ -275,7 +275,8 @@ export const awaitingCapture = (c: Pick<VisualReviewCell, 'fixCheck'>): boolean 
 /** A cell whose fix merged and whose new screenshot nobody has checked. */
 export const fixCheckDue = (c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): boolean => c.fixCheck?.state === 'check' && !c.current.review;
 
-const FIX_DEAD = new Set(['failed', 'cancelled']);
+/** A fix task that ended without landing: terminal, and not completed. */
+const FIX_DEAD = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'completed'));
 
 /**
  * Where a cell stands for the review deck (docs/design/visual-qa-human-review.md,
