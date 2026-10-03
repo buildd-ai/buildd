@@ -71,7 +71,8 @@ export type CausalLinkSource =
   | 'workers.prLifecycleStatus + workers.conflictDetectedAt'
   | 'gate_events.detail.consecutiveDeferrals'
   | 'tasks.subjectPrNumber + workers.mergedAt'
-  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber';
+  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
+  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */

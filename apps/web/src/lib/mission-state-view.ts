@@ -98,6 +98,7 @@ import type { Health, MissionDisplayState } from './mission-helpers';
 import { getMissionStateChip } from './mission-helpers';
 import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import type { CiRedChain } from './ci-red-chain';
+import type { SupersessionSuggestion } from '@buildd/core/pr-shipped';
 import { isRepeatedlyDeferred, SURFACE_DEFERRAL_MS } from './claim-deferral-thresholds';
 import { quietLabel } from './local-strand';
 
@@ -237,6 +238,12 @@ export type WaitingOnDescriptor =
       /** Hrefs to the closed PRs, for "view" rather than "merge". */
       prUrls: string[];
       taskIds: string[];
+      /**
+       * Unverified supersession candidates found by automatic detection
+       * (lib/pr-supersession-detect.ts), one per closed PR that has one. A
+       * hint the owner can Confirm — never a recorded edge.
+       */
+      suggestions?: Array<{ taskId: string; prNumber: number | null; suggestion: SupersessionSuggestion }>;
     }
   /**
    * Every unmerged PR has CI red and its fix chain has ended: the last
@@ -569,6 +576,7 @@ export interface MissionCompletionSummary {
     prNumber: number | null;
     prUrl: string | null;
     closedUnsuperseded?: boolean;
+    suggestion?: SupersessionSuggestion;
   }>;
   /** The visual review hold, in shadow or enforced (`visual_review_open`). */
   visualReviewHold?: { cells: number; roundCapOpen: boolean; enforced: boolean } | null;
@@ -1101,18 +1109,22 @@ function mergeFact(input: MissionStateInput): Resolution | null {
     // `merge` reading below — an open PR genuinely needs merging, so that
     // remedy still holds even when a sibling PR is dead.
     if (!missionPr && details.length > 0 && details.every(d => d.closedUnsuperseded)) {
+      const suggestions = details.flatMap(d => d.suggestion ? [{ taskId: d.taskId, prNumber: d.prNumber, suggestion: d.suggestion }] : []);
       return {
         kind: 'awaiting_merge',
         waitingOn: {
           kind: 'pr_closed_unmerged',
           tone: 'warning',
           label: details.length === 1
-            ? `PR #${details[0].prNumber} closed without merging, no supersession recorded`
+            ? details[0].suggestion
+              ? `PR #${details[0].prNumber} closed without merging, likely superseded by ${suggestionRef(details[0].suggestion, repoOfPrUrl(details[0].prUrl))}`
+              : `PR #${details[0].prNumber} closed without merging, no supersession recorded`
             : `${details.length} completed task(s) have a PR closed without merging, no supersession recorded`,
           count: details.length,
           prNumbers,
           prUrls,
           taskIds: details.map(d => d.taskId),
+          ...(suggestions.length > 0 ? { suggestions } : {}),
         },
         displayState: 'review',
         source: 'canCompleteMission',
@@ -1617,6 +1629,8 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
       return ciRedPhrase(d);
     case 'pr_closed_unmerged': {
       const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
+      const only = d.count === 1 ? d.suggestions?.[0]?.suggestion : undefined;
+      if (only) return `PR${ref} closed without merging, likely superseded by ${suggestionRef(only, repoOfPrUrl(d.prUrls[0]))}: confirm it or mark the PR abandoned`;
       return d.count === 1
         ? `PR${ref} closed without merging, no supersession recorded`
         : `${d.count} completed tasks have a PR closed without merging, no supersession recorded`;
@@ -1826,7 +1840,10 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
     case 'ci_red':
       return 'The automatic fix attempts are used up and CI is still red, so this is not ready to review. Open the failing check, fix it or take the branch over, then push.';
     case 'pr_closed_unmerged':
-      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or investigate why it closed unmerged.';
+      if (waitingOn.suggestions && waitingOn.suggestions.length > 0) {
+        return 'GitHub will not let this PR merge. Confirm the suggested PR if the work shipped there, or mark the PR abandoned with a reason if the work is not shipping.';
+      }
+      return 'GitHub will not let this PR merge. Record a supersession (record_pr_supersession) if the work shipped under a different PR, or mark the PR abandoned with a reason if the work is not shipping.';
     case 'criterion_failing':
       if (waitingOn.stale) {
         return 'Re-run goal-criteria verification: the failing verdict predates the current task state.';
@@ -1940,3 +1957,12 @@ export function situationDetail<L>(situation: MissionSituation, because: readonl
 
 /** Exported for the threshold's own regression test and for surfaces that explain it. */
 export { SURFACE_DEFERRAL_MS };
+
+function repoOfPrUrl(url: string | null | undefined): string | null {
+  return url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/\d+/)?.[1] ?? null;
+}
+
+/** `#N` for a suggestion, or `owner/repo#N` when it is in another repo. */
+export function suggestionRef(s: { repo: string; prNumber: number; prUrl?: string | null }, homeRepo?: string | null): string {
+  return homeRepo && s.repo.toLowerCase() !== homeRepo.toLowerCase() ? `${s.repo}#${s.prNumber}` : `#${s.prNumber}`;
+}

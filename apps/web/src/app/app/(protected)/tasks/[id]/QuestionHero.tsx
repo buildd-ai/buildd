@@ -121,12 +121,29 @@ export default function QuestionHero({
         {aside && <span className="ml-auto normal-case tracking-[1px] text-text-muted">{aside}</span>}
       </div>
 
+      {question.where && (
+        <p
+          data-testid="question-brief-where"
+          className="mt-3 font-mono text-[11px] md:text-[12px] tracking-[0.5px] text-text-muted [overflow-wrap:anywhere]"
+        >
+          {[question.where.taskTitle, question.where.branch, question.where.file].filter(Boolean).join(' · ')}
+        </p>
+      )}
+
       <h2
         data-testid="worker-needs-input-prompt"
         className={`${d.headline} text-text-primary [overflow-wrap:anywhere]`}
       >
         {question.headline}
       </h2>
+      {question.context && (
+        <p
+          data-testid="question-brief-context"
+          className={`${d.body} max-w-[64ch] leading-relaxed text-text-primary [overflow-wrap:anywhere]`}
+        >
+          {question.context}
+        </p>
+      )}
       {question.body && (
         <p className={`${d.body} max-w-[64ch] leading-relaxed text-text-secondary [overflow-wrap:anywhere] whitespace-pre-line`}>
           {question.body}

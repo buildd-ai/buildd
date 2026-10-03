@@ -1,6 +1,7 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse } from 'next/server';
 import { applyRoutingPatch, parseRoutingPatch } from '@/lib/role-routing';
+import { patchClaudeAiArtifactsMetadata } from '@buildd/shared';
 import { createHash } from 'crypto';
 import { db } from '@buildd/core/db';
 import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
@@ -154,6 +155,13 @@ export async function POST(
         const routing = parseRoutingPatch(body);
         if (!routing.ok) return NextResponse.json({ error: routing.error }, { status: 400 });
 
+        // claude.ai artifact access (@buildd/shared claude-ai-artifacts.ts), kept in metadata.
+        const artifactCheck = body.claudeAiArtifacts === undefined ? null : patchClaudeAiArtifactsMetadata({}, body.claudeAiArtifacts);
+        if (artifactCheck && !artifactCheck.ok) return NextResponse.json({ error: artifactCheck.error }, { status: 400 });
+        const withArtifactAccess = (meta: Record<string, unknown>): Record<string, unknown> => body.claudeAiArtifacts === undefined
+            ? meta
+            : (patchClaudeAiArtifactsMetadata(meta, body.claudeAiArtifacts) as { metadata: Record<string, unknown> }).metadata;
+
         const slug = body.slug || generateSlug(name);
 
         if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug)) {
@@ -199,9 +207,9 @@ export async function POST(
                     source: source || null,
                     // A re-register without metadata keeps the row's own (routing
                     // text, seeded version stamp) instead of wiping it.
-                    metadata: routing.patch
+                    metadata: withArtifactAccess(routing.patch
                         ? applyRoutingPatch(metadata ?? existing.metadata, routing.patch)
-                        : (metadata ?? existing.metadata ?? {}),
+                        : (metadata ?? existing.metadata ?? {})),
                     enabled: enabled !== undefined ? enabled : existing.enabled,
                     ...(model !== undefined ? { model } : {}),
                     ...(allowedTools !== undefined ? { allowedTools } : {}),
@@ -255,7 +263,7 @@ export async function POST(
                 source: source || null,
                 enabled: enabled !== undefined ? enabled : true,
                 origin: 'manual',
-                metadata: routing.patch ? applyRoutingPatch(metadata, routing.patch) : (metadata || {}),
+                metadata: withArtifactAccess(routing.patch ? applyRoutingPatch(metadata, routing.patch) : (metadata || {})),
                 ...(model ? { model } : {}),
                 ...(allowedTools ? { allowedTools } : {}),
                 ...(canDelegateTo ? { canDelegateTo } : {}),

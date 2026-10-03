@@ -7,6 +7,7 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
+const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
 
 const mockInsertReturning = mock(() => [{ id: 'new-task-1', title: 'Continue: Fix auth bug' }]);
 const mockInsertValues = mock(() => {
@@ -68,6 +69,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mockWorkersFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
     },
     insert: (table: any) =>
       table === 'missionNotes' ? { values: mockNotesInsertValues } : mockInsert(),
@@ -675,7 +677,26 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(res.status).toBe(409);
       const data = await res.json();
       expect(data.error).toContain('already answered');
+      expect(data.reasonCode).toBe('already_answered');
       expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    // A double tap: the card maps this to "answered", so it needs the winner's text.
+    it('names the winning answer, read back after the race, on a 409', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({ ...baseWorker })
+        .mockResolvedValueOnce({ ...baseWorker, status: 'superseded', waitingFor: null, continuationTaskId: 'task-2' });
+      mockTasksFindFirst.mockResolvedValueOnce({ context: { userInput: 'Session cookies' } });
+      mockWorkersUpdateReturning.mockReturnValue([]);
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.recordedAnswer).toBe('Session cookies');
     });
 
     it('restores the question when the retry task insert fails', async () => {
@@ -871,6 +892,26 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockTriggerEvent).not.toHaveBeenCalled();
       const where = mockWorkersUpdateWhere.mock.calls[0][0] as any;
       expect(JSON.stringify(where)).toContain('isNotNull');
+    });
+
+    // The resume path keeps status waiting_input with the answer queued. A
+    // second tap there is a duplicate, and must be told what was recorded.
+    it('calls a second tap on a resumed, not-yet-picked-up worker already answered, with the answer', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({
+        ...parkedWorker(),
+        waitingFor: null,
+        pendingInstructions: 'Park and wait',
+        instructionHistory: [{ type: 'instruction', message: 'Park and wait', timestamp: 1, deliveryState: 'pending' }],
+      });
+
+      const res = await POST(createMockRequest({ message: 'Park and wait' }), { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.reasonCode).toBe('already_answered');
+      expect(data.recordedAnswer).toBe('Park and wait');
+      expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
     });
 
     it('records the resume decision on the answered task', async () => {

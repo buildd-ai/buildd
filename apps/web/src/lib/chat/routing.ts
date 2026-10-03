@@ -1,6 +1,6 @@
 /**
  * Per-turn tier and intent routing through a decision call
- * (docs/design/agent-chat.md → Models: tiers; docs/design/decision-calls.md).
+ * (knowledge-base: buildd/design/agent-chat.md → Models: tiers; docs/design/decision-calls.md).
  *
  * A decision call is only ever an accelerator in front of a fixed default: any
  * failure (disabled, no key, timeout, parse) or low confidence takes the safe

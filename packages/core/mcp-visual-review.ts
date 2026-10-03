@@ -9,7 +9,7 @@
  */
 import type { ApiFn, ToolResult } from './mcp-tools';
 import { formatVisualReview, missionArtifacts } from './visual-review-text';
-import type { VisualReviewModel } from '@buildd/shared';
+import { executorDisplayName, fleetGroupKey, runnerFleetIdentity, type RunnerFleetIdentity, type VisualReviewModel } from '@buildd/shared';
 
 const text = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }] });
 const errorResult = (t: string): ToolResult => ({ content: [{ type: 'text' as const, text: t }], isError: true });
@@ -183,7 +183,30 @@ export async function runListRunners(
 
   const windowMs = typeof data?.onlineWindowMs === 'number' ? data.onlineWindowMs : 3 * 60_000;
   const wsName = wsId ? (data?.workspace?.name ?? rawWs) : null;
-  const lines = runners.map((r) => {
+
+  // Ephemeral `--once` runs (one cloud container per task) are not machines:
+  // one block per elastic group (the cloud dispatcher), its runs nested.
+  const groups = new Map<string, { identity: RunnerFleetIdentity; name: string; rows: RunnerRow[] }>();
+  const hosts: RunnerRow[] = [];
+  for (const r of runners) {
+    const hb = { accountId: str(r.accountId) || null, localUiUrl: String(r.localUiUrl ?? ''), environment: { ...((r.environment as object | null) ?? {}), fleet: r.fleet } };
+    const key = fleetGroupKey(hb);
+    if (!key) { hosts.push(r); continue; }
+    const identity = runnerFleetIdentity(hb);
+    const labels = (r.environment as { labels?: Record<string, string> } | null)?.labels;
+    const name = identity.group ?? (labels?.hostname || hb.localUiUrl.replace(/^headless:\/\//, '').split('/')[0] || 'once');
+    const g = groups.get(key) ?? { identity, name, rows: [] };
+    g.rows.push(r);
+    groups.set(key, g);
+  }
+  const groupLines = [...groups.values()].map(({ identity, name, rows }) => {
+    const head = [executorDisplayName(identity.executor), name, 'elastic', `${rows.length} running`].filter(Boolean).join(' · ');
+    const first = rows[0];
+    const runs = rows.map(r => `  run ${r.localUiUrl} — last heartbeat ${r.lastUpdated}`);
+    return `- ${head} — ${first.accountName ?? 'Unknown'}\n  runnerCommit=${first.runnerCommit ?? 'null'} runnerVersion=${first.runnerVersion ?? 'null'}\n${runs.join('\n')}`;
+  });
+
+  const lines = hosts.map((r) => {
     const header = `${r.accountName ?? 'Unknown'} — ${r.localUiUrl} — ${r.activeWorkers ?? '?'} busy of ${r.maxConcurrent ?? '?'} slots — browser: ${browserWord(r, windowMs, wsName)} — branch ${r.trackedBranch ?? 'unknown'}`;
     const update = [
       `currentCommit=${r.currentCommit ?? 'null'}`,
@@ -199,5 +222,6 @@ export async function runListRunners(
     return `- ${header}\n  ${runnerBuild}\n  ${update.join(' ')}\n  workspaces: ${workspaces} · last heartbeat ${r.lastUpdated}`;
   });
 
-  return text([...head, `${runners.length} runner(s):`, '', lines.join('\n\n')].join('\n') + tail);
+  const count = groups.size > 0 ? `${hosts.length} runner(s), ${groups.size} elastic group(s):` : `${runners.length} runner(s):`;
+  return text([...head, count, '', [...lines, ...groupLines].join('\n\n')].join('\n') + tail);
 }

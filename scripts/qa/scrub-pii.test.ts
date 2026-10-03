@@ -59,17 +59,22 @@ function splitTopLevel(s: string): string[] {
   return out;
 }
 
+interface Assignment { table: string; column: string; expr: string }
+
 function sqlCoverage(sql: string) {
   const body = stripComments(sql);
   // Only statements outside function bodies ($f$ … $f$).
   const top = body.replace(/\$f\$[\s\S]*?\$f\$/g, '');
   const assigned = new Map<string, Set<string>>();
+  const assignments: Assignment[] = [];
   for (const m of top.matchAll(/\bUPDATE\s+([a-z_0-9]+)(?:\s+(?!SET\b)[a-z_0-9]+)?\s+SET\s+([\s\S]*?)(?=\bFROM\b|\bWHERE\b|;)/gi)) {
     const table = m[1];
     const set = assigned.get(table) ?? new Set<string>();
     for (const part of splitTopLevel(m[2])) {
-      const col = /^\s*([a-z_0-9]+)\s*=/.exec(part)?.[1];
-      if (col) set.add(col);
+      const a = /^\s*([a-z_0-9]+)\s*=([\s\S]*)$/.exec(part);
+      if (!a) continue;
+      set.add(a[1]);
+      assignments.push({ table, column: a[1], expr: a[2].trim() });
     }
     assigned.set(table, set);
   }
@@ -78,8 +83,71 @@ function sqlCoverage(sql: string) {
   for (const m of top.matchAll(/\bTRUNCATE\s+([a-z_0-9,\s]+?);/gi)) {
     for (const t of m[1].split(',')) wiped.add(t.trim());
   }
-  return { assigned, wiped, top };
+  return { assigned, wiped, top, assignments };
 }
+
+interface UniqueKey { table: string; name: string; columns: string[]; nullsNotDistinct: boolean }
+
+/** Unique indexes/constraints per table, as SQL column names: column-level
+ *  `.unique()`, `uniqueIndex('…').on(…)` and `unique('…').on(…)`. Partial
+ *  indexes (`.where`) count as unique: the scrubbed rows may well match. */
+function schemaUniqueKeys(src: string): UniqueKey[] {
+  const starts = [...src.matchAll(/pgTable\(\s*'([a-z_0-9]+)'/g)].map(m => ({ table: m[1], at: m.index! }));
+  const keys: UniqueKey[] = [];
+  starts.forEach((s, i) => {
+    const body = src.slice(s.at, starts[i + 1]?.at ?? src.length);
+    const sqlName = new Map<string, string>();
+    for (const line of body.split('\n')) {
+      const m = /^\s+(\w+):\s*\w+\(\s*'([a-z_0-9]+)'/.exec(line);
+      if (!m) continue;
+      sqlName.set(m[1], m[2]);
+      if (/\.unique\(\)/.test(line)) keys.push({ table: s.table, name: `${m[2]} (column)`, columns: [m[2]], nullsNotDistinct: false });
+    }
+    for (const m of body.matchAll(/\b(?:uniqueIndex|unique)\(\s*'([^']+)'\s*\)\s*\.on\(([^)]*)\)([^\n]*(?:\n\s*\.[^\n]*)*)/g)) {
+      const columns = [...m[2].matchAll(/\bt\.(\w+)/g)].map(c => sqlName.get(c[1]) ?? c[1]);
+      keys.push({ table: s.table, name: m[1], columns, nullsNotDistinct: /\.nullsNotDistinct\(\)/.test(m[3]) });
+    }
+  });
+  return keys;
+}
+
+/** What an assignment can collide on. 'constant': every non-NULL result is the
+ *  same literal (CASE scaffolding and `x IS [NOT] NULL` tests aside).
+ *  'null': it only ever writes NULL. 'lossy': a helper that maps distinct
+ *  inputs to one output (lorem of the same length, PR URL keeping only the
+ *  number). Otherwise it is per-row (id, row number, md5 of the old value). */
+function collisionClass(expr: string): 'constant' | 'null' | 'lossy' | null {
+  if (/^pg_temp\.qa_(text|lorem|str|url|pr_url|json)\(/.test(expr)) return 'lossy';
+  const rest = expr
+    .replace(/'(?:[^']|'')*'/g, ' LIT ')
+    .replace(/::\w+(\[\])?/g, ' ')
+    .replace(/[\w.]+\s+IS\s+(?:NOT\s+)?NULL\b/gi, ' ')
+    .replace(/\|\||[()]/g, ' ');
+  const words = rest.split(/\s+/).filter(Boolean);
+  if (!words.every(w => /^(CASE|WHEN|THEN|ELSE|END|NULL|LIT)$/i.test(w))) return null;
+  return words.includes('LIT') ? 'constant' : 'null';
+}
+
+/** Assignments that can write the same value to two rows of a unique key. */
+function uniqueCollisions(assignments: Assignment[], keys: UniqueKey[], oneRow: Set<string>): string[] {
+  const out: string[] = [];
+  for (const a of assignments) {
+    const cls = collisionClass(a.expr);
+    if (!cls || oneRow.has(`${a.table}.${a.column}`)) continue;
+    for (const k of keys) {
+      if (k.table !== a.table || !k.columns.includes(a.column)) continue;
+      if (cls === 'null' && !k.nullsNotDistinct) continue;
+      out.push(`${a.table}.${a.column} (${cls}) vs ${k.name}`);
+    }
+  }
+  return out;
+}
+
+// Constant assignments to a unique column that are safe because the UPDATE's
+// WHERE pins them to at most one row.
+const ONE_ROW = new Set([
+  'users.email', // 'ci-qa@buildd.dev': LIMIT 1 owner, and only if no row has it yet
+]);
 
 // Structurally safe: ids, hashes, shas, enums without a literal $type, model
 // ids, timestamps-as-text, cron/timezone, colours, counts, numeric/uuid json.
@@ -165,6 +233,7 @@ const SAFE: Record<string, string[]> = {
 
 const schema = schemaTextColumns(schemaSrc);
 const cov = sqlCoverage(sqlSrc);
+const uniqueKeys = schemaUniqueKeys(schemaSrc);
 
 describe('scrub-pii.sql covers the schema', () => {
   test('the schema parser sees the tables it must (guards against a silent empty set)', () => {
@@ -226,10 +295,31 @@ describe('scrub-pii.sql covers the schema', () => {
     }
   });
 
-  test('plain statements only: no transaction block, fail on first error, quiet', () => {
-    expect(cov.top).not.toMatch(/\bBEGIN\s*;|\bCOMMIT\b|\bROLLBACK\b/i);
+  test('one transaction, fail on first error, quiet, no DETAIL in public logs', () => {
     expect(sqlSrc).toContain('\\set ON_ERROR_STOP on');
     expect(sqlSrc).toContain('\\set QUIET on');
+    expect(sqlSrc).toContain('\\set VERBOSITY terse');
+    const begin = cov.top.search(/^BEGIN;$/m);
+    const commit = cov.top.search(/^COMMIT;$/m);
+    expect(begin).toBeGreaterThan(-1);
+    expect(commit).toBeGreaterThan(begin);
+    // Every statement sits between them; only psql meta-commands precede BEGIN.
+    expect(cov.top.slice(0, begin).replace(/^\\set [^\n]*$/gm, '').trim()).toBe('');
+    expect(cov.top.slice(commit + 'COMMIT;'.length).trim()).toBe('');
+    expect(cov.top.match(/\bBEGIN\s*;|\bCOMMIT\s*;|\bROLLBACK\b/gi)).toHaveLength(2);
+  });
+
+  test('no constant or lossy value is written to a unique-indexed column', () => {
+    // Real prod shape: a constant collides on the second row and kills the
+    // whole QA run (worker_heartbeats.local_ui_url vs (account_id, local_ui_url)).
+    expect(uniqueCollisions(cov.assignments, uniqueKeys, ONE_ROW)).toEqual([]);
+  });
+
+  test('ONE_ROW exemptions are constant assignments that still exist', () => {
+    for (const k of ONE_ROW) {
+      const [t, c] = k.split('.');
+      expect(cov.assignments.some(a => a.table === t && a.column === c && collisionClass(a.expr) === 'constant')).toBe(true);
+    }
   });
 
   test('known identifiers are redacted from kept tokens, jsonb keys and tool lists', () => {
@@ -250,6 +340,45 @@ describe('scrub-pii.sql covers the schema', () => {
     const general = sqlSrc.indexOf("'@scrubbed.local'");
     expect(designate).toBeGreaterThan(-1);
     expect(general).toBeGreaterThan(designate);
+  });
+});
+
+describe('unique-collision detector', () => {
+  test('parses composite, column-level and nulls-not-distinct keys from the schema', () => {
+    const find = (name: string) => uniqueKeys.find(k => k.name === name);
+    expect(find('worker_heartbeats_local_ui_url_idx')).toEqual({
+      table: 'worker_heartbeats', name: 'worker_heartbeats_local_ui_url_idx',
+      columns: ['account_id', 'local_ui_url'], nullsNotDistinct: false,
+    });
+    expect(find('api_key (column)')?.table).toBe('accounts');
+    expect(find('chat_directives_user_scope_text_unique')?.nullsNotDistinct).toBe(true);
+    expect(find('ws_skills_team_slug_idx')?.columns).toEqual(['team_id', 'slug']);
+  });
+
+  test('catches the constant heartbeat URL that broke every QA dispatch', () => {
+    const old = sqlCoverage(`UPDATE worker_heartbeats SET
+      local_ui_url = 'http://localhost:8766',
+      viewer_token = CASE WHEN viewer_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(id::text) END;`);
+    expect(uniqueCollisions(old.assignments, uniqueKeys, ONE_ROW))
+      .toEqual(['worker_heartbeats.local_ui_url (constant) vs worker_heartbeats_local_ui_url_idx']);
+  });
+
+  test('classifies expressions', () => {
+    expect(collisionClass("'http://localhost:8766'")).toBe('constant');
+    expect(collisionClass("CASE WHEN w.x IS NULL THEN NULL ELSE 'a' END")).toBe('constant');
+    expect(collisionClass("'[]'::jsonb")).toBe('constant');
+    expect(collisionClass('NULL')).toBe('null');
+    expect(collisionClass('pg_temp.qa_text(t.description)')).toBe('lossy');
+    expect(collisionClass("'http://qa-' || replace(id::text, '-', '') || '.localhost:8766'")).toBeNull();
+    expect(collisionClass("'team-' || s.n")).toBeNull();
+    expect(collisionClass("pg_temp.qa_hash('artifact-', a.key)")).toBeNull();
+  });
+
+  test('a NULL only collides under NULLS NOT DISTINCT', () => {
+    const key = { table: 't', name: 'k', columns: ['c'], nullsNotDistinct: false };
+    const a = [{ table: 't', column: 'c', expr: 'NULL' }];
+    expect(uniqueCollisions(a, [key], new Set())).toEqual([]);
+    expect(uniqueCollisions(a, [{ ...key, nullsNotDistinct: true }], new Set())).toEqual(['t.c (null) vs k']);
   });
 });
 

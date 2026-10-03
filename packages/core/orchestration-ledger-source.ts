@@ -1,6 +1,6 @@
 /**
  * The stores half of the orchestration decision/outcome ledger
- * (docs/design/conflict-aware-orchestration.md §5–§6).
+ * (knowledge-base: buildd/design/conflict-aware-orchestration.md §5–§6).
  *
  * Split from the pure join (`./orchestration-outcomes.ts`) and the adapter
  * (`./orchestration-decision.ts`) for the reason task-area prediction is: a

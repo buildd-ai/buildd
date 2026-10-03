@@ -1,5 +1,5 @@
 /**
- * Chat-mode instructions for the Organizer (docs/design/agent-chat.md →
+ * Chat-mode instructions for the Organizer (knowledge-base: buildd/design/agent-chat.md →
  * "Should the Orchestrator be the chat?"). Planning mode keeps its own prompt
  * in the role content; this one never reaches the planner, and the planner's
  * never reaches chat.

@@ -1,5 +1,5 @@
 /**
- * The full task page's mission context (docs/design/mission-feed-mobile-continuity.md
+ * The full task page's mission context (knowledge-base: buildd/design/mission-feed-mobile-continuity.md
  * W6, slice S6): which mission, its one state chip, the context pulse ringed on
  * this task, `n / N · PHASE`, ‹ › to the pulse-order siblings' pages, and the
  * up-link to this task's row. Pure.

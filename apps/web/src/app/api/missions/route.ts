@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
         workspace: { columns: { id: true, name: true } },
         tasks: {
           columns: { id: true, status: true, kind: true, title: true, mode: true, category: true, parentTaskId: true, creationSource: true, updatedAt: true, taskClass: true },
-          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
         },
         schedule: { columns: { cronExpression: true, nextRunAt: true, lastRunAt: true, lastDeferralReason: true, lastDeferredAt: true } },
       },
@@ -158,7 +158,7 @@ export async function POST(req: NextRequest) {
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
@@ -202,6 +202,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Invalid orchestrationMode: must be "auto" or "manual"` }, { status: 400 });
     }
     const effectiveOrchestrationMode: 'auto' | 'manual' = orchestrationMode || 'auto';
+
+    // Let the creator say up front that they're filing the task chain
+    // themselves, instead of relying on runMission()'s pre-filed-task
+    // heuristic to catch it reactively (which it cannot: that check runs
+    // inside THIS request, before the creator has had a chance to file
+    // anything — see the decomposition re-check gate in POST /api/tasks).
+    const validDecompositionModes = ['auto', 'none'];
+    if (decomposition !== undefined && !validDecompositionModes.includes(decomposition)) {
+      return NextResponse.json({ error: `Invalid decomposition: must be "auto" or "none"` }, { status: 400 });
+    }
+    const decompositionSkippedAtCreate = decomposition === 'none';
 
     const validStartModes = ['armed', 'held'];
     if (startMode !== undefined && !validStartModes.includes(startMode)) {
@@ -364,6 +375,7 @@ export async function POST(req: NextRequest) {
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
+        ...(decompositionSkippedAtCreate ? { decompositionSkipped: true } : {}),
         isHeld: effectiveIsHeld,
         ...(executor ? { executor } : {}),
         integrationBranchEnabled,

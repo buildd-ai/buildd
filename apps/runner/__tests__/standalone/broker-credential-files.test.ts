@@ -18,6 +18,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'fs';
+import { buildClaudeCredentialsFile } from '../../src/claude-auth';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { CredentialBroker } from '../../src/broker';
@@ -85,11 +86,15 @@ describe('registerCredentialFile / deregisterCredentialFile', () => {
     expect(() => broker.deregisterCredentialFile('worker-1')).not.toThrow();
   });
 
+  // The CLI reads only `claudeAiOauth` (camelCase); a flat `access_token` file
+  // is ignored and the session drops to "Not logged in". The rewrite must keep
+  // that shape and the scopes materializeClaudeConfigDir declared.
   test('credential file is updated after a successful refresh', async () => {
     await acquireAndBootstrap(broker, 'initial-at', 'initial-rt');
 
     const credPath = join(tmpDir, '.credentials.json');
-    writeFileSync(credPath, JSON.stringify({ type: 'oauth_token', access_token: 'initial-at' }));
+    const scopes = ['user:inference', 'user:mcp_servers'];
+    writeFileSync(credPath, JSON.stringify(buildClaudeCredentialsFile('initial-at', null, scopes)));
     broker.registerCredentialFile('worker-1', SECRET_ID, credPath);
 
     const soonExpiry = new Date(Date.now() + 30 * 60 * 1000).toISOString();
@@ -104,8 +109,11 @@ describe('registerCredentialFile / deregisterCredentialFile', () => {
     ]) as unknown as typeof fetch;
     await (broker as any).refreshExpiring();
 
-    const written = JSON.parse(readFileSync(credPath, 'utf-8')) as { access_token: string };
-    expect(written.access_token).toBe('fresh-at');
+    const written = JSON.parse(readFileSync(credPath, 'utf-8'));
+    expect(written.access_token).toBeUndefined();
+    expect(written.claudeAiOauth.accessToken).toBe('fresh-at');
+    expect(written.claudeAiOauth.refreshToken).toBeNull();
+    expect(written.claudeAiOauth.scopes).toEqual(scopes);
   });
 
   test('credential file is NOT updated after deregisterCredentialFile', async () => {

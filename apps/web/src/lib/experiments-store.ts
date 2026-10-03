@@ -11,6 +11,7 @@ import { experiments } from '@buildd/core/db/schema';
 import { invalidateModelRoutingExperimentCache } from '@buildd/core/model-routing-experiment-source';
 import { invalidateCbmAccessExperimentCache } from '@buildd/core/cbm-access-experiment-source';
 import { invalidateHeartbeatTriageExperimentCache } from '@buildd/core/heartbeat-triage-experiment-source';
+import { invalidateQuestionGateExperimentCache } from '@buildd/core/question-gate-source';
 import type { NewExperimentValues } from './experiments';
 
 export type ExperimentRow = typeof experiments.$inferSelect;
@@ -140,5 +141,6 @@ export async function applyExperimentUpdate(
   invalidateModelRoutingExperimentCache(teamId);
   invalidateCbmAccessExperimentCache(teamId);
   invalidateHeartbeatTriageExperimentCache(teamId);
+  invalidateQuestionGateExperimentCache(teamId);
   return rows[0] ?? null;
 }

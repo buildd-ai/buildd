@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import QuestionHero from '../QuestionHero';
 import type { UnifiedQuestion } from '../question-hero';
 import { respondRedirectHref } from './respond-links';
-import { submitAnswer } from './submit-answer';
-import { useNeedsInput } from '@/components/needs-input-context';
+import type { AnswerOutcome } from './submit-answer';
+import { AnswerOutcomeText } from '@/components/AnswerRecorded';
+import { useAnswerSubmit } from './use-answer-submit';
 
 interface Props {
   workerId: string;
@@ -23,30 +24,25 @@ interface Props {
  */
 export default function RespondForm({ workerId, taskId, missionId, question, askerLabel }: Props) {
   const router = useRouter();
-  const { markAnswerSent } = useNeedsInput();
-  const [sending, setSending] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(message: string) {
-    if (!message.trim()) return;
-    setSending(message);
-    setError(null);
-    try {
-      const data = await submitAnswer({ workerId, taskId, noteId: question.noteId, message });
-      markAnswerSent?.(taskId);
-      // On a resume this is the SAME task (the resumed worker continues under
-      // it); on a cold continuation it is the new one. Either way it is where
-      // the work now is. A task-less worker returns null — stay put rather than
-      // navigating to a page that cannot exist. A mission task lands back on
-      // its row in the mission (`#t-<task>`).
-      const next = respondRedirectHref({ missionId, taskId: data.taskId });
-      if (next) router.push(next);
-      else router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send answer');
-      setSending(null);
-    }
-  }
+  const onAnswered = useCallback((o: AnswerOutcome) => {
+    // A duplicate stays put: the person reads what was recorded first.
+    if (o.kind !== 'sent') return;
+    // On a resume this is the SAME task (the resumed worker continues under
+    // it); on a cold continuation it is the new one. Either way it is where
+    // the work now is. A task-less worker returns null — stay put rather than
+    // navigating to a page that cannot exist. A mission task lands back on
+    // its row in the mission (`#t-<task>`).
+    const next = respondRedirectHref({ missionId, taskId: o.taskId });
+    if (next) router.push(next);
+    else router.refresh();
+  }, [missionId, router]);
+  const { submit, sending, outcome, error } = useAnswerSubmit({
+    workerId,
+    taskId,
+    noteId: question.noteId,
+    resetKey: workerId,
+    onAnswered,
+  });
 
   return (
     <QuestionHero
@@ -55,7 +51,8 @@ export default function RespondForm({ workerId, taskId, missionId, question, ask
       askerLabel={askerLabel}
       onAnswer={submit}
       sending={sending}
-      error={error}
+      error={error && <>{error.message}{error.credentialRevoked ? ' Reconnect the credential, then try again.' : ' Tap an answer to try again.'}</>}
+      sent={outcome ? <AnswerOutcomeText outcome={outcome} /> : undefined}
       enableKeys
     />
   );

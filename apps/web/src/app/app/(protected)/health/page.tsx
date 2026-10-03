@@ -13,6 +13,7 @@ import {
   isUnassignedWork,
   parseWindowMs,
   UNASSIGNED_ROLE,
+  INFERRED_ROLE_SUFFIX,
   type GroupEntry,
   type ScanBounds,
   type UsageStats as UsageRollup,
@@ -392,7 +393,7 @@ export default async function HealthPage({
 
       const stats = computeUsageStats(rows, 'role');
       const scan = describeScan(rows, windowStart, USAGE_ROW_LIMIT);
-      const slugs = stats.groups.map(g => g.key).filter(k => k !== UNASSIGNED_ROLE);
+      const slugs = [...new Set(stats.groups.map(g => g.roleSlug).filter((k): k is string => !!k))];
       const roleRows = slugs.length > 0
         ? await db.query.workspaceSkills.findMany({
             where: and(
@@ -411,8 +412,10 @@ export default async function HealthPage({
         scan,
         groups: stats.groups.map(g => ({
           ...g,
-          label: roleBySlug.get(g.key)?.name ?? (g.key === UNASSIGNED_ROLE ? 'No role' : g.key),
-          color: roleBySlug.get(g.key)?.color ?? '#888',
+          label: g.key === UNASSIGNED_ROLE
+            ? 'No role'
+            : `${roleBySlug.get(g.roleSlug ?? g.key)?.name ?? g.roleSlug ?? g.key}${g.roleSource === 'inferred' ? INFERRED_ROLE_SUFFIX : ''}`,
+          color: roleBySlug.get(g.roleSlug ?? g.key)?.color ?? '#888',
         })),
       };
     })().catch(() => null),

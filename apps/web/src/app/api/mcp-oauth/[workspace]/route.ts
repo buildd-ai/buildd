@@ -54,6 +54,7 @@ import { INTERACTIVE_SESSION_HEADER, signInteractiveSession } from '@/lib/intera
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
 import { isUuid } from '@/lib/uuid';
+import { resolveLinkedDocsWorkspaces } from '@/lib/linked-knowledge';
 
 function extractBearer(req: Request): string | null {
   const auth = req.headers.get('authorization');
@@ -114,7 +115,7 @@ function forbiddenForLevel(action: string, level: SessionLevel) {
   };
 }
 
-function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string) {
+function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, level: SessionLevel, isSensitive?: boolean, project?: string, linkedDocsWorkspaceIds: string[] = []) {
   const actions = [...allActionsList];
 
   const embedder = getVoyageEmbedder();
@@ -244,7 +245,12 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         if (!memClient) {
           return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team could not be resolved.' }], isError: true };
         }
-        return await handleMemoryAction(memClient, action, params, { ...ctx, project, isSensitive });
+        return await handleMemoryAction(memClient, action, params, {
+          ...ctx,
+          project,
+          isSensitive,
+          ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
+        });
       }
       if (name === 'recall' || name === 'learn') {
         // Defense-in-depth: gate even if the tool was called despite being absent
@@ -259,7 +265,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         // No multi-workspace guard here (unlike /api/mcp): this endpoint pins the
         // workspace in its URL path and the JWT claim is checked against it, so
         // the workspace can never be ambiguous.
-        const memCtx = { ...ctx, project, isSensitive };
+        const memCtx = { ...ctx, project, isSensitive, ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}) };
         const memArgs = (args || {}) as Record<string, unknown>;
         return name === 'recall'
           ? await handleRecallAction(memClient, memArgs, memCtx)
@@ -313,7 +319,18 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   // scope from either transport. None (memory closed) for a sensitive
   // workspace or one whose key a sensitive workspace in the team shares.
   const project = (await resolveMemoryProjectKey(ws.id)) ?? undefined;
-  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project);
+  const linkedDocsWorkspaceIds = isSensitive
+    ? []
+    : await resolveLinkedDocsWorkspaces({
+        workspaceId: ws.id,
+        account: {
+          id: account.id,
+          teamId: account.teamId,
+          workspaceIds: account.workspaceIds,
+          sessionUser: !!(account as { sessionUserId?: string }).sessionUserId,
+        },
+      });
+  const server = createMcpServer(api, workspace, ws.teamId, level, isSensitive, project, linkedDocsWorkspaceIds);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

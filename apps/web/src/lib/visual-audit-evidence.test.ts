@@ -166,6 +166,62 @@ describe('evaluateVisualAuditEvidence', () => {
   });
 });
 
+describe('state shots (QA_PLAN, docs/specs/qa-capture-steps.md)', () => {
+  const STATE = 'force-start-dialog';
+  const ev = (requiredRoutes: string[], shots: ReturnType<typeof shot>[], linked: string[] = []) =>
+    evaluateVisualAuditEvidence({ requiredRoutes, shots, uploadedIds: new Set(shots.map((s) => s.id)), linkedFixTaskIds: new Set(linked) });
+
+  it('round-trips state through parseQaMeta, trimmed, and leaves it absent on a base shot', () => {
+    expect(parseQaMeta({ qa: qa('/app/tasks/:id', 'mobile', { state: ` ${STATE} ` }) })?.state).toBe(STATE);
+    expect(parseQaMeta({ qa: qa('/app/tasks/:id', 'mobile') })).not.toHaveProperty('state');
+    expect(parseQaMeta({ qa: qa('/app/tasks/:id', 'mobile', { state: '' }) })).not.toHaveProperty('state');
+    expect(parseQaMeta({ qa: qa('/app/tasks/:id', 'mobile', { state: 7 }) })).not.toHaveProperty('state');
+  });
+
+  it('a state shot does not satisfy a required cell', () => {
+    const v = ev(['/app/tasks/:id'], [
+      shot('m', qa('/app/tasks/:id', 'mobile', { state: STATE })),
+      shot('d', qa('/app/tasks/:id', 'desktop', { state: STATE })),
+    ]);
+    expect(v.ok).toBe(false);
+    expect(v.missing).toEqual(['/app/tasks/:id @ mobile', '/app/tasks/:id @ desktop']);
+  });
+
+  it('a state shot alongside full base coverage does not break it', () => {
+    const v = ev(['/app/tasks/:id'], [
+      shot('bm', qa('/app/tasks/:id', 'mobile')),
+      shot('bd', qa('/app/tasks/:id', 'desktop')),
+      shot('sm', qa('/app/tasks/:id', 'mobile', { state: STATE, verdict: 'unsure' })),
+    ]);
+    expect(v.ok).toBe(true);
+    expect(v.missing).toEqual([]);
+  });
+
+  it('with no code-derived routes, state shots alone are not "at least one route"', () => {
+    const v = ev([], [
+      shot('m', qa('/app/tasks/:id', 'mobile', { state: STATE })),
+      shot('d', qa('/app/tasks/:id', 'desktop', { state: STATE })),
+    ]);
+    expect(v.missing).toEqual(['(no screenshots) any route @ mobile', '(no screenshots) any route @ desktop']);
+    // ...and a state route the auditor picked is not added to the required set.
+    const w = ev([], [shot('bm', qa('/app/home', 'mobile')), shot('bd', qa('/app/home', 'desktop')), shot('s', qa('/app/tasks/:id', 'mobile', { state: STATE }))]);
+    expect(w.ok).toBe(true);
+  });
+
+  it('every other rule still applies to a state shot: an issue needs its fix task, a finding is required', () => {
+    const shots = [
+      shot('bm', qa('/app/tasks/:id', 'mobile')),
+      shot('bd', qa('/app/tasks/:id', 'desktop')),
+      shot('si', qa('/app/tasks/:id', 'mobile', { state: STATE, verdict: 'issue' })),
+      shot('se', qa('/app/tasks/:id', 'desktop', { state: STATE, finding: '' })),
+    ];
+    const v = ev(['/app/tasks/:id'], shots);
+    expect(v.unlinkedIssues).toEqual(['si']);
+    expect(v.emptyFindings).toEqual(['se']);
+    expect(ev(['/app/tasks/:id'], [...shots.slice(0, 2), shot('si', qa('/app/tasks/:id', 'mobile', { state: STATE, verdict: 'issue', fixTaskId: FIX }))], [FIX]).ok).toBe(true);
+  });
+});
+
 describe('formatVisualEvidenceRejection', () => {
   it('says what is missing and how to fix it', () => {
     const msg = formatVisualEvidenceRejection({
@@ -364,6 +420,7 @@ describe('parseQaMeta parity with the Visual review strip', () => {
       { qa: qa('/app/missions', 'mobile', { verdict: 'pass' }) },
       { qa: qa('/app/missions', 'mobile', { finding: '  ' }) },
       { qa: qa('/app/missions', 'mobile', { finding: undefined }) },
+      { qa: qa('/app/tasks/:id', 'mobile', { state: 'force-start-dialog' }) },
       { qa: 'x' },
       null,
     ];
@@ -372,6 +429,13 @@ describe('parseQaMeta parity with the Visual review strip', () => {
       const countable = counted !== null && counted.finding.length > 0;
       expect({ m, shown: strip.parseQaMeta(m) !== null }).toEqual({ m, shown: countable });
     }
+  });
+
+  it('reads the same state key as the strip', async () => {
+    const strip = await import('./mission-visual-review');
+    const m = { qa: qa('/app/tasks/:id', 'mobile', { state: 'force-start-dialog' }) };
+    expect(strip.parseQaMeta(m)?.state).toBe(parseQaMeta(m)?.state);
+    expect(strip.parseQaMeta({ qa: qa('/x', 'mobile') })?.state).toBeUndefined();
   });
 
   it('shares one verdict and viewport vocabulary with the strip', async () => {

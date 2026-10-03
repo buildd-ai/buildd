@@ -113,6 +113,14 @@ export const GATE_SLUGS = {
    */
   RETRY_PR_SUPERSESSION: 'retry_pr_supersession',
   /**
+   * Automatic supersession of a closed-unmerged PR (`lib/pr-supersession-detect.ts`).
+   * `accepted`: content verification (patch-id or content) proved the work is
+   * in a merged PR, so the edge was recorded — `detail.method` and
+   * `detail.confidence` separate these from a person's edge. `deferred`: a
+   * candidate was found but not verified, so only a suggestion was stored.
+   */
+  AUTO_PR_SUPERSESSION: 'auto_pr_supersession',
+  /**
    * The chat retro proposal pass (apps/web/src/lib/chat-retro/, experiment).
    * `deferred`: a pattern over the daily per-team cap. `rejected`: a signature
    * muted until its evidence doubles, or a pattern with no workspace to file
@@ -165,6 +173,27 @@ export const GATE_SLUGS = {
    * never recorded here as an operational failure — it goes to the conflict agent.
    */
   BASE_REFRESH: 'base_refresh',
+  /**
+   * A red CI result on a buildd PR that got no CI-fix task
+   * (`lib/ci-failure-retry.ts`), from the `check_suite` webhook or the red-PR
+   * sweep (`lib/ci-red-sweep.ts`). `detail.skipReason` is the stable code:
+   * owner_stopped, pr_terminal, no_workspace, draft, pr_merged, pr_closed,
+   * fix_in_flight, head_already_retried, retries_exhausted, retries_disabled,
+   * duplicate. `deferred` = someone still owes a push (a fix in flight);
+   * `rejected` = nothing will act on this head; `stranded` = the sweep found a
+   * head an attempt already ran on with nothing pushed, and escalated it.
+   */
+  CI_RETRY_SKIPPED: 'ci_retry_skipped',
+  /**
+   * POST /api/tasks — the organizer's own planning task tried to create a
+   * decomposition child while sibling tasks the mission creator pre-filed
+   * (after that planning task was created) are still live. The pre-filed
+   * heuristic in `runMission()` only runs once, at planning-task creation —
+   * before a creator who files right after `manage_missions create` gets a
+   * chance to. This is the same check re-run at the point decomposition
+   * actually happens. Retry children (explicit `parentTaskId`) are exempt.
+   */
+  DECOMPOSITION_REFUSED: 'decomposition_refused',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

@@ -18,6 +18,8 @@ import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
+import type { RoleOverride } from './policy-overrides';
+import { loadPolicyOverrides } from './policy-overrides-source';
 
 const BUILDD_MCP = {
   type: 'http',
@@ -26,7 +28,7 @@ const BUILDD_MCP = {
 };
 
 /**
- * Choice criteria for role inference (docs/design/role-routing.md §2). This
+ * Choice criteria for role inference (knowledge-base: buildd/design/role-routing.md §2). This
  * text IS the routing prompt: the model reads nothing else about the role.
  * whenToUse is 20–300 chars, notFor ≤ 200 chars and names the neighbouring
  * role. `disabled` keeps a role out of the candidate set on purpose — used for
@@ -61,6 +63,12 @@ interface DefaultRoleDefinition {
   mcpServers: Record<string, unknown>;
   requiredEnvVars: Record<string, string>;
   routing: DefaultRoleRouting;
+  /**
+   * claude.ai artifact access for sessions under this role, seeded into
+   * `metadata.claudeAiArtifacts` (@buildd/shared claude-ai-artifacts.ts).
+   * Absent = off. Only design-consuming roles read; no seeded role publishes.
+   */
+  claudeAiArtifacts?: 'read';
 }
 
 interface DefaultRole extends DefaultRoleDefinition {
@@ -212,6 +220,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
   },
   {
     slug: 'builder',
+    // Builds UI from claude.ai Design canvases cited in context.designSource.
+    claudeAiArtifacts: 'read',
     name: 'Builder',
     description: 'Core engineering — features, bug fixes, refactoring, releases',
     content: `# Builder
@@ -541,6 +551,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // workflow, never a role). It is one of EXPLICIT_ROLE_SLUGS, so only a
     // runner whose env-scan found a browser can claim it.
     slug: VISUAL_AUDITOR_ROLE_SLUG,
+    // Compares shipped pages against the design the mission cited.
+    claudeAiArtifacts: 'read',
     // v2 (visual-qa-human-review.md): no note for unsure, update_artifact
     // sends only qa.fixTaskId, later rounds report prior-finding resolution.
     // v3: explicit block-in-foreground instruction for the dispatched run — a
@@ -548,11 +560,15 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // runner recorded as completion instead of parking it (task 8bc5b5ac).
     // v4: page source (sandbox | vercel-preview) from get_page_source, the two
     // auth walls parked like a boot failure, and qa.source on every shot.
-    version: 4,
+    // v5: QA_PLAN states (docs/specs/qa-capture-steps.md): capture a modal,
+    // menu or gated state instead of marking it unsure, the never-commit rule,
+    // and a fixture task behind every remaining unsure.
+    version: 5,
     supersededContentHashes: [
       '858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d',
       'fc757beb2e05a18169abe8435b23a4fcbd2fa269e9178bdbf13f87004a8aa137',
       'dad305063efb71f0834e8c3a0a64222cbdfac0b44d425fc243b6c9a2a31734b4',
+      'f1b14c03a7999fdb22098ea67f86a98d20169c0c989f235bedfd22442fd126c8',
     ],
     name: 'Visual Auditor',
     description: 'Screenshots the pages a mission changed at phone and desktop width, judges each shot, and files fix tasks. Never edits code or opens PRs',
@@ -586,15 +602,17 @@ deploys to Production and has no preview). Then:
 - \`decision.ok\` with \`source: "sandbox"\`: capture as below.
 - \`decision.ok\` with \`source: "vercel-preview"\`: capture from \`decision.baseUrl\` instead. Run
   \`scripts/qa/capture.ts\` with \`QA_BASE_URL=<baseUrl>\`, \`QA_PAGE_SOURCE=vercel-preview\`,
-  \`QA_ROUTES=<your routes>\` and \`QA_SIGN_IN_PATHS=<auth.signInPaths joined by commas>\`, once
-  with \`QA_VIEWPORT=mobile\` and once without. The bypass and storage-state env vars reach you
+  \`QA_ROUTES=<your routes>\` (or \`QA_PLAN\`, below) and
+  \`QA_SIGN_IN_PATHS=<auth.signInPaths joined by commas>\`, once with \`QA_VIEWPORT=mobile\` and once
+  without. The bypass and storage-state env vars reach you
   from the workspace's secrets; never print them. Outside buildd's own repo there is no
   \`scripts/qa/capture.ts\`: \`git clone --depth 1 https://github.com/buildd-ai/buildd /tmp/qa-kit/src
   && cd /tmp/qa-kit && bun add playwright\`, then, with
   \`PLAYWRIGHT_BROWSERS_PATH=/tmp/qa-kit/browsers\` set for both commands (a shared install would
   delete the runner's own browser), \`bunx playwright install chromium\` and
-  \`bun src/scripts/qa/capture.ts\`. Shots land in
-  \`/tmp/qa/screenshots/\`, and \`/tmp/qa/captures.json\` says which source each came from.
+  \`bun src/scripts/qa/capture.ts\`. \`QA_PLAN\` works the same from there: write the plan to
+  \`/tmp/qa-kit/plan.json\` and pass that path. Shots land in \`/tmp/qa/screenshots/\`, and
+  \`/tmp/qa/captures.json\` says which source each came from.
 - \`decision.error: "pending"\`: the preview is still building. Call again, in this turn.
 - \`decision.error: "preview_unavailable"\`: you have no pages. Park it as in "Boot failure".
 
@@ -604,13 +622,45 @@ Follow the \`visual-review\` skill (\`.claude/skills/visual-review/SKILL.md\`). 
 sandbox, pick the recipe by one question: is \`DATABASE_URL\` set?
 
 - **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` on the trunk
-  branch with your routes, once with \`viewport=mobile\` and once for desktop, then download
-  the \`qa-screenshots\` artifact exactly as the skill describes (and delete it after).
+  branch with your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
+  \`viewport=mobile\` and once for desktop, then download the \`qa-screenshots\` artifact exactly
+  as the skill describes (and delete it after).
 - **\`DATABASE_URL\` set** (a dev database, never prod): run \`scripts/qa/shoot.sh\` twice,
-  with \`QA_VIEWPORT=mobile\` and without it (desktop).
+  with \`QA_VIEWPORT=mobile\` and without it (desktop). It passes \`QA_PLAN\` through.
 
 Capture every required route at BOTH viewports: \`mobile\` (390x844) and \`desktop\`
 (1280x900). At most 40 shots per run. Navigate read-only: GETs only, no form submits.
+
+### Modals, menus and gated states: a capture plan
+
+A page loaded and shot shows only its resting state. For each modal, menu, confirm or gated
+state in scope, write a \`QA_PLAN\` state and capture it; do not mark it \`unsure\` because a
+click was needed. \`QA_PLAN\` replaces \`QA_ROUTES\` (never set both): a path to a JSON file, or
+the JSON itself.
+
+\`\`\`
+[{ "route": "/app/tasks/<a pending task id>",
+   "states": [{ "key": "force-start-dialog",
+                "steps": [{ "action": "click", "selector": "role:button[name=Start Task]", "commit": true },
+                          { "action": "waitFor", "selector": "text:Force start" }] }] }]
+\`\`\`
+
+Each route is shot at its base state, then once per state on a fresh load. Actions are a closed
+list: \`click\`, \`hover\`, \`fill\`, \`press\` (\`key\`), \`select\` (\`value\`), \`waitFor\` (\`state\`:
+visible or hidden), \`waitMs\` (\`ms\`, at most 5000). Selectors: \`testid:<id>\`,
+\`role:<role>[name=<name>]\`, \`text:<text>\`, or \`css:<css>\` as a last resort.
+
+**Steps never commit.** They open, reveal and type; they never confirm, submit or save. A step
+that sends a write must say \`commit: true\`, and only \`QA_PAGE_SOURCE=sandbox\` honours it: on
+a preview the pages hit real data, so capture.ts rejects the whole plan and names the step.
+Every other write a step triggers is aborted in the browser and listed as \`blockedWrites\`.
+The example above is a commit step because opening that dialog sends a Start request; the
+sandbox runs with writes disabled, so the task still does not start. Never click the confirm
+inside a dialog (Force start, Delete, Approve), on any source.
+
+A step that does not settle is recorded as \`stepFailed: { index, selector, error }\` in
+\`captures.json\`, and the shot is still taken where it stopped. Judge that shot as what it
+shows: a missing control is a finding, a wrong selector is yours to fix and re-run.
 
 **Block on the dispatched run in THIS turn — never end your turn to wait for it.** You are
 not an interactive session: nothing resumes you when a background job finishes. If you end
@@ -638,9 +688,13 @@ buildd action=upload_artifact params={
   type: "screenshot", missionId: "<this task's missionId>",
   metadata: { qa: { runKey: "<one id for this whole run>", route: "/app/tasks/:id",
     viewport: "mobile" | "desktop", finding: "<what you saw, one or two sentences>",
-    verdict: "ok" | "issue" | "unsure", source: "sandbox" | "vercel-preview" } }
+    verdict: "ok" | "issue" | "unsure", source: "sandbox" | "vercel-preview",
+    state: "<the QA_PLAN state key; omit on a base shot>" } }
 }
 \`\`\`
+
+A state shot (its \`captures.json\` entry has \`state\`) is extra evidence: the required
+route × viewport cells are met by base shots only, so upload both.
 
 When you shoot one route more than once per viewport (two locales, a query, an empty
 and a full state), add \`variant: "<what differs>"\` to \`qa\` so the captions tell them apart.
@@ -668,9 +722,14 @@ generically; never paste real names or content from a shot anywhere.
   \`metadata: { qa: { fixTaskId: "<task id>" } }\`. The server merges it into the shot's
   \`qa\`, so route, viewport and finding stay as you uploaded them. Every issue shot needs
   one. File it in THIS mission, never as a friction report.
-- **unsure**: upload the shot with \`verdict: "unsure"\` and a finding that says what you could
-  not tell. That is all: do not \`post_note\` about it. The human review queue shows every
-  unsure shot to a person, who decides it. An unsure shot does not block your completion.
+- **unsure**: only for a state you cannot produce with the data available (a real provider
+  failure, say), never for one a capture plan can open. Upload the shot with
+  \`verdict: "unsure"\` and a finding that says what you could not tell, then file a
+  \`[surface fix] <route>: add a ?state= fixture for <state>\` task in this mission and link it on
+  the shot with \`update_artifact\` (\`metadata: { qa: { fixTaskId } }\`), as for an issue. An unsure
+  shot with no follow-up task is not done. Do not \`post_note\` about it: the human review queue
+  shows every unsure shot to a person, who decides it. An unsure shot does not block your
+  completion.
 
 ## Rounds
 
@@ -818,7 +877,11 @@ If a near-duplicate exists, update it instead of creating a new entry.
  * `metadata.routing` (role-routing.md §2), so it needs no migration.
  */
 export function defaultRoleMetadata(role: DefaultRole, now: Date): Record<string, unknown> {
-  return { routing: { ...role.routing, updatedAt: now.toISOString() }, defaultRoleVersion: role.version };
+  return {
+    routing: { ...role.routing, updatedAt: now.toISOString() },
+    defaultRoleVersion: role.version,
+    ...(role.claudeAiArtifacts ? { claudeAiArtifacts: role.claudeAiArtifacts } : {}),
+  };
 }
 
 export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
@@ -829,6 +892,35 @@ export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
 
 export function roleContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * The default roles with the deployment's private overrides applied
+ * (lib/policy-overrides.ts, `roles` in the record). An override replaces
+ * `content` / `description`, may raise `version`, and adds to the hashes a
+ * resync may overwrite. A slug with no default role is logged and ignored.
+ * `DEFAULT_ROLES` itself stays the public text.
+ */
+export function resolveDefaultRoles(overrides: Record<string, RoleOverride> = {}): DefaultRole[] {
+  const known = new Set(DEFAULT_ROLES.map(r => r.slug));
+  for (const slug of Object.keys(overrides)) {
+    if (!known.has(slug)) console.warn(`[policy-overrides] role override for unknown slug "${slug}" ignored`);
+  }
+  return DEFAULT_ROLES.map(role => {
+    const o = overrides[role.slug];
+    if (!o) return role;
+    return {
+      ...role,
+      content: o.content ?? role.content,
+      description: o.description ?? role.description,
+      version: Math.max(role.version, o.version ?? 0),
+      supersededContentHashes: [...new Set([...role.supersededContentHashes, ...(o.supersededContentHashes ?? [])])],
+    };
+  });
+}
+
+async function currentDefaultRoles(): Promise<DefaultRole[]> {
+  return resolveDefaultRoles((await loadPolicyOverrides()).roles);
 }
 
 export interface SeededRoleRow {
@@ -853,8 +945,8 @@ export interface DefaultRoleResync {
  * = 1), whose content is exactly an earlier shipped version. A row a team
  * edited keeps its edit. Pure; `resyncDefaultRolesForTeam` applies it.
  */
-export function planDefaultRoleResync(rows: readonly SeededRoleRow[]): DefaultRoleResync[] {
-  const bySlug = new Map(DEFAULT_ROLES.map(r => [r.slug, r]));
+export function planDefaultRoleResync(rows: readonly SeededRoleRow[], roles: readonly DefaultRole[] = DEFAULT_ROLES): DefaultRoleResync[] {
+  const bySlug = new Map(roles.map(r => [r.slug, r]));
   const out: DefaultRoleResync[] = [];
   for (const row of rows) {
     const role = bySlug.get(row.slug);
@@ -878,7 +970,7 @@ export async function resyncDefaultRolesForTeam(teamId: string): Promise<number>
     where: and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.source, 'system')),
     columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
   }) as SeededRoleRow[];
-  const plan = planDefaultRoleResync(rows);
+  const plan = planDefaultRoleResync(rows, await currentDefaultRoles());
   const now = new Date();
   for (const p of plan) {
     const row = rows.find(r => r.id === p.id)!;
@@ -945,13 +1037,15 @@ export async function backfillDefaultRoleRouting(opts: { dryRun?: boolean } = {}
 
 /**
  * Seed Tier 1 default roles for a newly created team (team-level, workspaceId=null).
+ * Uses the deployment's role overrides when a record is present, else the public text.
  * Safe to call multiple times — uses onConflictDoNothing on (teamId, slug) WHERE workspaceId IS NULL.
  */
 export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
   const now = new Date();
+  const roles = await currentDefaultRoles();
 
   await db.insert(workspaceSkills)
-    .values(DEFAULT_ROLES.map(role => ({
+    .values(roles.map(role => ({
       id: crypto.randomUUID(),
       teamId,
       workspaceId: null,

@@ -1,5 +1,5 @@
 /**
- * Alerting for the PR landing guarantee (docs/design/pr-landing-guarantee.md §H).
+ * Alerting for the PR landing guarantee (knowledge-base: buildd/design/pr-landing-guarantee.md §H).
  *
  * `landPr` decides; this decides whether that deserves a person. Exactly one
  * Pushover per (workspace, PR, head, reason), and none for a PR that is
@@ -57,6 +57,7 @@ export const LANDING_ACTION_LABELS: Record<LandingAction, string> = {
   retry_landing: 'Retry landing',
   merge_anyway: 'Merge anyway',
   close_superseded: 'Close as superseded',
+  review_on_github: 'Review on GitHub',
 };
 
 export interface ActionPlan {
@@ -78,6 +79,8 @@ const MERGE_ANYWAY: Record<string, Override> = {
 
 export function overrideForAction(reason: PageReason, action: LandingAction): Override | null {
   if (action === 'merge_anyway') return MERGE_ANYWAY[reason] ?? null;
+  // A link, not a server action: nothing to run.
+  if (action === 'review_on_github') return null;
   return {};
 }
 
@@ -106,6 +109,18 @@ export function actionsForReason(reason: PageReason): ActionPlan {
         return { primary: 're_review', options: ['re_review'] };
       case 'size_cap':
         return withOverride('retry_landing');
+      // buildd never merges past these (landPr refuses a protected path or a
+      // migration for every door), so retrying the same commit cannot change
+      // the outcome. The person reviews the diff and merges it on GitHub.
+      case 'deny_path':
+      case 'migration':
+        return { primary: 'review_on_github', options: ['review_on_github'] };
+      // These can clear once the person acts on GitHub (an approval, a look at
+      // the dependency bump), so a retry stays on offer for afterwards.
+      case 'branch_protection':
+      case 'dependency_bot':
+      case 'unsafe_other':
+        return { primary: 'review_on_github', options: ['review_on_github', 'retry_landing'] };
       default:
         return withOverride('retry_landing');
     }
@@ -197,6 +212,11 @@ export function buildLandingPageCopy(i: {
  * A failed send is not retried — the claim already happened, and a duplicate page
  * on a flaky channel is worse than a missed one that the invariant clock backs up.
  */
+/** The PR's changed-files view on GitHub. */
+export function githubFilesUrl(repoFullName: string, prNumber: number): string {
+  return `https://github.com/${repoFullName}/pull/${prNumber}/files`;
+}
+
 export async function alertOnLanding(input: LandingAlertInput, deps: LandingAlertDeps): Promise<void> {
   try {
     const { outcome, taskId } = input;
@@ -231,6 +251,14 @@ export async function alertOnLanding(input: LandingAlertInput, deps: LandingAler
     const plan = actionsForReason(reason);
     const copy = buildLandingPageCopy({ prNumber: input.prNumber, prTitle: input.prTitle, reason, detail, approvedAgeMs, stuckMs });
     const base = `${deps.appUrl().replace(/\/$/, '')}/app/prs/${input.prNumber}/act`;
+    if (plan.primary === 'review_on_github') {
+      // Nothing for buildd to run: one tap should open the diff itself.
+      await deps.send(
+        { workspaceId: input.workspaceId, taskId },
+        { ...copy, url: githubFilesUrl(input.repoFullName, input.prNumber), urlTitle: LANDING_ACTION_LABELS.review_on_github, priority },
+      );
+      return;
+    }
     const token = signLandingActionToken(
       { workspaceId: input.workspaceId, prNumber: input.prNumber, headSha: input.headSha, action: plan.primary, reason },
       nowMs,

@@ -15,6 +15,8 @@ import {
   countResponseBytes,
   deliverRunReport,
   egressClassForKind,
+  emptyEgressDetail,
+  applyEgressDetail,
   emptyEgressCounters,
   isEgressEvent,
   parsePhaseLine,
@@ -181,6 +183,84 @@ const FULL: RunReportInput = {
   outcome: 'done',
 };
 
+describe('egress detail: why requests failed, never what they were', () => {
+  test('reject reasons and upstream error statuses are counted per class', () => {
+    const d = emptyEgressDetail();
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 1, rejected: true, reason: 'path', pathLabel: 'api_hello' });
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 2, rejected: true, reason: 'path', pathLabel: 'oauth' });
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 3, rejected: true, reason: 'unconfigured' });
+    applyEgressDetail(d, { type: 'status', cls: 'model', status: 403 });
+    applyEgressDetail(d, { type: 'status', cls: 'model', status: 400 });
+    applyEgressDetail(d, { type: 'status', cls: 'model', status: 200 });
+    applyEgressDetail(d, { type: 'request', cls: 'github', at: 4 });
+    expect(d.model).toEqual({ rejectReasons: { path: 2, unconfigured: 1 }, rejectedPaths: { api_hello: 1, oauth: 1 }, errorStatuses: { '400': 1, '403': 1 } });
+    expect(d.github).toEqual({ rejectReasons: {}, rejectedPaths: {}, errorStatuses: {}, credentialed: 0, unauthenticated: {}, unauthenticatedErrorStatuses: {}, grantFetchFailures: {} });
+  });
+
+  test('github: credentialed vs unauthenticated (by fixed reason), and which answers came back unauthenticated', () => {
+    const d = emptyEgressDetail();
+    applyEgressDetail(d, { type: 'request', cls: 'github', at: 1, auth: 'credentialed' });
+    applyEgressDetail(d, { type: 'request', cls: 'github', at: 2, auth: 'credentialed' });
+    applyEgressDetail(d, { type: 'request', cls: 'github', at: 3, auth: 'grant_fetch_failed' });
+    applyEgressDetail(d, { type: 'request', cls: 'github', at: 4, auth: 'out_of_scope' });
+    applyEgressDetail(d, { type: 'request', cls: 'github', at: 5, auth: 'bogus' as never });
+    applyEgressDetail(d, { type: 'status', cls: 'github', status: 429, auth: 'grant_fetch_failed' });
+    applyEgressDetail(d, { type: 'status', cls: 'github', status: 429, auth: 'credentialed' });
+    applyEgressDetail(d, { type: 'grant_failure', cls: 'github', status: 409 });
+    applyEgressDetail(d, { type: 'grant_failure', cls: 'github', status: 0 });
+    expect(d.github).toEqual({
+      rejectReasons: {}, rejectedPaths: {},
+      errorStatuses: { '429': 2 },
+      credentialed: 2,
+      unauthenticated: { grant_fetch_failed: 1, out_of_scope: 1, no_grant: 1 },
+      unauthenticatedErrorStatuses: { '429': 1 },
+      grantFetchFailures: { '409': 1, error: 1 },
+    });
+    // Model traffic never grows the GitHub-only fields.
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 6, auth: 'no_grant' });
+    expect(d.model).toEqual({ rejectReasons: {}, rejectedPaths: {}, errorStatuses: {} });
+  });
+
+  test('a grant_failure event is valid only for github, with an integer status', () => {
+    expect(isEgressEvent({ type: 'grant_failure', cls: 'github', status: 409 })).toBe(true);
+    expect(isEgressEvent({ type: 'grant_failure', cls: 'model', status: 409 })).toBe(false);
+    expect(isEgressEvent({ type: 'grant_failure', cls: 'github', status: 'x' })).toBe(false);
+  });
+
+  test('a status event is a valid egress event; an unknown reason is not counted', () => {
+    expect(isEgressEvent({ type: 'status', cls: 'model', status: 403 })).toBe(true);
+    expect(isEgressEvent({ type: 'status', cls: 'model', status: 'x' })).toBe(false);
+    const d = emptyEgressDetail();
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 1, rejected: true, reason: 'nope' as never });
+    expect(d.model.rejectReasons).toEqual({ other: 1 });
+    applyEgressDetail(d, { type: 'request', cls: 'model', at: 2, rejected: true, reason: 'path', pathLabel: '/raw/path' as never });
+    expect(d.model.rejectedPaths).toEqual({ other: 1 });
+  });
+
+  test('the report carries the detail, bounded to known reasons and 4xx/5xx codes', () => {
+    const r = assembleRunReport({ ...FULL, egressDetail: {
+      model: { rejectReasons: { path: 3, bogus: 9 } as never, rejectedPaths: { oauth: 3, '/x': 1 } as never, errorStatuses: { '403': 2, '200': 5, 'abc': 1 } },
+    } as never });
+    expect(r.egressDetail.model).toEqual({ rejectReasons: { path: 3 }, rejectedPaths: { oauth: 3 }, errorStatuses: { '403': 2 } });
+    expect(r.egressDetail.github).toEqual({ rejectReasons: {}, rejectedPaths: {}, errorStatuses: {}, credentialed: 0, unauthenticated: {}, unauthenticatedErrorStatuses: {}, grantFetchFailures: {} });
+  });
+
+  test('the github auth fields survive the report, bounded to known reasons and codes', () => {
+    const r = assembleRunReport({ ...FULL, egressDetail: {
+      github: {
+        rejectReasons: {}, rejectedPaths: {}, errorStatuses: { '429': 1 },
+        credentialed: 4, unauthenticated: { grant_fetch_failed: 2, nope: 1 } as never,
+        unauthenticatedErrorStatuses: { '429': 1, '200': 3 }, grantFetchFailures: { '409': 2, error: 1, '/x': 1 },
+      },
+    } as never });
+    expect(r.egressDetail.github).toEqual({
+      rejectReasons: {}, rejectedPaths: {}, errorStatuses: { '429': 1 },
+      credentialed: 4, unauthenticated: { grant_fetch_failed: 2 },
+      unauthenticatedErrorStatuses: { '429': 1 }, grantFetchFailures: { '409': 2, error: 1 },
+    });
+  });
+});
+
 describe('assembleRunReport', () => {
   test('timestamps, derived durations, ids, counters and outcome', () => {
     const r = assembleRunReport(FULL);
@@ -250,7 +330,7 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'exitCode', 'instanceType', 'kind',
+      'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
       'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
   });

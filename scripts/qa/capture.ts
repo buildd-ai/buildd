@@ -9,7 +9,10 @@
  * Route selection (in priority order):
  *   1. QA_ROUTES set  → capture exactly those ad-hoc paths (manifest ignored).
  *                       Best for reviewing the impact of a specific change.
- *   2. otherwise      → capture every route in the manifest. Dynamic routes
+ *   2. QA_PLAN set    → capture each plan route at its base state, then once per
+ *                       named state after running that state's steps (open a
+ *                       dialog, a menu, a gated sub-state). docs/specs/qa-capture-steps.md.
+ *   3. otherwise      → capture every route in the manifest. Dynamic routes
  *                       (`:id`) are resolved from QA_TASK_ID / QA_MISSION_ID when
  *                       provided, and skipped otherwise.
  *
@@ -25,6 +28,12 @@
  *   QA_OUTPUT                       — output dir for screenshots/a11y (default: /tmp/qa)
  *   QA_MANIFEST                     — path to visual-qa-routes.json (default: apps/web/src/qa/visual-qa-routes.json)
  *   QA_ROUTES                       — comma-separated ad-hoc paths, e.g. "/app/tasks/abc,/app/missions/xyz"
+ *   QA_PLAN                         — a capture plan: a path to a JSON file, or the JSON itself when it
+ *                                     starts with `[`. `[{ route, states?: [{ key, steps }] }]`, steps
+ *                                     from a closed list (click, hover, fill, press, select, waitFor,
+ *                                     waitMs). Steps never commit: a write needs `commit: true`, which
+ *                                     only QA_PAGE_SOURCE=sandbox honours, and every other write is
+ *                                     aborted in the browser. Not combinable with QA_ROUTES.
  *   QA_TASK_ID                      — resolves `/app/tasks/:id` in the manifest
  *   QA_MISSION_ID                   — resolves `/app/missions/:id` in the manifest
  *   VISUAL_QA_STORAGE_STATE_PATH    — Playwright storageState JSON for remote auth
@@ -50,6 +59,7 @@ import { readFileSync, mkdirSync, writeFileSync, existsSync, mkdtempSync } from 
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { resolveViewport } from './viewport';
+import { describeStep, guardWrites, parsePlan, planText, runSteps, type BlockedWrite, type PlanRoute, type Step, type StepFailure } from './steps';
 import {
   classifyPageLoad,
   CONFIG_ERROR_MESSAGES,
@@ -94,6 +104,24 @@ if (process.env.VISUAL_QA_STORAGE_STATE) {
 }
 console.log(`[capture] source ${PAGE_SOURCE}`);
 
+// The capture plan, validated whole before the first await for the same
+// reason: a bad plan, or a committing step against a preview, must exit 1
+// before any page loads, never land in the swallow handlers below.
+const adHoc = (process.env.QA_ROUTES ?? '').split(',').map((p) => p.trim()).filter(Boolean);
+let plan: PlanRoute[] | null = null;
+if (process.env.QA_PLAN?.trim()) {
+  if (adHoc.length > 0) {
+    console.error('[capture] set QA_ROUTES or QA_PLAN, not both');
+    process.exit(1);
+  }
+  try {
+    plan = parsePlan(planText(process.env.QA_PLAN, (p) => readFileSync(resolve(p), 'utf-8')), { pageSource: PAGE_SOURCE });
+  } catch (err) {
+    console.error(`[capture] ${(err as Error).message}`);
+    process.exit(1);
+  }
+}
+
 // Playwright 1.61 can throw unhandled errors from internal cookie/URL handling when
 // a response URL is relative. Suppress these non-fatal background exceptions so the
 // process exits cleanly with the captures it managed to collect.
@@ -122,7 +150,8 @@ mkdirSync(join(OUTPUT_DIR, 'screenshots'), { recursive: true });
 mkdirSync(join(OUTPUT_DIR, 'a11y'), { recursive: true });
 
 // --- Build the route list ---
-type Route = { id: string; path: string; skipReason?: string };
+/** `state` + `steps`: a QA_PLAN state, shot after its steps on a fresh load. */
+type Route = { id: string; path: string; skipReason?: string; state?: string; steps?: Step[] };
 
 /** Turn an ad-hoc path into a filesystem-safe id, e.g. /app/tasks/abc → app-tasks-abc */
 function slugify(path: string): string {
@@ -142,9 +171,22 @@ function resolveManifestPath(rawPath: string): { path: string; skipReason?: stri
 }
 
 let routes: Route[];
-const adHoc = (process.env.QA_ROUTES ?? '').split(',').map((p) => p.trim()).filter(Boolean);
 
-if (adHoc.length > 0) {
+if (plan) {
+  // Base first, then each state: required coverage is the base shot, and a
+  // state's steps start from a fresh load so they never stack.
+  // A pattern route (`/app/tasks/:id`) resolves like the manifest's, from
+  // QA_TASK_ID / QA_MISSION_ID, so a committed plan carries no real id.
+  routes = plan.flatMap((r) => {
+    const { path, skipReason } = resolveManifestPath(r.route);
+    const id = slugify(r.route.includes(':') ? path : r.route);
+    return [
+      { id, path, skipReason },
+      ...r.states.map((s) => ({ id: `${id}--${s.key}`, path, skipReason, state: s.key, steps: s.steps })),
+    ];
+  });
+  console.log(`[capture] plan mode — ${plan.length} route(s), ${routes.length - plan.length} state(s) from QA_PLAN`);
+} else if (adHoc.length > 0) {
   routes = adHoc.map((path) => ({ id: slugify(path), path }));
   console.log(`[capture] ad-hoc mode — ${routes.length} route(s) from QA_ROUTES`);
 } else {
@@ -255,6 +297,12 @@ type Capture = {
   devOverlay?: boolean;
   /** sandbox | vercel-preview: copy into the shot's metadata.qa.source. */
   source: string;
+  /** A QA_PLAN state key: copy into the shot's metadata.qa.state. Absent on the base shot. */
+  state?: string;
+  /** The step that did not settle. The shot was still taken, at that point. */
+  stepFailed?: StepFailure;
+  /** Writes the page tried during the steps, aborted by the guard. */
+  blockedWrites?: BlockedWrite[];
   /** An auth wall, not a page: no screenshot was taken. */
   configError?: CaptureConfigError;
   configErrorMessage?: string;
@@ -267,9 +315,12 @@ type Capture = {
 const captures: Capture[] = [];
 
 for (const route of routes) {
+  // Present only on a state shot, so a QA_ROUTES run's entries are unchanged.
+  const stateField = route.state ? { state: route.state } : {};
   if (route.skipReason) {
     captures.push({
       source: PAGE_SOURCE,
+      ...stateField,
       id: route.id,
       path: route.path,
       url: `${BASE_URL}${route.path}`,
@@ -284,6 +335,7 @@ for (const route of routes) {
   const url = `${BASE_URL}${route.path}`;
   console.log(`[capture] GET   ${route.id} → ${url}`);
 
+  let guard: Awaited<ReturnType<typeof guardWrites>> | null = null;
   try {
     const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
 
@@ -299,6 +351,7 @@ for (const route of routes) {
       if (wall.kind === 'config_error') {
         captures.push({
           source: PAGE_SOURCE,
+          ...stateField,
           id: route.id,
           path: route.path,
           url,
@@ -314,6 +367,22 @@ for (const route of routes) {
       }
     }
 
+    // A plan state: run its steps with writes aborted, except a commit step,
+    // which validatePlan only lets through on the sandbox. The guard stays up
+    // until the shot is taken, so a write fired late by a step still stops.
+    let stepFailed: StepFailure | null = null;
+    if (route.steps) {
+      guard = await guardWrites(page);
+      const g = guard;
+      stepFailed = await runSteps(page, route.steps, {
+        beforeStep: (step) => g.allow(step.commit === true && PAGE_SOURCE === 'sandbox'),
+        afterStep: () => g.allow(false),
+      });
+      if (stepFailed) {
+        console.warn(`[capture] STEP  ${route.id}: steps[${stepFailed.index}] (${describeStep(route.steps[stepFailed.index])}) failed: ${stepFailed.error}; shooting the page as it stands`);
+      }
+    }
+
     // The Next.js dev error/build overlay renders in a <nextjs-portal> element and
     // obscures the real UI. Detect it (so the error signal is recorded, not lost),
     // then hide it unless QA_KEEP_DEV_OVERLAY asks to keep it for debugging.
@@ -325,7 +394,9 @@ for (const route of routes) {
     // The app scrolls inside <main class="overflow-y-auto">, not the window, so
     // fullPage alone stops at the viewport. Unclip every inner scroll container
     // (and its fixed-height ancestors) so the shot covers the whole page.
-    await page.evaluate(() => {
+    // A state shot is the viewport instead: that is where a dialog or menu
+    // renders, and unclipping would move what the steps just opened.
+    if (!route.state) await page.evaluate(() => {
       for (const el of Array.from(document.querySelectorAll<HTMLElement>('body *'))) {
         const style = getComputedStyle(el);
         if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) {
@@ -340,7 +411,7 @@ for (const route of routes) {
 
     const screenshotFile = `${route.id}.png`;
     const screenshotPath = join(OUTPUT_DIR, 'screenshots', screenshotFile);
-    await page.screenshot({ path: screenshotPath, fullPage: true });
+    await page.screenshot({ path: screenshotPath, fullPage: !route.state });
 
     // page.accessibility was removed in Playwright 1.52. Use ariaSnapshot() (1.44+)
     // which returns a YAML ARIA tree. Fall back to null if unavailable.
@@ -359,6 +430,7 @@ for (const route of routes) {
     const finalUrl = page.url();
     captures.push({
       source: PAGE_SOURCE,
+      ...stateField,
       id: route.id,
       path: route.path,
       url,
@@ -367,6 +439,8 @@ for (const route of routes) {
       a11yFile,
       redirected: finalUrl !== url && !finalUrl.startsWith(url),
       devOverlay,
+      ...(stepFailed ? { stepFailed } : {}),
+      ...(guard?.blocked.length ? { blockedWrites: [...guard.blocked] } : {}),
       capturedAt: new Date().toISOString(),
     });
     console.log(`[capture] OK    ${route.id} → ${finalUrl}${devOverlay ? ' [dev-overlay hidden]' : ''}`);
@@ -374,12 +448,15 @@ for (const route of routes) {
     console.error(`[capture] FAIL  ${route.id}: ${(err as Error).message}`);
     captures.push({
       source: PAGE_SOURCE,
+      ...stateField,
       id: route.id,
       path: route.path,
       url,
       error: (err as Error).message,
       capturedAt: new Date().toISOString(),
     });
+  } finally {
+    await guard?.dispose();
   }
 }
 

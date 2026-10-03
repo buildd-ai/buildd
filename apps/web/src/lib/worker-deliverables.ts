@@ -106,3 +106,44 @@ export async function getWorkerArtifactCount(workerId: string): Promise<number> 
     return 0;
   }
 }
+
+/**
+ * Query count of deliverable artifacts for a worker (excluding machine/telemetry artifacts).
+ * Filters out byproduct types (screenshot, diff, file, data, link, recording, calendar_event)
+ * unless they're explicitly keyed. Cloud-run-report artifacts (type: data, key: cloud-run-report:*)
+ * are telemetry and never count as deliverables.
+ * Non-fatal — returns 0 on error.
+ */
+export async function getWorkerDeliverableArtifactCount(workerId: string): Promise<number> {
+  try {
+    const { db } = await import('@buildd/core/db');
+    const { artifacts } = await import('@buildd/core/db/schema');
+    const { eq, and, notLike, or, isNotNull, not, inArray } = await import('drizzle-orm');
+
+    const BYPRODUCT_TYPES = ['screenshot', 'diff', 'file', 'data', 'link', 'recording', 'calendar_event'];
+
+    // Deliverable artifacts are either:
+    // 1. Non-byproduct types (review types like report, analysis, summary, etc.)
+    // 2. Byproduct types that are explicitly keyed, EXCEPT cloud-run-report telemetry
+    const deliverableArtifacts = await db.query.artifacts.findMany({
+      where: and(
+        eq(artifacts.workerId, workerId),
+        or(
+          // Non-byproduct types
+          not(inArray(artifacts.type, BYPRODUCT_TYPES)),
+          // Byproduct types with a key, but not cloud-run-report
+          and(
+            inArray(artifacts.type, BYPRODUCT_TYPES),
+            isNotNull(artifacts.key),
+            notLike(artifacts.key, 'cloud-run-report:%'),
+          ),
+        ),
+      ),
+      columns: { id: true },
+    });
+
+    return deliverableArtifacts.length;
+  } catch {
+    return 0;
+  }
+}

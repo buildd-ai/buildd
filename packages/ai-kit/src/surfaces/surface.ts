@@ -1,7 +1,7 @@
 /**
  * `defineSurface` (0.14.0): Jev picks which of the app's own chips and card to
  * show, over several slots in one call, shadow first and gated per slot after
- * an eval. docs/design/shared-ai-kit.md §1d and P7.
+ * an eval. knowledge-base: buildd/design/shared-ai-kit.md §1d and P7.
  *
  * - A `rank` slot is one `score` question per candidate; a `choice` slot is
  *   one `choice` question over the app's labels. Question names are

@@ -1,5 +1,5 @@
 /**
- * What a tap on the landing page does (docs/design/pr-landing-guarantee.md §H).
+ * What a tap on the landing page does (knowledge-base: buildd/design/pr-landing-guarantee.md §H).
  *
  * The signed link only selects an action; the route that calls this has already
  * required a signed-in member of the PR's workspace. Here: verify the token,
@@ -77,7 +77,14 @@ export async function runLandingAction(input: TapInput, deps: LandingActionDeps)
 
   const plan = actionsForReason(payload.reason);
   const chosen = input.action ?? payload.action;
-  if (!plan.options.includes(chosen)) return { status: 'rejected', code: 'bad_action', httpStatus: 400 };
+  if (!plan.options.includes(chosen)) {
+    // A page whose only answer is GitHub still lets a person re-run landing
+    // once the PR has new commits: the change that tripped the rule may be gone.
+    const reRunAfterPush =
+      chosen === 'retry_landing' &&
+      (await deps.readLiveHead({ workspaceId: input.workspaceId, prNumber: input.prNumber }).catch(() => null)) !== payload.headSha;
+    if (!reRunAfterPush) return { status: 'rejected', code: 'bad_action', httpStatus: 400 };
+  }
   const override = overrideForAction(payload.reason, chosen);
   if (!override) return { status: 'rejected', code: 'bad_action', httpStatus: 400 };
 

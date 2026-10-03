@@ -1,6 +1,6 @@
 /**
  * Explore mode: buildd moves a pool's traffic once a day
- * (docs/design/tier-weights.md §3, §4c, §5).
+ * (knowledge-base: buildd/design/tier-weights.md §3, §4c, §5).
  *
  * Pure: every input is an argument, including the date that seeds the
  * Thompson draws, so a step replays exactly from its stored evidence. The

@@ -14,7 +14,8 @@ let row: Row | null;
 let authed: { id: string; level?: string; taskScope?: { taskId: string; workspaceId: string; expiresAt: number } } | null;
 const sets: Array<Record<string, unknown>> = [];
 
-mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => authed }));
+const authCalls: unknown[][] = [];
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (...args: unknown[]) => { authCalls.push(args); return authed; } }));
 mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'workers.id', parkedUntil: 'workers.parked_until' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 mock.module('@/lib/worker-park', () => ({
@@ -126,5 +127,16 @@ describe('DELETE /api/workers/[id]/park', () => {
     authed = { id: '55555555-5555-4555-8555-555555555555', level: 'worker' };
     expect((await DELETE(req('DELETE'), params())).status).toBe(404);
     expect(row!.parkedUntil).not.toBeNull();
+  });
+});
+
+describe('scoped runner keys', () => {
+  it('passes the request to auth, so a capability-scoped key is checked rather than refused', async () => {
+    // Without the request, authenticateApiKey refuses any scoped key: an
+    // evicted cloud agent could not mark its orphan run parked and crashed it.
+    authCalls.length = 0;
+    const r = req('POST');
+    await POST(r, params());
+    expect(authCalls.at(-1)?.[1]).toBe(r);
   });
 });

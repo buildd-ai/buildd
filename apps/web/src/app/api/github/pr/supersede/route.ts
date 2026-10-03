@@ -31,6 +31,8 @@ export async function POST(req: NextRequest) {
     prNumber?: number;
     workspaceId?: string;
     supersedingPrNumber?: number;
+    /** owner/name — only when the superseding PR lives in another repo of the workspace or mission. */
+    supersedingRepo?: string;
     reason?: string;
   };
   try {
@@ -39,7 +41,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  const { workerId, prNumber, workspaceId, supersedingPrNumber, reason } = body;
+  const { workerId, prNumber, workspaceId, supersedingPrNumber, supersedingRepo, reason } = body;
 
   if (!workerId && !prNumber) {
     return NextResponse.json({ error: 'workerId or prNumber is required' }, { status: 400 });
@@ -49,6 +51,9 @@ export async function POST(req: NextRequest) {
   }
   if (!reason || typeof reason !== 'string' || !reason.trim()) {
     return NextResponse.json({ error: 'reason is required' }, { status: 400 });
+  }
+  if (supersedingRepo != null && typeof supersedingRepo !== 'string') {
+    return NextResponse.json({ error: 'supersedingRepo must be owner/name' }, { status: 400 });
   }
 
   let resolvedWorkerId: string;
@@ -87,6 +92,7 @@ export async function POST(req: NextRequest) {
   const result = await recordPrSupersession({
     workerId: resolvedWorkerId,
     supersedingPrNumber,
+    supersedingRepo: supersedingRepo ?? null,
     reason,
     recordedBy: account.name,
   });
@@ -100,5 +106,6 @@ export async function POST(req: NextRequest) {
     supersededPrNumber: result.supersededPrNumber,
     supersedingPrNumber: result.supersedingPrNumber,
     supersedingPrUrl: result.supersedingPrUrl,
+    supersedingRepo: result.supersedingRepo,
   });
 }

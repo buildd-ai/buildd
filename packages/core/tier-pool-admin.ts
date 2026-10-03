@@ -1,6 +1,6 @@
 /**
  * Tier model pools — the admin writes and the per-arm stats read
- * (docs/design/tier-model-pools.md §6, §9).
+ * (knowledge-base: buildd/design/tier-model-pools.md §6, §9).
  *
  * Every traffic change is one SQL statement that updates the pool with a
  * compare-and-set on `allocation_version` AND appends its `tier_pool_changes`
@@ -203,7 +203,7 @@ export async function writeAllocation(args: {
   mode?: PoolMode;
   kind: 'allocation' | 'mode' | 'arm_removed' | 'arm_added';
   actorUserId: string | null;
-  /** e.g. `system:explore`, `system:harm-cut` — a system-initiated change (docs/design/tier-weights.md §5). */
+  /** e.g. `system:explore`, `system:harm-cut` — a system-initiated change (knowledge-base: buildd/design/tier-weights.md §5). */
   actorSystem?: string | null;
   evidence?: Record<string, unknown>;
 }): Promise<number | null> {
@@ -243,7 +243,7 @@ export type AddArmResult =
 /**
  * Add a challenger at the given weight, folded into the pool's weights so it
  * starts carrying traffic instead of needing a second edit
- * (docs/design/tier-weights.md §2). The four-arm cap is a conditional insert,
+ * (knowledge-base: buildd/design/tier-weights.md §2). The four-arm cap is a conditional insert,
  * not a transaction; logging the arm add and applying the resulting
  * allocation happen in the same `writeAllocation` call right after — this
  * function is two statements, not one, the same non-transactional shape

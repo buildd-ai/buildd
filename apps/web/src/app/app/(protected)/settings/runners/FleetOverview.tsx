@@ -35,6 +35,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
     <li
       data-testid="fleet-runner-row"
       data-online={runner.online ? 'true' : 'false'}
+      data-elastic={runner.elastic ? 'true' : undefined}
       className="flex min-h-14 items-center gap-3 px-4 py-2.5"
     >
       <div className="min-w-0 flex-1">
@@ -47,12 +48,19 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
           {waiting > 0 && <span className="text-status-warning"> · {waiting} waiting on you</span>}
         </div>
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-1.5">
-        <span data-testid="fleet-runner-busy" className="font-mono text-[12px] tabular-nums text-text-secondary">
-          <b className={busy > 0 ? 'text-accent-text' : 'text-text-primary'}>{busy}</b>/{runner.maxSlots} busy
+      {runner.elastic ? (
+        // Elastic: as many slots as runs, so there is no meter to fill.
+        <span data-testid="fleet-runner-running" className="shrink-0 font-mono text-[12px] tabular-nums text-text-secondary">
+          <b className="text-accent-text">{runner.elastic.running}</b> running
         </span>
-        <SlotMeter live={busy} max={runner.maxSlots} />
-      </div>
+      ) : (
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <span data-testid="fleet-runner-busy" className="font-mono text-[12px] tabular-nums text-text-secondary">
+            <b className={busy > 0 ? 'text-accent-text' : 'text-text-primary'}>{busy}</b>/{runner.maxSlots} busy
+          </span>
+          <SlotMeter live={busy} max={runner.maxSlots} />
+        </div>
+      )}
     </li>
   );
 }

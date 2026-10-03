@@ -16,7 +16,11 @@
 -- Rules for editing (the coverage test parses this file):
 --   * one `column = expression` per assignment, in UPDATE ... SET;
 --   * no FROM/WHERE inside a SET expression; put logic in a pg_temp function;
---   * plain statements, no transaction block. Safe to run twice.
+--   * a column in a unique index/constraint must get a per-row value (id, row
+--     number or an md5 of the old value), never a constant: the clone is real
+--     prod shape and a constant collides on the second row;
+--   * one transaction (BEGIN … COMMIT below): a failure leaves the clone
+--     untouched, never half-scrubbed. Safe to run twice.
 --
 -- scripts/qa/scrub-guard.sql runs next and fails the job if anything slipped.
 -- Never print row content from here.
@@ -24,6 +28,11 @@
 \set ON_ERROR_STOP on
 -- Command tags carry row counts, and CI logs on this repo are public.
 \set QUIET on
+-- Errors print without DETAIL: a constraint DETAIL echoes the offending key
+-- values. The workflow names the failing statement from psql's line number.
+\set VERBOSITY terse
+
+BEGIN;
 
 -- Known identifiers (NO_PROD_DATA_IDENTIFIERS, via `psql -v ids=…`). Anything
 -- matching is redacted wherever it survives the shape rules below: kept enum-
@@ -328,8 +337,9 @@ UPDATE connectors c SET
   assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c.id = s.id;
 
+-- Unique per (account_id, local_ui_url): one host per row, never a constant.
 UPDATE worker_heartbeats SET
-  local_ui_url = 'http://localhost:8766',
+  local_ui_url = 'http://qa-' || replace(id::text, '-', '') || '.localhost:8766',
   viewer_token = CASE WHEN viewer_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(id::text) END,
   environment = pg_temp.qa_json(environment);
 
@@ -404,6 +414,9 @@ UPDATE workers w SET
   superseded_by_pr_url = pg_temp.qa_pr_url(w.superseded_by_pr_url),
   superseded_reason = pg_temp.qa_text(w.superseded_reason),
   superseded_recorded_by = pg_temp.qa_str(w.superseded_recorded_by),
+  abandoned_reason = pg_temp.qa_text(w.abandoned_reason),
+  abandoned_recorded_by = pg_temp.qa_str(w.abandoned_recorded_by),
+  supersession_scan = pg_temp.qa_json(w.supersession_scan),
   pending_instructions = pg_temp.qa_text(w.pending_instructions),
   instruction_history = pg_temp.qa_json(w.instruction_history),
   result_meta = pg_temp.qa_json(w.result_meta),
@@ -545,3 +558,5 @@ UPDATE migration_log SET
   detail = pg_temp.qa_json(detail);
 
 RESET qa.ids;
+
+COMMIT;

@@ -1,8 +1,8 @@
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
-import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, missionNotes } from '@buildd/core/db/schema';
+import { desc, asc, eq, and, or, not, gt, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { isMissionLinkable } from '@/lib/mission-link-scope';
 import { jsonResponse } from '@/lib/api-response';
@@ -16,7 +16,7 @@ import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskCategorize } from '@/lib/task-category-decision';
-import { scheduleTaskRoleShadow } from '@/lib/task-role-decision';
+import { scheduleTaskRoleRouting } from '@/lib/task-role-apply';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
@@ -781,6 +781,100 @@ export async function POST(req: NextRequest) {
       creationSource: requestedSource,
     });
     const creationSource = creatorContext.creationSource ?? 'api';
+
+    // Decomposition re-check gate. `runMission()` detects pre-filed sibling
+    // tasks exactly ONCE, when the mission's planning task is created — but
+    // `manage_missions create` calls it in the SAME request that creates the
+    // mission, before a creator who files tasks right after create gets a
+    // chance to. That leaves the organizer's prompt frozen on full
+    // decomposition even though sibling tasks land moments later. Re-run the
+    // same check here, at the point decomposition actually happens: when the
+    // calling worker's own current task IS the mission's organizer/planning
+    // task, and it tries to create a non-retry child (no explicit
+    // `parentTaskId` — a retry names the failing task explicitly and stays
+    // exempt), refuse if sibling tasks were filed after the organizer's
+    // planning task started.
+    if (missionId && !parentTaskId && createdByWorkerId) {
+      const callingWorker = await db.query.workers.findFirst({
+        where: eq(workers.id, createdByWorkerId),
+        columns: { taskId: true },
+      });
+      const callingTask = callingWorker?.taskId
+        ? await db.query.tasks.findFirst({
+            where: eq(tasks.id, callingWorker.taskId),
+            columns: { id: true, missionId: true, mode: true, creationSource: true, createdAt: true },
+          })
+        : null;
+      if (
+        callingTask
+        && callingTask.missionId === missionId
+        && callingTask.mode === 'planning'
+        && callingTask.creationSource === 'orchestrator'
+      ) {
+        const missionRow = await db.query.missions.findFirst({
+          where: eq(missions.id, missionId),
+          columns: { decompositionSkipped: true, orchestrationMode: true },
+        });
+        // `orchestrationMode === 'manual'` is the one exemption, matching
+        // runMission()'s own heuristic. An already-`decompositionSkipped`
+        // mission is NOT exempt here — this same organizer task can still
+        // call create_task several times in one decomposition pass (that is
+        // the exact shape of the original incident: 3 sibling build tasks
+        // created back to back), so every one of those calls must be
+        // re-checked, not just the first. The flag only controls whether the
+        // persist-and-note below is a no-op repeat.
+        if (missionRow && missionRow.orchestrationMode !== 'manual') {
+          const preFiled = await db.query.tasks.findMany({
+            where: and(
+              eq(tasks.missionId, missionId),
+              not(eq(tasks.creationSource, 'orchestrator')),
+              not(eq(tasks.mode, 'planning')),
+              gt(tasks.createdAt, callingTask.createdAt),
+              // Exclude the organizer's own earlier creates in this same
+              // decomposition pass — those stamp creationSource 'mcp' and
+              // mode 'execution' just like a creator-filed task, so without
+              // this the organizer's 2nd/3rd create_task call would see its
+              // own 1st call's task and wrongly refuse itself.
+              not(eq(tasks.createdByWorkerId, createdByWorkerId)),
+            ),
+            columns: { id: true },
+            limit: 20,
+          });
+          if (preFiled.length > 0) {
+            const preFiledTaskIds = preFiled.map(t => t.id);
+            if (!missionRow.decompositionSkipped) {
+              await db.update(missions)
+                .set({ decompositionSkipped: true, updatedAt: new Date() })
+                .where(eq(missions.id, missionId));
+              await db.insert(missionNotes).values({
+                missionId,
+                authorType: 'system',
+                type: 'decision',
+                title: 'Decomposition skipped — pre-filed tasks detected',
+                body: `Found ${preFiled.length} pre-filed task(s) linked to this mission after the organizer's planning task started. Refused a decomposition create and switched to coordinate-only mode: the organizer should coordinate the existing tasks (${preFiledTaskIds.join(', ')}) rather than create new ones, except retry children of failed tasks.`,
+                status: 'open',
+              });
+            }
+            const error =
+              `Decomposition refused: ${preFiled.length} task(s) were already filed against this mission after your planning task started (${preFiledTaskIds.join(', ')}). ` +
+              'Switch to coordinate-only mode: coordinate/retry the existing tasks instead of creating new build tasks. ' +
+              'A retry child is still allowed — pass parentTaskId naming the failing task explicitly.';
+            const frictionSignature = fireGateEvent({
+              gate: GATE_SLUGS.DECOMPOSITION_REFUSED,
+              surface: 'POST /api/tasks',
+              outcome: 'rejected',
+              reason: error,
+              workspaceId,
+              missionId,
+              callerOrigin: gateCaller,
+              detail: { preFiledTaskIds, organizerTaskId: callingTask.id },
+            });
+            return NextResponse.json({ error, frictionSignature, decompositionSkipped: true, preFiledTaskIds }, { status: 409 });
+          }
+        }
+      }
+    }
+
     const knownSubjectOrigins = new Set<SubjectFilingOrigin>([
       'dashboard', 'api', 'mcp', 'organizer', 'watcher', 'webhook', 'friction', 'backfill',
     ]);
@@ -1455,13 +1549,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // The role shadow (lib/task-role-decision.ts, role-routing.md §6(a)): which
-    // role the decision model would give this task. Opt-in per team, after the
-    // response, log only — it never writes the task. Pipeline/bookkeeping rows
+    // Role routing (lib/task-role-decision.ts + lib/task-role-apply.ts,
+    // role-routing.md §6(a)/(c)): which role the decision model would give this
+    // task, logged; and, for a role-less task on a team that opted into
+    // task_role_apply, written when confident and still unclaimed. After the
+    // response, so it never delays or fails creation. Pipeline/bookkeeping rows
     // get their role from their parent, so only `work` rows are looked at.
     if (intake.outcome.action !== 'attached' && task.taskClass === 'work' && targetWorkspace.teamId) {
       try {
-        scheduleTaskRoleShadow({
+        scheduleTaskRoleRouting({
           taskId: task.id,
           teamId: targetWorkspace.teamId,
           workspaceId,

@@ -153,6 +153,7 @@ export async function GET(
           linesAdded: true,
           linesRemoved: true,
           supersededByPrNumber: true,
+          abandonedAt: true,
           supersededByPrUrl: true,
           supersededReason: true,
           supersededRecordedBy: true,

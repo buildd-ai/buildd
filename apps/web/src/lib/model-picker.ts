@@ -7,7 +7,7 @@
  * - Settings → Model tiers, base models (single select, one `(route, model)`)
  * - Settings → Model tiers, pool arms (multi select, max `MAX_POOL_ARMS`)
  *
- * See docs/design/tier-model-pools.md §2 (Picker).
+ * See knowledge-base: buildd/design/tier-model-pools.md §2 (Picker).
  */
 import {
   TIER_PRICE_BANDS,

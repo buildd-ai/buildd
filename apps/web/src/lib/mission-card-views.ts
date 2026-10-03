@@ -1,5 +1,5 @@
 /**
- * Server loader for mission cards (docs/design/mission-feed-mobile-continuity.md,
+ * Server loader for mission cards (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * S5). The pure model is `mission-card-view.ts`; this adds the one extra read a
  * card needs that its page did not already make — the human steering marks the
  * time-axis strip in `FlightDetailSheet` draws — batched into a single query and
@@ -32,7 +32,7 @@ export const MISSION_CARD_TASK_COLUMNS = {
 /** Worker columns a card reads (liveness, PR state, and the strip's spans). */
 export const MISSION_CARD_WORKER_COLUMNS = {
   id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true,
-  prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true,
+  prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true,
   exitCause: true,
 } as const;
 

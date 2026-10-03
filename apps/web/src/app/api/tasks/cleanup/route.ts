@@ -7,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
-import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
+import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -250,7 +250,7 @@ export async function POST(req: NextRequest) {
       // Check errored workers for deliverables
       for (const w of taskWorkers.filter(w => w.status === 'error' || w.status === 'failed')) {
         try {
-          const artifactCount = await getWorkerArtifactCount(w.id);
+          const artifactCount = await getWorkerDeliverableArtifactCount(w.id);
           const deliverables = checkWorkerDeliverables(w, { artifactCount });
           if (deliverables.hasAny) {
             completedWorker = w;

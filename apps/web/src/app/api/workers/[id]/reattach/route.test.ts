@@ -139,3 +139,12 @@ describe('POST /api/workers/[id]/reattach', () => {
     expect(updateWheres).toHaveLength(0);
   });
 });
+
+describe('scoped runner keys', () => {
+  it('passes the request to auth, so a capability-scoped key is checked rather than refused', async () => {
+    mockAuth.mockClear();
+    const r = req();
+    await POST(r, { params: Promise.resolve({ id: WORKER }) } as never);
+    expect(mockAuth.mock.calls.at(-1)?.[1]).toBe(r);
+  });
+});

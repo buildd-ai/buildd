@@ -163,7 +163,7 @@ function build(cut: Cut, root: HTMLElement): Built[] {
     } else if (shot.layout === 'fleet' && shot.fleet) {
       fleet = buildFleet(shot, layer);
     } else if (shot.layout === 'motion' && shot.motion) {
-      motion = buildMotion(shot.motion, layer, P);
+      motion = buildMotion(shot.motion, layer, P, { width: cut.width, height: cut.height });
       imgs.push(...motionImages(layer));
     } else if (shot.card) {
       const box = el('div', { position: 'absolute', inset: '0', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '22px' }, layer);
@@ -178,7 +178,8 @@ function build(cut: Cut, root: HTMLElement): Built[] {
       position: 'absolute', width: '72px', height: '72px', marginLeft: '-36px', marginTop: '-36px',
       border: `4px solid ${ACCENT}`, boxShadow: `4px 4px 0 0 ${P.shadow}`, opacity: '0', boxSizing: 'border-box', zIndex: '6',
     }, layer);
-    el('div', { position: 'absolute', left: '50%', top: '50%', width: '14px', height: '14px', marginLeft: '-7px', marginTop: '-7px', background: ACCENT }, tap);
+    const dot = el('div', { position: 'absolute', left: '50%', top: '50%', width: '14px', height: '14px', marginLeft: '-7px', marginTop: '-7px', background: ACCENT }, tap);
+    dot.dataset.dot = '1';
     return { shot, layer, body, imgs, fx, fleet, motion, chips, tap, place: captionPlace(cut, shot) };
   });
 }
@@ -285,7 +286,11 @@ function poseFleet(b: Built, local: number) {
   b.fleet!.count.textContent = String(f.live);
 }
 
-function pose(cut: Cut, b: Built, local: number, opacity: number) {
+type Px = [x: number, y: number, w: number, h: number];
+type Regions = { target: Px[]; artifacts: Px[] };
+let lastRegions: Regions = { target: [], artifacts: [] };
+
+function pose(cut: Cut, b: Built, local: number, opacity: number): Regions {
   const { shot } = b;
   b.layer.style.opacity = String(opacity);
   b.layer.style.display = opacity > 0 ? 'block' : 'none';
@@ -324,6 +329,10 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
     b.motion(local);
     toFrame = (x, y) => ({ x: x * cut.width, y: y * cut.height });
   }
+  // Where the lit target and the artifacts land in the frame, for demo:review.
+  const px = (r: Rect): Px => { const a = toFrame(r.x, r.y), z = toFrame(r.x + r.w, r.y + r.h); return [Math.round(a.x), Math.round(a.y), Math.round(z.x - a.x), Math.round(z.y - a.y)]; };
+  const lit = spotAt(shot.spot, local);
+  const regions: Regions = { target: lit.dim > 0 ? lit.rects.map(px) : [], artifacts: (shot.artifacts ?? []).map(px) };
   const last = !cut.loop && b === built[built.length - 1];
   const caps = captionsAt(shot, local, last ? cut.fade + 60 : cut.fade);
   b.chips.forEach((c, i) => {
@@ -338,16 +347,25 @@ function pose(cut: Cut, b: Built, local: number, opacity: number) {
     }
   });
   const tap = tapAt(shot.taps, local);
-  if (tap) {
+  const dot = b.tap.querySelector<HTMLElement>('[data-dot]');
+  if (tap?.rect) {
+    // Outline the control just outside its edge, pulsing in; nothing lands on the label.
+    const a = toFrame(tap.rect.x, tap.rect.y), z = toFrame(tap.rect.x + tap.rect.w, tap.rect.y + tap.rect.h);
+    const pad = 6 + 10 * (tap.scale - 1);
+    Object.assign(b.tap.style, { left: `${a.x - pad}px`, top: `${a.y - pad}px`, width: `${z.x - a.x + 2 * pad}px`, height: `${z.y - a.y + 2 * pad}px`, marginLeft: '0', marginTop: '0', opacity: String(tap.opacity), transform: 'none' });
+    if (dot) dot.style.display = 'none';
+  } else if (tap) {
     const f = toFrame(tap.x, tap.y);
-    Object.assign(b.tap.style, { left: `${f.x}px`, top: `${f.y}px`, opacity: String(tap.opacity), transform: `scale(${tap.scale})` });
+    Object.assign(b.tap.style, { left: `${f.x}px`, top: `${f.y}px`, width: '72px', height: '72px', marginLeft: '-36px', marginTop: '-36px', opacity: String(tap.opacity), transform: `scale(${tap.scale})` });
+    if (dot) dot.style.display = 'block';
   } else {
     b.tap.style.opacity = '0';
   }
+  return regions;
 }
 
 declare global {
-  interface Window { __load: (cut: Cut) => Promise<{ fonts: boolean; duration: number }>; __render: (t: number) => Promise<void> }
+  interface Window { __load: (cut: Cut) => Promise<{ fonts: boolean; duration: number }>; __render: (t: number) => Promise<void>; __regions: () => Regions }
 }
 
 let built: Built[] = [];
@@ -389,6 +407,8 @@ window.__load = async (cut: Cut) => {
   return { fonts, duration: cutDuration(cut) };
 };
 
+window.__regions = () => lastRegions;
+
 window.__render = async (t: number) => {
   if (!current) return;
   const layers = layersAt(current, t);
@@ -397,11 +417,13 @@ window.__render = async (t: number) => {
   const keep = new Set([...on.keys()].flatMap((i) => [i, (i + 1) % built.length]));
   for (const [i, b] of built.entries()) if (!keep.has(i)) release(b);
   for (const i of keep) await ensure(built[i]);
+  let best = -1;
   built.forEach((b, i) => {
     const l = on.get(i);
     if (!l) { b.layer.style.opacity = '0'; b.layer.style.display = 'none'; return; }
     b.layer.style.zIndex = String(l.z + 1);
-    pose(current!, b, l.local, l.opacity);
+    const r = pose(current!, b, l.local, l.opacity);
+    if (l.opacity > best) { best = l.opacity; lastRegions = r; }
   });
   if (curtain) curtain.style.opacity = String(fadeOutAt(current, t));
 };

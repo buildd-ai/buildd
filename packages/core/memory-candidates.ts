@@ -1,6 +1,6 @@
 /**
  * Candidate memories: one episode proposes, verification or repetition
- * promotes (docs/design/memory-done-right.md, "Write: candidates, then
+ * promotes (knowledge-base: buildd/design/memory-done-right.md, "Write: candidates, then
  * promotion" and "Safety properties").
  *
  * The vocabulary and the pure rules live here; the DB pass that applies them

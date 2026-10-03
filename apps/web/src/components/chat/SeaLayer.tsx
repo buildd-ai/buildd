@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The sea behind the chat canvas (sea.ts; docs/design/chat-canvas.md, "The
+ * The sea behind the chat canvas (sea.ts; knowledge-base: buildd/design/chat-canvas.md, "The
  * sea"). One decorative layer per surface, behind everything, hidden from
  * assistive tech. Pauses while the tab is hidden and holds still for reduced
  * motion. Phone only for now: the desktop canvas keeps its flat ground.

@@ -1,6 +1,6 @@
 /**
  * The chat tool registry: every MCP `buildd` action (plus `recall` / `learn`)
- * classified for chat (docs/design/agent-chat.md → Tools and permissions).
+ * classified for chat (knowledge-base: buildd/design/agent-chat.md → Tools and permissions).
  *
  * Each action is either a chat tool (CHAT_TOOL_SPECS) or listed in
  * NOT_IN_CHAT with the reason. A test checks the two cover `allActions`
@@ -260,7 +260,7 @@ export const CHAT_NATIVE_TOOL_SPECS = {
   /** Save team knowledge (the MCP `learn` tool). Team-visible, so a card. */
   learn: single('memory', write({ conversation: true })),
 
-  // ── notifications (docs/design/subscriptions-and-notifications.md → Chat tool surface) ──
+  // ── notifications (knowledge-base: buildd/design/subscriptions-and-notifications.md → Chat tool surface) ──
   /**
    * Tell me once when a task or PR does something, here in this conversation.
    * One-shot only in P1: it notifies only the caller and ends by itself, so

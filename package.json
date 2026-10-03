@@ -1,7 +1,7 @@
 {
   "name": "buildd",
   "private": true,
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-ALv2",
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -37,6 +37,7 @@
     "demo:advance": "bun run scripts/demo/advance.ts",
     "demo:shoot": "bun run scripts/demo/run-storyboard.ts",
     "demo:render": "bun run scripts/demo/renderer/render.ts",
+    "demo:review": "bun run scripts/demo/review/review.ts",
     "demo:check-live": "bun run scripts/demo/check-live-refresh.ts",
     "backfill:subject-anchors": "bun run packages/core/scripts/backfill-subject-anchors.ts",
     "backfill:seat-ids": "bun run scripts/backfill-seat-ids.ts",
@@ -48,9 +49,11 @@
     "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts",
     "screenshot": "bun run scripts/qa/capture.ts",
     "screenshot:app": "bash scripts/qa/shoot.sh",
+    "design:check": "bun run scripts/design-check.ts",
     "specs:check": "bun run scripts/check-specs.ts",
     "specs:lint": "bun run scripts/check-specs.ts --check",
-    "specs:conformance": "bun run scripts/check-spec-conformance.ts",
+    "public-docs:check": "bun run scripts/check-public-docs.ts",
+    "specs:conformance":"bun run scripts/check-spec-conformance.ts",
     "specs:discrepancies": "bun run packages/core/scripts/write-spec-discrepancies.ts",
     "specs:conformance-gate": "bun run scripts/spec-conformance-delta-gate.ts",
     "no-prod-data:check": "bash scripts/check-no-prod-data-local.sh",

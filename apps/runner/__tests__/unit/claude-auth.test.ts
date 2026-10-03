@@ -44,6 +44,24 @@ describe('buildClaudeCredentialsFile', () => {
     expect(c.claudeAiOauth.scopes).toEqual(['user:inference']);
   });
 
+  // The CLI loads claude.ai connectors (e.g. Claude Docs) only when the file
+  // declares user:mcp_servers, so declare what the credential was really granted.
+  test('declares the scopes the credential was granted', () => {
+    const granted = ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers'];
+    const c = buildClaudeCredentialsFile('tok', null, granted);
+    expect(c.claudeAiOauth.scopes).toEqual(granted);
+  });
+
+  test('falls back to the legacy scope set when none were recorded', () => {
+    expect(buildClaudeCredentialsFile('tok', null, undefined).claudeAiOauth.scopes).toEqual(['user:inference']);
+    expect(buildClaudeCredentialsFile('tok', null, []).claudeAiOauth.scopes).toEqual(['user:inference']);
+  });
+
+  test('always keeps user:inference and drops anything that is not a user: scope', () => {
+    const c = buildClaudeCredentialsFile('tok', null, ['user:mcp_servers', 'org:admin', '', 'user:mcp_servers', 42 as any]);
+    expect(c.claudeAiOauth.scopes).toEqual(['user:inference', 'user:mcp_servers']);
+  });
+
   test('serialises to JSON the CLI can parse back', () => {
     const expiry = new Date('2026-08-15T21:24:23.000Z');
     const round = JSON.parse(JSON.stringify(buildClaudeCredentialsFile('tok', expiry)));

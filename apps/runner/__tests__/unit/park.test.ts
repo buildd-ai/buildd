@@ -9,7 +9,10 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import {
   MAX_PARKS,
+  PARK_FETCH_RETRY_BUDGET_MS,
   ParkRestoreError,
+  fetchRetryDelayMs,
+  parseRetryAfter,
   applyParkRepo,
   buildParkBundle,
   findTranscriptFiles,
@@ -21,6 +24,7 @@ import {
   parkCountPath,
   type ParkPaths,
 } from '../../src/park';
+import { WARM_BASE_REF } from '../../src/warm-repo';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -196,6 +200,142 @@ describe('park → restore round trip', () => {
     restoreParkFiles(opened, paths);
     applyParkRepo(opened, again.clonePath);
     expect(readParkCount(paths.builddHome, WORKER)).toBe(2);
+  });
+});
+
+describe('resume when origin cannot be fetched (rate limited, unreachable)', () => {
+  const seedPath = () => join(dir, 'seed');
+  /** Land a commit on origin's main from the seed clone. */
+  function landOnOrigin(file: string) {
+    writeFileSync(join(seedPath(), file), `${file}\n`);
+    git(seedPath(), 'add', file);
+    commit(seedPath(), `add ${file}`);
+    git(seedPath(), 'push', '-q', 'origin', 'main');
+  }
+  /**
+   * A resumed container whose clone came from a warm snapshot taken at
+   * `snapshot` (a bare copy of origin from back then), and whose origin is
+   * `remote` (unreachable unless the test fixes it).
+   */
+  function containerFromSnapshot(snapshot: string, remote: string) {
+    rmSync(join(dir, 'run1'), { recursive: true, force: true });
+    const cp = join(dir, 'run1', 'buildd-home', 'once-workspaces', 'ws-1');
+    execFileSync('git', ['clone', '-q', snapshot, cp], { stdio: 'pipe' });
+    git(cp, 'remote', 'set-url', 'origin', remote);
+    return cp;
+  }
+  /** Run 1 restored the snapshot (so it recorded the warm base), then fetched origin's newer main and built on it. */
+  function workOnNewerMain(): { snapshot: string; head: string } {
+    const snapshot = join(dir, 'snapshot.git');
+    execFileSync('git', ['clone', '-q', '--bare', origin, snapshot], { stdio: 'pipe' });
+    git(clonePath, 'update-ref', WARM_BASE_REF, 'refs/remotes/origin/main');
+    landOnOrigin('LANDED.md');
+    git(clonePath, 'fetch', '-q', 'origin');
+    git(worktree, 'merge', '-q', '--ff-only', 'origin/main');
+    writeFileSync(join(worktree, 'feature.ts'), 'export const x = 1;\n');
+    git(worktree, 'add', 'feature.ts');
+    commit(worktree, 'task work');
+    writeFileSync(join(worktree, 'wip.txt'), 'uncommitted\n');
+    return { snapshot, head: git(worktree, 'rev-parse', 'HEAD') };
+  }
+
+  test('the bundle is self-contained against the warm snapshot: no fetch needed to restore', () => {
+    const { snapshot, head } = workOnNewerMain();
+    const built = park();
+    const saved = join(dir, 'park.tar');
+    writeFileSync(saved, readFileSync(built.tarPath));
+
+    const cp = containerFromSnapshot(snapshot, join(dir, 'unreachable.git'));
+    const sleeps: number[] = [];
+    applyParkRepo(readParkBundle(saved, join(dir, 'stage')), cp, { sleep: (ms) => sleeps.push(ms), retryAfter: () => null });
+    expect(git(worktree, 'rev-parse', 'HEAD')).toBe(head);
+    expect(readFileSync(join(worktree, 'LANDED.md'), 'utf-8')).toBe('LANDED.md\n');
+    expect(status(worktree)).toEqual(['?? wip.txt']);
+    // Nothing was missing, so nothing was retried.
+    expect(sleeps).toEqual([]);
+  });
+
+  test('a clean, no-commit branch on a newer main is carried too (its tip is not in the snapshot)', () => {
+    const snapshot = join(dir, 'snapshot.git');
+    execFileSync('git', ['clone', '-q', '--bare', origin, snapshot], { stdio: 'pipe' });
+    git(clonePath, 'update-ref', WARM_BASE_REF, 'refs/remotes/origin/main');
+    landOnOrigin('LANDED.md');
+    git(clonePath, 'fetch', '-q', 'origin');
+    git(worktree, 'merge', '-q', '--ff-only', 'origin/main');
+    const head = git(worktree, 'rev-parse', 'HEAD');
+    const built = park();
+    const saved = join(dir, 'park.tar');
+    writeFileSync(saved, readFileSync(built.tarPath));
+    const cp = containerFromSnapshot(snapshot, join(dir, 'unreachable.git'));
+    applyParkRepo(readParkBundle(saved, join(dir, 'stage')), cp, { sleep: () => {}, retryAfter: () => null });
+    expect(git(worktree, 'rev-parse', 'HEAD')).toBe(head);
+  });
+
+  test('without a warm base, missing prerequisites are fetched again with backoff until origin answers', () => {
+    // Run 1 was a plain clone (no warm base), so the bundle is built against
+    // origin/main, which the older snapshot lacks.
+    const snapshot = join(dir, 'snapshot.git');
+    execFileSync('git', ['clone', '-q', '--bare', origin, snapshot], { stdio: 'pipe' });
+    landOnOrigin('LANDED.md');
+    git(clonePath, 'fetch', '-q', 'origin');
+    git(worktree, 'merge', '-q', '--ff-only', 'origin/main');
+    writeFileSync(join(worktree, 'feature.ts'), 'export const x = 1;\n');
+    git(worktree, 'add', 'feature.ts');
+    commit(worktree, 'task work');
+    const head = git(worktree, 'rev-parse', 'HEAD');
+    const built = park();
+    const saved = join(dir, 'park.tar');
+    writeFileSync(saved, readFileSync(built.tarPath));
+
+    const cp = containerFromSnapshot(snapshot, join(dir, 'unreachable.git'));
+    const sleeps: number[] = [];
+    applyParkRepo(readParkBundle(saved, join(dir, 'stage')), cp, {
+      // origin "recovers" after the second wait
+      sleep: (ms) => { sleeps.push(ms); if (sleeps.length === 2) git(cp, 'remote', 'set-url', 'origin', origin); },
+      retryAfter: () => null,
+    });
+    expect(git(worktree, 'rev-parse', 'HEAD')).toBe(head);
+    expect(sleeps.length).toBe(2);
+    expect(sleeps[1]!).toBeGreaterThan(sleeps[0]!);
+  });
+
+  test('a 429 honours Retry-After, and the total wait is capped', () => {
+    expect(fetchRetryDelayMs({ attempt: 0, stderr: 'fatal: unable to access \'https://github.com/acme/widget.git/\': The requested URL returned error: 429', retryAfterS: 7, waitedMs: 0 })).toBe(7_000);
+    expect(fetchRetryDelayMs({ attempt: 0, stderr: 'error: 429', retryAfterS: 600, waitedMs: 0 })).toBe(PARK_FETCH_RETRY_BUDGET_MS);
+    expect(fetchRetryDelayMs({ attempt: 3, stderr: 'error: 429', retryAfterS: null, waitedMs: PARK_FETCH_RETRY_BUDGET_MS - 1_000 })).toBe(1_000);
+    expect(fetchRetryDelayMs({ attempt: 0, stderr: 'x', retryAfterS: null, waitedMs: PARK_FETCH_RETRY_BUDGET_MS })).toBeNull();
+    // Not worth waiting for: GitHub said no, not "later".
+    expect(fetchRetryDelayMs({ attempt: 0, stderr: "fatal: unable to access 'https://github.com/acme/widget.git/': The requested URL returned error: 403", retryAfterS: null, waitedMs: 0 })).toBeNull();
+    expect(fetchRetryDelayMs({ attempt: 0, stderr: 'remote: Repository not found.\nfatal: repository not found', retryAfterS: null, waitedMs: 0 })).toBeNull();
+    expect(parseRetryAfter('12')).toBe(12);
+    expect(parseRetryAfter(new Date(Date.now() + 5_000).toUTCString())).toBeGreaterThanOrEqual(3);
+    expect(parseRetryAfter('soon')).toBeNull();
+  });
+
+  test('when origin never answers, the error names the missing commits and git\'s own fetch error, not an empty string', () => {
+    const snapshot = join(dir, 'snapshot.git');
+    execFileSync('git', ['clone', '-q', '--bare', origin, snapshot], { stdio: 'pipe' });
+    landOnOrigin('LANDED.md');
+    git(clonePath, 'fetch', '-q', 'origin');
+    git(worktree, 'merge', '-q', '--ff-only', 'origin/main');
+    writeFileSync(join(worktree, 'feature.ts'), 'export const x = 1;\n');
+    git(worktree, 'add', 'feature.ts');
+    commit(worktree, 'task work');
+    const built = park();
+    const saved = join(dir, 'park.tar');
+    writeFileSync(saved, readFileSync(built.tarPath));
+    const cp = containerFromSnapshot(snapshot, join(dir, 'unreachable.git'));
+    const sleeps: number[] = [];
+    let err: unknown;
+    try {
+      applyParkRepo(readParkBundle(saved, join(dir, 'stage')), cp, { sleep: (ms) => sleeps.push(ms), retryAfter: () => null });
+    } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(ParkRestoreError);
+    const msg = (err as Error).message;
+    expect(msg).not.toMatch(/failed: ;|failed: $/);
+    expect(msg).toMatch(/prerequisite/i);
+    expect(msg).toContain('unreachable.git');
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(PARK_FETCH_RETRY_BUDGET_MS);
   });
 });
 

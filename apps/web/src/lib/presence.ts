@@ -1,6 +1,6 @@
 /**
  * Presence: is this person looking at buildd right now?
- * (docs/design/subscriptions-and-notifications.md, Presence; decision 2.)
+ * (knowledge-base: buildd/design/subscriptions-and-notifications.md, Presence; decision 2.)
  *
  * The chat page sends a beat every 30s while its tab is visible
  * (components/chat/ChatPresenceBeat.tsx -> POST /api/chat/presence).

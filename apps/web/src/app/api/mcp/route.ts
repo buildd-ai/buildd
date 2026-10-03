@@ -23,6 +23,7 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { hasTokenScope, requiredScopeForAction, tokenWorkspaceAllowed } from "@buildd/core/token-scopes";
+import { resolveLinkedDocsWorkspaces } from "@/lib/linked-knowledge";
 import { verifyAccountWorkspaceAccess } from "@/lib/team-access";
 import { authenticateTaskScopedCaller } from "@/lib/task-token-auth";
 import { scheduleInteractiveTouch } from "@/lib/interactive-worker-liveness";
@@ -75,6 +76,27 @@ function readConsumerSkillBody(): string {
     return readFileSync(CONSUMER_SKILL_PATH, "utf8");
   } catch {
     return "buildd-mcp-consumer skill content unavailable on this deployment — see .claude/skills/buildd-mcp-consumer/SKILL.md in the repo for the task lifecycle, blocked-vs-question rule, friction reporting, and branch strategy.";
+  }
+}
+
+// Same pattern for the one-time onboarding flow: the `buildd://workspace/onboarding`
+// resource serves .claude/skills/workspace-onboarding/SKILL.md directly, with
+// its own `outputFileTracingIncludes` entry. docs/design/workspace-onboarding.md §5.
+const ONBOARDING_SKILL_PATH = join(
+  process.cwd(),
+  "..",
+  "..",
+  ".claude",
+  "skills",
+  "workspace-onboarding",
+  "SKILL.md"
+);
+
+function readOnboardingSkillBody(): string {
+  try {
+    return readFileSync(ONBOARDING_SKILL_PATH, "utf8");
+  } catch {
+    return "workspace-onboarding skill content unavailable on this deployment — see .claude/skills/workspace-onboarding/SKILL.md in the repo for the readiness, scaffold and first-spec flow.";
   }
 }
 
@@ -321,6 +343,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     const embedder = getVoyageEmbedder();
     const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
     const memTeamId = await resolveTeamId(wsId, accountTeamId);
+    // Docs of other same-team workspaces this one links to. Read arms only: the
+    // admin knowledge-ops arm never searches.
+    const linkedDocsWorkspaceIds = opts.forwardIsSensitive && wsId && accountId && accountTeamId
+      ? await resolveLinkedDocsWorkspaces({
+          workspaceId: wsId,
+          account: { id: accountId, teamId: accountTeamId, workspaceIds: tokenWorkspaceIds },
+        })
+      : [];
 
     return {
       ok: true as const,
@@ -336,6 +366,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         // Jev keep/type/update on writes; fails open to today's rules.
         memoryDecider: memoryDeciderFor(accountId),
         ...(opts.forwardIsSensitive ? { isSensitive: sensitiveNow } : {}),
+        ...(linkedDocsWorkspaceIds.length > 0 ? { linkedDocsWorkspaceIds } : {}),
       },
     };
   };
@@ -756,6 +787,12 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         description: "Available skills",
         mimeType: "text/plain",
       },
+      {
+        uri: "buildd://workspace/onboarding",
+        name: "Workspace Onboarding",
+        description: "How to make a repo buildd-ready: readiness, scaffold PR, first spec, first mission",
+        mimeType: "text/plain",
+      },
     ],
   }));
 
@@ -814,6 +851,15 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             uri,
             mimeType: "text/plain",
             text: readConsumerSkillBody(),
+          }],
+        };
+
+      case "buildd://workspace/onboarding":
+        return {
+          contents: [{
+            uri,
+            mimeType: "text/plain",
+            text: readOnboardingSkillBody(),
           }],
         };
 

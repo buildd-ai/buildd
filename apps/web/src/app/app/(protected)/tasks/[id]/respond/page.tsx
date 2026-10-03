@@ -32,7 +32,7 @@ export default async function RespondPage({
   // Nothing to answer — bounce to the full task page so the user sees state.
   if (!view.open || !view.workerId) redirect(taskPageHref({ taskId: id, missionId: task.missionId }));
 
-  // The question folds into the chat (docs/design/agent-chat.md, "The respond
+  // The question folds into the chat (knowledge-base: buildd/design/agent-chat.md, "The respond
   // page folds in"): when this mission was filed from the reader's own
   // conversation and chat is on for them, the deep link opens that
   // conversation with the question card in focus. Otherwise, this page.
@@ -46,7 +46,7 @@ export default async function RespondPage({
   const heading = taskHeading({ title: task.title, label: task.label }, null);
 
   // A mission task returns to its row on the mission; the back link names the
-  // mission, not the workspace (docs/design/mission-feed-mobile-continuity.md W6).
+  // mission, not the workspace (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W6).
   const back = respondBackLink({ taskId: id, mission: task.mission, workspaceName: task.workspaceName });
 
   return (

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, getPusherClient, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import { needsInputEventAction, createReconnectDetector } from '@/lib/realtime-throttle';
 import { missionTaskHref } from '@/lib/mission-task-href';
+import { questionNotificationText } from '@buildd/core/question-brief';
 
 import { NeedsInputContext, type AlertPermission, type WaitingTask } from './needs-input-context';
 
@@ -157,7 +158,10 @@ function showToast(task: WaitingTask, router: ReturnType<typeof useRouter>) {
   // Show browser notification if permitted
   if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
     const n = new Notification('Task needs your input', {
-      body: task.waitingFor?.prompt || task.title,
+      // The question, one line of context, the recommended default (question brief).
+      body: task.waitingFor?.prompt
+        ? questionNotificationText({ ...task.waitingFor, where: { taskTitle: task.title } }).message
+        : task.title,
       icon: '/favicon.ico',
       tag: `waiting-input-${task.id}`,
     });

@@ -26,6 +26,8 @@
  * `--site <dir>` then publishes the site set there under fixed names: <beat>[-mobile][-light].*,
  * hero[-light].* (v6x loop), full.mp4 (v6a with sound, capped at 8MB), and manifest.json.
  * It builds a sibling dir and swaps it in (publishDir), so a killed run never wipes the last set.
+ * `--regions` records where each cut's lit target and artifacts sit (into shotlist.json) without encoding.
+ * `--review` then runs `demo:review` on the published set (pixel checks + judge; non-zero on a high finding).
  * `--stills t1,t2` writes still-<cut>-<t>.png at those times instead of encoding.
  */
 import { chromium } from 'playwright';
@@ -145,11 +147,12 @@ function sh(cmd: string[], quiet = true) {
  * ffmpeg filtergraph closing a loop: the cut's last `fade` seconds cross-fade
  * onto its first, so a clip `total` long plays back seamless at total - fade.
  */
-export function seamlessLoopFilter(total: number, fade: number, scale = ''): string {
+/** `dip` turns the seam's crossfade into a dip through black (dark theme) or white (light). */
+export function seamlessLoopFilter(total: number, fade: number, scale = '', dip?: 'black' | 'white'): string {
   const r = (n: number) => +n.toFixed(3);
   return `[0:v]split[a][b];[a]trim=start=${r(fade)}:end=${r(total)},setpts=PTS-STARTPTS[main];` +
     `[b]trim=start=0:end=${r(fade)},setpts=PTS-STARTPTS[head];` +
-    `[main][head]xfade=transition=fade:duration=${r(fade)}:offset=${r(total - 2 * fade)}${scale ? ',' + scale : ''}[v]`;
+    `[main][head]xfade=transition=${dip ? `fade${dip}` : 'fade'}:duration=${r(fade)}:offset=${r(total - 2 * fade)}${scale ? ',' + scale : ''}[v]`;
 }
 
 /** Cuts from this run replace same-named ones; the rest are kept, in their order. */
@@ -171,8 +174,8 @@ export const FAMILIES: Record<string, Family> = {
   v5c: v5('c', 'light'),
   v6a: { dir: 'a', prefix: 'buildd-demo-v6a', theme: 'dark', cuts: (s) => [v6aFilm(s), v6aHero(s), ...v6aBeats(s), ...v6aBeats(s, { mobile: true })] },
   // The site's light set: the same beats and the v6x hero loop, on light stills.
-  v6l: { dir: 'l', prefix: 'buildd-demo-v6l', theme: 'light', cuts: (s) => [v6xHero(s, 'light'), ...v6aBeats(s, { theme: 'light' }), ...v6aBeats(s, { mobile: true, theme: 'light' })] },
-  v6x: { dir: 'x', prefix: 'buildd-demo-v6x', theme: 'dark', cuts: (s) => [v6xFilm(s), v6xHero(s)] },
+  v6l: { dir: 'l', prefix: 'buildd-demo-v6l', theme: 'light', cuts: (s) => [v6xHero(s, 'light'), v6xHero(s, 'light', { mobile: true }), ...v6aBeats(s, { theme: 'light' }), ...v6aBeats(s, { mobile: true, theme: 'light' })] },
+  v6x: { dir: 'x', prefix: 'buildd-demo-v6x', theme: 'dark', cuts: (s) => [v6xFilm(s), v6xHero(s), v6xHero(s, 'dark', { mobile: true })] },
 };
 
 async function main() {
@@ -197,7 +200,7 @@ async function main() {
     const fam = FAMILIES[name];
     if (!fam) throw new Error(`[render] unknown cut family "${name}" (${Object.keys(FAMILIES).join(', ')})`);
     const stills = stillsFrom(manifest, shotsDir, arg('theme') ?? fam.theme, files);
-    const cuts = fam.cuts(stills).filter((c) => only.includes(c.name) || (only.includes('beats') && c.name.startsWith('beat-')));
+    const cuts = fam.cuts(stills).filter((c) => wantsCut(only, c.name));
     if (name.startsWith('v6')) for (const c of cuts) {
       const bad = [...captionCollisions(c).map((x) => `caption "${x.text}" covers a lit element or control in ${x.shot} at ${x.t}s`), ...fanoutEscapes(c)];
       if (bad.length) throw new Error(`[render] ${name} ${c.name}:\n  ${bad.join('\n  ')}`);
@@ -240,10 +243,19 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
         if (!loaded.fonts) console.warn('[render] IBM Plex Mono not available; captions fall back to Menlo');
         const duration = cutDuration(cut);
         const starts = shotStarts(cut);
-        shotlist.cuts.push({
-          name: cut.name, duration, fps: cut.fps, loop: !!cut.loop,
+        const entry: any = {
+          name: cut.name, duration, fps: cut.fps, loop: !!cut.loop, fade: cut.fade,
           shots: cut.shots.map((s, i) => ({ id: s.id, start: +starts[i].toFixed(2), dur: s.dur, caption: cut.captions === false ? null : s.caption ?? null })),
-        });
+        };
+        shotlist.cuts.push(entry);
+        // Where the lit target and the artifacts sit, every 0.25s of cut time (demo:review's legibility rules).
+        const regions: any[] = [];
+        for (let t = 0; t < duration; t += 0.25) {
+          await page.evaluate((tt) => window.__render(tt), t);
+          regions.push({ t: +t.toFixed(2), ...(await page.evaluate(() => window.__regions())) });
+        }
+        entry.regions = regions;
+        if (process.argv.includes('--regions')) { await page.close(); continue; }
         const still = async (t: number, file: string) => {
           await page.evaluate((tt) => window.__render(tt), t);
           await page.screenshot({ path: join(outDir, file) });
@@ -281,11 +293,17 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
 
         if (cut.name.startsWith('beat-')) {
           // Beats render at their own frame (1280x720, 720x900): no scaling here.
-          const loopFilter = seamlessLoopFilter(duration, cut.fade);
+          const loopFilter = seamlessLoopFilter(duration, cut.fade, '', cut.dip ? (cut.theme === 'light' ? 'white' : 'black') : undefined);
           const out = (fmt: string[], file: string) => ff(...input, '-filter_complex', loopFilter, '-map', '[v]', ...fmt, '-an', join(outDir, file));
-          out(['-c:v', 'libx264', '-preset', 'slow', '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart'], `${PREFIX}-${cut.name}.mp4`);
-          out(['-c:v', 'libvpx-vp9', '-crf', '38', '-b:v', '0', '-row-mt', '1', '-pix_fmt', 'yuv420p'], `${PREFIX}-${cut.name}.webm`);
-          const mid = join(frames, `${String(Math.min(n - 1, Math.round((cut.fade + beatLoopSeconds(cut) * 0.6) * cut.fps))).padStart(5, '0')}.jpg`);
+          // Each beat steps its CRF up until it fits BEAT_MAX_BYTES (a busy screen, like the rules list, runs large).
+          const under = (ladder: number[], fmt: (crf: number) => string[], file: string) => {
+            for (const crf of ladder) { out(fmt(crf), file); if (statSync(join(outDir, file)).size <= BEAT_MAX_BYTES) return; }
+            console.warn(`[render] ${file} is still over ${BEAT_MAX_BYTES} bytes at crf ${ladder[ladder.length - 1]}`);
+          };
+          under(crfLadder(24, 32), (crf) => ['-c:v', 'libx264', '-preset', 'slow', '-crf', String(crf), '-pix_fmt', 'yuv420p', '-movflags', '+faststart'], `${PREFIX}-${cut.name}.mp4`);
+          under(crfLadder(38, 46), (crf) => ['-c:v', 'libvpx-vp9', '-crf', String(crf), '-b:v', '0', '-row-mt', '1', '-pix_fmt', 'yuv420p'], `${PREFIX}-${cut.name}.webm`);
+          const posterAt = cut.poster ?? cut.fade + beatLoopSeconds(cut) * 0.6;
+          const mid = join(frames, `${String(Math.min(n - 1, Math.round(posterAt * cut.fps))).padStart(5, '0')}.jpg`);
           ff('-i', mid, '-q:v', '3', join(outDir, `${PREFIX}-${cut.name}-poster.jpg`));
         } else if (cut.name === 'full') {
           const audio = join(outDir, `.${PREFIX}.wav`);
@@ -299,11 +317,12 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
           sheet(join(outDir, `${PREFIX}.mp4`), 'contact-full.jpg');
           rmSync(audio, { force: true });
         } else {
-          ff(...input, ...x264, '-an', join(outDir, `${PREFIX}-hero.mp4`));
-          ff(...input, ...vp9, '-an', join(outDir, `${PREFIX}-hero.webm`));
-          ff(...input, '-vf', 'fps=15,scale=960:-1:flags=lanczos', '-c:v', 'libwebp_anim', '-loop', '0', '-q:v', '72', '-compression_level', '6', '-an', join(outDir, `${PREFIX}-hero.webp`));
-          ff('-i', poster, '-q:v', '2', join(outDir, `${PREFIX}-hero-poster.jpg`));
-          sheet(join(outDir, `${PREFIX}-hero.mp4`), 'contact-hero.jpg');
+          // hero, hero-mobile: named by the cut.
+          ff(...input, ...x264, '-an', join(outDir, `${PREFIX}-${cut.name}.mp4`));
+          ff(...input, ...vp9, '-an', join(outDir, `${PREFIX}-${cut.name}.webm`));
+          ff(...input, '-vf', 'fps=15,scale=960:-1:flags=lanczos', '-c:v', 'libwebp_anim', '-loop', '0', '-q:v', '72', '-compression_level', '6', '-an', join(outDir, `${PREFIX}-${cut.name}.webp`));
+          ff('-i', poster, '-q:v', '2', join(outDir, `${PREFIX}-${cut.name}-poster.jpg`));
+          sheet(join(outDir, `${PREFIX}-${cut.name}.mp4`), `contact-${cut.name}.jpg`);
         }
         if (!process.argv.includes('--keep-frames')) rmSync(frames, { recursive: true, force: true });
         console.log(`[render] ${job.name} ${cut.name}: ${n} frames, ${duration.toFixed(1)}s, ${((Date.now() - t0) / 1000).toFixed(0)}s wall`);
@@ -320,6 +339,11 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
   }
   const site = arg('site');
   if (site) assembleSite(outRoot, resolve(site));
+  // Optional: review the published clips' pixels (scripts/demo/review). Exits non-zero on a high finding.
+  if (site && process.argv.includes('--review')) {
+    const r = Bun.spawnSync(['bun', 'run', join(import.meta.dir, '../review/review.ts'), '--clips', resolve(site)], { stdout: 'inherit', stderr: 'inherit' });
+    if (r.exitCode !== 0) { console.error('[render] demo:review found high-severity issues'); process.exit(r.exitCode ?? 1); }
+  }
   console.log(`[render] done → ${outRoot}`);
 }
 
@@ -333,11 +357,34 @@ export function siteFiles(): Array<[from: string, to: string]> {
       ...set('v6a', `-beat-${b}`, b), ...set('v6a', `-beat-${b}-mobile`, `${b}-mobile`),
       ...set('v6l', `-beat-${b}`, `${b}-light`), ...set('v6l', `-beat-${b}-mobile`, `${b}-light-mobile`),
     ]),
-    ...set('v6x', '-hero', 'hero'), ...set('v6l', '-hero', 'hero-light'),
+    ...set('v6x', '-hero', 'hero'), ...set('v6x', '-hero-mobile', 'hero-mobile'),
+    ...set('v6l', '-hero', 'hero-light'), ...set('v6l', '-hero-mobile', 'hero-light-mobile'),
     // The film with sound: one mp4 (the dialog plays one source), capped at FULL_MAX_BYTES by assembleSite.
     [in_('v6a', '.mp4'), 'full.mp4'], [in_('v6a', '-poster.jpg'), 'full-poster.jpg'],
   ];
 }
+
+/** `--only` names: a cut name (`hero` also takes `hero-mobile`), or `beats` for every beat. */
+export function wantsCut(only: string[], name: string): boolean {
+  return only.includes(name) || (only.includes('beats') && name.startsWith('beat-')) || (only.includes('hero') && name === 'hero-mobile');
+}
+
+/** A rendered file (`<dir>/<prefix>[-<cut>].mp4`) back to its family dir and cut name; the bare prefix is the full film. */
+export function clipSource(from: string): { dir: string; cut: string } {
+  const [dir, file] = from.split('/');
+  const m = file.replace(/\.mp4$/, '').match(/^buildd-demo-v\d+[a-z]+(?:-(.+))?$/);
+  return { dir, cut: m?.[1] ?? 'full' };
+}
+
+/** CRFs to try, from `start` up to `max` in steps of 2. */
+export function crfLadder(start: number, max: number): number[] {
+  const out: number[] = [];
+  for (let c = start; c <= max; c += 2) out.push(c);
+  return out;
+}
+
+/** A site beat clip (each of mp4 and webm) stays under this. */
+export const BEAT_MAX_BYTES = 1.2 * 1024 * 1024;
 
 /** The site's film with sound stays under this; assembleSite re-encodes it down if the render is bigger. */
 export const FULL_MAX_BYTES = 8 * 1024 * 1024;
@@ -384,11 +431,25 @@ function assembleSite(outRoot: string, site: string) {
     for (const [from, to] of siteFiles()) copyFileSync(join(outRoot, from), join(tmp, to));
     capMp4(join(tmp, 'full.mp4'), FULL_MAX_BYTES);
     const clips = siteFiles().map(([, to]) => to).filter((f) => f.endsWith('.mp4')).map((f) => f.slice(0, -4));
+    // Each clip carries its cut's shots, so `demo:review` can find the crossfades from the site set alone.
+    const shotlists = new Map<string, any[]>();
+    const cutOf = (to: string) => {
+      const from = siteFiles().find(([, t]) => t === to)?.[0];
+      if (!from) return undefined;
+      const { dir, cut } = clipSource(from);
+      if (!shotlists.has(dir)) {
+        const f = join(outRoot, dir, 'shotlist.json');
+        shotlists.set(dir, existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')).cuts ?? [] : []);
+      }
+      const c = shotlists.get(dir)!.find((x: any) => x.name === cut);
+      return c ? { name: cut, loop: !!c.loop, fade: c.fade ?? 0.8, fps: c.fps, shots: c.shots.map((x: any) => ({ id: x.id, start: x.start, dur: x.dur })), regions: c.regions ?? [] } : undefined;
+    };
     const manifest = clips.map((beat) => {
       const webm = join(tmp, `${beat}.webm`);
       return {
         beat, durationSec: +probe(join(tmp, `${beat}.mp4`)).toFixed(2), size: size(join(tmp, `${beat}.mp4`)),
         bytes: statSync(join(tmp, `${beat}.mp4`)).size, ...(existsSync(webm) ? { webmBytes: statSync(webm).size } : {}),
+        cut: cutOf(`${beat}.mp4`),
       };
     });
     writeFileSync(join(tmp, 'manifest.json'), JSON.stringify(manifest, null, 2));

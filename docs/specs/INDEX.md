@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (44)
+## Active (45)
 
 ### auth (4)
 
@@ -33,7 +33,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### knowledge (2)
 
-- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-08-30
+- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-10-02
   Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 - [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-08-31
   The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
@@ -82,7 +82,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (9)
+### surfaces (10)
 
 - [Initiatives](./initiatives.md) · @max — verified 2026-09-26
   An initiative MUST be a container above missions with a human-set status, owner and optional target date; progress MUST be missions done over missions, and attention MUST come from its missions.
@@ -102,6 +102,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.
 - [Timezone Resolution](./timezone-resolution.md) · @max — verified 2026-09-02
   buildd MUST store exactly two timezones — one detected per user and one canonical per team — and MUST resolve every rendered or scheduled wall clock from that pair with a UTC fallback, never from a workspace.
+- [Workspace Onboarding](./workspace-onboarding.md) · @max — verified 2026-10-03
+  Onboarding MUST derive a workspace's readiness from observable repo facts without writing, and every change it proposes to the repo MUST arrive as an owner-merged PR from a non-default branch.
 
 ### tasks (9)
 
@@ -109,7 +111,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 - [Base Refresh Classification](./base-refresh-classification.md) · @max — verified 2026-10-01
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
-- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-09-20
+- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-02
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-09-27
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
@@ -124,10 +126,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 
-## Draft (2)
+## Draft (3)
 
 - [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-01
   Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
+- [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-03
+  Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 

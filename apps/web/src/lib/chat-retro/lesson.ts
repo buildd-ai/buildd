@@ -2,7 +2,7 @@
  * The retro's decision questions, their gates, and the code that turns the
  * model's labels back into a content-free lesson row.
  *
- * The crux (docs/design/chat-session-retro.md): the model labels, code counts,
+ * The crux (knowledge-base: buildd/design/chat-session-retro.md): the model labels, code counts,
  * and nothing in the loop writes prose. Every number on a lesson comes from
  * ./skeleton.ts; the model only picks labels from ./vocab.ts.
  */

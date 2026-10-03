@@ -1,5 +1,5 @@
 /**
- * The mission detail page's query shape (docs/design/mission-feed-mobile-continuity.md,
+ * The mission detail page's query shape (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * slice S7, AC-18). Lifted out of `page.tsx` so the shape is one object the
  * page and its read-through re-query both use, and a test can pin it without
  * a database.
@@ -48,6 +48,7 @@ export const MISSION_WORKER_COLUMNS = {
   prLifecycleStatus: true,
   mergedAt: true,
   supersededByPrNumber: true,
+  abandonedAt: true,
   supersededByPrUrl: true,
   supersededReason: true,
   costUsd: true,

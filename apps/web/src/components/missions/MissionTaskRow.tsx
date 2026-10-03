@@ -2,7 +2,7 @@
 
 /**
  * MissionTaskRow: the one task row on the mission feed
- * (docs/design/mission-feed-mobile-continuity.md, "One task row").
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "One task row").
  *
  * ```
  * │● ◆ Add claim lease column        #412↻ › │  status glyph, kind glyph, title, PR, ›

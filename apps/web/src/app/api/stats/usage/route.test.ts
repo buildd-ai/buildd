@@ -12,6 +12,15 @@ mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser })
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: mockResolveAccountTeamIds }));
 
+const mockFetchActionEvents = mock(() => Promise.resolve([] as any[]));
+const mockCountWorkers = mock(() => Promise.resolve(0));
+mock.module('@/lib/action-events', () => ({
+  ACTION_EVENTS_CAPTURED_SINCE: '2026-09-03',
+  ACTION_EVENTS_ROW_LIMIT: 5000,
+  fetchActionEvents: mockFetchActionEvents,
+  countWorkersInWindow: mockCountWorkers,
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -70,6 +79,10 @@ beforeEach(() => {
   mockWorkspacesFindMany.mockResolvedValue([]);
   mockWorkersFindMany.mockResolvedValue([]);
   mockSkillsFindMany.mockResolvedValue([]);
+  mockFetchActionEvents.mockReset();
+  mockCountWorkers.mockReset();
+  mockFetchActionEvents.mockResolvedValue([]);
+  mockCountWorkers.mockResolvedValue(0);
 });
 
 describe('GET /api/stats/usage — auth', () => {
@@ -179,6 +192,19 @@ describe('GET /api/stats/usage — aggregation', () => {
     expect(body.groups).toHaveLength(1);
     expect(body.groups[0]).toMatchObject({ key: 'builder', label: 'Builder', tasks: 2 });
     expect(body.groups[0].successRate).toBeCloseTo(0.5);
+  });
+
+  it('labels an inferred role group apart from the stated one', async () => {
+    mockSkillsFindMany.mockResolvedValue([{ slug: 'builder', name: 'Builder' }]);
+    mockWorkersFindMany.mockResolvedValue([
+      worker({ taskId: 'a', task: { id: 'a', status: 'completed', roleSlug: 'builder', parentTaskId: null } }),
+      worker({ taskId: 'b', task: { id: 'b', status: 'completed', roleSlug: 'builder', parentTaskId: null, roleInferred: true } }),
+    ]);
+
+    const body = await (await GET(makeRequest({ groupBy: 'role' }))).json();
+    const byKey = Object.fromEntries(body.groups.map((g: any) => [g.key, g]));
+    expect(byKey.builder).toMatchObject({ label: 'Builder', roleSource: 'stated', tasks: 1 });
+    expect(byKey['builder · inferred']).toMatchObject({ label: 'Builder · inferred', roleSource: 'inferred', tasks: 1 });
   });
 
   it('labels workspace groups with the workspace name', async () => {
@@ -339,5 +365,53 @@ describe('GET /api/stats/usage — aggregation', () => {
     // The oldest row actually scanned, not the requested 30d boundary.
     expect(body.scan.completeSince).toBe(rows[4999].completedAt.toISOString());
     expect(body.scan.completeSince).not.toBe(body.windowStart);
+  });
+});
+
+describe('GET /api/stats/usage — fine-grained breakdowns', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockResolvedValue(user);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', name: 'Buildd' }]);
+  });
+
+  it('returns bash buckets, search shapes, buildd actions and graph tools, each with its own population', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      worker({
+        resultMeta: {
+          toolCounts: { Bash: 5, 'mcp__codebase-memory__search_graph': 2 },
+          bashCommandCounts: { total: 5, buckets: { code_search: 3, test: 2 }, searchShapes: { identifier: 3 } },
+          cbm: { outcome: 'enforced', toolCalls: { search_graph: 2 }, totalCbmCalls: 2, readCount: 0, grepCount: 0, globCount: 0 },
+        },
+      }),
+    ]);
+    mockFetchActionEvents.mockResolvedValue([
+      { workerId: 'w1', taskId: 'task-1', action: 'update_progress', ts: new Date() },
+      { workerId: 'w1', taskId: 'task-1', action: 'complete_task', ts: new Date() },
+    ]);
+    mockCountWorkers.mockResolvedValue(1);
+
+    const body = await (await GET(makeRequest())).json();
+
+    expect(body.bashBuckets.histogramTasks).toBe(1);
+    expect(body.bashBuckets.classifiedCalls).toBe(5);
+    expect(body.searchShapes.codeSearchCalls).toBe(3);
+    expect(body.searchShapes.shapes[0]).toMatchObject({ key: 'identifier', calls: 3 });
+    expect(body.buildActions.totalCalls).toBe(2);
+    expect(body.buildActions.capturedSince).toBe('2026-09-03');
+    expect(body.buildActions.workers).toBe(1);
+    expect(body.cbmTools.sessions).toBe(1);
+    expect(body.cbmTools.tools[0]).toMatchObject({ tool: 'search_graph', calls: 2, sessions: 1 });
+  });
+
+  it('nulls a breakdown whose read failed instead of failing the response', async () => {
+    mockWorkersFindMany.mockResolvedValue([worker()]);
+    mockFetchActionEvents.mockRejectedValue(new Error('boom'));
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.buildActions).toBeNull();
+    expect(body.cbmTools).toBeNull();
+    expect(body.totals.tasks).toBe(1);
   });
 });

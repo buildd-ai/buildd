@@ -1,5 +1,5 @@
 /**
- * Hold versus start at claim (docs/design/conflict-aware-orchestration.md §5b).
+ * Hold versus start at claim (knowledge-base: buildd/design/conflict-aware-orchestration.md §5b).
  *
  * The pure half: the decision definition, which deferrals may be asked about
  * at all, the state the model sees and the content-free digest that ties a

@@ -89,7 +89,7 @@ export default async function ProtectedLayout({
     <AuthGuard>
       <KeyHintsProvider value={user?.showKeyboardHints === true}>
       <ChatEntryProvider value={chatEntry}>
-      {/* The chat canvas, summonable over any page (docs/design/chat-canvas.md). */}
+      {/* The chat canvas, summonable over any page (knowledge-base: buildd/design/chat-canvas.md). */}
       <ChatCanvasProvider
         available={chatEntry.available}
         teamId={chatEntry.teamId}

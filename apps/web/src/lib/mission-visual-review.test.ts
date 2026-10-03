@@ -224,6 +224,14 @@ describe('requiredCoverage', () => {
     expect(requiredCoverage(run, ['/app/tasks', '/app/missions/:id'])).toEqual({ required: 4, covered: 2 });
   });
 
+  it('never counts a QA_PLAN state shot toward a required cell', () => {
+    const run = toVisualShots([
+      row('s', '2026-03-10T10:00:00.000Z', { qa: qa({ route: '/app/tasks/:id', viewport: 'mobile', state: 'force-start-dialog' }) }),
+      row('b', '2026-03-10T10:01:00.000Z', { qa: qa({ route: '/app/tasks/:id', viewport: 'desktop' }) }),
+    ]);
+    expect(requiredCoverage(run, ['/app/tasks/:id'])).toEqual({ required: 2, covered: 1 });
+  });
+
   it('is null when code named no route (the auditor picks, so there is no denominator)', () => {
     expect(requiredCoverage(shots(['/app/tasks', 'mobile']), [])).toBeNull();
   });
@@ -322,6 +330,20 @@ describe('shot captions', () => {
       shotRow('ccc', 'three.png', '/z', 'desktop', { label: 'empty state' }),
     ]));
     expect(run.map(shotCaption)).toEqual(['/x · EUR · desktop', '/y · ja-JP · desktop', '/z · empty state · desktop']);
+  });
+
+  it('shows a QA_PLAN state next to the route, in its own caption beside the base shot', () => {
+    const run = withVariants(toVisualShots([
+      shotRow('a', 'app-tasks-abc-mobile.png', '/app/tasks/:id', 'mobile'),
+      shotRow('bb', 'app-tasks-abc--force-start-dialog-mobile.png', '/app/tasks/:id', 'mobile', { state: 'force-start-dialog' }),
+      shotRow('ccc', 'x.png', '/app/tasks/:id', 'desktop', { state: 'force-start-dialog', variant: 'eur' }),
+    ]));
+    expect(run.map(shotCaption)).toEqual([
+      '/app/tasks/:id · mobile',
+      '/app/tasks/:id · force-start-dialog · mobile',
+      '/app/tasks/:id · force-start-dialog · eur · desktop',
+    ]);
+    expect(run[1].qa.state).toBe('force-start-dialog');
   });
 
   it('titleVariant drops route words, viewport words, the theme and the extension', () => {

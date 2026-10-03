@@ -29,7 +29,7 @@ const notFound = () => NextResponse.json({ error: 'Worker not found' }, { status
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateApiKey(apiKey);
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { id } = await params;
