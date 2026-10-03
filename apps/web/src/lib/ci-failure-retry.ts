@@ -381,7 +381,10 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     parentTaskId: isAdoptedPrTask(task) ? null : task.id,
     door: surface,
   });
-  if (supersession.verdict === 'skip_dispatch') {
+  // `open_retry_supersedes_duplicate` reads the same open-attempt set as the
+  // in-flight check below, which also schedules the sweep's look-back — let
+  // that branch report it rather than mislabel it here.
+  if (supersession.verdict === 'skip_dispatch' && supersession.rule !== 'open_retry_supersedes_duplicate') {
     const reason: CiRetrySkipReason = supersession.rule === 'cancel_supersedes_retry'
       ? 'owner_stopped'
       : supersession.rule?.startsWith('close_') ? 'pr_closed' : 'pr_merged';

@@ -55,6 +55,7 @@ export const SUPERSESSION_RULE_IDS = [
   'newer_verdict_supersedes_fix',
   'parent_done_supersedes_retry',
   'cancel_supersedes_retry',
+  'open_retry_supersedes_duplicate',
 ] as const;
 export type SupersessionRuleId = (typeof SUPERSESSION_RULE_IDS)[number];
 
@@ -163,6 +164,12 @@ export interface DispatchProposal {
   parentTaskId?: string | null;
   /** For a review fix: the round whose request-changes verdict it answers. */
   triggeringReviewTaskId?: string | null;
+  /**
+   * Set by `guardDispatchedTask`: the row already inserted for this proposal.
+   * It is excluded from `openRetryIds`, and only attempts ordered before it
+   * count — so of two concurrent inserts the older one stays.
+   */
+  selfTaskId?: string | null;
 }
 
 export interface DispatchFacts {
@@ -174,6 +181,12 @@ export interface DispatchFacts {
   parentStatus?: string | null;
   /** The parent task's own PR merged — its work landed. */
   parentMerged?: boolean;
+  /**
+   * Open fix attempts (review, CI or conflict retry) already bound to the
+   * proposal's PR, from ANY parent in the lineage. With `selfTaskId`, only
+   * those ordered before it (createdAt, then id).
+   */
+  openRetryIds?: string[];
 }
 
 export interface SupersessionRule {
@@ -375,6 +388,20 @@ export const SUPERSESSION_RULES: readonly SupersessionRule[] = [
     cancel: (e, t) => (e.kind === 'cancelled' && isRetryOf(t, eventParent(e)) ? CANCEL : KEEP),
     dispatch: (p, f) => (p.kind !== 'reviewer' && f.parentStatus === 'cancelled' ? SKIP : KEEP),
   },
+  {
+    // One subject PR has at most one open retry. A second, filed while the
+    // first is queued or running — off a duplicate reviewer round, or by a
+    // sibling in another branch of the lineage — cannot check out the branch
+    // the first holds, so the runner cuts a fresh one and the lineage forks
+    // into a second PR. The open retry will push, and its push is reviewed and
+    // CI'd again; that is where the next fix comes from. Dispatch-only: an
+    // existing open retry is never cancelled for this, only the newcomer.
+    id: 'open_retry_supersedes_duplicate',
+    label: 'retry not filed · another is already open',
+    cancel: () => KEEP,
+    dispatch: (p, f) =>
+      p.kind !== 'reviewer' && p.prNumber != null && (f.openRetryIds?.length ?? 0) > 0 ? SKIP : KEEP,
+  },
 ];
 
 export function ruleById(id: SupersessionRuleId): SupersessionRule {
@@ -566,7 +593,7 @@ export async function guardDispatchedTask(
   event: SubjectEvent,
   opts: { store?: SupersessionStore } = {},
 ): Promise<boolean> {
-  const decision = await checkDispatch(proposal, opts);
+  const decision = await checkDispatch({ ...proposal, selfTaskId: taskId }, opts);
   if (decision.verdict !== SKIP || !decision.rule) return false;
   try {
     const store = opts.store ?? (await defaultStore());

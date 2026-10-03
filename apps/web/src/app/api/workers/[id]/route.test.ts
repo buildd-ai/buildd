@@ -529,9 +529,16 @@ mock.module('@/lib/supersession-store', () => ({
     loadDispatchFacts: async (p: any) => {
       const { findReviewTaskForPr } = await import('@/lib/pr-review-request');
       const newest: any = p.prNumber != null ? await findReviewTaskForPr(p.workspaceId, p.prNumber) : null;
+      const open = supersessionRows.filter(r =>
+        r.taskClass === 'attempt' && ['pending', 'assigned', 'in_progress'].includes(r.status)
+        && (r.reviewerRetryPrNumber === p.prNumber || r.ciRetryPrNumber === p.prNumber));
+      const self = open.find(r => r.id === p.selfTaskId);
       return {
         newestReviewTaskId: newest?.id ?? null,
         newestReviewVerdict: newest?.status === 'completed' ? newest.result?.structuredOutput?.verdict ?? null : null,
+        openRetryIds: open
+          .filter(r => r.id !== p.selfTaskId && (!self || r.createdAt < self.createdAt))
+          .map(r => r.id),
       };
     },
     casCancel: async (t: any, rule: any) => {
@@ -7986,6 +7993,60 @@ describe('PATCH /api/workers/[id]', () => {
       } finally {
         mockSelect.mockImplementation(selectAllColumns);
         mockWorkersFindFirst.mockImplementation(priorWorkerRead);
+        mockGenericInsert.mockImplementation(insertTask);
+        supersessionRows = [];
+      }
+    });
+
+    // Regression: one subject PR got two "after review #1" fixes — one per
+    // branch of the lineage — and the second, unable to check out the branch
+    // the first held, opened a second PR. A request-changes verdict while a
+    // fix for the PR is already open must file nothing.
+    it('REGRESSION (lineage fork): request-changes while a sibling fix for the PR is open files no second retry', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      supersessionLedger.length = 0;
+      supersessionRows = [supersessionFix({
+        id: 'sibling-fix', parentTaskId: 'an-attempt-of-original', status: 'in_progress', reviewerRetryHeadSha: 'older-sha',
+      })];
+      try {
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(lastInsertValues?.reviewerRetryPrNumber).toBeUndefined();
+        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+        // The open sibling is left to push; it is not cancelled for this.
+        expect(supersessionRows[0].status).toBe('in_progress');
+        expect(supersessionLedger).toEqual([]);
+      } finally {
+        supersessionRows = [];
+      }
+    });
+
+    it('request-changes: cancels its own inserted fix when a sibling fix was inserted first (fork race)', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      supersessionLedger.length = 0;
+      supersessionRows = [];
+      let insertedFix: any = null;
+      const insertTask = mockGenericInsert.getMockImplementation()!;
+      mockGenericInsert.mockImplementation((table: any) => {
+        const chain = insertTask(table);
+        const values = chain.values;
+        chain.values = mock((row: any) => {
+          if (row.reviewerRetryPrNumber) {
+            // A concurrent dispatch for the same PR won the race to the table.
+            supersessionRows.push(supersessionFix({ id: 'sibling-fix', parentTaskId: 'an-attempt-of-original', createdAt: new Date(1) }));
+            insertedFix = supersessionFix({ id: 'new-task-id', reviewerRetryHeadSha: row.reviewerRetryHeadSha, createdAt: new Date(2) });
+            supersessionRows.push(insertedFix);
+          }
+          return values(row);
+        });
+        return chain;
+      });
+      try {
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(insertedFix?.status).toBe('cancelled');
+        expect(supersessionRows.find(r => r.id === 'sibling-fix')?.status).toBe('pending');
+        expect(supersessionLedger).toEqual([{ taskId: 'new-task-id', rule: 'open_retry_supersedes_duplicate', event: 'verdict' }]);
+        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      } finally {
         mockGenericInsert.mockImplementation(insertTask);
         supersessionRows = [];
       }

@@ -79,7 +79,7 @@ mock.module('./pusher', () => ({
   events: { TASK_UPDATED: 'task:updated', WORKER_COMMAND: 'worker:command' },
 }));
 
-import { subjectHasLiveSuccessor, supersessionStore } from './supersession-store';
+import { loadOpenRetryIds, subjectHasLiveSuccessor, supersessionStore } from './supersession-store';
 import { SUPERSESSION_RULES, type SupersessionCandidate, type SubjectEvent } from './supersession';
 
 const rule = (id: string) => SUPERSESSION_RULES.find(r => r.id === id)!;
@@ -124,6 +124,27 @@ describe('subjectHasLiveSuccessor (the liveness half of the old subject sweep)',
     taskRows = [[{ id: 't1', parentTaskId: 'p1' }], [{ id: 'sibling' }]];
     workerRows = [[{ prLifecycleStatus: 'ci_running' }]];
     expect(await subjectHasLiveSuccessor('ws-1', 42)).toBe(true);
+  });
+});
+
+describe('loadOpenRetryIds (the one-open-retry-per-PR fact)', () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, s));
+
+  it('returns every open attempt bound to the PR through any retry key, from any parent', async () => {
+    taskRows = [[{ id: 'review-fix', createdAt: at(1) }, { id: 'ci-fix', createdAt: at(2) }]];
+    expect(await loadOpenRetryIds('ws-1', 42, null)).toEqual(['review-fix', 'ci-fix']);
+  });
+
+  it('post-insert: excludes the inserted row and counts only attempts ordered before it', async () => {
+    taskRows = [[{ id: 'older', createdAt: at(1) }, { id: 'self', createdAt: at(2) }, { id: 'newer', createdAt: at(3) }]];
+    expect(await loadOpenRetryIds('ws-1', 42, 'self')).toEqual(['older']);
+  });
+
+  it('breaks a createdAt tie by id, so exactly one of two simultaneous inserts survives', async () => {
+    const rows = [{ id: 'a', createdAt: at(1) }, { id: 'b', createdAt: at(1) }];
+    taskRows = [rows, rows];
+    expect(await loadOpenRetryIds('ws-1', 42, 'a')).toEqual([]);
+    expect(await loadOpenRetryIds('ws-1', 42, 'b')).toEqual(['a']);
   });
 });
 

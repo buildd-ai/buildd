@@ -423,3 +423,67 @@ describe('checkDispatch / guardDispatchedTask', () => {
     expect(m.status.get('fix-new')).toBe('pending');
   });
 });
+
+// The fork: one subject PR, two "after review #1" fixes from two branches of
+// the lineage. The second could not check out the branch the first held, cut
+// a fresh one, and opened a second PR; its own fix then forked again.
+describe('open_retry_supersedes_duplicate', () => {
+  const fix: DispatchProposal = {
+    kind: 'fix', workspaceId: WS, prNumber: PR, parentTaskId: ORIGINAL, triggeringReviewTaskId: 'review-1', door: 't',
+  };
+
+  it('skips a fix while another retry for the same PR is open, whichever parent filed it', () => {
+    expect(decideDispatch(fix, { newestReviewTaskId: 'review-1', openRetryIds: ['sibling-fix'] }))
+      .toEqual({ verdict: 'skip_dispatch', rule: 'open_retry_supersedes_duplicate' });
+    expect(decideDispatch({ ...fix, parentTaskId: 'an-attempt-of-original' }, { openRetryIds: ['sibling-fix'] }).rule)
+      .toBe('open_retry_supersedes_duplicate');
+  });
+
+  it('applies to a CI retry too — one open retry per PR, any kind', () => {
+    expect(decideDispatch({ ...fix, kind: 'ci_retry' }, { openRetryIds: ['review-fix'] }).verdict).toBe('skip_dispatch');
+  });
+
+  it('keeps when no retry is open, and never blocks a reviewer', () => {
+    expect(decideDispatch(fix, { newestReviewTaskId: 'review-1', openRetryIds: [] }).verdict).toBe('keep');
+    expect(decideDispatch({ ...fix, kind: 'reviewer' }, { openRetryIds: ['fix-1'] }).verdict).toBe('keep');
+  });
+
+  it('an obsolescence rule still names the skip when both apply', () => {
+    expect(decideDispatch(fix, { prState: 'merged', openRetryIds: ['fix-1'] }).rule).toBe('merge_supersedes_fix');
+  });
+
+  it('never cancels an existing retry in cancel mode — only the newcomer is refused', () => {
+    expect(decide(requestChanges({ headSha: 'sha-old' }), reviewFix({ status: 'in_progress' })).verdict).toBe('keep');
+  });
+
+  it('REGRESSION (fork race): two concurrent request-changes dispatches for one PR leave exactly one retry', async () => {
+    // Both doors passed the pre-insert check before either row existed, then
+    // both inserted. The post-insert guard orders the two and cancels the
+    // newer — so one retry child, and so one PR.
+    const first = reviewFix({ id: 'fix-a', parentTaskId: ORIGINAL, createdAt: new Date('2026-01-02T00:00:01Z') });
+    const second = reviewFix({ id: 'fix-b', parentTaskId: 'attempt-of-original', createdAt: new Date('2026-01-02T00:00:02Z') });
+    const m = memoryStore([first, second]);
+    const store: SupersessionStore = {
+      ...m.store,
+      loadDispatchFacts: async (p) => {
+        const open = [first, second].filter(r => m.status.get(r.id) !== 'cancelled');
+        const self = open.find(r => r.id === p.selfTaskId);
+        return {
+          newestReviewTaskId: p.triggeringReviewTaskId,
+          openRetryIds: open
+            .filter(r => r.id !== p.selfTaskId)
+            .filter(r => !self || r.createdAt!.getTime() < self.createdAt!.getTime())
+            .map(r => r.id),
+        };
+      },
+    };
+    const [a, b] = await Promise.all([
+      guardDispatchedTask(fix, 'fix-a', requestChanges(), { store }),
+      guardDispatchedTask({ ...fix, parentTaskId: 'attempt-of-original' }, 'fix-b', requestChanges(), { store }),
+    ]);
+    expect([a, b]).toEqual([false, true]);
+    expect(m.status.get('fix-a')).toBe('pending');
+    expect(m.status.get('fix-b')).toBe('cancelled');
+    expect(m.ledger).toEqual([{ taskId: 'fix-b', rule: 'open_retry_supersedes_duplicate', event: 'verdict' }]);
+  });
+});

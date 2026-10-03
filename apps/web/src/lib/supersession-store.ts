@@ -169,6 +169,43 @@ function verdictOf(result: unknown): ReviewVerdict | null {
   return v === 'approve' || v === 'request-changes' || v === 'escalate' ? v : null;
 }
 
+/**
+ * Open fix attempts bound to a PR through a retry key, from any parent — the
+ * same set the CI-retry door counts as "in flight". With `selfTaskId` (the
+ * post-insert guard) only attempts ordered before it count, so of two racing
+ * inserts exactly one survives: the older, ties broken by id.
+ */
+export async function loadOpenRetryIds(
+  workspaceId: string,
+  prNumber: number,
+  selfTaskId: string | null,
+): Promise<string[]> {
+  const rows = await db.query.tasks.findMany({
+    where: and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.taskClass, 'attempt'),
+      inArray(tasks.status, [...OPEN_STATUSES]),
+      or(
+        eq(tasks.reviewerRetryPrNumber, prNumber),
+        eq(tasks.ciRetryPrNumber, prNumber),
+        eq(tasks.conflictRetryPrNumber, prNumber),
+      ),
+    ),
+    columns: { id: true, createdAt: true },
+  });
+  const self = selfTaskId ? rows.find(r => r.id === selfTaskId) : undefined;
+  return rows
+    .filter(r => r.id !== selfTaskId)
+    .filter(r => !self || precedes(r, self))
+    .map(r => r.id);
+}
+
+function precedes(a: { id: string; createdAt: Date | null }, b: { id: string; createdAt: Date | null }): boolean {
+  const ta = a.createdAt?.getTime() ?? 0;
+  const tb = b.createdAt?.getTime() ?? 0;
+  return ta !== tb ? ta < tb : a.id < b.id;
+}
+
 async function loadDispatchFacts(p: DispatchProposal): Promise<DispatchFacts> {
   const facts: DispatchFacts = {};
 
@@ -183,6 +220,10 @@ async function loadDispatchFacts(p: DispatchProposal): Promise<DispatchFacts> {
       : prWorker.mergedAt || prWorker.prLifecycleStatus === 'merged'
         ? 'merged'
         : prWorker.prLifecycleStatus === 'closed' ? 'closed' : 'open';
+
+    if (p.kind !== 'reviewer') {
+      facts.openRetryIds = await loadOpenRetryIds(p.workspaceId, p.prNumber, p.selfTaskId ?? null);
+    }
 
     if (p.kind === 'fix') {
       const { findReviewTaskForPr } = await import('./pr-review-request');
