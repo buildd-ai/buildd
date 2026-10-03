@@ -49,7 +49,7 @@ import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation, supersedeFixTaskOnApproval } from '@/lib/reviewer';
 import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
-import { isApprovalSelfMergeable, derivePrReviewStatus } from '@/lib/pr-review-status';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { findReviewTaskForPr } from '@/lib/pr-review-request';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
@@ -4906,6 +4906,7 @@ async function handleReviewerOutcomeIfNeeded(
       // can push a commit and force a re-review on an already-approved PR
       // (task d57ba617).
       await supersedeFixTaskOnApproval({
+        workspaceId,
         originalTaskId,
         installationId,
         repoFullName,
@@ -5129,26 +5130,11 @@ async function handleReviewerOutcomeIfNeeded(
         return;
       }
 
-      // A newer review round can finish (and approve) while this request-
-      // changes verdict, dispatched off an earlier round, is still being
-      // processed server-side — e.g. a forced concurrent re-review. Re-read
-      // the PR's newest review task right before dispatch: if a later round
-      // already approved, this verdict is stale and must not spawn a fix
-      // nobody needs (task d57ba617).
+      // Any newer round supersedes this verdict, including unfinished rounds.
       const newestReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
-      if (newestReviewTask && newestReviewTask.id !== reviewerTaskId) {
-        const newestStatus = derivePrReviewStatus({ reviewTask: newestReviewTask, worker: null });
-        if (newestStatus.state === 'approved') {
-          console.log(`[reviewer] Skipping fix dispatch for PR #${prNumber}: newer review ${newestReviewTask.id} already approved`);
-          await appendPrActivity({
-            installationId,
-            repoFullName,
-            prNumber,
-            entry: { kind: 'fix_superseded_by_approval' },
-            workspaceId,
-          }).catch(() => {});
-          return;
-        }
+      if (newestReviewTask?.id !== reviewerTaskId) {
+        console.log(`[reviewer] Skipping stale fix dispatch for PR #${prNumber}`);
+        return;
       }
 
       // Fetch the prior attempt's worker to get lastCommitSha for retry continuity
@@ -5223,6 +5209,23 @@ async function handleReviewerOutcomeIfNeeded(
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
       });
+      // Approval can sweep zero fixes after the initial check but before our
+      // insert. Re-read after insertion; together with the approval sweep this
+      // closes that gap. Target only our row so a newer round's fix is kept.
+      const dispatchReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
+      if (dispatchReviewTask?.id !== reviewerTaskId) {
+        await supersedeFixTaskOnApproval({
+          workspaceId, originalTaskId, installationId, repoFullName, prNumber,
+          fixTaskId: retryTask.id, reason: 'newer_review',
+        });
+        return;
+      }
+      // Approval may have cancelled the row while we read the newest round.
+      const liveRetry = await db.query.tasks.findFirst({
+        where: eq(tasks.id, retryTask.id), columns: { status: true },
+      });
+      if (liveRetry?.status !== 'pending') return;
+
       if (workspace) {
         await dispatchNewTask(retryTask, workspace);
         console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);

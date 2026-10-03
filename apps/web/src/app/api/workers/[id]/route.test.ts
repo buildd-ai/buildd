@@ -7516,6 +7516,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       // The reviewer task itself
       mockTasksFindFirst.mockImplementation((opts_?: any) => {
+        if (opts_?.columns?.status && Object.keys(opts_.columns).length === 1) return Promise.resolve({ status: 'pending' });
         return Promise.resolve({
           id: 'reviewer-task-1',
           category: 'review',
@@ -7751,39 +7752,115 @@ describe('PATCH /api/workers/[id]', () => {
     // request-changes verdict is still being processed (e.g. a forced
     // concurrent re-review). The route must re-read the PR's newest review
     // right before dispatch and skip a fix nobody needs.
-    it('request-changes: skips the fix dispatch when a newer review already approved', async () => {
-      setupReviewerTaskCompletion('request-changes');
-      // db.select(...) defaults (via selectAllColumns) to resolving the SAME
-      // reviewer task for every caller. findReviewTaskForPr's own select is
-      // identifiable by its 4-column { id, status, result, context }
-      // projection — only that one is overridden, to a DIFFERENT, newer task
-      // whose stored verdict is approve. Every other select call in this
-      // request (e.g. the worker's own task row) keeps the default behavior.
+
+    function mockNewestReview(read: () => any) {
       mockSelect.mockImplementation((projection?: Record<string, unknown>) => {
         const keys = projection ? Object.keys(projection) : [];
-        const isFindReviewTaskForPr = keys.length === 4 && keys.includes('result') && keys.includes('context');
-        if (!isFindReviewTaskForPr) return selectAllColumns();
+        if (!(keys.length === 4 && keys.includes('result') && keys.includes('context'))) return selectAllColumns();
         const chain: any = {
-          from: () => chain,
-          where: () => chain,
-          orderBy: () => chain,
-          limit: () => Promise.resolve([{
-            id: 'reviewer-task-2',
-            status: 'completed',
-            result: { structuredOutput: { verdict: 'approve' } },
-            context: { prNumber: 42 },
-          }]),
+          from: () => chain, where: () => chain, orderBy: () => chain,
+          limit: () => Promise.resolve([read()]),
         };
         return chain;
       });
+    }
 
+    for (const [status, verdict] of [
+      ['pending', null], ['in_progress', null], ['completed', 'escalate'],
+      ['completed', 'request-changes'], ['completed', 'approve'],
+    ]) {
+      it(`request-changes: skips retry insertion and dispatch for newer ${status}/${verdict} round`, async () => {
+        setupReviewerTaskCompletion('request-changes');
+        mockNewestReview(() => ({
+          id: 'reviewer-task-2', status,
+          result: { structuredOutput: { verdict } }, context: { prNumber: 42 },
+        }));
+        try {
+          await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+          expect(mockDispatchNewTask).not.toHaveBeenCalled();
+          expect(lastInsertValues?.reviewerRetryPrNumber).toBeUndefined();
+        } finally {
+          mockSelect.mockImplementation(selectAllColumns);
+        }
+      });
+    }
+
+    it('request-changes: cancels an inserted fix when approval is processed between freshness check and insertion', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      let approved = false;
+      let reads = 0;
+      let insertedFix: any = null;
+      let cancelled = false;
+      const priorWorkerRead = () => Promise.resolve({
+        id: 'original-worker', workspaceId: 'ws-1', taskId: 'original-task-1', prNumber: 42,
+      });
+      const insertTask = mockGenericInsert.getMockImplementation()!;
+      mockSupersedeFixTaskOnApproval.mockClear();
+      mockSupersedeFixTaskOnApproval.mockImplementation(async (params: any) => {
+        if (insertedFix && (!params.fixTaskId || params.fixTaskId === insertedFix.id)) {
+          cancelled = true;
+          insertedFix.status = 'cancelled';
+        }
+        return { superseded: cancelled, fixTaskId: cancelled ? insertedFix.id : null };
+      });
+      mockNewestReview(() => {
+        reads++;
+        return {
+          id: approved ? 'reviewer-task-2' : 'reviewer-task-1',
+          status: 'completed', result: { structuredOutput: { verdict: approved ? 'approve' : 'request-changes' } },
+          context: { prNumber: 42 },
+        };
+      });
+      // Pause at the prior-worker lookup after the initial freshness check.
+      // A terminal approval is recorded and its sweep runs while no fix exists.
+      mockWorkersFindFirst.mockImplementation(async () => {
+        if (reads === 1 && !approved) {
+          approved = true;
+          await mockSupersedeFixTaskOnApproval({
+            workspaceId: 'ws-1', originalTaskId: 'original-task-1',
+            installationId: 5000, repoFullName: 'org/repo', prNumber: 42,
+          });
+          expect(cancelled).toBe(false);
+        }
+        return priorWorkerRead();
+      });
+      mockGenericInsert.mockImplementation((table: any) => {
+        const chain = insertTask(table);
+        const values = chain.values;
+        chain.values = mock((row: any) => {
+          if (row.reviewerRetryPrNumber) {
+            expect(approved).toBe(true);
+            insertedFix = { id: 'new-task-id', ...row };
+          }
+          return values(row);
+        });
+        return chain;
+      });
       try {
         await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
-
+        expect(reads).toBeGreaterThanOrEqual(2);
+        expect(insertedFix?.status).toBe('cancelled');
+        expect(mockSupersedeFixTaskOnApproval).toHaveBeenCalledWith(expect.objectContaining({
+          workspaceId: 'ws-1', prNumber: 42, fixTaskId: 'new-task-id',
+        }));
         expect(mockDispatchNewTask).not.toHaveBeenCalled();
       } finally {
         mockSelect.mockImplementation(selectAllColumns);
+        mockWorkersFindFirst.mockImplementation(priorWorkerRead);
+        mockGenericInsert.mockImplementation(insertTask);
+        mockSupersedeFixTaskOnApproval.mockImplementation(async () => ({ superseded: false, fixTaskId: null }));
       }
+    });
+
+    it('request-changes: does not dispatch a fix cancelled by the concurrent approval sweep', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      const readTask = mockTasksFindFirst.getMockImplementation()!;
+      mockTasksFindFirst.mockImplementation((query?: any) => {
+        if (query?.columns?.status) return Promise.resolve({ status: 'cancelled' });
+        return readTask(query);
+      });
+      await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
     });
 
     it('approve: a re-review producing the same verdict does not fail the outcome even when the review was already posted (idempotent)', async () => {
@@ -9481,8 +9558,8 @@ describe('PATCH /api/workers/[id]', () => {
       setupReviewerTaskCompletion('request-changes');
       // Replace default implementation with a version using a new headSha (def456)
       // so all tasks.findFirst fallback calls return the reviewer task correctly.
-      mockTasksFindFirst.mockImplementation(() =>
-        Promise.resolve({
+      mockTasksFindFirst.mockImplementation((query?: any) =>
+        Promise.resolve(query?.columns?.status ? { status: 'pending' } : {
           id: 'reviewer-task-1',
           category: 'review',
           context: {

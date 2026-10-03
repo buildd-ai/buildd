@@ -10,6 +10,9 @@ let reviewerTaskFindFirstResult: any = null;
 let liveReviewerTaskResult: any = null;
 let liveReviewerProbeArgs: any[] = [];
 let taskUpdateReturning: any[] = [];
+let fixCandidates: any[] | null = null;
+let cancellationWon = false;
+let workerReadAfterCancellation = false;
 // When set, the reviewer task insert conflicts (a concurrent producer already
 // inserted this row) and the live probe then finds the winner.
 let reviewerInsertConflictWinner: { id: string } | null = null;
@@ -66,18 +69,37 @@ mock.module('@buildd/core/db', () => ({
     update: mock((table: string) => ({
       set: mock((values: Record<string, unknown>) => {
         if (table === 'workers') workerUpdateCalls.push({ set: values });
-        return { where: mock(() => whereResult(taskUpdateReturning)) };
+        return { where: mock(() => {
+          if (table !== 'workers') cancellationWon = taskUpdateReturning.length > 0;
+          return whereResult(taskUpdateReturning);
+        }) };
       }),
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
-      workers: { findMany: mock(() => Promise.resolve([])) },
+      workers: { findMany: mock(() => {
+        workerReadAfterCancellation = cancellationWon;
+        return Promise.resolve(reviewerTaskFindFirstResult?.workers ?? []);
+      }) },
       missions: { findFirst: mock(() => Promise.resolve(missionFindFirstResult)) },
       // Two different callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
       // passes a `with: { workers }` relation; the pre-dispatch duplicate probe in
       // createReviewerTask does not — dispatch on that so one fixture cannot
       // silently answer the other query.
       tasks: {
+        findMany: mock((args: any) => {
+          const rows = fixCandidates ?? (reviewerTaskFindFirstResult ? [reviewerTaskFindFirstResult] : []);
+          const predicates = args.where as any[];
+          return Promise.resolve(rows.filter(row => predicates.every(p => {
+            if (p.a === 'workspaceId') return row.workspaceId === p.b;
+            if (p.a === 'reviewerRetryPrNumber') return row.reviewerRetryPrNumber == null || row.reviewerRetryPrNumber === p.b;
+            if (p.a === 'parentTaskId') return row.parentTaskId === p.b;
+            if (p.a === 'id') return row.id === p.b;
+            if (p.a === 'status' && row.status) return p.b.includes(row.status);
+            if (p.a === 'taskClass' && row.taskClass) return row.taskClass === p.b;
+            return true;
+          })));
+        }),
         findFirst: mock((args: any) => {
           // Four callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
           // passes a `with: { workers }` relation; the pre-dispatch duplicate probe
@@ -616,6 +638,9 @@ function resetSupersedeFixtures() {
   insertedMissionNote = undefined;
   reviewerTaskFindFirstResult = null;
   taskUpdateReturning = [];
+  fixCandidates = null;
+  cancellationWon = false;
+  workerReadAfterCancellation = false;
   workerUpdateCalls = [];
   pusherCalls.length = 0;
   mockAppendPrActivity.mockClear();
@@ -780,10 +805,11 @@ describe('supersedeFixTaskOnApproval', () => {
     taskUpdateReturning = [{ id: 'fix-task-1' }];
 
     const result = await supersedeFixTaskOnApproval({
+      workspaceId: 'ws-1',
       originalTaskId: 'task-1',
       installationId: 1,
       repoFullName: 'buildd-ai/buildd',
-      prNumber: 3408,
+      prNumber: 6008,
     });
 
     expect(result).toEqual({ superseded: true, fixTaskId: 'fix-task-1' });
@@ -805,17 +831,19 @@ describe('supersedeFixTaskOnApproval', () => {
     taskUpdateReturning = [{ id: 'fix-task-2' }];
 
     const result = await supersedeFixTaskOnApproval({
+      workspaceId: 'ws-1',
       originalTaskId: 'task-2',
       installationId: 1,
       repoFullName: 'buildd-ai/buildd',
-      prNumber: 3408,
+      prNumber: 6008,
     });
 
     expect(result.superseded).toBe(true);
+    expect(workerReadAfterCancellation).toBe(true);
     expect(workerUpdateCalls).toHaveLength(1);
     expect(workerUpdateCalls[0].set.status).toBe('failed');
     expect(workerUpdateCalls[0].set.exitCause).toBe('condition_unmet');
-    expect(workerUpdateCalls[0].set.error).toContain('approved');
+    expect(workerUpdateCalls[0].set.error).toContain('Superseded');
 
     const abort = pusherCalls.find(c => c.event === 'worker:command');
     expect(abort?.channel).toBe('private-worker-worker-9');
@@ -827,10 +855,11 @@ describe('supersedeFixTaskOnApproval', () => {
     reviewerTaskFindFirstResult = null;
 
     const result = await supersedeFixTaskOnApproval({
+      workspaceId: 'ws-1',
       originalTaskId: 'task-3',
       installationId: 1,
       repoFullName: 'buildd-ai/buildd',
-      prNumber: 3408,
+      prNumber: 6008,
     });
 
     expect(result).toEqual({ superseded: false, fixTaskId: null });
@@ -841,22 +870,75 @@ describe('supersedeFixTaskOnApproval', () => {
 
   it('does not record a supersession when the cancel write loses its CAS race', async () => {
     resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = { id: 'fix-task-4', missionId: 'mission-1', workspaceId: 'ws-1', workers: [] };
+    reviewerTaskFindFirstResult = { id: 'fix-task-4', missionId: 'mission-1', workspaceId: 'ws-1', workers: [{ id: 'completed-racer', status: 'running' }] };
     // The fix task's own worker completed concurrently — it already moved out
     // of a cancellable status.
     taskUpdateReturning = [];
 
     const result = await supersedeFixTaskOnApproval({
+      workspaceId: 'ws-1',
       originalTaskId: 'task-4',
       installationId: 1,
       repoFullName: 'buildd-ai/buildd',
-      prNumber: 3408,
+      prNumber: 6008,
     });
 
     expect(result).toEqual({ superseded: false, fixTaskId: null });
     expect(mockAppendPrActivity).not.toHaveBeenCalled();
     expect(releaseAndNotifyCalls).toHaveLength(0);
+    expect(workerUpdateCalls).toHaveLength(0);
+    expect(pusherCalls).toHaveLength(0);
   });
+  it('cancels all active fixes across attempt parents and leaves other PRs/workspaces untouched', async () => {
+    resetSupersedeFixtures();
+    fixCandidates = [
+      { id: 'fix-a', workspaceId: 'ws-1', parentTaskId: 'root', reviewerRetryPrNumber: 6008 },
+      { id: 'fix-b', workspaceId: 'ws-1', parentTaskId: 'older-attempt', reviewerRetryPrNumber: 6008 },
+      { id: 'other-pr', workspaceId: 'ws-1', reviewerRetryPrNumber: 999 },
+      { id: 'other-workspace', workspaceId: 'ws-2', reviewerRetryPrNumber: 6008 },
+      { id: 'finished', workspaceId: 'ws-1', reviewerRetryPrNumber: 6008, status: 'completed' },
+      { id: 'human-task', workspaceId: 'ws-1', reviewerRetryPrNumber: 6008, taskClass: 'work' },
+    ];
+    taskUpdateReturning = [{ id: 'cancelled' }];
+    await supersedeFixTaskOnApproval({
+      workspaceId: 'ws-1', originalTaskId: 'root', installationId: 1,
+      repoFullName: 'buildd-ai/buildd', prNumber: 6008,
+    });
+    expect(releaseAndNotifyCalls).toEqual([['fix-a', 'abandoned'], ['fix-b', 'abandoned']]);
+  });
+
+
+  it('post-insert cleanup targets only the stale attempt, leaving the newer rounds fix alive', async () => {
+    resetSupersedeFixtures();
+    fixCandidates = [
+      { id: 'stale', workspaceId: 'ws-1', reviewerRetryPrNumber: 6008 },
+      { id: 'newer', workspaceId: 'ws-1', reviewerRetryPrNumber: 6008 },
+    ];
+    taskUpdateReturning = [{ id: 'stale' }];
+    await supersedeFixTaskOnApproval({
+      workspaceId: 'ws-1', originalTaskId: 'root', installationId: 1,
+      repoFullName: 'buildd-ai/buildd', prNumber: 6008,
+      fixTaskId: 'stale', reason: 'newer_review',
+    });
+    expect(releaseAndNotifyCalls).toEqual([['stale', 'abandoned']]);
+    // An unfinished newer round is not an approval.
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+  });
+
+  it('aborts a worker that became live after fix selection, only after winning task cancellation', async () => {
+    resetSupersedeFixtures();
+    fixCandidates = [{ id: 'fix-late', workspaceId: 'ws-1', workers: [] }];
+    // Current worker read differs from the selection snapshot.
+    reviewerTaskFindFirstResult = { workers: [{ id: 'late-worker', status: 'running' }] };
+    taskUpdateReturning = [{ id: 'fix-late' }];
+    await supersedeFixTaskOnApproval({
+      workspaceId: 'ws-1', originalTaskId: 'root', installationId: 1,
+      repoFullName: 'buildd-ai/buildd', prNumber: 6008,
+    });
+    expect(workerReadAfterCancellation).toBe(true);
+    expect(pusherCalls.find(c => c.event === 'worker:command')?.channel).toBe('private-worker-late-worker');
+  });
+
 });
 
 // ── Patch evidence (T2) ──────────────────────────────────────────────────────
