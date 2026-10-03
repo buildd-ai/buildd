@@ -5,11 +5,12 @@
  * scope chip, the runner avatar, a criterion box, the landed meter and the
  * inline answer to a waiting agent's question.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { runnerInitial } from '@/lib/runner-display';
-import type { BoardCriterion, BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
+import { BOARD_LANDED, type BoardCriterion, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
+import { stripKeyTarget, stripOrder, stripTick } from '@/lib/mission-task-strip';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
@@ -137,8 +138,55 @@ const METER_CLASS: Record<BoardStatus, string> = {
   blocked: 'border-[var(--fleet-border-mid)] fleet-hatch',
 };
 
-/** One square per deliverable, grouped by phase. */
-export function LandedMeter({ model, variant, compact = false }: { model: MissionBoardModel; variant: 'band' | 'strip'; compact?: boolean }) {
+/**
+ * The interactive band cells: landed work is solid, anything unfinished is
+ * hatched (readable without colour), each in its state's tone.
+ */
+const STRIP_CELL_CLASS: Record<BoardStatus, string> = {
+  merged: 'border-status-success bg-status-success',
+  done: 'border-status-success bg-status-success',
+  review: 'border-status-success fleet-hatch-ok',
+  running: 'border-accent fleet-hatch-accent',
+  waiting: 'border-accent fleet-hatch-accent',
+  ci_failed: 'border-status-error fleet-hatch-err',
+  fixing: 'border-status-error fleet-hatch-err',
+  failed: 'border-status-error fleet-hatch-err',
+  ready: 'border-[var(--fleet-border-mid)] fleet-hatch',
+  blocked: 'border-[var(--fleet-border-mid)] fleet-hatch',
+};
+
+export type StripTone = 'ok' | 'error' | 'open';
+
+export function stripTone(status: BoardStatus): StripTone {
+  if (BOARD_LANDED.has(status)) return 'ok';
+  if (status === 'ci_failed' || status === 'fixing' || status === 'failed') return 'error';
+  return 'open';
+}
+
+const STRIP_OUTLINE: Record<StripTone, string> = {
+  ok: 'outline-status-success',
+  error: 'outline-status-error',
+  open: 'outline-accent',
+};
+
+const STATUS_WORDS: Record<BoardStatus, string> = {
+  merged: 'landed', done: 'landed', review: 'in review', running: 'running', waiting: 'needs you',
+  ci_failed: 'CI failed', fixing: 'fixing', failed: 'failed', ready: 'open', blocked: 'blocked',
+};
+
+/** Selecting a cell of the band (the mission page's Landed strip). */
+export interface LandedMeterSelection {
+  selectedId: string;
+  onSelect(taskId: string): void;
+}
+
+/**
+ * One square per deliverable, grouped by phase. With `selection` (the mission
+ * page's Board) the band is a toolbar of real buttons in strip order: a click
+ * selects without navigating, ArrowLeft/Right step and Home/End jump.
+ */
+export function LandedMeter({ model, variant, compact = false, selection }: { model: MissionBoardModel; variant: 'band' | 'strip'; compact?: boolean; selection?: LandedMeterSelection }) {
+  if (variant === 'band' && selection) return <StripCells model={model} compact={compact} selection={selection} />;
   if (variant === 'strip') {
     return (
       <span className="flex gap-[7px]">
@@ -179,6 +227,96 @@ export function LandedMeter({ model, variant, compact = false }: { model: Missio
     </div>
   );
 }
+
+/** Past this many cells the ticks lose their numbers: an unfinished one keeps a mark. */
+const MAX_NUMBERED_TICKS = 12;
+
+function StripCells({ model, compact, selection }: { model: MissionBoardModel; compact: boolean; selection: LandedMeterSelection }) {
+  const order = useMemo(() => stripOrder(model), [model]);
+  const n = order.length;
+  const sel = Math.max(0, order.indexOf(selection.selectedId));
+  const { onSelect } = selection;
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const to = stripKeyTarget(e.key, sel, n);
+    if (to == null) return;
+    e.preventDefault();
+    onSelect(order[to]);
+    // Roving focus follows the selection (only the selected cell is tabbable).
+    (e.currentTarget.querySelectorAll('button')[to] as HTMLButtonElement | undefined)?.focus();
+  };
+  const numbered = n <= MAX_NUMBERED_TICKS;
+  return (
+    <div>
+      <div
+        role="toolbar"
+        aria-label="Mission tasks. Use the arrow keys to move between tasks."
+        data-testid="landed-strip"
+        onKeyDown={onKeyDown}
+        className="flex gap-[var(--strip-gap)] pt-1.5"
+      >
+        {order.map((id, i) => {
+          const t = model.tasks[id];
+          return (
+            <StripCell
+              key={id}
+              id={id}
+              status={t.status}
+              selected={i === sel}
+              tall={!compact}
+              label={`Task ${i + 1} of ${n}, ${STATUS_WORDS[t.status]}: ${t.title}`}
+              onSelect={onSelect}
+            />
+          );
+        })}
+      </div>
+      <div aria-hidden="true" className={`flex gap-[var(--strip-gap)] ${compact ? 'h-[26px]' : 'h-[26px] md:h-7'}`}>
+        {order.map((id, i) => {
+          const open = !BOARD_LANDED.has(model.tasks[id].status);
+          return (
+            <span
+              key={id}
+              data-testid="landed-strip-tick"
+              data-open={open ? 'true' : undefined}
+              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${open ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
+            >
+              {numbered || i === sel ? stripTick(i) : open ? <i className="block h-1 w-1 bg-accent" /> : null}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Memoised: a selection change re-renders the two cells it touches, not the strip. */
+const StripCell = memo(function StripCell({ id, status, selected, tall, label, onSelect }: {
+  id: string;
+  status: BoardStatus;
+  selected: boolean;
+  tall: boolean;
+  label: string;
+  onSelect(taskId: string): void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid="landed-strip-cell"
+      data-task-ref={id}
+      data-status={status}
+      aria-label={label}
+      aria-pressed={selected}
+      aria-controls={STRIP_DRAWER_ID}
+      tabIndex={selected ? 0 : -1}
+      onClick={() => onSelect(id)}
+      className={`block h-11 min-w-0 flex-1 basis-0 cursor-pointer border-2 p-0 transition-transform duration-150 motion-reduce:transition-none ${tall ? 'md:h-14' : ''} ${STRIP_CELL_CLASS[status]} ${
+        selected ? `-translate-y-1 outline outline-2 outline-offset-2 ${STRIP_OUTLINE[stripTone(status)]}` : 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary'
+      }`}
+    />
+  );
+});
+
+/** The tethered drawer's element id (the cells' `aria-controls`). */
+export const STRIP_DRAWER_ID = 'mission-strip-drawer';
 
 export function SectionLabel({ children, className = '', title, 'data-testid': testId }: { children: ReactNode; className?: string; title?: string; 'data-testid'?: string }) {
   return (

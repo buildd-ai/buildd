@@ -563,8 +563,12 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // v5: QA_PLAN states (docs/specs/qa-capture-steps.md): capture a modal,
     // menu or gated state instead of marking it unsure, the never-commit rule,
     // and a fixture task behind every remaining unsure.
-    version: 5,
+    // v6: capture the mission's capture ref (get_page_source captureRef: the
+    // integration branch on a mission-branch mission), record qa.ref/refSource,
+    // and never file a shot the agent knows is from the wrong ref as unsure.
+    version: 6,
     supersededContentHashes: [
+      '7287fafb7ea8cc8624c5ab0df92e4ca9c249029ff18712079f7a5242abbf0fca',
       '858c4bb3437c364efa8a74a6fd7aa778ca05c9481af2796cd6dfab577f72359d',
       'fc757beb2e05a18169abe8435b23a4fcbd2fa269e9178bdbf13f87004a8aa137',
       'dad305063efb71f0834e8c3a0a64222cbdfac0b44d425fc243b6c9a2a31734b4',
@@ -596,8 +600,12 @@ First ask where the pages come from. The workspace chooses (\`gitConfig.visualQa
 buildd action=get_page_source params={ waitSeconds: 45 }
 \`\`\`
 
-Pass \`sha\` (the trunk commit you checked out) or \`prNumber\` (a merged builder PR, when trunk
-deploys to Production and has no preview). Then:
+The answer's \`captureRef\` is the branch to capture: the mission's integration branch on a
+mission-branch mission (the builder PRs merged there, not into trunk), else trunk. Capture from
+\`captureRef.ref\`, never from trunk by habit; trunk lacks a mission-branch mission's work until
+the mission PR merges. With no \`sha\` or \`prNumber\` the preview commit is already that branch's
+head. Pass \`sha\` (a commit on \`captureRef.ref\`) or \`prNumber\` (a merged builder PR, when
+that branch deploys to Production and has no preview) only to pin another commit. Then:
 
 - \`decision.ok\` with \`source: "sandbox"\`: capture as below.
 - \`decision.ok\` with \`source: "vercel-preview"\`: capture from \`decision.baseUrl\` instead. Run
@@ -621,8 +629,8 @@ deploys to Production and has no preview). Then:
 Follow the \`visual-review\` skill (\`.claude/skills/visual-review/SKILL.md\`). For the
 sandbox, pick the recipe by one question: is \`DATABASE_URL\` set?
 
-- **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` on the trunk
-  branch with your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
+- **No \`DATABASE_URL\`** (the normal worker case): dispatch \`visual-qa.yml\` with
+  \`--ref <captureRef.ref>\` and your routes (or \`-f plan='<plan JSON>'\` instead of \`routes\`), once with
   \`viewport=mobile\` and once for desktop, then download the \`qa-screenshots\` artifact exactly
   as the skill describes (and delete it after).
 - **\`DATABASE_URL\` set** (a dev database, never prod): run \`scripts/qa/shoot.sh\` twice,
@@ -689,6 +697,7 @@ buildd action=upload_artifact params={
   metadata: { qa: { runKey: "<one id for this whole run>", route: "/app/tasks/:id",
     viewport: "mobile" | "desktop", finding: "<what you saw, one or two sentences>",
     verdict: "ok" | "issue" | "unsure", source: "sandbox" | "vercel-preview",
+    ref: "<the branch you captured from>", refSource: "<captureRef.source>",
     state: "<the QA_PLAN state key; omit on a base shot>" } }
 }
 \`\`\`
@@ -698,6 +707,10 @@ route × viewport cells are met by base shots only, so upload both.
 
 When you shoot one route more than once per viewport (two locales, a query, an empty
 and a full state), add \`variant: "<what differs>"\` to \`qa\` so the captions tell them apart.
+
+\`ref\` is the branch the shot really came from, even when it is not \`captureRef.ref\`. A shot
+from any other branch never reaches the human review: it is superseded by a shot of the same
+route and viewport from \`captureRef.ref\`, or else listed as a capture gap that you owe.
 
 \`finding\` is never empty, even for \`ok\`: say what you checked. Describe what you saw
 generically; never paste real names or content from a shot anywhere.
@@ -722,6 +735,11 @@ generically; never paste real names or content from a shot anywhere.
   \`metadata: { qa: { fixTaskId: "<task id>" } }\`. The server merges it into the shot's
   \`qa\`, so route, viewport and finding stay as you uploaded them. Every issue shot needs
   one. File it in THIS mission, never as a friction report.
+- **Wrong ref**: if your own finding says a shot is invalid because of where it came from (it
+  shows the page before a fix that merged only into the integration branch, say), it is not
+  \`unsure\` and not an \`issue\`. Recapture that route and viewport from \`captureRef.ref\` and
+  upload the new shot; the old one is superseded. If you cannot recapture, upload it with its
+  true \`ref\` and say so in the finding: it is then a capture gap, never a question for a person.
 - **unsure**: only for a state you cannot produce with the data available (a real provider
   failure, say), never for one a capture plan can open. Upload the shot with
   \`verdict: "unsure"\` and a finding that says what you could not tell, then file a
