@@ -72,10 +72,10 @@ export function describeVisualPhase(
       const ok = s.effectiveOk ?? s.ok;
       const issues = s.effectiveIssues ?? s.issues;
       const head = `${ok} of ${s.shots} ok`;
-      const parts = [head];
+      const parts: string[] = [];
       if (issues > 0) parts.push(plural(issues, 'issue'));
-      if (s.reviewed > 0) parts.push(`${s.reviewed} decided by you`);
-      return { label: head, detail: `${parts.join(', ')}.` };
+      if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed`);
+      return { label: head, detail: parts.length > 0 ? `${parts.join(', ')}.` : `${head}.` };
     }
   }
 }
