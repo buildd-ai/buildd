@@ -1077,8 +1077,8 @@ function mergeFact(input: MissionStateInput): Resolution | null {
           kind: 'merge',
           tone: 'warning',
           label: missionPrState === 'closed'
-            ? `Mission PR${prNumber ? ` #${prNumber}` : ''} was closed without merging, so the work is still only on the integration branch`
-            : 'The mission’s work has landed on its integration branch, but the mission PR has not opened yet',
+            ? `Mission PR${prNumber ? ` #${prNumber}` : ''} closed without merging. Work is still on the integration branch`
+            : 'Mission PR not opened. Work is on the integration branch',
           count: 1,
           prNumbers: missionPrState === 'closed' && prNumber != null ? [prNumber] : [],
           // No href either way: a closed PR cannot merge, and a not-yet-opened
@@ -1617,7 +1617,7 @@ function situationPhrase(d: WaitingOnDescriptor, opts: { running?: boolean } = {
         return `mission PR${ref} was closed without merging`;
       }
       if (d.missionPr && d.missionPrState === 'not_opened') {
-        return 'the mission’s work has landed on its integration branch, but the mission PR has not opened yet';
+        return 'mission PR not opened yet; work is on the integration branch';
       }
       return d.missionPr
         ? `waiting on you to merge the mission PR${ref}`

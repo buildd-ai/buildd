@@ -96,7 +96,7 @@ export default function VisualReviewLine({ model, variant = 'compact', className
   const copy = describeVisualPhase(model);
   const tone = visualPhaseTone(model.phase);
   const s = model.summary;
-  const aria = [copy.label, s.shots > 0 ? `${s.shots} screens, ${s.reviewed} decided by you` : null].filter(Boolean).join('. ');
+  const aria = [copy.label, s.shots > 0 ? `${s.shots} screens, ${s.reviewed} reviewed` : null].filter(Boolean).join('. ');
   return (
     <div data-testid="visual-review-line" data-phase={model.phase} className={`min-w-0 ${className}`}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">

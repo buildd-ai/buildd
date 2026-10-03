@@ -72,12 +72,12 @@ export function describeVisualPhase(
       const ok = s.effectiveOk ?? s.ok;
       const issues = s.effectiveIssues ?? s.issues;
       const head = `${ok} of ${s.shots} ok`;
-      const parts = [head];
+      const parts: string[] = [];
       if (issues > 0) parts.push(plural(issues, 'issue'));
-      if (s.reviewed > 0) parts.push(`${s.reviewed} decided by you`);
+      if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed`);
       // Wrong-branch shots the auditor owes: never a question for a person.
       if (s.captureGaps) parts.push(`${plural(s.captureGaps, 'capture gap')} for the auditor`);
-      return { label: head, detail: `${parts.join(', ')}.` };
+      return { label: head, detail: parts.length > 0 ? `${parts.join(', ')}.` : `${head}.` };
     }
   }
 }
