@@ -95,14 +95,14 @@ mock.module('@buildd/core/db/schema', () => ({
   accounts: 'accounts',
 }));
 
-const mockGetWorkerArtifactCount = mock(() => Promise.resolve(0));
+const mockGetWorkerDeliverableArtifactCount = mock(() => Promise.resolve(0));
 const mockCheckWorkerDeliverables = mock(() => ({
   hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
 }));
 const mockGetLatestWorkerArtifactWithStructuredOutput = mock(() => Promise.resolve(null));
 mock.module('@/lib/worker-deliverables', () => ({
   checkWorkerDeliverables: mockCheckWorkerDeliverables,
-  getWorkerArtifactCount: mockGetWorkerArtifactCount,
+  getWorkerDeliverableArtifactCount: mockGetWorkerDeliverableArtifactCount,
   getLatestWorkerArtifactWithStructuredOutput: mockGetLatestWorkerArtifactWithStructuredOutput,
 }));
 
@@ -531,8 +531,8 @@ describe('cleanupStaleWorkers — cancelled task protection', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
@@ -631,7 +631,7 @@ describe('cleanupStaleWorkers — reviewer lease expiry', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
     mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
     mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
   });
@@ -754,8 +754,8 @@ describe('cleanupStaleWorkers — deliverable-aware cleanup', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
@@ -910,10 +910,10 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
     mockWorkerHeartbeatsFindFirst.mockReset();
     mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh by default
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
@@ -968,7 +968,7 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
   it('promotes task to completed when heartbeat-expired worker has artifact but no PR', async () => {
     mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
 
-    mockGetWorkerArtifactCount.mockResolvedValue(2);
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(2);
 
     mockWorkersFindMany
       .mockResolvedValueOnce([])  // section 1: no stale workers
@@ -1033,7 +1033,7 @@ describe('cleanupStaleWorkers — heartbeat-expiry path with deliverables', () =
     // leave hasDeliverables=false and the task would be reset to pending.
     mockWorkerHeartbeatsFindFirst.mockReturnValueOnce(null);
 
-    mockGetWorkerArtifactCount.mockRejectedValue(new Error('DB timeout'));
+    mockGetWorkerDeliverableArtifactCount.mockRejectedValue(new Error('DB timeout'));
 
     mockWorkersFindMany
       .mockResolvedValueOnce([])
@@ -1075,8 +1075,8 @@ describe('cleanupStaleWorkers — retry cap', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
@@ -1569,10 +1569,10 @@ describe('cleanupStaleWorkers — activeSessions seat release', () => {
     mockTasksUpdate.mockReset();
     mockAccountsUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
     mockWorkerHeartbeatsFindFirst.mockReset();
     mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh heartbeat by default
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
@@ -1708,10 +1708,10 @@ describe('cleanupStaleWorkers — seat accounting across a cross-account batch',
     mockTasksUpdate.mockReset();
     mockAccountsUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
     mockWorkerHeartbeatsFindFirst.mockReset();
     mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh heartbeat → section 2 inert
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
@@ -1887,9 +1887,9 @@ describe('cleanupStaleWorkers — pr_merged reaper exemption (B.3)', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
     mockGetLatestWorkerArtifactWithStructuredOutput.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockGetLatestWorkerArtifactWithStructuredOutput.mockResolvedValue(null);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
@@ -2014,9 +2014,9 @@ describe('cleanupStaleWorkers — outcome-first summaries (B.5)', () => {
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockReset();
     mockGetLatestWorkerArtifactWithStructuredOutput.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(1);
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(1);
     mockGetLatestWorkerArtifactWithStructuredOutput.mockResolvedValue(null);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: true, hasStructuredOutput: false, hasCommits: false, hasAny: true, details: '1 artifact',
@@ -2105,8 +2105,8 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
     mockWorkersUpdate.mockReset();
     mockTasksUpdate.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
@@ -2374,8 +2374,8 @@ describe('cleanupStaleWorkers — heartbeat path taxonomy', () => {
     mockTasksUpdate.mockReset();
     mockWorkerHeartbeatsFindFirst.mockReset();
     mockCheckWorkerDeliverables.mockReset();
-    mockGetWorkerArtifactCount.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
     });
