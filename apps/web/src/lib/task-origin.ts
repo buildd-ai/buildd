@@ -97,6 +97,8 @@ export interface TaskOriginContext {
   creatorRoleSlug?: string | null;
   /** Task page of the creating worker (workers have no page of their own). */
   creatorWorkerTaskId?: string | null;
+  /** That task's title — names the "Created by" link instead of "Agent run". */
+  creatorWorkerTaskTitle?: string | null;
   scheduleName?: string | null;
   missionTitle?: string | null;
   parentTaskTitle?: string | null;
@@ -267,7 +269,7 @@ export function deriveTaskOrigin(task: TaskOriginRow, ctx: TaskOriginContext = {
   // ── Links, in render order: worker → mission → schedule → parent → PR → run.
   if (!isEmpty) {
     if (task.createdByWorkerId && ctx.creatorWorkerTaskId) {
-      links.push({ key: 'worker', label: 'Agent run', href: `/app/tasks/${ctx.creatorWorkerTaskId}` });
+      links.push({ key: 'worker', label: str(ctx.creatorWorkerTaskTitle) ?? 'Agent run', href: `/app/tasks/${ctx.creatorWorkerTaskId}` });
     }
     if (task.missionId) {
       links.push({
