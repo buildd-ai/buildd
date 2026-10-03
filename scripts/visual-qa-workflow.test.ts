@@ -26,7 +26,7 @@ const step = (name: RegExp) => {
 describe('visual-qa.yml dispatch contract', () => {
   test('workflow_dispatch exposes routes / viewport / mission_id / task_id / judge', () => {
     const inputs = on.workflow_dispatch?.inputs ?? {};
-    for (const k of ['routes', 'viewport', 'mission_id', 'task_id']) {
+    for (const k of ['routes', 'plan', 'viewport', 'mission_id', 'task_id']) {
       expect(inputs[k]?.type).toBe('string');
       expect(inputs[k]?.required).toBe(false);
     }
@@ -37,6 +37,7 @@ describe('visual-qa.yml dispatch contract', () => {
   test('capture maps the inputs to QA_* env (never interpolated into the script)', () => {
     const capture = step(/^Capture/);
     expect(capture.env.QA_ROUTES).toContain('inputs.routes');
+    expect(capture.env.QA_PLAN).toContain('inputs.plan');
     expect(capture.env.QA_VIEWPORT).toContain('inputs.viewport');
     expect(capture.env.QA_MISSION_ID).toContain('inputs.mission_id');
     expect(capture.env.QA_TASK_ID).toContain('inputs.task_id');
@@ -71,7 +72,7 @@ describe('visual-qa.yml dispatch contract', () => {
     expect(all).not.toContain('BUILDD_QA_KEY');
     expect(all).not.toContain('BUILDD_QA_URL');
     const qaDir = join(__dirname, 'qa');
-    const withKey = readdirSync(qaDir).filter(f =>
+    const withKey = readdirSync(qaDir, { withFileTypes: true }).filter(d => d.isFile()).map(d => d.name).filter(f =>
       /BUILDD_QA_(KEY|URL)/.test(readFileSync(join(qaDir, f), 'utf8')));
     expect(withKey).toEqual([]);
     const oauth = steps.find(s => String(s.uses ?? '').startsWith('anthropics/claude-code-action@'));

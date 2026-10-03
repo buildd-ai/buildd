@@ -48,6 +48,12 @@ export interface QaMeta {
    * `withVariants` for the fallback that reads the title.
    */
   variant?: string;
+  /**
+   * A QA_PLAN state key (`force-start-dialog`): the shot shows a dialog or
+   * menu capture steps opened (docs/specs/qa-capture-steps.md). Shown next to
+   * the route, kept in its own cell, and never counted toward coverage.
+   */
+  state?: string;
 }
 
 export interface VisualShot {
@@ -96,6 +102,7 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
   if (nonEmpty(q.fixTaskId)) meta.fixTaskId = q.fixTaskId;
   const variant = [q.variant, q.locale, q.label].find(nonEmpty);
   if (variant) meta.variant = variant.trim();
+  if (nonEmpty(q.state)) meta.state = q.state.trim();
   return meta;
 }
 
@@ -155,18 +162,21 @@ export function titleVariant(shot: Pick<VisualShot, 'title' | 'qa'>): string | n
 }
 
 /**
- * Fill each shot's `variant`: the explicit `qa.variant` always; otherwise the
- * title's variant, for shots whose route and viewport collide with another
- * shot's (EUR and JPY invoices both read `/invoices/:id · desktop`). A route
- * with one shot per viewport gets none, so captions only grow where they must.
+ * Fill each shot's `variant`: the state key and the explicit `qa.variant`
+ * always (`force-start-dialog`, `force-start-dialog · eur`); otherwise the
+ * title's variant, for shots whose route, viewport and state collide with
+ * another shot's (EUR and JPY invoices both read `/invoices/:id · desktop`). A
+ * route with one shot per viewport gets none, so captions only grow where they
+ * must. The state leads, so a state shot is its own cell, never the base one.
  */
 export function withVariants(shots: readonly VisualShot[]): VisualShot[] {
   const perCell = new Map<string, number>();
-  const cell = (s: VisualShot) => `${s.qa.route}\u0000${s.qa.viewport}`;
+  const cell = (s: VisualShot) => `${s.qa.route}\u0000${s.qa.viewport}\u0000${s.qa.state ?? ''}`;
   for (const s of shots) perCell.set(cell(s), (perCell.get(cell(s)) ?? 0) + 1);
-  const collidingRoutes = new Set(shots.filter(s => (perCell.get(cell(s)) ?? 0) > 1).map(s => s.qa.route));
+  const colliding = new Set(shots.filter(s => (perCell.get(cell(s)) ?? 0) > 1).map(s => `${s.qa.route}\u0000${s.qa.state ?? ''}`));
   return shots.map((s) => {
-    const variant = s.qa.variant ?? (collidingRoutes.has(s.qa.route) ? titleVariant(s) : null);
+    const own = s.qa.variant ?? (colliding.has(`${s.qa.route}\u0000${s.qa.state ?? ''}`) ? titleVariant(s) : null);
+    const variant = [s.qa.state, own].filter(Boolean).join(' · ') || null;
     return variant === (s.variant ?? null) ? s : { ...s, variant };
   });
 }
@@ -228,7 +238,7 @@ export function qaRouteSatisfies(required: string, recorded: string): boolean {
 
 /**
  * How many required route × viewport cells the run covers, the same way the
- * evidence check counts them. Null when code named no route: the auditor then
+ * evidence check counts them: base-state shots only, never a `qa.state` shot. Null when code named no route: the auditor then
  * picks its own, so there is no denominator to show.
  */
 export function requiredCoverage(
@@ -239,7 +249,7 @@ export function requiredCoverage(
   let covered = 0;
   for (const route of requiredRoutes) {
     for (const viewport of QA_VIEWPORTS) {
-      if (run.some(s => s.qa.viewport === viewport && qaRouteSatisfies(route, s.qa.route))) covered++;
+      if (run.some(s => !s.qa.state && s.qa.viewport === viewport && qaRouteSatisfies(route, s.qa.route))) covered++;
     }
   }
   return { required: requiredRoutes.length * QA_VIEWPORTS.length, covered };

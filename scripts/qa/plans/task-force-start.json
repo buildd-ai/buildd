@@ -1,0 +1,14 @@
+[
+  {
+    "route": "/app/tasks/:id",
+    "states": [
+      {
+        "key": "force-start-dialog",
+        "steps": [
+          { "action": "click", "selector": "role:button[name=Start Task]", "commit": true },
+          { "action": "waitFor", "selector": "text:Force start", "timeoutMs": 15000 }
+        ]
+      }
+    ]
+  }
+]

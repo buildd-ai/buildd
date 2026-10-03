@@ -104,6 +104,14 @@ describe('buildSurfaceAuditDescription', () => {
     expect(desc).toContain('THIS SAME mission');
   });
 
+  it('asks for a QA_PLAN state per modal/menu/gated state, and a fixture task behind every unsure', () => {
+    const desc = buildSurfaceAuditDescription({ missionTitle: 'M', scopedPaths: [] });
+    expect(desc).toContain('write a QA_PLAN state');
+    expect(desc).toContain('never commit');
+    expect(desc).toContain('add a ?state= fixture for <state>');
+    expect(desc).toContain('An unsure shot with no follow-up task is not done');
+  });
+
   it('lists the required routes and the per-shot evidence contract', () => {
     const desc = buildSurfaceAuditDescription({
       missionTitle: 'Mobile nav redesign',

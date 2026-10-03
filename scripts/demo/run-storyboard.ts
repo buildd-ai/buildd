@@ -54,6 +54,7 @@ import { loadState, loadStory, type DemoState } from './lib/story';
 import { seedStory } from './seed';
 import { advanceTo, parseT } from './advance';
 import { mintSessionToken, SESSION_COOKIE } from './lib/session';
+import { runSteps, selectorString, toLocator } from '../qa/steps';
 import { captureFile, captureKey, clickTargets, DESKTOP, highlightTargets, isRendered, loginUser, reducedMotionFor, resolveViewports, scrollPlan, stepViewports, textBoxes, typedValues, hideCss, type Viewport, type ViewportSpec } from './lib/storyboard';
 
 type Step = {
@@ -103,10 +104,13 @@ const HIDE_CSS = `
   ::-webkit-scrollbar { display: none; }
 `;
 
-/** A bare word is a data-testid; anything else is a Playwright selector. */
-function sel(target: string): string {
-  return /^[a-z0-9][a-z0-9-_]*$/i.test(target) ? `[data-testid="${target}"]` : target;
-}
+/**
+ * A bare word is a data-testid; anything else is a Playwright selector. The
+ * prefixed forms (`testid:`, `role:`, `text:`, `css:`) work too. Resolved by
+ * the step engine capture.ts uses (scripts/qa/steps.ts), so the two agree.
+ */
+const sel = selectorString;
+const at = toLocator;
 
 function fill(path: string, ids: Record<string, string>): string {
   return path.replace(/\{([^}]+)\}/g, (m, key) => {
@@ -189,17 +193,18 @@ async function main() {
     const missing: string[] = [];
     for (const w of [step.waitFor ?? []].flat()) {
       try {
-        await page.waitForSelector(sel(w), { timeout: 15_000 });
+        await at(page, w).first().waitFor({ state: 'visible', timeout: 15_000 });
       } catch {
         missing.push(w);
         console.warn(`[storyboard]   waitFor "${w}" never appeared on ${page.url()}`);
         if (process.argv.includes('--strict')) throw new Error(`waitFor "${w}" missing (--strict)`);
       }
     }
-    for (const target of clickTargets(step)) {
-      await page.locator(sel(target)).first().click();
-      await page.waitForLoadState('networkidle');
-    }
+    // Clicks run through the shared engine; a click that fails still fails
+    // the step, as it always has.
+    const clicks = clickTargets(step);
+    const failed = await runSteps(page, clicks.map((selector) => ({ action: 'click' as const, selector })), { defaultTimeoutMs: 30_000 });
+    if (failed) throw new Error(`[storyboard] click "${clicks[failed.index]}" failed on ${page.url()}: ${failed.error}`);
     // Park the pointer in a corner: a pointer left where the last click landed
     // would hover whatever sits there on the next page (a Board tile's card).
     await page.mouse.move(0, 0).catch(() => {});
@@ -211,8 +216,8 @@ async function main() {
       window.scrollTo(0, 0);
       for (const el of Array.from(document.querySelectorAll<HTMLElement>('*'))) if (el.scrollTop > 0) el.scrollTop = 0;
     });
-    if (step.scrollTo && (await page.locator(sel(step.scrollTo)).count())) {
-      await page.locator(sel(step.scrollTo)).first().evaluate((el, { block, delta }) => {
+    if (step.scrollTo && (await at(page, step.scrollTo).count())) {
+      await at(page, step.scrollTo).first().evaluate((el, { block, delta }) => {
         el.scrollIntoView({ block });
         // Leave room for sticky headers (start) or below the target (end).
         let p: HTMLElement | null = el.parentElement;
@@ -230,7 +235,7 @@ async function main() {
   async function boxes(page: Page, step: Step) {
     const out = [];
     for (const { target, required } of highlightTargets(step, board.highlight)) {
-      const loc = page.locator(sel(target));
+      const loc = at(page, target);
       const n = await loc.count();
       if (!n && !required) continue;
       const found = [];
@@ -318,7 +323,7 @@ async function main() {
           // Typed a prefix at a time (fill, so each frame is exact), never submitted.
           // Frame 00 is the empty field, so the take starts before the first key.
           // `append` keeps what the page pre-filled (a draft card's Edit writes a prefix).
-          const field = page.locator(sel(step.type.into)).first();
+          const field = at(page, step.type.into).first();
           const base = step.type.append ? await field.inputValue() : '';
           const frames: string[] = [];
           for (const [i, value] of typedValues(base, step.type.text, step.type.frames ?? 24).entries()) {
