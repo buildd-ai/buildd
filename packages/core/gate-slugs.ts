@@ -111,7 +111,10 @@ export const GATE_SLUGS = {
    * ancestor PR that should have been closed when a retry opened a fresh PR was
    * left open (state unreadable, close failed). `warned`: the pr-reconcile
    * sweep found two open PRs in one retry lineage and closed the older — the
-   * create_pr door missed it.
+   * create_pr door missed it. From create_pr (`lib/retry-fresh-pr-gate.ts`):
+   * `rejected` — a retry asked for a fresh PR while its subject PR is open and
+   * can carry the work; `warned` — a fresh PR was let through, with
+   * `detail.freshPrReason` (`diverged` | `unverified`).
    */
   RETRY_PR_SUPERSESSION: 'retry_pr_supersession',
   /**

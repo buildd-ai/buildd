@@ -237,6 +237,8 @@ happen is recorded rather than logged, and the hourly pr-reconcile sweep retries
 |---|---|---|---|---|
 | 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
 | 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
+| 61e | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | rejected | create_pr refused a fresh PR from a retry whose subject PR is still open and whose head is an ancestor of the new branch (or vice versa): the retry must update the subject PR |
+| 61f | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | warned | a retry opened a fresh PR while its subject PR was open: `detail.freshPrReason` is `diverged` (GitHub compare) or `unverified` (unreadable, failed open) |
 
 ### Automatic supersession of closed PRs (`lib/pr-supersession-detect.ts`)
 
@@ -261,6 +263,12 @@ the same event record one cancellation.
 |---|---|---|---|---|
 | 61c | `supersession-store.ts:recordSupersession` | `supersession` | accepted | one row per task a rule cancelled; `detail.rule` is the rule id, `detail.event` the subject event, `surface` the door |
 | 61d | `supersession-store.ts:recordBulkRefusal` | `supersession` | rejected | one event matched more than the per-event cap: nothing cancelled, `detail.wouldCancel` holds the set, and a warning note is posted |
+
+The dispatch guard also runs the table before a fix or CI retry is created
+(`checkDispatch`) and against the inserted row (`guardDispatchedTask`).
+`open_retry_supersedes_duplicate` keeps one subject PR to one open retry: a
+newcomer is not filed, and of two racing inserts the newer cancels itself —
+recorded as row 61c with that rule id.
 
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 
