@@ -3241,6 +3241,55 @@ export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
 }
+/**
+ * Aggregate counts over the orchestration decision ledger
+ * (`orchestration_decisions`, `orchestration_manifest_predictions`) — the
+ * DB-free answer to "is this decision shadow collecting evidence?".
+ * Served by `GET /api/stats/coordination?metric=orchestrationDecisions`.
+ */
+export interface OrchestrationDecisionCounts {
+  total: number;
+  applied: number;
+  suggested: number;
+  fallback: number;
+  /** Rows whose task has an `orchestration_touch_labels` row (an outcome label). */
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  capability: string;
+  decisionId: string;
+  fingerprint: string;
+  candidatePolicyVersion: string;
+  experimentArm: string;
+  mode: string;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+export interface OrchestrationPredictionCounts {
+  total: number;
+  complete: number;
+  unknownScope: number;
+  allApplied: number;
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
+  decisionCapabilities: CoordinationDecisionCapability[];
+  decisions: OrchestrationDecisionCounts & {
+    firstAt: string | null;
+    lastAt: string | null;
+    byGroup: OrchestrationDecisionGroup[];
+    /** `day` is a UTC calendar date (YYYY-MM-DD). */
+    byDay: Array<OrchestrationDecisionCounts & { day: string; capability: string }>;
+    byReason: Array<{ capability: string; status: string; reason: string | null; total: number }>;
+  };
+  manifestPredictions: OrchestrationPredictionCounts & {
+    byDay: Array<OrchestrationPredictionCounts & { day: string }>;
+    byStopReason: Array<{ stopReason: string; total: number }>;
+  };
+  coverage: { note: string };
+}
 
 // ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
 // The readiness report is recomputed from the repo on every request and never
