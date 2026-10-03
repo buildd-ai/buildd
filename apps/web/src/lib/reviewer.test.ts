@@ -106,6 +106,8 @@ mock.module('@buildd/core/db/schema', () => ({
     subjectPrNumber: 'subjectPrNumber',
     subjectHeadSha: 'subjectHeadSha',
     parentTaskId: 'parentTaskId',
+    taskClass: 'taskClass',
+    reviewerRetryPrNumber: 'reviewerRetryPrNumber',
     id: 'id',
     createdAt: 'createdAt',
   },
@@ -170,6 +172,7 @@ import {
   renderSpecConformanceGuidance,
   resolvePriorVerdict,
   supersedeReviewerTaskOnMerge,
+  supersedeFixTaskOnApproval,
   REVIEWER_TASK_OUTPUT_SCHEMA,
 } from './reviewer';
 import { composeBodyWithLede } from '@buildd/core/pr-lede';
@@ -761,6 +764,98 @@ describe('supersedeReviewerTaskOnMerge', () => {
     expect(result.superseded).toBe(true);
     expect(insertedMissionNote).toBeUndefined();
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── supersedeFixTaskOnApproval (task d57ba617) ──────────────────────────────
+// An approve verdict must cancel any still-queued or still-running
+// `[builder · after review #N]` fix task dispatched off an earlier
+// changes-requested verdict — otherwise the stale fix can still push a commit
+// and force a re-review on an already-approved PR.
+
+describe('supersedeFixTaskOnApproval', () => {
+  it('cancels a PENDING fix task with no live worker', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = { id: 'fix-task-1', missionId: 'mission-1', workspaceId: 'ws-1', workers: [] };
+    taskUpdateReturning = [{ id: 'fix-task-1' }];
+
+    const result = await supersedeFixTaskOnApproval({
+      originalTaskId: 'task-1',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 3408,
+    });
+
+    expect(result).toEqual({ superseded: true, fixTaskId: 'fix-task-1' });
+    expect(workerUpdateCalls).toHaveLength(0);
+    expect(insertedMissionNote?.type).toBe('reviewer_superseded');
+    expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
+    expect(mockAppendPrActivity.mock.calls[0]?.[0]?.entry?.kind).toBe('fix_superseded_by_approval');
+    expect(releaseAndNotifyCalls).toEqual([['fix-task-1', 'abandoned']]);
+  });
+
+  it('interrupts the live worker when the fix task is RUNNING', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = {
+      id: 'fix-task-2',
+      missionId: 'mission-1',
+      workspaceId: 'ws-1',
+      workers: [{ id: 'worker-9', status: 'running' }],
+    };
+    taskUpdateReturning = [{ id: 'fix-task-2' }];
+
+    const result = await supersedeFixTaskOnApproval({
+      originalTaskId: 'task-2',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 3408,
+    });
+
+    expect(result.superseded).toBe(true);
+    expect(workerUpdateCalls).toHaveLength(1);
+    expect(workerUpdateCalls[0].set.status).toBe('failed');
+    expect(workerUpdateCalls[0].set.exitCause).toBe('condition_unmet');
+    expect(workerUpdateCalls[0].set.error).toContain('approved');
+
+    const abort = pusherCalls.find(c => c.event === 'worker:command');
+    expect(abort?.channel).toBe('private-worker-worker-9');
+    expect(abort?.data.action).toBe('abort');
+  });
+
+  it('is a no-op when no fix task is queued or running for the approved PR', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = null;
+
+    const result = await supersedeFixTaskOnApproval({
+      originalTaskId: 'task-3',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 3408,
+    });
+
+    expect(result).toEqual({ superseded: false, fixTaskId: null });
+    expect(insertedMissionNote).toBeUndefined();
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+    expect(releaseAndNotifyCalls).toHaveLength(0);
+  });
+
+  it('does not record a supersession when the cancel write loses its CAS race', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = { id: 'fix-task-4', missionId: 'mission-1', workspaceId: 'ws-1', workers: [] };
+    // The fix task's own worker completed concurrently — it already moved out
+    // of a cancellable status.
+    taskUpdateReturning = [];
+
+    const result = await supersedeFixTaskOnApproval({
+      originalTaskId: 'task-4',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 3408,
+    });
+
+    expect(result).toEqual({ superseded: false, fixTaskId: null });
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+    expect(releaseAndNotifyCalls).toHaveLength(0);
   });
 });
 

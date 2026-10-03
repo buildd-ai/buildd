@@ -502,11 +502,16 @@ const mockEnforceServerSideEscalation = mock((params: any) => ({
   verdict: params.verdict,
   overrideReason: null as string | null,
 }));
+// The cancellation logic itself is unit-tested in lib/reviewer.test.ts. Here
+// it is a mock so these tests can pin the WIRING: that an approve verdict
+// calls it with the right PR/task identity (task d57ba617).
+const mockSupersedeFixTaskOnApproval = mock(() => Promise.resolve({ superseded: false, fixTaskId: null }));
 mock.module('@/lib/reviewer', () => ({
   createReviewerTask: mock(() => Promise.resolve({ id: 'reviewer-task-1' })),
   preflightEscalationCheck: mock(() => ({ shouldEscalate: false })),
   isSchemaTouchingFile: mock(() => false),
   enforceServerSideEscalation: mockEnforceServerSideEscalation,
+  supersedeFixTaskOnApproval: mockSupersedeFixTaskOnApproval,
   REVIEWER_TASK_OUTPUT_SCHEMA: {},
 }));
 
@@ -7715,6 +7720,70 @@ describe('PATCH /api/workers/[id]', () => {
       await PATCH(makeReviewerPatchRequest('escalate'), { params: mockParams });
 
       expect(mockPostPrReview).not.toHaveBeenCalled();
+    });
+
+    // Task d57ba617: a stale fix task must not be left queued/running once a
+    // newer review approves — otherwise it can still push a commit and force
+    // a re-review on an already-approved PR.
+    it('approve: cancels any queued or running fix task for this PR', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockSupersedeFixTaskOnApproval.mockClear();
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockSupersedeFixTaskOnApproval).toHaveBeenCalledTimes(1);
+      expect(mockSupersedeFixTaskOnApproval.mock.calls[0][0]).toMatchObject({
+        originalTaskId: 'original-task-1',
+        prNumber: 42,
+      });
+    });
+
+    it('request-changes: does not try to cancel a fix task — nothing is dispatched yet', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      mockSupersedeFixTaskOnApproval.mockClear();
+
+      await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(mockSupersedeFixTaskOnApproval).not.toHaveBeenCalled();
+    });
+
+    // A newer review round can approve while an earlier round's
+    // request-changes verdict is still being processed (e.g. a forced
+    // concurrent re-review). The route must re-read the PR's newest review
+    // right before dispatch and skip a fix nobody needs.
+    it('request-changes: skips the fix dispatch when a newer review already approved', async () => {
+      setupReviewerTaskCompletion('request-changes');
+      // db.select(...) defaults (via selectAllColumns) to resolving the SAME
+      // reviewer task for every caller. findReviewTaskForPr's own select is
+      // identifiable by its 4-column { id, status, result, context }
+      // projection — only that one is overridden, to a DIFFERENT, newer task
+      // whose stored verdict is approve. Every other select call in this
+      // request (e.g. the worker's own task row) keeps the default behavior.
+      mockSelect.mockImplementation((projection?: Record<string, unknown>) => {
+        const keys = projection ? Object.keys(projection) : [];
+        const isFindReviewTaskForPr = keys.length === 4 && keys.includes('result') && keys.includes('context');
+        if (!isFindReviewTaskForPr) return selectAllColumns();
+        const chain: any = {
+          from: () => chain,
+          where: () => chain,
+          orderBy: () => chain,
+          limit: () => Promise.resolve([{
+            id: 'reviewer-task-2',
+            status: 'completed',
+            result: { structuredOutput: { verdict: 'approve' } },
+            context: { prNumber: 42 },
+          }]),
+        };
+        return chain;
+      });
+
+      try {
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      } finally {
+        mockSelect.mockImplementation(selectAllColumns);
+      }
     });
 
     it('approve: a re-review producing the same verdict does not fail the outcome even when the review was already posted (idempotent)', async () => {

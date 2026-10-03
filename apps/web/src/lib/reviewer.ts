@@ -1583,3 +1583,121 @@ export async function supersedeReviewerTaskOnMerge(
     return { superseded: false, reviewerTaskId: null };
   }
 }
+
+export interface SupersedeFixTaskOnApprovalParams {
+  originalTaskId: string;
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+}
+
+/**
+ * Cancel a still-queued or still-running review-fix (`[builder · after review
+ * #N]`) task once a terminal `approve` verdict lands for its PR. Without this,
+ * a fix dispatched off an earlier changes-requested verdict can still start
+ * and push a commit after the PR was already approved, forcing a stale
+ * re-review — see task d57ba617. Mirrors `supersedeReviewerTaskOnMerge`'s
+ * cancel-and-abort shape, scoped to the builder attempt task instead of the
+ * reviewer task.
+ *
+ * Best-effort: never throws. A failure here must not roll back the approve
+ * processing that triggered it.
+ */
+export async function supersedeFixTaskOnApproval(
+  params: SupersedeFixTaskOnApprovalParams,
+): Promise<{ superseded: boolean; fixTaskId: string | null }> {
+  const { originalTaskId, installationId, repoFullName, prNumber } = params;
+
+  try {
+    const fixTask = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.parentTaskId, originalTaskId),
+        eq(tasks.taskClass, 'attempt'),
+        eq(tasks.reviewerRetryPrNumber, prNumber),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      columns: { id: true, missionId: true, workspaceId: true },
+      orderBy: [desc(tasks.createdAt)],
+      with: {
+        workers: {
+          where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+          columns: { id: true, status: true },
+          limit: 1,
+        },
+      },
+    });
+
+    if (!fixTask) return { superseded: false, fixTaskId: null };
+
+    const liveWorker = (fixTask as any).workers?.[0];
+    if (liveWorker) {
+      // CAS-guarded — a fix task's worker completing at the same instant
+      // should win its own lease rather than being clobbered here.
+      await db
+        .update(workers)
+        .set({
+          status: 'failed',
+          error: 'Superseded — reviewer approved the PR before this fix was needed',
+          exitCause: 'condition_unmet',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(workers.id, liveWorker.id), eq(workers.status, liveWorker.status)));
+    }
+
+    const [cancelled] = await db
+      .update(tasks)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(
+        eq(tasks.id, fixTask.id),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ))
+      .returning({ id: tasks.id });
+
+    if (!cancelled) return { superseded: false, fixTaskId: null };
+
+    // Not a cancellation through PATCH /api/tasks/[id] — release path claims
+    // ourselves. Nothing landed from a cancelled fix, so 'abandoned' is
+    // always correct.
+    await releaseAndNotify(fixTask.id, 'abandoned');
+
+    const push = (send: () => Promise<unknown>) =>
+      Promise.resolve().then(send).catch((err) =>
+        console.warn(`[reviewer] supersede-on-approval push failed for fix task ${fixTask.id}:`, err));
+    await Promise.all([
+      push(() => triggerEvent(channels.workspace(fixTask.workspaceId), events.TASK_UPDATED, {
+        task: { id: fixTask.id, status: 'cancelled', workspaceId: fixTask.workspaceId, missionId: fixTask.missionId },
+      })),
+      liveWorker
+        ? push(() => triggerEvent(channels.worker(liveWorker.id), events.WORKER_COMMAND, {
+            action: 'abort', reason: 'pr_approved', timestamp: Date.now(),
+          }))
+        : Promise.resolve(),
+    ]);
+
+    if (fixTask.missionId) {
+      await db.insert(missionNotes).values({
+        missionId: fixTask.missionId,
+        taskId: originalTaskId,
+        authorType: 'system',
+        type: 'reviewer_superseded',
+        title: `PR #${prNumber}: queued fix cancelled — reviewer approved first`,
+        body: 'A fix dispatched from an earlier changes-requested verdict was cancelled because a newer review already approved this PR.',
+        status: 'open',
+      });
+    }
+
+    await appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber,
+      entry: { kind: 'fix_superseded_by_approval' },
+      workspaceId: fixTask.workspaceId,
+    }).catch(() => {});
+
+    return { superseded: true, fixTaskId: fixTask.id };
+  } catch (err) {
+    console.error(`[reviewer] supersedeFixTaskOnApproval failed for PR #${prNumber}:`, err);
+    return { superseded: false, fixTaskId: null };
+  }
+}
