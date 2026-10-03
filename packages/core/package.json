@@ -159,6 +159,7 @@
     "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
+    "./claim-planner": "./claim-planner.ts",
     "./github-installation-auth": "./github-installation-auth.ts",
     "./pr-scope-read": "./pr-scope-read.ts",
     "./task-pr-diffs": "./task-pr-diffs.ts",
