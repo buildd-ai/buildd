@@ -159,6 +159,8 @@
     "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
+    "./github-installation-auth": "./github-installation-auth.ts",
+    "./pr-scope-read": "./pr-scope-read.ts",
     "./path-claim": "./path-claim.ts",
     "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",

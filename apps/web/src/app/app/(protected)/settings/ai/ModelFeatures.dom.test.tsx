@@ -20,6 +20,7 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
+const { OPT_IN_CAPABILITIES } = await import('@buildd/core/inference-policy');
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelFeatures } = await import('./ModelFeatures');
@@ -65,8 +66,58 @@ describe('ModelFeatures', () => {
   it('has no chat kill switch and no enable step: chat is always on', async () => {
     await mount();
     expect(q('[data-testid="interactive-switch"]')).toBeNull();
+    expect(q('[data-testid="decision-chat"]')).toBeNull();
+    expect(host.textContent).not.toMatch(/interactive ai|turn (on|off) chat|turn chat (on|off)|off for the team/i);
+  });
+
+  it('lists every opt-in capability with its own named toggle, defaulting off', async () => {
+    await mount();
+    expect(host.querySelectorAll('[role="switch"]').length).toBe(OPT_IN_CAPABILITIES.length);
+    for (const capability of OPT_IN_CAPABILITIES) {
+      const toggle = q(`[data-testid="decision-${capability}"] [role="switch"]`)!;
+      expect(toggle).not.toBeNull();
+      expect(toggle.getAttribute('aria-checked')).toBe('false');
+      expect(toggle.getAttribute('aria-labelledby')).toBe(`decision-${capability}-label`);
+    }
+  });
+
+  it('keeps opt-in controls disabled when stored selections could not be loaded', async () => {
+    globalThis.fetch = mock(async () => new Response(JSON.stringify({ error: 'Unavailable' }), { status: 500 })) as unknown as typeof fetch;
+    await mount();
+    for (const toggle of host.querySelectorAll<HTMLButtonElement>('[role="switch"]')) {
+      expect(toggle.disabled).toBe(true);
+      await act(async () => { toggle.click(); });
+    }
+    expect(patches).toEqual([]);
+  });
+
+  it('preserves other opt-ins when toggling and stores null when the last is disabled', async () => {
+    team.enabledDecisionShadows = ['task_role_shadow'];
+    await mount();
+    const manifest = q('[data-testid="decision-orchestration_manifest"] [role="switch"]')!;
+    await act(async () => { manifest.click(); });
+    expect(patches[0]).toEqual({ enabledDecisionShadows: ['task_role_shadow', 'orchestration_manifest'] });
+    await act(async () => { manifest.click(); });
+    const role = q('[data-testid="decision-task_role_shadow"] [role="switch"]')!;
+    await act(async () => { role.click(); });
+    expect(patches[2]).toEqual({ enabledDecisionShadows: null });
+  });
+
+  it('rolls back a failed opt-in save and reports the error', async () => {
+    await mount();
+    globalThis.fetch = mock(async () => new Response(JSON.stringify({ error: 'Save failed' }), { status: 403 })) as unknown as typeof fetch;
+    const toggle = q('[data-testid="decision-orchestration_manifest"] [role="switch"]')!;
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(q('[role="alert"]')!.textContent).toBe('Save failed');
+  });
+
+  it('shows members loaded opt-in states without mutation controls', async () => {
+    team.enabledDecisionShadows = ['orchestration_manifest'];
+    await mount({ canManage: false });
+    expect(q('[data-testid="decision-orchestration_manifest"]')!.textContent).toContain('On');
+    expect(q('[data-testid="decision-orchestration_claim"]')!.textContent).toContain('Off');
     expect(host.querySelectorAll('[role="switch"]').length).toBe(0);
-    expect(host.textContent).not.toMatch(/interactive ai|turn (on|off) chat|turn chat (on|off)|off for the team|enable/i);
   });
 
   it('does not list the built-in decision calls, or features with no call site', async () => {
