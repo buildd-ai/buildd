@@ -3922,6 +3922,7 @@ export async function handleBuilddAction(
       if (params.url) artifactBody.url = params.url;
       if (params.metadata && typeof params.metadata === 'object') artifactBody.metadata = params.metadata;
       if (params.key) artifactBody.key = params.key;
+      if (ctx.taskId) artifactBody.taskId = ctx.taskId;
 
       // Support initiative-level, mission-level (no worker required), or worker artifacts
       let artifactData;

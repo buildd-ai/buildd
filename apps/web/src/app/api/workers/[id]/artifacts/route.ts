@@ -9,6 +9,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { appBaseUrl } from '@/lib/app-url';
+import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 
 
 // POST /api/workers/[id]/artifacts - Create (or upsert by key) an artifact for a worker
@@ -154,6 +155,16 @@ export async function POST(
         );
       }
 
+      // Notify if this artifact is meant for review and the task opted in.
+      // For updates, only notify if content or title actually changed.
+      if (worker.taskId && worker.workspaceId) {
+        const shouldNotify = await shouldNotifyOnArtifact(updated, worker.taskId);
+        const newContent = isSensitive ? null : (content || null);
+        if (shouldNotify && (existing.content !== newContent || existing.title !== title)) {
+          await notifyArtifactReady(updated, worker.taskId, worker.workspaceId);
+        }
+      }
+
       return NextResponse.json({
         artifact: { ...updated, shareUrl },
         upserted: true,
@@ -202,6 +213,14 @@ export async function POST(
       'worker:artifact',
       { workerId: id, taskId: worker.taskId }
     );
+  }
+
+  // Notify if this artifact is meant for review and the task opted in.
+  if (worker.taskId && worker.workspaceId) {
+    const shouldNotify = await shouldNotifyOnArtifact(artifact, worker.taskId);
+    if (shouldNotify) {
+      await notifyArtifactReady(artifact, worker.taskId, worker.workspaceId);
+    }
   }
 
   return NextResponse.json({
