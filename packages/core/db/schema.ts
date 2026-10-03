@@ -3640,6 +3640,7 @@ export const notificationPreferences = pgTable('notification_preferences', {
   taskFailed: boolean('task_failed').default(true).notNull(),
   credentialExpired: boolean('credential_expired').default(true).notNull(),
   connectorBlocked: boolean('connector_blocked').default(true).notNull(),
+  artifactReady: boolean('artifact_ready').default(false).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

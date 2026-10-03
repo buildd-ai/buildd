@@ -14,6 +14,8 @@ const mockArtifactsUpdate = mock(() => ({
   })),
 }));
 const mockTriggerEvent = mock(() => Promise.resolve());
+const mockShouldNotifyOnArtifact = mock(async () => false);
+const mockNotifyArtifactReady = mock(async () => {});
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -23,6 +25,11 @@ mock.module('@buildd/core/db', () => ({
     insert: () => mockArtifactsInsert(),
     update: () => mockArtifactsUpdate(),
   },
+}));
+
+mock.module('@/lib/artifact-notify', () => ({
+  shouldNotifyOnArtifact: mockShouldNotifyOnArtifact,
+  notifyArtifactReady: mockNotifyArtifactReady,
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -121,6 +128,8 @@ describe('upsertAutoArtifact', () => {
     mockArtifactsInsert.mockReset();
     mockArtifactsUpdate.mockReset();
     mockTriggerEvent.mockReset();
+    mockShouldNotifyOnArtifact.mockReset();
+    mockNotifyArtifactReady.mockReset();
 
     mockArtifactsFindFirst.mockResolvedValue(null);
     mockArtifactsInsert.mockReturnValue({
@@ -128,6 +137,7 @@ describe('upsertAutoArtifact', () => {
         returning: mock(() => [{ id: 'artifact-1', shareToken: 'generated-share-token' }]),
       })),
     });
+    mockShouldNotifyOnArtifact.mockResolvedValue(false);
   });
 
   it('creates new artifact when none exists for key', async () => {
@@ -262,5 +272,62 @@ describe('upsertAutoArtifact', () => {
 
     expect(mockArtifactsFindFirst).not.toHaveBeenCalled();
     expect(mockArtifactsInsert).not.toHaveBeenCalled();
+  });
+
+  it('does not notify when taskId is not provided', async () => {
+    await upsertAutoArtifact({
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      key: 'heartbeat-obj-1',
+      type: 'report',
+      title: 'Test',
+      content: 'Content',
+      metadata: {},
+    });
+
+    expect(mockShouldNotifyOnArtifact).not.toHaveBeenCalled();
+    expect(mockNotifyArtifactReady).not.toHaveBeenCalled();
+  });
+
+  it('does not notify when shouldNotifyOnArtifact returns false', async () => {
+    mockShouldNotifyOnArtifact.mockResolvedValue(false);
+
+    await upsertAutoArtifact({
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      key: 'heartbeat-obj-1',
+      type: 'report',
+      title: 'Test',
+      content: 'Content',
+      metadata: {},
+      taskId: 'task-1',
+    });
+
+    expect(mockShouldNotifyOnArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'artifact-1' }),
+      'task-1'
+    );
+    expect(mockNotifyArtifactReady).not.toHaveBeenCalled();
+  });
+
+  it('sends notification when shouldNotifyOnArtifact returns true', async () => {
+    mockShouldNotifyOnArtifact.mockResolvedValue(true);
+
+    await upsertAutoArtifact({
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      key: 'heartbeat-obj-1',
+      type: 'report',
+      title: 'Test Report',
+      content: 'Content',
+      metadata: {},
+      taskId: 'task-1',
+    });
+
+    expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
+    const [artifact, taskId, workspaceId] = mockNotifyArtifactReady.mock.calls[0] as any[];
+    expect(artifact.id).toBe('artifact-1');
+    expect(taskId).toBe('task-1');
+    expect(workspaceId).toBe('ws-1');
   });
 });

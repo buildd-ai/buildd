@@ -3760,6 +3760,7 @@ export async function PATCH(
                   ...(!isSensitive && structuredOutput && typeof structuredOutput === 'object' ? { structuredOutput } : {}),
                   ...(isHeartbeat && structuredOutput ? { heartbeatStatus: (structuredOutput as any)?.status } : {}),
                 },
+                taskId,
               });
             }
           }
