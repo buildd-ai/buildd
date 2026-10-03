@@ -17,7 +17,8 @@
  */
 import { and, desc, eq, gte, isNotNull, lt, ne, sql } from 'drizzle-orm';
 import { db } from './db/client';
-import { decisionRecords } from './db/schema';
+import { decisionChallengerRuns, decisionRecords } from './db/schema';
+import type { ChallengerRun } from '@builddai/ai-kit/decide';
 
 export interface DecisionLedgerInput {
   teamId: string;
@@ -43,6 +44,18 @@ export interface DecisionLedgerInput {
   latencyMs?: number | null;
   inputTokens?: number | null;
   costUsd?: number | null;
+  /** Decision-kind fields (decision-policy.ts). Omitted by call sites that predate kinds. */
+  policyVersion?: string | null;
+  provider?: string | null;
+  attemptCount?: number | null;
+  escalated?: boolean;
+  failureClass?: 'capability' | 'key' | 'provider' | null;
+  subjectType?: string | null;
+  subjectId?: string | null;
+  /** Only from experiment-randomizer.ts `assignExperimentArm`; the readout's causal lift reads nothing else. */
+  experimentId?: string | null;
+  experimentArm?: string | null;
+  propensity?: number | null;
 }
 
 /** Coerce every optional to an explicit null, so a test can assert on the full row. */
@@ -67,24 +80,90 @@ export function rowFromRecord(input: DecisionLedgerInput) {
     latencyMs: input.latencyMs ?? null,
     inputTokens: input.inputTokens ?? null,
     costUsd: input.costUsd ?? null,
+    policyVersion: input.policyVersion ?? null,
+    provider: input.provider ?? null,
+    attemptCount: input.attemptCount ?? null,
+    escalated: input.escalated ?? false,
+    failureClass: input.failureClass ?? null,
+    subjectType: input.subjectType ?? null,
+    subjectId: input.subjectId ?? null,
+    experimentId: input.experimentId ?? null,
+    experimentArm: input.experimentArm ?? null,
+    propensity: input.propensity ?? null,
     humanOverride: null as Record<string, unknown> | null,
     overriddenAt: null as Date | null,
     overriddenBy: null as string | null,
   };
 }
 
-export type InsertDecisionRow = (row: ReturnType<typeof rowFromRecord>) => Promise<void>;
+/** Insert one row; resolves to its id when the store reports one. */
+export type InsertDecisionRow = (row: ReturnType<typeof rowFromRecord>) => Promise<string | null | void>;
 
-async function dbInsertDecisionRow(row: ReturnType<typeof rowFromRecord>): Promise<void> {
-  await db.insert(decisionRecords).values(row);
+async function dbInsertDecisionRow(row: ReturnType<typeof rowFromRecord>): Promise<string | null> {
+  const [inserted] = await db.insert(decisionRecords).values(row).returning({ id: decisionRecords.id });
+  return inserted?.id ?? null;
 }
 
-/** Persist one decision-call attempt. Never throws; a failed insert costs a row, not the caller. */
-export async function recordDecision(input: DecisionLedgerInput, deps: { insert?: InsertDecisionRow } = {}): Promise<void> {
+/**
+ * Persist one decision-call attempt. Never throws; a failed insert costs a
+ * row, not the caller. Resolves to the row id (null on failure), which is what
+ * a challenger run or an outcome label attaches to.
+ */
+export async function recordDecision(input: DecisionLedgerInput, deps: { insert?: InsertDecisionRow } = {}): Promise<string | null> {
   try {
-    await (deps.insert ?? dbInsertDecisionRow)(rowFromRecord(input));
+    return (await (deps.insert ?? dbInsertDecisionRow)(rowFromRecord(input))) ?? null;
   } catch (err) {
     console.warn('[decision-ledger] insert failed (non-fatal):', (err as Error)?.message ?? err);
+    return null;
+  }
+}
+
+/** A challenger run (ai-kit `runChallenger`) against a recorded decision. */
+export interface ChallengerRunInput {
+  decisionRecordId: string;
+  teamId: string;
+  capability: string;
+  /** Stable id of the challenger config, e.g. `openrouter/acme/rich-1`. One row per (decision, key). */
+  challengerKey: string;
+  run: ChallengerRun;
+}
+
+export function challengerRowFromRun(input: ChallengerRunInput) {
+  const a = input.run.attempt;
+  return {
+    decisionRecordId: input.decisionRecordId,
+    teamId: input.teamId,
+    capability: input.capability,
+    challengerKey: input.challengerKey,
+    status: input.run.status,
+    skipReason: input.run.skipReason,
+    provider: a?.provider ?? null,
+    model: a?.model ?? null,
+    modelVersion: a?.modelVersion ?? null,
+    outcome: a?.outcome ?? null,
+    decision: a?.decision ?? null,
+    confidence: a?.confidence ?? null,
+    appliedAnswer: input.run.appliedDecision,
+    agrees: input.run.agrees,
+    failureKind: a?.failure?.kind ?? null,
+    latencyMs: a ? Math.round(a.latencyMs) : null,
+    costUsd: a?.usage.costUsd ?? null,
+  };
+}
+
+export type InsertChallengerRow = (row: ReturnType<typeof challengerRowFromRun>) => Promise<void>;
+
+async function dbInsertChallengerRow(row: ReturnType<typeof challengerRowFromRun>): Promise<void> {
+  await db.insert(decisionChallengerRuns).values(row)
+    .onConflictDoNothing({ target: [decisionChallengerRuns.decisionRecordId, decisionChallengerRuns.challengerKey] });
+}
+
+/** Persist a challenger run. Idempotent per (decision, challenger key). Never throws. */
+export async function recordChallengerRun(input: ChallengerRunInput, deps: { insert?: InsertChallengerRow } = {}): Promise<void> {
+  try {
+    await (deps.insert ?? dbInsertChallengerRow)(challengerRowFromRun(input));
+  } catch (err) {
+    console.warn('[decision-ledger] challenger insert failed (non-fatal):', (err as Error)?.message ?? err);
   }
 }
 

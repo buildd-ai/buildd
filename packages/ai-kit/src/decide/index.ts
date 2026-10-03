@@ -1508,3 +1508,4 @@ export async function runDecisionEval<T, Q extends DecisionQuestions>(params: Ru
 // ══ Decision kinds ════════════════════════════════════════════════════════════
 
 export * from './policy';
+export * from './challenger';

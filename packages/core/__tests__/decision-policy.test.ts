@@ -3,6 +3,7 @@ import { choice } from '@builddai/ai-kit/decide';
 import { defineBuilddDecisionKind, listBuilddDecisionKinds, isMeasuredForKind } from '../decision-kinds';
 import { resolveBuilddDecisionRuntime, runBuilddDecision, toDecisionLedgerInput, type BuilddDecisionDeps } from '../decision-policy';
 import type { DecisionLedgerInput } from '../decision-ledger';
+import { assignExperimentArm } from '../experiment-randomizer';
 
 /**
  * buildd's binding of the decision-kind contract: the team's inference policy
@@ -186,5 +187,146 @@ describe('runBuilddDecision', () => {
     const h = harness();
     await runBuilddDecision(kind, { features: feats() }, scope, { ...h.deps, record: false });
     expect(h.rows).toHaveLength(0);
+  });
+});
+
+describe('toDecisionLedgerInput: the fields the readout groups and counts by', () => {
+  it('stamps policy version, provider, attempts, escalation, subject', async () => {
+    const h = harness({ replies: [answer('skip', 0.5, 'typesafe/jev-1.13-20260917'), answer('run', 0.75, 'acme/rich-1', 0.003)] });
+    await runBuilddDecision(kind, { features: feats(), subjectRef: { type: 'task', id: 'task-1' } }, scope, h.deps);
+    expect(h.rows[0]).toMatchObject({
+      policyVersion: '2026-10-03.a', provider: 'openrouter', attemptCount: 2, escalated: true, failureClass: null,
+      subjectType: 'task', subjectId: 'task-1', experimentId: null, experimentArm: null, propensity: null,
+    });
+  });
+
+  it('classifies why nothing was applied: key (no route) vs provider (every attempt failed)', async () => {
+    const noKey = harness({ access: { ok: false, error: { kind: 'missing_key' } } });
+    await runBuilddDecision(kind, { features: feats() }, scope, noKey.deps);
+    expect(noKey.rows[0]).toMatchObject({ status: 'fallback', failureClass: 'key', attemptCount: 0, provider: null });
+
+    const failing = { ok: false, error: { kind: 'timeout', timeoutMs: 5 }, latencyMs: 5, attempts: 1 };
+    const down = harness({ replies: [failing, failing] });
+    await runBuilddDecision(kind, { features: feats() }, scope, down.deps);
+    expect(down.rows[0]).toMatchObject({ status: 'fallback', failureClass: 'provider' });
+
+    const rule = harness();
+    await runBuilddDecision(kind, { features: feats(0.5, true) }, scope, rule.deps);
+    expect(rule.rows[0]).toMatchObject({ failureClass: null, attemptCount: 0 });
+  });
+
+  it('carries an experiment assignment only when the caller drew one through the randomizer', async () => {
+    const h = harness();
+    const assignment = assignExperimentArm({ experimentId: 'exp-1', policyVersion: 'v1', controlArm: 'control', treatmentArm: 'treatment', unitId: 'task-1', fraction: 0.5 });
+    await runBuilddDecision(kind, { features: feats() }, { ...scope, experiment: { experimentId: 'exp-1', ...assignment } }, h.deps);
+    expect(h.rows[0]).toMatchObject({ experimentId: 'exp-1', experimentArm: assignment.arm, propensity: assignment.propensity });
+  });
+});
+
+describe('challengers: asked after the decision, never changing it', () => {
+  const challenged = defineBuilddDecisionKind({
+    kind: 'buildd.test_probe_challenged',
+    policyVersion: '2026-10-03.a',
+    featureSchemaVersion: 'v1',
+    decisions: ['run', 'skip'] as const,
+    parseFeatures: kind.parseFeatures,
+    override: kind.override,
+    questions: kind.questions,
+    state: kind.state,
+    interpret: kind.interpret,
+    minConfidence: 0.8,
+    fallback: kind.fallback,
+  }, {
+    capability: 'surface_audit_advice',
+    mode: 'live',
+    challenger: { endpoint: 'chat', model: 'acme/challenger-2', via: 'openrouter' },
+  });
+
+  function challengerHarness(opts: Parameters<typeof harness>[0] & { recordId?: string | null } = {}) {
+    const h = harness(opts);
+    const runs: any[] = [];
+    const jobs: Array<() => Promise<void>> = [];
+    h.deps.record = async row => { h.rows.push(row); return opts.recordId === undefined ? 'rec-1' : opts.recordId; };
+    h.deps.recordChallenger = async input => { runs.push(input); };
+    h.deps.defer = job => { jobs.push(job); };
+    return { ...h, runs, jobs, drain: async () => { for (const j of jobs.splice(0)) await j(); } };
+  }
+
+  it('returns the applied response before the challenger runs, and the challenger cannot alter it', async () => {
+    const h = challengerHarness({
+      rich: { apiKey: 'k', endpoint: { kind: 'chat', baseURL: 'https://openrouter.ai/api/v1', provider: 'openrouter' }, model: 'acme/challenger-2' },
+      replies: [answer('run', 0.9, 'typesafe/jev-1.13-20260917'), answer('skip', 0.97, 'acme/challenger-2', 0.004)],
+    });
+    const r = await runBuilddDecision(challenged, { features: feats(), subjectRef: { type: 'task', id: 'task-1' } }, scope, h.deps);
+    const snapshot = structuredClone(r);
+    expect(h.calls).toHaveLength(1);
+    expect(h.jobs).toHaveLength(1);
+    expect(h.runs).toHaveLength(0);
+
+    await h.drain();
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]).toMatchObject({ apiKey: 'k', model: 'acme/challenger-2' });
+    expect(r).toEqual(snapshot);
+    expect(r).toMatchObject({ decision: 'run', source: 'model' });
+    expect(h.rows).toHaveLength(1);
+    expect(h.runs).toHaveLength(1);
+    expect(h.runs[0]).toMatchObject({
+      decisionRecordId: 'rec-1', teamId: 'team-1', capability: 'buildd.test_probe_challenged', challengerKey: 'openrouter/chat/acme/challenger-2',
+      run: { status: 'attempted', agrees: false, appliedDecision: 'run', attempt: { role: 'challenger', applied: false, decision: 'skip' } },
+    });
+  });
+
+  it('records a skip with its reason when the challenger has no key', async () => {
+    const h = challengerHarness({ rich: { apiKey: null, model: 'acme/challenger-2' } });
+    await runBuilddDecision(challenged, { features: feats() }, scope, h.deps);
+    await h.drain();
+    expect(h.calls).toHaveLength(1);
+    expect(h.runs[0].run).toMatchObject({ status: 'skipped', skipReason: 'no_route' });
+  });
+
+  it('records a deterministic override as skipped, never asking', async () => {
+    const h = challengerHarness();
+    await runBuilddDecision(challenged, { features: feats(0.5, true) }, scope, h.deps);
+    await h.drain();
+    expect(h.calls).toHaveLength(0);
+    expect(h.runs[0].run).toMatchObject({ status: 'skipped', skipReason: 'deterministic_override' });
+  });
+
+  it('samples by subject through the experiment randomizer: fraction 0 records not_sampled', async () => {
+    const sampled = defineBuilddDecisionKind({ ...challenged, kind: 'buildd.test_probe_unsampled' } as any, {
+      capability: 'surface_audit_advice', mode: 'live',
+      challenger: { endpoint: 'chat', model: 'acme/challenger-2', via: 'openrouter', fraction: 0 },
+    });
+    const h = challengerHarness();
+    await runBuilddDecision(sampled, { features: feats(), subjectRef: { type: 'task', id: 'task-1' } }, scope, h.deps);
+    await h.drain();
+    expect(h.calls).toHaveLength(1);
+    expect(h.runs[0].run).toMatchObject({ status: 'skipped', skipReason: 'not_sampled' });
+  });
+
+  it('no ledger row means nothing to attach to: no challenger is scheduled', async () => {
+    const h = challengerHarness({ recordId: null });
+    await runBuilddDecision(challenged, { features: feats() }, scope, h.deps);
+    expect(h.jobs).toHaveLength(0);
+  });
+
+  it('a kind without a challenger schedules nothing', async () => {
+    const h = challengerHarness();
+    await runBuilddDecision(kind, { features: feats() }, scope, h.deps);
+    expect(h.jobs).toHaveLength(0);
+  });
+
+  it('a challenger that throws inside the job never surfaces', async () => {
+    const h = challengerHarness();
+    h.deps.resolveRoute = (async () => { throw new Error('lookup down'); }) as any;
+    await runBuilddDecision(challenged, { features: feats() }, scope, h.deps);
+    await expect(h.drain()).resolves.toBeUndefined();
+    expect(h.runs[0].run).toMatchObject({ status: 'skipped', skipReason: 'no_route' });
+  });
+
+  it('refuses a malformed challenger binding at definition time', () => {
+    expect(() => defineBuilddDecisionKind({ ...challenged, kind: 'buildd.bad_challenger' } as any, {
+      capability: 'surface_audit_advice', mode: 'live', challenger: { endpoint: 'chat', model: 'acme/x', via: 'openrouter', fraction: 2 },
+    })).toThrow(/challenger/);
   });
 });
