@@ -166,6 +166,7 @@
     "./visual-qa-page-source": "./visual-qa-page-source.ts",
     "./visual-qa-capture-ref": "./visual-qa-capture-ref.ts",
     "./visual-review-text": "./visual-review-text.ts",
+    "./visual-fix-label": "./visual-fix-label.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",
     "./friction-manifest": "./friction-manifest.ts",

@@ -40,6 +40,7 @@ import {
   type VisualReviewModel,
   type VisualReviewRelation,
 } from '@buildd/shared';
+import { findingIsStillThere } from '@buildd/core/visual-fix-label';
 import Dialog from '@/components/ui/Dialog';
 import { Kbd } from '@/components/KeyHints';
 import { taskPageHref } from '@/lib/mission-task-href';
@@ -766,7 +767,7 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
         <div data-testid="deck-fix" className="order-3 flex flex-col gap-1 border-2 border-border-default bg-surface-2 px-3 py-2.5">
           <p className="flex items-center gap-2">
             <span className="section-label">{fix.origin === 'human' ? 'Your fix' : 'Fix task'}</span>
-            <FixStatus fix={fix} />
+            <FixStatus fix={fix} stillPresent={entry.agentVerdict === 'issue' && findingIsStillThere(entry.finding)} />
           </p>
           <a href={fixTaskHref(fix.id)} className="text-[14px] leading-[1.4] text-text-primary underline decoration-border-strong underline-offset-2 hover:text-accent-text">
             {fixTitleText(fix.title, cell.route)}

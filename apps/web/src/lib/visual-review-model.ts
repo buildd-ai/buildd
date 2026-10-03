@@ -66,6 +66,8 @@ export interface VisualReviewWorkerInput {
   prUrl?: string | null;
   prNumber?: number | null;
   mergedAt?: string | Date | null;
+  /** `workers.prBaseRef`: which branch a merged PR landed on (trunk vs a mission integration branch). */
+  prBaseRef?: string | null;
   /** `workers.error`: an audit's `why` when its task has no summary. */
   error?: string | null;
 }
@@ -112,6 +114,15 @@ export interface BuildVisualReviewInput {
    * correct-ref sibling, or else a capture gap. Absent: no shot is judged.
    */
   captureRef?: string | null;
+  /**
+   * The mission's own integration branch (`missionIntegrationBase`), or null when
+   * it is not using one. Classifies a merged fix PR's base as trunk vs mission
+   * branch (`VisualReviewFixTask.mergedInto`): under this strategy a fix task's
+   * PR bases on the integration branch, not trunk, so an unknown `prBaseRef` is
+   * read as mission-branch here too, not trunk — the direction that undersells
+   * "shipped", never oversells it.
+   */
+  missionIntegrationBranch?: string | null;
   now: number;
 }
 
@@ -230,17 +241,28 @@ function auditView(t: VisualReviewTaskInput): VisualReviewAuditTask {
   };
 }
 
-function fixTaskView(t: VisualReviewTaskInput, origin: VisualReviewFixTask['origin']): VisualReviewFixTask {
+function fixTaskView(
+  t: VisualReviewTaskInput,
+  origin: VisualReviewFixTask['origin'],
+  missionIntegrationBranch: string | null,
+): VisualReviewFixTask {
   // The newest worker that opened a PR, else the newest worker.
   const workers = [...(t.workers ?? [])].sort((a, b) => ms(b.startedAt) - ms(a.startedAt));
   const w = workers.find(x => x.prUrl) ?? workers[0];
+  const mergedAt = iso(w?.mergedAt ?? null);
+  const mergedInto: VisualReviewFixTask['mergedInto'] = !mergedAt
+    ? null
+    : !missionIntegrationBranch
+      ? 'trunk'
+      : (w?.prBaseRef && w.prBaseRef !== missionIntegrationBranch ? 'trunk' : 'mission_branch');
   return {
     id: t.id,
     title: t.title ?? '',
     status: t.status,
     prUrl: w?.prUrl ?? null,
     prNumber: w?.prNumber ?? null,
-    mergedAt: iso(w?.mergedAt ?? null),
+    mergedAt,
+    mergedInto,
     origin,
   };
 }
@@ -338,6 +360,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     const prev = activeReview.get(r.artifactId);
     if (!prev || Date.parse(r.createdAt) > Date.parse(prev.createdAt)) activeReview.set(r.artifactId, r);
   }
+  const missionIntegrationBranch = input.missionIntegrationBranch ?? null;
   const fixViews = new Map<string, VisualReviewFixTask>();
   const fixFor = (id: string | null | undefined, origin: VisualReviewFixTask['origin']): VisualReviewFixTask | null => {
     if (!id) return null;
@@ -345,7 +368,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     if (existing) return existing;
     const t = byId.get(id);
     if (!t) return null;
-    const view = fixTaskView(t, origin);
+    const view = fixTaskView(t, origin, missionIntegrationBranch);
     fixViews.set(id, view);
     return view;
   };

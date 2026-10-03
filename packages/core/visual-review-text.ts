@@ -20,6 +20,7 @@
  * QA" over a manual validation report.
  */
 import type { VisualReviewAuditTask, VisualReviewCell, VisualReviewModel, VisualReviewNeedsYou } from '@buildd/shared';
+import { findingIsStillThere, fixStatusLabel } from './visual-fix-label';
 
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 
@@ -233,10 +234,6 @@ function evidenceLines(ev: ReturnType<typeof otherVisualEvidence>, o: FormatVisu
 const VIEWPORT_WORD = { mobile: 'phone', desktop: 'desktop' } as const;
 const DECISION_WORD = { looks_right: 'looks right', needs_fix: 'needs fix' } as const;
 const RELATION_WORD = { agree: 'agreed', dispute: 'disagreed', waive: 'waived' } as const;
-const STATUS_WORD: Record<string, string> = {
-  pending: 'queued', assigned: 'starting', in_progress: 'in progress', waiting_input: 'waiting on you',
-  completed: 'done', failed: 'failed', cancelled: 'cancelled',
-};
 
 /** Unsure first, then issues, then ok; a route keeps its phone and desktop rows together. */
 const RANK: Record<string, number> = { unsure: 0, issue: 1, ok: 2 };
@@ -262,8 +259,10 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
   ];
   const fix = e.fixTask;
   if (fix) {
-    const pr = fix.prNumber ? `, PR #${fix.prNumber}${fix.mergedAt ? ' merged' : ''}` : '';
-    bits.push(`fix: ${fix.mergedAt ? 'merged' : STATUS_WORD[fix.status] ?? fix.status}${pr} (task ${mcp ? fix.id : fix.id.slice(0, 8)})`);
+    const stillPresent = e.agentVerdict === 'issue' && findingIsStillThere(e.finding);
+    const { text: fixText } = fixStatusLabel(fix, { stillPresent });
+    const pr = fix.prNumber ? `, PR #${fix.prNumber}` : '';
+    bits.push(`fix: ${fixText}${pr} (task ${mcp ? fix.id : fix.id.slice(0, 8)})`);
   }
   if (mcp) {
     const base = (o.baseUrl ?? '').replace(/\/+$/, '');

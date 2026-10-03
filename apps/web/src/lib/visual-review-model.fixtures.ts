@@ -101,9 +101,15 @@ const ROUND_2: VisualReviewShotRow[] = [
   shotRow('fixture-shot-08', 'fixture-w2', 'fixture-audit-2', 100, '/app/tasks/:id', 'mobile', 'ok', 'Resolved: the title now truncates with an ellipsis.'),
 ];
 
-/** The deck scenario's second issue: a round-1 finding whose fix is still open. */
+/**
+ * The deck scenario's extra issues: a round-1 finding whose fix is still
+ * open, and one whose fix finished without ever opening a PR (the route
+ * sorts after every other issue cell here, so it never becomes the "first
+ * issue" an existing test picks by `m.cells.find`).
+ */
 const DECK_EXTRA: VisualReviewShotRow[] = [
   shotRow('fixture-shot-09', 'fixture-w1', 'fixture-audit-1', 9, '/app/settings', 'desktop', 'issue', 'The save bar covers the last settings row at 1280px.', 'fixture-fix-2'),
+  shotRow('fixture-shot-10', 'fixture-w1', 'fixture-audit-1', 10, '/app/workspaces/:id', 'desktop', 'issue', 'The repo card overflows at 1280px.', 'fixture-fix-3'),
 ];
 
 const openFixTask = (): VisualReviewTaskInput => ({
@@ -113,6 +119,16 @@ const openFixTask = (): VisualReviewTaskInput => ({
   createdAt: at(20),
   updatedAt: at(120),
   workers: [{ id: 'fixture-wf2', status: 'running', startedAt: at(118), prUrl: 'https://example.test/pulls/2', prNumber: 2, mergedAt: null }],
+});
+
+/** Finished without ever opening a PR: `completed`, no PR, nothing merged. */
+const completedNoPrFixTask = (): VisualReviewTaskInput => ({
+  id: 'fixture-fix-3',
+  title: '[surface fix] /app/workspaces/:id: The repo card overflows at 1280px.',
+  status: 'completed',
+  createdAt: at(20),
+  updatedAt: at(130),
+  workers: [{ id: 'fixture-wf3', status: 'completed', startedAt: at(22) }],
 });
 
 const fixTask = (status: string, merged = false): VisualReviewTaskInput => ({
@@ -195,6 +211,7 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
             auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-fix-1'] }),
             fixTask('completed', true),
             openFixTask(),
+            completedNoPrFixTask(),
           ],
           reviews: [review('fixture-shot-01', '/app/tasks', 'mobile', 'ok', { relation: 'agree', createdAt: at(140) })],
         };

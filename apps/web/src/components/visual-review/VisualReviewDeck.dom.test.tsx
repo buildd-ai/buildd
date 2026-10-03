@@ -106,7 +106,7 @@ describe('verdict-aware buttons', () => {
     const fix = qa('deck-fix').find(f => f.closest('[data-viewport="desktop"]'))!;
     expect(fix.textContent).toContain('The save bar covers the last settings row');
     expect(fix.textContent).toContain('PR #2');
-    expect(fix.textContent?.toLowerCase()).toContain('in progress');
+    expect(fix.textContent?.toLowerCase()).toContain('pr open, not merged');
   });
 });
 

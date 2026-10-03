@@ -12,6 +12,7 @@
  */
 import { useState } from 'react';
 import type { VisualReviewCell, VisualReviewCellEntry, VisualReviewFixTask } from '@buildd/shared';
+import { findingIsStillThere, fixStatusLabel } from '@buildd/core/visual-fix-label';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL } from './ShotImage';
 import { BTN_BASE, BTN_SECONDARY } from './review-ui';
 
@@ -27,13 +28,18 @@ export function fixTitleText(title: string, route: string): string {
   return title.startsWith(prefix) ? title.slice(prefix.length).trim() : title.replace(/^\[surface fix\]\s*/i, '');
 }
 
-export function FixStatus({ fix }: { fix: VisualReviewFixTask }) {
-  const merged = !!fix.mergedAt;
-  const status = merged ? 'merged' : fix.status.replace(/_/g, ' ');
-  const done = merged || fix.status === 'completed';
+/**
+ * Reports what landed, not the task's own status: a `completed` fix with no
+ * merged PR, or a PR merged only to the mission's own branch, never reads
+ * green. `stillPresent` (the shot it sits under is a "Still there" re-check)
+ * outranks every other state.
+ */
+export function FixStatus({ fix, stillPresent }: { fix: VisualReviewFixTask; stillPresent?: boolean }) {
+  const { text, tone } = fixStatusLabel(fix, { stillPresent });
+  const cls = tone === 'success' ? 'text-status-success' : tone === 'muted' ? 'text-text-muted' : 'text-status-warning';
   return (
-    <span className={`font-mono text-[11px] uppercase tracking-[1px] ${done ? 'text-status-success' : fix.status === 'cancelled' ? 'text-text-muted' : 'text-status-warning'}`}>
-      {status}
+    <span className={`font-mono text-[11px] uppercase tracking-[1px] ${cls}`}>
+      {text}
     </span>
   );
 }
@@ -43,6 +49,15 @@ function fixBetween(cell: VisualReviewCell, before: VisualReviewCellEntry): Visu
   if (before.fixTask) return before.fixTask;
   for (const h of cell.history) if (h.round >= before.round && h.round < cell.current.round && h.fixTask) return h.fixTask;
   return null;
+}
+
+/**
+ * Was `entry`'s shot taken before `fix` merged? A timestamp proxy — the model
+ * has no per-shot commit SHA yet (follow-up), but a shot uploaded before the
+ * fix's PR merged cannot show the fix's effect regardless.
+ */
+function capturedBeforeFix(entry: VisualReviewCellEntry, fix: VisualReviewFixTask): boolean {
+  return !!fix.mergedAt && Date.parse(entry.shot.createdAt) < Date.parse(fix.mergedAt);
 }
 
 function Frame({ entry, label, eager }: { entry: VisualReviewCellEntry; label: string; eager?: boolean }) {
@@ -63,6 +78,7 @@ function Frame({ entry, label, eager }: { entry: VisualReviewCellEntry; label: s
 
 function FixStrip({ cell, before, fixTaskHref }: { cell: VisualReviewCell; before: VisualReviewCellEntry; fixTaskHref?: (id: string) => string }) {
   const fix = fixBetween(cell, before);
+  const stillPresent = cell.current.agentVerdict === 'issue' && findingIsStillThere(cell.current.finding);
   return (
     <div data-testid="compare-fix" className="flex min-w-0 flex-col gap-1.5 border-2 border-border-default bg-surface-2 p-3">
       <p className="section-label">Round {before.round} to {cell.current.round}</p>
@@ -72,13 +88,16 @@ function FixStrip({ cell, before, fixTaskHref }: { cell: VisualReviewCell; befor
             {fixTaskHref ? <a href={fixTaskHref(fix.id)} className="underline decoration-border-strong underline-offset-2 hover:text-accent-text">{fixTitleText(fix.title, cell.route)}</a> : fixTitleText(fix.title, cell.route)}
           </p>
           <p className="flex flex-wrap items-center gap-2">
-            <FixStatus fix={fix} />
+            <FixStatus fix={fix} stillPresent={stillPresent} />
             {fix.prUrl && (
               <a href={fix.prUrl} target="_blank" rel="noreferrer" className="font-mono text-[12px] text-accent-text underline underline-offset-2">
                 PR #{fix.prNumber ?? ''}
               </a>
             )}
           </p>
+          {capturedBeforeFix(cell.current, fix) && (
+            <p data-testid="compare-pre-fix" className="font-mono text-[11px] uppercase tracking-[1px] text-text-muted">captured before the fix</p>
+          )}
         </>
       ) : (
         <p className="text-[13px] text-text-secondary">Re-shot with no linked fix.</p>
