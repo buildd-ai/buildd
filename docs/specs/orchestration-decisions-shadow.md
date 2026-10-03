@@ -102,6 +102,17 @@ record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md`
   `eligible_for_gated` verdict. With too few labelled rows in any of train,
   held-out or the later window the verdict is `insufficient_n` and the
   threshold is null. A held claim decision is censored, never a safe start.
+- Creation-manifest candidates are tree-pinned when the server can read the
+  repository tree at the task's base commit (`getServerTreeCandidateAdapter`,
+  cached per commit, ranked by the workspace code corpus): every candidate
+  exists at that commit and coverage is `tree_pinned`. Unknown scope then
+  means candidate truncation or a path the task text names that the tree
+  lacks. A failed tree or corpus read degrades to `neighbour_diff_only`.
+- Each manifest group's verdict carries two eligibilities. Lease eligibility
+  is the gated-application verdict above and still refuses unknown scope.
+  Ordering eligibility grades the predicted set on whole-set precision/recall
+  against the regex and neighbour-union baselines, reporting unknown scope as
+  a covariate; it applies nothing.
 
 **Acceptance criteria**:
 
