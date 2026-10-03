@@ -27,6 +27,12 @@
  *    `tree_pinned`; a tree or corpus failure degrades to `neighbour_diff_only`
  *    with candidate omissions unknown scope.
  *
+ * ── Set confidence and size (jev-scheduling §3) ──────────────────────────
+ *  - `setConfidence`: the product of the pick confidences
+ *    (`setConfidenceOf`), a starting point the readout recalibrates.
+ *  - `expectedSize`: median files and session minutes of the same
+ *    neighbours (`./task-size-estimate.ts`); null with fewer than k.
+ *
  * One overall deadline (5s default) covers access, retrieval and every pick.
  */
 import { and, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm';
@@ -47,6 +53,7 @@ import {
   type OrchestrationDecisionRow,
 } from './orchestration-decision';
 import { loadTaskPrDiffs, type LoadTaskPrDiffs } from './task-pr-diffs';
+import { estimateTaskSize, type EstimateTaskSizeArgs, type ExpectedTaskSize } from './task-size-estimate';
 import type { DecisionAccess } from './decision-client';
 import { manifestPickIdentity, resolveApplyingFraction, type PromotionEvidence } from './orchestration-promotion';
 import {
@@ -62,6 +69,7 @@ import {
   runRepeatedManifestChoice,
   type CbmCandidateResult,
   type ManifestCandidateSet,
+  type ManifestPick,
   type NeighbourEvidence,
   type RepeatedChoiceResult,
   type TreeCandidateResult,
@@ -379,6 +387,8 @@ export interface CreationManifestDeps {
   cbm?: CbmCandidateAdapter;
   /** Default: `getServerTreeCandidateAdapter()`. */
   tree?: TreeCandidateAdapter;
+  /** Expected size from the same neighbours (jev-scheduling §3). Default: `estimateTaskSize`. */
+  estimateSize?: (args: EstimateTaskSizeArgs & { signal: AbortSignal }) => Promise<ExpectedTaskSize | null>;
   now?: () => number;
   deadlineMs?: number;
   /** The REQUESTED applying fraction (default `MANIFEST_APPLYING_FRACTION`); the promotion guard grants it. */
@@ -400,6 +410,21 @@ const isConcreteDeclaration = (m: readonly string[] | null | undefined) =>
 const RETRIEVAL_DEADLINE = Symbol('retrieval_deadline');
 
 const EMPTY_UNAVAILABLE: CbmCandidateResult = { status: 'unavailable', reason: 'not consulted' };
+
+/**
+ * How sure the model is of the whole selected set (jev-scheduling §3): the
+ * product of its pick confidences, the DONE pick included. A starting point
+ * the readout recalibrates. Null with no picks, or when any pick has none.
+ */
+export function setConfidenceOf(picks: readonly Pick<ManifestPick, 'confidence'>[]): number | null {
+  if (picks.length === 0) return null;
+  let p = 1;
+  for (const k of picks) {
+    if (typeof k.confidence !== 'number' || !Number.isFinite(k.confidence)) return null;
+    p *= k.confidence;
+  }
+  return p;
+}
 
 export async function predictCreationManifest(
   input: CreationManifestInput,
@@ -424,7 +449,13 @@ export async function predictCreationManifest(
     }
   };
 
-  const rowOf = (c: ManifestCandidateSet, r: RepeatedChoiceResult | null, stop: string, neighbourUnion: string[]): ManifestPredictionRow => ({
+  const rowOf = (
+    c: ManifestCandidateSet,
+    r: RepeatedChoiceResult | null,
+    stop: string,
+    neighbourUnion: string[],
+    expectedSize: ExpectedTaskSize | null = null,
+  ): ManifestPredictionRow => ({
     teamId: input.teamId,
     workspaceId: input.workspaceId,
     taskId: input.taskId,
@@ -448,6 +479,8 @@ export async function predictCreationManifest(
     pickCap,
     regexPaths,
     neighbourUnionPaths: neighbourUnion,
+    setConfidence: setConfidenceOf(r?.picks ?? []),
+    expectedSize,
     latencyMs: Math.max(0, Math.round(now() - started)),
   });
 
@@ -479,15 +512,28 @@ export async function predictCreationManifest(
       const loadNeighbours = deps.loadNeighbours ?? (async (a) => loadNeighbourEvidence(await defaultStore(), a));
       const cbm = deps.cbm ?? getServerCbmCandidateAdapter();
       const tree = deps.tree ?? getServerTreeCandidateAdapter();
-      const [neighbours, cbmResult, treeResult] = await Promise.all([
+      const estimateSize = deps.estimateSize ?? ((a) => estimateTaskSize(a));
+      const [[neighbours, expectedSize], cbmResult, treeResult] = await Promise.all([
         loadNeighbours({ workspaceId: input.workspaceId, taskId: input.taskId, seedText, cutoff: input.createdAt, signal: controller.signal })
-          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; }),
+          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; })
+          // The size reads the same neighbours: no second retrieval.
+          .then(async (found): Promise<[NeighbourEvidence[], ExpectedTaskSize | null]> => [
+            found,
+            await estimateSize({
+              workspaceId: input.workspaceId,
+              taskId: input.taskId,
+              seedText,
+              cutoff: input.createdAt,
+              neighbourTaskIds: found.map(n => n.taskId),
+              signal: controller.signal,
+            }).catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; }),
+          ]),
         cbm.lookup({ workspaceId: input.workspaceId, revision: input.baseRef ?? null, seedText, limit: MANIFEST_CBM_CANDIDATE_LIMIT, signal: controller.signal })
           .catch((err): CbmCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),
         tree.lookup({ workspaceId: input.workspaceId, baseRef: input.baseRef ?? null, seedText, limit: MANIFEST_TREE_RANKED_LIMIT, signal: controller.signal })
           .catch((err): TreeCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),
       ]);
-      return { neighbours, cbmResult, treeResult };
+      return { neighbours, expectedSize, cbmResult, treeResult };
     })();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const raced = await Promise.race([
@@ -502,7 +548,7 @@ export async function predictCreationManifest(
       return { row };
     }
 
-    const { neighbours, cbmResult, treeResult } = raced;
+    const { neighbours, expectedSize, cbmResult, treeResult } = raced;
     const candidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours, cbm: cbmResult, tree: treeResult, namedPaths: regexPaths });
     // Same-task neighbour-union baseline over the same leakage-filtered neighbours.
     const pastNeighbours = neighbours
@@ -570,7 +616,7 @@ export async function predictCreationManifest(
       }),
     });
 
-    const row = rowOf(candidates, result, result.stop, neighbourUnion);
+    const row = rowOf(candidates, result, result.stop, neighbourUnion, expectedSize);
     await persist(row);
     return { row };
   } catch (err) {

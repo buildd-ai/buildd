@@ -2,6 +2,7 @@ import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
+import { after } from 'next/server';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
@@ -12,6 +13,7 @@ import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
 import { dispatchPlanChildTask } from './task-dispatch';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
+import { scheduleCreationManifestShadow } from './task-manifest-prediction';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -170,6 +172,8 @@ export async function approvePlan(
         columns: {
           id: true, name: true, repo: true, gitConfig: true, webhookConfig: true,
           githubInstallationId: true, githubRepoId: true,
+          // The creation-manifest shadow's opt-in is per team.
+          teamId: true,
         },
       })
     : null;
@@ -406,6 +410,11 @@ export async function approvePlan(
         detail: { shape: manifestShape(declared), planningTaskId },
       });
     }
+
+    // The creation-manifest shadow (lib/task-manifest-prediction.ts): which
+    // files a missing-scope step would declare. After the response, record
+    // only; the hook decides eligibility and never throws.
+    scheduleCreationManifestShadow(created, { teamId: workspace?.teamId ?? null }, after);
 
     refToId[step.ref] = created.id;
     refToTitle[step.ref] = step.title;
