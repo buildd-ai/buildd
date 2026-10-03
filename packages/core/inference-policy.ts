@@ -37,6 +37,7 @@ export type InferenceCapability =
   | 'orchestration_manifest'
   | 'orchestration_claim'
   | 'mission_strand_choice'
+  | 'mission_goal_quality'
   | 'cbm_search_injection'
   | 'endpoint_model_match'
   | 'question_gate'
@@ -147,6 +148,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Stranded mission shadow',
     description: 'A decision model says whether a stranded local mission should continue on a runner or wait for your session. Logged only; you always choose.',
     costHint: '~$0.00003 per stranded mission, cached',
+  },
+  // Goal-criteria quality (apps/web/src/lib/goal-criteria-quality-decision.ts,
+  // docs/specs/mission-goal-criteria-quality.md). Shadow first: logged and
+  // recorded as an advisory gate row only; it never blocks or rewrites a goal.
+  mission_goal_quality: {
+    id: 'mission_goal_quality',
+    kind: 'opt_in',
+    label: 'Goal quality shadow',
+    description: 'A decision model says whether each new goal criterion states an outcome a user would notice and can be checked. Logged only; never blocks or changes your goal.',
+    costHint: '~$0.0001 per goal edit, cached',
   },
   // CBM search injection (docs/design/cbm-search-injection.md). Live: the
   // decision only picks between two factual lists the runner already

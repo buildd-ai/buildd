@@ -4524,7 +4524,7 @@ export const memories = pgTable('memories', {
   state: text('state').notNull().default('active').$type<'candidate' | 'active' | 'expired' | 'invalidated'>(),
   // Provenance: which episode proposed it. source_id is the task id for
   // learn / failed_task, the review_feedback row id for review.
-  sourceKind: text('source_kind').$type<'learn' | 'failed_task' | 'review' | 'chat' | 'digest' | 'dashboard'>(),
+  sourceKind: text('source_kind').$type<'learn' | 'failed_task' | 'review' | 'chat' | 'digest' | 'dashboard' | 'mission_completion'>(),
   sourceId: text('source_id'),
   // Derived from content outside the team (external PR comments, issue text).
   // Hard floor: never auto-promoted.

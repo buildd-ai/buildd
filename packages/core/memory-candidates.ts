@@ -38,7 +38,7 @@
 export const MEMORY_STATES = ['candidate', 'active', 'expired', 'invalidated'] as const;
 export type MemoryState = typeof MEMORY_STATES[number];
 
-export const MEMORY_SOURCE_KINDS = ['learn', 'failed_task', 'review', 'chat', 'digest', 'dashboard'] as const;
+export const MEMORY_SOURCE_KINDS = ['learn', 'failed_task', 'review', 'chat', 'digest', 'dashboard', 'mission_completion'] as const;
 export type MemorySourceKind = typeof MEMORY_SOURCE_KINDS[number];
 
 /** The workspace flag's key in `workspaces.git_config`. */
