@@ -161,6 +161,39 @@ describe('formatVisualReview for MCP', () => {
   });
 });
 
+describe('formatVisualReview: wrong-ref shots (visual-qa-auditor.md, "Page source")', () => {
+  const SHOT3 = 'bbbbbbbb-0000-4000-8000-000000000003';
+  const SHOT4 = 'bbbbbbbb-0000-4000-8000-000000000004';
+  const MB = 'mission/example-abcd1234';
+  const m = model({
+    superseded: [{ shotId: SHOT3, route: '/app/example', viewport: 'mobile', ref: 'dev', expectedRef: MB, supersededBy: SHOT1 }],
+    captureGaps: [{ shotId: SHOT4, route: '/app/other', viewport: 'desktop', ref: 'dev', expectedRef: MB, auditTaskId: A2, round: 2 }],
+  });
+
+  it('lists capture gaps as owed by the auditor, never as a human question', () => {
+    const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: 'https://example.test' });
+    expect(text).toContain(`Capture gaps (1): shots from the wrong branch the auditor still has to recapture from ${MB}; not shown for review:`);
+    expect(text).toContain(`  - /app/other desktop: captured from dev (round 2, shot https://example.test/app/artifacts/${SHOT4})`);
+  });
+
+  it('lists superseded wrong-ref shots, kept for audit, with what replaced them', () => {
+    const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: 'https://example.test' });
+    expect(text).toContain(`Superseded (1): shots from the wrong branch, replaced by a shot from ${MB}; kept for audit, not shown for review:`);
+    expect(text).toContain(`  - /app/example phone: captured from dev, replaced by https://example.test/app/artifacts/${SHOT1}`);
+  });
+
+  it('the reviewed phase copy counts capture gaps as the auditor\'s, not yours', () => {
+    const copy = describeVisualPhase(model({ phase: 'reviewed', needsYou: null, summary: { ...model().summary, awaitingHuman: 0, captureGaps: 1 } }));
+    expect(copy.detail).toContain('1 capture gap for the auditor');
+  });
+
+  it('says nothing about either when there are none', () => {
+    const text = formatVisualReview(model(), 'Example', { audience: 'mcp' });
+    expect(text).not.toContain('Capture gaps');
+    expect(text).not.toContain('Superseded');
+  });
+});
+
 describe('formatVisualReview for chat', () => {
   it('links each screenshot to its artifact page (never the image), and keeps the "not seen" line', () => {
     const text = formatVisualReview(model(), 'Example');

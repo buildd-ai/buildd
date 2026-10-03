@@ -15,6 +15,12 @@ import {
   type PreviewResolution,
   type ResolvedVisualQaConfig,
 } from '@buildd/core/visual-qa-page-source';
+import {
+  captureTrunk,
+  resolveVisualQaCaptureRef,
+  type CaptureRefResolution,
+} from '@buildd/core/visual-qa-capture-ref';
+import { missionIntegrationBase } from '@buildd/core/mission-integration';
 
 /** GET against the GitHub REST API as the workspace's installation. Throws on non-2xx. */
 export type GitHubGet = (path: string) => Promise<unknown>;
@@ -25,6 +31,13 @@ const POLL_MS = 5_000;
 
 export interface PageSourceResult {
   pageSource: ResolvedVisualQaConfig['pageSource'];
+  /**
+   * The branch to capture: the mission's integration branch on a
+   * mission-branch mission, else trunk. The sandbox dispatch takes `--ref` from
+   * it, the preview commit defaults to its head, and every shot records it as
+   * `qa.ref` / `qa.refSource`.
+   */
+  captureRef: CaptureRefResolution;
   sha: string | null;
   preview: PreviewResolution | null;
   decision: PageSourceDecision;
@@ -43,6 +56,29 @@ function errMessage(err: unknown): string {
   const m = err instanceof Error ? err.message : String(err);
   // githubApi puts the response body in the message; keep the status line only.
   return m.split('\n')[0].slice(0, 200);
+}
+
+/**
+ * The capture ref, with the integration branch's existence read live, the same
+ * rule as the PR-base guard. Only a 404 counts as gone: an unreadable answer
+ * keeps the integration branch, because trunk is the error this closes.
+ */
+async function resolveCaptureRef(
+  get: GitHubGet | null,
+  repo: string | null,
+  mission: Parameters<typeof resolveVisualQaCaptureRef>[0]['mission'],
+  trunk: string | null,
+): Promise<CaptureRefResolution> {
+  const integrationBase = missionIntegrationBase(mission);
+  let integrationBaseMissing = false;
+  if (integrationBase && get && repo) {
+    try {
+      await get(`/repos/${repo}/git/ref/heads/${integrationBase}`);
+    } catch (err) {
+      integrationBaseMissing = /GitHub API error: 404\b/.test(errMessage(err));
+    }
+  }
+  return resolveVisualQaCaptureRef({ mission, trunk, integrationBaseMissing });
 }
 
 async function resolveSha(get: GitHubGet, repo: string, input: { sha?: string | null; prNumber?: number | null; ref?: string | null }): Promise<string> {
@@ -64,7 +100,11 @@ async function resolveSha(get: GitHubGet, repo: string, input: { sha?: string | 
 export async function resolvePageSource(opts: {
   get: GitHubGet | null;
   repoFullName: string | null;
-  gitConfig: { visualQa?: unknown; envMapping?: Record<string, string>; defaultBranch?: string } | null | undefined;
+  gitConfig: { visualQa?: unknown; envMapping?: Record<string, string>; defaultBranch?: string; targetBranch?: string } | null | undefined;
+  /** The worker's task's mission, when it has one: its integration fields. */
+  mission?: Parameters<typeof resolveVisualQaCaptureRef>[0]['mission'];
+  /** The repo's own default branch, the last trunk fallback. */
+  repoDefaultBranch?: string | null;
   sha?: string | null;
   prNumber?: number | null;
   waitSeconds?: number;
@@ -80,19 +120,21 @@ export async function resolvePageSource(opts: {
     signInPaths: config.signInPaths,
   };
 
-  if (config.pageSource === 'sandbox') {
-    return { pageSource: 'sandbox', sha: null, preview: null, decision: selectPageSource('sandbox', null), auth };
-  }
-
   const get = opts.get;
   const repo = opts.repoFullName;
+  const captureRef = await resolveCaptureRef(get, repo, opts.mission, captureTrunk(opts.gitConfig, opts.repoDefaultBranch));
+
+  if (config.pageSource === 'sandbox') {
+    return { pageSource: 'sandbox', captureRef, sha: null, preview: null, decision: selectPageSource('sandbox', null), auth };
+  }
+
   let sha: string | null = null;
   let preview: PreviewResolution;
   if (!get || !repo) {
     preview = { state: 'unreadable', reason: 'the workspace has no GitHub App installation for its repo' };
   } else {
     try {
-      sha = await resolveSha(get, repo, { sha: opts.sha, prNumber: opts.prNumber, ref: opts.gitConfig?.defaultBranch ?? null });
+      sha = await resolveSha(get, repo, { sha: opts.sha, prNumber: opts.prNumber, ref: captureRef.ref });
       const wait = Math.max(0, Math.min(opts.waitSeconds ?? 0, MAX_PAGE_SOURCE_WAIT_SECONDS));
       preview = await resolvePreviewUrl(
         {
@@ -120,5 +162,5 @@ export async function resolvePageSource(opts: {
     }
   }
 
-  return { pageSource: config.pageSource, sha, preview, decision: selectPageSource(config.pageSource, preview), auth };
+  return { pageSource: config.pageSource, captureRef, sha, preview, decision: selectPageSource(config.pageSource, preview), auth };
 }

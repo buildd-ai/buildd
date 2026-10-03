@@ -74,17 +74,29 @@ describe('TierPoolsSection', () => {
     expect(row.querySelector('[data-testid="pool-mode"]')!.textContent).toBe('split');
   });
 
-  it('gives the model id its own line, apart from the route chip, with the full id as a title', async () => {
+  it('keeps the model id apart from the route chip, wrapping below it rather than squeezing, with the full id as a title', async () => {
     await mount();
     const arm = host.querySelector('[data-testid="pool-row-chat-standard"] [data-testid="pool-arm"]')!;
     const model = arm.querySelector('[data-testid="pool-model"]')!;
     expect(model.textContent).toBe('claude-sonnet-5');
     expect(model.getAttribute('title')).toBe('claude-sonnet-5');
     expect(model.className).toContain('truncate');
-    // The chip and the base marker sit on a separate line, so they never squeeze the id.
+    // The chip and base marker are a sibling of the id, not its container, so they never squeeze it.
     const meta = arm.querySelector('[data-testid="pool-arm-meta"]')!;
     expect(meta.contains(model)).toBe(false);
     expect(meta.textContent).toContain('base');
+    // Same line when the id fits, the id drops to its own line when it doesn't.
+    expect(meta.parentElement).toBe(model.parentElement);
+    expect(model.parentElement!.className).toContain('flex-wrap');
+  });
+
+  it('puts the row actions in the tier cell, so a one-model tier is not padded out by a stacked action column', async () => {
+    await mount();
+    const row = host.querySelector('[data-testid="pool-row-chat-standard"]')!;
+    const cell = row.querySelector('[data-testid="pool-tier-cell"]')!;
+    expect(cell.textContent).toContain('standard');
+    expect(cell.querySelector('[data-testid="pool-add-toggle"]')).not.toBeNull();
+    expect(cell.querySelector('[data-testid="pool-details-toggle"]')).not.toBeNull();
   });
 
   it('premium-plus is pinned with no way to add a model', async () => {
