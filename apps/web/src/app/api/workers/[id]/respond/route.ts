@@ -21,6 +21,8 @@ import {
   buildContinuationTaskValues,
   explainNotWaiting,
   isAnswerableWaitingFor,
+  isAnswerQueued,
+  recordedAnswerOf,
   type AnswerPathDecision,
 } from '@/lib/answer-resume';
 import { preflightBackendCredential } from '@/lib/answer-credential-preflight';
@@ -91,12 +93,16 @@ export async function POST(
     const explained = explainNotWaiting({
       workerStatus: worker.status,
       continuationTaskId: (worker as { continuationTaskId?: string | null }).continuationTaskId ?? null,
+      answerQueued: isAnswerQueued(worker),
     });
     return NextResponse.json(
       {
         error: explained.message,
         reasonCode: explained.reasonCode,
         nextAction: explained.nextAction,
+        // A duplicate tap is told what was recorded, so the card can show the
+        // answer instead of an error.
+        ...(explained.reasonCode === 'already_answered' ? { recordedAnswer: await readRecordedAnswer(worker) } : {}),
         workerStatus: worker.status,
         taskId: worker.taskId ?? null,
       },
@@ -248,12 +254,7 @@ async function respondByResume(args: {
     .where(and(eq(workers.id, workerId), isNotNull(workers.waitingFor)))
     .returning();
 
-  if (!claimed) {
-    return NextResponse.json(
-      { error: 'Question was already answered' },
-      { status: 409 },
-    );
-  }
+  if (!claimed) return alreadyAnsweredReply(workerId);
 
   if (task?.id) {
     await recordAnswerDelivery(task.id, task.context, deliveryRecord);
@@ -363,12 +364,7 @@ async function respondByContinuation(args: {
     .where(and(eq(workers.id, workerId), isNotNull(workers.waitingFor)))
     .returning();
 
-  if (!claimed) {
-    return NextResponse.json(
-      { error: 'Question was already answered' },
-      { status: 409 },
-    );
-  }
+  if (!claimed) return alreadyAnsweredReply(workerId);
 
   // Create the new retry task. The field-by-field inheritance rules live with
   // buildContinuationTaskValues so this path and the unacknowledged-resume
@@ -490,6 +486,40 @@ async function respondByContinuation(args: {
     workerId,
     message: describeAnswerPath(decision),
   });
+}
+
+/**
+ * The reply to an answer that lost the race to another one (a double tap, two
+ * people). It says what was recorded, re-read after the winner's write, so the
+ * card shows the answer rather than an error.
+ */
+async function alreadyAnsweredReply(workerId: string) {
+  const fresh = await db.query.workers.findFirst({ where: eq(workers.id, workerId) }).catch(() => null);
+  return NextResponse.json(
+    {
+      error: 'Question was already answered',
+      reasonCode: 'already_answered',
+      recordedAnswer: fresh ? await readRecordedAnswer(fresh) : null,
+    },
+    { status: 409 },
+  );
+}
+
+/** What an answered question was answered with. Best effort: a failed read only drops the text. */
+async function readRecordedAnswer(worker: { status: string | null; instructionHistory?: unknown; continuationTaskId?: string | null }): Promise<string | null> {
+  try {
+    let continuationContext: unknown = null;
+    if (worker.status === 'superseded' && worker.continuationTaskId) {
+      const next = await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.continuationTaskId),
+        columns: { context: true },
+      });
+      continuationContext = next?.context ?? null;
+    }
+    return recordedAnswerOf({ workerStatus: worker.status, instructionHistory: worker.instructionHistory, continuationContext });
+  } catch {
+    return null;
+  }
 }
 
 /** Stamp the decision on the answered task so the path taken is queryable. */

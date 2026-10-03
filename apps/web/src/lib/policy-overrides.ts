@@ -33,6 +33,12 @@ export const POLICY_DEFAULTS = {
   autoMergeGreenGraceMs: 5 * 60_000,
   /** ci-retry: CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries. */
   maxCiRetries: 3,
+  /**
+   * task-role-apply: the confidence (in percent) at or above which an inferred
+   * role is written to a role-less task. Picked from a held-out benchmark
+   * (knowledge-base: buildd/design/role-routing.md §6(b)).
+   */
+  taskRoleMinConfidencePct: 90,
 } as const;
 
 export type PolicyKey = keyof typeof POLICY_DEFAULTS;
@@ -44,6 +50,8 @@ const POLICY_BOUNDS: Record<PolicyKey, { min: number; max: number }> = {
   maxConflictIterations: { min: 0, max: 100 },
   autoMergeGreenGraceMs: { min: 0, max: 24 * 60 * 60_000 },
   maxCiRetries: { min: 0, max: 100 },
+  // Below 50 a role would be written on a coin flip; 100 turns apply off in effect.
+  taskRoleMinConfidencePct: { min: 50, max: 100 },
 };
 
 export interface RoleOverride {

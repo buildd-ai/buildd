@@ -795,4 +795,46 @@ describe('GET /api/workers/active', () => {
       expect(mockLoadBrowserRunnerHeartbeats).not.toHaveBeenCalled();
     });
   });
+
+  describe('ephemeral --once runs (cloud containers)', () => {
+    const session = () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', name: 'My Workspace' }]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    };
+    const host = {
+      localUiUrl: 'http://atlas.local:8766', viewerToken: 't', accountId: 'account-1',
+      maxConcurrentWorkers: 4, activeWorkerCount: 0, lastHeartbeatAt: new Date(), environment: null,
+      account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 4 },
+    };
+    const cloud = (task: string, fleet: unknown = { executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' }) => ({
+      ...host, localUiUrl: `headless://container/once/${task}`, maxConcurrentWorkers: 5, activeWorkerCount: 1,
+      environment: { envKeys: [], labels: { hostname: 'container' }, ...(fleet ? { fleet } : {}) },
+    });
+
+    it('lists a running cloud run as one busy slot with its group, never as spare capacity', async () => {
+      session();
+      mockHeartbeatsFindMany.mockResolvedValue([host, cloud('a')]);
+      mockWorkersFindMany.mockResolvedValue([
+        { accountId: 'account-1', localUiUrl: 'headless://container/once/a' },
+      ]);
+      const data = await (await GET(createMockRequest())).json();
+      const by = Object.fromEntries(data.activeLocalUis.map((r: any) => [r.localUiUrl, r]));
+      const run = by['headless://container/once/a'];
+      expect(run).toMatchObject({ maxConcurrent: 1, activeWorkers: 1, capacity: 0 });
+      expect(run.fleet).toEqual({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' });
+      // The host runner is unchanged, and its live count is not inflated by the cloud run's worker.
+      expect(by['http://atlas.local:8766']).toMatchObject({ maxConcurrent: 4, capacity: 4, activeWorkers: 0 });
+      expect(by['http://atlas.local:8766'].fleet).toBeNull();
+    });
+
+    it('drops a finished cloud run (fresh heartbeat, nothing running) so no picker targets a dead container', async () => {
+      session();
+      mockHeartbeatsFindMany.mockResolvedValue([host, cloud('done', null), cloud('done2')]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      const data = await (await GET(createMockRequest())).json();
+      expect(data.activeLocalUis.map((r: any) => r.localUiUrl)).toEqual(['http://atlas.local:8766']);
+    });
+  });
 });

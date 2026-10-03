@@ -5,12 +5,14 @@
  * scope chip, the runner avatar, a criterion box, the landed meter and the
  * inline answer to a waiting agent's question.
  */
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { runnerInitial } from '@/lib/runner-display';
 import type { BoardCriterion, BoardStatus, BoardTask, MissionBoardModel } from '@/lib/mission-board';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
+import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
+import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
 
 // ── Time ─────────────────────────────────────────────────────────────────────
 
@@ -208,37 +210,27 @@ export function taskSheetHref(ctx: BoardLinkContext, taskId: string): string {
  */
 export function AnswerButtons({ workerId, options, compact = false }: { workerId: string | null; options: readonly string[]; compact?: boolean }) {
   const router = useRouter();
-  const [sending, setSending] = useState<string | null>(null);
-  const [sent, setSent] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [replying, setReplying] = useState(false);
   const [text, setText] = useState('');
+  const [lastTried, setLastTried] = useState<string | null>(null);
+  const onAnswered = useCallback(() => router.refresh(), [router]);
+  const { submit, sending, outcome, error } = useAnswerSubmit({ workerId, resetKey: workerId ?? '', onAnswered });
 
-  async function send(message: string) {
-    if (!workerId || !message.trim()) return;
-    setSending(message);
-    setError(null);
-    try {
-      const res = await fetch(`/api/workers/${workerId}/respond`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(typeof data?.error === 'string' ? data.error : 'Failed to send answer');
-        return;
-      }
-      setSent(typeof data?.message === 'string' ? data.message : 'Answer sent.');
-      router.refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to send answer');
-    } finally {
-      setSending(null);
-    }
+  function send(message: string) {
+    setLastTried(message.trim());
+    void submit(message);
   }
 
-  if (sent) return <p data-testid="board-answer-sent" className="font-mono text-[12px] text-status-success">{sent}</p>;
+  if (outcome) {
+    const lines = answerOutcomeLines(outcome);
+    return (
+      <p data-testid="board-answer-sent" data-outcome={outcome.kind} className="font-mono text-[12px] text-status-success [overflow-wrap:anywhere]">
+        {`✓ ${lines.headline}`}
+        {lines.detail && <span className="block text-text-secondary">{lines.detail}</span>}
+        <span className="block text-text-muted">Answer sent, waiting for the agent</span>
+      </p>
+    );
+  }
 
   const btn = `inline-flex ${compact ? 'h-[30px] px-3 text-[12px]' : 'h-8 px-3.5 text-[12.5px]'} items-center border-[1.5px] font-mono font-semibold disabled:opacity-50`;
   return (
@@ -252,7 +244,7 @@ export function AnswerButtons({ workerId, options, compact = false }: { workerId
             onClick={() => send(o)}
             className={`${btn} ${i === 0 ? 'border-accent bg-accent text-white hover:bg-primary-hover' : 'border-border-strong bg-surface-3 text-text-primary hover:bg-surface-4'}`}
           >
-            {sending === o ? 'Sending…' : shortOption(o)}
+            {sending === o.trim() ? 'Sending…' : shortOption(o)}
           </button>
         ))}
         {!replying && (
@@ -264,7 +256,7 @@ export function AnswerButtons({ workerId, options, compact = false }: { workerId
       {replying && (
         <form
           className="flex gap-1.5"
-          onSubmit={e => { e.preventDefault(); void send(text); }}
+          onSubmit={e => { e.preventDefault(); send(text); }}
         >
           <input
             autoFocus
@@ -273,10 +265,17 @@ export function AnswerButtons({ workerId, options, compact = false }: { workerId
             placeholder="Your answer…"
             className="min-w-0 flex-1 border border-border-default bg-surface-1 px-2.5 py-1.5 font-mono text-base md:text-[12px] text-text-primary placeholder:text-text-muted focus:border-primary"
           />
-          <button type="submit" disabled={!text.trim() || sending !== null} className={`${btn} border-border-strong bg-surface-3 text-text-primary`}>Send</button>
+          <button type="submit" disabled={!text.trim() || sending !== null} className={`${btn} border-border-strong bg-surface-3 text-text-primary`}>{sending !== null && sending === text.trim() ? 'Sending…' : 'Send'}</button>
         </form>
       )}
-      {error && <p className="font-mono text-[12px] text-status-error">{error}</p>}
+      {error && (
+        <p className="font-mono text-[12px] text-status-error">
+          {error.message}
+          {lastTried && sending === null && (
+            <>{' '}<button type="button" onClick={() => send(lastTried)} className="underline hover:no-underline">Retry</button></>
+          )}
+        </p>
+      )}
     </div>
   );
 }

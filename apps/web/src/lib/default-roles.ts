@@ -63,6 +63,12 @@ interface DefaultRoleDefinition {
   mcpServers: Record<string, unknown>;
   requiredEnvVars: Record<string, string>;
   routing: DefaultRoleRouting;
+  /**
+   * claude.ai artifact access for sessions under this role, seeded into
+   * `metadata.claudeAiArtifacts` (@buildd/shared claude-ai-artifacts.ts).
+   * Absent = off. Only design-consuming roles read; no seeded role publishes.
+   */
+  claudeAiArtifacts?: 'read';
 }
 
 interface DefaultRole extends DefaultRoleDefinition {
@@ -214,6 +220,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
   },
   {
     slug: 'builder',
+    // Builds UI from claude.ai Design canvases cited in context.designSource.
+    claudeAiArtifacts: 'read',
     name: 'Builder',
     description: 'Core engineering — features, bug fixes, refactoring, releases',
     content: `# Builder
@@ -543,6 +551,8 @@ If a near-duplicate exists, update it instead of creating a new entry.
     // workflow, never a role). It is one of EXPLICIT_ROLE_SLUGS, so only a
     // runner whose env-scan found a browser can claim it.
     slug: VISUAL_AUDITOR_ROLE_SLUG,
+    // Compares shipped pages against the design the mission cited.
+    claudeAiArtifacts: 'read',
     // v2 (visual-qa-human-review.md): no note for unsure, update_artifact
     // sends only qa.fixTaskId, later rounds report prior-finding resolution.
     // v3: explicit block-in-foreground instruction for the dispatched run — a
@@ -820,7 +830,11 @@ If a near-duplicate exists, update it instead of creating a new entry.
  * `metadata.routing` (role-routing.md §2), so it needs no migration.
  */
 export function defaultRoleMetadata(role: DefaultRole, now: Date): Record<string, unknown> {
-  return { routing: { ...role.routing, updatedAt: now.toISOString() }, defaultRoleVersion: role.version };
+  return {
+    routing: { ...role.routing, updatedAt: now.toISOString() },
+    defaultRoleVersion: role.version,
+    ...(role.claudeAiArtifacts ? { claudeAiArtifacts: role.claudeAiArtifacts } : {}),
+  };
 }
 
 export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({

@@ -236,6 +236,17 @@ happen is recorded rather than logged, and the hourly pr-reconcile sweep retries
 | 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
 | 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
 
+### Automatic supersession of closed PRs (`lib/pr-supersession-detect.ts`)
+
+A closed-unmerged PR is checked for where its work landed (webhook on close,
+hourly pr-reconcile backfill). Claims and sibling tasks only nominate; an edge
+is recorded only when the content verifies.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 61a | `pr-supersession-detect.ts:recordVerified` | `auto_pr_supersession` | accepted | candidate's merged diff carries the closed PR's changes; edge recorded with `detail.method` (patch-id or content) and `detail.confidence` |
+| 61b | `pr-supersession-detect.ts:detectPrSupersession` | `auto_pr_supersession` | deferred | candidate found but not content-verified: suggestion stored for the mission card, no edge |
+
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 
 Every reason the unattended path did not merge a PR, so "why didn't this green
@@ -302,6 +313,7 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 | `apps/web/src/lib/base-refresh.ts:refreshBehindPr` | `base_refresh` | accepted / deferred / warned / rejected | Deterministic refresh of a behind-only PR (conflict-aware-orchestration §4). `accepted` = GitHub update-branch merged the base in, no agent. `deferred` = an operational update failure (`detail.failure`: rate_limit / auth / transient / unknown, with `attempts`), an enforcing semantic check whose symbol coverage is unknown (bounded rechecks), or a verified same-symbol edit sent to semantic review (`detail.verdict`, `evidence`); repeats coalesce. `warned` = shadow semantic verdict or a moved head. `rejected` = attempts or rechecks exhausted, with one diagnostic note posted. A textual conflict is not recorded here; it goes to the conflict agent. |
 | `apps/web/src/lib/path-declaration-ledger.ts:recordPathDeclaration` | `path_declaration` | accepted / deferred / warned | Declaration denominators: `accepted` = declared/acquired, `deferred` = denied by a live holder, `warned` = degraded (runner could not reach coordination; `detail.pathCount` is the delta). `detail.provenance` = creation / plan_step / doc_fix / check_path_claim / observed / hook; creation rows carry `detail.shape` (none / sentinel / concrete / mixed). |
 | `apps/web/src/lib/path-claim-check.ts:checkPathClaim` | `path_claim` | accepted | Each successful call, including an already-held-path no-op; excluded from friction rankings and bypass rates. |
+| `apps/web/src/app/api/tasks/route.ts:POST` | `decomposition_refused` | rejected | Re-checks, at the moment the organizer's own planning task tries to create a non-retry child, whether sibling tasks were pre-filed against the mission after that planning task was created. `runMission()`'s own pre-filed-task detection only runs once, inside the SAME request that creates the mission — too early to see tasks a creator files right after. `detail.preFiledTaskIds`, `detail.organizerTaskId`; persists `missions.decompositionSkipped=true` and a mission note on the first trip. Exempt: manual-orchestration missions, and any create with an explicit `parentTaskId` (a retry naming the failing task). |
 
 `get_manifest_coverage` and `get_path_claim_stats` read aggregate REST metrics.
 Use `get_failure_analytics` with `family=gate` and

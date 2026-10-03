@@ -29,6 +29,21 @@ describe('startClaudeOAuthLogin', () => {
 });
 
 describe('exchangeClaudeOAuthCode', () => {
+  it('records the scopes the token response granted', async () => {
+    global.fetch = mock(async () => jsonResponse(200, {
+      access_token: 'at', refresh_token: 'rt', expires_in: 3600,
+      scope: 'user:profile user:inference user:mcp_servers',
+    })) as any;
+    const r = await exchangeClaudeOAuthCode('c#s', 'v', 's');
+    expect(r.ok && r.credential.scopes).toEqual(['user:profile', 'user:inference', 'user:mcp_servers']);
+  });
+
+  it('records no scopes when the response does not name any', async () => {
+    global.fetch = mock(async () => jsonResponse(200, { access_token: 'at', refresh_token: 'rt' })) as any;
+    const r = await exchangeClaudeOAuthCode('c#s', 'v', 's');
+    expect(r.ok && r.credential.scopes).toBeUndefined();
+  });
+
   it('splits code#state, exchanges, and returns a credential', async () => {
     let sentBody = '';
     global.fetch = mock(async (_url: string, init: any) => {

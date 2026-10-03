@@ -1,11 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import type { Stills } from './cuts';
-import { crfLadder, mergeShotlists, publishDir, seamlessLoopFilter, siteFiles, wantsCut } from './render';
+import { clipSource, crfLadder, mergeShotlists, publishDir, seamlessLoopFilter, siteFiles, wantsCut } from './render';
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { TAP_LIFE, layersAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars, verifyAt } from './motion-model';
 
@@ -23,6 +23,10 @@ const BOXES: Record<string, Rect[]> = {
   'kit-approval-confirm': [R(0.16, 0.8, 0.07, 0.03)],
   'approval-card': [R(0.15, 0.55, 0.47, 0.29)],
   'approval-draft-criteria': [R(0.25, 0.62, 0.35, 0.1)],
+  // Real proportions (s08-home at 1440 CSS): four runner rows, 469 wide.
+  'fleet-runner': [0, 1, 2, 3].map((i) => R(90 / 1440, (599 + i * 101) / 1620 * 2, 469 / 1440, 100 / 1620 * 2)),
+  // Real proportions (s11-deck at 1440x810 CSS): Looks right is 376 x 57.
+  'deck-looks-right': [R(724 / 1440, 715 / 810, 376 / 1440, 57 / 810)],
   'kit-approval-edit': [R(0.24, 0.8, 0.05, 0.03)],
 };
 const fake: Stills = {
@@ -168,10 +172,36 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
     expect(LOOKS[0].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}`));
     expect(LOOKS[1].beats.map((c) => c.name)).toEqual(BEATS.map((b) => `beat-${b}-mobile`));
   });
-  test('no shot is in two beats; only the opening typing and thread stay film-only', () => {
+  test('no shot is in two beats; the typing, the thread, the edit and the Board stay film-only', () => {
     const used = LOOKS[0].beats.flatMap((c) => c.shots.map((s) => s.id));
     expect(new Set(used).size).toBe(used.length);
-    expect(film.shots.map((s) => s.id).filter((id) => !used.includes(id)).sort()).toEqual(['ask', 'reads']);
+    expect(film.shots.map((s) => s.id).filter((id) => !used.includes(id)).sort()).toEqual(['ask', 'board', 'edit', 'reads']);
+  });
+  test('review never crops what it lights: every lit rect fits the frame width at the camera\'s zoom', () => {
+    for (const look of LOOKS) {
+      const review = look.beats.find((c) => c.name.startsWith('beat-review'))!.shots.find((x) => x.id === 'review')!;
+      const zoom = Math.max(...review.camera!.map((k) => k.zoom));
+      for (const k of review.spot!) for (const r of k.rects) if (k.dim > 0) expect(r.w * zoom).toBeLessThanOrEqual(1 + 1e-6);
+    }
+  });
+  test('decide: nothing placed on the question layout outlives the swap to the answered one', () => {
+    for (const c of [film, ...LOOKS.map((l) => l.beats.find((b) => b.name.startsWith('beat-decide'))!)]) {
+      const q = c.shots.find((x) => x.id === 'question')!;
+      const swap = q.images[1].at;
+      for (const tap of q.taps ?? []) expect(tap.at + TAP_LIFE).toBeLessThanOrEqual(swap);
+      const after = (q.spot ?? []).filter((k) => k.at >= swap);
+      if (q.spot?.length) expect(after.length && after.every((k) => k.dim === 0)).toBe(true);
+    }
+  });
+  test('fleet holds the runner table (the machines), not a zoom onto the stat', () => {
+    for (const look of LOOKS) {
+      const fleet = look.beats.find((c) => c.name.startsWith('beat-fleet'))!.shots[0];
+      const cs = fleet.camera!;
+      expect(Math.abs(cs[cs.length - 1].zoom - cs[0].zoom) / cs[0].zoom).toBeLessThan(0.1);
+      // It lights the runner column (names + their slots) and never crops it.
+      const lit = fleet.spot![0].rects[0];
+      for (const k of cs) expect(lit.w * k.zoom).toBeLessThanOrEqual(1 + 1e-6);
+    }
   });
   test('the spec poster is a frame with the criteria list lit, not the typing', () => {
     for (const look of LOOKS) {
@@ -184,10 +214,25 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
       expect(spec.poster).toBeLessThan(next.at);
     }
   });
+  test('done holds the goal band, large enough to read at page size, from the first frame to the last (so the loop has no seam)', () => {
+    for (const look of LOOKS) {
+      const done = look.beats.find((c) => c.name.startsWith('beat-done'))!.shots[0];
+      const css = done.images[0].width / 2;
+      const zooms = done.camera!.map((k) => (look.frame[0] / css) * k.zoom);
+      for (const z of zooms) expect(z).toBeGreaterThanOrEqual((look.frame[0] < 1000 ? 1.8 : 2) - 1e-6);
+      // The lit band itself is never cut by the frame edge.
+      const band = BOXES['goal-band'][0];
+      for (const z of zooms) expect(band.w * css * 1.0 * z).toBeLessThanOrEqual(look.frame[0] + 1e-6);
+      const cs = done.camera!.map((k) => [k.cx, k.cy]);
+      for (const c of cs) { expect(c[0]).toBeCloseTo(cs[0][0], 2); expect(c[1]).toBeCloseTo(cs[0][1], 2); }
+      expect(done.spot!.every((k) => k.rects.length === 1)).toBe(true);
+    }
+  });
   test('spec is the criteria then the edit; plan is Confirm then the Board', () => {
     const by = Object.fromEntries(LOOKS[0].beats.map((c) => [c.name, c.shots.map((s) => s.id)]));
-    expect(by['beat-spec']).toEqual(['criteria', 'edit']);
-    expect(by['beat-plan']).toEqual(['confirm', 'board']);
+    // demo:review: half of spec was the chat edit, not the checklist; plan's Board read as unrelated to "you press go".
+    expect(by['beat-spec']).toEqual(['criteria']);
+    expect(by['beat-plan']).toEqual(['confirm', 'filed']);
     expect(by['beat-review']).toEqual(['screens', 'review']);
   });
   for (const look of LOOKS) describe(look.name, () => {
@@ -279,6 +324,15 @@ describe('verifyAt', () => {
       if (v.done > 0) expect(v.checks.every((c) => c > 0.99) || t > m.resetAt).toBe(true);
     }
   });
+  test('Done never shares a frame with the bars: they leave before it comes, and come back after it goes', () => {
+    for (let t = 0; t <= dur + 1e-9; t += 0.02) {
+      const v = verifyAt(m, t);
+      expect(v.done > 0 && v.barsShown > 0).toBe(false);
+    }
+    // Both are fully there at some point: bars while the agents work, Done at the end.
+    expect(verifyAt(m, 5).barsShown).toBe(1);
+    expect(verifyAt(m, 10).done).toBe(1);
+  });
   test('seamless: the last frame is the first', () => {
     const a = verifyAt(m, 0), b = verifyAt(m, dur);
     expect(b).toEqual(a);
@@ -297,6 +351,50 @@ describe('verifyAt', () => {
 test('v6x hero comes in both themes', () => {
   expect(v6xHero(fake).theme).toBe('dark');
   expect(v6xHero(fake, 'light').theme).toBe('light');
+});
+
+test('a tap on a control outlines the control instead of stamping a square over its label', () => {
+  for (const c of [v6aFilm(fake), ...v6aBeats(fake), ...v6aBeats(fake, { mobile: true })]) for (const sh of c.shots) for (const tap of sh.taps ?? []) {
+    const on = (sh.controls ?? []).find((r) => tap.x >= r.x && tap.x <= r.x + r.w && tap.y >= r.y && tap.y <= r.y + r.h);
+    if (on) expect(tap.rect).toEqual(on);
+  }
+  const t = tapAt([{ at: 1, x: 0.5, y: 0.5, rect: R(0.4, 0.45, 0.2, 0.1) }], 1.1)!;
+  expect(t.rect).toEqual(R(0.4, 0.45, 0.2, 0.1));
+});
+
+test('the screenshots under review are marked as artifacts (their text is a picture of a page)', () => {
+  const film = v6aFilm(fake);
+  expect(film.shots.find((x) => x.id === 'screens')!.artifacts!.length).toBeGreaterThan(0);
+  const review = film.shots.find((x) => x.id === 'review')!;
+  expect(review.artifacts!.length).toBe(1);
+  // The verdict buttons are not part of the artifact.
+  const a = review.artifacts![0], btn = BOXES['deck-looks-right'][0];
+  expect(a.y + a.h).toBeLessThanOrEqual(btn.y);
+});
+
+describe('dip transitions: two dense screens never share a frame', () => {
+  const two = { fade: 0.8, shots: [{ dur: 4 }, { dur: 4 }] as any, dip: true };
+  test('between shots: the outgoing shot is gone before the incoming one appears', () => {
+    for (let t = 3.9; t <= 5; t += 0.01) {
+      const ls = layersAt({ ...two, loop: false }, t).filter((l) => l.opacity > 0.001);
+      expect(ls.length).toBeLessThanOrEqual(1);
+    }
+  });
+  test('at a loop seam too', () => {
+    for (let t = 7; t <= 8; t += 0.01) {
+      const ls = layersAt({ ...two, loop: true }, t).filter((l) => l.opacity > 0.001);
+      expect(ls.length).toBeLessThanOrEqual(1);
+    }
+  });
+  test('without dip a crossfade still blends both', () => {
+    expect(layersAt({ ...two, dip: false, loop: false }, 4.4).filter((l) => l.opacity > 0.1).length).toBe(2);
+  });
+  test('v6a film and beats dip; the seam of a folded beat dips through the theme ground', () => {
+    expect(v6aFilm(fake).dip).toBe(true);
+    for (const c of [...v6aBeats(fake), ...v6aBeats(fake, { theme: 'light' })]) expect(c.dip).toBe(true);
+    expect(seamlessLoopFilter(10.8, 0.8, '', 'black')).toContain('transition=fadeblack');
+    expect(seamlessLoopFilter(10.8, 0.8, '', 'white')).toContain('transition=fadewhite');
+  });
 });
 
 describe('seamlessLoopFilter', () => {
@@ -322,6 +420,12 @@ test('wantsCut: --only hero takes the phone crop too, and nothing else by prefix
   expect(wantsCut(['full'], 'hero')).toBe(false);
   expect(wantsCut(['beats'], 'beat-spec-mobile')).toBe(true);
   expect(wantsCut(['hero'], 'beat-spec')).toBe(false);
+});
+
+test('clipSource: a site file back to its family dir and cut name (for the shotlist)', () => {
+  expect(clipSource('a/buildd-demo-v6a-beat-spec-mobile.mp4')).toEqual({ dir: 'a', cut: 'beat-spec-mobile' });
+  expect(clipSource('l/buildd-demo-v6l-hero-mobile.mp4')).toEqual({ dir: 'l', cut: 'hero-mobile' });
+  expect(clipSource('a/buildd-demo-v6a.mp4')).toEqual({ dir: 'a', cut: 'full' });
 });
 
 test('crfLadder: steps up from the start in twos, to a ceiling', () => {

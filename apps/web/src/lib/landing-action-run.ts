@@ -75,6 +75,9 @@ export function makeLandingRunner(ports: LandingRunPorts): LandingActionDeps['ru
       case 'close_superseded':
         await ports.closePr(ctx);
         return { ok: true, summary: 'Closed as superseded.', taskId: null };
+      case 'review_on_github':
+        // A link the page opens; runLandingAction refuses it before it gets here.
+        return { ok: false, error: 'Review and merge this PR on GitHub.' };
     }
   };
 }

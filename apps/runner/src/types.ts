@@ -2,7 +2,7 @@ import type { RoleConfig, RoleInstructions } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
-import type { SkillBundle } from '@buildd/shared';
+import type { RunnerFleetIdentity, SkillBundle } from '@buildd/shared';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -21,7 +21,14 @@ export interface WaitingFor {
   options?: Array<{
     label: string;
     description?: string;
+    /** Question brief: what choosing this leads to (from the option's description). */
+    consequence?: string;
+    recommended?: boolean;
   }>;
+  /** Question brief (packages/core/question-brief.ts): the task and the exact decision. */
+  context?: string;
+  recommended?: { label: string; reason?: string };
+  where?: { taskTitle?: string; branch?: string; file?: string };
   toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
   // Permission-specific fields (when type === 'permission')
   toolName?: string;           // The tool requesting permission
@@ -315,6 +322,16 @@ export interface LocalWorker {
    * experiment: no CBM mount, no steering, every CBM tool denied.
    */
   cbmExperimentWithheld?: boolean;
+  /**
+   * The claim put this task in a running `question_gate` experiment: every
+   * AskUserQuestion goes through POST /api/workers/[id]/question-check before
+   * it is parked (apps/runner/src/question-gate.ts).
+   */
+  questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number };
+  /** Questions the gate sent back to the agent in this worker. */
+  questionPushbacks?: number;
+  /** Last file the agent edited or wrote, for the question brief's `where`. */
+  lastEditedFile?: string;
   cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
   cbmBootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   cbmBootstrapFailReason?: string;
@@ -384,6 +401,10 @@ export interface LocalWorker {
   // access_token — no refresh_token — preventing in-session token rotation.
   claudeAccessToken?: string;
   claudeTokenExpiresAt?: Date | null;
+  /** OAuth scopes recorded for the managed claude_credential; written into .credentials.json. */
+  claudeTokenScopes?: string[];
+  /** claude.ai artifact access resolved by the claim (absent = off). */
+  claudeAiArtifacts?: import('@buildd/shared').ClaudeAiArtifactAccess;
   // secretId of the claude_credential managed by the broker for this worker.
   // Used by startSession to fetch a fresh token via the broker socket instead
   // of relying on the potentially-stale claudeAccessToken from the claim response.
@@ -806,4 +827,8 @@ export interface LocalUIConfig {
   // knowledge-ingest jobs, no restore of other workers from disk, no worktree
   // sweeps or server cleanup. Heartbeats, sync and Pusher commands still run.
   singleTask?: boolean;
+  // What this runner is in the fleet, sent on every heartbeat as
+  // environment.fleet. Set only by `--once` (run-once.ts buildOnceConfig):
+  // ephemeral, one slot, executor and, in a cloud container, the group.
+  fleetIdentity?: RunnerFleetIdentity;
 }

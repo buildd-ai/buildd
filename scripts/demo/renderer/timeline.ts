@@ -69,7 +69,8 @@ export type CamKey = { at: number; cx: number; cy: number; zoom: number };
 /** `fade`: how long this still dissolves in over the last (default SWAP_FADE); 0 cuts, for a UI that jumps on a tap. */
 export type ShotImage = { src: string; at: number; width: number; height: number; fade?: number };
 
-export type Tap = { at: number; x: number; y: number };
+/** A tap at (x, y). With `rect` (the control tapped) the mark outlines the control, so it never sits on its label. */
+export type Tap = { at: number; x: number; y: number; rect?: Rect };
 
 export type Shot = {
   id: string;
@@ -82,6 +83,12 @@ export type Shot = {
   caption?: string | Array<{ at: number; text: string; to?: number }>;
   camera?: CamKey[];
   taps?: Tap[];
+  /**
+   * Embedded artifacts in the still (fractions): screenshots under review, an
+   * invoice page. A picture of a page: demo:review exempts their text from the
+   * size floor. Recorded per frame with the lit target (stage __regions).
+   */
+  artifacts?: Rect[];
   /** Seconds into the shot where a key tick sounds (typing). */
   keys?: number[];
   /** Seconds into the shot for the completion chime. */
@@ -112,6 +119,12 @@ export type Cut = {
   fade: number;
   /** Seamless: the last shot fades into the first, and the cut is exactly sum(dur) long. */
   loop?: boolean;
+  /**
+   * Dip instead of crossfade: the outgoing shot fades to the ground over the
+   * first half of `fade`, then the next fades in. Two dense screens blended
+   * at 50% read as text printed over text (demo:review's judge, every beat).
+   */
+  dip?: boolean;
   captions?: boolean;
   theme?: 'dark' | 'light';
   /** Caption chip font size in px (default 32). */
@@ -162,7 +175,7 @@ export type Layer = { index: number; local: number; opacity: number };
  * the last during the final `fade`, held at its first frame, so t = duration
  * lands exactly on t = 0.
  */
-export function layersAt(cut: Pick<Cut, 'shots' | 'fade' | 'loop'>, t: number): Layer[] {
+export function layersAt(cut: Pick<Cut, 'shots' | 'fade' | 'loop' | 'dip'>, t: number): Layer[] {
   const starts = shotStarts(cut);
   const n = cut.shots.length;
   const total = cutDuration(cut);
@@ -172,13 +185,23 @@ export function layersAt(cut: Pick<Cut, 'shots' | 'fade' | 'loop'>, t: number): 
   const local = tt - starts[i];
   const layers: Layer[] = [];
   const inFade = i > 0 && local < cut.fade;
-  if (inFade) layers.push({ index: i - 1, local: local + cut.shots[i - 1].dur, opacity: 1 });
-  layers.push({ index: i, local, opacity: inFade ? ease(local / cut.fade) : 1 });
+  const half = cut.fade / 2;
+  // Dip: out over the first half, in over the second; the two never overlap.
+  const out = (u: number) => (cut.dip ? 1 - ease(u / half) : 1);
+  const inn = (u: number) => (cut.dip ? ease((u - half) / half) : ease(u / cut.fade));
+  if (inFade) layers.push({ index: i - 1, local: local + cut.shots[i - 1].dur, opacity: out(local) });
+  let own = inFade ? inn(local) : 1;
   if (cut.loop && i === n - 1 && n > 1) {
     const into = local - (cut.shots[i].dur - cut.fade);
-    if (into > 0) layers.push({ index: 0, local: 0, opacity: ease(into / cut.fade) });
+    if (into > 0) {
+      if (cut.dip) own = Math.min(own, out(into));
+      layers.push({ index: i, local, opacity: own });
+      layers.push({ index: 0, local: 0, opacity: inn(into) });
+      return layers.filter((l) => l.opacity > 0 || !cut.dip);
+    }
   }
-  return layers;
+  layers.push({ index: i, local, opacity: own });
+  return cut.dip ? layers.filter((l, k) => l.opacity > 0 || k === layers.length - 1) : layers;
 }
 
 export function cameraAt(keys: CamKey[] | undefined, u: number): { cx: number; cy: number; zoom: number } {
@@ -254,12 +277,12 @@ export function captionsAt(shot: { dur: number; caption?: Shot['caption'] }, loc
 }
 
 /** A tap marker: a square that settles onto the target and fades. Null when no tap is live. */
-export function tapAt(taps: Tap[] | undefined, local: number): { x: number; y: number; opacity: number; scale: number } | null {
+export function tapAt(taps: Tap[] | undefined, local: number): { x: number; y: number; opacity: number; scale: number; rect?: Rect } | null {
   for (const tap of taps ?? []) {
     const u = (local - tap.at) / TAP_LIFE;
     if (u < 0 || u > 1) continue;
     const opacity = u < 0.2 ? ease(u / 0.2) : 1 - ease((u - 0.2) / 0.8);
-    return { x: tap.x, y: tap.y, opacity, scale: 1.6 - 0.6 * ease(u / 0.35) };
+    return { x: tap.x, y: tap.y, opacity, scale: 1.6 - 0.6 * ease(u / 0.35), ...(tap.rect ? { rect: tap.rect } : {}) };
   }
   return null;
 }

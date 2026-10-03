@@ -7,7 +7,7 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import type { VisualReviewDecisionRequest, VisualReviewDecisionResponse, VisualReviewUndoResponse } from '@buildd/shared';
 import type { BuilddObjectRef } from './chat-contract';
-import { submitAnswer } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
+import { submitAnswer, type AnswerOutcome } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
 import { createHttpVisualReviewTransport } from '@/components/visual-review/review-transport';
 
 /** A human decision on audit screens, as the decisions route takes it (plus the mission). */
@@ -39,8 +39,12 @@ export interface ChatActions {
   viewerName: string | null;
   /** The ref the pane is showing, so its inline card can say so. */
   paneRef: BuilddObjectRef | null;
-  /** Answer a waiting agent — the respond route by default. Tapping an option is the approval. */
-  answerQuestion(input: { workerId: string; taskId: string; noteId: string | null; message: string }): Promise<void>;
+  /**
+   * Answer a waiting agent — the respond route by default. Tapping an option is
+   * the approval. Resolves with what was recorded (an already-answered question
+   * resolves too, it is not an error); a fixture may resolve with nothing.
+   */
+  answerQuestion(input: { workerId: string; taskId: string; noteId: string | null; message: string }): Promise<AnswerOutcome | void>;
   /**
    * Record a human decision on audit screens: the decisions route, directly.
    * The tap is the consent (as for answerQuestion); no approval card, and no
@@ -65,7 +69,7 @@ const DEFAULT: ChatActions = {
   workspaceName: () => null,
   viewerName: null,
   paneRef: null,
-  answerQuestion: async (input) => { await submitAnswer(input); },
+  answerQuestion: (input) => submitAnswer(input),
   reviewShots: ({ missionId, ...req }) => createHttpVisualReviewTransport(missionId).decide(req),
   undoReview: ({ missionId, reviewId }) => createHttpVisualReviewTransport(missionId).undo(reviewId),
   openVisualReview: noop,

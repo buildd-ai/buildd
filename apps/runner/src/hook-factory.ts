@@ -2,7 +2,7 @@ import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, Milestone, PermissionSuggestion } from './types';
 import { isPathDeniedByReadJail, resolveToolPath } from './read-jail.js';
 import { findWorktreeEscape, findWriteEscape } from './worktree-confinement.js';
-import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS } from '@buildd/shared';
+import { DANGEROUS_PATTERNS, SENSITIVE_PATHS, SENSITIVE_READ_PATHS, DANGEROUS_CREDENTIAL_READ_PATTERNS, classifyArtifactToolCall, isClaudeAiArtifactTool, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import { readFileSync } from 'fs';
 import { saveWorker as storeSaveWorker } from './worker-store';
 import type { BuilddClient } from './buildd';
@@ -10,6 +10,7 @@ import { exchangeAssertionConnector, isAuthError } from './assertion-exchange.js
 import { BUILDD_MCP_TOOL_NAME } from './action-events';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
+import { questionFromToolInput, runQuestionGate } from './question-gate.js';
 import type { PathClaimResponse } from './buildd';
 import {
   extractEditPaths,
@@ -74,6 +75,13 @@ export interface HookFactoryContext {
    * advisory callers need not supply it.
    */
   onPathCollision?: (worker: LocalWorker, collision: PathCollision) => void;
+  /**
+   * Park an AskUserQuestion (waiting_input, notify, abort under inputAsRetry).
+   * Called from the PreToolUse hook only for a gated worker
+   * (`worker.questionGate`), once the question gate let the question through;
+   * otherwise handleMessage parks it as before.
+   */
+  parkQuestion?: (worker: LocalWorker, toolInput: Record<string, unknown>, toolUseId?: string) => Promise<void>;
   pendingPermissionRequests: Map<string, {
     resolve: (result: any) => void;
     toolInput: Record<string, unknown>;
@@ -378,6 +386,35 @@ export class HookFactory {
   }
 
   /**
+   * PreToolUse gate for claude.ai artifact tools (Artifact, ArtifactData,
+   * ArtifactComments, ArtifactCheck, DesignSync). They act in the seat owner's
+   * claude.ai account, so: read/list/get when opted in, publish only for
+   * producer roles, delete never. Registered for every Claude session, so a
+   * tool that appears without the opt-in (e.g. a role env secret setting
+   * CLAUDE_CODE_ARTIFACT) is still refused. Policy: @buildd/shared
+   * claude-ai-artifacts.ts.
+   */
+  createClaudeAiArtifactHook(worker: LocalWorker, access: ClaudeAiArtifactAccess): HookCallback {
+    return async (input) => {
+      if ((input as any).hook_event_name !== 'PreToolUse') return {};
+      const toolName = (input as any).tool_name as string;
+      if (!isClaudeAiArtifactTool(toolName)) return {};
+      const toolInput = ((input as any).tool_input ?? {}) as Record<string, unknown>;
+      const decision = classifyArtifactToolCall(toolName, toolInput, access);
+      const url = typeof toolInput.url === 'string' ? toolInput.url : '';
+      if (decision.allowed) {
+        console.log(`[Worker ${worker.id}] claude.ai artifact: ${toolName} ${String(toolInput.action ?? '')} ${url}`.trim());
+        return {};
+      }
+      console.log(`[Worker ${worker.id}] claude.ai artifact: denied ${toolName} ${String(toolInput.action ?? '')} ${url}`.trim());
+      return denyPreToolUse(runnerDenial(
+        decision.reason,
+        'read the design from the copy-in artifact keys in the task context (get_artifact / list_artifacts), or ask in the task if it needs a write',
+      ));
+    };
+  }
+
+  /**
    * PreToolUse guard that keeps the agent acting in its own worktree.
    *
    * Worktrees are nested inside the primary clone, and agents were running
@@ -460,6 +497,22 @@ export class HookFactory {
       // Explicitly allow it here so it can't fall through to the PermissionRequest
       // / canUseTool gates. (The autonomous hard-block is handled above.)
       if (toolName === 'AskUserQuestion') {
+        // Question gate (question-gate.ts): only for a worker whose claim
+        // enrolled it. A pushback becomes this call's result and the agent
+        // asks again; anything else parks the question here, because
+        // handleMessage leaves gated questions to this hook.
+        if (worker.questionGate) {
+          const toolUseId = typeof (input as any).tool_use_id === 'string' ? (input as any).tool_use_id as string : undefined;
+          const gate = await runQuestionGate(worker, questionFromToolInput(worker, toolInput, toolUseId), this.ctx.buildd);
+          if (gate.action === 'pushback') {
+            this.ctx.addMilestone(worker, { type: 'status', label: 'Question sent back: needs context', ts: Date.now() });
+            return denyPreToolUse(runnerDenial(
+              `this AskUserQuestion was not shown to anyone. ${gate.reason}`,
+              'rewrite the question as a self-contained decision brief (what is being decided in this task and why it matters, what each option leads to, your recommended default first marked "(Recommended)") and call AskUserQuestion again',
+            ));
+          }
+          await this.ctx.parkQuestion?.(worker, toolInput, toolUseId);
+        }
         return {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse' as const,

@@ -77,6 +77,45 @@ describe('buildd://workspace/skills resource', () => {
   });
 });
 
+describe('buildd://workspace/onboarding resource', () => {
+  // docs/design/workspace-onboarding.md section 5 / AC-14: the resource serves
+  // the committed skill file itself, read at request time, never a copy.
+  const skillRelPath = '.claude/skills/workspace-onboarding/SKILL.md';
+  const nextConfig = readFileSync(join(repoRoot, 'apps/web/next.config.mjs'), 'utf8');
+
+  it('is listed and read from the one skill file at request time', () => {
+    expect(routeSource).toContain('uri: "buildd://workspace/onboarding"');
+    expect(routeSource).toContain('case "buildd://workspace/onboarding"');
+    expect(routeSource).toContain('readOnboardingSkillBody');
+    expect(routeSource).toContain('workspace-onboarding');
+    // Beside, not instead of, the consumer skill resource.
+    expect(routeSource).toContain('case "buildd://workspace/skills"');
+  });
+
+  it('is force-included in the serverless bundle for /api/mcp', () => {
+    expect(nextConfig).toContain('../../.claude/skills/workspace-onboarding/**');
+    expect(nextConfig).toContain('../../.claude/skills/buildd-mcp-consumer/**');
+  });
+
+  it('resolves, from the route\'s working directory, to exactly the committed file', () => {
+    // The route builds its path as join(process.cwd(), "..", "..", ".claude",
+    // "skills", "workspace-onboarding", "SKILL.md") with cwd = apps/web.
+    expect(routeSource).toMatch(
+      /join\(\s*process\.cwd\(\),\s*"\.\.",\s*"\.\.",\s*"\.claude",\s*"skills",\s*"workspace-onboarding",\s*"SKILL\.md"\s*\)/,
+    );
+    const resolved = join(repoRoot, 'apps/web', '..', '..', '.claude', 'skills', 'workspace-onboarding', 'SKILL.md');
+    expect(resolved).toBe(join(repoRoot, skillRelPath));
+    expect(readFileSync(resolved, 'utf8')).toBe(readFileSync(join(repoRoot, skillRelPath), 'utf8'));
+  });
+
+  it('has no inlined copy of the skill body in the route', () => {
+    const body = readFileSync(join(repoRoot, skillRelPath), 'utf8');
+    const distinctiveLine = body.split('\n').find(l => l.length > 60 && !l.startsWith('---')) ?? '';
+    expect(distinctiveLine.length).toBeGreaterThan(0);
+    expect(routeSource).not.toContain(distinctiveLine);
+  });
+});
+
 describe('a skill-less client can still work a task from what remains', () => {
   // The trimmed instructions block drops per-action parameter detail on the
   // assumption that each tool's own schema description already carries it

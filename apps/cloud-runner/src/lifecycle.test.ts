@@ -28,8 +28,19 @@ import {
   parseWorkerIdLine,
   resolveInactivityTimeoutMs,
   runnerCommand,
+  DEFAULT_RUNNER_GROUP,
+  RUNNER_GROUP_CONTAINER_ENV,
   type RunState,
 } from './lifecycle';
+import { RUNNER_GROUP_ENV, onceFleetIdentity } from '../../../packages/shared/src/runner-fleet';
+
+describe('runner group contract with the runner', () => {
+  test('the container env name is the one the runner reads, and the runner reports the group', () => {
+    expect(RUNNER_GROUP_CONTAINER_ENV).toBe(RUNNER_GROUP_ENV);
+    const env = buildContainerEnv({ BUILDD_SERVER: 's', RUNNER_GROUP: 'my-dispatcher' }, 'bldt_a');
+    expect(onceFleetIdentity(env)).toEqual({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' });
+  });
+});
 
 describe('exit code contract with run-once.ts', () => {
   test('codes and the worker-id prefix match the runner', () => {
@@ -185,6 +196,7 @@ describe('container env', () => {
       ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
       BUILDD_DISABLE_AUTO_UPDATE: '1',
       BUILDD_EXECUTOR: 'cloud',
+      BUILDD_RUNNER_GROUP: 'buildd-cloud-runner',
     });
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
@@ -221,6 +233,23 @@ describe('container env', () => {
     }, 'bldt_task');
     expect(env.PUSHER_KEY).toBe('pk');
     expect('MODEL' in env).toBe(false);
+  });
+
+  test('every container of one deployment reports the same runner group: the Worker name', () => {
+    expect(buildContainerEnv({ BUILDD_SERVER: 's', RUNNER_GROUP: 'my-dispatcher' }, 'bldt_a').BUILDD_RUNNER_GROUP).toBe('my-dispatcher');
+    expect(buildContainerEnv({ BUILDD_SERVER: 's', RUNNER_GROUP: 'my-dispatcher' }, 'bldt_b').BUILDD_RUNNER_GROUP).toBe('my-dispatcher');
+    // A Worker deployed before the var existed still groups, under the default name.
+    expect(buildContainerEnv({ BUILDD_SERVER: 's' }, 'bldt_a').BUILDD_RUNNER_GROUP).toBe(DEFAULT_RUNNER_GROUP);
+    expect(DEFAULT_RUNNER_GROUP).toBe('buildd-cloud-runner');
+  });
+
+  test('wrangler.jsonc sets RUNNER_GROUP to the Worker name', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const raw = readFileSync(join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8');
+    const parsed = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ''));
+    expect(parsed.vars.RUNNER_GROUP).toBe(parsed.name);
+    expect(parsed.vars.RUNNER_GROUP).toBe(DEFAULT_RUNNER_GROUP);
   });
 
   test('warm repos: the flag and the snapshot URL only when the Worker turned them on', () => {

@@ -603,6 +603,40 @@ describe('canCompleteMission — PR supersession (task fcaf83d5: a closed-unmerg
     }]);
   });
 
+  it('a closed-unmerged PR declared abandoned with a reason no longer blocks, and is reported as abandoned', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [work('completed', 'Docs import', {
+      workers: [{
+        prUrl: 'https://github.com/org/repo/pull/6', prNumber: 6, mergedAt: null, prLifecycleStatus: 'closed',
+        supersededByPrNumber: null, abandonedAt: '2026-10-01T00:00:00.000Z', abandonedReason: 'docs moved to another plan',
+      }],
+    })];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.awaitingMerge).toBe(0);
+    expect(d.abandonedDetails).toEqual([{
+      taskId: expect.any(String), title: 'Docs import', prNumber: 6, abandonedReason: 'docs moved to another plan',
+    }]);
+  });
+
+  it('an unverified supersession suggestion does NOT clear the gate, but rides along on the detail', async () => {
+    activeMission({ goalCriteria: null });
+    const suggestion = { repo: 'org/repo', prNumber: 3366, prUrl: 'https://github.com/org/repo/pull/3366', signal: 'sibling_task', why: 'merged by a sibling task', score: 0.6 };
+    taskRows = [work('completed', 'Docs import', {
+      workers: [{
+        prUrl: 'https://github.com/org/repo/pull/6', prNumber: 6, mergedAt: null, prLifecycleStatus: 'closed',
+        supersededByPrNumber: null, supersessionScan: { scannedAt: '2026-10-01T00:00:00.000Z', candidatesChecked: 1, suggestion },
+      }],
+    })];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+    expect(d.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
+    expect(d.awaitingMergeDetails[0].suggestion).toEqual(suggestion);
+  });
+
   it('regression (M4): an OPEN PR with changes requested still blocks even if some unrelated field looks set — supersession never substitutes for a merge on a still-open PR', async () => {
     activeMission({ goalCriteria: null });
     // Open PR, no supersession recorded — must still block like the original M4 case.

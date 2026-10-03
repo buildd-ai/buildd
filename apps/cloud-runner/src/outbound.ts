@@ -323,6 +323,8 @@ export type EgressDecision =
       action: 'forward'; url: string; headers: Headers; injected: 'gateway' | 'proxy' | 'direct' | 'github_basic' | 'github_bearer' | 'otlp' | 'none';
       /** Set for a message request to a team endpoint with a model mapping: the egress handler rewrites the body's `model`. */
       mapModel?: (id: string) => string;
+      /** GitHub only: why our credential did not go with this forward (counted in the run report). */
+      unauthenticated?: GithubUnauthenticatedReason;
     }
   | { action: 'reject'; status: number; message: string; reason: RejectReason; pathLabel?: RejectedPathLabel };
 
@@ -330,8 +332,15 @@ export interface RewriteContext {
   model: ModelRoute;
   /** Resolved only for GitHub hosts. `null`: no token available, forward unauthenticated. */
   github?: GithubGrant | null;
+  /** Why `github` is null, as the agent reported it (lookupGithubGrant). */
+  githubUnavailable?: GithubUnavailable;
   now?: number;
 }
+
+/** Mirrors run-report.ts GITHUB_UNAUTH_REASONS. */
+export type GithubUnauthenticatedReason = 'no_grant' | 'grant_fetch_failed' | 'grant_expired' | 'out_of_scope';
+/** Why the agent handed back no grant: no live run, or the token fetch failed (or is backing off). */
+export type GithubUnavailable = 'no_run' | 'fetch_failed';
 
 /** Copy of the request headers with every container-supplied credential removed. */
 export function stripContainerCredentials(input: Headers | Record<string, string>): Headers {
@@ -465,7 +474,12 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   } else if (usable && auth === 'github_bearer') {
     headers.set('authorization', `Bearer ${usable.token}`);
   }
-  return { action: 'forward', url: url.toString(), headers, injected: auth };
+  if (auth !== 'none') return { action: 'forward', url: url.toString(), headers, injected: auth };
+  const unauthenticated: GithubUnauthenticatedReason = usable
+    ? 'out_of_scope'
+    : grant ? 'grant_expired'
+    : ctx.githubUnavailable === 'fetch_failed' ? 'grant_fetch_failed' : 'no_grant';
+  return { action: 'forward', url: url.toString(), headers, injected: auth, unauthenticated };
 }
 
 // ── Token cache (lives in the WorkerAgent) ────────────────────────────────────
@@ -479,6 +493,25 @@ export interface GithubTokenCacheDeps {
   fetchGrant(): Promise<GithubGrant>;
   now(): number;
   log?(message: string): void;
+  /** Once per failed fetch: buildd's status (GrantFetchError), or 0 when nothing answered. */
+  onFailure?(status: number): void;
+}
+
+/** buildd's github-token endpoint answered `status` instead of a grant. */
+export class GrantFetchError extends Error {
+  constructor(readonly status: number, detail?: string) {
+    super(`${GITHUB_TOKEN_PATH} returned ${status}${detail ? `: ${detail}` : ''}`);
+  }
+}
+
+/** What the agent's grant RPC hands the egress handler: the grant, or why there is none. */
+export type GithubGrantLookup = { grant: GithubGrant } | { grant: null; unavailable: GithubUnavailable };
+
+/** The agent's grant RPC. `live`: a run is starting or running; only then is the cache asked. */
+export async function lookupGithubGrant(live: boolean, get: () => Promise<GithubGrant | null>): Promise<GithubGrantLookup> {
+  if (!live) return { grant: null, unavailable: 'no_run' };
+  const grant = await get();
+  return grant ? { grant } : { grant: null, unavailable: 'fetch_failed' };
 }
 
 /**
@@ -522,7 +555,9 @@ export class GithubTokenCache {
         if (gen !== this.generation) return null;
         this.grant = null;
         this.failedAt = this.d.now();
-        this.d.log?.(`[cloud-runner] GitHub token fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+        const status = err instanceof GrantFetchError ? err.status : 0;
+        this.d.log?.(`[cloud-runner] GitHub token fetch failed (status ${status || 'none'}): ${err instanceof Error ? err.message : String(err)}`);
+        this.d.onFailure?.(status);
         return null;
       },
     ).finally(() => {

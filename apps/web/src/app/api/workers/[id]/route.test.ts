@@ -2465,6 +2465,52 @@ describe('PATCH /api/workers/[id]', () => {
     expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention' && 'workspaceId' in c[0])).toBe(true);
   });
 
+  it('stores a sanitized question brief and puts its context and default in the notification', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) };
+      }),
+    });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null });
+    mockNotify.mockClear();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'waiting_input',
+        waitingFor: {
+          type: 'question',
+          prompt: 'Should it use local time or UTC?',
+          context: 'isWeekend() decides weekend surcharges.',
+          options: [{ label: 'Local time', description: 'Own calendar.', consequence: 'Own calendar.', recommended: true }, { label: 'UTC', consequence: 42 }],
+          recommended: { label: 'Local time', reason: 'Own calendar.' },
+          where: { taskTitle: 'Weekend surcharge', branch: 7 },
+        },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+
+    expect(capturedSet.waitingFor).toMatchObject({
+      type: 'question',
+      prompt: 'Should it use local time or UTC?',
+      context: 'isWeekend() decides weekend surcharges.',
+      recommended: { label: 'Local time', reason: 'Own calendar.' },
+      where: { taskTitle: 'Weekend surcharge' },
+    });
+    expect(capturedSet.waitingFor.options[1]).toEqual({ label: 'UTC' });
+    const call = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs your input');
+    expect(call![0].message.split('\n')).toEqual([
+      'Should it use local time or UTC?',
+      'isWeekend() decides weekend surcharges.',
+      'Recommended: Local time. Own calendar.',
+    ]);
+  });
+
   it('clears waitingFor when worker resumes running', async () => {
     let capturedSet: any = null;
     mockWorkersUpdate.mockReturnValue({

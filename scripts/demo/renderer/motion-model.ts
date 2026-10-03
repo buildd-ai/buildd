@@ -92,17 +92,23 @@ export function verifyTick(m: Verify, i: number): number {
 }
 
 /**
- * The hero at `local`: each bar's fill and each check (0..1), Done (0..1).
- * Everything fades back to zero over [resetAt, resetAt + resetDur], which ends
- * the shot, so the last frame is the first.
+ * The hero at `local`: each bar's fill and each check (0..1), whether the bars
+ * show, and Done (0..1). Done and the bars never share a frame: the bars leave
+ * just before Done comes in, and at the reset Done leaves before the (empty)
+ * bars come back. Everything is back at its first frame by the end of the
+ * shot (resetAt + resetDur), so a single-shot loop has no seam.
  */
-export function verifyAt(m: Verify, local: number): { bars: number[]; checks: number[]; done: number } {
+export function verifyAt(m: Verify, local: number): { bars: number[]; checks: number[]; barsShown: number; done: number } {
   const keep = 1 - ease((local - m.resetAt) / m.resetDur);
-  const q = (x: number) => +(x * keep).toFixed(6);
+  const q = (x: number) => +x.toFixed(6);
+  const reset = local >= m.resetAt;
+  const doneOut = 1 - ease((local - m.resetAt) / 0.5);
+  const barsBack = ease((local - (m.resetAt + 0.55)) / 0.5);
   return {
-    bars: m.checks.map((_, i) => q(ease((local - (m.from + i * m.stagger)) / (m.grow + i * m.spread)))),
-    checks: m.checks.map((_, i) => q(ease((local - verifyTick(m, i)) / 0.25))),
-    done: q(ease((local - m.doneAt) / 0.6)),
+    bars: m.checks.map((_, i) => q(reset ? 0 : ease((local - (m.from + i * m.stagger)) / (m.grow + i * m.spread)))),
+    checks: m.checks.map((_, i) => q(ease((local - verifyTick(m, i)) / 0.25) * keep)),
+    barsShown: q(reset ? barsBack : 1 - ease((local - (m.doneAt - 0.5)) / 0.45)),
+    done: q(ease((local - m.doneAt) / 0.6) * doneOut),
   };
 }
 

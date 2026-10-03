@@ -26,7 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration,TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -521,6 +521,9 @@ export interface WorkspaceGitConfig {
     migrationsDir?: string;
   };
 
+  // Owner decisions the repo cannot tell us (docs/design/workspace-onboarding.md §2).
+  // The readiness report itself is recomputed, never stored. Absent ⇒ current behaviour.
+  onboarding?: WorkspaceOnboardingConfig;
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
@@ -1583,13 +1586,21 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
  * AskUserQuestion options as objects; older rows and hand-written callers still
  * send bare strings, so readers must accept both.
  */
-export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean };
+export type WaitingForOption = string | { label: string; description?: string; recommended?: boolean; consequence?: string };
 
+/**
+ * `context`, `recommended` and `where` are the question brief
+ * (module header: packages/core/question-brief.ts). All optional: rows written before
+ * it carry none and still render.
+ */
 export type WorkerWaitingFor = {
   type: string;
   prompt: string;
   options?: WaitingForOption[];
   toolUseId?: string;
+  context?: string;
+  recommended?: { label: string; reason?: string };
+  where?: { taskTitle?: string; branch?: string; file?: string };
 };
 
 /**
@@ -1732,6 +1743,21 @@ export const workers = pgTable('workers', {
   // the account being deleted.
   supersededRecordedBy: text('superseded_recorded_by'),
   supersededAt: timestamp('superseded_at', { withTimezone: true }),
+  // A closed-unmerged PR a person declared abandoned: the work is deliberately
+  // not shipping, and the reason says why. Not a supersession (nothing landed)
+  // and not a fake one — `prShipState` reads it as its own `abandoned` state,
+  // which no longer blocks mission completion. Reason required at write time
+  // (lib/pr-supersession.ts `recordPrAbandonment`).
+  abandonedReason: text('abandoned_reason'),
+  abandonedRecordedBy: text('abandoned_recorded_by'),
+  abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
+  // Where automatic supersession detection (lib/pr-supersession-detect.ts)
+  // looked last, and the unverified candidate it found, if any. A suggestion
+  // here is NEVER an edge: only content verification writes the columns above.
+  // `supersessionScannedAt` mirrors `supersessionScan.scannedAt` so the backfill
+  // sweep can select stale rows without a jsonb cast.
+  supersessionScan: jsonb('supersession_scan').$type<import('../pr-shipped').SupersessionScan | null>(),
+  supersessionScannedAt: timestamp('supersession_scanned_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -2698,7 +2724,7 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.

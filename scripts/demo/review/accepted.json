@@ -1,0 +1,17 @@
+{
+  "_doc": "Known false positives, reviewed by a person (scripts/demo/review/checks.ts applyAccepted). Each stays in the report, marked accepted with its reason, and stops failing the run. Keep each match narrow: the review rule only accepts a finding when EVERY word it lists is text inside the screenshot.",
+  "rules": [
+    {
+      "clip": "^review",
+      "check": "legibility",
+      "match": "^lit text set under 9px at \\d+px wide: (\"(3\\.763,97|¥166,320|EUR|JPY|Total|Sep|14|2026|INV-2026-04\\d\\d|Harbor[lt]ine|Invoice|FINDING|FINDENG|ba|ine|NG)\" [\\d.]+px(, )?)+( \\(\\+\\d+\\))?$",
+      "reason": "Text inside the invoice screenshot the review deck shows (amounts, dates, invoice ids): a picture of a page, not UI copy meant to be read at this size."
+    },
+    {
+      "clip": "^rules",
+      "check": "legibility",
+      "match": "^lit text set under 9px at \\d+px wide: \"lling\" [\\d.]+px$",
+      "reason": "OCR fragment of \"billing-web\", which the spotlight's dimmed edge cuts; the full word is not small."
+    }
+  ]
+}

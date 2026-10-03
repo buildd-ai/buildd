@@ -24,6 +24,12 @@ mock.module('@/lib/retry-pr-supersession', () => ({
   sweepDuplicateLineagePrs: mockLineageSweep,
 }));
 
+const CLOSED_ZERO = { candidates: 0, recorded: 0, suggested: 0, none: 0, skipped: 0 };
+const mockClosedPrSweep = mock(() => Promise.resolve(CLOSED_ZERO as any));
+mock.module('@/lib/pr-supersession-detect', () => ({
+  sweepClosedUnsupersededPrs: mockClosedPrSweep,
+}));
+
 // The two sweeps below were unmocked too, so they queried the live database.
 mock.module('@/lib/stranded-tasks-sweep', () => ({
   sweepStrandedTasks: async () => ({ scanned: 0, stranded: 0, cleared: 0 }),
@@ -100,6 +106,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockDeadZone.mockReset();
     mockLineageSweep.mockReset();
     mockLineageSweep.mockResolvedValue(LINEAGE_ZERO);
+    mockClosedPrSweep.mockReset();
+    mockClosedPrSweep.mockResolvedValue(CLOSED_ZERO);
     mockDeferredDispatch.mockReset();
     mockDeferredDispatch.mockResolvedValue({ dispatched: 0, failed: 0 });
     mockReconcile.mockResolvedValue(ZERO);
@@ -280,6 +288,23 @@ describe('GET /api/cron/pr-reconcile', () => {
     const body = await res.json();
     expect(body.reconcile.stamped).toBe(2);
     expect(body.lineagePrs.error).toContain('lineage query failed');
+  });
+
+  // ── Closed-unmerged PR supersession backfill ───────────────────────────────
+
+  it('runs the closed-PR supersession backfill hourly and reports it', async () => {
+    mockClosedPrSweep.mockResolvedValue({ candidates: 2, recorded: 1, suggested: 1, none: 0, skipped: 0 });
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect(mockClosedPrSweep).toHaveBeenCalledTimes(1);
+    expect((await res.json()).closedPrs).toEqual({ candidates: 2, recorded: 1, suggested: 1, none: 0, skipped: 0 });
+  });
+
+  it('a closed-PR backfill failure does not fail the run', async () => {
+    mockClosedPrSweep.mockRejectedValue(new Error('detect failed'));
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).closedPrs.error).toContain('detect failed');
   });
 
   // ── Deferred-start dispatch ────────────────────────────────────────────────
