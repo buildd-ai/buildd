@@ -9,6 +9,40 @@ surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, 
 related: [timeline-dependency-geometry, timeline-mobile-rail, mission-structure-view, mission-legibility]
 keywords: [landed strip, segment strip, 04 / 14, waiting on 8 dependencies, next open, tick row, topological order, queued behind, stripOrder]
 verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
+assertions:
+  - id: "build-mission-adjacency"
+    type: "symbol"
+    name: "buildMissionAdjacency"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "strip-order"
+    type: "symbol"
+    name: "stripOrder"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-state"
+    type: "symbol"
+    name: "stripState"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-slots"
+    type: "symbol"
+    name: "stripSlots"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-marks"
+    type: "symbol"
+    name: "stripMarks"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-selection-reason"
+    type: "symbol"
+    name: "stripSelectionReason"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "mission-task-strip-test"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-task-strip.test.ts"
+  - id: "mission-task-strip-dom-test"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx"
+  - id: "condensed-timeline-test"
+    type: "test_file"
+    path: "apps/web/src/lib/condensed-timeline.test.ts"
 supersedes: []
 ---
 
