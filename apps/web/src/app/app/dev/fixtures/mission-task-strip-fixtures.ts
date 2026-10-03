@@ -1,0 +1,115 @@
+/**
+ * The `?state=mission-task-strip` dev fixture and the parity test's tasks: a
+ * mission Board whose Landed strip has something to select.
+ *
+ *   &variant=mid-open     nine landed, one open in the middle (a local mission)
+ *   &variant=all-landed   everything landed: the drawer opens on the last task
+ *   &variant=states       one task per action state: queued, failed, blocked, landed
+ *
+ * Illustrative rows only (made-up ids and titles), built through the real
+ * `buildMissionBoard`, so the strip reads exactly what the mission page reads.
+ */
+import { buildMissionBoard, type BoardTaskInput, type BoardWorkerInput, type MissionBoardModel } from '@/lib/mission-board';
+import type { MissionExecutor } from '@/lib/task-actions';
+import { MISSION_TASK_STRIP_FIXTURE_STATE } from './visual-review-fixtures';
+
+export const MISSION_TASK_STRIP_STATE = MISSION_TASK_STRIP_FIXTURE_STATE;
+export const MISSION_TASK_STRIP_VARIANTS = ['mid-open', 'all-landed', 'states'] as const;
+export type MissionTaskStripVariant = (typeof MISSION_TASK_STRIP_VARIANTS)[number];
+
+export function parseMissionTaskStripVariant(q: URLSearchParams): MissionTaskStripVariant {
+  const v = q.get('variant');
+  return (MISSION_TASK_STRIP_VARIANTS as readonly string[]).includes(v ?? '') ? (v as MissionTaskStripVariant) : 'mid-open';
+}
+
+export function missionTaskStripLinks(): { label: string; href: string }[] {
+  return MISSION_TASK_STRIP_VARIANTS.map(v => ({ label: `strip: ${v}`, href: `?state=${MISSION_TASK_STRIP_STATE}&variant=${v}` }));
+}
+
+/** Made-up but valid UUIDs, so the drawer's links and short ids look real. */
+export const stripFixtureId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+const T0 = Date.UTC(2026, 0, 1, 12, 0, 0);
+const min = (n: number) => T0 + n * 60_000;
+
+function worker(id: string, over: Partial<BoardWorkerInput>): BoardWorkerInput {
+  return {
+    id, status: 'completed', runner: 'alpha', startedAt: min(1), completedAt: min(8), updatedAt: min(8),
+    mergedAt: null, prNumber: null, prUrl: null, prLifecycleStatus: null, currentAction: null, waitingFor: null,
+    milestones: [], linesAdded: null, linesRemoved: null, ...over,
+  };
+}
+
+function task(n: number, title: string, over: Partial<BoardTaskInput> = {}): BoardTaskInput {
+  const workers = over.workers ?? [];
+  const first = workers[0];
+  return {
+    id: stripFixtureId(n), title, status: 'pending', taskClass: 'work',
+    createdAt: new Date(T0 + n * 1000), missionPhaseIndex: 1, missionPhaseLabel: 'Build it',
+    roleSlug: 'builder', outputRequirement: 'pr_required', backend: 'claude', workers,
+    worker: first ? {
+      status: first.status, startedAt: first.startedAt ? new Date(first.startedAt) : null,
+      updatedAt: first.updatedAt ? new Date(first.updatedAt) : null, prNumber: first.prNumber,
+      prUrl: first.prUrl, prLifecycleStatus: first.prLifecycleStatus, mergedAt: first.mergedAt ? new Date(first.mergedAt) : null,
+    } : null,
+    ...over,
+  };
+}
+
+function landed(n: number, title: string): BoardTaskInput {
+  const pr = 400 + n;
+  return task(n, title, {
+    status: 'completed',
+    workers: [worker(`w${n}`, {
+      startedAt: min(n * 3), completedAt: min(n * 3 + 2), updatedAt: min(n * 3 + 2), mergedAt: min(n * 3 + 2),
+      prNumber: pr, prUrl: `https://github.com/example/app/pull/${pr}`, prLifecycleStatus: 'merged',
+    })],
+  });
+}
+
+const TITLES = [
+  'feat(runner): agent loop skeleton', 'feat(runner): tool call bridge', 'feat(runner): session storage',
+  'feat(runner): streaming output', 'fix(runner): retry on rate limit', 'feat(runner): workspace checkout',
+  'feat(runner): heartbeat', 'docs(runner): setup guide', 'feat(runner): claim from a session', 'test(runner): end-to-end smoke',
+];
+
+/** What a fixture hands the Board: the model, the mission's executor, and nothing else. */
+export interface MissionTaskStripFixture {
+  model: MissionBoardModel;
+  executor: MissionExecutor;
+}
+
+export function missionTaskStripFixture(variant: MissionTaskStripVariant, now = min(60)): MissionTaskStripFixture {
+  const base = { now, missionCreatedAt: T0, missionStatus: 'active' as const };
+  if (variant === 'all-landed') {
+    return {
+      model: buildMissionBoard({ ...base, tasks: TITLES.map((t, i) => landed(i + 1, t)), missionStatus: 'completed', missionCompletedAt: min(40) }),
+      executor: 'runner',
+    };
+  }
+  if (variant === 'states') {
+    return {
+      model: buildMissionBoard({
+        ...base,
+        tasks: [
+          landed(1, 'feat(app): landed work'),
+          task(2, 'feat(app): queued on a runner'),
+          task(3, 'feat(app): failed on claude', {
+            status: 'failed',
+            workers: [worker('w3', { status: 'failed', startedAt: min(5), completedAt: min(9), updatedAt: min(9) })],
+          }),
+          task(4, 'feat(app): waits for the queued task', { dependsOn: [stripFixtureId(2)] }),
+        ],
+      }),
+      executor: 'runner',
+    };
+  }
+  // mid-open: nine landed, the claim task open (a local mission's task).
+  return {
+    model: buildMissionBoard({
+      ...base,
+      tasks: TITLES.map((t, i) => (i === 8 ? task(i + 1, t) : landed(i + 1, t))),
+    }),
+    executor: 'local',
+  };
+}

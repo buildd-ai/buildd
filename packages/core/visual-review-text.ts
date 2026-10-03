@@ -75,6 +75,8 @@ export function describeVisualPhase(
       const parts: string[] = [];
       if (issues > 0) parts.push(plural(issues, 'issue'));
       if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed`);
+      // Wrong-branch shots the auditor owes: never a question for a person.
+      if (s.captureGaps) parts.push(`${plural(s.captureGaps, 'capture gap')} for the auditor`);
       return { label: head, detail: parts.length > 0 ? `${parts.join(', ')}.` : `${head}.` };
     }
   }
@@ -314,6 +316,26 @@ function checkedBeforeDone(audits: VisualReviewAuditTask[], completedAt: string 
   return `${q} no (no audit completed; latest: round ${latest.round} ${latest.status}).`;
 }
 
+/**
+ * Shots from a branch other than the mission's capture ref
+ * (docs/design/visual-qa-auditor.md, "Page source"). They never reach the
+ * cells, so they are listed here instead of disappearing silently.
+ */
+function wrongRefLines(model: VisualReviewModel, o: FormatVisualReviewOptions): string[] {
+  const lines: string[] = [];
+  const gaps = model.captureGaps ?? [];
+  const superseded = model.superseded ?? [];
+  if (gaps.length > 0) {
+    lines.push(`Capture gaps (${gaps.length}): shots from the wrong branch the auditor still has to recapture from ${gaps[0].expectedRef}; not shown for review:`);
+    for (const g of gaps) lines.push(`  - ${g.route} ${VIEWPORT_WORD[g.viewport]}: captured from ${g.ref} (round ${g.round}, shot ${pageLink(o, g.shotId)})`);
+  }
+  if (superseded.length > 0) {
+    lines.push(`Superseded (${superseded.length}): shots from the wrong branch, replaced by a shot from ${superseded[0].expectedRef}; kept for audit, not shown for review:`);
+    for (const s of superseded) lines.push(`  - ${s.route} ${VIEWPORT_WORD[s.viewport]}: captured from ${s.ref}, replaced by ${pageLink(o, s.supersededBy)}`);
+  }
+  return lines;
+}
+
 /** The MCP closing line: what, if anything, waits on a human, from `needsYou`, never a bare count. */
 function needsYouLine(model: VisualReviewModel): string {
   const n = model.summary.awaitingHuman;
@@ -388,6 +410,7 @@ export function formatVisualReview(
     const left = model.cells.length - shown.length;
     if (left > 0) lines.push(`${plural(left, 'other screen')} not shown (awaitingOnly); call without awaitingOnly for all.`);
   }
+  lines.push(...wrongRefLines(model, opts));
   if (hasEvidence) lines.push(...evidenceLines(ev, opts));
 
   if (mcp) {

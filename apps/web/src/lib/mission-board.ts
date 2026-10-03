@@ -69,6 +69,8 @@ export interface BoardTaskInput extends MissionFeedTaskInput {
   label?: string | null;
   outputRequirement?: string | null;
   ciRetryPrNumber?: number | null;
+  /** `tasks.backend` (null: the default). The Landed drawer's task actions read it. */
+  backend?: string | null;
   /** Newest first, as the mission query orders them. */
   workers: BoardWorkerInput[];
 }
@@ -173,6 +175,15 @@ export interface BoardTask {
   /** Attempts beyond the first (↻2 = one retry). */
   attempt: number;
   waitingFor: { prompt: string; options: string[] } | null;
+  /**
+   * The raw row the Landed drawer's task actions derive their phase from
+   * (`taskActionPhase`, the same function the task sheet uses): the task's own
+   * status and mode, its newest worker's status, and its backend.
+   */
+  taskStatus: string;
+  taskMode: string | null;
+  workerStatus: string | null;
+  backend: 'claude' | 'codex' | null;
 }
 
 export interface BoardPhase {
@@ -417,6 +428,7 @@ export function toBoardTaskInput(t: Record<string, unknown> & { id: string; titl
     missionPhaseLabel: str(t.missionPhaseLabel),
     outputRequirement: str(t.outputRequirement),
     ciRetryPrNumber: num(t.ciRetryPrNumber),
+    backend: str(t.backend),
     worker: w0
       ? {
           status: w0.status,
@@ -602,6 +614,10 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       lines: own && (own.linesAdded || own.linesRemoved) ? { added: own.linesAdded ?? 0, removed: own.linesRemoved ?? 0 } : null,
       attempt: 1 + r.attempts.filter(a => a.workers.length > 0 || a.status !== 'pending').length,
       waitingFor: status === 'waiting' ? activeWorker?.waitingFor ?? null : null,
+      taskStatus: t.status,
+      taskMode: t.mode ?? null,
+      workerStatus: own?.status ?? null,
+      backend: t.backend === 'claude' || t.backend === 'codex' ? t.backend : null,
     };
   }
   for (const bt of Object.values(tasks)) {

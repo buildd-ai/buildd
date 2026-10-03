@@ -28,7 +28,7 @@
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
@@ -219,9 +219,16 @@ export async function escalateCiRedHead(input: EscalationInput): Promise<boolean
 export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetryOutcome> {
   const { repoFullName, prNumber, headSha, installationId, surface } = input;
 
+  // A PR under an active retry loop can have more than one worker row
+  // stamped with the same prNumber — the original worker and each retry
+  // attempt's own worker, since a retry continues on the SAME branch/PR. Order
+  // by newest so the iteration read below comes from the latest attempt's
+  // context, not an earlier (possibly iteration-less) one — see the openWorker
+  // fix in PR #2574, which this mirrors for the CI-retry path.
   let worker = await db.query.workers.findFirst({
     where: workerOwnsPr(repoFullName, prNumber),
     with: { task: true },
+    orderBy: [desc(workers.createdAt)],
   });
 
   if (!worker?.task) {

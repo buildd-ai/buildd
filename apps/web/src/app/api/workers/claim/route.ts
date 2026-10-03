@@ -2271,10 +2271,20 @@ export async function POST(req: NextRequest) {
     //      by the time this insert runs another claim (or a reaper re-queue racing
     //      a still-live worker) may already own the task. A second row for a task
     //      that already has one can only ever rot into a stale-worker kill.
+    // Lock the claimed task in this statement. Cancellation either wins first
+    // (the status check refuses insertion), or waits for this insert to commit
+    // and then sees the live worker in its post-cancellation read.
     const insertResult = await db.execute(sql`
       INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
       SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
-      WHERE (
+      WHERE EXISTS (
+        SELECT 1 FROM ${tasks} t_claim
+        WHERE t_claim.id = ${task.id}
+        AND t_claim.status = 'assigned'
+        AND t_claim.claimed_by = ${account.id}
+        FOR UPDATE
+      )
+      AND (
         SELECT count(*) FROM ${workers}
         WHERE account_id = ${account.id}
         AND status IN ('idle', 'running', 'starting', 'waiting_input')
@@ -2312,11 +2322,11 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
-      // Concurrency limit reached — roll back the task claim
+      // Roll back only our still-assigned claim; never resurrect a cancelled task.
       await db
         .update(tasks)
         .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-        .where(eq(tasks.id, task.id));
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id)));
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',

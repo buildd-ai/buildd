@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { otherBackendOf, requestTaskRetry } from '@/lib/task-actions';
 
 type Backend = 'claude' | 'codex' | null;
 
@@ -20,31 +21,21 @@ export default function ReassignButton({
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const otherBackend: Backend = currentBackend === 'codex' ? 'claude' : currentBackend === 'claude' ? 'codex' : null;
+  const otherBackend: Backend = otherBackendOf(currentBackend);
   const cap = (b: Backend) => (b ? b.charAt(0).toUpperCase() + b.slice(1) : '');
 
   async function handleReassign(which: 'same' | 'switch') {
     setLoading(which);
     setError(null);
-    try {
-      const res = await fetch(`/api/tasks/${taskId}/reassign?force=true`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // Only send a backend when switching; omitted keeps the stored one.
-        body: which === 'switch' && otherBackend ? JSON.stringify({ backend: otherBackend }) : undefined,
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setError(data.error || 'Failed to reassign task');
-        return;
-      }
-      router.refresh();
-      setShowConfirm(false);
-    } catch {
-      setError('Failed to reassign task');
-    } finally {
-      setLoading(null);
+    // Only send a backend when switching; omitted keeps the stored one.
+    const out = await requestTaskRetry(taskId, which === 'switch' && otherBackend ? { backend: otherBackend } : {});
+    setLoading(null);
+    if (!out.ok) {
+      setError(out.error);
+      return;
     }
+    router.refresh();
+    setShowConfirm(false);
   }
 
   if (showConfirm) {

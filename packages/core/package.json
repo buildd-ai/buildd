@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.264.0",
+  "version": "0.265.1",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -164,6 +164,7 @@
     "./surface-audit": "./surface-audit.ts",
     "./visual-qa-routes": "./visual-qa-routes.ts",
     "./visual-qa-page-source": "./visual-qa-page-source.ts",
+    "./visual-qa-capture-ref": "./visual-qa-capture-ref.ts",
     "./visual-review-text": "./visual-review-text.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",
