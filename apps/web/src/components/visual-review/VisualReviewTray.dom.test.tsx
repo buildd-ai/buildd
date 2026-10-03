@@ -69,11 +69,11 @@ describe('VisualReviewTray with shots', () => {
     const onReview = mock((_k: string | null) => {});
     render(<VisualReviewTray model={model} onReview={onReview} />);
     const btn = q('visual-review-review-button')!;
-    // Screens awaiting you: the unsure ones and new screenshots after a merged fix.
+    // The same count the Line and the Ask use: unsure screens awaiting you (fix checks wait in the deck).
     expect(model.summary.awaitingHuman).toBeGreaterThan(0);
     expect(model.summary.fixChecks).toBeGreaterThan(0);
     expect(model.summary.unreviewed).not.toBe(model.summary.awaitingHuman);
-    expect(btn.textContent).toContain(`Review ${model.summary.awaitingHuman + model.summary.fixChecks!}`);
+    expect(btn.textContent).toContain(`Review ${model.summary.awaitingHuman}`);
     act(() => btn.click());
     expect(onReview).toHaveBeenLastCalledWith(model.queue[0]);
     const thumb = qa('visual-review-thumb')[2];

@@ -42,9 +42,9 @@ describe('VisualReviewLine', () => {
     const m = buildVisualReviewFixtureModel('needs_you', { scenario: 'deck' });
     const html = renderToStaticMarkup(<VisualReviewLine model={m} />);
     expect((html.match(/data-dot=/g) ?? []).length).toBe(m.cells.length);
-    // Awaiting you: unsure screens and new screenshots after a merged fix.
+    // Hollow = the "N to review" count: unsure screens. A fix check waits in the deck instead.
     expect(m.summary.fixChecks).toBe(1);
-    expect((html.match(/data-dot="awaiting"/g) ?? []).length).toBe(m.summary.awaitingHuman + m.summary.fixChecks!);
+    expect((html.match(/data-dot="awaiting"/g) ?? []).length).toBe(m.summary.awaitingHuman);
     expect(m.summary.awaitingCapture).toBe(1);
     expect((html.match(/data-dot="fix_merged"/g) ?? []).length).toBe(1);
     expect((html.match(/data-dot="decided"/g) ?? []).length).toBe(m.summary.reviewed);

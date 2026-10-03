@@ -7,7 +7,7 @@
  * (hollow: not decided yet; solid: you agreed; struck: you disagreed; a
  * hollow tick: you waived an unsure call; a filled grey square: its fix
  * merged and it waits for a new screenshot, nothing to decide). "Review N"
- * counts unsure screens and fix checks, and opens the deck at the
+ * opens the deck at the
  * head of the queue, and a thumbnail opens it at that screen. The button is
  * secondary on purpose: when the audit needs you, VisualReviewAsk carries
  * the one orange call to action.
@@ -19,7 +19,7 @@
  */
 import { useState } from 'react';
 import type { VisualReviewCell, VisualReviewMarker, VisualReviewModel } from '@buildd/shared';
-import { awaitingCapture, describeVisualPhase, fixCheckDue } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase } from '@/lib/visual-review-model';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL, viewportAspect } from './ShotImage';
 import VisualReviewLine from './VisualReviewLine';
 import { AnswerRow, type OnAnswer } from './VisualReviewAsk';
@@ -98,7 +98,7 @@ export function ReviewMarker({ marker, className = '' }: { marker: VisualReviewM
 function Thumb({ cell, onOpen }: { cell: VisualReviewCell; onOpen?: (key: string) => void }) {
   const verdict = cell.effectiveVerdict;
   const label = `${cell.route}${cell.variant ? ` ${cell.variant}` : ''}, ${VIEWPORT_LABEL[cell.viewport].toLowerCase()}: ${thumbState(cell)}`;
-  const due = cell.needsHuman || fixCheckDue(cell);
+  const due = cell.needsHuman;
   const inner = (
     <>
       <span
@@ -165,8 +165,9 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
 export default function VisualReviewTray({ model, onReview, actions, hideLine = false, hideReviewButton = false, columns = 'auto', className = '' }: VisualReviewTrayProps) {
   const groups = groupCells(model.cells);
   const s = model.summary;
-  // Screens awaiting you: unsure ones (the count the Line and the Ask share) and fix checks.
-  const awaiting = s.awaitingHuman + (s.fixChecks ?? 0);
+  // One count across the Line, the Ask and this button: unsure screens awaiting you.
+  // Fix checks wait in the deck's queue, not here (they never put the audit in needs_you).
+  const awaiting = s.awaitingHuman;
   const reviewButton = onReview && !hideReviewButton && model.cells.length > 0 ? (
     <button
       type="button"
