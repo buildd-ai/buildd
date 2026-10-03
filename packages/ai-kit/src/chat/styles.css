@@ -51,6 +51,26 @@
 .kit-step[data-state="pending"] .kit-step-mark { border-color: var(--kit-accent); }
 @keyframes kit-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .kit-step[data-state="active"] .kit-step-mark { animation: none; border-top-color: var(--kit-accent); } }
+/* 0.17.0: the live turn is one free line (square + live label, no box, no
+   header) that unfolds the turn; one key step stays pinned under it. */
+.kit-thinking[data-streaming] { border: 0; background: transparent; padding: 0; display: grid; gap: 4px; }
+.kit-live-line { display: flex; align-items: center; gap: 8px; min-height: 44px; width: 100%; min-width: 0; margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; }
+button.kit-live-line { cursor: pointer; }
+button.kit-live-line:disabled { cursor: default; }
+.kit-live-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kit-live-count { font-family: var(--kit-font-mono); font-size: 11.5px; color: var(--kit-muted); }
+.kit-live-timer { flex: none; font-variant-numeric: tabular-nums; color: var(--kit-warn, var(--kit-muted)); }
+.kit-live-chevron { margin-left: auto; flex: none; padding: 0 4px; color: var(--kit-muted); opacity: .6; transition: rotate 150ms cubic-bezier(0.4, 0, 0.2, 1); }
+.kit-live-line[aria-expanded="true"] .kit-live-chevron { rotate: 90deg; }
+.kit-thinking-pinned { min-width: 0; }
+.kit-thinking-pinned > .kit-steps { margin: 0; }
+.kit-step[data-weight="key"] { color: var(--kit-ink); font-weight: 500; }
+.kit-step-fold { display: grid; gap: 4px; min-width: 0; }
+.kit-step-fold-btn { display: grid; gap: 2px; min-height: 44px; width: 100%; min-width: 0; margin: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--kit-muted); text-align: left; cursor: pointer; opacity: .8; }
+.kit-step-fold-count { font-size: 13px; }
+.kit-step-fold-labels { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kit-step-fold > .kit-steps { margin: 0 0 0 12px; }
+@media (prefers-reduced-motion: reduce) { .kit-live-chevron { transition: none; } }
 
 /* ── Cards (approval, hand-off, setup) ──────────────────────────────────── */
 .kit-card { border: 1px solid var(--kit-rule); border-top: 2px solid var(--kit-accent); border-radius: var(--kit-radius-hard); background: var(--kit-surface); padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }

@@ -243,6 +243,14 @@ export interface StepData {
   id: string;
   label: string;
   state: 'done' | 'active' | 'pending';
+  /**
+   * How much the step matters to the person (0.17.0), decided by the server:
+   * `key` (a write that returned something, a failure, a change waiting on
+   * them, a refusal) or `routine` (reads, counted runs, thinking). The panel
+   * pins the latest key step and folds runs of routine ones. Absent: a
+   * `pending` step is key, anything else routine (`stepWeight`).
+   */
+  weight?: 'key' | 'routine';
 }
 
 /** A long job was filed to a runner; the part becomes a live object. */
