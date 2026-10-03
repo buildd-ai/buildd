@@ -136,11 +136,16 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
       { artifact: broadcastArtifact }
     );
 
-    // Notify if this artifact is meant for review and the task opted in
+    // Notify if this artifact is meant for review and the task opted in.
+    // For updates, only notify if content actually changed (not on every upsert).
     if (taskId && result) {
       const shouldNotify = await shouldNotifyOnArtifact(result, taskId);
       if (shouldNotify) {
-        await notifyArtifactReady(result, taskId, workspaceId);
+        // On update, check if content or title changed; on insert, always notify.
+        const isUpdate = !!existing;
+        if (!isUpdate || (existing.content !== content || existing.title !== title)) {
+          await notifyArtifactReady(result, taskId, workspaceId);
+        }
       }
     }
   } catch (err) {
