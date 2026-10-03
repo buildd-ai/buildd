@@ -123,6 +123,14 @@ export const GATE_SLUGS = {
    */
   AUTO_PR_SUPERSESSION: 'auto_pr_supersession',
   /**
+   * The supersession reconciler (`lib/supersession.ts`). `accepted`: one row per
+   * task a rule cancelled, written by the CAS winner only — `detail.rule` is the
+   * rule id, `detail.event` the subject event. `rejected`: one event matched more
+   * than the per-event cap, so nothing was cancelled and `detail.wouldCancel`
+   * holds the set.
+   */
+  SUPERSESSION: 'supersession',
+  /**
    * The chat retro proposal pass (apps/web/src/lib/chat-retro/, experiment).
    * `deferred`: a pattern over the daily per-team cap. `rejected`: a signature
    * muted until its evidence doubles, or a pattern with no workspace to file

@@ -47,11 +47,17 @@ import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
-import { enforceServerSideEscalation, supersedeFixTaskOnApproval } from '@/lib/reviewer';
+import { enforceServerSideEscalation } from '@/lib/reviewer';
+import {
+  checkDispatch,
+  guardDispatchedTask,
+  reconcileSubjectEvent,
+  type DispatchProposal,
+  type SubjectEvent,
+} from '@/lib/supersession';
 import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
-import { findReviewTaskForPr } from '@/lib/pr-review-request';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
@@ -4702,7 +4708,7 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true },
+    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true },
   });
 
   if (!reviewerTask) return;
@@ -4976,22 +4982,26 @@ async function handleReviewerOutcomeIfNeeded(
     }
   }
 
+  // The verdict is recorded: let the supersession table cancel what it made
+  // obsolete — every open review fix on an approve, and on any verdict a
+  // not-yet-started fix that answers an older round. Before the switch, so an
+  // approve's merge below never races a fix that is about to push. Never throws.
+  const verdictEvent: SubjectEvent = {
+    kind: 'verdict',
+    verdict: effectiveVerdict,
+    workspaceId,
+    prNumber,
+    reviewerTaskId,
+    headSha,
+    roundCreatedAt: reviewerTask.createdAt ?? null,
+    originalTaskId,
+    door: 'PATCH /api/workers/[id] (reviewer verdict)',
+    pr: { installationId, repoFullName },
+  };
+  await reconcileSubjectEvent(verdictEvent);
+
   switch (effectiveVerdict) {
     case 'approve': {
-      // An earlier changes-requested verdict may still have a fix task queued
-      // or running on this PR — that verdict is now stale. Cancel it before it
-      // can push a commit and force a re-review on an already-approved PR
-      // (task d57ba617).
-      await supersedeFixTaskOnApproval({
-        workspaceId,
-        originalTaskId,
-        installationId,
-        repoFullName,
-        prNumber,
-      }).catch((err) =>
-        console.error(`[reviewer] supersedeFixTaskOnApproval threw for PR #${prNumber}:`, err),
-      );
-
       // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
       const approvePolicy = reviewPolicy;
 
@@ -5207,10 +5217,20 @@ async function handleReviewerOutcomeIfNeeded(
         return;
       }
 
-      // Any newer round supersedes this verdict, including unfinished rounds.
-      const newestReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
-      if (newestReviewTask?.id !== reviewerTaskId) {
-        console.log(`[reviewer] Skipping stale fix dispatch for PR #${prNumber}`);
+      // Dispatch guard: the supersession table in skip_dispatch mode. A newer
+      // round (finished or not), an approve, or a merged/closed PR means this
+      // fix would be cancelled the moment it existed — so it is never created.
+      const fixProposal: DispatchProposal = {
+        kind: 'fix',
+        workspaceId,
+        prNumber,
+        parentTaskId: originalTaskId,
+        triggeringReviewTaskId: reviewerTaskId,
+        door: 'PATCH /api/workers/[id] (request-changes fix)',
+      };
+      const dispatchCheck = await checkDispatch(fixProposal);
+      if (dispatchCheck.verdict === 'skip_dispatch') {
+        console.log(`[reviewer] Skipping fix dispatch for PR #${prNumber}: ${dispatchCheck.rule}`);
         return;
       }
 
@@ -5286,17 +5306,12 @@ async function handleReviewerOutcomeIfNeeded(
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
       });
-      // Approval can sweep zero fixes after the initial check but before our
-      // insert. Re-read after insertion; together with the approval sweep this
-      // closes that gap. Target only our row so a newer round's fix is kept.
-      const dispatchReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
-      if (dispatchReviewTask?.id !== reviewerTaskId) {
-        await supersedeFixTaskOnApproval({
-          workspaceId, originalTaskId, installationId, repoFullName, prNumber,
-          fixTaskId: retryTask.id, reason: 'newer_review',
-        });
-        return;
-      }
+      // A newer round or an approve can land between the check above and the
+      // insert, and the approve's own reconcile may have found nothing to
+      // cancel yet. Re-run the guard against the inserted row; it cancels only
+      // this row (through the same CAS and ledger), so a newer round's fix is
+      // kept.
+      if (await guardDispatchedTask(fixProposal, retryTask.id, verdictEvent)) return;
       // Approval may have cancelled the row while we read the newest round.
       const liveRetry = await db.query.tasks.findFirst({
         where: eq(tasks.id, retryTask.id), columns: { status: true },

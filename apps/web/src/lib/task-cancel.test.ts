@@ -20,6 +20,8 @@ mock.module('@/lib/path-claim-release', () => ({ releaseAndNotify: mockReleaseAn
 mock.module('@/lib/task-dependencies', () => ({ resolveCompletedTask: mockResolveCompletedTask }));
 const mockReopenCompletedMission = mock(() => Promise.resolve({ reopened: true }));
 mock.module('@/lib/mission-loop', () => ({ reopenCompletedMission: mockReopenCompletedMission }));
+const mockReconcileSubjectEvent = mock((..._args: any[]) => Promise.resolve({ cancelled: [], lostRace: [], decisions: [] }));
+mock.module('@/lib/supersession', () => ({ reconcileSubjectEvent: mockReconcileSubjectEvent }));
 mock.module('@/lib/mission-feed', () => ({
   systemActor: (label: string) => ({ kind: 'system', id: null, label }),
 }));
@@ -55,6 +57,13 @@ describe('applyTaskCancelSideEffects', () => {
     expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-1', 'task:updated', {
       task: { id: 'task-1', status: 'cancelled', workspaceId: 'ws-1', missionId: null },
     });
+  });
+
+  it('fires the supersession cancelled event so the task\'s open retries go with it', async () => {
+    mockReconcileSubjectEvent.mockClear();
+    await applyTaskCancelSideEffects(TASK);
+    expect(mockReconcileSubjectEvent).toHaveBeenCalledTimes(1);
+    expect(mockReconcileSubjectEvent.mock.calls[0][0]).toMatchObject({ kind: 'cancelled', workspaceId: 'ws-1', taskId: 'task-1' });
   });
 
   it('resolves tasks without a missionId too (not only mission tasks)', async () => {

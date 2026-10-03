@@ -25,6 +25,7 @@
  * nobody was fixing had no record of why.
  */
 
+import { checkDispatch } from '@/lib/supersession';
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
@@ -367,6 +368,24 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     console.log(`Skipping CI retry for ${prGate.merged ? 'merged' : 'closed'} PR #${prNumber} on ${repoFullName}`);
     const reason = prGate.merged ? 'pr_merged' : 'pr_closed';
     recordSkip(skipCtx, reason);
+    return { kind: 'skipped', reason };
+  }
+
+  // Dispatch guard: the supersession table in skip_dispatch mode, so a CI fix
+  // is never filed for work the reconciler would cancel on sight. An adopted
+  // PR's placeholder owner is exempt from the owner-status rules, as above.
+  const supersession = await checkDispatch({
+    kind: 'ci_retry',
+    workspaceId: task.workspaceId,
+    prNumber,
+    parentTaskId: isAdoptedPrTask(task) ? null : task.id,
+    door: surface,
+  });
+  if (supersession.verdict === 'skip_dispatch') {
+    const reason: CiRetrySkipReason = supersession.rule === 'cancel_supersedes_retry'
+      ? 'owner_stopped'
+      : supersession.rule?.startsWith('close_') ? 'pr_closed' : 'pr_merged';
+    recordSkip(skipCtx, reason, { supersessionRule: supersession.rule });
     return { kind: 'skipped', reason };
   }
 

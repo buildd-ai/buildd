@@ -249,6 +249,19 @@ is recorded only when the content verifies.
 | 61a | `pr-supersession-detect.ts:recordVerified` | `auto_pr_supersession` | accepted | candidate's merged diff carries the closed PR's changes; edge recorded with `detail.method` (patch-id or content) and `detail.confidence` |
 | 61b | `pr-supersession-detect.ts:detectPrSupersession` | `auto_pr_supersession` | deferred | candidate found but not content-verified: suggestion stored for the mission card, no edge |
 
+### Supersession reconciler (`lib/supersession.ts`, `lib/supersession-store.ts`)
+
+One rule table decides which queued or running work a subject event made
+obsolete: a reviewer verdict, a PR merged or closed (webhook and both merge
+routes), a task cancelled, a task whose PR merged. Every cancel is a status
+CAS; only the caller that wins it writes the ledger row, so two doors seeing
+the same event record one cancellation.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 61c | `supersession-store.ts:recordSupersession` | `supersession` | accepted | one row per task a rule cancelled; `detail.rule` is the rule id, `detail.event` the subject event, `surface` the door |
+| 61d | `supersession-store.ts:recordBulkRefusal` | `supersession` | rejected | one event matched more than the per-event cap: nothing cancelled, `detail.wouldCancel` holds the set, and a warning note is posted |
+
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 
 Every reason the unattended path did not merge a PR, so "why didn't this green

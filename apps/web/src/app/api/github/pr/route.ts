@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { reconcileSubjectEvent } from '@/lib/supersession';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
@@ -1691,6 +1692,17 @@ export async function PUT(req: NextRequest) {
         .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
       await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName);
+      // The merge made a live reviewer and any open fix obsolete. The
+      // pull_request.closed webhook fires the same event; the CAS keeps it to
+      // one cancellation per task whichever door gets there first.
+      await reconcileSubjectEvent({
+        kind: 'merged',
+        workspaceId: worker.workspaceId,
+        prNumber,
+        originalTaskId: worker.taskId,
+        door: 'PUT /api/github/pr',
+        pr: { installationId: repo.installation.installationId, repoFullName: repo.fullName },
+      });
     } else if (/resource not accessible by integration/i.test(result.message)) {
       // The GitHub App installation lacks the required permissions.
       // Merging requires pull_requests:write AND contents:write.

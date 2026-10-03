@@ -180,6 +180,16 @@ describe('status derivation — queued is never shown as working', () => {
     expect(header).not.toContain(SPINNER_PATH);
   });
 
+  it('work cancelled by a supersession rule is an aside: a row, never the header, no motion', () => {
+    const before = headerOf(renderPrActivityComment([queued]));
+    const body = renderPrActivityComment([
+      queued, { kind: 'work_superseded', detail: 'fix cancelled · PR closed', at: at(20) },
+    ]);
+    expect(headerOf(body)).toBe(before);
+    expect(body).toContain('Superseded · fix cancelled · PR closed');
+    expect(body).not.toContain(SPINNER_PATH);
+  });
+
   for (const kind of ['review_escalated', 'review_failed', 'human_review_required', 'ci_exhausted'] as const) {
     it(`${kind} flags a human and stops moving`, () => {
       const body = renderPrActivityComment([reviewing, { kind, at: at(5) }]);

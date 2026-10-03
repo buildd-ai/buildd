@@ -73,6 +73,7 @@ export type PrActivityKind =
   | 'fix_superseded_by_approval'
   | 'changes_pushed'
   | 'review_superseded_by_merge'
+  | 'work_superseded'
   | 'human_applied_recommendation'
   | 'human_override_merge'
   | 'merged'
@@ -247,6 +248,9 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'done', label: 'Merged by a human · review cancelled' };
     case 'fix_superseded_by_approval':
       return { tone: 'done', label: 'Fix cancelled · already approved' };
+    case 'work_superseded':
+      // `detail` names the rule ("fix cancelled · PR closed"); the row appends it.
+      return { tone: 'plain', label: 'Superseded', aside: true };
     case 'human_override_merge':
       return { tone: 'done', label: 'Merged · escalation overridden', noteLabel: 'Reason' };
     case 'merged':
@@ -391,7 +395,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
   'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
-  'review_superseded_by_merge',
+  'review_superseded_by_merge', 'work_superseded',
   'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
 ]);
 

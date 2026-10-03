@@ -502,18 +502,60 @@ const mockEnforceServerSideEscalation = mock((params: any) => ({
   verdict: params.verdict,
   overrideReason: null as string | null,
 }));
-// The cancellation logic itself is unit-tested in lib/reviewer.test.ts. Here
-// it is a mock so these tests can pin the WIRING: that an approve verdict
-// calls it with the right PR/task identity (task d57ba617).
-const mockSupersedeFixTaskOnApproval = mock(() => Promise.resolve({ superseded: false, fixTaskId: null }));
 mock.module('@/lib/reviewer', () => ({
   createReviewerTask: mock(() => Promise.resolve({ id: 'reviewer-task-1' })),
   preflightEscalationCheck: mock(() => ({ shouldEscalate: false })),
   isSchemaTouchingFile: mock(() => false),
   enforceServerSideEscalation: mockEnforceServerSideEscalation,
-  supersedeFixTaskOnApproval: mockSupersedeFixTaskOnApproval,
   REVIEWER_TASK_OUTPUT_SCHEMA: {},
 }));
+
+// The supersession rules run for real; only their store is in memory, so these
+// tests pin the WIRING — which events the verdict handler fires and which
+// rows the table cancels — without modelling the CAS in the drizzle mock. The
+// store itself is unit-tested in lib/supersession-store.test.ts. Dispatch
+// facts come from the real newest-review read (findReviewTaskForPr, through
+// `mockSelect`), the same read the route used before the table existed.
+const supersessionEvents: any[] = [];
+const supersessionLedger: Array<{ taskId: string; rule: string; event: string }> = [];
+let supersessionRows: any[] = [];
+mock.module('@/lib/supersession-store', () => ({
+  supersessionStore: {
+    loadCandidates: async (event: any) => {
+      supersessionEvents.push(event);
+      return supersessionRows.filter(r => ['pending', 'assigned', 'in_progress'].includes(r.status));
+    },
+    loadEventFacts: async () => ({}),
+    loadDispatchFacts: async (p: any) => {
+      const { findReviewTaskForPr } = await import('@/lib/pr-review-request');
+      const newest: any = p.prNumber != null ? await findReviewTaskForPr(p.workspaceId, p.prNumber) : null;
+      return {
+        newestReviewTaskId: newest?.id ?? null,
+        newestReviewVerdict: newest?.status === 'completed' ? newest.result?.structuredOutput?.verdict ?? null : null,
+      };
+    },
+    casCancel: async (t: any, rule: any) => {
+      const row = supersessionRows.find(r => r.id === t.id);
+      if (!row || !(rule.casStatuses ?? ['pending', 'assigned', 'in_progress']).includes(row.status)) return false;
+      row.status = 'cancelled';
+      return true;
+    },
+    applyCancelEffects: async () => {},
+    recordSupersession: async (t: any, rule: any, event: any) => {
+      supersessionLedger.push({ taskId: t.id, rule: rule.id, event: event.kind });
+    },
+    recordBulkRefusal: async () => {},
+  },
+}));
+
+function supersessionFix(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'fix-task-1', workspaceId: 'ws-1', missionId: null, status: 'pending', parentTaskId: 'original-task-1',
+    category: null, taskClass: 'attempt', creationSource: 'webhook', reviewerRetryPrNumber: 42,
+    reviewerRetryHeadSha: 'older-sha', ciRetryPrNumber: null, subjectPrNumber: null, subjectAnchor: null,
+    subjectResolution: null, context: null, createdAt: new Date(0), ownLivePrNumber: null, ...overrides,
+  };
+}
 
 // The fold and the persistence are unit-tested in lib/criteria-reviewer-findings.test.ts.
 // Here the mock pins the WIRING: that a reviewer verdict hands its criteria
@@ -7829,26 +7871,34 @@ describe('PATCH /api/workers/[id]', () => {
     // Task d57ba617: a stale fix task must not be left queued/running once a
     // newer review approves — otherwise it can still push a commit and force
     // a re-review on an already-approved PR.
-    it('approve: cancels any queued or running fix task for this PR', async () => {
+    it('approve: fires the verdict event, which cancels a queued or running fix for this PR', async () => {
       setupReviewerTaskCompletion('approve');
-      mockSupersedeFixTaskOnApproval.mockClear();
-
-      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
-
-      expect(mockSupersedeFixTaskOnApproval).toHaveBeenCalledTimes(1);
-      expect(mockSupersedeFixTaskOnApproval.mock.calls[0][0]).toMatchObject({
-        originalTaskId: 'original-task-1',
-        prNumber: 42,
-      });
+      supersessionEvents.length = 0;
+      supersessionLedger.length = 0;
+      supersessionRows = [supersessionFix({ status: 'in_progress' })];
+      try {
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+        expect(supersessionEvents[0]).toMatchObject({
+          kind: 'verdict', verdict: 'approve', prNumber: 42, originalTaskId: 'original-task-1',
+          reviewerTaskId: 'reviewer-task-1', pr: { installationId: 5000, repoFullName: 'org/repo' },
+        });
+        expect(supersessionLedger).toEqual([{ taskId: 'fix-task-1', rule: 'approve_supersedes_fix', event: 'verdict' }]);
+      } finally {
+        supersessionRows = [];
+      }
     });
 
-    it('request-changes: does not try to cancel a fix task — nothing is dispatched yet', async () => {
+    it('request-changes: the verdict event leaves a fix for the same head alone', async () => {
       setupReviewerTaskCompletion('request-changes');
-      mockSupersedeFixTaskOnApproval.mockClear();
-
-      await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
-
-      expect(mockSupersedeFixTaskOnApproval).not.toHaveBeenCalled();
+      supersessionLedger.length = 0;
+      supersessionRows = [supersessionFix({ reviewerRetryHeadSha: 'abc123' })];
+      try {
+        await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+        expect(supersessionLedger).toEqual([]);
+        expect(supersessionRows[0].status).toBe('pending');
+      } finally {
+        supersessionRows = [];
+      }
     });
 
     // A newer review round can approve while an earlier round's
@@ -7890,22 +7940,15 @@ describe('PATCH /api/workers/[id]', () => {
 
     it('request-changes: cancels an inserted fix when approval is processed between freshness check and insertion', async () => {
       setupReviewerTaskCompletion('request-changes');
+      supersessionLedger.length = 0;
+      supersessionRows = [];
       let approved = false;
       let reads = 0;
       let insertedFix: any = null;
-      let cancelled = false;
       const priorWorkerRead = () => Promise.resolve({
         id: 'original-worker', workspaceId: 'ws-1', taskId: 'original-task-1', prNumber: 42,
       });
       const insertTask = mockGenericInsert.getMockImplementation()!;
-      mockSupersedeFixTaskOnApproval.mockClear();
-      mockSupersedeFixTaskOnApproval.mockImplementation(async (params: any) => {
-        if (insertedFix && (!params.fixTaskId || params.fixTaskId === insertedFix.id)) {
-          cancelled = true;
-          insertedFix.status = 'cancelled';
-        }
-        return { superseded: cancelled, fixTaskId: cancelled ? insertedFix.id : null };
-      });
       mockNewestReview(() => {
         reads++;
         return {
@@ -7914,17 +7957,10 @@ describe('PATCH /api/workers/[id]', () => {
           context: { prNumber: 42 },
         };
       });
-      // Pause at the prior-worker lookup after the initial freshness check.
-      // A terminal approval is recorded and its sweep runs while no fix exists.
+      // Pause at the prior-worker lookup, after the dispatch check passed. The
+      // approval lands here, and its own reconcile finds no fix to cancel yet.
       mockWorkersFindFirst.mockImplementation(async () => {
-        if (reads === 1 && !approved) {
-          approved = true;
-          await mockSupersedeFixTaskOnApproval({
-            workspaceId: 'ws-1', originalTaskId: 'original-task-1',
-            installationId: 5000, repoFullName: 'org/repo', prNumber: 42,
-          });
-          expect(cancelled).toBe(false);
-        }
+        if (reads === 1 && !approved) approved = true;
         return priorWorkerRead();
       });
       mockGenericInsert.mockImplementation((table: any) => {
@@ -7933,7 +7969,8 @@ describe('PATCH /api/workers/[id]', () => {
         chain.values = mock((row: any) => {
           if (row.reviewerRetryPrNumber) {
             expect(approved).toBe(true);
-            insertedFix = { id: 'new-task-id', ...row };
+            insertedFix = supersessionFix({ id: 'new-task-id', reviewerRetryHeadSha: row.reviewerRetryHeadSha, createdAt: new Date() });
+            supersessionRows.push(insertedFix);
           }
           return values(row);
         });
@@ -7943,15 +7980,14 @@ describe('PATCH /api/workers/[id]', () => {
         await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
         expect(reads).toBeGreaterThanOrEqual(2);
         expect(insertedFix?.status).toBe('cancelled');
-        expect(mockSupersedeFixTaskOnApproval).toHaveBeenCalledWith(expect.objectContaining({
-          workspaceId: 'ws-1', prNumber: 42, fixTaskId: 'new-task-id',
-        }));
+        // One cancellation, one ledger row, written by the post-insert guard.
+        expect(supersessionLedger).toEqual([{ taskId: 'new-task-id', rule: 'approve_supersedes_fix', event: 'verdict' }]);
         expect(mockDispatchNewTask).not.toHaveBeenCalled();
       } finally {
         mockSelect.mockImplementation(selectAllColumns);
         mockWorkersFindFirst.mockImplementation(priorWorkerRead);
         mockGenericInsert.mockImplementation(insertTask);
-        mockSupersedeFixTaskOnApproval.mockImplementation(async () => ({ superseded: false, fixTaskId: null }));
+        supersessionRows = [];
       }
     });
 
