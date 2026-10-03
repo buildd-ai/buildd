@@ -29,6 +29,9 @@ export const MISSION_CHECK_INS_FIXTURE_STATE = 'mission-check-ins';
 /** The task page's Evidence files section in each state (TaskEvidenceFilesFixture.tsx). */
 export const TASK_EVIDENCE_FIXTURE_STATE = 'task-evidence';
 
+/** The workspace onboarding card with a stubbed readiness report (OnboardingFixture.tsx). */
+export const ONBOARDING_FIXTURE_STATE = 'onboarding';
+
 /** Settings → Storage with fixture backends (EvidenceStorageFixture.tsx). */
 export const EVIDENCE_STORAGE_FIXTURE_STATE = 'evidence-storage';
 
@@ -39,7 +42,7 @@ export const COMMIT_CHECKS_FIXTURE_STATE = 'commit-checks';
 /** A question's answer pending, recorded, already answered and failed (AnswerStatesFixture.tsx). */
 export const ANSWER_STATES_FIXTURE_STATE = 'answer-states';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

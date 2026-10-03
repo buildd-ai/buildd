@@ -26,7 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration,TaskStatusValue, WorkerStatusValue, MissionStatusValue } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -521,6 +521,9 @@ export interface WorkspaceGitConfig {
     migrationsDir?: string;
   };
 
+  // Owner decisions the repo cannot tell us (docs/design/workspace-onboarding.md §2).
+  // The readiness report itself is recomputed, never stored. Absent ⇒ current behaviour.
+  onboarding?: WorkspaceOnboardingConfig;
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
