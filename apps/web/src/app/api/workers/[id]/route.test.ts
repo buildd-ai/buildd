@@ -3081,6 +3081,21 @@ describe('PATCH /api/workers/[id]', () => {
   });
 
   describe('silent completion refusal', () => {
+    it('accepts touches first reported on completion with an agent-tagged fallback tail', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', observedTouches: [], commitCount: 0, filesChanged: 0,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', kind: 'writing', outputRequirement: 'auto' });
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', touchedPaths: ['docs/example.md', 'docs/example.md', null],
+          summarySource: 'agent', summary: 'Checking the code.\n\n---\n\nNow locating the file.' },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+    });
+
     it.each([
       { count: 0, missionId: null },
       { count: 0, missionId: 'mission-1' },
@@ -6991,6 +7006,46 @@ describe('PATCH /api/workers/[id]', () => {
       });
       return () => capturedTeamSet;
     }
+
+    it.each([true, false])('settles a charged silent refusal exactly once (reported cost: %s)', async (reported) => {
+      const getSet = setupCompletion({}, {}, {}, {
+        kind: 'writing', status: 'in_progress', missionId: 'mission-1', context: {},
+      });
+      accountsUpdateSets.length = 0;
+      const taskSets: any[] = [];
+      mockTasksUpdate.mockReturnValue({ set: mock((v: any) => {
+        taskSets.push(v);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) };
+      }) });
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({ set: mock((v: any) => {
+        workerSets.push(v);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', ...v }]) })) };
+      }) });
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Budgeted mission', status: 'active', costBudgetUsd: '1' });
+      mockGetMissionSpendUsd.mockResolvedValue(10);
+      const body = { status: 'completed', summarySource: 'agent',
+        summary: 'Checking the code.\n\n---\n\nNow locating the file.',
+        ...(reported ? { costUsd: 10 } : { costUsd: 0, actualModel: 'claude-sonnet-4-20250514',
+          resultMeta: { totalUsage: { inputTokens: 1000000, outputTokens: 100000 } } }),
+      };
+      const request = () => createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body });
+      expect((await PATCH(request(), { params: mockParams })).status).toBe(400);
+      expect(getSet()).not.toBeNull();
+      expect(taskSets.some(v => v.status === 'pending')).toBe(true);
+      expect(parseFloat(getSet().monthlyCostUsd)).toBeGreaterThan(0);
+      expect(workerSets.some(v => v.status === 'failed' && Number(v.costUsd) > 0)).toBe(true);
+      expect(mockExhaustMissionBudget).toHaveBeenCalledWith('mission-1', 'Budgeted mission', 10, 1);
+      const teamCharges = mockTeamsUpdate.mock.calls.length;
+      const claimsReleased = mockReleaseClaims.mock.calls.length;
+      const seatsReleased = accountsUpdateSets.filter((v: any) => v.activeSessions).length;
+      expect(seatsReleased).toBe(1);
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'failed', workspaceId: 'ws-1', taskId: 'task-1' });
+      expect((await PATCH(request(), { params: mockParams })).status).toBe(409);
+      expect(mockTeamsUpdate.mock.calls.length).toBe(teamCharges);
+      expect(mockReleaseClaims.mock.calls.length).toBe(claimsReleased);
+      expect(accountsUpdateSets.filter((v: any) => v.activeSessions).length).toBe(seatsReleased);
+    });
 
     it('accumulates reported cost on the team row and fires the 50% threshold alert', async () => {
       const getSet = setupCompletion(
