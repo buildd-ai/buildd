@@ -18,6 +18,7 @@ import type {
   VisualQaVerdict,
   VisualQaViewport,
   VisualReviewAuditTask,
+  VisualReviewCaptureGap,
   VisualReviewCell,
   VisualReviewCellEntry,
   VisualReviewFixTask,
@@ -27,8 +28,10 @@ import type {
   VisualReviewPhase,
   VisualReviewShot,
   VisualReviewSummary,
+  VisualReviewSupersededShot,
 } from '@buildd/shared';
 import { isSurfaceFixTask, surfaceAuditRound } from '@buildd/core/surface-audit';
+import { captureRefMatch, normalizeCaptureRef } from '@buildd/core/visual-qa-capture-ref';
 import { DEP_SATISFYING_STATUSES } from './dep-gate-contract';
 import {
   VISUAL_AUDITOR_ROLE_SLUG,
@@ -103,6 +106,12 @@ export interface BuildVisualReviewInput {
   browserRunnerOnline?: boolean | null;
   /** An audit task's required routes (`auditRequiredRoutes`). Absent: coverage unknown. */
   requiredRoutesOf?: (task: VisualReviewTaskInput) => readonly string[];
+  /**
+   * The mission's capture ref (`resolveVisualQaCaptureRef`). A shot whose
+   * `qa.ref` names another branch never reaches `cells`: it is superseded by a
+   * correct-ref sibling, or else a capture gap. Absent: no shot is judged.
+   */
+  captureRef?: string | null;
   now: number;
 }
 
@@ -285,6 +294,16 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   }
   shots.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
+  // Wrong-ref shots leave the deck (docs/design/visual-qa-auditor.md, "Page
+  // source"): the agent may already know such a shot is invalid, and a person
+  // must never be asked to judge it. Matched on route, viewport and capture
+  // state, across variants and rounds: a wrong-ref shot is often labelled.
+  const { superseded, captureGaps } = splitWrongRef(shots, input.captureRef ?? null);
+  if (superseded.length + captureGaps.length > 0) {
+    const out = new Set([...superseded.map(s => s.shotId), ...captureGaps.map(g => g.shotId)]);
+    for (let i = shots.length - 1; i >= 0; i--) if (out.has(shots[i].id)) shots.splice(i, 1);
+  }
+
   // Per round: variants, then one shot per cell.
   // - A caption variant from a title only applies where two shots of one round
   //   collide, so rounds must not see each other's titles.
@@ -440,7 +459,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     if (since == null) phase = 'waiting_deps';
     else if (input.browserRunnerOnline === false && now - since > NO_BROWSER_RUNNER_AFTER_MS) phase = 'no_browser_runner';
     else phase = 'queued';
-  } else if (cells.length > 0) {
+  } else if (cells.length > 0 || captureGaps.length > 0) {
     phase = 'reviewed';
   } else {
     phase = 'off';
@@ -467,6 +486,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     ...(bootFailed ? { bootFailed: true } : {}),
     rounds: Math.max(0, ...cells.flatMap(c => c.history.map(h => h.round)), ...(latest ? [surfaceAuditRound(latest)] : [])),
     openFixes,
+    captureGaps: captureGaps.length,
   };
 
   const audit: VisualReviewAuditTask | null = latest ? auditView(latest) : null;
@@ -487,8 +507,39 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     queue,
     summary,
     fixTasks,
+    superseded,
+    captureGaps,
     generatedAt: new Date(now).toISOString(),
   };
+}
+
+/**
+ * Wrong-ref shots, split by whether a correct-ref shot of the same route,
+ * viewport and state exists (the newest one supersedes). `shots` is oldest first.
+ */
+function splitWrongRef(
+  shots: readonly VisualReviewShot[],
+  captureRef: string | null,
+): { superseded: VisualReviewSupersededShot[]; captureGaps: VisualReviewCaptureGap[] } {
+  const expectedRef = normalizeCaptureRef(captureRef);
+  if (!expectedRef) return { superseded: [], captureGaps: [] };
+  const place = (s: VisualReviewShot) => `${s.qa.route}\u0000${s.qa.viewport}\u0000${(s.qa as { state?: string }).state ?? ''}`;
+  const correct = new Map<string, string>();
+  const wrong: VisualReviewShot[] = [];
+  for (const s of shots) {
+    const m = captureRefMatch(s.qa, expectedRef);
+    if (m === 'match') correct.set(place(s), s.id);
+    else if (m === 'mismatch') wrong.push(s);
+  }
+  const superseded: VisualReviewSupersededShot[] = [];
+  const captureGaps: VisualReviewCaptureGap[] = [];
+  for (const s of wrong) {
+    const base = { shotId: s.id, route: s.qa.route, viewport: s.qa.viewport, ref: normalizeCaptureRef(s.qa.ref)!, expectedRef };
+    const by = correct.get(place(s));
+    if (by) superseded.push({ ...base, supersededBy: by });
+    else captureGaps.push({ ...base, auditTaskId: s.auditTaskId, round: s.round });
+  }
+  return { superseded, captureGaps };
 }
 
 /**

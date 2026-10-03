@@ -38,6 +38,8 @@ deciding whether to step in, so every rule below comes down to two things:
 | approved, human merges | `review_approved_awaiting_human` | ✓ Approved · ready to merge | none |
 | needs a human | `review_escalated`, `review_failed`, `human_review_required`, `ci_exhausted` | ⚑ … · needs a human | none |
 | done | `merged`, `human_override_merge`, `review_superseded_by_merge` | ✓ Merged … | none |
+| queued/running fix cancelled, reviewer approved first | `fix_superseded_by_approval` | ✓ Fix cancelled · already approved | none |
+| other queued work cancelled by a supersession rule (aside) | `work_superseded` | Superseded · fix cancelled · PR closed (row only) | none |
 | abandoned | `closed_unmerged` | ✕ Closed without merging | none |
 
 Rules:

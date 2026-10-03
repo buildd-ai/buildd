@@ -15,7 +15,8 @@ import PrCard from '@/components/task/PrCard';
 import WorkerStats from '@/components/task/WorkerStats';
 import TaskSummary from '@/components/task/TaskSummary';
 import AiFeedback from '@/components/AiFeedback';
-import { deriveDisplayStatus, deriveTaskPhase } from '@/lib/task-presentation';
+import { deriveDisplayStatus } from '@/lib/task-presentation';
+import { taskActionPhase } from '@/lib/task-actions';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import TaskActionZone from './TaskActionZone';
@@ -29,6 +30,8 @@ export interface TaskPanelData {
   roleSlug: string | null;
   createdAt: string;
   missionId: string | null;
+  /** The mission's executor (`local`: runners never claim it); absent from older responses. */
+  missionExecutor?: 'runner' | 'local' | null;
   backend: 'claude' | 'codex' | null;
   failover: { from: string; reason: string | null } | null;
   worker: {
@@ -240,20 +243,20 @@ export function TaskPanelSkeleton() {
 
 export interface TaskPanelBodyProps {
   data: TaskPanelData;
+  workspaceId?: string | null;
   onChanged: () => void | Promise<void>;
 }
 
-export default function TaskPanelBody({ data, onChanged }: TaskPanelBodyProps) {
+export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPanelBodyProps) {
   const w = data.worker;
-  const isBlocked = data.status === 'pending' && data.blockedByCount > 0;
-  // Canonical phase — shared with the task detail page (deriveTaskPhase), so the
-  // sheet and the full page agree on what state a task is in.
-  const phase = deriveTaskPhase({
+  // Canonical phase — shared with the task detail page and the mission drawer
+  // (deriveTaskPhase via taskActionPhase), so they agree on what state a task is in.
+  const { phase, isBlocked } = taskActionPhase({
     taskStatus: data.status,
     taskMode: data.mode,
     workerStatus: w?.status,
     workerWaitingFor: w?.waitingFor,
-    isBlocked,
+    blockedByCount: data.blockedByCount,
   });
   const displayStatus = deriveDisplayStatus(data.status, w?.status);
   const isRunning = phase === 'running';
@@ -293,6 +296,7 @@ export default function TaskPanelBody({ data, onChanged }: TaskPanelBodyProps) {
       {/* ── Action zone — the one decision this state needs, done here ── */}
       <TaskActionZone
         taskId={data.id}
+        workspaceId={workspaceId || ''}
         phase={phase}
         isBlocked={isBlocked}
         blockedByCount={data.blockedByCount}
@@ -300,6 +304,8 @@ export default function TaskPanelBody({ data, onChanged }: TaskPanelBodyProps) {
         lastError={data.lastError}
         worker={w ? { id: w.id, waitingFor: w.waitingFor } : null}
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
+        roleSlug={data.roleSlug}
+        missionExecutor={data.missionExecutor ?? null}
         onChanged={onChanged}
       />
 

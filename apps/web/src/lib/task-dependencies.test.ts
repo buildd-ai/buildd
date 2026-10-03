@@ -25,6 +25,10 @@ let selectWhereResults: any[][] = [];
 let findFirstCallCount = 0;
 let findFirstResults: any[] = [];
 
+// The merged-worker probe behind the parent_done supersession event.
+const mockWorkersFindFirst = mock((..._args: any[]) => Promise.resolve(null as any));
+const mockReconcileSubjectEvent = mock((..._args: any[]) => Promise.resolve({ cancelled: [], lostRace: [], decisions: [] }));
+
 // Track missions findFirst separately
 let missionsFindFirstResults: any[] = [];
 let missionsFindFirstCallCount = 0;
@@ -39,6 +43,9 @@ mock.module('@buildd/core/db', () => ({
           return Promise.resolve(findFirstResults[callIndex] ?? null);
         },
         findMany: mockFindMany,
+      },
+      workers: {
+        findFirst: (...args: any[]) => mockWorkersFindFirst(...args),
       },
       missions: {
         findFirst: (...args: any[]) => {
@@ -104,6 +111,8 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 const mockTriggerEvent = mock(() => Promise.resolve());
+mock.module('@/lib/supersession', () => ({ reconcileSubjectEvent: mockReconcileSubjectEvent }));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
@@ -150,6 +159,9 @@ import {
 } from './task-dependencies';
 
 function resetMocks() {
+  mockWorkersFindFirst.mockReset();
+  mockWorkersFindFirst.mockResolvedValue(null);
+  mockReconcileSubjectEvent.mockClear();
   mockFindFirst.mockReset();
   mockFindMany.mockReset();
   mockSelect.mockReset();
@@ -1101,5 +1113,41 @@ describe('task-dependencies aggregation — role', () => {
     effectiveRoles = new Set(['builder']);
     await resolveCompletedTask('child-1', 'ws-1');
     expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: null }));
+  });
+});
+
+describe('resolveCompletedTask — parent_done supersession', () => {
+  beforeEach(resetMocks);
+
+  it('fires parent_done for a completed task whose PR merged', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'completed', context: {} };
+    mockWorkersFindFirst.mockResolvedValue({ prNumber: 42 });
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockReconcileSubjectEvent).toHaveBeenCalledTimes(1);
+    expect(mockReconcileSubjectEvent.mock.calls[0][0]).toMatchObject({
+      kind: 'parent_done', workspaceId: 'ws-1', parentTaskId: 'task-1', prNumber: 42,
+    });
+  });
+
+  it('does not fire for a completed task whose PR is still open — its fixes are still needed', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'completed', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockReconcileSubjectEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not fire for a failed task', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed', context: {} };
+    mockWorkersFindFirst.mockResolvedValue({ prNumber: 42 });
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockReconcileSubjectEvent).not.toHaveBeenCalled();
   });
 });

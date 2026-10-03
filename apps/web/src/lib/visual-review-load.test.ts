@@ -140,6 +140,24 @@ describe('loadVisualReview', () => {
     expect((await loadVisualReview({ id: MISSION, workspaceId: WS }, { now: NOW })).phase).toBe('queued');
   });
 
+  it("reads the mission's capture ref and keeps a wrong-ref shot out of the deck as a capture gap", async () => {
+    const BRANCH = 'mission/settings-abcd1234';
+    rowsFor = (r) => {
+      if (from(r) === 'artifacts') return [{ ...shotRow, metadata: { qa: { ...shotRow.metadata.qa, ref: 'dev', refSource: 'trunk' } } }];
+      if (from(r) === 'tasks') return [{ id: auditId, title: '[surface audit] M', status: 'completed', roleSlug: 'visual-auditor', dependsOn: [], pathManifest: null, createdAt: new Date(0), updatedAt: new Date(0), context: {}, errorType: null }];
+      if (from(r) === 'missions') return [{ workingBranch: BRANCH, integrationBranchEnabled: true, gitConfig: { defaultBranch: 'dev' } }];
+      return [];
+    };
+    const model = await loadVisualReview({ id: MISSION, workspaceId: WS }, { now: NOW });
+    const q = rendered.find(r => from(r) === 'missions')!;
+    expect(q.sql).toContain('left join "workspaces" on "workspaces"."id" = "missions"."workspace_id"');
+    expect(q.params).toContain(MISSION);
+    expect(model.cells).toEqual([]);
+    expect(model.summary.awaitingHuman).toBe(0);
+    expect(model.captureGaps).toMatchObject([{ shotId: shotRow.id, ref: 'dev', expectedRef: BRANCH }]);
+    expect(model.phase).not.toBe('needs_you');
+  });
+
   it('marks the round-cap question open when the note exists', async () => {
     rowsFor = (r) => {
       if (from(r) === 'artifacts') return [{ ...shotRow, metadata: { qa: { ...shotRow.metadata.qa, verdict: 'issue' } } }];

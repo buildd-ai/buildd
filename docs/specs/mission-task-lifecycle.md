@@ -368,7 +368,7 @@ stalled a whole workspace.
 semantics, terminal cancellation and the override. This table records only its
 place in the gate ladder.
 
-`StartTaskButton` also renders a `capability_mismatch` branch that no route
+`TaskActionZone` (the one task-action renderer) also renders a `capability_mismatch` branch that no route
 emits. That is deliberate, not an oversight: the capability abstraction whose
 only real check was "does this backend have a credential" was removed in PR
 #1864 and replaced by the onboarding/workspace-configuration path (see

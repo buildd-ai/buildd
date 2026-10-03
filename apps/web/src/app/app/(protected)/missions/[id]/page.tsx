@@ -457,9 +457,10 @@ export default async function MissionDetailPage({
   // Whether the situation block is offering a wired affordance. When it is, the
   // settings panel must not raise a competing primary button — an action at
   // parity with the one right action is what made this screen unreadable.
-  const hasPrimaryAction = missionAnswer
-    ? affordanceFor(missionAnswer.situation.focus, { missionId: id, criteriaReachable }) !== null
-    : false;
+  const primaryAffordance = missionAnswer
+    ? affordanceFor(missionAnswer.situation.focus, { missionId: id, criteriaReachable })
+    : null;
+  const hasPrimaryAction = primaryAffordance !== null;
 
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
   const detailNextScanMins = detailNextRunAt ? Math.max(0, Math.round((new Date(detailNextRunAt).getTime() - Date.now()) / 60_000)) : null;
@@ -1346,6 +1347,16 @@ export default async function MissionDetailPage({
     </>
   );
   const boardLink = { missionId: id, from: parseMissionOrigin(from), initiativeId: initiativeId ?? null };
+  // The Landed strip's drawer: the tasks' actions run in this workspace, and
+  // when the situation block's one affordance is a single task, the drawer
+  // opens on it with the accessor's sentence (and the block points at it).
+  const boardStrip = {
+    workspaceId: mission.workspaceId ?? null,
+    executor: ((mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null) as 'local' | 'runner' | null,
+    stripFocus: !quietState && missionAnswer && primaryAffordance?.kind === 'internal' && primaryAffordance.taskId
+      ? { taskId: primaryAffordance.taskId, reason: missionAnswer.situation.headline }
+      : null,
+  };
   const verifiedPill = (
     <MissionVerifiedPill
       sheetOnly={!showVerifiedPill}
@@ -1496,7 +1507,7 @@ export default async function MissionDetailPage({
       <MissionVisualReviewProvider missionId={id} visual={boardVisual}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} />)}
+        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
         lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} visual={boardVisual} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout

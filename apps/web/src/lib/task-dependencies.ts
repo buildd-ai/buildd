@@ -139,6 +139,10 @@ export async function resolveCompletedTask(
     columns: { mode: true, missionId: true, status: true, context: true },
   });
 
+  if (completedTaskFull?.status === 'completed') {
+    await supersedeRetriesOfMergedTask(completedTaskId, _workspaceId);
+  }
+
   if (completedTaskFull?.mode === 'planning') {
     if (completedTaskFull.status === 'failed') {
       // Failed planning task — auto-retry the mission (infrastructure failure, not stall)
@@ -304,6 +308,33 @@ export async function resolveCompletedTask(
  * Fires a CHILDREN_COMPLETED Pusher event for dashboard visibility.
  * If the parent is a planning task, auto-creates an aggregation child task.
  */
+/**
+ * Called for a completed task. If its own PR merged it has delivered: any retry of it still
+ * open (CI fix, review fix, conflict retry) has nothing left to do. Routed
+ * through the supersession reconciler as a `parent_done` event. Only on a
+ * merge — a completed task with an open PR still legitimately has fixes
+ * running against it. Never throws.
+ */
+async function supersedeRetriesOfMergedTask(taskId: string, workspaceId: string): Promise<void> {
+  try {
+    const merged = await db.query.workers.findFirst({
+      where: and(eq(workers.taskId, taskId), isNotNull(workers.mergedAt)),
+      columns: { prNumber: true },
+    });
+    if (!merged) return;
+    const { reconcileSubjectEvent } = await import('@/lib/supersession');
+    await reconcileSubjectEvent({
+      kind: 'parent_done',
+      workspaceId,
+      parentTaskId: taskId,
+      prNumber: merged.prNumber ?? null,
+      door: 'resolveCompletedTask',
+    });
+  } catch (err) {
+    console.error(`[task-deps] retry supersession failed for task ${taskId}:`, err);
+  }
+}
+
 async function checkChildrenCompleted(
   parentTaskId: string
 ): Promise<void> {

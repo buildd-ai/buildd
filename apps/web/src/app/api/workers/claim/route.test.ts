@@ -7036,6 +7036,67 @@ describe('claim insert — atomic duplicate-worker guard', () => {
     });
   });
 
+
+  it('cannot claim a review-fix cancelled after candidate selection', async () => {
+    mockWorkersInsert.mockClear();
+    // The candidate was pending when selected, then approval won cancellation.
+    // Evaluate the claim CAS against that current status.
+    const currentStatus = 'cancelled';
+    let pendingGuardChecked = false;
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock((predicate: any) => {
+          const pendingGuard = predicate.args.find((p: any) =>
+            p.type === 'eq' && p.field === 'status' && p.value === 'pending');
+          pendingGuardChecked = Boolean(pendingGuard);
+          return { returning: mock(() => pendingGuard && currentStatus !== pendingGuard.value ? [] : [{ id: 'task-1' }]) };
+        }),
+      })),
+    });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+    }));
+    expect(pendingGuardChecked).toBe(true);
+    // Auxiliary reads may use execute; no worker may be inserted.
+    const statements = mockDbExecute.mock.calls.map(([q]: any) => q.strings?.join(' ') ?? '');
+    expect(statements.some((sql: string) => sql.includes('INSERT INTO'))).toBe(false);
+    expect(mockWorkersInsert).not.toHaveBeenCalled();
+  });
+
+
+  it('locks and rechecks the assigned task inside worker insertion so cancellation cannot race past it', async () => {
+    mockDbExecute.mockResolvedValue({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+    }));
+    const insert = mockDbExecute.mock.calls.find(([q]: any) => q.strings?.join(' ').includes('INSERT INTO'));
+    expect(insert).toBeDefined();
+    const sql = (insert![0] as any).strings.join('?');
+    expect(sql).toContain("t_claim.status = 'assigned'");
+    expect(sql).toContain('t_claim.claimed_by');
+    expect(sql).toContain('FOR UPDATE');
+  });
+
+  it('does not roll a concurrently cancelled attempt back to pending when worker insertion is refused', async () => {
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    const writes: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((values: any) => ({
+        where: mock((predicate: any) => {
+          writes.push({ values, predicate });
+          return { returning: mock(() => [{ id: 'task-1' }]), then: (resolve: any) => Promise.resolve().then(resolve) };
+        }),
+      })),
+    });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+    }));
+    const rollback = writes.find(w => w.values.status === 'pending');
+    expect(rollback).toBeDefined();
+    expect(rollback.predicate.args).toContainEqual({ field: 'status', value: 'assigned', type: 'eq' });
+    expect(rollback.predicate.args).toContainEqual({ field: 'claimedBy', value: 'account-1', type: 'eq' });
+  });
+
   it('requires the task to have no live worker inside the insert statement', async () => {
     mockDbExecute.mockReturnValue(Promise.resolve({
       rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
