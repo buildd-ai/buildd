@@ -21,7 +21,7 @@
  * "after <scope>" chips. Hover (or focus) shows the task's detail; a click
  * opens the task sheet.
  */
-import type { ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import SteerButton from '@/components/chat/SteerButton';
 import VisualReviewLine from '@/components/visual-review/VisualReviewLine';
@@ -31,6 +31,10 @@ import {
   taskSheetHref, useLiveBoard, useNow, type BoardLinkContext,
 } from './MissionBoardParts';
 import { MISSION_CRITERIA_ANCHOR } from '@/components/missions/MissionSituationBlock';
+import { MissionStripContext, createMissionStripStore, type MissionStripValue } from '@/components/missions/mission-strip-context';
+import type { MissionExecutor } from '@/lib/task-actions';
+import { stripOrder } from '@/lib/mission-task-strip';
+import { LandedStrip, type LandedStripProps, type StripFocus } from './MissionTaskStrip';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import {
   MissionVisualAsk, MissionVisualTray, WithMissionVisualReview,
@@ -63,6 +67,19 @@ export interface MissionBoardProps extends BoardLinkContext {
   visual?: VisualReviewModel | null;
   /** Force the review deck's layout (`sheet`: inline, for a host that is a sheet). */
   reviewLayout?: VisualReviewLayout;
+  /**
+   * The Landed strip's task actions: the workspace the tasks run in and the
+   * mission's executor (`local` adds the `claim_task` command). Without a
+   * workspace the band stays the plain meter.
+   */
+  workspaceId?: string | null;
+  executor?: MissionExecutor | null;
+  /**
+   * The situation block's task, when its one affordance targets a single task:
+   * the drawer opens on it and says the accessor's sentence for it, and the
+   * block points at the drawer instead of drawing a second call to action.
+   */
+  stripFocus?: StripFocus | null;
 }
 
 /** Tile order inside a column: what needs you, then red, then live, then review, then queued. */
@@ -82,9 +99,18 @@ export default function MissionBoard(props: MissionBoardProps) {
 }
 
 function BoardView({
-  model: serverModel, completionText, notice, compact = false, visual: _visual, reviewLayout: _layout, review, ...link
+  model: serverModel, completionText, notice, compact = false, visual: _visual, reviewLayout: _layout, review,
+  workspaceId = null, executor = null, stripFocus = null, ...link
 }: MissionBoardProps & { review: MissionVisualReviewValue | null }) {
   const model = useLiveBoard(serverModel);
+  // The Landed strip's selection: a store, so selecting re-renders the strip
+  // and its drawer only. The situation block (in `notice`) reads it too.
+  const [stripStore] = useState(createMissionStripStore);
+  const stripIds = useMemo(() => stripOrder(serverModel), [serverModel]);
+  const stripValue = useMemo<MissionStripValue | null>(
+    () => (workspaceId && stripIds.length > 0 ? { store: stripStore, taskIds: stripIds } : null),
+    [workspaceId, stripStore, stripIds],
+  );
   const now = useNow(model.now, 15_000, !model.complete);
   const liveSpans = Object.values(model.tasks)
     .filter(t => t.status === 'running' || t.status === 'fixing')
@@ -104,8 +130,16 @@ function BoardView({
     ) : null;
 
   return (
+    <MissionStripContext.Provider value={stripValue}>
     <div data-testid="mission-board" data-compact={compact ? 'true' : undefined} className="flex flex-col">
-      <Band model={model} compact={compact} missionId={link.missionId} visual={vm} onReview={review ? () => review.openDeck(null) : undefined} />
+      <Band
+        model={model}
+        compact={compact}
+        missionId={link.missionId}
+        visual={vm}
+        onReview={review ? () => review.openDeck(null) : undefined}
+        strip={stripValue && workspaceId ? { link, workspaceId, executor, focus: stripFocus } : null}
+      />
       {notice && <div className="mt-4">{notice}</div>}
       {model.needsYou.map(id => (
         <AskBanner key={id} task={model.tasks[id]} now={now} />
@@ -167,6 +201,7 @@ function BoardView({
 
       {model.complete ? <Concurrency model={model} /> : <Ticker model={model} now={now} link={link} />}
     </div>
+    </MissionStripContext.Provider>
   );
 }
 
@@ -188,13 +223,15 @@ export function stuckVisualCaption(vm: Pick<VisualReviewModel, 'phase'>): string
   }
 }
 
-export function Band({ model, compact, missionId, visual = null, onReview }: {
+export function Band({ model, compact, missionId, visual = null, onReview, strip = null }: {
   model: MissionBoardModel;
   compact: boolean;
   missionId: string;
   /** The live visual review: a Screens row, and its screens in Needs you. */
   visual?: VisualReviewModel | null;
   onReview?: () => void;
+  /** The interactive Landed strip (the mission page's Board); absent: the plain meter. */
+  strip?: Pick<LandedStripProps, 'link' | 'workspaceId' | 'executor' | 'focus'> | null;
 }) {
   const needs = boardNeedsYouCount(model, visual);
   const first = model.needsYou.length ? model.tasks[model.needsYou[0]] : null;
@@ -211,28 +248,43 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
           ? 'visual audit is stuck'
           : model.complete ? 'all answered' : 'nothing waiting';
   const cell = 'flex min-w-0 flex-col gap-2.5 border-border-default px-[18px] pb-4 pt-3.5';
+  const L = bandLayout(strip && model.landed.total > 0 ? (compact ? 'strip-compact' : 'strip') : 'meter');
   return (
     <section
       data-testid="mission-band"
-      className="mt-[18px] grid grid-cols-2 border-2 border-border-strong bg-card shadow-[var(--card-shadow)] md:grid-cols-[1.35fr_1.25fr_1.1fr_0.8fr]"
+      data-layout={L.name}
+      className={`mt-[18px] grid border-2 border-border-strong bg-card shadow-[var(--card-shadow)] ${L.grid}`}
     >
       {/* Phone: Landed and Goal take a full row each (half width truncates the
-          phase captions and every criterion); Fleet and Needs you pair up. */}
-      <div data-testid="landed-band" className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`}>
-        <SectionLabel>Landed</SectionLabel>
-        {model.landed.total > 0 ? (
-          <>
-            <Big n={model.landed.done} small={`of ${model.landed.total}`} />
-            <LandedMeter model={model} variant="band" compact={compact} />
-          </>
+          phase captions and every criterion); Fleet and Needs you pair up.
+          With the strip at desktop width, Landed is the left column and the
+          other cells stack on the right. */}
+      <div data-testid="landed-band" className={`${cell} ${L.landed}`}>
+        {strip && model.landed.total > 0 ? (
+          <LandedStrip
+            model={model}
+            compact={compact}
+            {...strip}
+            count={<Big n={model.landed.done} small={`of ${model.landed.total}`} />}
+          />
         ) : (
-          <span data-testid="landed-empty" className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
-            No tasks yet
-          </span>
+          <>
+            <SectionLabel>Landed</SectionLabel>
+            {model.landed.total > 0 ? (
+              <>
+                <Big n={model.landed.done} small={`of ${model.landed.total}`} />
+                <LandedMeter model={model} variant="band" compact={compact} />
+              </>
+            ) : (
+              <span data-testid="landed-empty" className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
+                No tasks yet
+              </span>
+            )}
+          </>
         )}
       </div>
-      <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r`} />
-      <div data-testid="fleet-band" className={`${cell} md:border-r`}>
+      <GoalCell model={model} compact={compact} missionId={missionId} className={`${cell} ${L.goal}`} />
+      <div data-testid="fleet-band" className={`${cell} ${L.fleet}`}>
         <SectionLabel>Fleet</SectionLabel>
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
         <div className="flex flex-wrap gap-3">
@@ -250,7 +302,7 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
           {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has picked up work yet.</span>}
         </div>
       </div>
-      <div data-testid="needs-you-cell" className={`${cell} border-l md:border-l-0 ${needs ? 'bg-accent-soft' : ''}`}>
+      <div data-testid="needs-you-cell" className={`${cell} ${L.needs} ${needs ? 'bg-accent-soft' : ''}`}>
         <SectionLabel className={needs ? '!text-accent-text' : ''}>Needs you</SectionLabel>
         <span className={`font-mono text-[34px] font-semibold leading-none tracking-[-1px] tabular-nums ${needs ? 'text-accent-text' : 'text-[var(--fleet-faint)]'}`}>{needs}</span>
         <span className="font-mono text-[12px] md:text-[11.5px] text-text-muted">
@@ -260,7 +312,7 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
       {visual && visual.phase !== 'off' && (
         // The Visual cell: one full-width row under the four, at every width,
         // so the band keeps its columns (a fifth would crowd a docked pane).
-        <div data-testid="visual-band" data-phase={visual.phase} className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-default px-[18px] py-3 md:col-span-4">
+        <div data-testid="visual-band" data-phase={visual.phase} className={`flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-default px-[18px] py-3 ${L.visual}`}>
           {/* needs_you: the Ask under the band says the sentence; the row keeps the label and dots. */}
           <VisualReviewLine model={visual} variant={visual.phase === 'needs_you' ? 'compact' : 'full'} className="min-w-0 flex-1" />
           {onReview && visual.cells.length > 0 && visual.phase !== 'needs_you' && (
@@ -278,6 +330,44 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
       )}
     </section>
   );
+}
+
+/**
+ * The band's grid, per layout. `meter`: the four cells in a row at desktop
+ * width. `strip`: the interactive Landed strip is the left column (its drawer
+ * needs the width) and Goal, Fleet and Needs you stack on the right.
+ * `strip-compact` (the chat's docked pane): the phone arrangement at any width.
+ */
+function bandLayout(name: 'meter' | 'strip' | 'strip-compact') {
+  switch (name) {
+    case 'meter': return {
+      name,
+      grid: 'grid-cols-2 md:grid-cols-[1.35fr_1.25fr_1.1fr_0.8fr]',
+      landed: 'col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r',
+      goal: 'col-span-2 border-b md:col-span-1 md:border-b-0 md:border-r',
+      fleet: 'md:border-r',
+      needs: 'border-l md:border-l-0',
+      visual: 'col-span-2 md:col-span-4',
+    };
+    case 'strip': return {
+      name,
+      grid: 'grid-cols-2 md:grid-cols-[minmax(0,1fr)_340px]',
+      landed: 'col-span-2 border-b md:col-span-1 md:row-span-3 md:border-b-0 md:border-r',
+      goal: 'col-span-2 border-b md:col-span-1',
+      fleet: 'md:col-start-2 md:border-b',
+      needs: 'border-l md:col-start-2 md:border-l-0',
+      visual: 'col-span-2',
+    };
+    case 'strip-compact': return {
+      name,
+      grid: 'grid-cols-2',
+      landed: 'col-span-2 border-b',
+      goal: 'col-span-2 border-b',
+      fleet: '',
+      needs: 'border-l',
+      visual: 'col-span-2',
+    };
+  }
 }
 
 /**

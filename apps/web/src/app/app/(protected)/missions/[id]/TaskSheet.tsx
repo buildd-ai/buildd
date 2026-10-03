@@ -59,6 +59,7 @@ export interface TaskSheetViewProps {
   mission: TaskSheetMission | null;
   nav: TaskSheetNav;
   summary: { data: TaskPanelData | null; loading: boolean; error: string | null };
+  workspaceId?: string | null;
   onChanged: () => void | Promise<void>;
   onClose: () => void;
   /** Step to another task in place (replaceState). */
@@ -88,7 +89,7 @@ function DragHandle({ onClose }: { onClose: () => void }) {
   );
 }
 
-function SheetContent({ taskId, mission, nav, summary, onChanged, onStep }: TaskSheetViewProps) {
+function SheetContent({ taskId, mission, nav, summary, workspaceId, onChanged, onStep }: TaskSheetViewProps) {
   const { data, loading, error } = summary;
   const stepTo = (id: string | null) => (id ? () => onStep(id) : undefined);
   const sheetHref = (id: string) =>
@@ -119,7 +120,7 @@ function SheetContent({ taskId, mission, nav, summary, onChanged, onStep }: Task
       {error && !data && (
         <p className="py-6 text-center font-mono text-[13px] text-status-error">{error}</p>
       )}
-      {data && <TaskPanelBody data={data} onChanged={onChanged} />}
+      {data && <TaskPanelBody data={data} workspaceId={workspaceId} onChanged={onChanged} />}
       {/* A visual audit's screens: its round's Tray (the deck opens inline,
           in the sheet), not the shots as title links. */}
       {data?.visual && (
@@ -212,6 +213,7 @@ export default function TaskSheet({ taskId, mission, nav, workspaceId, onClose, 
       mission={mission}
       nav={nav}
       summary={summary}
+      workspaceId={workspaceId}
       onChanged={onChanged}
       onClose={onClose}
       onStep={onStep}
