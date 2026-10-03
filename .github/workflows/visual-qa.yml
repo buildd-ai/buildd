@@ -243,7 +243,20 @@ jobs:
             echo "::error::NO_PROD_DATA_IDENTIFIERS secret is not set; refusing to scrub without it"
             exit 1
           fi
-          psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f scripts/qa/scrub-pii.sql
+          # The scrub is one transaction, so a failure leaves the clone untouched.
+          # psql reports the line where the failing statement ends; name that
+          # statement from our own file (never from row data) so the next
+          # breakage is self-diagnosing.
+          if ! psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v ids="$NO_PROD_DATA_IDENTIFIERS" -f scripts/qa/scrub-pii.sql 2> scrub.err; then
+            cat scrub.err >&2
+            line=$(grep -oE 'scrub-pii\.sql:[0-9]+' scrub.err | head -1 | cut -d: -f2)
+            stmt=""
+            if [ -n "$line" ]; then
+              stmt=$(head -n "$line" scripts/qa/scrub-pii.sql | grep -E '^(UPDATE|DELETE|TRUNCATE|DO|CREATE|SET|BEGIN|COMMIT)\b' | tail -1 | cut -c1-80)
+            fi
+            echo "::error file=scripts/qa/scrub-pii.sql,line=${line:-1}::scrub-pii.sql failed in: ${stmt:-unknown statement} (clone rolled back, nothing rendered)"
+            exit 1
+          fi
           echo "ci_user_email=ci-qa@buildd.dev" >> "$GITHUB_OUTPUT"
           echo "::notice::Scrub complete — prod clone rewritten to placeholders"
         env:
