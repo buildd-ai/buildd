@@ -164,6 +164,7 @@
     "./surface-audit": "./surface-audit.ts",
     "./visual-qa-routes": "./visual-qa-routes.ts",
     "./visual-qa-page-source": "./visual-qa-page-source.ts",
+    "./visual-qa-capture-ref": "./visual-qa-capture-ref.ts",
     "./visual-review-text": "./visual-review-text.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",

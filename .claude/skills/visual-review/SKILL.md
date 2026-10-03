@@ -46,6 +46,16 @@ QA_PORT=3217 QA_VIEWPORT=mobile DEV_USER_EMAIL=you@example.com \
 clone, captures, and uploads an artifact. Push your branch first, because the run
 checks out `--ref`.
 
+**Which `--ref`, for a mission audit.** Your own branch when you check your own work.
+For a mission's visual audit, the ref is `captureRef.ref` from `get_page_source`: the
+mission's integration branch on a `mission-branch` mission, trunk otherwise. Builder PRs
+on such a mission merge into the integration branch, not trunk, so a trunk shot shows the
+page before the fix. Record the branch on each shot as `metadata.qa.ref` and
+`captureRef.source` as `qa.refSource`. A shot from another ref never reaches the human
+review: it is superseded by a correct-ref shot of the same route and viewport, or listed
+as a capture gap. **When your own finding says a shot is invalid because of its ref,
+recapture it from `captureRef.ref`. Do not file it as `unsure`.**
+
 **The CI clone is scrubbed to placeholders, so CI shots show layout, not real
 content.** `scripts/qa/scrub-pii.sql` rewrites every tenant-authored or
 identifying text column (`Workspace 3`, `org-2/repo-2`, `Mission 12: lorem ipsum…`,
@@ -153,6 +163,7 @@ stays on `sandbox`. Design: `docs/design/visual-qa-auditor.md` → "Page source"
 1. `buildd action=get_page_source params={ waitSeconds: 45 }` (add `sha` or `prNumber`).
    It reads the commit's GitHub deployment statuses with the workspace's GitHub App, so
    no Vercel token is needed. `pending` means call again; `preview_unavailable` is loud.
+   With no `sha` or `prNumber` the commit is the head of `captureRef.ref` (above).
 2. Capture from `decision.baseUrl`:
    ```bash
    QA_BASE_URL=<baseUrl> QA_PAGE_SOURCE=vercel-preview QA_ROUTES=/,/settings \
@@ -170,7 +181,8 @@ stays on `sandbox`. Design: `docs/design/visual-qa-auditor.md` → "Page source"
    Without that export, `playwright install` from a different version garbage-collects
    the shared `~/.cache/ms-playwright` builds, including the runner's own browser. A
    browser that will not launch exits 1, never 0.
-3. Upload each shot with `metadata.qa.source` copied from `captures.json`.
+3. Upload each shot with `metadata.qa.source` copied from `captures.json`, plus
+   `qa.ref` and `qa.refSource` from `captureRef`.
 
 **Diagnosing the two failure modes.** capture.ts exits 3 and records `configError` on
 the capture instead of taking a shot. Neither is a visual finding:
