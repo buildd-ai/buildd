@@ -325,7 +325,7 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
   return (
     <aside className="mt-[22px] flex min-w-0 flex-col gap-[18px]">
       {sec('Needs you', needsN, needsN > 0, 'needs-you-band', ny.length === 0
-        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">{needsN > 0 ? 'Screens below want your call.' : 'Nothing waiting on you.'}</div>
+        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">{needsN > 0 ? 'Screens awaiting review.' : 'Nothing waiting on you.'}</div>
         : ny.map(t => (
           <div key={t.id} className="flex flex-col gap-2.5 border-2 border-accent bg-card p-3 shadow-[3px_3px_0_0_var(--border-strong)]">
             <div className="flex items-center gap-[7px] font-mono text-[12px] text-text-muted">

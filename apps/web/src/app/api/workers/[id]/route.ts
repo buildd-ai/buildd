@@ -48,6 +48,13 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
+import {
+  checkDispatch,
+  guardDispatchedTask,
+  reconcileSubjectEvent,
+  type DispatchProposal,
+  type SubjectEvent,
+} from '@/lib/supersession';
 import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
@@ -4701,7 +4708,7 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true },
+    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true },
   });
 
   if (!reviewerTask) return;
@@ -4975,6 +4982,24 @@ async function handleReviewerOutcomeIfNeeded(
     }
   }
 
+  // The verdict is recorded: let the supersession table cancel what it made
+  // obsolete — every open review fix on an approve, and on any verdict a
+  // not-yet-started fix that answers an older round. Before the switch, so an
+  // approve's merge below never races a fix that is about to push. Never throws.
+  const verdictEvent: SubjectEvent = {
+    kind: 'verdict',
+    verdict: effectiveVerdict,
+    workspaceId,
+    prNumber,
+    reviewerTaskId,
+    headSha,
+    roundCreatedAt: reviewerTask.createdAt ?? null,
+    originalTaskId,
+    door: 'PATCH /api/workers/[id] (reviewer verdict)',
+    pr: { installationId, repoFullName },
+  };
+  await reconcileSubjectEvent(verdictEvent);
+
   switch (effectiveVerdict) {
     case 'approve': {
       // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
@@ -5192,6 +5217,23 @@ async function handleReviewerOutcomeIfNeeded(
         return;
       }
 
+      // Dispatch guard: the supersession table in skip_dispatch mode. A newer
+      // round (finished or not), an approve, or a merged/closed PR means this
+      // fix would be cancelled the moment it existed — so it is never created.
+      const fixProposal: DispatchProposal = {
+        kind: 'fix',
+        workspaceId,
+        prNumber,
+        parentTaskId: originalTaskId,
+        triggeringReviewTaskId: reviewerTaskId,
+        door: 'PATCH /api/workers/[id] (request-changes fix)',
+      };
+      const dispatchCheck = await checkDispatch(fixProposal);
+      if (dispatchCheck.verdict === 'skip_dispatch') {
+        console.log(`[reviewer] Skipping fix dispatch for PR #${prNumber}: ${dispatchCheck.rule}`);
+        return;
+      }
+
       // Fetch the prior attempt's worker to get lastCommitSha for retry continuity
       const priorWorker = await db.query.workers.findFirst({
         where: and(
@@ -5264,6 +5306,18 @@ async function handleReviewerOutcomeIfNeeded(
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
       });
+      // A newer round or an approve can land between the check above and the
+      // insert, and the approve's own reconcile may have found nothing to
+      // cancel yet. Re-run the guard against the inserted row; it cancels only
+      // this row (through the same CAS and ledger), so a newer round's fix is
+      // kept.
+      if (await guardDispatchedTask(fixProposal, retryTask.id, verdictEvent)) return;
+      // Approval may have cancelled the row while we read the newest round.
+      const liveRetry = await db.query.tasks.findFirst({
+        where: eq(tasks.id, retryTask.id), columns: { status: true },
+      });
+      if (liveRetry?.status !== 'pending') return;
+
       if (workspace) {
         await dispatchNewTask(retryTask, workspace);
         console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);

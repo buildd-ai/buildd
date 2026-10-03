@@ -64,7 +64,7 @@ export async function GET(
         taskClass: true,
       },
       with: {
-        mission: { columns: { title: true } },
+        mission: { columns: { title: true, executor: true } },
         parentTask: { columns: { title: true } },
         creatorAccount: { columns: { name: true } },
         creatorWorker: {
@@ -231,6 +231,8 @@ export async function GET(
       roleSlug: task.roleSlug,
       createdAt: task.createdAt,
       missionId: task.missionId,
+      // A local mission's task is claimed from a session: the sheet shows claim_task.
+      missionExecutor: task.mission?.executor ?? null,
       backend: task.backend,
       failover,
       worker: worker
