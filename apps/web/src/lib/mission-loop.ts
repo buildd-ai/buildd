@@ -5,10 +5,13 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
+import { isMergeBlockCode } from '@buildd/core/mission-completion-codes';
 import { postMissionFeedEvent, systemActor, type FeedActor } from '@/lib/mission-feed';
 import { evaluateMissionOpenPrGate } from '@/lib/mission-run';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
 import type { MissionWakeReason } from '@/lib/mission-wake';
+import { evaluateHeartbeatPrepass, type HeartbeatPrepassDecision } from '@/lib/heartbeat-prepass';
+import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
 
 /** Max planning cycles within a single trigger chain before stopping */
 const MAX_CYCLES_PER_CHAIN = 5;
@@ -16,14 +19,17 @@ const MAX_CYCLES_PER_CHAIN = 5;
 /** Debounce window (ms) to prevent concurrent re-triggers */
 const DEBOUNCE_MS = 10_000;
 
-export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'evaluation_requested' | 'failure_retried' | 'failure_limit' | 'completion_blocked';
+export type LoopAction = 'retriggered' | 'completed' | 'stalled' | 'depth_exceeded' | 'skipped' | 'waiting' | 'evaluation_requested' | 'failure_retried' | 'failure_limit' | 'completion_blocked';
 
 /**
  * Evaluate whether a mission should start another planning cycle after
  * an aggregation task (or zero-child planning task) completes.
  *
- * Runs a guard chain: status → manual → dependency → idempotency → completion →
- * depth → stall → open-PR. If all guards pass, calls runMission() with an
+ * Runs a guard chain: status → manual → dependency → event gate → idempotency →
+ * completion → depth → stall → open-PR. The event gate is the heartbeat prepass
+ * applied to task-completion events: an attempt task finishing, or a mission
+ * whose open work is all a known self-resolving wait, does not dispatch the
+ * organizer. If all guards pass, calls runMission() with an
  * incremented cycle context and `triggerSource: 'event'`.
  *
  * Heartbeat missions go through the same chain: events plan every auto mission,
@@ -41,6 +47,25 @@ type SpawnEvaluationFn = (missionId: string, completedTaskId: string) => Promise
 export interface RetriggerOptions {
   /** Set by wakeMission: an external event, not a task completion, is re-planning. */
   wakeReason?: MissionWakeReason;
+}
+
+/**
+ * Why a task-completion event did not dispatch the organizer. Server-side
+ * diagnostics on the loop's own channel; the durable, user-visible record of a
+ * wait is the check-in wait note.
+ */
+async function announceEventSkip(
+  missionId: string,
+  reason: string,
+  triggerTaskId: string | null,
+  extra?: Record<string, unknown>,
+): Promise<void> {
+  console.log(`[mission-loop] mission ${missionId}: event re-plan skipped (${reason})`);
+  await triggerEvent(
+    channels.mission(missionId),
+    events.MISSION_LOOP_STALLED,
+    { missionId, reason, ...(triggerTaskId ? { triggerTaskId } : {}), ...extra },
+  ).catch(e => console.error(`[mission-loop] pusher failed for mission ${missionId}:`, e));
 }
 
 export async function maybeRetriggerMission(
@@ -94,6 +119,76 @@ export async function maybeRetriggerMission(
     isHeartbeat = ctx?.heartbeat === true;
   }
 
+  // Read the triggering task to get cycle context and its class. A wake has
+  // none and starts a fresh chain at cycle 1.
+  const planningTask = completedPlanningTaskId && !wakeReason
+    ? await db.query.tasks.findFirst({
+        where: eq(tasks.id, completedPlanningTaskId),
+        columns: { context: true, result: true, taskClass: true },
+      })
+    : null;
+
+  // 2b. Deterministic event gate — runs BEFORE the debounce claim, so an event
+  //     suppressed here never stamps updatedAt and swallows a meaningful
+  //     completion landing seconds later. Wakes are exempt: an owner note, a
+  //     merged PR or a cleared dependency is exactly the external signal the
+  //     organizer should read, whatever else is in flight.
+  //     A completion proposal is exempt too: step 4 owns that decision.
+  const triggerResult = (planningTask?.result || {}) as Record<string, unknown>;
+  const proposesCompletion = triggerResult.missionComplete === true ||
+    (triggerResult.structuredOutput as Record<string, unknown> | undefined)?.missionComplete === true;
+  let prepass: HeartbeatPrepassDecision | null = null;
+  if (!wakeReason && !proposesCompletion) {
+    // A reviewer pass or CI/conflict retry finishing is not a planning event:
+    // its parent deliverable already reached its terminal state (and re-planned
+    // then), and what the attempt unblocks — a merge — arrives as its own wake.
+    // Only the code-side completion check runs, so the last attempt can still
+    // let a finished mission close.
+    if (planningTask?.taskClass === 'attempt') {
+      const dormancy = await completeMissionIfVerified(missionId, { path: 'dormancy' });
+      if (dormancy.completed) return { action: 'completed' };
+      await announceEventSkip(missionId, 'attempt_completed', completedPlanningTaskId);
+      return { action: 'skipped' };
+    }
+
+    // The heartbeat prepass, reused on the event path. Fails open: an error
+    // here keeps the old behaviour (dispatch), and the cron stuck check
+    // (mission-stuck.ts) remains the backstop for anything suppressed wrongly.
+    // `lastHeartbeatStateHash: null` disables skip_no_change: the hash is
+    // written only by backstop dispatches, so it says nothing about whether
+    // this event changed anything.
+    try {
+      prepass = await evaluateHeartbeatPrepass({
+        missionId,
+        dependsOnMissionId: mission.dependsOnMissionId ?? null,
+        gateCondition: (mission.gateCondition as 'merged' | 'completed') ?? 'merged',
+        dependencyMetAt: mission.dependencyMetAt ?? null,
+        lastHeartbeatStateHash: null,
+      });
+    } catch (err) {
+      console.warn(`[mission-loop] event prepass failed for mission ${missionId}, dispatching as before:`, err instanceof Error ? err.message : err);
+    }
+
+    if (prepass?.action === 'skip_blocked') {
+      await announceEventSkip(missionId, 'heartbeat_blocked', completedPlanningTaskId);
+      return { action: 'skipped' };
+    }
+
+    // Every open task is a known self-resolving wait (queued reviewer/retry,
+    // budget pause, loop backoff): the organizer would only say "I'll wait".
+    // Same durable note the check-in writes, so the timeline shows why.
+    if (prepass?.action === 'skip_waiting') {
+      await recordHeartbeatWaitNote(missionId, prepass.reason, prepass.waitUntil).catch(e =>
+        console.error(`[mission-loop] failed to record wait note for mission ${missionId}:`, e),
+      );
+      await announceEventSkip(missionId, 'heartbeat_waiting', completedPlanningTaskId, {
+        waitReason: prepass.reason,
+        waitUntil: prepass.waitUntil.toISOString(),
+      });
+      return { action: 'waiting' };
+    }
+  }
+
   // 3. Idempotency — atomic debounce via updatedAt timestamp.
   //    A wake skips the debounce window: every wake site has just written the
   //    mission row itself (dependencyMetAt, status, a budget), so the window
@@ -118,15 +213,6 @@ export async function maybeRetriggerMission(
   if (!claimed) {
     return { action: 'skipped' };
   }
-
-  // Read the completed planning task to get cycle context. A wake has none and
-  // starts a fresh chain at cycle 1.
-  const planningTask = completedPlanningTaskId && !wakeReason
-    ? await db.query.tasks.findFirst({
-        where: eq(tasks.id, completedPlanningTaskId),
-        columns: { context: true, result: true },
-      })
-    : null;
 
   const taskContext = (planningTask?.context || {}) as Record<string, unknown>;
   const taskResult = (planningTask?.result || {}) as Record<string, unknown>;
@@ -200,6 +286,20 @@ export async function maybeRetriggerMission(
 
   // Work is done but unverified — do not retrigger planning, and do not close.
   if (isCriteriaBlockCode(dormancy.decision.code)) return { action: 'completion_blocked' };
+
+  // 6. Every deliverable is terminal and the only thing between the mission and
+  //    completion is a PR merge (a task PR, or the integration branch's mission
+  //    PR). The merge arrives as a `pr_merged` wake; an organizer run now can
+  //    only report that it is waiting. A task PR closed unmerged is the
+  //    exception — it will not resolve on its own, so it still re-plans.
+  if (
+    prepass?.action === 'skip_complete' &&
+    isMergeBlockCode(dormancy.decision.code) &&
+    !dormancy.decision.awaitingMergeDetails?.some(d => d.closedUnsuperseded)
+  ) {
+    await announceEventSkip(missionId, dormancy.decision.code, completedPlanningTaskId);
+    return { action: 'waiting' };
+  }
 
   // 7. Depth guard — max cycles per trigger chain
   const chainTaskCount = await db
@@ -345,6 +445,11 @@ export async function maybeRetriggerMission(
   if (runResult?.deduped) {
     return { action: 'skipped' };
   }
+
+  // Planning resumed — close any wait note an earlier skip left open.
+  await resolveHeartbeatWaitNote(missionId).catch(e =>
+    console.error(`[mission-loop] failed to resolve wait note for mission ${missionId}:`, e),
+  );
 
   await triggerEvent(
     channels.mission(missionId),
