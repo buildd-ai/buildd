@@ -73,6 +73,9 @@ jobs:
       - name: Lint specs (frontmatter + dead paths + index)
         run: bun run scripts/check-specs.ts --check
 
+      - name: Check design drift
+        run: bun run design:check
+
       # Open-core boundary: design/strategy prose lives in the private
       # knowledge-base repo. docs/design keeps only frontmatter stubs (plus
       # design-system.md and DESIGN-FORMAT.md); docs/plans and docs/reports
