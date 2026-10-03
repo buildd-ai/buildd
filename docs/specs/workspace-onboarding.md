@@ -10,6 +10,44 @@ related: [team-workspace-mission-onboarding, mcp-action-contracts]
 keywords: [readiness report, scaffold PR, author_spec, onboarding skill, buildd-ready, nextStep, anti-blind-copy, interview]
 verified_by: [packages/core/__tests__/workspace-readiness.test.ts, apps/web/src/app/api/workspaces/[id]/readiness/route.test.ts, packages/core/__tests__/onboarding-render.test.ts, packages/core/__tests__/onboarding-scaffold.test.ts, apps/web/src/app/api/workspaces/[id]/onboarding/scaffold/route.test.ts, packages/core/__tests__/onboarding-spec.test.ts, apps/web/src/app/api/workspaces/[id]/onboarding/spec/route.test.ts, packages/core/__tests__/mcp-tools-manage-workspaces.test.ts, scripts/mcp-consumer-skill-action-drift.test.ts, scripts/mcp-consumer-skill-instructions.test.ts, scripts/workspace-onboarding-skill.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "compute-readiness"
+    type: "symbol"
+    name: "computeReadiness"
+    path: "packages/core/workspace-readiness.ts"
+  - id: "author-spec"
+    type: "symbol"
+    name: "authorSpec"
+    path: "packages/core/onboarding-spec.ts"
+  - id: "plan-scaffold"
+    type: "symbol"
+    name: "planScaffold"
+    path: "packages/core/onboarding-scaffold.ts"
+  - id: "readiness-route"
+    type: "route"
+    method: "GET"
+    path: "/api/workspaces/[id]/readiness"
+    file: "apps/web/src/app/api/workspaces/[id]/readiness/route.ts"
+  - id: "scaffold-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/onboarding/scaffold"
+    file: "apps/web/src/app/api/workspaces/[id]/onboarding/scaffold/route.ts"
+  - id: "spec-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/onboarding/spec"
+    file: "apps/web/src/app/api/workspaces/[id]/onboarding/spec/route.ts"
+  - id: "readiness-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/workspace-readiness.test.ts"
+  - id: "onboarding-spec-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/onboarding-spec.test.ts"
+  - id: "manage-workspaces-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/mcp-tools-manage-workspaces.test.ts"
 ---
 
 # Workspace Onboarding
