@@ -11,7 +11,7 @@
  * the view is display only.
  */
 import type { HumanShotReview, VisualQaVerdict, VisualReviewCell, VisualReviewCellEntry, VisualReviewModel } from '@buildd/shared';
-import { awaitingCapture, fixCheckDue, fixCheckOf, markerOf, queueRankOf } from './visual-review-model';
+import { awaitingCapture, fixCheckDue, fixCheckOf, markerOf, queueRankOf, standingOf } from './visual-review-model';
 
 /** Rounds that shot at least one screen, latest first. */
 export function visualReviewRounds(model: Pick<VisualReviewModel, 'cells'>): number[] {
@@ -35,6 +35,7 @@ function cellAt(cell: VisualReviewCell, entry: VisualReviewCellEntry, round: num
   const review = entry.review;
   const history = cell.history.filter(h => h.round <= round);
   const fixCheck = fixCheckOf(history);
+  const standing = standingOf({ current: entry, fixCheck });
   return {
     ...cell,
     current: entry,
@@ -43,6 +44,7 @@ function cellAt(cell: VisualReviewCell, entry: VisualReviewCellEntry, round: num
     marker: markerOf(review, fixCheck),
     needsHuman: entry.agentVerdict === 'unsure' && !review && fixCheck?.state !== 'awaiting_capture',
     fixCheck,
+    standing,
   };
 }
 
@@ -55,7 +57,7 @@ export function visualReviewForRound(model: VisualReviewModel, round: number): V
   }
   const order = new Map(model.cells.map((c, i) => [c.key, i]));
   const queue = cells
-    .filter(c => !awaitingCapture(c))
+    .filter(c => c.standing === 'to_review')
     .sort((a, b) => queueRankOf(a) - queueRankOf(b) || (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0))
     .map(c => c.key);
   const latest = Math.max(0, ...visualReviewRounds(model), model.audit?.round ?? 0);
@@ -82,6 +84,7 @@ export function visualReviewForRound(model: VisualReviewModel, round: number): V
       reviewed,
       unreviewed: cells.length - reviewed,
       awaitingHuman: cells.filter(c => c.needsHuman).length,
+      toReview: queue.length,
       fixChecks: cells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
       awaitingCapture: cells.filter(awaitingCapture).length,
       confirmed: rel('agree'),

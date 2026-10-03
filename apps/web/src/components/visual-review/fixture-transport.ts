@@ -18,6 +18,7 @@ import {
 } from '@buildd/shared';
 import { surfaceFixTitle } from '@buildd/core/surface-audit';
 import { buildVisualReviewModel, type VisualReviewTaskInput } from '@/lib/visual-review-model';
+import { decisionOutcome, planShotReviewEffect } from '@/lib/visual-review-outcome';
 import {
   VISUAL_REVIEW_FIXTURE_NOW,
   visualReviewFixtureInput,
@@ -84,8 +85,18 @@ export function createFixtureVisualReviewTransport(
       let fixTaskId: string | null = null;
       let cancelledFixTaskId: string | null = null;
       let guidanceTaskId: string | null = null;
-      // Still broken on a fix check files a new fix whatever the agent said.
-      const filing = cells.filter(c => c && req.decision === 'needs_fix' && (c.current.agentVerdict !== 'issue' || c.fixCheck?.state === 'check'));
+      // The route's rule (planShotReviewEffect). Still broken on a fix check
+      // files a new fix whatever the agent said: the merged fix is what it tests.
+      const TERMINAL = ['completed', 'failed', 'cancelled'];
+      const effects = cells.map((c) => {
+        if (!c) return null;
+        const check = c.fixCheck?.state === 'check';
+        const fix = check && c.current.fixTask?.id === c.fixCheck!.fix.id ? null : c.current.fixTask;
+        const linkedFix = fix ? { id: fix.id, status: taskStatus(before, fix.id) ?? fix.status } : null;
+        const effect = planShotReviewEffect(c.current.agentVerdict, req.decision, { linkedFix, hasNote: !!req.note?.trim() });
+        return { ...effect, check, linkedOpen: !!linkedFix && !TERMINAL.includes(linkedFix.status) };
+      });
+      const filing = cells.filter((c, i) => c && effects[i]?.intent === 'file_fix');
       if (filing.length) {
         const first = filing[0]!;
         fixTaskId = `fixture-human-fix-${seq}`;
@@ -106,7 +117,7 @@ export function createFixtureVisualReviewTransport(
         if (active) superseded.add(active.id);
         const verdict = c.current.agentVerdict;
         let cancelled: string | null = null;
-        if (req.decision === 'looks_right' && verdict === 'issue' && c.current.fixTask) {
+        if (effects[cells.indexOf(c)]?.intent === 'waive_fix' && c.current.fixTask) {
           const fix = c.current.fixTask;
           if (taskStatus(before, fix.id) === 'pending') {
             statusOf.set(fix.id, 'cancelled');
@@ -143,6 +154,18 @@ export function createFixtureVisualReviewTransport(
         cancelledFixTaskIds: cancelledFixTaskId ? [cancelledFixTaskId] : [],
         guidanceTaskIds: guidanceTaskId ? [guidanceTaskId] : [],
         annotated: guidanceTaskId ? [{ fixTaskId: guidanceTaskId, reason: 'started' }] : [],
+        outcome: decisionOutcome({
+          decision: req.decision,
+          shots: cells.flatMap((c, i) => (c && effects[i] ? [{ agentVerdict: c.current.agentVerdict, check: effects[i]!.check, linkedOpen: effects[i]!.linkedOpen }] : [])),
+          filed: !!fixTaskId,
+          reused: false,
+          cancelled: !!cancelledFixTaskId,
+          annotated: [
+            ...(guidanceTaskId ? ['started' as const] : []),
+            ...(effects.some(e => e?.intent === 'guide_fix') ? ['note' as const] : []),
+          ],
+          roundCapOpen: before.roundCapOpen,
+        }),
         model: build(),
       };
     },

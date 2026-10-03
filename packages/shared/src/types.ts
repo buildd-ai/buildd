@@ -2208,6 +2208,14 @@ export type VisualReviewMarker = 'awaiting' | 'confirmed' | 'disputed' | 'waived
  */
 export type VisualReviewFixCheckState = 'awaiting_capture' | 'check';
 
+/**
+ * Where a cell stands for the review deck (`standingOf`). `to_review`: waits
+ * on a human decision, so it is in `VisualReviewModel.queue`. `fine`: the
+ * agent or a person found it right. `fixing`: a fix is open, merged and not
+ * yet re-shot, or a person asked for one.
+ */
+export type VisualReviewStanding = 'to_review' | 'fine' | 'fixing';
+
 export interface VisualReviewFixCheck {
   state: VisualReviewFixCheckState;
   /** The merged fix. */
@@ -2239,6 +2247,8 @@ export interface VisualReviewCell {
    * Looks right / Needs fix apply.
    */
   fixCheck?: VisualReviewFixCheck | null;
+  /** Server-derived (`standingOf`). Absent only on a model built before the field existed. */
+  standing?: VisualReviewStanding;
 }
 
 export interface VisualReviewSummary {
@@ -2256,6 +2266,8 @@ export interface VisualReviewSummary {
   unreviewed: number;
   /** Current unsure cells without an active review (`needsHuman`). */
   awaitingHuman: number;
+  /** Cells awaiting a human decision: the length of `VisualReviewModel.queue`. */
+  toReview?: number;
   /** Cells whose fix merged with a new screenshot nobody has checked yet (`fixCheck.state` `check`, no review). */
   fixChecks?: number;
   /** Cells whose fix merged with no screenshot since (`fixCheck.state` `awaiting_capture`): settled, not to review. */
@@ -2320,8 +2332,9 @@ export interface VisualReviewModel {
   needsYou: VisualReviewNeedsYou | null;
   cells: VisualReviewCell[];
   /**
-   * Cell keys in review order: unsure, fix checks, issue, ok, then already
-   * reviewed. A cell whose fix merged with no screenshot since is never in it.
+   * Keys of the cells awaiting a human decision (`standing` `to_review`), in
+   * review order: unsure, fix checks, then issue. Decided, fine and settled
+   * cells are never in it.
    */
   queue: string[];
   summary: VisualReviewSummary;
@@ -2367,8 +2380,38 @@ export interface VisualReviewDecisionResponse {
   guidanceTaskIds: string[];
   /** Why each fix in `guidanceTaskIds` got a note instead of a cancel, for an honest toast. */
   annotated: VisualReviewAnnotation[];
+  /** What the decision did, for the confirmation (`decisionOutcome`). Absent from an older server. */
+  outcome?: VisualReviewOutcome;
   model: VisualReviewModel;
 }
+
+/**
+ * What a decision did, as the server applied it
+ * (docs/design/visual-qa-human-review.md, "The deck queue"):
+ * - `fix_filed`: a new fix was filed; a re-check round opens or extends.
+ * - `fix_added`: the route's open human fix was reused.
+ * - `fix_kept` / `fix_kept_no_recheck`: agreed with an issue whose fix is
+ *   open; the second when the last automatic round already ran.
+ * - `fix_noted`: a note went to the open fix.
+ * - `fix_done`: the fix had completed; recorded only.
+ * - `fix_cancelled`: a pending, unclaimed fix was cancelled.
+ * - `fix_started`: the fix had started, so it got a note instead.
+ * - `fix_still_linked`: another screen still links the fix, so it stays open.
+ * - `not_a_bug`, `marked_fixed`, `marked_fine`: recorded only.
+ */
+export type VisualReviewOutcome =
+  | 'fix_filed'
+  | 'fix_added'
+  | 'fix_kept'
+  | 'fix_kept_no_recheck'
+  | 'fix_noted'
+  | 'fix_done'
+  | 'fix_cancelled'
+  | 'fix_started'
+  | 'fix_still_linked'
+  | 'not_a_bug'
+  | 'marked_fixed'
+  | 'marked_fine';
 
 /**
  * `started`: a looks-right could not cancel the fix because it had started.

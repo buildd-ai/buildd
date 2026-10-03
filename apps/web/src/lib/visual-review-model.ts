@@ -28,6 +28,7 @@ import type {
   VisualReviewNeedsYou,
   VisualReviewPhase,
   VisualReviewShot,
+  VisualReviewStanding,
   VisualReviewSummary,
   VisualReviewSupersededShot,
 } from '@buildd/shared';
@@ -274,6 +275,30 @@ export const awaitingCapture = (c: Pick<VisualReviewCell, 'fixCheck'>): boolean 
 /** A cell whose fix merged and whose new screenshot nobody has checked. */
 export const fixCheckDue = (c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): boolean => c.fixCheck?.state === 'check' && !c.current.review;
 
+/** A fix task that ended without landing: terminal, and not completed. */
+const FIX_DEAD = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'completed'));
+
+/**
+ * Where a cell stands for the review deck (docs/design/visual-qa-human-review.md,
+ * "The deck queue"). Only `to_review` waits on a person: an unsure verdict, a
+ * merged fix with a new screenshot, or an issue nobody is fixing. An issue
+ * whose fix is open or done waits on nobody; its next round re-checks it.
+ */
+export function standingOf(c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): VisualReviewStanding {
+  if (c.fixCheck?.state === 'awaiting_capture') return 'fixing';
+  const review = c.current.review;
+  if (review) return review.decision === 'looks_right' ? 'fine' : 'fixing';
+  if (c.fixCheck?.state === 'check') return 'to_review';
+  const verdict = c.current.agentVerdict;
+  if (verdict === 'unsure') return 'to_review';
+  if (verdict === 'ok') return 'fine';
+  const fix = c.current.fixTask;
+  return fix && !FIX_DEAD.has(fix.status) ? 'fixing' : 'to_review';
+}
+
+/** The cell's standing: the server's, else derived the same way for a model that predates the field. */
+export const cellStanding = (c: Pick<VisualReviewCell, 'fixCheck' | 'current' | 'standing'>): VisualReviewStanding => c.standing ?? standingOf(c);
+
 export function markerOf(review: HumanShotReview | null, fixCheck?: VisualReviewFixCheck | null): VisualReviewMarker {
   if (fixCheck?.state === 'awaiting_capture') return 'fix_merged';
   if (!review) return 'awaiting';
@@ -284,7 +309,7 @@ export function markerOf(review: HumanShotReview | null, fixCheck?: VisualReview
 
 const VERDICT_RANK: Record<VisualQaVerdict, number> = { unsure: 0, issue: 2, ok: 3 };
 
-/** Triage rank: unsure, fix checks, issue, ok, then reviewed. */
+/** Triage rank: unsure, fix checks, issue, ok, then reviewed. The queue holds the `to_review` ones. */
 export function queueRankOf(c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): number {
   if (c.current.review) return 4;
   if (c.fixCheck?.state === 'check') return 1;
@@ -410,6 +435,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
       ? (review.decision === 'looks_right' ? 'ok' : 'issue')
       : current.agentVerdict;
     const fixCheck = fixCheckOf(history);
+    const standing = standingOf({ current, fixCheck });
     cells.push({
       key,
       route: current.shot.qa.route,
@@ -421,6 +447,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
       marker: markerOf(review, fixCheck),
       needsHuman: current.agentVerdict === 'unsure' && !review && fixCheck?.state !== 'awaiting_capture',
       fixCheck,
+      standing,
     });
   }
 
@@ -431,7 +458,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     || VIEWPORT_RANK[a.viewport] - VIEWPORT_RANK[b.viewport];
   cells.sort(byPlace);
   const queue = cells
-    .filter(c => !awaitingCapture(c))
+    .filter(c => c.standing === 'to_review')
     .sort((a, b) => queueRankOf(a) - queueRankOf(b) || byPlace(a, b))
     .map(c => c.key);
 
@@ -515,6 +542,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     reviewed,
     unreviewed: cells.length - reviewed,
     awaitingHuman,
+    toReview: queue.length,
     // An unsure "after" shot already counts in awaitingHuman.
     fixChecks: cells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
     awaitingCapture: cells.filter(awaitingCapture).length,
