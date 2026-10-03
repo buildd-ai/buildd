@@ -75,18 +75,6 @@ describe('check-public-docs', () => {
     expect(v[0].message).toContain('frontmatter');
   });
 
-  test('allows the explicitly requested human-question spec only at its exact path', () => {
-    const root = tree({
-      'docs/design/human-question-gate.md': '# Human question gate\n\nPublic contract.\n',
-      'docs/design/human-question-gate-extra.md': '# Related design\n\nPrivate proposal.\n',
-      'docs/design/nested/human-question-gate.md': '# Nested design\n\nPrivate proposal.\n',
-    });
-    expect(check(root).map(v => v.file).sort()).toEqual([
-      'docs/design/human-question-gate-extra.md',
-      'docs/design/nested/human-question-gate.md',
-    ]);
-  });
-
   test('fails on a stub with prose appended after the pointer', () => {
     const root = tree({ 'docs/design/foo.md': `${stub('foo')}\n## Extra\n\nmore\n` });
     expect(check(root)).toHaveLength(1);

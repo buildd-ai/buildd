@@ -6,7 +6,6 @@
  * knowledge-base repo under buildd/design/. What stays here:
  *
  *   docs/design/design-system.md, docs/design/DESIGN-FORMAT.md  — any content
- *   docs/design/human-question-gate.md — explicitly requested public contract
  *   docs/design/<name>.md   — frontmatter + the standard pointer stub only, so
  *                             spec conformance can still check its assertions
  *   docs/reports/gate-audit.md                                   — any content
@@ -28,8 +27,6 @@ export const GUARDED_DIRS = ['docs/design', 'docs/plans', 'docs/reports'] as con
 export const ALLOWED_FULL = new Set([
   'docs/design/design-system.md',
   'docs/design/DESIGN-FORMAT.md',
-  // Owner explicitly requested this contract here; other designs remain stubs.
-  'docs/design/human-question-gate.md',
   'docs/reports/gate-audit.md',
 ]);
 
@@ -120,7 +117,7 @@ if (import.meta.main) {
   const root = rootIdx >= 0 ? args[rootIdx + 1] : join(import.meta.dir, '..');
   const violations = checkPublicDocs(root, listDocFiles(root, { useGit: !args.includes('--no-git') }));
   if (violations.length === 0) {
-    console.log('public-docs: ok (docs/design holds only stubs and explicitly allowed files)');
+    console.log('public-docs: ok (docs/design holds only stubs and the two allowed files)');
     process.exit(0);
   }
   for (const v of violations) console.error(`✖ ${v.file}: ${v.message}`);
