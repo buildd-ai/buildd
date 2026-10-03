@@ -268,6 +268,103 @@ describe('POST /api/missions/[id]/artifacts', () => {
     const res = await POST(req, { params: mockParams });
     expect(res.status).toBe(200);
   });
+
+  it('does not notify on upsert when content and title are unchanged', async () => {
+    const mockShouldNotifyOnArtifact = mock(async () => true);
+    const mockNotifyArtifactReady = mock(async () => {});
+
+    mock.module('@/lib/artifact-notify', () => ({
+      shouldNotifyOnArtifact: mockShouldNotifyOnArtifact,
+      notifyArtifactReady: mockNotifyArtifactReady,
+    }));
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+    });
+
+    const existing = {
+      id: 'artifact-1',
+      content: 'Same content',
+      title: 'Same title',
+      shareToken: 'test-token',
+    };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [existing]),
+        })),
+      })),
+    });
+
+    const req = createRequest({
+      method: 'POST',
+      body: {
+        type: 'report',
+        title: 'Same title',
+        content: 'Same content',
+        key: 'my-artifact',
+        taskId: 'task-1',
+      },
+      headers: { authorization: 'Bearer bld_test' },
+    });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // notifyArtifactReady should NOT be called because content/title unchanged
+    expect(mockNotifyArtifactReady).not.toHaveBeenCalled();
+  });
+
+  it('notifies on upsert when content changed', async () => {
+    const mockShouldNotifyOnArtifact = mock(async () => true);
+    const mockNotifyArtifactReady = mock(async () => {});
+
+    mock.module('@/lib/artifact-notify', () => ({
+      shouldNotifyOnArtifact: mockShouldNotifyOnArtifact,
+      notifyArtifactReady: mockNotifyArtifactReady,
+    }));
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+    });
+
+    const existing = {
+      id: 'artifact-1',
+      content: 'Old content',
+      title: 'Same title',
+      shareToken: 'test-token',
+    };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...existing, content: 'New content' }]),
+        })),
+      })),
+    });
+
+    const req = createRequest({
+      method: 'POST',
+      body: {
+        type: 'report',
+        title: 'Same title',
+        content: 'New content',
+        key: 'my-artifact',
+        taskId: 'task-1',
+      },
+      headers: { authorization: 'Bearer bld_test' },
+    });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('GET /api/missions/[id]/artifacts', () => {

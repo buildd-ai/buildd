@@ -9,12 +9,26 @@ const mockMissionsFindMany = mock(() => [] as any[]);
 const mockArtifactsFindMany = mock(() => [] as any[]);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockShouldNotifyOnArtifact = mock(async () => false);
+const mockNotifyArtifactReady = mock(async () => {});
 let insertedValues: any = null;
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/team-access', () => ({ resolveAccountTeamIds: mockResolveAccountTeamIds }));
 mock.module('@/lib/app-url', () => ({ appBaseUrl: () => 'https://buildd.test' }));
+mock.module('@/lib/artifact-notify', () => ({
+  shouldNotifyOnArtifact: mockShouldNotifyOnArtifact,
+  notifyArtifactReady: mockNotifyArtifactReady,
+}));
+const mockArtifactsUpdate = mock(() => ({
+  set: mock(() => ({
+    where: mock(() => ({
+      returning: mock((vals: any) => [{ id: 'artifact-1', ...vals }]),
+    })),
+  })),
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -31,6 +45,7 @@ mock.module('@buildd/core/db', () => ({
         },
       }),
     }),
+    update: () => mockArtifactsUpdate(),
   },
 }));
 mock.module('drizzle-orm', () => ({
@@ -108,5 +123,99 @@ describe('POST /api/initiatives/[id]/artifacts', () => {
     expect(res.status).toBe(200);
     expect(insertedValues.title).toBe('Roadmap');
     expect(insertedValues.initiativeId).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('does not notify on upsert when content and title are unchanged', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockInitiativesFindFirst.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+    });
+    mockShouldNotifyOnArtifact.mockResolvedValue(true);
+
+    const existing = {
+      id: 'artifact-1',
+      workspaceId: 'ws-1',
+      initiativeId: '11111111-1111-4111-8111-111111111111',
+      key: 'my-spec',
+      type: 'report',
+      title: 'Spec',
+      content: 'Same content',
+      shareToken: 'test-token',
+    };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [existing]),
+        })),
+      })),
+    });
+
+    const req = new NextRequest('http://localhost/api/initiatives/11111111-1111-4111-8111-111111111111/artifacts', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'report',
+        title: 'Spec',
+        content: 'Same content',
+        key: 'my-spec',
+        taskId: 'task-1',
+      }),
+    });
+    const res = await POST(req, ctx('11111111-1111-4111-8111-111111111111'));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.upserted).toBe(true);
+    // Should NOT notify because content/title unchanged
+    expect(mockNotifyArtifactReady).not.toHaveBeenCalled();
+  });
+
+  it('notifies on upsert when content changed', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockInitiativesFindFirst.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+    });
+    mockShouldNotifyOnArtifact.mockResolvedValue(true);
+
+    const existing = {
+      id: 'artifact-1',
+      workspaceId: 'ws-1',
+      initiativeId: '11111111-1111-4111-8111-111111111111',
+      key: 'my-spec',
+      type: 'report',
+      title: 'Spec',
+      content: 'Old content',
+      shareToken: 'test-token',
+    };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...existing, content: 'New content' }]),
+        })),
+      })),
+    });
+
+    const req = new NextRequest('http://localhost/api/initiatives/11111111-1111-4111-8111-111111111111/artifacts', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'report',
+        title: 'Spec',
+        content: 'New content',
+        key: 'my-spec',
+        taskId: 'task-1',
+      }),
+    });
+    const res = await POST(req, ctx('11111111-1111-4111-8111-111111111111'));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.upserted).toBe(true);
+    // Should notify because content changed
+    expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
   });
 });
