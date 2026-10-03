@@ -365,6 +365,27 @@ describe('POST /api/missions/[id]/artifacts', () => {
     expect(res.status).toBe(200);
     expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
   });
+
+  it('accepts taskId in request body for MCP tool notifications', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', teamId: 'team-1', workspaceId: 'ws-1' });
+
+    const req = createRequest({
+      method: 'POST',
+      body: {
+        type: 'report',
+        title: 'MCP Created Report',
+        content: 'Report content',
+        taskId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      },
+      headers: { authorization: 'Bearer bld_test' },
+    });
+    const res = await POST(req, { params: mockParams });
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.artifact.title).toBe('MCP Created Report');
+  });
 });
 
 describe('GET /api/missions/[id]/artifacts', () => {

@@ -218,4 +218,28 @@ describe('POST /api/initiatives/[id]/artifacts', () => {
     // Should notify because content changed
     expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
   });
+
+  it('accepts taskId in request body for MCP tool notifications', async () => {
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockInitiativesFindFirst.mockResolvedValue({
+      id: '11111111-1111-4111-8111-111111111111',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+    });
+
+    const req = new NextRequest('http://localhost/api/initiatives/11111111-1111-4111-8111-111111111111/artifacts', {
+      method: 'POST',
+      body: JSON.stringify({
+        type: 'report',
+        title: 'MCP Created Report',
+        content: 'Report content',
+        taskId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      }),
+    });
+    const res = await POST(req, ctx('11111111-1111-4111-8111-111111111111'));
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.artifact.title).toBe('MCP Created Report');
+  });
 });
