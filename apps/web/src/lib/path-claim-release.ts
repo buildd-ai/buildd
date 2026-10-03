@@ -13,14 +13,19 @@
  *
  * Selective narrowing (lib/path-claim-check.ts `narrowPathClaim`) reuses the
  * delivery half, `deliverPathReleased`, for just the waiters it freed.
+ *
+ * A notified waiter is dispatch-woken (see `dispatchQueuedWaiters`) whenever
+ * it is still `pending`, not just sent the `path_released` worker message —
+ * that message only reaches an agent that is already running and checking in.
  */
 
 import { db } from '@buildd/core/db';
-import { tasks, workers } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { and, eq, inArray } from 'drizzle-orm';
 import { releaseClaims, rearmWaiter, type ReleaseResult } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage } from '@buildd/core/worker-messages';
 import { triggerEvent, channels } from '@/lib/pusher';
+import { dispatchRetriedTask, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch';
 
 /**
  * Why the locks dropped — decides what the waiting agent should do next.
@@ -59,9 +64,53 @@ export async function releaseAndNotify(taskId: string, reason: PathReleaseReason
 }
 
 /**
+ * A waiter that is still `pending` has no active worker to serve it the
+ * `path_released` message queued below — nothing polls `pendingWorkerMessages`
+ * until a worker claims the task, and the fallback runner poll defaults to a
+ * full hour (BUILDD_RUNNER_POLL_MIN, packages/shared/src/runner-liveness.ts).
+ * Run it through the same wake the claim loop already uses for a requeued
+ * retry (webhook `task.retry` where configured, else Pusher TASK_ASSIGNED)
+ * instead of waiting for that poll. This only nudges the claim loop to
+ * re-evaluate the task now — it re-checks path overlap, dependencies,
+ * capacity and every other gate itself, so a wake for a task still blocked on
+ * a second claim, or one raced into another status, is a harmless no-op.
+ */
+async function dispatchQueuedWaiters(waiterTaskIds: string[]): Promise<void> {
+  if (waiterTaskIds.length === 0) return;
+  try {
+    const rows = await db.query.tasks.findMany({
+      where: and(inArray(tasks.id, waiterTaskIds), eq(tasks.status, 'pending')),
+      columns: {
+        id: true, title: true, description: true, workspaceId: true, mode: true,
+        priority: true, missionId: true, backend: true, roleSlug: true,
+        runnerPreference: true, startAt: true,
+      },
+    });
+    if (rows.length === 0) return;
+
+    const workspaceRows = await db.query.workspaces.findMany({
+      where: inArray(workspaces.id, [...new Set(rows.map(r => r.workspaceId))]),
+      columns: { id: true, name: true, repo: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
+    });
+    const workspaceById = new Map<string, DispatchWorkspace>(workspaceRows.map(w => [w.id, w]));
+
+    await Promise.all(rows.map(row =>
+      dispatchRetriedTask(
+        row as unknown as DispatchTask & { startAt?: Date | string | null },
+        workspaceById.get(row.workspaceId) ?? {},
+      ).catch(err => console.error(`[path-claim] dispatch wake failed for task ${row.id}:`, err)),
+    ));
+  } catch (err) {
+    console.error('[path-claim] dispatchQueuedWaiters failed:', err);
+  }
+}
+
+/**
  * Deliver `path_released` to each waiter in `result` (already stamped
  * notified by the core release/narrow statement), re-arming any waiter whose
- * delivery fails, then fan out `path_claim_released` for dashboards.
+ * delivery fails, then fan out `path_claim_released` for dashboards. Also
+ * dispatch-wakes any notified waiter still `pending` (see
+ * `dispatchQueuedWaiters`) instead of leaving it to the hourly fallback poll.
  *
  * Only the waiters in `result` are messaged — for a narrowing that is exactly
  * the ones blocked on a released path, not every waiter on the task.
@@ -97,26 +146,29 @@ export async function deliverPathReleased(
     // already stamped notifiedAt, so without the re-arm a failed enqueue is a
     // permanently silent waiter. The next release event for this task (a
     // repeated terminal signal, or the maintenance sweep) wakes it again.
-    await Promise.all([...pathsByWaiter].map(async ([waitingTaskId, paths]) => {
-      try {
-        const delivered = await enqueueWorkerMessage(
-          waitingTaskId,
-          buildWorkerMessage({
-            type: 'path_released',
-            fromTaskId: taskId,
-            toTaskId: waitingTaskId,
-            body: { paths, releasedAt, reason },
-          }),
-        );
-        // false = the waiting task row is gone; nothing to re-arm for.
-        if (!delivered) return;
-      } catch (err) {
-        console.error(`[path-claim] path_released enqueue failed for task ${waitingTaskId}:`, err);
-        await rearmWaiter(taskId, waitingTaskId).catch(rearmErr =>
-          console.error(`[path-claim] rearmWaiter failed for task ${waitingTaskId}:`, rearmErr),
-        );
-      }
-    }));
+    await Promise.all([
+      ...[...pathsByWaiter].map(async ([waitingTaskId, paths]) => {
+        try {
+          const delivered = await enqueueWorkerMessage(
+            waitingTaskId,
+            buildWorkerMessage({
+              type: 'path_released',
+              fromTaskId: taskId,
+              toTaskId: waitingTaskId,
+              body: { paths, releasedAt, reason },
+            }),
+          );
+          // false = the waiting task row is gone; nothing to re-arm for.
+          if (!delivered) return;
+        } catch (err) {
+          console.error(`[path-claim] path_released enqueue failed for task ${waitingTaskId}:`, err);
+          await rearmWaiter(taskId, waitingTaskId).catch(rearmErr =>
+            console.error(`[path-claim] rearmWaiter failed for task ${waitingTaskId}:`, rearmErr),
+          );
+        }
+      }),
+      dispatchQueuedWaiters([...pathsByWaiter.keys()]),
+    ]);
 
     await triggerEvent(
       channels.workspace(workspaceId),

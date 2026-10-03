@@ -11,7 +11,9 @@
  *   - PATCH /api/workers/[id] (observed touches → lease; terminal status → release)
  *   - GitHub webhook (PR merged/closed → release)
  *   - stale-workers reaper (orphaned worker → release)
- *   - Workers claim route (path_claims backstop)
+ *   - Workers claim route (path_claims backstop; registers a deferred pending
+ *     task as a waiter so release dispatch-wakes it instead of leaving it to
+ *     the claim loop's own next poll)
  */
 
 import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';

@@ -258,8 +258,11 @@ mock.module('@/lib/pushover', () => ({
 }));
 // path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
 const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
+// Waiter registration on a path_overlap deferral — real module hits the DB.
+const mockRegisterWaiter = mock((..._args: any[]) => Promise.resolve({ registered: true } as any));
 mock.module('@buildd/core/path-claim', () => ({
   getActiveClaimsByWorkspace: mockGetActiveClaimsByWorkspace,
+  registerWaiter: mockRegisterWaiter,
 }));
 // Gate ledger: capture deferral events so a test can read the `detail` bag a
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
@@ -5513,6 +5516,67 @@ describe('path-overlap claim guard', () => {
       detail: 'Its files overlap an active claim held by task task-9 (apps/web/src/lib/mcp-oauth.ts). Wait for that task to finish, or rebase onto its work.',
     });
   });
+
+  // A pending task deferred here has no active worker to ever see a
+  // `path_released` worker message (nothing polls it until claimed), and the
+  // runner fallback poll defaults to a full hour (BUILDD_RUNNER_POLL_MIN).
+  // Registering it as a waiter on the blocker is what lets path-claim-release
+  // dispatch-wake it the moment the blocker's claim actually releases, instead
+  // of leaving it to that hourly poll.
+  it('layer 1: registers the deferred task as a waiter on the blocking PR\'s task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockRegisterWaiter.mockClear();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toHaveLength(0);
+    expect(mockRegisterWaiter).toHaveBeenCalledWith(
+      'sibling-task', 'task-1', 'apps/web/src/lib/mcp-oauth.ts', 'ws-1',
+    );
+  });
+
+  it('layer 2: registers the deferred task as a waiter on the active-claim holder', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockRegisterWaiter.mockClear();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([]); // no open PR tasks — this is the layer-2 backstop
+    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
+      new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]),
+    );
+
+    mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toHaveLength(0);
+    expect(mockRegisterWaiter).toHaveBeenCalledWith(
+      'task-9', 'task-1', 'apps/web/src/lib/mcp-oauth.ts', 'ws-1',
+    );
+  });
 });
 
 describe('entity catalog injection at claim time', () => {
@@ -7697,6 +7761,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
 
   it('force: an admin explicit claim is not deferred by path overlap or the mission cap', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockRegisterWaiter.mockClear();
     mockWorkersFindMany
       .mockResolvedValueOnce([]) // active workers
       .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
@@ -7710,6 +7775,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].taskId).toBe('task-1');
+    // Forced past the gate, not deferred — nothing is actually waiting.
+    expect(mockRegisterWaiter).not.toHaveBeenCalled();
   });
 
   // H2: the mission budget is a cost limit, not a person-overridable gate.
