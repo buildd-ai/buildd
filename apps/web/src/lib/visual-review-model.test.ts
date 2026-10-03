@@ -262,6 +262,29 @@ describe('buildVisualReviewModel: fix tasks', () => {
     expect(m.summary.openFixes).toBe(1);
     expect(m.fixTasks.map(f => f.id).sort()).toEqual(['fx1', 'fx2']);
   });
+
+  it('classifies a merged fix PR as trunk or mission-branch by the mission\'s own integration branch', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx1' });
+    const b = shot('w1', '/b', 'mobile', 'issue', 2, { fixTaskId: 'fx2' });
+    const c = shot('w1', '/c', 'mobile', 'issue', 3, { fixTaskId: 'fx3' });
+    const tasks: VisualReviewTaskInput[] = [
+      audit('t1', 1, 'completed', 'w1'),
+      // No mission integration branch configured: a merged PR always reads trunk.
+      { id: 'fx1', title: '[surface fix] /a: x', status: 'completed', workers: [{ id: 'wf1', prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: at(90), prBaseRef: null }] },
+      // Mission uses one, and the PR based on it: merged, but only there.
+      { id: 'fx2', title: '[surface fix] /b: y', status: 'completed', workers: [{ id: 'wf2', prUrl: 'https://example.test/pr/2', prNumber: 2, mergedAt: at(90), prBaseRef: 'mission/x-12345678' }] },
+      // Mission uses one, but this PR based directly on trunk anyway.
+      { id: 'fx3', title: '[surface fix] /c: z', status: 'completed', workers: [{ id: 'wf3', prUrl: 'https://example.test/pr/3', prNumber: 3, mergedAt: at(90), prBaseRef: 'dev' }] },
+    ];
+    const m1 = buildVisualReviewModel(input({ shots: [a], tasks, missionIntegrationBranch: null }));
+    expect(m1.cells.find(c => c.route === '/a')!.current.fixTask).toMatchObject({ mergedInto: 'trunk' });
+
+    const m2 = buildVisualReviewModel(input({ shots: [a, b, c], tasks, missionIntegrationBranch: 'mission/x-12345678' }));
+    // An unrecorded prBaseRef defaults to mission-branch once the mission has one: unknown must undersell "shipped", never oversell it.
+    expect(m2.cells.find(c => c.route === '/a')!.current.fixTask).toMatchObject({ mergedInto: 'mission_branch' });
+    expect(m2.cells.find(c => c.route === '/b')!.current.fixTask).toMatchObject({ mergedInto: 'mission_branch' });
+    expect(m2.cells.find(c => c.route === '/c')!.current.fixTask).toMatchObject({ mergedInto: 'trunk' });
+  });
 });
 
 describe('buildVisualReviewModel: triage queue', () => {
