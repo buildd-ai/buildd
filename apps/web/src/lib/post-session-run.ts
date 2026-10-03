@@ -18,6 +18,10 @@
  *  - **Never throws.** Every outcome is a returned status, so a caller on a
  *    cron path cannot be broken by this loop.
  *
+ * After collecting, the sweep runs Stage B triage (`post-session-triage.ts`)
+ * over every collected-but-untriaged run, so a triage that failed or was cut
+ * short is picked up by the next sweep.
+ *
  * The DB-backed store is `post-session-store.ts`, loaded lazily so this module
  * stays testable without a database.
  */
@@ -36,6 +40,7 @@ import {
   type TranscriptAvailability,
 } from '@buildd/core/post-session-quality';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { triagePostSessionRun, type PostSessionTriageStore, type TriageDeps } from './post-session-triage';
 
 /** The eligibility + mode inputs for one worker. */
 export interface PostSessionWorkerRef {
@@ -53,7 +58,7 @@ export type ClaimRunResult =
   | { claimed: true; runId: string; attempt: number }
   | { claimed: false; runId: string; state: PostSessionRunState };
 
-export interface PostSessionRunStore {
+export interface PostSessionRunStore extends PostSessionTriageStore {
   loadWorker(workerId: string): Promise<PostSessionWorkerRef | null>;
   /** Insert-or-reclaim the run for (worker, policy version). Atomic. */
   claimRun(input: {
@@ -161,6 +166,13 @@ export interface PostSessionSweepSummary {
   failed: number;
   skipped: number;
   errors: number;
+  /** Stage B: runs given a final decision this sweep. */
+  triaged: number;
+  /** ...of which routed to deeper analysis (model or hard trigger). */
+  selected: number;
+  /** ...of which the decision itself was unavailable (fail-open). */
+  triageUnavailable: number;
+  triageErrors: number;
 }
 
 export async function sweepPostSessionRuns(opts: {
@@ -169,8 +181,13 @@ export async function sweepPostSessionRuns(opts: {
   limit?: number;
   lookbackMs?: number;
   policyVersion?: string;
+  /** Stage B seams (decision call, receipt writer). */
+  triage?: Pick<TriageDeps, 'decide' | 'recordReceipts'>;
 } = {}): Promise<PostSessionSweepSummary> {
-  const summary: PostSessionSweepSummary = { candidates: 0, collected: 0, duplicate: 0, failed: 0, skipped: 0, errors: 0 };
+  const summary: PostSessionSweepSummary = {
+    candidates: 0, collected: 0, duplicate: 0, failed: 0, skipped: 0, errors: 0,
+    triaged: 0, selected: 0, triageUnavailable: 0, triageErrors: 0,
+  };
   let store: PostSessionRunStore;
   let ids: string[];
   const now = opts.now ?? new Date();
@@ -197,6 +214,26 @@ export async function sweepPostSessionRuns(opts: {
     else if (res.status === 'failed') summary.failed++;
     else if (res.status === 'error') summary.errors++;
     else summary.skipped++;
+  }
+
+  // Stage B over everything collected and not yet triaged — this sweep's runs
+  // and any a previous sweep collected but did not finish triaging.
+  let untriaged: string[];
+  try {
+    untriaged = await store.listUntriaged({ policyVersion, limit: opts.limit ?? POST_SESSION_SWEEP_LIMIT });
+  } catch {
+    summary.triageErrors++;
+    return summary;
+  }
+  for (const runId of untriaged) {
+    const res = await triagePostSessionRun(runId, { ...opts.triage, store, now });
+    if (res.status === 'triaged') {
+      summary.triaged++;
+      if (res.finalDecision === 'analyse') summary.selected++;
+      if (res.triageStatus === 'unavailable') summary.triageUnavailable++;
+    } else if (res.status === 'error') {
+      summary.triageErrors++;
+    }
   }
   return summary;
 }

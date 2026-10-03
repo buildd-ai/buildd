@@ -228,3 +228,45 @@ describe('postSessionRunStore.loadSource', () => {
     await expect(postSessionRunStore.loadSource(refFor, 'shadow')).rejects.toThrow('not found');
   });
 });
+
+describe('postSessionRunStore Stage B triage', () => {
+  const outcome = (finalDecision: 'skip' | 'analyse') => ({
+    triage: { status: 'ok' as const, decision: 'skip' as const, focus: 'general' as const, reasonCode: 'routine_success', confidence: 0.9, provenance: { rule: 'triage' } },
+    hardTriggered: finalDecision === 'analyse',
+    hardTriggerReasons: finalDecision === 'analyse' ? ['reviewer_escalated' as const] : [],
+    finalDecision,
+    rule: finalDecision === 'analyse' ? 'hard_trigger' as const : 'triage' as const,
+  });
+
+  it('loads the run with its workspace team and data class', async () => {
+    selectResults.set(postSessionRuns, [{
+      id: 'run-1', state: 'collected', facts: { schemaVersion: 1 }, workspaceId: 'ws-1', teamId: 'team-1', dataClass: 'standard',
+    }]);
+    expect(await postSessionRunStore.loadTriageInput('run-1')).toEqual({
+      runId: 'run-1', state: 'collected', facts: { schemaVersion: 1 } as any, workspaceId: 'ws-1', teamId: 'team-1', dataClass: 'standard',
+    });
+    selectResults.set(postSessionRuns, []);
+    expect(await postSessionRunStore.loadTriageInput('run-1')).toBeNull();
+  });
+
+  it('records triage, hard triggers and final decision fenced on state=collected', async () => {
+    updateResults = [[{ id: 'run-1' }], []];
+    expect(await postSessionRunStore.recordTriage('run-1', outcome('analyse'), NOW)).toBe(true);
+    expect(await postSessionRunStore.recordTriage('run-1', outcome('skip'), NOW)).toBe(false);
+    const [first, second] = writes();
+    expect(first.table).toBe(postSessionRuns);
+    expect(first.steps.find(([s]) => s === 'set')![1][0]).toMatchObject({
+      state: 'triaged', finalDecision: 'analyse', hardTriggered: true, hardTriggerReasons: ['reviewer_escalated'], triagedAt: NOW,
+    });
+    expect((first.steps.find(([s]) => s === 'set')![1][0] as any).triage.status).toBe('ok');
+    expect(second.steps.find(([s]) => s === 'set')![1][0]).toMatchObject({ state: 'skipped', finalDecision: 'skip', hardTriggered: false });
+    expect(first.steps.some(([s]) => s === 'where')).toBe(true);
+  });
+
+  it('lists collected runs for the policy version', async () => {
+    selectResults.set(postSessionRuns, [{ id: 'run-1' }, { id: 'run-2' }]);
+    expect(await postSessionRunStore.listUntriaged({ policyVersion: 'psq-v1', limit: 10 })).toEqual(['run-1', 'run-2']);
+    const sel = calls.find(c => c.op === 'select' && c.table === postSessionRuns)!;
+    expect(sel.steps.find(([s]) => s === 'limit')![1][0]).toBe(10);
+  });
+});

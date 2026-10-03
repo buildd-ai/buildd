@@ -1,6 +1,7 @@
 /**
  * Postgres-backed {@link PostSessionRunStore} for the post-session quality
- * collector (`post-session-run.ts`).
+ * collector (`post-session-run.ts`) and its Stage B triage
+ * (`post-session-triage.ts`).
  *
  * Writes go to `post_session_runs` and nowhere else — the worker and task a
  * run describes are read, never updated. Each Stage A sub-source is read
@@ -320,6 +321,60 @@ export const postSessionRunStore: PostSessionRunStore = {
         )`,
       ))
       .orderBy(asc(workers.completedAt))
+      .limit(limit);
+    return rows.map(r => r.id);
+  },
+
+  // ── Stage B ───────────────────────────────────────────────────────────────
+
+  async loadTriageInput(runId) {
+    const [row] = await db
+      .select({
+        id: postSessionRuns.id,
+        state: postSessionRuns.state,
+        facts: postSessionRuns.facts,
+        workspaceId: postSessionRuns.workspaceId,
+        teamId: workspaces.teamId,
+        dataClass: workspaces.dataClass,
+      })
+      .from(postSessionRuns)
+      .innerJoin(workspaces, eq(workspaces.id, postSessionRuns.workspaceId))
+      .where(eq(postSessionRuns.id, runId))
+      .limit(1);
+    if (!row) return null;
+    return {
+      runId: row.id,
+      state: row.state,
+      facts: row.facts ?? null,
+      workspaceId: row.workspaceId,
+      teamId: row.teamId ?? null,
+      dataClass: row.dataClass ?? null,
+    };
+  },
+
+  async recordTriage(runId, outcome, now) {
+    const rows = await db
+      .update(postSessionRuns)
+      .set({
+        state: outcome.finalDecision === 'analyse' ? 'triaged' : 'skipped',
+        triage: outcome.triage,
+        hardTriggered: outcome.hardTriggered,
+        hardTriggerReasons: outcome.hardTriggerReasons,
+        finalDecision: outcome.finalDecision,
+        triagedAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(postSessionRuns.id, runId), eq(postSessionRuns.state, 'collected')))
+      .returning({ id: postSessionRuns.id });
+    return rows.length > 0;
+  },
+
+  async listUntriaged({ policyVersion, limit }) {
+    const rows = await db
+      .select({ id: postSessionRuns.id })
+      .from(postSessionRuns)
+      .where(and(eq(postSessionRuns.policyVersion, policyVersion), eq(postSessionRuns.state, 'collected')))
+      .orderBy(asc(postSessionRuns.updatedAt))
       .limit(limit);
     return rows.map(r => r.id);
   },
