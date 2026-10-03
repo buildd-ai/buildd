@@ -27,6 +27,17 @@ function evalCondition(cond: unknown, row: Record<string, unknown>): boolean {
       const [col, vals] = args as [string, unknown[]];
       return vals.includes(row[col]);
     }
+    case 'isNull': {
+      const [col] = args as [string];
+      return row[col] === null || row[col] === undefined;
+    }
+    case 'sql': {
+      // Only the tag-containment fragment is interpreted: `tags @> ARRAY[tag]`.
+      const [strings, exprs] = args as [TemplateStringsArray, unknown[]];
+      if (!strings.join('?').includes('@> ARRAY[')) return true;
+      const [col, tag] = exprs as [string, string];
+      return Array.isArray(row[col]) && (row[col] as string[]).includes(tag);
+    }
     default:
       return true;
   }
@@ -64,6 +75,7 @@ mock.module('../db/schema', () => ({
     id: 'id',
     updatedAt: 'updatedAt',
     supersededBy: 'supersededBy',
+    tags: 'tags',
   },
 }));
 
@@ -195,5 +207,34 @@ describe('MemoryStore.search — tokenized query', () => {
     const absent = await store.search({});
 
     expect(absent.results.map(r => r.id)).toEqual(['m1']);
+  });
+});
+
+describe('MemoryStore.search — tag and team-wide filters', () => {
+  it('tag keeps only rows carrying it', async () => {
+    allRows = [
+      { ...row('m1', 'rubric', 'a'), tags: ['goal-criteria-rubric'] },
+      { ...row('m2', 'other', 'b'), tags: ['something-else'] },
+    ];
+    const result = await new MemoryStore('team-1').search({ tag: 'goal-criteria-rubric' });
+    expect(result.results.map(r => r.id)).toEqual(['m1']);
+  });
+
+  it('teamWide keeps only rows with no project', async () => {
+    allRows = [
+      { ...row('m1', 'team', 'a'), project: null },
+      { ...row('m2', 'scoped', 'b'), project: 'acme/app' },
+    ];
+    const result = await new MemoryStore('team-1').search({ teamWide: true });
+    expect(result.results.map(r => r.id)).toEqual(['m1']);
+  });
+
+  it('a project wins over teamWide', async () => {
+    allRows = [
+      { ...row('m1', 'team', 'a'), project: null },
+      { ...row('m2', 'scoped', 'b'), project: 'acme/app' },
+    ];
+    const result = await new MemoryStore('team-1').search({ teamWide: true, project: 'acme/app' });
+    expect(result.results.map(r => r.id)).toEqual(['m2']);
   });
 });

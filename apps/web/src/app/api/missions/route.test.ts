@@ -4,11 +4,21 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // mocks below. Stubbed here because this file asserts route BEHAVIOUR; the
 // ledger's own wiring is covered by gate-ledger.test.ts / the gate-events and
 // gate-analytics suites in packages/core.
+const recordedGateEvents: any[] = [];
 mock.module('@buildd/core/gate-events', () => ({
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
   gateFrictionSignature: (gate: string, reason: string) => `gate:${gate}_${Buffer.from(reason).toString('hex').slice(0, 12)}`,
-  recordGateEvent: async () => null,
+  recordGateEvent: async (input: any) => { recordedGateEvents.push(input); return null; },
   recordOrCoalesceDeferral: async () => null,
+}));
+// The goal-criteria quality shadow (lib/goal-criteria-quality-shadow.ts) runs
+// for real after the response; only its decision call is stubbed here.
+let goalQualityAccess: () => Promise<any> = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+let goalQualityDecide: (req: any) => Promise<any> = async () => { throw new Error('decide not expected'); };
+const goalQualityDecideCalls: any[] = [];
+mock.module('@buildd/core/decision-client', () => ({
+  resolveDecisionAccess: () => goalQualityAccess(),
+  decisionCall: (req: any) => { goalQualityDecideCalls.push(req); return goalQualityDecide(req); },
 }));
 import { NextRequest } from 'next/server';
 
@@ -1196,7 +1206,9 @@ describe('POST /api/missions — goalCriteria validation', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/mechanical criterion/);
-    expect(body.error).toMatch(/all_prs_merged \+ no_open_tasks/);
+    expect(body.error).not.toContain('all_prs_merged + no_open_tasks');
+    expect(body.error).toContain('command');
+    expect(body.error).toContain('artifact_exists');
   });
 
   it('rejects a command criterion with no command (previously accepted, then unevaluatable)', async () => {
@@ -1225,6 +1237,110 @@ describe('POST /api/missions — goalCriteria validation', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/goalCriteria\[0\]/);
+  });
+  describe('goal-criteria quality shadow (docs/specs/mission-goal-criteria-quality.md)', () => {
+    const allowed = async () => ({ ok: true, apiKey: 'k', model: 'jev-test' });
+    const disabled = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+    /** Grades a criterion labelled "...tests pass" as not noticeable; everything else as an outcome. */
+    const grading = async (req: any) => {
+      const answers: Record<string, unknown> = {};
+      for (const name of Object.keys(req.questions)) {
+        const i = Number(/^c(\d+)_/.exec(name)?.[1]);
+        const weak = Number.isFinite(i) && /tests pass$/.test(req.state.criteria[i]?.label ?? '');
+        answers[name] = { type: 'choice', confidence: 0.95, probabilities: {}, choice: name === 'rewrite' ? 'state-outcome' : weak ? 'no' : 'yes' };
+      }
+      return { ok: true, answers, model: 'jev-test', latencyMs: 4, usage: null, attempts: 1 };
+    };
+    const flush = () => new Promise(r => setTimeout(r, 20));
+    const create = (criteria: unknown[]) => POST(new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Goal quality', orchestrationMode: 'manual', goalCriteria: criteria }),
+    }));
+    const quality = () => recordedGateEvents.filter(e => e.gate === 'goal_criteria_quality');
+
+    beforeEach(() => {
+      recordedGateEvents.length = 0;
+      goalQualityDecideCalls.length = 0;
+      goalQualityAccess = disabled;
+      goalQualityDecide = grading;
+    });
+
+    it('capability off: 201, no decision call, no goal_criteria_quality row (AC-1)', async () => {
+      const res = await create([{ type: 'command', command: 'bun run test', label: 'off: tests pass' }]);
+      expect(res.status).toBe(201);
+      await flush();
+      expect(goalQualityDecideCalls).toHaveLength(0);
+      expect(quality()).toEqual([]);
+    });
+
+    it('shadow: the response body is identical to capability off, and the stored goal is the submitted one (AC-3, AC-4, AC-12)', async () => {
+      const criteria = [{ type: 'command', command: 'bun run test', label: 'same body: tests pass' }, { type: 'all_prs_merged' }];
+      const off = await (await create(criteria)).json();
+      await flush();
+      goalQualityAccess = allowed;
+      const res = await create(criteria);
+      expect(res.status).toBe(201);
+      const on = await res.json();
+      expect(on).toEqual(off);
+      expect(on).not.toHaveProperty('advisory');
+      expect(insertedMissionValues.goalCriteria).toEqual(criteria);
+      await flush();
+      expect(goalQualityDecideCalls).toHaveLength(1);
+    });
+
+    it('a weak criterion records one warned row, without its text (AC-7)', async () => {
+      goalQualityAccess = allowed;
+      await create([
+        { type: 'command', command: 'bun run e2e signup', label: 'warned: a visitor can sign up' },
+        { type: 'command', command: 'bun run test', label: 'warned: tests pass' },
+      ]);
+      await flush();
+      const rows = quality();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ outcome: 'warned', surface: 'POST /api/missions', missionId: 'obj-1', detail: { index: 1, type: 'command' } });
+      expect(JSON.stringify(rows[0])).not.toContain('tests pass');
+      expect(JSON.stringify(rows[0])).not.toContain('bun run test');
+    });
+
+    it('a strong criterion records no warned row', async () => {
+      goalQualityAccess = allowed;
+      await create([{ type: 'command', command: 'bun run e2e signup', label: 'strong: a visitor can sign up' }]);
+      await flush();
+      expect(goalQualityDecideCalls).toHaveLength(1);
+      expect(quality()).toEqual([]);
+    });
+
+    it('the decision call never sends the command string (AC-6)', async () => {
+      goalQualityAccess = allowed;
+      await create([{ type: 'command', command: 'bun run scripts/secret-check.ts', label: 'sent: a visitor can sign up' }]);
+      await flush();
+      expect(JSON.stringify(goalQualityDecideCalls[0].state)).not.toContain('secret-check');
+    });
+
+    it('a never-resolving decision call cannot delay the response (AC-2)', async () => {
+      goalQualityAccess = allowed;
+      goalQualityDecide = () => new Promise(() => {});
+      const res = await create([{ type: 'command', command: 'bun run test', label: 'hang: tests pass' }]);
+      expect(res.status).toBe(201);
+      expect(await res.json()).not.toHaveProperty('advisory');
+    });
+
+    it('a throwing decision call cannot fail the response (AC-2)', async () => {
+      goalQualityAccess = allowed;
+      goalQualityDecide = async () => { throw new Error('provider down'); };
+      const res = await create([{ type: 'command', command: 'bun run test', label: 'throw: tests pass' }]);
+      expect(res.status).toBe(201);
+      await flush();
+      expect(quality()).toEqual([]);
+    });
+
+    it('a 400 from validation makes no decision call', async () => {
+      goalQualityAccess = allowed;
+      const res = await create([{ type: 'description', description: 'feels nice', notMechanizableReason: 'it is a feeling, nothing to run' }]);
+      expect(res.status).toBe(400);
+      await flush();
+      expect(goalQualityDecideCalls).toHaveLength(0);
+    });
   });
 });
 

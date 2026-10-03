@@ -213,7 +213,9 @@ export const planningOutputSchema = {
       type: 'array',
       description:
         'Mission-level completion gates this plan proposes — see manage_missions goalCriteria. At least one ' +
-        'MECHANICAL criterion (command / all_prs_merged / no_open_tasks / artifact_exists) is required; ' +
+        'MECHANICAL criterion (command / all_prs_merged / no_open_tasks / artifact_exists) is required. ' +
+        'Prove the outcome: a command that exits 0 only when it holds, or artifact_exists for a named ' +
+        'deliverable; all_prs_merged / no_open_tasks only close out the work and prove nothing a user would notice. ' +
         '"metric" has no evaluator yet and "description" requires notMechanizableReason.',
       items: {
         type: 'object',

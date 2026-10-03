@@ -51,12 +51,12 @@ export const CRITERION_TYPE_OPTIONS: CriterionTypeOption[] = [
   {
     type: 'all_prs_merged',
     label: 'All PRs merged',
-    hint: 'Every PR this mission opened has landed.',
+    hint: 'Every PR this mission opened has landed. Bookkeeping: shows the work closed, not that a user sees a change.',
   },
   {
     type: 'no_open_tasks',
     label: 'No open tasks',
-    hint: 'Nothing left pending, assigned or running.',
+    hint: 'Nothing left pending, assigned or running. Bookkeeping, like All PRs merged.',
   },
   {
     type: 'artifact_exists',
