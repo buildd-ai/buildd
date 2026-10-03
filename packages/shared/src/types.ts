@@ -2086,6 +2086,43 @@ export interface VisualQaMeta {
   /** The auditor's own fix link. A human-filed fix is on the review row instead. */
   fixTaskId?: string;
   variant?: string;
+  /**
+   * The branch the shot was captured from, and why that branch
+   * (`CaptureRefSource` in @buildd/core/visual-qa-capture-ref). Absent on
+   * shots that predate the capture ref; those are never judged wrong-ref.
+   */
+  ref?: string;
+  refSource?: string;
+}
+
+/**
+ * A shot captured from a ref other than the mission's capture ref, with a
+ * correct-ref shot at the same route, viewport and state. Hidden from the deck;
+ * the artifact is kept for audit (docs/design/visual-qa-auditor.md, "Page source").
+ */
+export interface VisualReviewSupersededShot {
+  shotId: string;
+  route: string;
+  viewport: VisualQaViewport;
+  /** The ref the shot recorded, normalized. */
+  ref: string;
+  expectedRef: string;
+  /** The correct-ref shot that replaces it. */
+  supersededBy: string;
+}
+
+/**
+ * A wrong-ref shot with no correct-ref sibling: a capture the auditor still
+ * owes, never a question for a person.
+ */
+export interface VisualReviewCaptureGap {
+  shotId: string;
+  route: string;
+  viewport: VisualQaViewport;
+  ref: string;
+  expectedRef: string;
+  auditTaskId: string | null;
+  round: number;
 }
 
 /** One audit screenshot, as every surface renders it. */
@@ -2200,6 +2237,8 @@ export interface VisualReviewSummary {
   rounds: number;
   /** `[surface fix]` tasks of the mission still open. */
   openFixes: number;
+  /** Wrong-ref shots with no correct-ref sibling (`VisualReviewModel.captureGaps`). */
+  captureGaps?: number;
 }
 
 export interface VisualReviewAuditTask {
@@ -2251,6 +2290,10 @@ export interface VisualReviewModel {
   queue: string[];
   summary: VisualReviewSummary;
   fixTasks: VisualReviewFixTask[];
+  /** Wrong-ref shots hidden because a correct-ref sibling exists. Never in `cells` or `queue`. */
+  superseded?: VisualReviewSupersededShot[];
+  /** Wrong-ref shots the auditor still has to recapture. Never in `cells` or `queue`. */
+  captureGaps?: VisualReviewCaptureGap[];
   generatedAt: string;
 }
 

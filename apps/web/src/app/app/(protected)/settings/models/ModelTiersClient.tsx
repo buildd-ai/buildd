@@ -106,11 +106,11 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
         <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link> hold the keys.
       </p>
 
-      <div className="mt-6">
+      <div className="mt-5">
         <TierPoolsSection teamId={teamId} isAdmin={isAdmin} models={catalog.models ?? []} keys={keys} refreshKey={tiersVersion} />
       </div>
 
-      <div className="mt-10 max-w-4xl">
+      <div className="mt-8 max-w-4xl">
         <h2 className="mb-2 flex items-baseline gap-2 font-mono text-[15px] font-bold text-text-primary">
           Base models
         </h2>
@@ -230,7 +230,7 @@ function TierRow({
 
 
   return (
-    <div className="border-b border-border-default last:border-b-0 px-3 py-2.5" data-testid={`tier-row-${tier}`} data-source={entry?.source ?? ''}>
+    <div className="border-b border-border-default last:border-b-0 px-3 py-2" data-testid={`tier-row-${tier}`} data-source={entry?.source ?? ''}>
       <div className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[130px_minmax(0,1fr)_auto] gap-x-3 gap-y-2 items-center">
         <div className="min-w-0" title={tierBandLabel(tier)}>
           <span className="text-[13px] font-bold text-text-primary">{tier}</span>

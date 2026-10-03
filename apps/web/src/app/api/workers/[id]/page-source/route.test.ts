@@ -11,12 +11,14 @@ const WORKER = '33333333-3333-4333-8333-333333333333';
 const ACCOUNT = '44444444-4444-4444-8444-444444444444';
 
 let authed: { id: string } | null;
-let worker: { id: string; accountId: string; workspaceId: string } | null;
+let worker: { id: string; accountId: string; workspaceId: string; taskId?: string | null } | null;
 let workspace: Record<string, unknown> | null;
 let resolverArgs: Record<string, unknown> | null;
+let task: { missionId: string | null } | null;
+let mission: { workingBranch: string | null; integrationBranchEnabled: boolean } | null;
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async () => authed }));
-mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'workers.id' }, workspaces: { id: 'workspaces.id' } }));
+mock.module('@buildd/core/db/schema', () => ({ workers: { id: 'workers.id' }, workspaces: { id: 'workspaces.id' }, tasks: { id: 'tasks.id' }, missions: { id: 'missions.id' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 mock.module('@/lib/github', () => ({ githubApi: async () => ({}) }));
 mock.module('@/lib/visual-qa-page-source', () => ({
@@ -30,6 +32,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findFirst: async () => worker },
       workspaces: { findFirst: async () => workspace },
+      tasks: { findFirst: async () => task },
+      missions: { findFirst: async () => mission },
     },
   },
 }));
@@ -49,6 +53,8 @@ beforeEach(() => {
     githubRepo: { fullName: 'acme/web', installation: { installationId: 42 } },
   };
   resolverArgs = null;
+  task = null;
+  mission = null;
 });
 
 describe('GET /api/workers/[id]/page-source', () => {
@@ -74,6 +80,20 @@ describe('GET /api/workers/[id]/page-source', () => {
       waitSeconds: 30,
     });
     expect(typeof resolverArgs!.get).toBe('function');
+  });
+
+  it("passes the worker's mission integration fields and the repo default branch, for the capture ref", async () => {
+    worker = { ...worker!, taskId: 'task-1' } as typeof worker;
+    task = { missionId: 'mission-1' };
+    mission = { workingBranch: 'mission/settings-abcd1234', integrationBranchEnabled: true };
+    workspace = { ...workspace!, githubRepo: { fullName: 'acme/web', defaultBranch: 'main', installation: { installationId: 42 } } };
+    await GET(req(), params());
+    expect(resolverArgs).toMatchObject({ mission, repoDefaultBranch: 'main' });
+  });
+
+  it('no mission: the resolver gets mission null (trunk)', async () => {
+    await GET(req(), params());
+    expect(resolverArgs!.mission).toBeNull();
   });
 
   it('no installation: the resolver gets no GitHub reader (it reports unreadable)', async () => {

@@ -25,10 +25,11 @@
  * nobody was fixing had no record of why.
  */
 
+import { checkDispatch } from '@/lib/supersession';
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
@@ -219,9 +220,16 @@ export async function escalateCiRedHead(input: EscalationInput): Promise<boolean
 export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetryOutcome> {
   const { repoFullName, prNumber, headSha, installationId, surface } = input;
 
+  // A PR under an active retry loop can have more than one worker row
+  // stamped with the same prNumber — the original worker and each retry
+  // attempt's own worker, since a retry continues on the SAME branch/PR. Order
+  // by newest so the iteration read below comes from the latest attempt's
+  // context, not an earlier (possibly iteration-less) one — see the openWorker
+  // fix in PR #2574, which this mirrors for the CI-retry path.
   let worker = await db.query.workers.findFirst({
     where: workerOwnsPr(repoFullName, prNumber),
     with: { task: true },
+    orderBy: [desc(workers.createdAt)],
   });
 
   if (!worker?.task) {
@@ -360,6 +368,27 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     console.log(`Skipping CI retry for ${prGate.merged ? 'merged' : 'closed'} PR #${prNumber} on ${repoFullName}`);
     const reason = prGate.merged ? 'pr_merged' : 'pr_closed';
     recordSkip(skipCtx, reason);
+    return { kind: 'skipped', reason };
+  }
+
+  // Dispatch guard: the supersession table in skip_dispatch mode, so a CI fix
+  // is never filed for work the reconciler would cancel on sight. An adopted
+  // PR's placeholder owner is exempt from the owner-status rules, as above.
+  const supersession = await checkDispatch({
+    kind: 'ci_retry',
+    workspaceId: task.workspaceId,
+    prNumber,
+    parentTaskId: isAdoptedPrTask(task) ? null : task.id,
+    door: surface,
+  });
+  // `open_retry_supersedes_duplicate` reads the same open-attempt set as the
+  // in-flight check below, which also schedules the sweep's look-back — let
+  // that branch report it rather than mislabel it here.
+  if (supersession.verdict === 'skip_dispatch' && supersession.rule !== 'open_retry_supersedes_duplicate') {
+    const reason: CiRetrySkipReason = supersession.rule === 'cancel_supersedes_retry'
+      ? 'owner_stopped'
+      : supersession.rule?.startsWith('close_') ? 'pr_closed' : 'pr_merged';
+    recordSkip(skipCtx, reason, { supersessionRule: supersession.rule });
     return { kind: 'skipped', reason };
   }
 

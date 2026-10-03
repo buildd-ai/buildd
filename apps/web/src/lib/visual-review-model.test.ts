@@ -461,7 +461,7 @@ describe('buildVisualReviewModel: phase', () => {
     const copy = describeVisualPhase(m);
     expect(copy.label).toBe('1 of 1 ok');
     expect(copy.detail).not.toMatch(/issue/);
-    expect(copy.detail).toContain('1 decided by you');
+    expect(copy.detail).toContain('1 reviewed');
   });
 
   it('every phase has copy with no dash placeholders', () => {
@@ -544,5 +544,53 @@ describe('buildVisualReviewModel: every audit task', () => {
     ]);
     expect(m.audit?.id).toBe('t2');
     expect(m.audit?.errorType).toBe('max_turns');
+  });
+});
+
+describe('buildVisualReviewModel: shots from the wrong ref (visual-qa-auditor.md, "Wrong-ref shots never reach the deck")', () => {
+  const MB = 'mission/settings-abcd1234';
+  const tasks = [audit('t1', 1, 'completed', 'w1'), audit('t2', 2, 'completed', 'w2')];
+
+  it('a wrong-ref shot with a correct-ref sibling is superseded: out of cells and queue, kept for audit', () => {
+    const right = shot('w2', '/a', 'mobile', 'ok', 20, { ref: MB, refSource: 'mission_integration' });
+    // The auditor labelled the trunk shot, so it would otherwise be a cell of its own.
+    const wrong = shot('w2', '/a', 'mobile', 'unsure', 21, { ref: 'dev', refSource: 'trunk', label: 'trunk baseline' });
+    const m = buildVisualReviewModel(input({ shots: [right, wrong], tasks, captureRef: MB }));
+    expect(m.cells.map(c => c.current.shot.id)).toEqual([right.id]);
+    expect(m.queue).toEqual([visualReviewCellKey('/a', 'mobile', null)]);
+    expect(m.summary.awaitingHuman).toBe(0);
+    expect(m.summary.unsure).toBe(0);
+    expect(m.superseded).toEqual([{ shotId: wrong.id, route: '/a', viewport: 'mobile', ref: 'dev', expectedRef: MB, supersededBy: right.id }]);
+    expect(m.captureGaps).toEqual([]);
+    expect(m.phase).toBe('reviewed');
+  });
+
+  it('a lone wrong-ref shot is a capture gap for the auditor, never a human question', () => {
+    const wrong = shot('w2', '/a', 'desktop', 'unsure', 21, { ref: 'origin/dev', refSource: 'trunk' });
+    const m = buildVisualReviewModel(input({ shots: [wrong], tasks, captureRef: MB }));
+    expect(m.cells).toEqual([]);
+    expect(m.queue).toEqual([]);
+    expect(m.summary.awaitingHuman).toBe(0);
+    expect(m.needsYou).toBeNull();
+    expect(m.phase).not.toBe('needs_you');
+    expect(m.captureGaps).toEqual([{ shotId: wrong.id, route: '/a', viewport: 'desktop', ref: 'dev', expectedRef: MB, auditTaskId: 't2', round: 2 }]);
+    expect(m.summary.captureGaps).toBe(1);
+  });
+
+  it('a shot with no recorded ref, or no expected ref, is unchanged', () => {
+    const legacy = shot('w2', '/a', 'mobile', 'unsure', 21);
+    expect(buildVisualReviewModel(input({ shots: [legacy], tasks, captureRef: MB })).summary.awaitingHuman).toBe(1);
+    const tagged = shot('w2', '/b', 'mobile', 'unsure', 22, { ref: 'dev' });
+    const m = buildVisualReviewModel(input({ shots: [tagged], tasks }));
+    expect(m.summary.awaitingHuman).toBe(1);
+    expect(m.captureGaps).toEqual([]);
+  });
+
+  it('the sibling must share the capture state: a base shot does not supersede a wrong-ref dialog shot', () => {
+    const base = shot('w2', '/a', 'mobile', 'ok', 20, { ref: MB });
+    const dialog = shot('w2', '/a', 'mobile', 'unsure', 21, { ref: 'dev', state: 'confirm-dialog' });
+    const m = buildVisualReviewModel(input({ shots: [base, dialog], tasks, captureRef: MB }));
+    expect(m.superseded).toEqual([]);
+    expect(m.captureGaps.map(g => g.shotId)).toEqual([dialog.id]);
   });
 });
