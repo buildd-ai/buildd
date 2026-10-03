@@ -116,6 +116,7 @@
     "./orchestration-promotion": "./orchestration-promotion.ts",
     "./orchestration-readout": "./orchestration-readout.ts",
     "./orchestration-readout-source": "./orchestration-readout-source.ts",
+    "./decision-ledger": "./decision-ledger.ts",
     "./manifest-prediction": "./manifest-prediction.ts",
     "./manifest-prediction-source": "./manifest-prediction-source.ts",
     "./task-area-readout": "./task-area-readout.ts",
