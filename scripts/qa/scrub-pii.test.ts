@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration';
 
 /**
  * scrub-pii.sql rewrites a prod clone before Visual QA screenshots it, and the
@@ -293,6 +294,23 @@ describe('scrub-pii.sql covers the schema', () => {
     for (const t of ['secrets', 'device_codes', 'oauth_codes', 'oauth_refresh_tokens', 'knowledge_chunks']) {
       expect(cov.wiped.has(t)).toBe(true);
     }
+  });
+
+  // `isMissionPrTask` recognises the mission-PR owner by its title prefix. A
+  // scrub that rewrites it to "Task N: …" leaves every opted-in mission on the
+  // clone without a mission PR, so Visual QA screenshots a completed, merged
+  // mission under a "MISSION PR · NOT OPENED" banner that prod never shows.
+  test('tasks.title keeps the mission-PR owner prefix, and the guard accepts it', () => {
+    const titleExpr = cov.assignments.find(a => a.table === 'tasks' && a.column === 'title')?.expr ?? '';
+    expect(titleExpr).toContain(`'${MISSION_PR_TASK_PREFIX}'`);
+    expect(titleExpr).toContain(`substr(t.title, ${MISSION_PR_TASK_PREFIX.length + 1})`);
+    const guard = readFileSync(join(__dirname, 'scrub-guard.sql'), 'utf8');
+    const pattern = /\('tasks', 'title', '([^']*)'\)/.exec(guard)?.[1];
+    expect(pattern).toBeDefined();
+    const re = new RegExp(pattern!);
+    expect(re.test(`${MISSION_PR_TASK_PREFIX}Task 12: lorem ipsum`)).toBe(true);
+    expect(re.test('Task 12: lorem ipsum')).toBe(true);
+    expect(re.test('Ship mission: Real mission title')).toBe(false);
   });
 
   test('one transaction, fail on first error, quiet, no DETAIL in public logs', () => {

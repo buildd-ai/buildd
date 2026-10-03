@@ -45,7 +45,7 @@ BEGIN
     ('missions', 'title', '^Mission [0-9]+: [a-z ]*$'),
     ('missions', 'description', lorem),
     ('missions', 'primary_pr_url', '^https://github\.com/org-1/repo-1(/pull/[0-9]+)?$'),
-    ('tasks', 'title', '^Task [0-9]+: [a-z ]*$'),
+    ('tasks', 'title', '^(Ship mission: )?Task [0-9]+: [a-z ]*$'),
     ('tasks', 'description', lorem),
     ('workers', 'branch', '^buildd/[0-9a-f]{8}-task-[0-9]+$'),
     ('workers', 'pr_url', '^https://github\.com/org-1/repo-1(/pull/[0-9]+)?$'),
