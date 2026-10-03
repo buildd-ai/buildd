@@ -51,6 +51,8 @@ export const GATE_SLUGS = {
   GOAL_CRITERIA_QUALITY: 'goal_criteria_quality',
   /** PATCH /api/workers/[id] — the outputRequirement completion gate, and `discardEdits`. */
   OUTPUT_REQUIREMENT: 'output_requirement',
+  /** Empty editing session with a non-outcome summary. */
+  SILENT_COMPLETION: 'silent_completion',
   /** PATCH /api/workers/[id] — the handoff completion gate: tasks with dependents must include handoff.delivered. */
   HANDOFF_REQUIRED: 'handoff_required',
   /** PATCH /api/workers/[id] — refusing to adopt a PR that targets the wrong base. */
