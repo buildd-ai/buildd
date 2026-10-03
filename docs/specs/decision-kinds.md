@@ -9,6 +9,37 @@ surfaces: [packages/core/decision-kinds.ts, packages/core/decision-policy.ts, pa
 related: [orchestration-decisions-shadow, mission-goal-criteria-quality, model-routing-and-tiers]
 keywords: [decision policy platform, decision kind, post_session_triage, scout_probe_selection, challenger, escalation, shadow, decision_records, decision_outcomes, readout, collection health]
 verified_by: [packages/core/__tests__/decision-kind-adapters.test.ts, packages/core/__tests__/decision-kinds-e2e.test.ts, packages/core/__tests__/decision-policy.test.ts, packages/core/__tests__/decision-readout.test.ts]
+assertions:
+  - id: "post-session-triage-kind"
+    type: "symbol"
+    name: "postSessionTriageKind"
+    path: "packages/core/decision-kind-post-session-triage.ts"
+  - id: "scout-probe-selection-kind"
+    type: "symbol"
+    name: "scoutProbeSelectionKind"
+    path: "packages/core/decision-kind-scout-probe-selection.ts"
+  - id: "define-buildd-decision-kind"
+    type: "symbol"
+    name: "defineBuilddDecisionKind"
+    path: "packages/core/decision-kinds.ts"
+  - id: "run-buildd-decision"
+    type: "symbol"
+    name: "runBuilddDecision"
+    path: "packages/core/decision-policy.ts"
+  - id: "run-buildd-challenger"
+    type: "symbol"
+    name: "runBuilddChallenger"
+    path: "packages/core/decision-policy.ts"
+  - id: "decision-comparison-table"
+    type: "symbol"
+    name: "formatDecisionComparison"
+    path: "packages/core/decision-shadow-harness.ts"
+  - id: "decision-kinds-e2e-test"
+    type: "test_file"
+    path: "packages/core/__tests__/decision-kinds-e2e.test.ts"
+  - id: "decision-kind-adapters-test"
+    type: "test_file"
+    path: "packages/core/__tests__/decision-kind-adapters.test.ts"
 ---
 
 # Decision Kinds
