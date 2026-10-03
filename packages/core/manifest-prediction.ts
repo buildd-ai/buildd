@@ -12,9 +12,13 @@
  *    neighbours (completed strictly before the new task was created — no future
  *    leakage), plus a bounded codebase-memory adapter. Diff evidence ranks above
  *    CBM. At most 254 deduplicated files, so `DONE` fits the 255-label Choice.
- *    Server-side CBM cannot answer at a pinned revision today (Step E), so the
- *    adapter reads `unavailable`, coverage is recorded as neighbour-diff only and
- *    candidate omissions stay **unknown scope**.
+ *    Server-side CBM cannot answer at a pinned revision (Step E), so the CBM
+ *    adapter reads `unavailable`. The tree-pinned source (jev-scheduling §1d)
+ *    reads the repository tree at the base commit instead: corpus-ranked files
+ *    and neighbour-diff siblings join the diff paths, everything is verified
+ *    to exist at that commit, and coverage is `tree_pinned`. Unknown scope
+ *    then means truncation or a named path the tree lacks; when the tree read
+ *    fails, coverage is neighbour-diff only and omissions stay unknown.
  *  - **One Choice picks one file.** A bounded repeated Choice removes each
  *    selected file between picks, under a pick cap and the single shared
  *    deadline. Every pick is its own dynamic definition, recorded with its
@@ -52,7 +56,7 @@ export const MANIFEST_DECISION_ID = 'buildd.orchestration_manifest_pick';
 /** Bump when the instructions, the DONE definition or the state shape change. */
 export const MANIFEST_PROMPT_VERSION = '2026-09-30.a';
 /** Bump when candidate assembly (sources, ranking, filters, cap) changes. */
-export const MANIFEST_CANDIDATE_POLICY_VERSION = 'mc1';
+export const MANIFEST_CANDIDATE_POLICY_VERSION = 'mc2';
 export const MANIFEST_PICK_QUESTION = 'pick' as const;
 export const DONE_LABEL = 'DONE' as const;
 /** 254 files + DONE = the kit's 255-label Choice maximum. */
@@ -113,11 +117,44 @@ export type CbmCandidateResult =
     }
   | { status: Exclude<CbmStatus, 'ok'>; reason: string };
 
-export type CandidateSource = 'diff' | 'cbm' | 'diff+cbm';
+/**
+ * What the tree-pinned source answered (§1d): every file in the repository
+ * tree at the task's base commit, plus the workspace code corpus's ranking of
+ * files for the task text. Nothing absent from `paths` may be a candidate.
+ */
+export type TreeCandidateResult =
+  | {
+      status: 'ok';
+      /** The commit SHA the tree was read at. */
+      revision: string;
+      /** Every file (blob) path in the tree at `revision`. */
+      paths: readonly string[];
+      /** Corpus-ranked file paths, best first. May name files absent at `revision`. */
+      ranked: readonly string[];
+    }
+  | { status: 'unavailable'; reason: string };
+
+export type TreeStatus = 'ok' | 'unavailable' | 'not_consulted';
+
+export type CandidateSource = 'diff' | 'cbm' | 'diff+cbm' | 'corpus' | 'diff+corpus' | 'sibling';
+
+/** Siblings of a neighbour-diff file offered per directory (path order). Bounds a wide directory. */
+export const MANIFEST_SIBLINGS_PER_DIR = 16;
 
 export interface CandidateCoverage {
-  /** neighbour_diff_only when CBM did not answer; the honest description of what was searched. */
-  source: 'neighbour_diff_only' | 'neighbour_diff_and_cbm';
+  /**
+   * The honest description of what was searched: tree_pinned when the base
+   * commit's tree was read (every candidate verified to exist there),
+   * neighbour_diff_and_cbm when CBM answered, else neighbour_diff_only.
+   */
+  source: 'neighbour_diff_only' | 'neighbour_diff_and_cbm' | 'tree_pinned';
+  /** Absent on rows written before the tree-pinned source. */
+  tree?: TreeStatus;
+  treeReason?: string | null;
+  /** Diff/corpus/CBM paths dropped because the tree at the commit lacks them. */
+  droppedAbsent?: number;
+  /** Paths the task text names that the tree lacks: files the task would create. */
+  namedMissing?: string[];
   neighbours: number;
   neighboursUsed: number;
   neighboursWithoutDiff: number;
@@ -137,8 +174,30 @@ export interface ManifestCandidateSet {
   truncated: boolean;
   omitted: number;
   coverage: CandidateCoverage;
-  /** True unless a complete pinned CBM answer and no truncation: omissions are unknown. */
+  /**
+   * Omissions are unknown. Tree-pinned: true on truncation or when the task
+   * text names a path the tree lacks (a new file). Otherwise: true unless a
+   * complete pinned CBM answer and no truncation.
+   */
   unknownScope: boolean;
+}
+
+const dirOf = (p: string): string => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
+
+/** Paths the task text names (files, directories or globs) that are neither a file nor a directory in the tree. */
+export function namedPathsMissingFromTree(named: readonly string[], tree: ReadonlySet<string>): string[] {
+  const dirs = new Set<string>();
+  for (const p of tree) {
+    let d = dirOf(p);
+    while (d && !dirs.has(d)) { dirs.add(d); d = dirOf(d); }
+  }
+  const missing = new Set<string>();
+  for (const n of named) {
+    const op = selectionOperand(n);
+    if (op === null) continue;
+    if (!tree.has(op) && !dirs.has(op)) missing.add(op);
+  }
+  return [...missing].sort();
 }
 
 /**
@@ -148,11 +207,19 @@ export interface ManifestCandidateSet {
  * path), then CBM-only paths in adapter order. A neighbour completed at or
  * after `cutoff`, or undated, is excluded — at replay time the corpus already
  * holds work that finished after the task was filed.
+ *
+ * With an `ok` tree (§1d) the order is diff paths, then corpus-ranked files,
+ * then CBM paths, then siblings of neighbour-diff files (at most
+ * MANIFEST_SIBLINGS_PER_DIR per directory), and anything the tree at the
+ * commit lacks is dropped. `namedPaths` (what the task text names) decides
+ * whether the task would create a file the tree cannot offer.
  */
 export function buildManifestCandidates(input: {
   cutoff: Date;
   neighbours: readonly NeighbourEvidence[];
   cbm: CbmCandidateResult;
+  tree?: TreeCandidateResult;
+  namedPaths?: readonly string[];
   cap?: number;
 }): ManifestCandidateSet {
   const cap = Math.max(0, Math.min(MANIFEST_MAX_CANDIDATES, input.cap ?? MANIFEST_MAX_CANDIDATES));
@@ -187,30 +254,96 @@ export function buildManifestCandidates(input: {
 
   const cbmOk = input.cbm.status === 'ok';
   const cbmPaths = cbmOk ? [...new Set((input.cbm as { paths: readonly string[] }).paths.filter(isConcreteCandidatePath))] : [];
+  const neighbourCoverage = {
+    neighbours: seenTask.size,
+    neighboursUsed,
+    neighboursWithoutDiff,
+    excludedFuture,
+    excludedUndated,
+    cbm: input.cbm.status,
+    cbmReason: cbmOk ? null : (input.cbm as { reason: string }).reason,
+  };
+  const finish = (all: Array<{ path: string; source: CandidateSource }>) => {
+    const kept = all.slice(0, cap);
+    return { kept, truncated: all.length > kept.length, omitted: all.length - kept.length };
+  };
+
+  // §1d: the tree at the base commit pins every candidate. A failed read falls through to today's sources.
+  const tree = input.tree;
+  if (tree && tree.status === 'ok') {
+    const inTree = new Set(tree.paths.filter(isConcreteCandidatePath));
+    const ranked = [...new Set(tree.ranked.filter(isConcreteCandidatePath))];
+    const rankedSet = new Set(ranked);
+    const absent = new Set([...diffRanked, ...ranked, ...cbmPaths].filter(p => !inTree.has(p)));
+    const taken = new Set<string>();
+    const all: Array<{ path: string; source: CandidateSource }> = [];
+    const push = (path: string, source: CandidateSource) => {
+      if (!inTree.has(path) || taken.has(path)) return;
+      taken.add(path);
+      all.push({ path, source });
+    };
+    for (const p of diffRanked) push(p, rankedSet.has(p) ? 'diff+corpus' : 'diff');
+    for (const p of ranked) push(p, 'corpus');
+    for (const p of cbmPaths) push(p, 'cbm');
+    // Siblings: files in the directory of a neighbour-diff file (including one since deleted), in diff rank order.
+    const byDir = new Map<string, string[]>();
+    for (const p of [...inTree].sort()) {
+      const d = dirOf(p);
+      const list = byDir.get(d) ?? [];
+      list.push(p);
+      byDir.set(d, list);
+    }
+    const seenDir = new Set<string>();
+    for (const p of diffRanked) {
+      const d = dirOf(p);
+      if (seenDir.has(d)) continue;
+      seenDir.add(d);
+      let added = 0;
+      for (const s of byDir.get(d) ?? []) {
+        if (added >= MANIFEST_SIBLINGS_PER_DIR) break;
+        if (taken.has(s)) continue;
+        push(s, 'sibling');
+        added++;
+      }
+    }
+    const { kept, truncated, omitted } = finish(all);
+    const namedMissing = namedPathsMissingFromTree(input.namedPaths ?? [], inTree);
+    return {
+      candidates: kept.map(k => k.path),
+      sources: kept.map(k => k.source),
+      truncated,
+      omitted,
+      coverage: {
+        source: 'tree_pinned',
+        tree: 'ok',
+        treeReason: null,
+        droppedAbsent: absent.size,
+        namedMissing,
+        ...neighbourCoverage,
+        revision: tree.revision,
+        revisionPinned: true,
+      },
+      unknownScope: truncated || namedMissing.length > 0,
+    };
+  }
+
   const cbmSet = new Set(cbmPaths);
   const diffSet = new Set(diffRanked);
-  const all: Array<{ path: string; source: CandidateSource }> = [
+  const { kept, truncated, omitted } = finish([
     ...diffRanked.map(p => ({ path: p, source: (cbmSet.has(p) ? 'diff+cbm' : 'diff') as CandidateSource })),
     ...cbmPaths.filter(p => !diffSet.has(p)).map(p => ({ path: p, source: 'cbm' as CandidateSource })),
-  ];
-  const kept = all.slice(0, cap);
-  const truncated = all.length > kept.length;
+  ]);
   const cbmComplete = cbmOk && (input.cbm as { complete: boolean }).complete === true;
 
   return {
     candidates: kept.map(k => k.path),
     sources: kept.map(k => k.source),
     truncated,
-    omitted: all.length - kept.length,
+    omitted,
     coverage: {
       source: cbmOk ? 'neighbour_diff_and_cbm' : 'neighbour_diff_only',
-      neighbours: seenTask.size,
-      neighboursUsed,
-      neighboursWithoutDiff,
-      excludedFuture,
-      excludedUndated,
-      cbm: input.cbm.status,
-      cbmReason: cbmOk ? null : (input.cbm as { reason: string }).reason,
+      ...(tree ? { tree: 'unavailable' as const, treeReason: (tree as { reason: string }).reason } : {}),
+      ...neighbourCoverage,
       revision: cbmOk ? (input.cbm as { revision: string }).revision : null,
       revisionPinned: cbmOk,
     },
