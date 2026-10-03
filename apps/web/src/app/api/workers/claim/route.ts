@@ -53,7 +53,7 @@ import {
   bypassFlagCondition,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
-import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
+import { getActiveClaimsByWorkspace, registerWaiter } from '@buildd/core/path-claim';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { depsGate } from './deps-gate';
 import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-rate-limit';
@@ -1528,16 +1528,28 @@ export async function POST(req: NextRequest) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
         firstBlockingPr ??= blockedByPr;
+        const blockingEntry = filterOpenPrTasks.find(
+          t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
+        );
         if (task.id === taskId && !forced) {
-          const blockingEntry = filterOpenPrTasks.find(
-            t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
-          );
           const overlapPaths = intersectPaths(taskManifest, blockingEntry?.pathManifest ?? []);
           const prLabel = blockedByPr.prNumber ? `#${blockedByPr.prNumber}` : (blockedByPr.prUrl ?? 'an open PR');
           explicitTaskExclusion = {
             code: 'path_overlap',
             detail: `Its files overlap open PR ${prLabel}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for it to merge, or rebase onto it.`,
           };
+        }
+        // Register this still-pending task as a waiter on the PR's own task so
+        // it is dispatch-woken (path-claim-release.ts) the moment that task's
+        // terminal signal fires again on merge/close — not just on the claim
+        // loop's own next poll. releaseClaims() wakes every waiter on a
+        // blockingTaskId even when that task already released its claims (e.g.
+        // it completed with the PR still open), so this still fires correctly
+        // even though layer 1 has no active path_claims row to key off.
+        if (!forced && blockingEntry?.taskId) {
+          const overlapPaths = intersectPaths(taskManifest, blockingEntry.pathManifest ?? []);
+          registerWaiter(blockingEntry.taskId, task.id, overlapPaths[0] ?? taskManifest[0], task.workspaceId)
+            .catch(err => console.warn(`[claim] registerWaiter (layer 1) failed for task ${task.id}:`, err));
         }
         if (bypassOrDefer('path_overlap', blockedByPr)) continue;
       }
@@ -1563,12 +1575,20 @@ export async function POST(req: NextRequest) {
             if (concreteClaimed.length === 0) continue; // advisory-only claim
             if (pathsOverlap(concreteManifest, concreteClaimed)) {
               console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
+              const overlapPaths = intersectPaths(concreteManifest, concreteClaimed);
               if (task.id === taskId && !forced) {
-                const overlapPaths = intersectPaths(concreteManifest, concreteClaimed);
                 explicitTaskExclusion = {
                   code: 'path_overlap',
                   detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
                 };
+              }
+              // Register this still-pending task as a waiter on the claim
+              // holder so releasing it dispatch-wakes this task immediately
+              // (path-claim-release.ts) instead of leaving it to the claim
+              // loop's own next poll.
+              if (!forced) {
+                registerWaiter(claimingTaskId, task.id, overlapPaths[0] ?? concreteManifest[0], task.workspaceId)
+                  .catch(err => console.warn(`[claim] registerWaiter (layer 2) failed for task ${task.id}:`, err));
               }
               // prNumber/prUrl: null so a coalesced row does not keep naming a
               // PR from an earlier layer-1 deferral as the current blocker.
