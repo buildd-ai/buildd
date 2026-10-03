@@ -12,7 +12,7 @@ import { deriveStage } from '@/lib/stage';
 import type { Stage } from '@/lib/stage';
 import type { WorkKind } from '@/lib/task-presentation';
 import type { TaskType } from '@buildd/core/mission-helpers';
-import type { CondensedTask, ChainUnit } from '@/lib/condensed-timeline';
+import { buildMissionAdjacency, type CondensedTask, type ChainUnit } from '@/lib/condensed-timeline';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -214,56 +214,6 @@ function taskSegmentState<T extends StructureTask>(task: T): NodeSegmentState {
   return 'empty';
 }
 
-// ─── Kahn rank assignment ─────────────────────────────────────────────────────
-
-function assignRanks(
-  taskIds: Set<string>,
-  blockerMap: Map<string, string[]>,
-): Map<string, number> {
-  const ranks = new Map<string, number>();
-  const inDegree = new Map<string, number>();
-  const dependentsOf = new Map<string, string[]>();
-
-  for (const id of taskIds) {
-    ranks.set(id, 0);
-    inDegree.set(id, 0);
-    dependentsOf.set(id, []);
-  }
-
-  for (const [id, blockers] of blockerMap) {
-    inDegree.set(id, (inDegree.get(id) ?? 0) + blockers.length);
-    for (const b of blockers) {
-      dependentsOf.get(b)?.push(id);
-    }
-  }
-
-  const queue: string[] = [];
-  for (const [id, deg] of inDegree) {
-    if (deg === 0) queue.push(id);
-  }
-
-  const processed = new Set<string>();
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    processed.add(id);
-    const myRank = ranks.get(id) ?? 0;
-    for (const dep of dependentsOf.get(id) ?? []) {
-      const newRank = myRank + 1;
-      if (newRank > (ranks.get(dep) ?? 0)) ranks.set(dep, newRank);
-      const newDeg = (inDegree.get(dep) ?? 1) - 1;
-      inDegree.set(dep, newDeg);
-      if (newDeg <= 0 && !processed.has(dep)) queue.push(dep);
-    }
-  }
-
-  // Cycle guard: unprocessed tasks get rank 0
-  for (const id of taskIds) {
-    if (!processed.has(id)) ranks.set(id, 0);
-  }
-
-  return ranks;
-}
-
 // ─── Barycenter ordering ──────────────────────────────────────────────────────
 
 function barycentricOrder(
@@ -364,28 +314,19 @@ export function computeStructureLayout<T extends StructureTask>(
   const taskById = new Map(allTasks.map(t => [t.id, t]));
   const allTaskIds = new Set(allTasks.map(t => t.id));
 
-  // ── 2. Build task-level adjacency from condensed taskMap ──────────────────
-  const blockerMap = new Map<string, string[]>(); // id → in-scope blockers
-  const dependentsOf = new Map<string, string[]>(); // id → in-scope dependents
-
-  for (const id of allTaskIds) {
-    blockerMap.set(id, []);
-    dependentsOf.set(id, []);
-  }
-  for (const id of allTaskIds) {
-    const deps = taskMap.get(id)?.dependsOn ?? [];
-    const inScope = deps.filter(d => allTaskIds.has(d));
-    blockerMap.set(id, inScope);
-    for (const d of inScope) {
-      dependentsOf.get(d)?.push(id);
-    }
-  }
+  // ── 2. Task-level adjacency: the shared derivation (condensed-timeline.ts) ─
+  const adjacency = buildMissionAdjacency(
+    allTasks.map(t => taskMap.get(t.id) ?? { id: t.id, status: t.status, dependsOn: null, workers: [] }),
+    { lookup: id => taskMap.get(id) },
+  );
+  const blockerMap = new Map([...adjacency.blockersOf].map(([id, es]) => [id, es.map(e => e.id)])); // id → in-scope blockers
+  const dependentsOf = new Map([...adjacency.dependentsOf].map(([id, es]) => [id, es.map(e => e.id)])); // id → in-scope dependents
 
   // ── 3. Compute fingerprint ────────────────────────────────────────────────
   const fingerprint = computeEdgeSetFingerprint(chains, taskMap);
 
-  // ── 4. Assign ranks via Kahn's algorithm ──────────────────────────────────
-  const ranks = assignRanks(allTaskIds, blockerMap);
+  // ── 4. Ranks: the adjacency's levels, 0-based ─────────────────────────────
+  const ranks = new Map([...allTaskIds].map(id => [id, adjacency.level.get(id)! - 1]));
 
   // ── 5. Partition by rank ──────────────────────────────────────────────────
   const rankGroups = new Map<number, string[]>();
