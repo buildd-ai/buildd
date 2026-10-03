@@ -974,7 +974,7 @@ export async function POST(req: NextRequest) {
   // what the current window has already consumed. The 5h-wall forecast is not
   // reliable enough to delay work on, so it does NOT feed `dailyBudgetPct` (the
   // router would pause priority-0 work at 95%). Its only effect is a lower
-  // per-seat session cap — `oauthSeatSlotsLeft`, never below one live session,
+  // per-seat session cap — `oauthSeatSlotsLeft`, retaining at least half the slots,
   // restored when the window resets, off entirely at low confidence.
   // Failures here never block claiming.
   //
@@ -1007,7 +1007,7 @@ export async function POST(req: NextRequest) {
           lastResetsAt: episodes[0]?.resetsAt ?? null,
         });
 
-        oauthPressure = oauthBudgetPressure({ usage, capacity });
+        oauthPressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
         const seatCap = oauthParallelismCap({ pressure: oauthPressure, baseMax: account.maxConcurrentWorkers });
         if (seatCap !== null) {
           oauthSeatSlotsLeft = Math.max(0, seatCap - await countLiveSeatWorkers(accountIds));

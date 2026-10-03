@@ -121,6 +121,8 @@ export async function measureOauthWindow(input: {
     .where(and(
       inArray(workers.accountId, accountIds),
       gte(workers.createdAt, new Date(now.getTime() - LOOKBACK_MS)),
+      or(isNull(tasks.backend), ne(tasks.backend, 'codex')),
+      sql`(${tasks.context}->'tenantContext'->>'tenantId') is null`,
     ));
 
   const windowStartedAt = inferWindowStart({
@@ -129,7 +131,7 @@ export async function measureOauthWindow(input: {
     workerStarts: rows.map(r => new Date(r.createdAt)),
   });
 
-  const inWindow = rows.filter(r => new Date(r.createdAt).getTime() >= windowStartedAt.getTime());
+  const inWindow = rows.filter(r => new Date(r.createdAt).getTime() >= windowStartedAt.getTime() && new Date(r.createdAt).getTime() <= now.getTime());
   return {
     windowStartedAt,
     usage: summarizeWindowUsage(inWindow.map(r => ({
