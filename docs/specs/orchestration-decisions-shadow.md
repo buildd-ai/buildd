@@ -166,6 +166,11 @@ record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md`
   `splitWorkUnits`, `replayDecisionEval`, `calibrateAndJudge`; loader
   `packages/core/orchestration-readout-source.ts`; operator command
   `scripts/orchestration-readout.ts`.
+- `apps/web/src/lib/orchestration-decision-stats-query.ts`:
+  `fetchOrchestrationDecisionStats`, the DB-free evidence count (rows by
+  decision group / UTC day / fallback reason, labelled vs unlabelled, opt-in
+  state) behind MCP `get_decision_stats`. The readout script
+  needs `DATABASE_URL`; this does not.
 - Data model: `orchestration_decisions`, `orchestration_touch_labels`,
   `orchestration_manifest_predictions` in `packages/core/db/schema.ts`.
 
