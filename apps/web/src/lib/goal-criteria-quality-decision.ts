@@ -55,10 +55,10 @@ export const GOAL_QUALITY_PROMPT_VERSION = 'gq2';
 
 /**
  * `shadow`: log and ledger only, response unchanged. `surface`: the response
- * carries an advisory (not built yet). Raised in code, in its own PR, after
+ * carries an advisory. Raised in code, in its own PR, after
  * the readout — never by configuration, workspace setting or request flag.
  */
-export const GOAL_QUALITY_MODE: 'shadow' | 'surface' = 'shadow';
+export const GOAL_QUALITY_MODE: 'shadow' | 'surface' = 'surface';
 
 /** Closing-out checks: true of any finished mission, so they say nothing about this one. */
 export const BOOKKEEPING_CRITERION_TYPES = ['all_prs_merged', 'no_open_tasks'] as const;
