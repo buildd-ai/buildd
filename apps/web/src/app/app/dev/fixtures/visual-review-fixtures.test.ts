@@ -27,8 +27,9 @@ import {
 function expectValidModel(m: VisualReviewModel) {
   const keys = new Set(m.cells.map(c => c.key));
   expect(keys.size).toBe(m.cells.length);
-  // A cell whose fix merged with no screenshot since has nothing to decide: never queued.
-  expect([...m.queue].sort()).toEqual(m.cells.filter(c => c.fixCheck?.state !== 'awaiting_capture').map(c => c.key).sort());
+  // Only screens awaiting a decision are queued: never a fine, decided or settled one.
+  expect([...m.queue].sort()).toEqual(m.cells.filter(c => c.standing === 'to_review').map(c => c.key).sort());
+  expect(m.summary.toReview).toBe(m.queue.length);
   for (const c of m.cells) {
     expect(c.history.length).toBeGreaterThan(0);
     expect(c.current).toEqual(c.history[c.history.length - 1]);
@@ -81,6 +82,10 @@ describe('visual review fixture', () => {
     const issue = m.cells.find(c => c.current.agentVerdict === 'issue')!;
     expect(issue.current.fixTask?.prNumber).toBeGreaterThan(0);
     expect(m.cells.find(c => c.key === m.queue[0])!.current.agentVerdict).toBe('unsure');
+    // A mixed queue: screens to review beside fine and fix-under-way ones the deck must skip.
+    const standings = new Set(m.cells.map(c => c.standing));
+    expect([...standings].sort()).toEqual(['fine', 'fixing', 'to_review']);
+    expect(m.queue.length).toBeLessThan(m.cells.length);
   });
 
   it('links both after-the-fix cases: a new screenshot to check, and a merged fix with none yet', () => {

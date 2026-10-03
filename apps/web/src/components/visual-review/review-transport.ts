@@ -26,9 +26,10 @@ import {
   type VisualReviewDecisionRequest,
   type VisualReviewDecisionResponse,
   type VisualReviewModel,
+  type VisualReviewOutcome,
   type VisualReviewUndoResponse,
 } from '@buildd/shared';
-import { fixCheckDue, markerOf } from '@/lib/visual-review-model';
+import { fixCheckDue, markerOf, standingOf } from '@/lib/visual-review-model';
 
 // ── Requests ────────────────────────────────────────────────────────────────
 
@@ -102,9 +103,9 @@ function errorMessage(status: number, body: unknown): string {
   const b = body as { error?: unknown; message?: unknown } | null;
   if (b && typeof b.message === 'string' && b.message) return b.message;
   switch (b?.error) {
-    case 'stale': return 'This screen changed while you looked. It is shown fresh now.';
-    case 'fix_started': return 'The fix has already started, so this cannot be undone here.';
-    case 'round_ceiling': return 'This mission has had its last audit round. Open a task by hand.';
+    case 'stale': return 'Screen changed since it loaded. Showing the latest.';
+    case 'fix_started': return 'Fix already started. Undo is not available.';
+    case 'round_ceiling': return 'No re-check left for this mission. Open a task by hand.';
     case 'not_in_mission': return 'These screens are not part of this mission.';
   }
   if (b && typeof b.error === 'string' && b.error) return b.error;
@@ -148,6 +149,7 @@ function withReview(cell: VisualReviewCell, review: HumanShotReview | null): Vis
     marker: markerOf(review, cell.fixCheck),
     effectiveVerdict: review ? (review.decision === 'looks_right' ? 'ok' : 'issue') : current.agentVerdict,
     needsHuman: current.agentVerdict === 'unsure' && !review && cell.fixCheck?.state !== 'awaiting_capture',
+    standing: standingOf({ current, fixCheck: cell.fixCheck }),
   };
 }
 
@@ -165,6 +167,7 @@ function recount(model: VisualReviewModel, cells: VisualReviewCell[]): VisualRev
       reviewed,
       unreviewed: cells.length - reviewed,
       awaitingHuman: cells.filter(c => c.needsHuman).length,
+      toReview: cells.filter(c => c.standing === 'to_review').length,
       fixChecks: cells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
       confirmed: rel('agree'),
       disputed: rel('dispute'),
@@ -227,7 +230,7 @@ export function isNewerOrSame(m: VisualReviewModel, cur: VisualReviewModel): boo
 }
 
 export type DecideResult =
-  | { ok: true; reviewIds: string[]; fixTaskId: string | null; cancelledFixTaskId: string | null; guidanceTaskId: string | null }
+  | { ok: true; reviewIds: string[]; fixTaskId: string | null; cancelledFixTaskId: string | null; guidanceTaskId: string | null; outcome: VisualReviewOutcome | null }
   | { ok: false; reason: 'stale' | 'round_ceiling' | 'not_in_mission' | 'error'; message: string };
 
 export type UndoResult = { ok: true } | { ok: false; reason: 'fix_started' | 'error'; message: string };
@@ -306,6 +309,7 @@ export function useVisualReviewDecisions(
         fixTaskId: res.fixTaskId,
         cancelledFixTaskId: res.cancelledFixTaskId,
         guidanceTaskId: res.guidanceTaskId,
+        outcome: res.outcome ?? null,
       };
     } catch (e) {
       const f = failureOf(e);
