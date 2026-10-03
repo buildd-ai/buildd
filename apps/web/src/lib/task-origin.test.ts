@@ -209,6 +209,15 @@ describe('deriveTaskOrigin — mechanism and actor are separate axes', () => {
     expect(origin.mechanism).toBe('mcp');
     expect(line(origin)).toBe('Builder agent · MCP');
     expect(origin.links.map(l => l.key)).toEqual(['worker']);
+    expect(origin.links[0].label).toBe('Agent run');
+  });
+
+  it('names the worker link after the creating task when its title is known', () => {
+    const origin = deriveTaskOrigin(
+      { ...bare, creationSource: 'mcp', createdByWorkerId: WORKER_ID },
+      { creatorWorkerTaskId: CREATOR_TASK_ID, creatorWorkerTaskTitle: 'Plan the audit fixes' },
+    );
+    expect(origin.links[0]).toMatchObject({ key: 'worker', label: 'Plan the audit fixes' });
   });
 
   it('reports api as the mechanism for an API-created task', () => {

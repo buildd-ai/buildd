@@ -53,6 +53,7 @@ import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
+import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
@@ -155,7 +156,7 @@ export default async function TaskDetailPage({
       creatorAccount: { columns: { id: true, name: true } },
       creatorWorker: {
         columns: { id: true, name: true },
-        with: { task: { columns: { id: true, roleSlug: true } } },
+        with: { task: { columns: { id: true, roleSlug: true, title: true } } },
       },
       schedule: { columns: { id: true, name: true } },
     },
@@ -394,6 +395,7 @@ export default async function TaskDetailPage({
     isSelf: !!creatorAccountName && viewerNames.includes(creatorAccountName.toLowerCase()),
     creatorRoleSlug: task.creatorWorker?.task?.roleSlug ?? null,
     creatorWorkerTaskId: task.creatorWorker?.task?.id ?? null,
+    creatorWorkerTaskTitle: task.creatorWorker?.task?.title ?? null,
     scheduleName: task.schedule?.name ?? null,
     missionTitle: task.mission?.title ?? null,
     parentTaskTitle: task.parentTask?.title ?? null,
@@ -924,15 +926,26 @@ export default async function TaskDetailPage({
                 <div data-testid="task-origin-clause">{[origin.actor, ...origin.parts].filter(Boolean).join(' · ')}</div>
               )}
               {origin.links.length > 0 && (
-                <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  {origin.links.map(link => (
-                    link.href.startsWith('/') ? (
-                      <Link key={`${link.key}-${link.href}`} href={link.href} className="text-accent-text hover:underline">{link.label}</Link>
-                    ) : (
-                      <a key={`${link.key}-${link.href}`} href={link.href} target="_blank" rel="noopener noreferrer" className="text-accent-text hover:underline">{link.label} ↗</a>
-                    )
-                  ))}
-                </div>
+                <ul data-testid="task-origin-links" className="space-y-1.5 pt-1">
+                  {originLinkCards(origin.links).map(card => {
+                    const body = (
+                      <>
+                        <span className="block text-eyebrow uppercase text-text-muted">{card.kind}</span>
+                        <span className="block truncate text-text-primary" title={card.title}>{card.title}{card.external ? ' ↗' : ''}</span>
+                      </>
+                    );
+                    const cls = 'block border border-border-default bg-surface-2 px-2.5 py-1.5 hover:border-border-strong';
+                    return (
+                      <li key={card.key}>
+                        {card.external ? (
+                          <a href={card.href} target="_blank" rel="noopener noreferrer" className={cls}>{body}</a>
+                        ) : (
+                          <Link href={card.href} className={cls}>{body}</Link>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
               {origin.shipped && (
                 <div data-testid="task-origin-shipped" className="text-text-secondary">
