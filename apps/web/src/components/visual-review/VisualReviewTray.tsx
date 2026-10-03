@@ -5,7 +5,9 @@
  * part 2): thumbnails grouped by route, the phone and desktop shot of a route
  * side by side, each with its agent verdict dot and its human-review marker
  * (hollow: not decided yet; solid: you agreed; struck: you disagreed; a
- * hollow tick: you waived an unsure call). "Review N" opens the deck at the
+ * hollow tick: you waived an unsure call; a filled grey square: its fix
+ * merged and it waits for a new screenshot, nothing to decide). "Review N"
+ * counts unsure screens and fix checks, and opens the deck at the
  * head of the queue, and a thumbnail opens it at that screen. The button is
  * secondary on purpose: when the audit needs you, VisualReviewAsk carries
  * the one orange call to action.
@@ -17,7 +19,7 @@
  */
 import { useState } from 'react';
 import type { VisualReviewCell, VisualReviewMarker, VisualReviewModel } from '@buildd/shared';
-import { describeVisualPhase } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, fixCheckDue } from '@/lib/visual-review-model';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL, viewportAspect } from './ShotImage';
 import VisualReviewLine from './VisualReviewLine';
 import { AnswerRow, type OnAnswer } from './VisualReviewAsk';
@@ -61,12 +63,21 @@ const MARKER_LABEL: Record<VisualReviewMarker, string> = {
   confirmed: 'you agreed',
   disputed: 'you disagreed',
   waived: 'you waived it',
+  fix_merged: 'fix merged, waiting for a new screenshot',
 };
+
+/** The thumbnail's plain words: what the agent said, or where the fix stands. */
+function thumbState(cell: VisualReviewCell): string {
+  if (awaitingCapture(cell)) return MARKER_LABEL.fix_merged;
+  if (cell.fixCheck?.state === 'check') return cell.current.review ? `fix merged, ${MARKER_LABEL[cell.marker]}` : 'fix merged, new screenshot to check';
+  return `agent said ${cell.current.agentVerdict}, ${MARKER_LABEL[cell.marker]}`;
+}
 
 /** Hollow, solid, strike: the human-review marker. */
 export function ReviewMarker({ marker, className = '' }: { marker: VisualReviewMarker; className?: string }) {
   const base = `relative inline-block h-3 w-3 border-2 border-text-primary ${className}`;
   if (marker === 'confirmed') return <i aria-hidden="true" className={`${base} bg-text-primary`} />;
+  if (marker === 'fix_merged') return <i aria-hidden="true" className={`relative inline-block h-3 w-3 border-2 border-text-muted bg-text-muted ${className}`} />;
   if (marker === 'disputed') {
     return (
       <i aria-hidden="true" className={`${base} bg-surface-1`}>
@@ -86,19 +97,21 @@ export function ReviewMarker({ marker, className = '' }: { marker: VisualReviewM
 
 function Thumb({ cell, onOpen }: { cell: VisualReviewCell; onOpen?: (key: string) => void }) {
   const verdict = cell.effectiveVerdict;
-  const label = `${cell.route}${cell.variant ? ` ${cell.variant}` : ''}, ${VIEWPORT_LABEL[cell.viewport].toLowerCase()}: agent said ${cell.current.agentVerdict}, ${MARKER_LABEL[cell.marker]}`;
+  const label = `${cell.route}${cell.variant ? ` ${cell.variant}` : ''}, ${VIEWPORT_LABEL[cell.viewport].toLowerCase()}: ${thumbState(cell)}`;
+  const due = cell.needsHuman || fixCheckDue(cell);
   const inner = (
     <>
       <span
         data-testid="visual-review-frame"
-        className={`relative block h-28 md:h-24 ${viewportAspect(cell.viewport)} max-w-full border-2 ${cell.needsHuman ? 'border-status-info' : 'border-border-strong'} bg-surface-3 transition-transform group-hover:-translate-y-0.5 group-hover:border-text-primary group-focus-visible:-translate-y-0.5`}
+        className={`relative block h-28 md:h-24 ${viewportAspect(cell.viewport)} max-w-full border-2 ${due ? 'border-status-info' : 'border-border-strong'} bg-surface-3 transition-transform group-hover:-translate-y-0.5 group-hover:border-text-primary group-focus-visible:-translate-y-0.5`}
       >
         <ShotImage shot={cell.current.shot} alt="" className="block h-full w-full object-cover object-top" />
         <i aria-hidden="true" className={`absolute -right-1 -top-1 z-10 block h-2.5 w-2.5 ring-2 ring-surface-2 ${VERDICT_DOT[verdict]}`} />
       </span>
       <span className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[1px] text-text-muted">
         <ReviewMarker marker={cell.marker} />
-        {VIEWPORT_LABEL[cell.viewport]}{cell.current.round > 1 ? ` · R${cell.current.round}` : ''}
+        {VIEWPORT_LABEL[cell.viewport]}
+        {awaitingCapture(cell) ? ' · Fix merged' : cell.fixCheck ? ' · After fix' : cell.current.round > 1 ? ` · R${cell.current.round}` : ''}
       </span>
     </>
   );
@@ -107,6 +120,7 @@ function Thumb({ cell, onOpen }: { cell: VisualReviewCell; onOpen?: (key: string
     'data-cell': cell.key,
     'data-viewport': cell.viewport,
     'data-marker': cell.marker,
+    'data-fix-check': cell.fixCheck?.state,
     'data-verdict': verdict,
   };
   if (!onOpen) {
@@ -151,8 +165,8 @@ function EmptyPhase({ model, actions }: { model: VisualReviewModel; actions?: Vi
 export default function VisualReviewTray({ model, onReview, actions, hideLine = false, hideReviewButton = false, columns = 'auto', className = '' }: VisualReviewTrayProps) {
   const groups = groupCells(model.cells);
   const s = model.summary;
-  // One count across the Line, the Ask and this button: screens awaiting you.
-  const awaiting = s.awaitingHuman;
+  // Screens awaiting you: unsure ones (the count the Line and the Ask share) and fix checks.
+  const awaiting = s.awaitingHuman + (s.fixChecks ?? 0);
   const reviewButton = onReview && !hideReviewButton && model.cells.length > 0 ? (
     <button
       type="button"

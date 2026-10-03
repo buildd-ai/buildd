@@ -256,11 +256,14 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
     `round ${e.round}`,
     `agent: ${e.agentVerdict}`,
     e.finding ? `"${one(e.finding)}"` : 'no finding',
-    e.review
-      ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
-      : c.needsHuman ? `${who}: not reviewed yet, ${mcp ? 'needs review' : 'needs your call'}` : `${who}: not reviewed yet`,
+    c.fixCheck?.state === 'awaiting_capture'
+      ? 'fix merged, waiting for a new screenshot (nothing to decide)'
+      : e.review
+        ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
+        : c.fixCheck?.state === 'check' ? `fix merged, new screenshot to check: fixed or still broken`
+        : c.needsHuman ? `${who}: not reviewed yet, ${mcp ? 'needs review' : 'needs your call'}` : `${who}: not reviewed yet`,
   ];
-  const fix = e.fixTask;
+  const fix = e.fixTask ?? c.fixCheck?.fix ?? null;
   if (fix) {
     const pr = fix.prNumber ? `, PR #${fix.prNumber}${fix.mergedAt ? ' merged' : ''}` : '';
     bits.push(`fix: ${fix.mergedAt ? 'merged' : STATUS_WORD[fix.status] ?? fix.status}${pr} (task ${mcp ? fix.id : fix.id.slice(0, 8)})`);

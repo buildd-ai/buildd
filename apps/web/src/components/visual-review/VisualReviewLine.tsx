@@ -2,15 +2,16 @@
  * The visual audit in one line (docs/design/visual-qa-human-review.md,
  * part 2): the phase label, an optional detail sentence, and one square dot
  * per current screen. A dot is coloured by the effective verdict (the human
- * decision where there is one); a decided dot carries a tick, and an unsure
- * screen nobody has decided is hollow.
+ * decision where there is one); a decided dot carries a tick, and a screen
+ * waiting on you (unsure, or a new screenshot after a merged fix) is hollow.
+ * A screen whose fix merged with no screenshot since is grey: nothing to decide.
  *
  * Every surface that states the phase renders this, so the wording lives in
  * one place: `describeVisualPhase` (lib/visual-review-model.ts), re-exported
  * here as `visualReviewPhaseCopy` for callers that need the bare strings.
  */
 import type { VisualReviewModel, VisualReviewPhase } from '@buildd/shared';
-import { describeVisualPhase } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase, fixCheckDue } from '@/lib/visual-review-model';
 import { VERDICT_DOT } from './ShotImage';
 
 export const visualReviewPhaseCopy = describeVisualPhase;
@@ -70,8 +71,11 @@ export function VerdictDots({ cells }: { cells: VisualReviewModel['cells'] }) {
     <span data-testid="visual-review-dots" className="inline-flex flex-wrap items-center gap-[3px]" aria-hidden="true">
       {shown.map(c => {
         const decided = !!c.current.review;
-        if (c.needsHuman) {
+        if (c.needsHuman || fixCheckDue(c)) {
           return <i key={c.key} data-dot="awaiting" className="inline-block h-2.5 w-2.5 border-2 border-status-info" />;
+        }
+        if (awaitingCapture(c)) {
+          return <i key={c.key} data-dot="fix_merged" className="inline-block h-2.5 w-2.5 bg-text-muted" />;
         }
         return (
           <i key={c.key} data-dot={decided ? 'decided' : c.effectiveVerdict} className={`relative inline-block h-2.5 w-2.5 ${VERDICT_DOT[c.effectiveVerdict]}`}>

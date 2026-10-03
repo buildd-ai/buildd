@@ -74,7 +74,7 @@ export function createFixtureVisualReviewTransport(
       const cells = req.artifactIds.map(id => before.cells.find(c => c.current.shot.id === id));
       const missing = req.artifactIds.filter((_, i) => !cells[i]);
       if (missing.length) throw new VisualReviewRequestError(422, { error: 'not_in_mission', artifactIds: missing });
-      const stale = cells.filter(c => c && req.expected[c.current.shot.id] !== c.current.agentVerdict);
+      const stale = cells.filter(c => c && (req.expected[c.current.shot.id] !== c.current.agentVerdict || c.fixCheck?.state === 'awaiting_capture'));
       if (stale.length || staleLeft > 0) {
         staleLeft = Math.max(0, staleLeft - 1);
         throw new VisualReviewRequestError(409, { error: 'stale', stale: true, cells: stale.length ? stale : cells, model: before });
@@ -84,7 +84,8 @@ export function createFixtureVisualReviewTransport(
       let fixTaskId: string | null = null;
       let cancelledFixTaskId: string | null = null;
       let guidanceTaskId: string | null = null;
-      const filing = cells.filter(c => c && req.decision === 'needs_fix' && c.current.agentVerdict !== 'issue');
+      // Still broken on a fix check files a new fix whatever the agent said.
+      const filing = cells.filter(c => c && req.decision === 'needs_fix' && (c.current.agentVerdict !== 'issue' || c.fixCheck?.state === 'check'));
       if (filing.length) {
         const first = filing[0]!;
         fixTaskId = `fixture-human-fix-${seq}`;

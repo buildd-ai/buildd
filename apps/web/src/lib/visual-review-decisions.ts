@@ -203,11 +203,15 @@ export function planDecision(model: VisualReviewModel, request: VisualReviewDeci
       if (older && !stale.includes(older)) stale.push(older);
       continue;
     }
-    if (request.expected[artifactId] !== cell.current.agentVerdict) {
+    // A shot whose fix merged with no screenshot since has nothing to decide:
+    // the client that sent this held an older model.
+    if (request.expected[artifactId] !== cell.current.agentVerdict || cell.fixCheck?.state === 'awaiting_capture') {
       if (!stale.includes(cell)) stale.push(cell);
       continue;
     }
-    const fix = cell.current.fixTask;
+    // A fix check: the merged fix is what the new screenshot tests, so Still
+    // broken files a new fix rather than reading the merged one as done.
+    const fix = cell.fixCheck?.state === 'check' && cell.current.fixTask?.id === cell.fixCheck.fix.id ? null : cell.current.fixTask;
     const linkedFix = fix ? { id: fix.id, status: openFix.get(fix.id)?.status ?? fix.status } : null;
     const effect = planShotReviewEffect(cell.current.agentVerdict, request.decision, { linkedFix, hasNote: !!oneLine(request.note) });
     shots.push({ artifactId, cell, ...effect, priorReview: cell.current.review });

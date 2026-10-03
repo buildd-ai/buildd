@@ -38,11 +38,15 @@ describe('VisualReviewLine', () => {
     expect(text(renderToStaticMarkup(<VisualReviewLine model={unsure} />))).toContain('1 to review');
   });
 
-  it('draws one dot per screen: hollow when it awaits you, ticked when decided', () => {
+  it('draws one dot per screen: hollow when it awaits you, ticked when decided, grey once its fix merged', () => {
     const m = buildVisualReviewFixtureModel('needs_you', { scenario: 'deck' });
     const html = renderToStaticMarkup(<VisualReviewLine model={m} />);
     expect((html.match(/data-dot=/g) ?? []).length).toBe(m.cells.length);
-    expect((html.match(/data-dot="awaiting"/g) ?? []).length).toBe(m.summary.awaitingHuman);
+    // Awaiting you: unsure screens and new screenshots after a merged fix.
+    expect(m.summary.fixChecks).toBe(1);
+    expect((html.match(/data-dot="awaiting"/g) ?? []).length).toBe(m.summary.awaitingHuman + m.summary.fixChecks!);
+    expect(m.summary.awaitingCapture).toBe(1);
+    expect((html.match(/data-dot="fix_merged"/g) ?? []).length).toBe(1);
     expect((html.match(/data-dot="decided"/g) ?? []).length).toBe(m.summary.reviewed);
     expect(renderToStaticMarkup(<VisualReviewLine model={buildVisualReviewFixtureModel('queued')} />)).not.toContain('data-dot=');
   });

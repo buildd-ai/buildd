@@ -25,10 +25,10 @@ import {
   type VisualReviewDecisionError,
   type VisualReviewDecisionRequest,
   type VisualReviewDecisionResponse,
-  type VisualReviewMarker,
   type VisualReviewModel,
   type VisualReviewUndoResponse,
 } from '@buildd/shared';
+import { fixCheckDue, markerOf } from '@/lib/visual-review-model';
 
 // ── Requests ────────────────────────────────────────────────────────────────
 
@@ -138,11 +138,6 @@ export function createHttpVisualReviewTransport(missionId: string, fetchImpl: ty
 
 // ── Optimistic model edits (pure) ───────────────────────────────────────────
 
-function markerOf(review: HumanShotReview | null): VisualReviewMarker {
-  if (!review) return 'awaiting';
-  return review.relation === 'agree' ? 'confirmed' : review.relation === 'dispute' ? 'disputed' : 'waived';
-}
-
 function withReview(cell: VisualReviewCell, review: HumanShotReview | null): VisualReviewCell {
   const current = { ...cell.current, review };
   const history = cell.history.map(h => (h.shot.id === current.shot.id ? current : h));
@@ -150,9 +145,9 @@ function withReview(cell: VisualReviewCell, review: HumanShotReview | null): Vis
     ...cell,
     current,
     history,
-    marker: markerOf(review),
+    marker: markerOf(review, cell.fixCheck),
     effectiveVerdict: review ? (review.decision === 'looks_right' ? 'ok' : 'issue') : current.agentVerdict,
-    needsHuman: current.agentVerdict === 'unsure' && !review,
+    needsHuman: current.agentVerdict === 'unsure' && !review && cell.fixCheck?.state !== 'awaiting_capture',
   };
 }
 
@@ -170,6 +165,7 @@ function recount(model: VisualReviewModel, cells: VisualReviewCell[]): VisualRev
       reviewed,
       unreviewed: cells.length - reviewed,
       awaitingHuman: cells.filter(c => c.needsHuman).length,
+      fixChecks: cells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
       confirmed: rel('agree'),
       disputed: rel('dispute'),
       waived: rel('waive'),
