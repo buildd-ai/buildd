@@ -74,6 +74,37 @@ describe('MissionBoard — running', () => {
     expect(html).toContain('#101');
   });
 
+  // Regression (surface audit, 1280px): the 380px hover detail stayed laid out
+  // while hidden (`invisible`), so it widened the page's scroll area beside
+  // every tile. A single-phase board popped it right of a full-width tile,
+  // 394px past the content edge, and the page captured 1642px wide.
+  const popovers = (h: string) =>
+    [...h.matchAll(/data-testid="board-tile-detail"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
+
+  it('takes the tile detail out of layout until it is shown', () => {
+    const cls = popovers(html);
+    expect(cls.length).toBeGreaterThan(0);
+    for (const c of cls) {
+      expect(c).toContain('hidden');
+      expect(c).not.toContain('md:flex');
+      expect(c).not.toContain('invisible');
+      expect(c).toContain('md:group-hover:flex');
+      expect(c).toContain('md:group-focus-within:flex');
+    }
+  });
+
+  it('a single-phase board drops the tile detail below the tile, never beside it', () => {
+    const m = boardFixture('running');
+    const single = renderToStaticMarkup(<MissionBoard model={{ ...m, phases: [m.phases[0]] }} missionId="mission-1" />);
+    const cls = popovers(single);
+    expect(cls.length).toBeGreaterThan(0);
+    for (const c of cls) {
+      expect(c.some(k => k.startsWith('left-[calc') || k.startsWith('right-[calc'))).toBe(false);
+      expect(c).toContain('right-0');
+      expect(c).toContain('top-[calc(100%+6px)]');
+    }
+  });
+
   it('a running tile has an elapsed strip with one notch per milestone', () => {
     expect(html).toContain('data-testid="board-tile-strip"');
     expect(count(html, 'data-testid="board-tile-notch"')).toBe(2);
