@@ -17,6 +17,11 @@
  *   it differs), on by default when their verdicts match: one request, so one fix.
  * - Every decision shows a five-second Undo. At the end of the queue, one
  *   batch action accepts every screen the agent marked fine.
+ * - After a fix merges the buttons follow the cell's `fixCheck`, never local
+ *   state: with no screenshot since, the screen is settled (no buttons, not
+ *   counted, skipped by the queue); with a new one, it opens on Before / After
+ *   with **Fixed** and **Still broken** (which files a new fix). No copy in
+ *   either state names a round.
  * - Keys: Y looks right, N needs fix, J/K next and previous, C compare,
  *   U undo, Escape closes the note, then compare, then the deck.
  * - Phone: the image is width-fit and scrolls with the page, with no height
@@ -43,13 +48,24 @@ import {
 import Dialog from '@/components/ui/Dialog';
 import { Kbd } from '@/components/KeyHints';
 import { taskPageHref } from '@/lib/mission-task-href';
+import { awaitingCapture } from '@/lib/visual-review-model';
 import ShotImage, { VERDICT_DOT, VIEWPORT_LABEL } from './ShotImage';
 import VisualShotCompare, { FixStatus, fixTitleText } from './VisualShotCompare';
 import { ReviewMarker } from './VisualReviewTray';
-import { BTN_BASE, BTN_GHOST, BTN_PRIMARY, BTN_SECONDARY, CHIP, groupCells, groupCellsOf, groupsInQueueOrder, type RouteGroup } from './review-ui';
+import { BTN_BASE, BTN_GHOST, BTN_PRIMARY, BTN_SECONDARY, CHIP, groupCells, groupCellsOf, groupKeyOf, groupsInQueueOrder, type RouteGroup } from './review-ui';
 import { chunkCells, type DecideInput, type DecideResult, type UndoResult } from './review-transport';
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
+
+/** The decision buttons a cell offers, by label: the one place a dead button could come back. */
+export function decisionLabels(cell: VisualReviewCell): Record<VisualReviewDecision, string> | null {
+  if (awaitingCapture(cell)) return null;
+  if (cell.fixCheck?.state === 'check') return { looks_right: 'Fixed', needs_fix: 'Still broken' };
+  return { looks_right: 'Looks right', needs_fix: 'Needs fix' };
+}
+
+/** The status line of a settled cell: its fix merged and no screenshot was taken since. */
+export const FIX_MERGED_STATUS = 'Fix merged, waiting for a new screenshot';
 
 /** What each button means for this verdict (the design doc's table). */
 export function verdictEffects(verdict: VisualQaVerdict): Record<VisualReviewDecision, VisualReviewRelation> {
@@ -79,6 +95,7 @@ export function fixStage(cell: VisualReviewCell): 'none' | 'pending' | 'running'
  * guidance note), and a finished one is left alone.
  */
 export function effectCopy(cell: VisualReviewCell): Record<VisualReviewDecision, string> {
+  if (cell.fixCheck?.state === 'check') return { looks_right: 'The fix worked', needs_fix: 'File another fix' };
   const verdict = cell.current.agentVerdict;
   if (verdict !== 'issue') return EFFECT_COPY[verdict];
   const stage = fixStage(cell);
@@ -96,6 +113,7 @@ function outcomeSuffix(r: Extract<DecideResult, { ok: true }>): string {
 }
 
 const DECISION_WORDS: Record<VisualReviewDecision, string> = { looks_right: 'looks right', needs_fix: 'needs fix' };
+const CHECK_WORDS: Record<VisualReviewDecision, string> = { looks_right: 'fixed', needs_fix: 'still broken' };
 const RELATION_WORDS: Record<VisualReviewRelation, string> = { agree: 'agreed', dispute: 'disagreed', waive: 'waived' };
 
 export const SWIPE_THRESHOLD_PX = 40;
@@ -175,17 +193,26 @@ function DeckInner({
   const sectionRef = useRef<HTMLElement>(null);
   const hrefOf = useMemo(() => fixTaskHref ?? ((id: string) => taskPageHref({ taskId: id, missionId: model.missionId })), [fixTaskHref, model.missionId]);
 
-  // The order is fixed at open; a group that appears later joins the end.
+  // The order is fixed at open; a group that appears later joins the end. A
+  // route whose every screen waits on a screenshot after its merged fix has
+  // nothing to decide and stays out, unless the deck was opened on it.
+  const [startGroup] = useState(() => {
+    const c = startKey ? model.cells.find(x => x.key === startKey) : undefined;
+    return c ? groupKeyOf(c) : null;
+  });
   const [snapshot] = useState(() => groupsInQueueOrder(model).map(g => g.key));
   const groups: RouteGroup[] = useMemo(() => {
-    const byKey = new Map(groupCells(model.cells).map(g => [g.key, g]));
+    const byKey = new Map(groupCells(model.cells)
+      .filter(g => g.key === startGroup || groupCellsOf(g).some(c => !awaitingCapture(c)))
+      .map(g => [g.key, g]));
     const keys = [...snapshot.filter(k => byKey.has(k)), ...[...byKey.keys()].filter(k => !snapshot.includes(k))];
     return keys.map(k => byKey.get(k)!);
-  }, [model.cells, snapshot]);
+  }, [model.cells, snapshot, startGroup]);
   const queueRank = useMemo(() => new Map(model.queue.map((k, i) => [k, i])), [model.queue]);
 
   const [decided, setDecided] = useState<ReadonlySet<string>>(() => new Set());
-  const isDone = useCallback((c: VisualReviewCell) => !!c.current.review || decided.has(c.key), [decided]);
+  // A settled screen counts as done: nothing is left to decide on it.
+  const isDone = useCallback((c: VisualReviewCell) => !!c.current.review || decided.has(c.key) || awaitingCapture(c), [decided]);
 
   const focusIn = useCallback((g: RouteGroup | undefined, prefer?: string | null): VisualQaViewport => {
     if (!g) return 'mobile';
@@ -210,7 +237,10 @@ function DeckInner({
   const [note, setNote] = useState<string | null>(null);
   const [guidance, setGuidance] = useState<Guidance | null>(null);
   const [applyBoth, setApplyBoth] = useState<boolean | null>(null);
-  const [comparing, setComparing] = useState(initialCompare && !!focused && focused.history.length > 1);
+  // Compare opens by itself on a fix check (Before / After is the question);
+  // a toggle overrides that until the deck moves.
+  const [compareOverride, setComparing] = useState<boolean | null>(initialCompare ? true : null);
+  const comparing = !!focused && focused.history.length > 1 && (compareOverride ?? (focused.fixCheck?.state === 'check' && !isDone(focused)));
   const [zoomed, setZoomed] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
@@ -219,7 +249,9 @@ function DeckInner({
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
 
-  const bothDefault = !!sibling && !isDone(sibling) && sibling.current.agentVerdict === focused?.current.agentVerdict;
+  // "Still broken" on one viewport is not a fix for the other unless both are fix checks.
+  const bothDefault = !!sibling && !isDone(sibling) && sibling.current.agentVerdict === focused?.current.agentVerdict
+    && sibling.fixCheck?.state === focused?.fixCheck?.state;
   // Offered only while neither viewport has a decision; re-deciding one screen never touches the other.
   const canApplyBoth = !!sibling && !!focused && !isDone(sibling) && !isDone(focused);
   const both = canApplyBoth && (applyBoth ?? bothDefault);
@@ -229,7 +261,7 @@ function DeckInner({
     setPos({ index: i, viewport: focusIn(groups[i], prefer) });
     setNote(null); setGuidance(null);
     setApplyBoth(null);
-    setComparing(false);
+    setComparing(null);
     setZoomed(false);
   }, [groups, focusIn]);
   const next = useCallback(() => go(pos.index + 1), [go, pos.index]);
@@ -256,7 +288,7 @@ function DeckInner({
       setPos({ index: pos.index, viewport: rest.viewport });
       setNote(null); setGuidance(null);
       setApplyBoth(null);
-      setComparing(false);
+      setComparing(null);
       setZoomed(false);
       return;
     }
@@ -305,9 +337,11 @@ function DeckInner({
   const decide = useCallback((decision: VisualReviewDecision, noteText?: string) => {
     if (!focused) return;
     const cells = both && sibling ? [focused, sibling] : [focused];
+    if (awaitingCapture(focused)) return;
     const where = `${focused.route} ${cells.length > 1 ? 'both' : VIEWPORT_LABEL[focused.viewport].toLowerCase()}`;
-    const extra = decision === 'needs_fix' && focused.current.agentVerdict !== 'issue' ? ', fix filed' : '';
-    const keys = submit(cells, decision, noteText, `${where}: ${DECISION_WORDS[decision]}${extra}`, { index: pos.index, viewport: focused.viewport });
+    const check = focused.fixCheck?.state === 'check';
+    const extra = decision === 'needs_fix' && (check || focused.current.agentVerdict !== 'issue') ? ', fix filed' : '';
+    const keys = submit(cells, decision, noteText, `${where}: ${(check ? CHECK_WORDS : DECISION_WORDS)[decision]}${extra}`, { index: pos.index, viewport: focused.viewport });
     advanceAfter(keys);
   }, [focused, sibling, both, submit, advanceAfter, pos.index]);
 
@@ -318,7 +352,14 @@ function DeckInner({
    * is right, not what to change).
    */
   const needsFix = useCallback(() => {
-    if (!focused) return;
+    if (!focused || awaitingCapture(focused)) return;
+    // Still broken: a new fix, prefilled with what the merged fix was for.
+    const check = focused.fixCheck?.state === 'check' ? focused.fixCheck : null;
+    if (check) {
+      setGuidance(null);
+      setNote(focused.history.find(h => h.shot.id === check.beforeShotId)?.finding ?? focused.current.finding);
+      return;
+    }
     if (focused.current.agentVerdict === 'issue') { decide('needs_fix'); return; }
     setGuidance(null);
     setNote(focused.current.agentVerdict === 'unsure' ? focused.current.finding : '');
@@ -330,7 +371,7 @@ function DeckInner({
     if (!t) return;
     setToast(null);
     setPos(t.at);
-    setComparing(false);
+    setComparing(null);
     setZoomed(false);
     setGuidance({ cells: t.cells, label: t.label, at: t.at });
     setNote('');
@@ -371,7 +412,7 @@ function DeckInner({
       setDecided(prev => { const s = new Set(prev); t.keys.forEach(k => s.delete(k)); return s; });
       setPos(t.at);
       setNote(null); setGuidance(null);
-      setComparing(false);
+      setComparing(null);
       setFlash('Undone.');
     } else {
       setNotice(u.message);
@@ -380,9 +421,9 @@ function DeckInner({
 
   const toggleCompare = useCallback(() => {
     if (!focused || focused.history.length < 2) return;
-    setComparing(c => !c);
+    setComparing(!comparing);
     setZoomed(false);
-  }, [focused]);
+  }, [focused, comparing]);
 
   // Keys. Typing in the note is never a shortcut.
   const keyState = useRef({ decide, needsFix, next, prev, toggleCompare, undo, note, closeNote, comparing, atEnd, onClose, layout, focused });
@@ -400,8 +441,9 @@ function DeckInner({
       if (s.note !== null) return;
       const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
       const act = (fn: () => void) => { e.preventDefault(); fn(); };
-      if ((k === 'y') && s.focused && !s.atEnd) act(() => s.decide('looks_right'));
-      else if (k === 'n' && s.focused && !s.atEnd) act(s.needsFix);
+      const decidable = !!s.focused && !s.atEnd && !awaitingCapture(s.focused);
+      if (k === 'y' && decidable) act(() => s.decide('looks_right'));
+      else if (k === 'n' && decidable) act(s.needsFix);
       else if (k === 'j' || k === 'ArrowRight') act(s.next);
       else if (k === 'k' || k === 'ArrowLeft') act(s.prev);
       else if (k === 'c') act(s.toggleCompare);
@@ -433,8 +475,10 @@ function DeckInner({
     onPointerCancel: () => { swipeStart.current = null; },
   };
 
-  const reviewedCount = model.cells.filter(isDone).length;
-  const total = model.cells.length;
+  // Settled screens are neither to review nor reviewed.
+  const reviewable = model.cells.filter(c => !awaitingCapture(c));
+  const reviewedCount = reviewable.filter(isDone).length;
+  const total = reviewable.length;
   const s = model.summary;
 
   const header = (
@@ -465,7 +509,7 @@ function DeckInner({
           {group ? group.route : 'End of the queue'}
         </h2>
         {group?.variant && <span className={CHIP}>{group.variant}</span>}
-        {focused && <span data-testid="deck-round" className={CHIP}>Round {focused.current.round}</span>}
+        {focused && !focused.fixCheck && <span data-testid="deck-round" className={CHIP}>Round {focused.current.round}</span>}
         {focused && focused.history.length > 1 && (
           <button
             type="button"
@@ -474,7 +518,7 @@ function DeckInner({
             onClick={toggleCompare}
             className={`${BTN_BASE} min-h-9 px-2.5 text-[12px] ${comparing ? 'border-text-primary bg-text-primary text-surface-1' : BTN_SECONDARY}`}
           >
-            {comparing ? 'Close compare' : `Compare rounds`}<Kbd>C</Kbd>
+            {comparing ? 'Close compare' : focused.fixCheck ? 'Before / After' : 'Compare rounds'}<Kbd>C</Kbd>
           </button>
         )}
       </div>
@@ -492,7 +536,7 @@ function DeckInner({
     />
   ) : comparing && focused ? (
     <div className="px-4 py-4 md:px-6">
-      <VisualShotCompare cell={focused} fixTaskHref={hrefOf} />
+      <VisualShotCompare cell={focused} fixTaskHref={hrefOf} fixCheck={focused.fixCheck} />
     </div>
   ) : group && focused ? (
     <div className="flex flex-col gap-4 px-4 py-4 md:px-6">
@@ -533,13 +577,15 @@ function DeckInner({
     </div>
   ) : null;
 
-  const effects = focused ? verdictEffects(focused.current.agentVerdict) : null;
+  const labels = focused ? decisionLabels(focused) : null;
+  const effects = focused && labels ? verdictEffects(focused.current.agentVerdict) : null;
   const copy = focused ? effectCopy(focused) : null;
-  const primary: VisualReviewDecision | null = focused
+  const primary: VisualReviewDecision | null = focused && !focused.fixCheck
     ? focused.current.agentVerdict === 'ok' ? 'looks_right' : focused.current.agentVerdict === 'issue' ? 'needs_fix' : null
     : null;
-  // The note either files a fix (ok or unsure) or adds guidance to one you agreed with.
-  const filesFix = !!focused && !guidance && focused.current.agentVerdict !== 'issue';
+  const checking = focused?.fixCheck?.state === 'check';
+  // The note either files a fix (ok, unsure, or still broken) or adds guidance to one you agreed with.
+  const filesFix = !!focused && !guidance && (checking || focused.current.agentVerdict !== 'issue');
   const noteRequired = filesFix && focused!.current.agentVerdict === 'ok';
 
   const bar = (
@@ -628,11 +674,16 @@ function DeckInner({
             </div>
           </form>
         )}
-        {!atEnd && focused && effects && note === null && (
+        {!atEnd && focused && !labels && (
+          <p data-testid="deck-settled" className="border-l-[3px] border-status-success bg-surface-2 py-2 pl-3 pr-2 font-mono text-[12px] text-text-primary">
+            {FIX_MERGED_STATUS}
+          </p>
+        )}
+        {!atEnd && focused && labels && effects && note === null && (
           <div className="flex gap-2">
             <DecisionButton
-              testId="deck-needs-fix"
-              label="Needs fix"
+              testId={checking ? 'deck-still-broken' : 'deck-needs-fix'}
+              label={labels.needs_fix}
               hint="N"
               effect={effects.needs_fix}
               copy={copy!.needs_fix}
@@ -640,8 +691,8 @@ function DeckInner({
               onClick={needsFix}
             />
             <DecisionButton
-              testId="deck-looks-right"
-              label="Looks right"
+              testId={checking ? 'deck-fixed' : 'deck-looks-right'}
+              label={labels.looks_right}
               hint="Y"
               effect={effects.looks_right}
               copy={copy!.looks_right}
@@ -712,7 +763,9 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
 }) {
   const entry = cell.current;
   const review = entry.review;
-  const fix = entry.fixTask;
+  // On a fix check the new screenshot has no fix of its own: show the merged one it tests.
+  const fix = entry.fixTask ?? cell.fixCheck?.fix ?? null;
+  const settled = awaitingCapture(cell);
   return (
     <article
       data-testid="deck-shot"
@@ -731,10 +784,12 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
           <i aria-hidden="true" className={`inline-block h-2.5 w-2.5 ${VERDICT_DOT[entry.agentVerdict]}`} />
           Agent: {entry.agentVerdict}
         </span>
-        {(review || done) && (
+        {(review || (done && !settled)) && (
           <span className="inline-flex items-center gap-1.5 font-mono text-[12px] text-text-secondary">
             <ReviewMarker marker={review ? cell.marker : 'confirmed'} />
-            {review ? `You: ${DECISION_WORDS[review.decision]}, ${RELATION_WORDS[review.relation]}` : 'Saving'}
+            {review
+              ? cell.fixCheck?.state === 'check' ? `You: ${CHECK_WORDS[review.decision]}` : `You: ${DECISION_WORDS[review.decision]}, ${RELATION_WORDS[review.relation]}`
+              : 'Saving'}
           </span>
         )}
       </button>
@@ -747,7 +802,7 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
       >
         <ShotImage
           shot={entry.shot}
-          alt={`${cell.route} on ${VIEWPORT_LABEL[cell.viewport].toLowerCase()}, round ${entry.round}`}
+          alt={`${cell.route} on ${VIEWPORT_LABEL[cell.viewport].toLowerCase()}${cell.fixCheck ? '' : `, round ${entry.round}`}`}
           large
           eager={focused}
           className={zoomed ? 'block h-auto w-[200%] max-w-none' : 'block h-auto w-full md:mx-auto md:max-h-[56vh] md:w-auto md:max-w-full'}
@@ -768,6 +823,7 @@ function ShotPanel({ cell, focused, paired, done, zoomed, onFocus, onImageClick,
             <span className="section-label">{fix.origin === 'human' ? 'Your fix' : 'Fix task'}</span>
             <FixStatus fix={fix} />
           </p>
+          {settled && <p data-testid="deck-fix-merged" className="text-[13px] leading-[1.4] text-text-primary">{FIX_MERGED_STATUS}</p>}
           <a href={fixTaskHref(fix.id)} className="text-[14px] leading-[1.4] text-text-primary underline decoration-border-strong underline-offset-2 hover:text-accent-text">
             {fixTitleText(fix.title, cell.route)}
           </a>

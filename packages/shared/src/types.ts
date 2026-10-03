@@ -2191,8 +2191,31 @@ export interface VisualReviewCellEntry {
   review: HumanShotReview | null;
 }
 
-/** A thumbnail's human-review marker: hollow, solid, strike. */
-export type VisualReviewMarker = 'awaiting' | 'confirmed' | 'disputed' | 'waived';
+/**
+ * A thumbnail's human-review marker: hollow, solid, strike. `fix_merged`: the
+ * cell's fix merged and no screenshot was taken since, so there is nothing to
+ * decide (never hollow).
+ */
+export type VisualReviewMarker = 'awaiting' | 'confirmed' | 'disputed' | 'waived' | 'fix_merged';
+
+/**
+ * Where a cell stands once a fix for it merged. The question is no longer
+ * "is this a bug?" but "did the fix work?".
+ * - `awaiting_capture`: no screenshot since the merge. Settled: no buttons,
+ *   not in the queue, not counted as to review.
+ * - `check`: the current screenshot was taken after the merge. Before/after,
+ *   with Fixed (looks right) and Still broken (needs fix, files a new fix).
+ */
+export type VisualReviewFixCheckState = 'awaiting_capture' | 'check';
+
+export interface VisualReviewFixCheck {
+  state: VisualReviewFixCheckState;
+  /** The merged fix. */
+  fix: VisualReviewFixTask;
+  /** The screenshot the fix was filed against: the "before". */
+  beforeShotId: string;
+  beforeRound: number;
+}
 
 /** One route × viewport × variant, across rounds. */
 export interface VisualReviewCell {
@@ -2208,8 +2231,14 @@ export interface VisualReviewCell {
   /** The active human decision if there is one (looks right = ok, needs fix = issue), else the agent's verdict. */
   effectiveVerdict: VisualQaVerdict;
   marker: VisualReviewMarker;
-  /** An unsure cell nobody has decided: the only kind that needs a human. */
+  /** An unsure cell nobody has decided: the only kind that puts the audit in `needs_you`. */
   needsHuman: boolean;
+  /**
+   * Set once a fix for this cell merged and the current screenshot has no
+   * unmerged fix of its own (`fixCheckOf`). Absent or null: the usual
+   * Looks right / Needs fix apply.
+   */
+  fixCheck?: VisualReviewFixCheck | null;
 }
 
 export interface VisualReviewSummary {
@@ -2227,6 +2256,10 @@ export interface VisualReviewSummary {
   unreviewed: number;
   /** Current unsure cells without an active review (`needsHuman`). */
   awaitingHuman: number;
+  /** Cells whose fix merged with a new screenshot nobody has checked yet (`fixCheck.state` `check`, no review). */
+  fixChecks?: number;
+  /** Cells whose fix merged with no screenshot since (`fixCheck.state` `awaiting_capture`): settled, not to review. */
+  awaitingCapture?: number;
   confirmed: number;
   disputed: number;
   waived: number;
@@ -2286,7 +2319,10 @@ export interface VisualReviewModel {
   /** For `needs_you`: why, and for a question the parked worker and its prompt. Null in every other phase. */
   needsYou: VisualReviewNeedsYou | null;
   cells: VisualReviewCell[];
-  /** Cell keys in review order: unsure, issue, ok, then already reviewed. */
+  /**
+   * Cell keys in review order: unsure, fix checks, issue, ok, then already
+   * reviewed. A cell whose fix merged with no screenshot since is never in it.
+   */
   queue: string[];
   summary: VisualReviewSummary;
   fixTasks: VisualReviewFixTask[];

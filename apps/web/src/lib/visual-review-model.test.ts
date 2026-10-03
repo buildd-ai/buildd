@@ -264,6 +264,78 @@ describe('buildVisualReviewModel: fix tasks', () => {
   });
 });
 
+describe('buildVisualReviewModel: after a fix merges (fixCheck)', () => {
+  const fix = (id: string, status: string, mergedAt: string | null): VisualReviewTaskInput => ({
+    id, title: `[surface fix] /a: ${id}`, status,
+    workers: [{ id: `wf-${id}`, startedAt: at(10), prUrl: 'https://example.test/pr/7', prNumber: 7, mergedAt }],
+  });
+  const round2 = audit('t2', 2, 'completed', 'w2', { createdAt: at(100) });
+  const cellA = (m: ReturnType<typeof buildVisualReviewModel>) => m.cells.find(c => c.route === '/a')!;
+
+  it('a pending, running, failed or cancelled fix leaves the cell as it was: no fixCheck', () => {
+    for (const status of ['pending', 'in_progress', 'failed', 'cancelled']) {
+      const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+      const m = buildVisualReviewModel(input({ shots: [a], tasks: [audit('t1', 1, 'completed', 'w1'), fix('fx', status, null)] }));
+      expect(cellA(m).fixCheck).toBeNull();
+      expect(cellA(m).marker).toBe('awaiting');
+      expect(m.queue).toContain('/a|mobile|');
+    }
+  });
+
+  it('merged with no screenshot since: settled, out of the queue, never hollow, not to review', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const b = shot('w1', '/b', 'mobile', 'ok', 2);
+    const m = buildVisualReviewModel(input({ shots: [a, b], tasks: [audit('t1', 1, 'completed', 'w1'), fix('fx', 'completed', at(90))] }));
+    const c = cellA(m);
+    expect(c.fixCheck).toMatchObject({ state: 'awaiting_capture', fix: { id: 'fx', prNumber: 7, mergedAt: at(90) }, beforeShotId: a.id, beforeRound: 1 });
+    expect(c.marker).toBe('fix_merged');
+    expect(c.needsHuman).toBe(false);
+    expect(m.queue).toEqual(['/b|mobile|']);
+    expect(m.summary).toMatchObject({ awaitingCapture: 1, fixChecks: 0 });
+  });
+
+  it('a screenshot taken before the merge says nothing about the fix: still waiting', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const early = shot('w2', '/a', 'mobile', 'ok', 50);
+    const m = buildVisualReviewModel(input({ shots: [a, early], tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))] }));
+    expect(cellA(m).current.round).toBe(2);
+    expect(cellA(m).fixCheck?.state).toBe('awaiting_capture');
+  });
+
+  it('a screenshot after the merge: a fix check, queued after unsure and before issues', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const z = shot('w1', '/z', 'mobile', 'issue', 2);
+    const u = shot('w1', '/u', 'mobile', 'unsure', 3);
+    const after = shot('w2', '/a', 'mobile', 'ok', 120);
+    const m = buildVisualReviewModel(input({ shots: [a, z, u, after], tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))] }));
+    const c = cellA(m);
+    expect(c.current.shot.id).toBe(after.id);
+    expect(c.fixCheck).toMatchObject({ state: 'check', fix: { id: 'fx' }, beforeShotId: a.id, beforeRound: 1 });
+    expect(c.marker).toBe('awaiting');
+    expect(m.queue).toEqual(['/u|mobile|', '/a|mobile|', '/z|mobile|']);
+    expect(m.summary).toMatchObject({ fixChecks: 1, awaitingCapture: 0 });
+  });
+
+  it('the re-shot copying the merged fix id is still a check, and a decision on it is counted as reviewed', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const after = shot('w2', '/a', 'mobile', 'ok', 120, { fixTaskId: 'fx' });
+    const m = buildVisualReviewModel(input({
+      shots: [a, after],
+      tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))],
+      reviews: [review(after.id, { round: 2, auditTaskId: 't2', agentVerdict: 'ok', decision: 'looks_right', relation: 'agree' })],
+    }));
+    expect(cellA(m).fixCheck).toMatchObject({ state: 'check', beforeShotId: a.id });
+    expect(m.summary).toMatchObject({ fixChecks: 0, reviewed: 1 });
+  });
+
+  it("the re-shot's own new fix, unmerged, takes over: the usual buttons again", () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const after = shot('w2', '/a', 'mobile', 'issue', 120, { fixTaskId: 'fx2' });
+    const m = buildVisualReviewModel(input({ shots: [a, after], tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90)), fix('fx2', 'pending', null)] }));
+    expect(cellA(m).fixCheck).toBeNull();
+  });
+});
+
 describe('buildVisualReviewModel: triage queue', () => {
   it('orders unsure, then issue, then ok, then already reviewed; by route, variant, then phone first', () => {
     const rows = [

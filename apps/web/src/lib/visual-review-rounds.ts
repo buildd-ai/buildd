@@ -10,7 +10,8 @@
  * re-shoot. Decisions still go through the whole model (the hook holds it);
  * the view is display only.
  */
-import type { HumanShotReview, VisualQaVerdict, VisualReviewCell, VisualReviewCellEntry, VisualReviewMarker, VisualReviewModel } from '@buildd/shared';
+import type { HumanShotReview, VisualQaVerdict, VisualReviewCell, VisualReviewCellEntry, VisualReviewModel } from '@buildd/shared';
+import { awaitingCapture, fixCheckDue, fixCheckOf, markerOf, queueRankOf } from './visual-review-model';
 
 /** Rounds that shot at least one screen, latest first. */
 export function visualReviewRounds(model: Pick<VisualReviewModel, 'cells'>): number[] {
@@ -30,24 +31,20 @@ export function visualReviewRoundOf(model: Pick<VisualReviewModel, 'cells' | 'au
   return model.audit?.id === auditTaskId ? model.audit.round : null;
 }
 
-function markerOf(review: HumanShotReview | null): VisualReviewMarker {
-  if (!review) return 'awaiting';
-  return review.relation === 'agree' ? 'confirmed' : review.relation === 'dispute' ? 'disputed' : 'waived';
-}
-
 function cellAt(cell: VisualReviewCell, entry: VisualReviewCellEntry, round: number): VisualReviewCell {
   const review = entry.review;
+  const history = cell.history.filter(h => h.round <= round);
+  const fixCheck = fixCheckOf(history);
   return {
     ...cell,
     current: entry,
-    history: cell.history.filter(h => h.round <= round),
+    history,
     effectiveVerdict: review ? (review.decision === 'looks_right' ? 'ok' : 'issue') : entry.agentVerdict,
-    marker: markerOf(review),
-    needsHuman: entry.agentVerdict === 'unsure' && !review,
+    marker: markerOf(review, fixCheck),
+    needsHuman: entry.agentVerdict === 'unsure' && !review && fixCheck?.state !== 'awaiting_capture',
+    fixCheck,
   };
 }
-
-const VERDICT_RANK: Record<VisualQaVerdict, number> = { unsure: 0, issue: 1, ok: 2 };
 
 /** The model as round `round` saw it. The latest round keeps the live phase; an earlier one is history. */
 export function visualReviewForRound(model: VisualReviewModel, round: number): VisualReviewModel {
@@ -57,12 +54,9 @@ export function visualReviewForRound(model: VisualReviewModel, round: number): V
     if (entry) cells.push(cellAt(c, entry, round));
   }
   const order = new Map(model.cells.map((c, i) => [c.key, i]));
-  const queue = [...cells]
-    .sort((a, b) => {
-      const ra = a.current.review ? 3 : VERDICT_RANK[a.current.agentVerdict];
-      const rb = b.current.review ? 3 : VERDICT_RANK[b.current.agentVerdict];
-      return ra - rb || (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0);
-    })
+  const queue = cells
+    .filter(c => !awaitingCapture(c))
+    .sort((a, b) => queueRankOf(a) - queueRankOf(b) || (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0))
     .map(c => c.key);
   const latest = Math.max(0, ...visualReviewRounds(model), model.audit?.round ?? 0);
   const count = (v: VisualQaVerdict) => cells.filter(c => c.current.agentVerdict === v).length;
@@ -88,6 +82,8 @@ export function visualReviewForRound(model: VisualReviewModel, round: number): V
       reviewed,
       unreviewed: cells.length - reviewed,
       awaitingHuman: cells.filter(c => c.needsHuman).length,
+      fixChecks: cells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
+      awaitingCapture: cells.filter(awaitingCapture).length,
       confirmed: rel('agree'),
       disputed: rel('dispute'),
       waived: rel('waive'),
