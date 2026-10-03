@@ -114,6 +114,21 @@ describe('MissionBoard — running', () => {
     expect(html).toMatch(/after.*api/);
   });
 
+  // Regression (surface audit, 390px/320px): a task waiting on four others ran
+  // its "after" chips past the dashed card and the viewport (page ~394px wide).
+  // The chip row wraps inside the tile, and no single chip can outgrow it.
+  it('wraps a long "after" chip row inside the tile', () => {
+    const m = boardFixture('running');
+    const blocked = Object.values(m.tasks).find(t => t.status === 'blocked')!;
+    const deps = ['invoices', 'payments-reconciliation', 'ledger', 'notifications'].map((s, i) => ({ id: `d${i}`, label: s, scope: s, ok: i > 0 }));
+    const tasks = { ...m.tasks, [blocked.id]: { ...blocked, deps } };
+    const many = renderToStaticMarkup(<MissionBoard model={{ ...m, tasks }} missionId="mission-1" />);
+    const row = many.match(/data-testid="board-tile-deps"[^>]*class="([^"]+)"/)?.[1].split(/\s+/) ?? [];
+    expect(row).toContain('flex-wrap');
+    expect(row).toContain('min-w-0');
+    expect(count(many, 'notifications')).toBeGreaterThan(0);
+  });
+
   it('tiles open the task sheet: a real href plus data-task-id', () => {
     expect(html).toMatch(/href="\/app\/missions\/mission-1\?task=api" data-task-id="api"/);
   });

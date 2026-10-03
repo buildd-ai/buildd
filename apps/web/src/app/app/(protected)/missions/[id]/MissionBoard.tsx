@@ -406,12 +406,14 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
   let body: ReactNode;
   if (queued) {
     body = (
-      <div className="flex min-h-[18px] items-center gap-[5px] font-mono text-[12px] md:text-[11.5px] text-text-muted">
+      // Wraps: a task waiting on several others ran its chips past the tile and
+      // the viewport on a phone.
+      <div data-testid="board-tile-deps" className="flex min-h-[18px] min-w-0 flex-wrap items-center gap-[5px] font-mono text-[12px] md:text-[11.5px] text-text-muted">
         {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? 'ready · next free slot' : (
           <>
             after
             {t.deps.filter(d => !d.ok).concat(t.deps.filter(d => d.ok)).map(d => (
-              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} />
+              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} className="max-w-full overflow-hidden" />
             ))}
           </>
         )}
