@@ -9,7 +9,7 @@
  * every surface reaches it through the loader.
  */
 import { and, asc, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
-import { artifacts, missionNotes, missions, tasks, visualShotReviews, workers } from '@buildd/core/db/schema';
+import { artifacts, missionNotes, missions, tasks, visualShotReviews, workers, workspaces } from '@buildd/core/db/schema';
 import { ArtifactType, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE, SURFACE_FIX_TITLE_PREFIX } from '@buildd/core/surface-audit';
 
@@ -128,6 +128,25 @@ export function visualReviewWorkersQuery(q: Selectable, missionId: string) {
     })
     .from(workers)
     .where(sql`${workers.taskId} in (select "t"."id" from "tasks" "t" where "t"."mission_id" = ${missionId} and ("t"."role_slug" = ${VISUAL_AUDITOR_ROLE_SLUG} or lower(ltrim("t"."title")) like ${SURFACE_FIX_LIKE}))`);
+}
+
+// ── The capture ref ─────────────────────────────────────────────────────────
+
+/**
+ * What `resolveVisualQaCaptureRef` needs: the mission's integration fields and
+ * its workspace's git config (docs/design/visual-qa-auditor.md, "Page source").
+ */
+export function missionCaptureRefQuery(q: Selectable, missionId: string) {
+  return q
+    .select({
+      workingBranch: missions.workingBranch,
+      integrationBranchEnabled: missions.integrationBranchEnabled,
+      gitConfig: workspaces.gitConfig,
+    })
+    .from(missions)
+    .leftJoin(workspaces, eq(workspaces.id, missions.workspaceId))
+    .where(eq(missions.id, missionId))
+    .limit(1);
 }
 
 // ── Reviews and the round-cap question ──────────────────────────────────────
