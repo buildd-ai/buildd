@@ -21,6 +21,7 @@ import type {
   VisualReviewCaptureGap,
   VisualReviewCell,
   VisualReviewCellEntry,
+  VisualReviewFixCheck,
   VisualReviewFixTask,
   VisualReviewMarker,
   VisualReviewModel,
@@ -245,14 +246,50 @@ function fixTaskView(t: VisualReviewTaskInput, origin: VisualReviewFixTask['orig
   };
 }
 
-function markerOf(review: HumanShotReview | null): VisualReviewMarker {
+/**
+ * Where a cell stands once a fix for it merged (docs/design/visual-qa-human-review.md,
+ * "After a fix merges"). Null while the current screenshot has a fix of its
+ * own that has not merged (open, failed or cancelled: Looks right and Needs
+ * fix still apply), or when no fix of the cell ever merged.
+ *
+ * `check` needs a screenshot taken after the merge; one taken before it shows
+ * nothing about the fix. `history` is oldest round first.
+ */
+export function fixCheckOf(history: readonly VisualReviewCellEntry[]): VisualReviewFixCheck | null {
+  const current = history[history.length - 1];
+  if (!current) return null;
+  if (current.fixTask && !current.fixTask.mergedAt) return null;
+  let fix: VisualReviewFixTask | null = null;
+  for (let i = history.length - 1; i >= 0 && !fix; i--) if (history[i].fixTask?.mergedAt) fix = history[i].fixTask;
+  if (!fix) return null;
+  // The fix was filed against the earliest screenshot that links it.
+  const before = history.find(h => h.fixTask?.id === fix.id)!;
+  const after = current.shot.id !== before.shot.id && ms(current.shot.createdAt) > ms(fix.mergedAt);
+  return { state: after ? 'check' : 'awaiting_capture', fix, beforeShotId: before.shot.id, beforeRound: before.round };
+}
+
+/** A cell waiting on a screenshot after its merged fix: settled, nothing to decide. */
+export const awaitingCapture = (c: Pick<VisualReviewCell, 'fixCheck'>): boolean => c.fixCheck?.state === 'awaiting_capture';
+
+/** A cell whose fix merged and whose new screenshot nobody has checked. */
+export const fixCheckDue = (c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): boolean => c.fixCheck?.state === 'check' && !c.current.review;
+
+export function markerOf(review: HumanShotReview | null, fixCheck?: VisualReviewFixCheck | null): VisualReviewMarker {
+  if (fixCheck?.state === 'awaiting_capture') return 'fix_merged';
   if (!review) return 'awaiting';
   if (review.relation === 'agree') return 'confirmed';
   if (review.relation === 'dispute') return 'disputed';
   return 'waived';
 }
 
-const VERDICT_RANK: Record<VisualQaVerdict, number> = { unsure: 0, issue: 1, ok: 2 };
+const VERDICT_RANK: Record<VisualQaVerdict, number> = { unsure: 0, issue: 2, ok: 3 };
+
+/** Triage rank: unsure, fix checks, issue, ok, then reviewed. */
+export function queueRankOf(c: Pick<VisualReviewCell, 'fixCheck' | 'current'>): number {
+  if (c.current.review) return 4;
+  if (c.fixCheck?.state === 'check') return 1;
+  return VERDICT_RANK[c.current.agentVerdict];
+}
 const VIEWPORT_RANK: Record<VisualQaViewport, number> = { mobile: 0, desktop: 1 };
 
 // ── The model ───────────────────────────────────────────────────────────────
@@ -372,6 +409,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     const effectiveVerdict: VisualQaVerdict = review
       ? (review.decision === 'looks_right' ? 'ok' : 'issue')
       : current.agentVerdict;
+    const fixCheck = fixCheckOf(history);
     cells.push({
       key,
       route: current.shot.qa.route,
@@ -380,8 +418,9 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
       current,
       history,
       effectiveVerdict,
-      marker: markerOf(review),
-      needsHuman: current.agentVerdict === 'unsure' && !review,
+      marker: markerOf(review, fixCheck),
+      needsHuman: current.agentVerdict === 'unsure' && !review && fixCheck?.state !== 'awaiting_capture',
+      fixCheck,
     });
   }
 
@@ -391,12 +430,9 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     || (a.variant ?? '').localeCompare(b.variant ?? '')
     || VIEWPORT_RANK[a.viewport] - VIEWPORT_RANK[b.viewport];
   cells.sort(byPlace);
-  const queue = [...cells]
-    .sort((a, b) => {
-      const ra = a.current.review ? 3 : VERDICT_RANK[a.current.agentVerdict];
-      const rb = b.current.review ? 3 : VERDICT_RANK[b.current.agentVerdict];
-      return ra - rb || byPlace(a, b);
-    })
+  const queue = cells
+    .filter(c => !awaitingCapture(c))
+    .sort((a, b) => queueRankOf(a) - queueRankOf(b) || byPlace(a, b))
     .map(c => c.key);
 
   // Every [surface fix] of the mission, plus any fix a cell links.
@@ -479,6 +515,9 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     reviewed,
     unreviewed: cells.length - reviewed,
     awaitingHuman,
+    // An unsure "after" shot already counts in awaitingHuman.
+    fixChecks: cells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
+    awaitingCapture: cells.filter(awaitingCapture).length,
     confirmed: rel('agree'),
     disputed: rel('dispute'),
     waived: rel('waive'),

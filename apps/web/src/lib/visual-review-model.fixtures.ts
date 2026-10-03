@@ -101,10 +101,24 @@ const ROUND_2: VisualReviewShotRow[] = [
   shotRow('fixture-shot-08', 'fixture-w2', 'fixture-audit-2', 100, '/app/tasks/:id', 'mobile', 'ok', 'Resolved: the title now truncates with an ellipsis.'),
 ];
 
-/** The deck scenario's second issue: a round-1 finding whose fix is still open. */
+/**
+ * The deck scenario's other issues: a round-1 finding whose fix is still
+ * open, and one whose fix merged with no screenshot since (settled).
+ */
 const DECK_EXTRA: VisualReviewShotRow[] = [
   shotRow('fixture-shot-09', 'fixture-w1', 'fixture-audit-1', 9, '/app/settings', 'desktop', 'issue', 'The save bar covers the last settings row at 1280px.', 'fixture-fix-2'),
+  shotRow('fixture-shot-10', 'fixture-w1', 'fixture-audit-1', 10, '/app/inbox', 'mobile', 'issue', 'The unread badge overlaps the sender name.', 'fixture-fix-3'),
 ];
+
+/** The settled cell's fix: merged after round 2 ran, so no screenshot shows it yet. */
+const mergedFixTask = (): VisualReviewTaskInput => ({
+  id: 'fixture-fix-3',
+  title: '[surface fix] /app/inbox: The unread badge overlaps the sender name.',
+  status: 'completed',
+  createdAt: at(20),
+  updatedAt: at(130),
+  workers: [{ id: 'fixture-wf3', status: 'completed', startedAt: at(22), prUrl: 'https://example.test/pulls/3', prNumber: 3, mergedAt: at(130) }],
+});
 
 const openFixTask = (): VisualReviewTaskInput => ({
   id: 'fixture-fix-2',
@@ -195,6 +209,7 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
             auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-fix-1'] }),
             fixTask('completed', true),
             openFixTask(),
+            mergedFixTask(),
           ],
           reviews: [review('fixture-shot-01', '/app/tasks', 'mobile', 'ok', { relation: 'agree', createdAt: at(140) })],
         };
@@ -246,14 +261,21 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
           auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-fix-1'] }),
           fixTask('completed', true),
         ],
-        reviews: [waived, review('fixture-shot-06', '/app/missions/:id', 'desktop', 'ok', { relation: 'agree' })],
+        reviews: [
+          waived,
+          review('fixture-shot-06', '/app/missions/:id', 'desktop', 'ok', { relation: 'agree' }),
+          // The re-shot after the merged fix, checked: Fixed.
+          review('fixture-shot-08', '/app/tasks/:id', 'mobile', 'ok', { relation: 'agree', round: 2, auditTaskId: 'fixture-audit-2' }),
+        ],
       };
   }
 }
 
 /**
  * `deck`: two rounds with mixed human reviews, an unsure cell, an issue whose
- * fix is still open and a fixed route to compare (phase `needs_you`).
+ * fix is still open, a merged fix with a new screenshot to check (Fixed /
+ * Still broken), and a merged fix with no screenshot since (settled) (phase
+ * `needs_you`).
  */
 export type VisualReviewFixtureScenario = 'deck';
 

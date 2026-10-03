@@ -234,6 +234,42 @@ describe('planDecision', () => {
     expect(plan.kind === 'ok' && plan.shots[0]).toMatchObject({ relation: 'agree', intent: 'none' });
   });
 
+  describe('after a fix merged', () => {
+    const MERGED = '2026-03-10T10:20:00.000Z';
+    const merged: VisualReviewTaskInput = { id: 'fix-a', title: '[surface fix] /app/x: broken', status: 'completed', workers: [{ id: 'wf', prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: MERGED }] };
+    const round2: VisualReviewTaskInput = { id: 'audit-2', title: '[surface audit] round 2: M', status: 'completed', roleSlug: 'visual-auditor', createdAt: AT, context: { surfaceAuditRound: 2 }, workers: [{ id: 'worker-2', status: 'completed' }] };
+    const after = (verdict: 'ok' | 'issue' | 'unsure', fixTaskId?: string) =>
+      ({ ...shot('a-m2', '/app/x', 'mobile', verdict, 'looks fixed', fixTaskId), workerId: 'worker-2', taskId: 'audit-2', createdAt: '2026-03-10T10:40:00.000Z' });
+
+    it('no screenshot since the merge: any decision is stale, there is nothing to decide', () => {
+      model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a')], { tasks: [merged] });
+      expect(model.cells[0].fixCheck?.state).toBe('awaiting_capture');
+      for (const d of ['looks_right', 'needs_fix'] as const) {
+        expect(planDecision(model, req(['a-m'], d, { 'a-m': 'issue' })).kind).toBe('stale');
+      }
+    });
+
+    it('Still broken on the new screenshot files a new fix for the route, whatever the agent said', () => {
+      for (const verdict of ['ok', 'issue', 'unsure'] as const) {
+        // The re-shot may carry the merged fix id over; it still files.
+        for (const carried of [undefined, 'fix-a']) {
+          model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a'), after(verdict, carried)], { tasks: [round2, merged] });
+          expect(model.cells[0].fixCheck?.state).toBe('check');
+          const plan = planDecision(model, req(['a-m2'], 'needs_fix', { 'a-m2': verdict }, 'header still overflows'));
+          expect(plan.kind === 'ok' && plan.shots[0].intent).toBe('file_fix');
+          expect(plan.kind === 'ok' && plan.fixGroups).toEqual([{ route: '/app/x', artifactIds: ['a-m2'], reuseFixId: null }]);
+        }
+      }
+    });
+
+    it('Fixed on the new screenshot records only', () => {
+      model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a'), after('ok', 'fix-a')], { tasks: [round2, merged] });
+      const plan = planDecision(model, req(['a-m2'], 'looks_right', { 'a-m2': 'ok' }));
+      expect(plan.kind === 'ok' && plan.shots[0]).toMatchObject({ relation: 'agree', intent: 'none' });
+      expect(plan.kind === 'ok' && [...plan.fixGroups, ...plan.waives, ...plan.guides]).toEqual([]);
+    });
+  });
+
   it('a looks-right redecide withdraws the fix the earlier human decision filed', () => {
     model = buildModel([shot('a-m', '/app/x', 'mobile', 'ok', 'fine')], {
       reviews: [review({ id: 'rev-old', artifactId: 'a-m', fixTaskId: 'fix-h' })],

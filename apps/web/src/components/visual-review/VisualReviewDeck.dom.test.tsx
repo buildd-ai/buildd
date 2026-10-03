@@ -17,7 +17,8 @@ import type { VisualReviewModel } from '@buildd/shared';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { buildVisualReviewFixtureModel } = await import('@/lib/visual-review-model.fixtures');
+const { buildVisualReviewFixtureModel, visualReviewFixtureInput, withFixtureImages } = await import('@/lib/visual-review-model.fixtures');
+const { buildVisualReviewModel } = await import('@/lib/visual-review-model');
 const { default: VisualReviewDeck, swipeStep, verdictEffects } = await import('./VisualReviewDeck');
 const { useVisualReviewDecisions, VisualReviewRequestError, applyOptimisticDecision, buildDecisionRequest } = await import('./review-transport');
 const { createFixtureVisualReviewTransport } = await import('./fixture-transport');
@@ -26,6 +27,8 @@ type DecideInput = import('./review-transport').DecideInput;
 type DecideResult = import('./review-transport').DecideResult;
 
 const deckModel = (): VisualReviewModel => buildVisualReviewFixtureModel('needs_you', { scenario: 'deck' });
+/** Screens the deck counts: a cell whose fix merged with no screenshot since is settled, never to review. */
+const reviewable = (m: VisualReviewModel) => m.cells.filter(c => c.fixCheck?.state !== 'awaiting_capture').length;
 
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
@@ -89,7 +92,8 @@ describe('verdict-aware buttons', () => {
     renderDeck();
     expect(route()).toBe('/app/missions/:id');
     expect(focused()).toBe('/app/missions/:id|mobile|');
-    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed} of ${m.cells.length} reviewed`);
+    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed} of ${reviewable(m)} reviewed`);
+    expect(reviewable(m)).toBe(m.cells.length - 1);
     expect(q('visual-review-deck')!.textContent).toContain('The empty state shows two headings');
     expect(q('deck-looks-right')!.textContent).toContain('Looks right');
     expect(q('deck-needs-fix')!.textContent).toContain('Needs fix');
@@ -126,7 +130,10 @@ describe('deciding', () => {
   });
 
   it('applies to both viewports by default when their verdicts match', async () => {
-    const { onDecide } = renderDeck({ startKey: '/app/tasks/:id|desktop|' });
+    // Two plain ok screens (the phone's fix check taken out: it has its own rule).
+    const m = deckModel();
+    const plain = { ...m, cells: m.cells.map(c => ({ ...c, fixCheck: null })) };
+    const { onDecide } = renderDeck({ model: plain, startKey: '/app/tasks/:id|desktop|' });
     expect((q('deck-apply-both') as HTMLInputElement).checked).toBe(true);
     act(() => q('deck-looks-right')!.click());
     await flush();
@@ -263,7 +270,9 @@ describe('deciding', () => {
     const routes = new Set<string>();
     for (let i = 0; i < 10 && !q('deck-end'); i++) { routes.add(route()!); key('j'); }
     expect(q('deck-end')).not.toBeNull();
-    expect(routes.size).toBe(new Set(m.cells.map(c => c.route)).size);
+    // Every route but the settled one (its fix merged, no screenshot since).
+    expect(routes.size).toBe(new Set(m.cells.filter(c => c.fixCheck?.state !== 'awaiting_capture').map(c => c.route)).size);
+    expect(routes.has('/app/inbox')).toBe(false);
     const okLeft = m.cells.filter(c => !c.current.review && c.current.agentVerdict === 'ok');
     const accept = q('deck-accept-all')!;
     expect(accept.textContent).toBe(`Accept all ${okLeft.length} the agent marked fine`);
@@ -276,9 +285,13 @@ describe('deciding', () => {
     expect(q('deck-end')).toBeNull();
   });
 
-  it('C opens compare on a screen shot in two rounds, and swipe is off while comparing', () => {
+  it('C toggles compare on a screen shot in two rounds, and swipe is off while comparing', () => {
+    // A fix check opens on compare by itself; C closes it and opens it again.
     renderDeck({ startKey: '/app/tasks/:id|mobile|' });
+    expect(q('visual-review-compare')).not.toBeNull();
+    key('c');
     expect(q('visual-review-compare')).toBeNull();
+    expect(q('visual-review-deck')!.dataset.swipe).toBe('on');
     key('c');
     expect(q('visual-review-compare')).not.toBeNull();
     expect(q('compare-fix')!.textContent).toContain('Header title overflows');
@@ -291,6 +304,94 @@ describe('deciding', () => {
     key('c');
     expect(q('visual-review-compare')).toBeNull();
     expect(q('visual-review-deck')!.dataset.swipe).toBe('on');
+  });
+});
+
+describe('after a fix merges: the buttons follow the fix, never local state', () => {
+  /** The deck fixture rebuilt with one fix task's status changed, so fixCheck is derived as the server would. */
+  const withFixStatus = (id: string, status: string) => {
+    const base = visualReviewFixtureInput('needs_you', { needsYou: 'unsure', scenario: 'deck' });
+    return withFixtureImages(buildVisualReviewModel({ ...base, tasks: base.tasks.map(t => (t.id === id ? { ...t, status } : t)) }));
+  };
+  const buttons = () => [...q('deck-actions')!.querySelectorAll<HTMLElement>('button')].map(b => b.dataset.testid);
+
+  it('pins the exact button set per fix state', () => {
+    // Pending or in progress: Looks right / Needs fix, unchanged.
+    renderDeck({ startKey: '/app/settings|desktop|' });
+    expect(buttons()).toEqual(['deck-needs-fix', 'deck-looks-right']);
+
+    // Merged, no screenshot since: no decision buttons at all.
+    act(() => root.render(<VisualReviewDeck key="merged" model={deckModel()} layout="sheet" startKey="/app/inbox|mobile|" onDecide={okDecide()} onUndo={async () => ({ ok: true })} />));
+    expect(focused()).toBe('/app/inbox|mobile|');
+    expect(buttons()).toEqual([]);
+
+    // Merged, new screenshot: Fixed / Still broken.
+    act(() => root.render(<VisualReviewDeck key="check" model={deckModel()} layout="sheet" startKey="/app/tasks/:id|mobile|" onDecide={okDecide()} onUndo={async () => ({ ok: true })} />));
+    expect(buttons()).toEqual(['deck-still-broken', 'deck-fixed']);
+    expect(q('deck-still-broken')!.textContent).toContain('Still broken');
+    expect(q('deck-fixed')!.textContent).toContain('Fixed');
+
+    // Failed or cancelled: Looks right / Needs fix, with the outcome shown.
+    for (const status of ['failed', 'cancelled']) {
+      act(() => root.render(<VisualReviewDeck key={status} model={withFixStatus('fixture-fix-2', status)} layout="sheet" startKey="/app/settings|desktop|" onDecide={okDecide()} onUndo={async () => ({ ok: true })} />));
+      expect(buttons()).toEqual(['deck-needs-fix', 'deck-looks-right']);
+      const fix = qa('deck-fix').find(f => f.closest('[data-viewport="desktop"]'))!;
+      expect(fix.textContent?.toLowerCase()).toContain(status);
+    }
+  });
+
+  it('merged with no screenshot since: settled, says so in plain words, links the fix and PR, keys do nothing', async () => {
+    const { onDecide } = renderDeck({ startKey: '/app/inbox|mobile|' });
+    expect(q('deck-settled')!.textContent).toBe('Fix merged, waiting for a new screenshot');
+    const fix = q('deck-fix')!;
+    expect(fix.textContent).toContain('The unread badge overlaps the sender name.');
+    expect(fix.textContent).toContain('PR #3, merged');
+    expect(fix.querySelector('a[href="https://example.test/pulls/3"]')).not.toBeNull();
+    expect(q('visual-review-deck')!.textContent).not.toMatch(/round/i);
+    key('y');
+    key('n');
+    await flush();
+    expect(onDecide).not.toHaveBeenCalled();
+    expect(q('deck-note')).toBeNull();
+  });
+
+  it('a new screenshot after the merge opens on Before / After with no round named', () => {
+    renderDeck({ startKey: '/app/tasks/:id|mobile|' });
+    const compare = q('visual-review-compare')!;
+    expect(compare.dataset.fixCheck).toBe('true');
+    expect(q('compare-fix')!.textContent).toContain('The fix');
+    expect(q('compare-fix')!.textContent).toContain('PR #1');
+    expect(q('deck-round')).toBeNull();
+    expect(q('compare-showing')!.textContent).toBe('After');
+    expect(q('visual-review-deck')!.textContent).not.toMatch(/round/i);
+    // Closed, the button names what it shows.
+    key('c');
+    expect(q('deck-compare')!.textContent).toContain('Before / After');
+    expect(q('visual-review-deck')!.textContent).not.toMatch(/round/i);
+  });
+
+  it('Still broken opens the note prefilled with what the merged fix was for, and files it', async () => {
+    const { onDecide } = renderDeck({ startKey: '/app/tasks/:id|mobile|' });
+    // The desktop is no fix check: not applied to it by default.
+    expect((q('deck-apply-both') as HTMLInputElement).checked).toBe(false);
+    act(() => q('deck-still-broken')!.click());
+    const note = q('deck-note') as HTMLInputElement;
+    expect(note.value).toBe('Header title overflows the viewport by about 40px.');
+    expect(q('deck-note-submit')!.textContent).toBe('File the fix');
+    act(() => { note.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+    expect(onDecide.mock.calls[0][0]).toMatchObject({ decision: 'needs_fix', note: 'Header title overflows the viewport by about 40px.' });
+    expect(onDecide.mock.calls[0][0].cells.map(c => c.key)).toEqual(['/app/tasks/:id|mobile|']);
+    expect(q('deck-toast-label')!.textContent).toBe('/app/tasks/:id phone: still broken, fix filed');
+  });
+
+  it('Fixed records the decision with no note', async () => {
+    const { onDecide } = renderDeck({ startKey: '/app/tasks/:id|mobile|' });
+    key('y');
+    await flush();
+    expect(onDecide.mock.calls[0][0]).toMatchObject({ decision: 'looks_right' });
+    expect('note' in onDecide.mock.calls[0][0]).toBe(false);
+    expect(q('deck-toast-label')!.textContent).toBe('/app/tasks/:id phone: fixed');
   });
 });
 
@@ -412,10 +513,10 @@ describe('optimistic apply with rollback', () => {
     act(() => root.render(<Connected transport={transport} model={m} />));
     key('y');
     await flush();
-    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed + 1} of ${m.cells.length} reviewed`);
+    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed + 1} of ${reviewable(m)} reviewed`);
     await act(async () => { reject(new VisualReviewRequestError(500, { error: 'boom' })); });
     await flush();
-    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed} of ${m.cells.length} reviewed`);
+    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed} of ${reviewable(m)} reviewed`);
     expect(q('deck-notice')!.textContent).toContain('boom');
     expect(focused()).toBe('/app/missions/:id|mobile|');
   });
@@ -427,11 +528,11 @@ describe('optimistic apply with rollback', () => {
     key('n');
     act(() => { (q('deck-note') as HTMLInputElement).form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
     await flush();
-    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed + 1} of ${m.cells.length} reviewed`);
+    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed + 1} of ${reviewable(m)} reviewed`);
     expect(t.model().fixTasks.some(f => f.status === 'pending' && f.title.startsWith('[surface fix] /app/missions/:id:'))).toBe(true);
     act(() => q('deck-undo')!.click());
     await flush();
-    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed} of ${m.cells.length} reviewed`);
+    expect(q('deck-progress')!.textContent).toBe(`${m.summary.reviewed} of ${reviewable(m)} reviewed`);
     expect(t.model().fixTasks.filter(f => f.title.startsWith('[surface fix] /app/missions/:id:')).every(f => f.status === 'cancelled')).toBe(true);
   });
 });
