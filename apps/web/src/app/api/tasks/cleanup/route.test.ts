@@ -40,13 +40,13 @@ mock.module('@/lib/stale-workers', () => ({
 }));
 
 // Mock worker-deliverables to prevent cross-file mock contamination from stale-workers.test.ts
-const mockGetWorkerArtifactCount = mock(() => Promise.resolve(0));
+const mockGetWorkerDeliverableArtifactCount = mock(() => Promise.resolve(0));
 const mockCheckWorkerDeliverables = mock(() => ({
   hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
 }));
 mock.module('@/lib/worker-deliverables', () => ({
   checkWorkerDeliverables: mockCheckWorkerDeliverables,
-  getWorkerArtifactCount: mockGetWorkerArtifactCount,
+  getWorkerDeliverableArtifactCount: mockGetWorkerDeliverableArtifactCount,
 }));
 
 // A task the retry cap fails must still cascade to its dependents — otherwise
@@ -165,8 +165,8 @@ describe('POST /api/tasks/cleanup', () => {
     mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 0, retriedTasks: 0 });
     mockReleaseAndNotify.mockReset();
     mockReleaseAndNotify.mockResolvedValue(undefined);
-    mockGetWorkerArtifactCount.mockReset();
-    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockGetWorkerDeliverableArtifactCount.mockReset();
+    mockGetWorkerDeliverableArtifactCount.mockResolvedValue(0);
     mockCheckWorkerDeliverables.mockReset();
     mockCheckWorkerDeliverables.mockReturnValue({
       hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',

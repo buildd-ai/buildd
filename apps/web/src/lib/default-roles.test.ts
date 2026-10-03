@@ -62,6 +62,7 @@ describe('DEFAULT_ROLES', () => {
           updatedAt: now.toISOString(),
         },
         defaultRoleVersion: bySlug.builder.version,
+        claudeAiArtifacts: 'read',
       });
       expect(defaultRoleMetadata(bySlug.reviewer, now)).toEqual({
         routing: { disabled: true, updatedAt: now.toISOString() },
@@ -177,6 +178,32 @@ describe('DEFAULT_ROLES', () => {
       expect(role().version).toBeGreaterThanOrEqual(2);
       expect(role().supersededContentHashes.length).toBeGreaterThan(0);
       expect(role().supersededContentHashes).not.toContain(roleContentHash(role().content));
+    });
+
+    // docs/specs/qa-capture-steps.md.
+    it('prompt captures modals, menus and gated states with a QA_PLAN, and never commits', () => {
+      const c = role().content;
+      const plan = c.slice(c.indexOf('### Modals, menus and gated states'), c.indexOf('## 3. Judge'));
+      expect(plan).toContain('write a `QA_PLAN` state and capture it');
+      for (const a of ['click', 'hover', 'fill', 'press', 'select', 'waitFor', 'waitMs']) expect(plan).toContain(`\`${a}\``);
+      expect(plan).toContain('**Steps never commit.**');
+      expect(plan).toContain('`commit: true`');
+      expect(plan).toContain('QA_PAGE_SOURCE=sandbox');
+      expect(plan).toContain('stepFailed');
+      // The outside-repo kit and both sandbox recipes carry the plan too.
+      expect(c).toContain('/tmp/qa-kit/plan.json');
+      expect(c).toContain("-f plan='<plan JSON>'");
+      expect(c).toMatch(/state: "<the QA_PLAN state key/);
+    });
+
+    it('prompt keeps unsure for states the data cannot produce, with a fixture task linked', () => {
+      const c = role().content;
+      const act = c.slice(c.indexOf('## 4. Act on verdicts'), c.indexOf('## Rounds'));
+      const unsure = act.slice(act.indexOf('- **unsure**'));
+      expect(unsure).toMatch(/cannot produce with the data available/);
+      expect(unsure).toContain('add a ?state= fixture for <state>');
+      expect(unsure).toContain('fixTaskId');
+      expect(unsure).toMatch(/no follow-up task is not done/);
     });
 
     // docs/design/visual-qa-auditor.md, "Page source".
@@ -484,6 +511,27 @@ describe('DEFAULT_ROLES', () => {
     expect(c).toContain('`tier`');
     expect(c).toContain('premium');
     expect(c).toContain('budget');
+  });
+});
+
+// claude.ai artifact access (@buildd/shared claude-ai-artifacts.ts): read-only
+// for the roles that consume designs, off for every other seeded role, and no
+// seeded role may publish.
+describe('claudeAiArtifacts on seeded roles', () => {
+  const now = new Date('2026-10-02T00:00:00.000Z');
+  const access = (slug: string) =>
+    defaultRoleMetadata(DEFAULT_ROLES.find(r => r.slug === slug)!, now).claudeAiArtifacts;
+
+  it('builder and the visual auditor read claude.ai artifacts', () => {
+    expect(access('builder')).toBe('read');
+    expect(access(VISUAL_AUDITOR_ROLE_SLUG)).toBe('read');
+  });
+
+  it('every other seeded role leaves it unset', () => {
+    for (const role of DEFAULT_ROLES) {
+      if (role.slug === 'builder' || role.slug === VISUAL_AUDITOR_ROLE_SLUG) continue;
+      expect(defaultRoleMetadata(role, now).claudeAiArtifacts).toBeUndefined();
+    }
   });
 });
 

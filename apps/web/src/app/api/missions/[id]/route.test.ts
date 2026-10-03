@@ -2,6 +2,25 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 import { UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 
+// The goal-criteria quality shadow (lib/goal-criteria-quality-shadow.ts) runs
+// for real after the response; only its decision call is stubbed, and gate
+// rows are captured instead of reaching the table-agnostic db.insert mock.
+const recordedGateEvents: any[] = [];
+mock.module('@buildd/core/gate-events', () => ({
+  GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
+  gateFrictionSignature: (gate: string, reason: string) => `gate:${gate}_${Buffer.from(reason).toString('hex').slice(0, 12)}`,
+  recordGateEvent: async (input: any) => { recordedGateEvents.push(input); return null; },
+  recordOrCoalesceDeferral: async () => null,
+  recordOrCoalesceRepeat: async () => null,
+}));
+let goalQualityAccess: () => Promise<any> = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+let goalQualityDecide: (req: any) => Promise<any> = async () => { throw new Error('decide not expected'); };
+const goalQualityDecideCalls: any[] = [];
+mock.module('@buildd/core/decision-client', () => ({
+  resolveDecisionAccess: () => goalQualityAccess(),
+  decisionCall: (req: any) => { goalQualityDecideCalls.push(req); return goalQualityDecide(req); },
+}));
+
 // Mock functions
 const mockGetCurrentUser = mock(() => ({ id: 'user-1' }) as any);
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -152,8 +171,21 @@ mock.module('@/lib/schedule-helpers', () => ({
   },
 }));
 
+// The goal-criteria quality bypass check reads this mission's prior
+// `goal_criteria_quality` rows; the only `db.select` the PATCH path makes.
+let gateLedgerRows: Array<{ outcome: string; detail: unknown }> = [];
+const gateLedgerReads: any[] = [];
 mock.module('@buildd/core/db', () => ({
   db: {
+    select: () => ({
+      from: (table: any) => ({
+        where: (cond: any) => ({
+          orderBy: () => ({
+            limit: () => { gateLedgerReads.push({ table, cond }); return Promise.resolve(gateLedgerRows); },
+          }),
+        }),
+      }),
+    }),
     query: {
       missions: { findFirst: mockMissionsFindFirst },
       taskSchedules: { findFirst: mockScheduleFindFirst },
@@ -209,9 +241,11 @@ mock.module('@buildd/core/db/schema', () => ({
   initiatives: 'initiatives',
   missionNotes: 'missionNotes',
   workers: 'workers',
+  gateEvents: { gate: 'gate', missionId: 'missionId', outcome: 'outcome', detail: 'detail', occurredAt: 'occurredAt' },
 }));
 
 import { PATCH } from './route';
+import { criterionFingerprint } from '@buildd/core/mission-helpers';
 
 const makeParams = (id: string) => Promise.resolve({ id });
 
@@ -853,7 +887,9 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toMatch(/mechanical criterion/);
-    expect(body.error).toMatch(/all_prs_merged \+ no_open_tasks/);
+    expect(body.error).not.toContain('all_prs_merged + no_open_tasks');
+    expect(body.error).toContain('command');
+    expect(body.error).toContain('artifact_exists');
   });
 
   it('rejects a PATCH that removes the last mechanical criterion, leaving only description-type ones', async () => {
@@ -1951,5 +1987,155 @@ describe('PATCH /api/missions/[id] — surface audit gate and waiver', () => {
     );
     expect(res.status).toBe(200);
     expect(insertedNotes.find(n => n.title === 'Surface audit waived')?.authorType).toBe('mcp');
+  });
+});
+
+describe('PATCH /api/missions/[id] — goal-criteria quality shadow (docs/specs/mission-goal-criteria-quality.md)', () => {
+  const MID = '11111111-1111-4111-8111-111111111111';
+  const strong = { type: 'command', command: 'bun run e2e signup', label: 'a visitor can sign up' };
+  const patch = (body: Record<string, unknown>) =>
+    PATCH(new NextRequest(`http://localhost/api/missions/${MID}`, { method: 'PATCH', body: JSON.stringify(body) }), { params: makeParams(MID) });
+  const allowed = async () => ({ ok: true, apiKey: 'k', model: 'jev-test' });
+  /** Grades a criterion labelled "...tests pass" as not noticeable; everything else as an outcome. */
+  const grading = async (req: any) => {
+    const answers: Record<string, unknown> = {};
+    for (const name of Object.keys(req.questions)) {
+      const i = Number(/^c(\d+)_/.exec(name)?.[1]);
+      const weak = Number.isFinite(i) && /tests pass$/.test(req.state.criteria[i]?.label ?? '');
+      answers[name] = { type: 'choice', confidence: 0.95, probabilities: {}, choice: name === 'rewrite' ? 'state-outcome' : weak ? 'no' : 'yes' };
+    }
+    return { ok: true, answers, model: 'jev-test', latencyMs: 4, usage: null, attempts: 1 };
+  };
+  const flush = () => new Promise(r => setTimeout(r, 20));
+  const quality = () => recordedGateEvents.filter(e => e.gate === 'goal_criteria_quality');
+
+  beforeEach(() => {
+    recordedGateEvents.length = 0;
+    goalQualityDecideCalls.length = 0;
+    gateLedgerRows = [];
+    gateLedgerReads.length = 0;
+    goalQualityAccess = allowed;
+    goalQualityDecide = grading;
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', dataClass: 'standard' });
+    insertedNotes = [];
+    updatedSetData = null;
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null,
+      status: 'active', priority: 0, goalCriteria: [strong],
+    });
+    mockMissionsUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedSetData = { ...updatedSetData, ...data };
+        return { where: mock(() => ({ returning: mock(() => [{ id: MID, ...data }]) })) };
+      }),
+    }));
+  });
+
+  it('byte-identical criteria make no decision call (AC-14)', async () => {
+    const res = await patch({ goalCriteria: [strong] });
+    expect(res.status).toBe(200);
+    await flush();
+    expect(goalQualityDecideCalls).toHaveLength(0);
+  });
+
+  it('keeping a warned criterion records one bypassed row, matched by fingerprint, even with the capability off (AC-8)', async () => {
+    const weak = { type: 'command', command: 'bun run test', label: 'kept: tests pass' };
+    mockMissionsFindFirst.mockReturnValue({
+      id: MID, teamId: 'team-1', title: 'Existing Mission', workspaceId: 'ws-1', scheduleId: null,
+      status: 'active', priority: 0, goalCriteria: [strong, weak],
+    });
+    goalQualityAccess = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+    gateLedgerRows = [{ outcome: 'warned', detail: { fingerprint: criterionFingerprint(weak as any), mode: 'shadow' } }];
+    // Reordered: index is not identity.
+    const res = await patch({ goalCriteria: [weak, strong] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).not.toHaveProperty('advisory');
+    await flush();
+    expect(gateLedgerReads).toHaveLength(1);
+    expect(goalQualityDecideCalls).toHaveLength(0);
+    const rows = quality();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ outcome: 'bypassed', surface: 'PATCH /api/missions/[id]', missionId: MID, detail: { fingerprint: criterionFingerprint(weak as any), mode: 'shadow' } });
+    expect(JSON.stringify(rows[0])).not.toContain('tests pass');
+
+    // A further PATCH that still keeps it: the ledger now holds the bypass.
+    recordedGateEvents.length = 0;
+    gateLedgerRows = [...gateLedgerRows, { outcome: 'bypassed', detail: { fingerprint: criterionFingerprint(weak as any) } }];
+    await patch({ goalCriteria: [weak, strong] });
+    await flush();
+    expect(quality()).toEqual([]);
+  });
+
+  it('changing a warned criterion records no bypassed row (AC-9)', async () => {
+    const weak = { type: 'command', command: 'bun run test', label: 'changed: tests pass' };
+    gateLedgerRows = [{ outcome: 'warned', detail: { fingerprint: criterionFingerprint(weak as any), mode: 'shadow' } }];
+    goalQualityAccess = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+    await patch({ goalCriteria: [strong, { ...weak, label: 'changed: an owner can export a CSV' }] });
+    await flush();
+    expect(quality()).toEqual([]);
+  });
+
+  it('a PATCH without goalCriteria makes no decision call', async () => {
+    await patch({ priority: 3 });
+    await flush();
+    expect(goalQualityDecideCalls).toHaveLength(0);
+  });
+
+  it('grades only the added criterion, records one warned row, and leaves the response and stored goal alone (AC-4, AC-7, AC-12)', async () => {
+    const criteria = [strong, { type: 'command', command: 'bun run test', label: 'patch: tests pass' }];
+    goalQualityAccess = async () => ({ ok: false, error: { kind: 'capability_disabled', capability: 'mission_goal_quality' } });
+    const off = await (await patch({ goalCriteria: criteria })).json();
+    await flush();
+    goalQualityAccess = allowed;
+    const res = await patch({ goalCriteria: criteria });
+    expect(res.status).toBe(200);
+    const on = await res.json();
+    // Surface mode: response includes advisory field
+    expect(on.advisory).toBeDefined();
+    expect(typeof on.advisory.suggestion).toBe('string');
+    expect(Array.isArray(on.advisory.criteria)).toBe(true);
+    // But the stored goal criteria is untouched
+    expect(updatedSetData.goalCriteria).toEqual(criteria);
+    // Goal criteria itself is unchanged in response
+    expect(on.goalCriteria).toEqual(criteria);
+    await flush();
+    expect(goalQualityDecideCalls).toHaveLength(1);
+    expect(goalQualityDecideCalls[0].state.criteria).toEqual([{ type: 'command', label: 'patch: tests pass' }]);
+    const rows = quality();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ outcome: 'warned', surface: 'PATCH /api/missions/[id]', missionId: MID, detail: { index: 1 } });
+    expect(JSON.stringify(rows[0])).not.toContain('tests pass');
+  });
+
+  it('a strong added criterion records no warned row', async () => {
+    await patch({ goalCriteria: [strong, { type: 'command', command: 'bun run e2e export', label: 'patch: an owner can export a CSV' }] });
+    await flush();
+    expect(goalQualityDecideCalls).toHaveLength(1);
+    expect(quality()).toEqual([]);
+  });
+
+  it('a sensitive workspace sends nothing (AC-5)', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', dataClass: 'sensitive' });
+    await patch({ goalCriteria: [strong, { type: 'command', command: 'bun run test', label: 'sensitive: tests pass' }] });
+    await flush();
+    expect(goalQualityDecideCalls).toHaveLength(0);
+    expect(quality()).toEqual([]);
+  });
+
+  it('a never-resolving or throwing decision call cannot delay or fail the PATCH (AC-2)', async () => {
+    goalQualityDecide = () => new Promise(() => {});
+    expect((await patch({ goalCriteria: [strong, { type: 'command', command: 'bun run test', label: 'hang: tests pass' }] })).status).toBe(200);
+    goalQualityDecide = async () => { throw new Error('provider down'); };
+    expect((await patch({ goalCriteria: [strong, { type: 'command', command: 'bun run test', label: 'throw: tests pass' }] })).status).toBe(200);
+    await flush();
+    expect(quality()).toEqual([]);
   });
 });

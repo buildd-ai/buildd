@@ -42,6 +42,13 @@ export const GATE_SLUGS = {
   BRANCH_STRATEGY: 'branch_strategy',
   /** Missions create/update — `goalCriteria` validation, incl. notMechanizableReason. */
   GOAL_CRITERIA: 'goal_criteria',
+  /**
+   * Missions create/update — ADVISORY ONLY: a goal criterion the shadow decision
+   * verdict graded weak (no user-noticeable outcome, or not checkable without
+   * reading prose). Never blocks, never rewrites. Separate from GOAL_CRITERIA,
+   * which is the validation 400. See docs/specs/mission-goal-criteria-quality.md.
+   */
+  GOAL_CRITERIA_QUALITY: 'goal_criteria_quality',
   /** PATCH /api/workers/[id] — the outputRequirement completion gate, and `discardEdits`. */
   OUTPUT_REQUIREMENT: 'output_requirement',
   /** PATCH /api/workers/[id] — the handoff completion gate: tasks with dependents must include handoff.delivered. */
@@ -177,6 +184,16 @@ export const GATE_SLUGS = {
    * head an attempt already ran on with nothing pushed, and escalated it.
    */
   CI_RETRY_SKIPPED: 'ci_retry_skipped',
+  /**
+   * POST /api/tasks — the organizer's own planning task tried to create a
+   * decomposition child while sibling tasks the mission creator pre-filed
+   * (after that planning task was created) are still live. The pre-filed
+   * heuristic in `runMission()` only runs once, at planning-task creation —
+   * before a creator who files right after `manage_missions create` gets a
+   * chance to. This is the same check re-run at the point decomposition
+   * actually happens. Retry children (explicit `parentTaskId`) are exempt.
+   */
+  DECOMPOSITION_REFUSED: 'decomposition_refused',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

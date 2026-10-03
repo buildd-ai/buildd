@@ -839,6 +839,21 @@ export async function completeMissionIfVerified(
     void storeShipped();
   }
 
+  // Accepted goal-criteria patterns (docs/specs/mission-goal-criteria-quality.md
+  // §4): a criterion warned weak, kept, and now passing on a clean completion
+  // stops being warned on. Same scheduling as the shipped report; it never
+  // throws and can never un-complete the mission.
+  if (decision.criteriaVerdict.kind === 'value' && decision.criteriaVerdict.value === 'pass') {
+    const storeAccepted = () => import('@/lib/goal-criteria-accepted')
+      .then(m => m.recordAcceptedGoalCriteriaPatterns(missionId))
+      .catch(e => console.error(`[mission-completion] accepted patterns failed for ${missionId}:`, e));
+    try {
+      after(storeAccepted);
+    } catch {
+      void storeAccepted();
+    }
+  }
+
   const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
   await postMissionFeedEvent({
     missionId,

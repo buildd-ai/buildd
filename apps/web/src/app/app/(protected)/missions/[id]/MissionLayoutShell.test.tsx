@@ -79,4 +79,12 @@ describe('MissionBoardHeader', () => {
     expect(html).toContain('Retry failed webhooks with backoff.');
     expect(html).toContain('data-testid="mission-description-open"');
   });
+
+  it('clamps a long goal line below md too, so the strip stays on the first screen', () => {
+    const html = renderToStaticMarkup(<MissionBoardHeader {...base} goal={'A long goal. '.repeat(80)} description={<p>Full text</p>} />);
+    const cls = html.match(/<p data-testid="mission-goal-line"[^>]*? class="([^"]*)"/)?.[1] ?? '';
+    expect(cls.split(' ')).toContain('max-md:line-clamp-3');
+    expect(cls.split(' ')).toContain('md:truncate');
+    expect(html).toContain('data-testid="mission-description-open"');
+  });
 });

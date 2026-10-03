@@ -29,6 +29,7 @@ import type { GoalCriteriaState } from '@buildd/shared';
 import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
+import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 import { continueOnRunnerBlockedReason } from '@/lib/local-strand';
@@ -976,6 +977,25 @@ export async function PATCH(
     ) {
       const liftedByBudget = existing.status === 'budget_exhausted' && costBudgetUsd != null && status !== 'active';
       wakeMissionAfterResponse(id, liftedByBudget ? 'budget_raised' : 'resumed');
+    }
+
+    // Advisory goal-criteria verdict (docs/specs/mission-goal-criteria-quality.md)
+    // on the criteria this PATCH added or changed — unchanged ones are not
+    // re-graded, but any write carrying criteria is checked for kept warnings
+    // (`bypassed`). In shadow mode it runs after the response and the body is
+    // unchanged; it never blocks or rewrites.
+    if (updated && Array.isArray(updateData.goalCriteria) && updateData.goalCriteria.length > 0) {
+      return NextResponse.json(await withGoalQualityAdvisory(updated, {
+        missionId: id,
+        teamId: existing.teamId,
+        workspaceId: updated.workspaceId ?? existing.workspaceId ?? null,
+        criteria: updateData.goalCriteria,
+        stored: existing.goalCriteria,
+        accountId: apiAccount?.id ?? null,
+        userId: user?.id ?? null,
+        surface: 'PATCH /api/missions/[id]',
+        callerOrigin: gateCaller,
+      }));
     }
 
     return NextResponse.json(updated);

@@ -130,6 +130,23 @@ mock.module('@/lib/mission-completion', () => ({
   completeMissionIfVerified: mockCompleteMissionIfVerified,
 }));
 
+// The heartbeat prepass, reused as the event gate. Mocked: its own rules
+// (classifyMissionWait etc.) are covered in heartbeat-prepass.test.ts; here the
+// question is what the loop does with each decision. Default asks for planning,
+// so every test that predates the gate sees the same control flow it always did.
+const mockEvaluatePrepass = mock((_input: any) => Promise.resolve({
+  action: 'invoke_llm', stateKey: 'k', openTaskCount: 1, planningActive: false, lastOrganizerRunAt: null,
+}) as any);
+mock.module('@/lib/heartbeat-prepass', () => ({
+  evaluateHeartbeatPrepass: mockEvaluatePrepass,
+}));
+const mockRecordWaitNote = mock((_m: string, _r: string, _u: Date) => Promise.resolve());
+const mockResolveWaitNote = mock((_m: string) => Promise.resolve());
+mock.module('@/lib/heartbeat-wait-note', () => ({
+  recordHeartbeatWaitNote: mockRecordWaitNote,
+  resolveHeartbeatWaitNote: mockResolveWaitNote,
+}));
+
 const mockSpawnEvaluationTask = mock(() => Promise.resolve('eval-task-1'));
 
 mock.module('@/lib/pusher', () => ({
@@ -168,6 +185,14 @@ function resetAll() {
   mockTriggerEvent.mockImplementation(() => Promise.resolve());
   mockSpawnEvaluationTask.mockReset();
   mockSpawnEvaluationTask.mockImplementation(() => Promise.resolve('eval-task-1'));
+  mockEvaluatePrepass.mockReset();
+  mockEvaluatePrepass.mockImplementation(() => Promise.resolve({
+    action: 'invoke_llm', stateKey: 'k', openTaskCount: 1, planningActive: false, lastOrganizerRunAt: null,
+  }) as any);
+  mockRecordWaitNote.mockReset();
+  mockRecordWaitNote.mockImplementation(() => Promise.resolve());
+  mockResolveWaitNote.mockReset();
+  mockResolveWaitNote.mockImplementation(() => Promise.resolve());
   mockCompleteMissionIfVerified.mockReset();
   // Default: the predicate refuses because there is nothing to complete, so the
   // loop falls through to its retrigger/stall guards.
@@ -839,6 +864,162 @@ describe('maybeRetriggerMission — wake entry (mission-wake.ts)', () => {
     const result = await wake('m1', 'resumed');
     expect(result.action).toBe('skipped');
     expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('is not gated by the event prepass: an owner note re-plans even when only waits are open', async () => {
+    activeMission();
+    mockEvaluatePrepass.mockImplementation(() => Promise.resolve({
+      action: 'skip_waiting', reason: 'reviewer/retry task queued', waitUntil: new Date(Date.now() + 60_000),
+    }) as any);
+    const result = await wake('m1', 'owner_note');
+    expect(result.action).toBe('retriggered');
+    expect(mockEvaluatePrepass).not.toHaveBeenCalled();
+  });
+});
+
+// docs/design/event-driven-mission-replanning.md §1: events plan every auto
+// mission — but a completion that leaves nothing to decide must not dispatch
+// an organizer that can only say "I'll wait".
+describe('maybeRetriggerMission — event gate (heartbeat prepass on the event path)', () => {
+  beforeEach(resetAll);
+
+  /** An auto mission past the debounce window, whose completed task is `taskClass`. */
+  function completion(taskClass: 'work' | 'attempt' = 'work') {
+    missionFindFirstResult = { id: 'm1', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {}, taskClass };
+    selectResults = [[{ count: 1 }]];
+    // Recent planning cycles each produced children: no stall.
+    tasksFindManyResults = [[{ id: 'pt1' }], [{ id: 'child-1' }]];
+  }
+
+  it('dispatches no organizer when a completion leaves only attempt tasks in flight', async () => {
+    completion('work');
+    const waitUntil = new Date(Date.now() + 30 * 60_000);
+    mockEvaluatePrepass.mockImplementation(() => Promise.resolve({
+      action: 'skip_waiting', reason: 'reviewer/retry task queued', waitUntil,
+    }) as any);
+
+    const result = await retrigger('m1', 'deliverable-1');
+
+    expect(result.action).toBe('waiting');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    // The prepass is read without the heartbeat's state hash: skip_no_change
+    // must never fire on an event.
+    expect((mockEvaluatePrepass.mock.calls[0] as any[])[0].lastHeartbeatStateHash).toBeNull();
+    // Same durable note the check-in writes, and the deferral reason it uses.
+    expect(mockRecordWaitNote).toHaveBeenCalledWith('m1', 'reviewer/retry task queued', waitUntil);
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1', 'mission:loop_stalled',
+      expect.objectContaining({ reason: 'heartbeat_waiting', triggerTaskId: 'deliverable-1' }),
+    );
+    expect(mockTriggerEvent).not.toHaveBeenCalledWith('mission-m1', 'mission:cycle_started', expect.anything());
+  });
+
+  it('does not stamp the debounce when it suppresses, so the next real completion still plans', async () => {
+    completion('work');
+    mockEvaluatePrepass.mockImplementation(() => Promise.resolve({
+      action: 'skip_waiting', reason: 'reviewer/retry task queued', waitUntil: new Date(Date.now() + 60_000),
+    }) as any);
+
+    await retrigger('m1', 'deliverable-1');
+
+    // The claim's .returning() was never reached: the queued claim is unconsumed.
+    expect(updateReturningResult).toEqual([{ id: 'm1' }]);
+  });
+
+  it('dispatches exactly once when the completion leaves a deliverable needing planning', async () => {
+    completion('work');
+
+    const result = await retrigger('m1', 'deliverable-1');
+
+    expect(result.action).toBe('retriggered');
+    expect(mockEvaluatePrepass).toHaveBeenCalledTimes(1);
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+    expect((mockRunMission.mock.calls[0] as any[])[1].cycleContext.triggerSource).toBe('event');
+    // Planning resumed: an earlier wait note is closed.
+    expect(mockResolveWaitNote).toHaveBeenCalledWith('m1');
+  });
+
+  it('an attempt task completing does not re-plan, and does not consult the prepass', async () => {
+    completion('attempt');
+
+    const result = await retrigger('m1', 'review-pass-1');
+
+    expect(result.action).toBe('skipped');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    expect(mockEvaluatePrepass).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1', 'mission:loop_stalled',
+      expect.objectContaining({ reason: 'attempt_completed', triggerTaskId: 'review-pass-1' }),
+    );
+    expect(updateReturningResult).toEqual([{ id: 'm1' }]);
+  });
+
+  it('an attempt task completing can still close a finished mission (code-side check only)', async () => {
+    completion('attempt');
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({ completed: true, decision: decision('ok', true) }) as any);
+
+    const result = await retrigger('m1', 'review-pass-1');
+
+    expect(result.action).toBe('completed');
+    expect(mockRunMission).not.toHaveBeenCalled();
+  });
+
+  it('still dispatches when the prepass throws (fails open)', async () => {
+    completion('work');
+    mockEvaluatePrepass.mockImplementation(() => Promise.reject(new Error('db hiccup')));
+
+    const result = await retrigger('m1', 'deliverable-1');
+
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits instead of planning when all deliverables are done and only an open PR merge remains', async () => {
+    completion('work');
+    mockEvaluatePrepass.mockImplementation(() => Promise.resolve({ action: 'skip_complete' }) as any);
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: { ...decision('awaiting_mission_pr'), awaitingMergeDetails: [] },
+    }) as any);
+
+    const result = await retrigger('m1', 'ship-task');
+
+    expect(result.action).toBe('waiting');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'mission-m1', 'mission:loop_stalled', expect.objectContaining({ reason: 'awaiting_mission_pr' }),
+    );
+  });
+
+  it('still re-plans when a task PR was closed unmerged (will not resolve on its own)', async () => {
+    completion('work');
+    mockEvaluatePrepass.mockImplementation(() => Promise.resolve({ action: 'skip_complete' }) as any);
+    mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({
+      completed: false,
+      decision: {
+        ...decision('awaiting_merge'),
+        awaitingMergeDetails: [{ taskId: 't1', title: 'x', prNumber: 1, prUrl: null, closedUnsuperseded: true }],
+      },
+    }) as any);
+
+    const result = await retrigger('m1', 'deliverable-1');
+
+    expect(result.action).toBe('retriggered');
+  });
+
+  it('does not gate a planning task that proposes completion (step 4 owns that)', async () => {
+    completion('work');
+    taskFindFirstResult.result = { structuredOutput: { missionComplete: true } };
+    mockEvaluatePrepass.mockImplementation(() => Promise.resolve({
+      action: 'skip_waiting', reason: 'reviewer/retry task queued', waitUntil: new Date(Date.now() + 60_000),
+    }) as any);
+
+    const result = await retrigger('m1', 'pt1');
+
+    expect(mockEvaluatePrepass).not.toHaveBeenCalled();
+    expect(result.action).toBe('evaluation_requested');
   });
 });
 

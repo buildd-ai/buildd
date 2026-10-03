@@ -567,8 +567,30 @@ export async function tryAutoMergeWorkerPr(params: {
   // One mission read serves both callers of it inside the safety rails: the
   // size-gate exemption and, when a model verdict authorised this merge, the
   // bound's base-ref test.
-  const mission = await loadMissionIntegrationFields(worker.taskId);
+  const { mission, requiresReview } = await loadTaskMergeFields(worker.taskId);
   const observed: { baseRef?: string | null } = {};
+
+  // `tasks.requiresReview` is the explicit human-tier tag (resolvePolicy rule 1),
+  // but the reviewer-approve and two webhook paths resolve policy without the
+  // task. Refusing here, on the door itself, keeps the tag binding for every
+  // caller whatever policy they computed. Onboarding scaffold PRs rely on it.
+  if (requiresReview) {
+    const reason = 'task requires human review; unattended merge is refused';
+    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+    fireGateEvent({
+      gate: GATE_SLUGS.AUTO_MERGE,
+      surface: 'auto-merge',
+      outcome: 'rejected',
+      reason,
+      workspaceId: worker.workspaceId ?? null,
+      taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null,
+      callerOrigin: 'system',
+      detail: { prNumber, headSha, repoFullName, reasonClass: 'requires_review', tier: policy.tier },
+    });
+    return { merged: false, reason };
+  }
+
   const safetyCheck = await evaluateAutoMergeSafety(
     installationId,
     repoFullName,
@@ -913,17 +935,24 @@ async function recordUnfiledRefreshOutcome(
 export async function loadMissionIntegrationFields(
   taskId: string | null,
 ): Promise<MissionIntegrationFields | null> {
-  if (!taskId) return null;
+  return (await loadTaskMergeFields(taskId)).mission;
+}
+
+async function loadTaskMergeFields(
+  taskId: string | null,
+): Promise<{ mission: MissionIntegrationFields | null; requiresReview: boolean }> {
+  if (!taskId) return { mission: null, requiresReview: false };
   try {
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, taskId),
-      columns: { id: true },
+      columns: { id: true, requiresReview: true },
       with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
     });
-    return (task as { mission?: MissionIntegrationFields | null } | undefined)?.mission ?? null;
+    const row = task as { mission?: MissionIntegrationFields | null; requiresReview?: boolean } | undefined;
+    return { mission: row?.mission ?? null, requiresReview: row?.requiresReview === true };
   } catch (err) {
-    console.warn(`[auto-merge] could not resolve mission for task ${taskId}:`, err);
-    return null;
+    console.warn(`[auto-merge] could not resolve task ${taskId}:`, err);
+    return { mission: null, requiresReview: false };
   }
 }
 

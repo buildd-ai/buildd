@@ -16,7 +16,11 @@
 -- Rules for editing (the coverage test parses this file):
 --   * one `column = expression` per assignment, in UPDATE ... SET;
 --   * no FROM/WHERE inside a SET expression; put logic in a pg_temp function;
---   * plain statements, no transaction block. Safe to run twice.
+--   * a column in a unique index/constraint must get a per-row value (id, row
+--     number or an md5 of the old value), never a constant: the clone is real
+--     prod shape and a constant collides on the second row;
+--   * one transaction (BEGIN … COMMIT below): a failure leaves the clone
+--     untouched, never half-scrubbed. Safe to run twice.
 --
 -- scripts/qa/scrub-guard.sql runs next and fails the job if anything slipped.
 -- Never print row content from here.
@@ -24,6 +28,11 @@
 \set ON_ERROR_STOP on
 -- Command tags carry row counts, and CI logs on this repo are public.
 \set QUIET on
+-- Errors print without DETAIL: a constraint DETAIL echoes the offending key
+-- values. The workflow names the failing statement from psql's line number.
+\set VERBOSITY terse
+
+BEGIN;
 
 -- Known identifiers (NO_PROD_DATA_IDENTIFIERS, via `psql -v ids=…`). Anything
 -- matching is redacted wherever it survives the shape rules below: kept enum-
@@ -328,10 +337,9 @@ UPDATE connectors c SET
   assertion_token_endpoint = pg_temp.qa_url(c.assertion_token_endpoint)
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM connectors) s WHERE c.id = s.id;
 
--- Distinct per row: (account_id, local_ui_url) is unique, so one constant URL
--- fails as soon as an account has two runners.
+-- Unique per (account_id, local_ui_url): one host per row, never a constant.
 UPDATE worker_heartbeats SET
-  local_ui_url = 'http://localhost:8766/#' || left(md5(id::text), 12),
+  local_ui_url = 'http://qa-' || replace(id::text, '-', '') || '.localhost:8766',
   viewer_token = CASE WHEN viewer_token IS NULL THEN NULL ELSE 'scrubbed-' || md5(id::text) END,
   environment = pg_temp.qa_json(environment);
 
@@ -362,7 +370,11 @@ UPDATE missions m SET
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM missions) s WHERE m.id = s.id;
 
 UPDATE tasks t SET
-  title = pg_temp.qa_title('Task', s.n, t.title),
+  -- The mission-PR owner is recognised by this prefix (isMissionPrTask); losing
+  -- it makes every opted-in mission read "mission PR not opened" on the clone.
+  title = CASE WHEN t.task_class = 'bookkeeping' AND t.title LIKE 'Ship mission: %'
+    THEN 'Ship mission: ' || pg_temp.qa_title('Task', s.n, substr(t.title, 15))
+    ELSE pg_temp.qa_title('Task', s.n, t.title) END,
   -- Derived from the real title; NULL makes taskDisplayLabel re-derive it from the scrubbed one.
   label = NULL,
   description = pg_temp.qa_text(t.description),
@@ -550,3 +562,5 @@ UPDATE migration_log SET
   detail = pg_temp.qa_json(detail);
 
 RESET qa.ids;
+
+COMMIT;

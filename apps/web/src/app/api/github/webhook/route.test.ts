@@ -5577,6 +5577,16 @@ describe('pull_request merged — effects that belong to the merge, not the tran
     expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
   });
 
+  it('wakes the mission with pr_merged when the merge completes an attempt task (whose completion does not re-plan)', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskPrWorker({ task: { ...taskPrWorker().task, taskClass: 'attempt', missionId: 'm2' } }));
+
+    await POST(createWebhookRequest('pull_request', taskPrPayload()));
+
+    expect(mockResolveCompletedTask).toHaveBeenCalledWith('t-task', 'ws1');
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledTimes(1);
+    expect(mockWakeMissionAfterResponse).toHaveBeenCalledWith('m2', 'pr_merged');
+  });
+
   it('does not resolve the task when the worker path completed it first (row guard lost)', async () => {
     mockWorkersFindFirst.mockReturnValue(taskPrWorker());
     updateReturningByStatus = { completed: [] };

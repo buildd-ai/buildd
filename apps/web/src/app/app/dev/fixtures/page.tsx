@@ -13,6 +13,7 @@ import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
+import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
@@ -23,6 +24,7 @@ import {
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
+    ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
@@ -49,6 +51,12 @@ export default function DevFixturesPage() {
         setHints(keyHintsFromQuery(q));
     }, []);
 
+    const [onboardingView, setOnboardingView] = useState<OnboardingFixtureView>('checklist');
+    useEffect(() => {
+        const v = new URLSearchParams(window.location.search).get('view');
+        if ((ONBOARDING_FIXTURE_VIEWS as readonly string[]).includes(v ?? '')) setOnboardingView(v as OnboardingFixtureView);
+    }, []);
+
     const worker = mockWorkers[state as FixtureState] || mockWorkers['waiting-input'];
 
     if (state === MISSION_BOARD_VISUAL_FIXTURE_STATE) {
@@ -61,6 +69,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {
         return <MissionListExecutorFixture />;
+    }
+
+    if (state === ONBOARDING_FIXTURE_STATE) {
+        return <OnboardingFixture key={onboardingView} view={onboardingView} />;
     }
 
     if (state === TASK_EVIDENCE_FIXTURE_STATE) {

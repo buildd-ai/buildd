@@ -42,6 +42,12 @@ describe('isInferenceAllowed', () => {
     expect(isInferenceAllowed('criteria_grading', gate)).toBe(false);
   });
 
+  it('turning the role shadow on never turns on role apply', () => {
+    expect(OPT_IN_CAPABILITIES).toContain('task_role_apply');
+    expect(isInferenceAllowed('task_role_apply', { enabledDecisionShadows: ['task_role_shadow'] })).toBe(false);
+    expect(isInferenceAllowed('task_role_apply', { enabledDecisionShadows: ['task_role_apply'] })).toBe(true);
+  });
+
   it('never gates the built-in decision calls', () => {
     const gate = { featureModes: { task_classification: 'runner', task_category: 'runner' } };
     expect(isInferenceAllowed('task_classification', gate)).toBe(true);

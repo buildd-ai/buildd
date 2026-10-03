@@ -7,8 +7,8 @@
  * a PR, or a sibling's mission artifact must not satisfy an audit. Completion
  * requires that
  *
- *   - every required route × {mobile, desktop} has a screenshot artifact
- *     written by THIS worker,
+ *   - every required route × {mobile, desktop} has a base-state screenshot
+ *     artifact (no `qa.state`) written by THIS worker,
  *   - whose storage object was minted for THAT row by upload-url
  *     (its artifact key names this row's id, see mintedByUploadUrl)
  *     and exists (a row with no upload, or pointing at someone else's object,
@@ -56,6 +56,12 @@ export interface QaMeta {
   fixTaskId: string | null;
   /** Where the page came from (docs/design/visual-qa-auditor.md, "Page source"). Absent on older shots. */
   source?: PageSource;
+  /**
+   * A QA_PLAN state key (a dialog or menu opened by capture steps,
+   * docs/specs/qa-capture-steps.md). Absent on the base shot. A state shot is
+   * extra evidence: it never covers, nor uncovers, a required cell.
+   */
+  state?: string;
 }
 
 export interface QaShot {
@@ -102,6 +108,7 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
     verdict: qa.verdict as QaVerdict,
     fixTaskId: typeof qa.fixTaskId === 'string' ? qa.fixTaskId : null,
     ...(qa.source === 'sandbox' || qa.source === 'vercel-preview' ? { source: qa.source } : {}),
+    ...(typeof qa.state === 'string' && qa.state.trim() ? { state: qa.state.trim() } : {}),
   };
 }
 
@@ -191,11 +198,16 @@ export function evaluateVisualAuditEvidence(input: {
     }
   }
 
+  // Coverage is route × viewport at the base state. A state shot (a dialog
+  // opened by capture steps) is still checked above, but cannot stand in for
+  // the page itself.
+  const base = counting.filter((q) => !q.state);
+
   // No route came from code (no changed page/layout file): the auditor picks,
   // but must still show at least one route at both viewports.
   const routes = requiredRoutes.length > 0
     ? requiredRoutes
-    : [...new Set(counting.map((q) => q.route))].sort();
+    : [...new Set(base.map((q) => q.route))].sort();
 
   const missing: string[] = [];
   if (routes.length === 0) {
@@ -203,7 +215,7 @@ export function evaluateVisualAuditEvidence(input: {
   }
   for (const route of routes) {
     for (const viewport of QA_VIEWPORTS) {
-      if (!counting.some((q) => q.viewport === viewport && qaRouteSatisfies(route, q.route))) {
+      if (!base.some((q) => q.viewport === viewport && qaRouteSatisfies(route, q.route))) {
         missing.push(`${route} @ ${viewport}`);
       }
     }

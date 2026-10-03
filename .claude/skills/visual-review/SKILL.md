@@ -96,6 +96,7 @@ don't turn it on by habit.
 | Input | Maps to | Notes |
 |---|---|---|
 | `routes` | `QA_ROUTES` | Comma-separated paths. Empty = full manifest (`apps/web/src/qa/visual-qa-routes.json`). |
+| `plan` | `QA_PLAN` | A capture plan instead of `routes`: the JSON itself, or a repo path. See "Capture plans" below. |
 | `viewport` | `QA_VIEWPORT` | `mobile` or `WxH`. Empty = desktop. A malformed value fails the capture. |
 | `mission_id` / `task_id` | `QA_MISSION_ID` / `QA_TASK_ID` | Fill `:id` routes in manifest mode only. |
 | `judge` | (step gate) | Default `false`. `true` = CI verdict on the team OAuth seat (see above). |
@@ -113,6 +114,34 @@ don't turn it on by habit.
   single route failing does **not** fail the run, so a green run can still hold a
   bad shot. Check `captures.json`, which records `error`, `redirected` and
   `devOverlay` per route.
+
+## Capture plans: dialogs, menus and gated states
+
+A loaded page shows only its resting state. To shoot a modal, menu, confirm or gated
+sub-state, pass `QA_PLAN` (or `-f plan=…`) instead of `QA_ROUTES`: a path to a JSON
+file, or the JSON itself. Spec: `docs/specs/qa-capture-steps.md`.
+
+```json
+[{ "route": "/app/tasks/<pending task id>",
+   "states": [{ "key": "force-start-dialog",
+                "steps": [{ "action": "click", "selector": "role:button[name=Start Task]", "commit": true },
+                          { "action": "waitFor", "selector": "text:Force start" }] }] }]
+```
+
+- Each route is shot at its base state, then once per state on a fresh load (a
+  viewport shot, id `<route-id>--<key>`, `state` in `captures.json`).
+- Actions (closed list): `click`, `hover`, `fill` (`value`), `press` (`key`),
+  `select` (`value`), `waitFor` (`state: visible | hidden`), `waitMs` (`ms`, max 5000).
+  Selectors: `testid:<id>`, `role:<role>[name=<name>]`, `text:<text>`, `css:<css>`.
+- **Steps never commit.** Open, reveal, type; never confirm, submit or save. A step that
+  sends a write needs `commit: true`, honoured only with `QA_PAGE_SOURCE=sandbox`; a
+  preview rejects the whole plan and names the step. Every other write is aborted in the
+  browser and listed as `blockedWrites`. The example is a commit step because opening
+  that dialog sends a Start request; CI runs with `DISABLE_WRITES=true`, so nothing starts.
+- A step that does not settle leaves `stepFailed: { index, selector, error }` and a shot
+  of the page where it stopped; the run still exits 0.
+- Upload a state shot with `metadata.qa.state` = its key. Required coverage counts base
+  shots only, so a state shot is extra evidence, never a substitute.
 
 ## Preview recipe (other workspaces with Vercel previews)
 
@@ -136,6 +165,8 @@ stays on `sandbox`. Design: `docs/design/visual-qa-auditor.md` → "Page source"
    export PLAYWRIGHT_BROWSERS_PATH=/tmp/qa-kit/browsers
    bunx playwright install chromium && bun src/scripts/qa/capture.ts
    ```
+   A plan works the same from the kit (`QA_PLAN=/tmp/qa-kit/plan.json`); on a preview
+   it must hold no `commit: true` step.
    Without that export, `playwright install` from a different version garbage-collects
    the shared `~/.cache/ms-playwright` builds, including the runner's own browser. A
    browser that will not launch exits 1, never 0.

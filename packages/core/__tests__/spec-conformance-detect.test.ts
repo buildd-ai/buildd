@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { detectSpecConformanceRoots } from '../spec-conformance-detect';
+import { detectSpecConformanceRoots, detectMigrationsDir } from '../spec-conformance-detect';
 
 describe('detectSpecConformanceRoots', () => {
   test('detects buildd-shaped docs/specs + docs/design', () => {
@@ -35,5 +35,19 @@ describe('detectSpecConformanceRoots', () => {
   test('prefers the more specific docs/specs over a bare specs/ when both exist', () => {
     const result = detectSpecConformanceRoots(['docs/specs/a.md', 'specs/b.md']);
     expect(result.specsRoot).toBe('docs/specs');
+  });
+});
+
+describe('detectMigrationsDir', () => {
+  test('finds generic candidates at any depth, shallowest first', () => {
+    expect(detectMigrationsDir(['migrations/001.sql'])).toBe('migrations');
+    expect(detectMigrationsDir(['db/migrate/1.rb'])).toBe('db/migrate');
+    expect(detectMigrationsDir(['prisma/migrations/1/m.sql'])).toBe('prisma/migrations');
+    expect(detectMigrationsDir(['services/api/alembic/env.py'])).toBe('services/api/alembic');
+    expect(detectMigrationsDir(['a/migrations/1.sql', 'migrations/2.sql'])).toBe('migrations');
+  });
+  test('returns null when there is none, and does not match lookalike names', () => {
+    expect(detectMigrationsDir(['src/index.ts', 'data-migrations-notes.md', 'premigrations/x'])).toBeNull();
+    expect(detectMigrationsDir([])).toBeNull();
   });
 });

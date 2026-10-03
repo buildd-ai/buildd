@@ -8,6 +8,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { GitConfigForm } from './GitConfigForm';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
+import { ReadinessCard } from './ReadinessCard';
 import { checkWorkspaceHealth } from '@/lib/workspace-health';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import ReleaseSection from './ReleaseSection';
@@ -82,6 +83,11 @@ export default async function WorkspaceConfigPage({
                             userTeamCount: userTeams.length,
                         })}
                     />
+                )}
+
+                {/* Scaffold and spec routes are admin writes too. */}
+                {(access.role === 'owner' || access.role === 'admin') && (
+                    <ReadinessCard workspaceId={workspace.id} />
                 )}
 
                 <GitConfigForm

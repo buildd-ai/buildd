@@ -138,7 +138,9 @@ function BoardView({
                 >
                   {p.label ?? (model.phases.length === 1 ? 'Tasks' : 'Unphased')}
                 </SectionLabel>
-                <span aria-hidden="true" className="ml-auto flex shrink-0 gap-0.5">
+                {/* The squares give way first (clipped) so a long phase never
+                    pushes the label to "1 TA…" or the count off the screen. */}
+                <span aria-hidden="true" data-testid="board-phase-progress" className="ml-auto flex min-w-0 shrink-[100] gap-0.5 overflow-hidden">
                   {p.taskIds.map((id, k) => (
                     <i key={id} className={`block h-2 w-2 border ${k < p.done ? 'border-status-success bg-status-success' : 'border-[var(--fleet-border-mid)]'}`} />
                   ))}
@@ -146,7 +148,7 @@ function BoardView({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">{`${p.done}/${p.total}`}</span>
               </div>
               {active.map(t => [
-                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popLeft={i === lastCol && lastCol > 0} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,
+                <Tile key={t.id} task={t} model={model} now={now} span={stripSpan} link={link} popSide={lastCol === 0 ? 'below' : i === lastCol ? 'left' : 'right'} compact={compact} visualStuck={t.id === auditId && vm ? stuckVisualCaption(vm) : null} />,
                 shotsFor(t.id),
               ])}
               {landed.length > 0 && (
@@ -237,7 +239,8 @@ export function Band({ model, compact, missionId, visual = null, onReview }: {
         <Big n={model.live} small={model.complete || model.live === 0 ? 'agents · idle' : model.live === 1 ? 'agent live' : 'agents live'} />
         <div className="flex flex-wrap gap-3">
           {model.runners.map(r => (
-            <span key={r.id} className="flex items-center gap-1" title={r.machine ? `${r.name} · ${r.machine}` : r.name}>
+            // Wraps: a ten-slot runner overran the half-width phone cell onto Needs you.
+            <span key={r.id} data-testid="fleet-runner" className="flex min-w-0 flex-wrap items-center gap-1" title={r.machine ? `${r.name} · ${r.machine}` : r.name}>
               <RunnerAvatar runner={r.name} />
               {r.slots.map((s, i) => (
                 <span
@@ -376,7 +379,7 @@ const ACCENT_BAR: Partial<Record<BoardStatus, string>> = {
   running: 'bg-accent', waiting: 'bg-accent', review: 'bg-status-success', ci_failed: 'bg-status-error', fixing: 'bg-status-error', failed: 'bg-status-error',
 };
 
-function Tile({ task: t, model, now, span, link, popLeft, compact = false, visualStuck = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popLeft: boolean; compact?: boolean; visualStuck?: string | null }) {
+function Tile({ task: t, model, now, span, link, popSide, compact = false, visualStuck = null }: { task: BoardTask; model: MissionBoardModel; now: number; span: number; link: BoardLinkContext; popSide: PopoverSide; compact?: boolean; visualStuck?: string | null }) {
   const href = taskSheetHref(link, t.id);
   const queued = t.status === 'ready' || t.status === 'blocked';
   const live = t.status === 'running' || t.status === 'fixing';
@@ -403,12 +406,14 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false, visua
   let body: ReactNode;
   if (queued) {
     body = (
-      <div className="flex min-h-[18px] items-center gap-[5px] font-mono text-[12px] md:text-[11.5px] text-text-muted">
+      // Wraps: a task waiting on several others ran its chips past the tile and
+      // the viewport on a phone.
+      <div data-testid="board-tile-deps" className="flex min-h-[18px] min-w-0 flex-wrap items-center gap-[5px] font-mono text-[12px] md:text-[11.5px] text-text-muted">
         {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? 'ready · next free slot' : (
           <>
             after
             {t.deps.filter(d => !d.ok).concat(t.deps.filter(d => d.ok)).map(d => (
-              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} />
+              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} className="max-w-full overflow-hidden" />
             ))}
           </>
         )}
@@ -472,7 +477,7 @@ function Tile({ task: t, model, now, span, link, popLeft, compact = false, visua
         {head}
         {body}
       </a>
-      {!queued && <TilePopover task={t} model={model} now={now} left={popLeft} href={href} />}
+      {!queued && <TilePopover task={t} model={model} now={now} side={popSide} href={href} />}
     </div>
   );
 }
@@ -504,15 +509,25 @@ function ElapsedStrip({ task: t, now, span }: { task: BoardTask; now: number; sp
   );
 }
 
-function TilePopover({ task: t, model, now, left, href }: { task: BoardTask; model: MissionBoardModel; now: number; left: boolean; href: string }) {
+/** Beside the tile when there is a neighbouring column to cover; below it when the tile is the full width. */
+const POPOVER_SIDE: Record<PopoverSide, string> = {
+  left: 'top-[-6px] right-[calc(100%+14px)]',
+  right: 'top-[-6px] left-[calc(100%+14px)]',
+  below: 'top-[calc(100%+6px)] right-0',
+};
+type PopoverSide = 'left' | 'right' | 'below';
+
+function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; model: MissionBoardModel; now: number; side: PopoverSide; href: string }) {
   const recent = t.milestones.slice(-4);
   const deps = t.deps.map(d => `${d.scope ?? d.label}${d.ok ? ' ✓' : ''}`).join('  ');
   const running = t.startedAt != null ? formatAge((t.endedAt ?? now) - t.startedAt) : null;
   return (
+    // display:none until hovered: an `invisible` box is still laid out, and
+    // 380px of it beside the rightmost tile widened the page's scroll area.
     <div
       data-testid="board-tile-detail"
       role="tooltip"
-      className={`pointer-events-none invisible absolute top-[-6px] z-30 hidden w-[380px] flex-col gap-2.5 border-2 border-border-strong bg-card px-4 py-3.5 opacity-0 shadow-[var(--card-shadow)] transition-opacity delay-150 group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100 md:flex ${left ? 'right-[calc(100%+14px)]' : 'left-[calc(100%+14px)]'}`}
+      className={`pointer-events-none absolute z-30 hidden w-[380px] flex-col gap-2.5 border-2 border-border-strong bg-card px-4 py-3.5 shadow-[var(--card-shadow)] md:group-focus-within:flex md:group-hover:flex ${POPOVER_SIDE[side]}`}
     >
       <div className="flex items-center gap-2">
         <RoleGlyph task={t} />

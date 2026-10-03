@@ -1,5 +1,6 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
 import type { RunnerFleetIdentity } from './runner-fleet';
+import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
 // UTILS
@@ -1588,6 +1589,12 @@ export interface ClaimTasksResponse {
      * through POST /api/workers/[id]/question-check before parking.
      */
     questionGate?: QuestionGateMarker;
+    /**
+     * claude.ai artifact access for this session, resolved from the role's
+     * `metadata.claudeAiArtifacts` and the task's `context.claudeAiArtifacts`.
+     * Absent means off. See claude-ai-artifacts.ts.
+     */
+    claudeAiArtifacts?: ClaudeAiArtifactAccess;
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
     /** Decrypted server-managed OAuth token (inline) */
@@ -1601,6 +1608,12 @@ export interface ClaimTasksResponse {
     claudeAccessToken?: string;
     /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
     claudeTokenExpiresAt?: string | null;
+    /**
+     * OAuth scopes the managed claude_credential was granted, when recorded
+     * (the dashboard login records them). The runner writes these into the
+     * worker's .credentials.json; absent means the legacy `['user:inference']`.
+     */
+    claudeTokenScopes?: string[];
     /**
      * The team's agent model endpoint, when it won the §2 ranking for this task
      * (docs/design/agent-model-endpoint.md). When set, serverApiKey,
@@ -3220,4 +3233,65 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+}
+
+// ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
+// The readiness report is recomputed from the repo on every request and never
+// stored; only what the repo cannot tell us is persisted, in
+// `workspaces.gitConfig.onboarding`. Absent means current behaviour.
+
+export type WorkspaceReadinessItemId =
+  | 'agent-instructions'
+  | 'spec-root'
+  | 'spec-format'
+  | 'test-command'
+  | 'typecheck-command'
+  | 'build-command'
+  | 'env-manifest'
+  | 'migrations-dir'
+  | 'merge-policy'
+  | 'release-path'
+  | 'visual-qa-source';
+
+export type WorkspaceReadinessNextStep =
+  | 'link-repo'
+  | 'review-policy'
+  | 'propose-fixes'
+  | 'author-spec'
+  | 'first-mission'
+  | 'done';
+
+export interface WorkspaceOnboardingConfig {
+  /** Items the owner said are not for this repo. */
+  waived?: Record<string, { reason: string; at: string }>;
+  /** The open scaffold PR, when one exists. */
+  scaffoldPr?: { number: number; branch: string };
+  lastSeenPolicyInitAt?: string;
+}
+
+export interface WorkspaceReadinessItem {
+  id: WorkspaceReadinessItemId;
+  label: string;
+  /** `unknown` = could not tell (truncated tree, unreadable manifest, detector not available). */
+  status: 'detected' | 'missing' | 'unknown';
+  importance: 'core' | 'recommended';
+  evidence: Array<{ kind: 'path' | 'manifest' | 'signal' | 'absent'; paths?: string[]; note: string }>;
+  fix: {
+    kind: 'scaffold' | 'apply-config' | 'owner-decision' | 'none';
+    summary: string;
+    templateId?: string;
+    configPatch?: Record<string, unknown>;
+  } | null;
+  /** The detected value when there is one: a command, a directory, a source name. */
+  value?: string;
+  waived?: { reason: string; at: string };
+}
+
+/** Response of `GET /api/workspaces/[id]/readiness`. */
+export interface WorkspaceReadinessReport {
+  items: WorkspaceReadinessItem[];
+  nextStep: WorkspaceReadinessNextStep;
+  skill: 'workspace-onboarding';
+  /** The git tree response was truncated. */
+  truncated: boolean;
 }

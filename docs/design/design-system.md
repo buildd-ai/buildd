@@ -427,6 +427,31 @@ notification text) follows the same rules as a PR lede:
 - **iOS `Theme.swift`.** Lean: copy §2 into it on the next iOS task, rather than
   keeping a second table in the plan doc.
 
+## Design drift check
+
+**`bun run design:check`** runs in CI (after `specs:check`) to stop new design debt landing.
+It is a **ratchet**: `scripts/design-check.baseline.json` records per-file counts for each rule,
+and the check fails only when a rule's total goes UP, so existing debt does not block CI.
+It flags five categories in `apps/web/src/`:
+
+1. **Arbitrary font sizes** (`text-[<n>px]`): use a type-scale role (§3).
+2. **Raw hex colors** in `className` / `style`: use a design token (§2).
+3. **`rounded-full` on chip/badge-like elements** (the same line carries `px-`, `uppercase`,
+   `text-xs` or an arbitrary font size): corners are square (§2.7), use `Chip` (§4).
+   Avatars and dots are not flagged.
+4. **Hand-rolled `fixed inset-0` sheets**: use `Sheet` or `BottomSheet` (§4).
+5. **Local `StatusBadge` definitions**: consolidate on `components/StatusBadge.tsx` or use `Chip`.
+
+On failure it prints every violation in the files whose count rose, with file:line and the
+section to consult. `components/ui/**` is excluded from all rules; `FlightStrip.tsx` from rules 1–3.
+
+The check fails closed: an unreadable file or unparseable baseline is an error, and in CI a
+missing baseline is an error rather than a fresh baseline.
+
+**Updating the baseline.** After paying debt down, run `bun run design:check --update` and commit
+the baseline — it lowers counts to today's and never raises them. To deliberately accept new debt
+(e.g. reverting a large feature), add `--allow-increase`; reviewers will see the baseline grow.
+
 ## Non-goals
 
 - No colour, radius or shadow changes; every token is documented as shipped.

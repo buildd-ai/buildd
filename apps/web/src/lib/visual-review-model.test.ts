@@ -91,6 +91,33 @@ describe('visualReviewCellKey', () => {
   });
 });
 
+describe('buildVisualReviewModel: QA_PLAN state shots', () => {
+  const model = buildVisualReviewModel(input({
+    shots: [
+      shot('w1', '/app/tasks/:id', 'mobile', 'ok', 1),
+      shot('w1', '/app/tasks/:id', 'desktop', 'ok', 2),
+      shot('w1', '/app/tasks/:id', 'mobile', 'unsure', 3, { state: 'force-start-dialog' }),
+    ],
+    tasks: [audit('t1', 1, 'in_progress', 'w1')],
+    requiredRoutesOf: () => ['/app/tasks/:id'],
+  }));
+
+  it('keeps a state shot in its own cell, labelled with the state, beside the base cell', () => {
+    expect(model.cells.map(c => c.key).sort()).toEqual([
+      '/app/tasks/:id|desktop|',
+      '/app/tasks/:id|mobile|',
+      '/app/tasks/:id|mobile|force-start-dialog',
+    ]);
+    const state = model.cells.find(c => c.variant === 'force-start-dialog')!;
+    expect(state.current.agentVerdict).toBe('unsure');
+    expect(model.cells.find(c => c.key === '/app/tasks/:id|mobile|')!.current.agentVerdict).toBe('ok');
+  });
+
+  it('counts coverage from the base cells only', () => {
+    expect(model.summary).toMatchObject({ required: 2, covered: 2 });
+  });
+});
+
 describe('buildVisualReviewModel: cells across rounds', () => {
   // The regression: round 2 re-shoots only the fixed route, and selectLatestRun
   // used to drop every other route from the Board.

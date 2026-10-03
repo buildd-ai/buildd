@@ -45,7 +45,7 @@ BEGIN
     ('missions', 'title', '^Mission [0-9]+: [a-z ]*$'),
     ('missions', 'description', lorem),
     ('missions', 'primary_pr_url', '^https://github\.com/org-1/repo-1(/pull/[0-9]+)?$'),
-    ('tasks', 'title', '^Task [0-9]+: [a-z ]*$'),
+    ('tasks', 'title', '^(Ship mission: )?Task [0-9]+: [a-z ]*$'),
     ('tasks', 'description', lorem),
     ('workers', 'branch', '^buildd/[0-9a-f]{8}-task-[0-9]+$'),
     ('workers', 'pr_url', '^https://github\.com/org-1/repo-1(/pull/[0-9]+)?$'),
@@ -62,7 +62,8 @@ BEGIN
     ('memories', 'title', '^Memory [0-9]+: [a-z ]*$'),
     ('memories', 'content', lorem),
     ('experiments', 'title', '^Experiment [0-9]+: [a-z ]*$'),
-    ('connectors', 'name', '^Connector [0-9]+$')
+    ('connectors', 'name', '^Connector [0-9]+$'),
+    ('worker_heartbeats', 'local_ui_url', '^http://qa-[0-9a-f]{32}\.localhost:8766$')
   ) AS v(t, c, p) LOOP
     EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I WHERE %I IS NOT NULL AND %I::text !~ $1)', r.t, r.c, r.c)
       INTO hit USING r.p;

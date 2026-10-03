@@ -239,6 +239,7 @@ export function planSurfaceFixFollowUp(
 const SURFACE_AUDIT_CHECKLIST_ITEMS = [
   '390pt and 320pt viewport walk of every route/component in scope',
   'Exercise the CTA set derived from LIVE server state for every state this mission introduced — dead/no-op CTAs are the recurring defect this audit exists to catch',
+  'For each modal, menu, confirm or gated state in scope, write a QA_PLAN state (capture.ts steps: click, hover, fill, press, select, waitFor, waitMs) and capture it, rather than marking it unsure. Steps open, reveal and type but never commit: a write needs `commit: true`, which only the sandbox honours',
   'Empty, error, and loading rendering for every surface in scope',
   'No duplicate chrome titles (page heading and header both rendering the same text)',
 ] as const;
@@ -293,6 +294,6 @@ export function buildSurfaceAuditDescription(opts: {
     '',
     'Capture with the visual-review skill, then upload every shot with upload_artifact (type screenshot, missionId, metadata.qa = { runKey, route, viewport, finding, verdict: ok | issue | unsure }). Completion is refused until every required route has a mobile and a desktop shot from you, each with a non-empty finding.',
     '',
-    'File each defect as a `[surface fix] <route>: <finding>` task in THIS SAME mission (not a friction report) and link it on the shot with update_artifact metadata { qa: { fixTaskId } } (the server merges it into the shot\'s qa). Record an unsure shot with verdict unsure and move on: the human review queue asks about it, so post no note.',
+    'File each defect as a `[surface fix] <route>: <finding>` task in THIS SAME mission (not a friction report) and link it on the shot with update_artifact metadata { qa: { fixTaskId } } (the server merges it into the shot\'s qa). `unsure` is only for a state the available data cannot produce (a real provider failure, say): record it with verdict unsure, then file a `[surface fix] <route>: add a ?state= fixture for <state>` task in this mission and link it on the shot (qa.fixTaskId). An unsure shot with no follow-up task is not done. Post no note: the human review queue asks about it.',
   ].join('\n');
 }

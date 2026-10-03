@@ -292,7 +292,7 @@ describe('runTaskRoleShadow', () => {
     const lines: string[] = [];
     const decide = mock(async (_p: unknown) => okResult('Builder', 0.91, 'engineering'));
     const res = await runTaskRoleShadow({ ...INPUT, kindHeuristic: 'engineering' }, {
-      resolveAccess: ALLOWED, decide: decide as never, loadRoles: ROLES,
+      resolveAccess: async ({ capability }) => capability === TASK_ROLE_CAPABILITY ? ALLOWED() : DISABLED(), decide: decide as never, loadRoles: ROLES,
       readClaimedAt: async () => new Date(), log: (l) => lines.push(l),
     });
     expect(res.outcome).toBe('logged');

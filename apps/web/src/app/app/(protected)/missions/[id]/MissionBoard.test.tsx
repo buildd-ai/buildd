@@ -34,6 +34,29 @@ describe('MissionBoard — running', () => {
     expect(html).toContain('1/4');
   });
 
+  // Regression (surface audit, 390px/320px): a runner with ten slots ran its
+  // boxes past the Fleet cell's divider onto "nothing waiting", and a phase's
+  // progress squares pushed its count past the viewport. The slot row wraps
+  // inside its cell; the squares give way before the label and count do.
+  it('keeps a wide slot row inside the Fleet cell', () => {
+    const rows = [...html.matchAll(/data-testid="fleet-runner"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const cls of rows) {
+      expect(cls).toContain('flex-wrap');
+      expect(cls).toContain('min-w-0');
+    }
+  });
+
+  it('lets the phase progress squares shrink so the count stays in view', () => {
+    const bars = [...html.matchAll(/data-testid="board-phase-progress"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
+    expect(bars.length).toBeGreaterThan(0);
+    for (const cls of bars) {
+      expect(cls).toContain('min-w-0');
+      expect(cls).toContain('overflow-hidden');
+      expect(cls).not.toContain('shrink-0');
+    }
+  });
+
   // Regression (UX review, board at 390px): the band's 2x2 phone grid put the
   // goal beside Landed at half width, so criteria read "open ta…", "roundi…".
   // On a phone Landed and Goal each take the full row; Fleet and Needs you pair.
@@ -51,6 +74,37 @@ describe('MissionBoard — running', () => {
     expect(html).toContain('#101');
   });
 
+  // Regression (surface audit, 1280px): the 380px hover detail stayed laid out
+  // while hidden (`invisible`), so it widened the page's scroll area beside
+  // every tile. A single-phase board popped it right of a full-width tile,
+  // 394px past the content edge, and the page captured 1642px wide.
+  const popovers = (h: string) =>
+    [...h.matchAll(/data-testid="board-tile-detail"[^>]*class="([^"]+)"/g)].map(m => m[1].split(/\s+/));
+
+  it('takes the tile detail out of layout until it is shown', () => {
+    const cls = popovers(html);
+    expect(cls.length).toBeGreaterThan(0);
+    for (const c of cls) {
+      expect(c).toContain('hidden');
+      expect(c).not.toContain('md:flex');
+      expect(c).not.toContain('invisible');
+      expect(c).toContain('md:group-hover:flex');
+      expect(c).toContain('md:group-focus-within:flex');
+    }
+  });
+
+  it('a single-phase board drops the tile detail below the tile, never beside it', () => {
+    const m = boardFixture('running');
+    const single = renderToStaticMarkup(<MissionBoard model={{ ...m, phases: [m.phases[0]] }} missionId="mission-1" />);
+    const cls = popovers(single);
+    expect(cls.length).toBeGreaterThan(0);
+    for (const c of cls) {
+      expect(c.some(k => k.startsWith('left-[calc') || k.startsWith('right-[calc'))).toBe(false);
+      expect(c).toContain('right-0');
+      expect(c).toContain('top-[calc(100%+6px)]');
+    }
+  });
+
   it('a running tile has an elapsed strip with one notch per milestone', () => {
     expect(html).toContain('data-testid="board-tile-strip"');
     expect(count(html, 'data-testid="board-tile-notch"')).toBe(2);
@@ -58,6 +112,21 @@ describe('MissionBoard — running', () => {
 
   it('a queued tile says what it waits on', () => {
     expect(html).toMatch(/after.*api/);
+  });
+
+  // Regression (surface audit, 390px/320px): a task waiting on four others ran
+  // its "after" chips past the dashed card and the viewport (page ~394px wide).
+  // The chip row wraps inside the tile, and no single chip can outgrow it.
+  it('wraps a long "after" chip row inside the tile', () => {
+    const m = boardFixture('running');
+    const blocked = Object.values(m.tasks).find(t => t.status === 'blocked')!;
+    const deps = ['invoices', 'payments-reconciliation', 'ledger', 'notifications'].map((s, i) => ({ id: `d${i}`, label: s, scope: s, ok: i > 0 }));
+    const tasks = { ...m.tasks, [blocked.id]: { ...blocked, deps } };
+    const many = renderToStaticMarkup(<MissionBoard model={{ ...m, tasks }} missionId="mission-1" />);
+    const row = many.match(/data-testid="board-tile-deps"[^>]*class="([^"]+)"/)?.[1].split(/\s+/) ?? [];
+    expect(row).toContain('flex-wrap');
+    expect(row).toContain('min-w-0');
+    expect(count(many, 'notifications')).toBeGreaterThan(0);
   });
 
   it('tiles open the task sheet: a real href plus data-task-id', () => {

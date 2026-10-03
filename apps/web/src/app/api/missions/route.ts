@@ -29,6 +29,7 @@ import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
 import { buildMissionListWhere, missionListOrderBy, parseMissionListSort } from '@/lib/mission-list-query';
+import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -157,7 +158,7 @@ export async function POST(req: NextRequest) {
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
-      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor } = body;
+      startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode, executor, decomposition } = body;
 
     if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
@@ -201,6 +202,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Invalid orchestrationMode: must be "auto" or "manual"` }, { status: 400 });
     }
     const effectiveOrchestrationMode: 'auto' | 'manual' = orchestrationMode || 'auto';
+
+    // Let the creator say up front that they're filing the task chain
+    // themselves, instead of relying on runMission()'s pre-filed-task
+    // heuristic to catch it reactively (which it cannot: that check runs
+    // inside THIS request, before the creator has had a chance to file
+    // anything — see the decomposition re-check gate in POST /api/tasks).
+    const validDecompositionModes = ['auto', 'none'];
+    if (decomposition !== undefined && !validDecompositionModes.includes(decomposition)) {
+      return NextResponse.json({ error: `Invalid decomposition: must be "auto" or "none"` }, { status: 400 });
+    }
+    const decompositionSkippedAtCreate = decomposition === 'none';
 
     const validStartModes = ['armed', 'held'];
     if (startMode !== undefined && !validStartModes.includes(startMode)) {
@@ -363,6 +375,7 @@ export async function POST(req: NextRequest) {
         maxConcurrentTasks: maxConcurrentTasks ?? null,
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
+        ...(decompositionSkippedAtCreate ? { decompositionSkipped: true } : {}),
         isHeld: effectiveIsHeld,
         ...(executor ? { executor } : {}),
         integrationBranchEnabled,
@@ -511,18 +524,33 @@ export async function POST(req: NextRequest) {
         })()
       : null;
 
-    return NextResponse.json(
-      {
-        ...mission,
-        organizerTask,
-        ...(deferredStart.startAt ? {
-          startAt: deferredStart.startAt.toISOString(),
-          startResolution: deferredStart.resolution,
-        } : {}),
-        ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}),
-      },
-      { status: 201 }
-    );
+    const created = {
+      ...mission,
+      organizerTask,
+      ...(deferredStart.startAt ? {
+        startAt: deferredStart.startAt.toISOString(),
+        startResolution: deferredStart.resolution,
+      } : {}),
+      ...(nextRunInfo ? { heartbeatInfo: nextRunInfo } : {}),
+    };
+
+    // Advisory goal-criteria verdict (docs/specs/mission-goal-criteria-quality.md).
+    // Only once validation passed and the row exists. In shadow mode it runs
+    // after the response and the body is unchanged; it never blocks or rewrites.
+    const responseBody = Array.isArray(goalCriteria) && goalCriteria.length > 0
+      ? await withGoalQualityAdvisory(created, {
+          missionId: mission.id,
+          teamId,
+          workspaceId: resolvedWorkspaceId,
+          criteria: goalCriteria,
+          accountId: apiAccount?.id ?? null,
+          userId: user?.id ?? null,
+          surface: 'POST /api/missions',
+          callerOrigin: gateCaller,
+        })
+      : created;
+
+    return NextResponse.json(responseBody, { status: 201 });
   } catch (error) {
     console.error('Create mission error:', error);
     return NextResponse.json({ error: 'Failed to create mission' }, { status: 500 });
