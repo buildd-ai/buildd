@@ -62,23 +62,24 @@ export interface TouchLabelInput {
 }
 
 /**
- * Persist a worker session's final touched-file label, for a task that an
- * orchestration decision looked at. Call it at terminal status BEFORE the
+ * Persist a worker session's final touched-file label, for every work task
+ * with observed touches. Call it at terminal status BEFORE the
  * observation column is cleared. Returns whether a label was written.
- * Never throws; one cheap read for an undecided task, nothing else.
+ * Never throws; task eligibility is independent of decision opt-in.
  */
 export async function recordOrchestrationTouchLabel(input: TouchLabelInput): Promise<boolean> {
   const taskId = uuidOrNull(input.taskId);
   const workspaceId = uuidOrNull(input.workspaceId);
   if (!taskId || !workspaceId) return false;
   try {
-    const decided = await db
-      .select({ id: orchestrationDecisions.id })
-      .from(orchestrationDecisions)
-      .where(decidedTaskWhere({ taskId, workspaceId }))
+    const eligible = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.id, taskId), eq(tasks.workspaceId, workspaceId), eq(tasks.taskClass, 'work')))
       .limit(1);
-    if (decided.length === 0) return false;
+    if (eligible.length === 0) return false;
     const { paths, truncated } = normalizeTouchLabel(input.paths);
+    if (paths.length === 0) return false;
     await db.insert(orchestrationTouchLabels).values({
       taskId,
       workspaceId,

@@ -3216,7 +3216,13 @@ export interface ManifestCoverageCounts {
   /** Fraction in [0, 1]; null for an empty population. */
   concreteShare: number | null;
 }
+export interface CoordinationDecisionCapability {
+  workspaceId: string;
+  capability: string;
+  status: 'enabled' | 'capability_disabled';
+}
 export interface ManifestCoverageStats extends CoordinationMetricFilters, ManifestCoverageCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   groups: Array<ManifestCoverageCounts & { workspaceId: string; missionId: string | null; kind: string | null }>;
 }
 export interface PathClaimCallCounts {
@@ -3226,6 +3232,7 @@ export interface PathClaimCallCounts {
   rejected: number;
 }
 export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCallCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   calls: number;
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
