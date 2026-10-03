@@ -2,8 +2,8 @@
 title: Mission Goal Criteria Quality (Advisory Verdict)
 status: active
 owner: max
-last_verified: 2026-10-02
-summary: A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal, failing open and shadow-only until promoted in code.
+last_verified: 2026-10-03
+summary: A mission's goal criteria MUST be graded advisorily on write (noticeable outcome, checkable proof) without ever blocking, rewriting or changing the stored goal; fails open; surfaces an advisory by default.
 domain: missions
 surfaces: [packages/core/mission-helpers.ts, packages/core/gate-slugs.ts, apps/web/src/app/api/missions/route.ts, apps/web/src/app/api/missions/[id]/route.ts, apps/web/src/lib/goal-criteria-quality-decision.ts, apps/web/src/lib/goal-criteria-quality-shadow.ts]
 related: [mission-task-lifecycle, orchestration-decisions-shadow]
@@ -60,10 +60,9 @@ assertions:
 # Mission Goal Criteria Quality (Advisory Verdict)
 
 **Status: active.** Every acceptance criterion is asserted by a test. The
-mode constant is `surface` for single-user teams with the `mission_goal_quality`
-capability enabled (promotion from shadow via enabledDecisionShadows). The
-readout (§5) shows advisory verdicts in the mission create/patch response when
-surface is live for a team, and logs only in shadow mode.
+mode constant ships `surface` (§5, amended 2026-10-03): the response carries
+an `advisory` field by default once the capability is on. `shadow` stays
+available as an explicit per-call mode for tests.
 
 ## Why
 
@@ -284,9 +283,20 @@ canonical scope key written via `normalizeProject`):
 
 ## 5. Rollout
 
-**Capability statement**: The verdict MUST ship shadow-only behind an opt-in
-decision capability and MUST reach authors only after a code change made from
-the shadow readout.
+**Capability statement** (amended 2026-10-03, owner decision retiring
+shadow-first as the default decision-call rollout — `knowledge-base:
+buildd/design/decision-calls.md` Point 2b): the verdict ships behind an
+opt_in decision capability, with `GOAL_QUALITY_MODE` shipping `surface` from
+the capability's first enablement, not shadow-only pending a later readout-
+gated PR. A wrong verdict here is strictly an annoying, harmless suggestion —
+it never blocks, rewrites or changes the stored goal, and a person always
+confirms it — so the original "graduate from shadow to surface only after a
+measured readout" plan below is superseded for this capability (contrast
+hold-vs-start-at-claim, `docs/specs/orchestration-decisions-shadow.md`, which
+stays evidence-gated because a wrong answer there can produce a real merge
+collision). The bar table under "Readout and graduation" remains useful as
+retune/demotion guidance read from the decision ledger and the gate ledger,
+not as a precondition for shipping.
 
 Modelled exactly on `mission_strand_choice`
 (`apps/web/src/lib/strand-choice-decision.ts`, `docs/design/decision-calls.md`):
@@ -305,9 +315,9 @@ Modelled exactly on `mission_strand_choice`
   no `warned` row, the write unaffected. A bounded timeout (proposed 3s, like
   `STRAND_CHOICE_TIMEOUT_MS`).
 - **Surface**: a code constant (shaped like `STRAND_CHOICE_MODE`, values
-  `shadow` | `surface`) moves from `shadow` to `surface` in its own PR after the
-  readout. Only then do the POST and PATCH responses carry an `advisory` field,
-  and only when something is weak: for each criterion the write added or
+  `shadow` | `surface`) ships `surface` from the capability's first PR (2026-10-03
+  amendment above). The POST and PATCH responses carry an `advisory` field
+  only when something is weak: for each criterion the write added or
   changed its index, fingerprint, type and `outcome` / `checkable` / `weak`
   flags, plus exactly one rendered `suggestion` (when the model picked `none`
   while grading something weak, the code picks `state-outcome` or
@@ -316,7 +326,9 @@ Modelled exactly on `mission_strand_choice`
   the work finishes after the response, so its ledger rows still land. Never
   raised by configuration, workspace setting or request flag.
 
-**Readout and graduation** (shadow → surface). Every bar must hold on a single
+**Readout and retune bars** (no longer a graduation gate — see the 2026-10-03
+amendment above; these now inform a rubric/prompt retune or a demotion back to
+`shadow`). Every bar must hold on a single
 `promptVersion`; a miss means tune the questions or rubric and bump the
 version, never lower the bar:
 
@@ -414,6 +426,11 @@ bookkeeping as the default.
   criterion is graded weak WHEN `POST /api/missions` or
   `PATCH /api/missions/[id]` responds THEN the response body has no `advisory`
   field, and one `[decision-shadow]` line is logged.
+- AC-12b: GIVEN the mode constant is `surface` (the shipped default since
+  2026-10-03) and the capability is on and a criterion is graded weak within
+  `GOAL_QUALITY_TIMEOUT_MS` WHEN `POST /api/missions` or
+  `PATCH /api/missions/[id]` responds THEN the response body carries an
+  `advisory` field, and the stored goal is still exactly what was submitted.
 - AC-13: GIVEN a non-empty goal-criteria array with no mechanical criterion WHEN
   `POST /api/missions` is called THEN it rejects with HTTP 400, and the error
   message does not contain `all_prs_merged + no_open_tasks` and does contain
@@ -468,9 +485,9 @@ Existing:
   (`docs/specs/mission-task-lifecycle.md`).
 - Grading at completion time, or re-grading criteria that were not changed.
 - Free-text rewrites from the model.
-- Dashboard UI for the `advisory` field; the surface PR specifies its own
-  rendering.
-- Moving the mode constant to `surface`; that is its own PR after the readout.
+- Dashboard UI for the `advisory` field; a future UI task specifies its own
+  rendering. The field exists on the response today (mode `surface`, shipped
+  2026-10-03) whether or not anything in the dashboard reads it yet.
 - Learning negatives automatically: a bypassed criterion on a mission that
   later fails or escalates writes nothing. The failure may be the work's, not
   the criterion's; escalation already asks the owner which reading holds.

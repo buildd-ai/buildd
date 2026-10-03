@@ -158,13 +158,15 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     costHint: '~$0.00003 per stranded mission, cached',
   },
   // Goal-criteria quality (apps/web/src/lib/goal-criteria-quality-decision.ts,
-  // docs/specs/mission-goal-criteria-quality.md). Shadow first: logged and
-  // recorded as an advisory gate row only; it never blocks or rewrites a goal.
+  // docs/specs/mission-goal-criteria-quality.md). Surfaces an `advisory` on the
+  // response when the verdict lands in time and something is weak (2026-10-03:
+  // GOAL_QUALITY_MODE ships `surface`, not shadow-only). Still never blocks or
+  // rewrites the goal — advisory only, always confirmed by a person.
   mission_goal_quality: {
     id: 'mission_goal_quality',
     kind: 'opt_in',
-    label: 'Goal quality shadow',
-    description: 'A decision model says whether each new goal criterion states an outcome a user would notice and can be checked. Logged only; never blocks or changes your goal.',
+    label: 'Goal quality advisory',
+    description: 'A decision model says whether each new goal criterion states an outcome a user would notice and can be checked, and suggests a rewrite when it does not. Never blocks or changes your goal.',
     costHint: '~$0.0001 per goal edit, cached',
   },
   // CBM search injection (docs/design/cbm-search-injection.md). Live: the
