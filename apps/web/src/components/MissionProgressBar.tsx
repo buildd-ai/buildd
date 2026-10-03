@@ -149,8 +149,7 @@ function FullBar({
   inFlightTasks?: InFlightTask[];
 }) {
   const { primary, overflow } = selectInFlightTasks(inFlightTasks);
-  const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 };
-  const projected = [...segments].sort((a, b) => order[a.state] - order[b.state]);
+  const projected = compactSegmentsByState(segments);
   return (
     <div className="min-w-0 space-y-1.5">
       <div className="flex min-w-0 items-center gap-2">
@@ -175,6 +174,17 @@ function FullBar({
   );
 }
 
+/**
+ * State compaction: landed first, then half, ghost, notch, empty. Every
+ * density here is an unaddressable histogram — no tick numbers, no ordinal,
+ * no selection (mission-progress-strip-ordering.md ADDR-2) — so compacting it
+ * is honest. The Landed strip, which is numbered, orders by dependency instead.
+ */
+const SEGMENT_STATE_ORDER = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 };
+export function compactSegmentsByState<S extends { state: keyof typeof SEGMENT_STATE_ORDER }>(segments: readonly S[]): S[] {
+  return [...segments].sort((a, b) => SEGMENT_STATE_ORDER[a.state] - SEGMENT_STATE_ORDER[b.state]);
+}
+
 // ─── Stacked density — initiative page (mini bar, fixed 200px) ────────────────
 
 function StackedBar({
@@ -186,8 +196,7 @@ function StackedBar({
   completedTasks: number;
   totalTasks: number;
 }) {
-  const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 };
-  const projected = [...segments].sort((a, b) => order[a.state] - order[b.state]);
+  const projected = compactSegmentsByState(segments);
   return (
     <div className="flex min-w-0 items-center gap-2" style={{ width: 200 }}>
       <SegmentStrip segments={projected} label={`${completedTasks}/${totalTasks}`} />
@@ -279,8 +288,7 @@ export function MissionProgressBar(props: MissionProgressBarProps) {
   }
 
   // mini
-  const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 };
-  const projected = [...props.segments].sort((a, b) => order[a.state] - order[b.state]);
+  const projected = compactSegmentsByState(props.segments);
   return (
     <SegmentStrip continuous height={4} maxWidth={props.maxWidth ?? 80} segments={projected} />
   );

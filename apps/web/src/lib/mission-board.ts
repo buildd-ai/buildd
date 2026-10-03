@@ -27,7 +27,8 @@ import {
   type FeedPrState,
   type MissionFeedTaskInput,
 } from './mission-pulse';
-import { deriveWorkKind, LIVE_WORKER_STATUSES } from './task-presentation';
+import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-presentation';
+import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
@@ -118,6 +119,19 @@ export interface MissionBoardInput {
    * same denominator Home prints. Absent: the slots this mission's bars drew.
    */
   fleetCapacity?: number | null;
+  /**
+   * Dependencies outside this mission's rows, loaded by id (`loadDependencyRows`):
+   * the claim gate judges them, so the Board does too (strip spec ST-2).
+   */
+  externalDeps?: readonly BoardExternalDepInput[];
+}
+
+/** A dependency row from outside the mission (`DependencyRow`'s shape). */
+export interface BoardExternalDepInput {
+  id?: string;
+  title?: string | null;
+  status: string;
+  workers?: ReadonlyArray<{ prUrl?: string | null; mergedAt?: Date | string | null; prLifecycleStatus?: string | null }> | null;
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -141,8 +155,15 @@ export interface BoardDep {
   id: string;
   scope: string | null;
   label: string;
-  /** Landed (or at least in review) — the dependency no longer holds this task. */
-  ok: boolean;
+  /** The claim gate's verdict (`isGateSatisfied`): the dependency no longer holds this task. */
+  satisfied: boolean;
+}
+
+/** An unsatisfied dependency with no cell on the strip: another mission's task, or a non-deliverable. */
+export interface BoardOffStripBlocker {
+  id: string;
+  title: string;
+  otherMission: boolean;
 }
 
 export interface BoardTask {
@@ -169,8 +190,23 @@ export interface BoardTask {
   milestones: BoardMilestone[];
   currentAction: string | null;
   pr: { number: number; url: string | null; state: FeedPrState } | null;
+  /** On-strip dependencies, satisfied or not. */
   deps: BoardDep[];
   unblocks: Array<{ id: string; scope: string | null; label: string }>;
+  /** blockers(T): on-strip dependencies the claim gate still waits on. */
+  blockers: string[];
+  /** Unsatisfied dependencies that have no cell. */
+  offStrip: BoardOffStripBlocker[];
+  /** frontier(T): blockers (off-strip first) after transitive reduction (`reduceToFrontier`). */
+  frontier: string[];
+  /** 1-based depth in its component (shared adjacency), and the component's deepest level. */
+  level: number;
+  levels: number;
+  /** Weakly connected component id. */
+  component: number;
+  /** Epoch ms; the strip's tie-breakers. */
+  createdAt: number;
+  phaseIndex: number | null;
   lines: { added: number; removed: number } | null;
   /** Attempts beyond the first (↻2 = one retry). */
   attempt: number;
@@ -556,34 +592,37 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
   const labelOf = new Map<string, { scope: string | null; label: string }>();
   for (const t of input.tasks) labelOf.set(t.id, boardTaskLabel(t));
 
-  // Pass 1: raw status (landed-ness of deps is needed for ready/blocked).
-  const feedLanded = new Map<string, boolean>();
-  for (const r of ordered) {
-    const s = deriveFeedTaskState(r).state;
-    feedLanded.set(r.task.id, s === 'done' || s === 'skipped');
-  }
-  const inReviewish = (id: string) => {
-    const r = ordered.find(x => x.task.id === id);
-    if (!r) return true;
-    return feedLanded.get(id) === true || (r.task.status === 'completed' && !!r.task.worker?.prNumber);
+  // Cells: every row but the cancelled ones. Their dependencies come from the
+  // shared adjacency, judged by the claim gate on the raw id each names (an
+  // attempt's own row, another mission's task), then folded onto its cell.
+  const skipped = new Set(ordered.filter(r => deriveFeedTaskState(r).state === 'skipped').map(r => r.task.id));
+  const cellRows = ordered.filter(r => !skipped.has(r.task.id));
+  const externalById = new Map((input.externalDeps ?? []).flatMap(d => (d.id ? [[d.id, d] as const] : [])));
+  const gateRow = (id: string): AdjacencyGateRow | undefined => {
+    const own = allById.get(id);
+    if (own) return { status: own.status, workers: own.workers.map(w => ({ prUrl: w.prUrl, mergedAt: w.mergedAt != null ? new Date(w.mergedAt) : null, prLifecycleStatus: w.prLifecycleStatus })) };
+    const ext = externalById.get(id);
+    if (ext) return { status: ext.status, workers: (ext.workers ?? []).map(w => ({ prUrl: w.prUrl ?? null, mergedAt: w.mergedAt ?? null, prLifecycleStatus: w.prLifecycleStatus ?? null })) };
+    return undefined;
   };
+  const adjacency = buildMissionAdjacency(
+    cellRows.map(r => ({ ...r.task, workers: [] })),
+    { lookup: gateRow, resolveId: id => rowIdFor.get(id) ?? id },
+  );
+  const reach = cellRows.map(r => ({ id: r.task.id, dependsOn: adjacency.blockersOf.get(r.task.id)!.map(e => e.id) }));
 
   const tasks: Record<string, BoardTask> = {};
-  const skipped = new Set<string>();
-  for (const r of ordered) {
+  for (const r of cellRows) {
     const t = r.task;
-    if (deriveFeedTaskState(r).state === 'skipped') {
-      skipped.add(t.id);
-      continue;
-    }
-    const depIds = (t.dependsOn ?? []).map(d => rowIdFor.get(d) ?? d).filter(d => d !== t.id && allById.has(d));
-    const deps: BoardDep[] = [...new Set(depIds)].map(d => ({
-      id: d,
-      ...labelOf.get(d)!,
-      ok: feedLanded.get(d) === true || inReviewish(d),
+    const deps: BoardDep[] = adjacency.blockersOf.get(t.id)!.map(e => ({ id: e.id, ...labelOf.get(e.id)!, satisfied: e.satisfied }));
+    const blockers = deps.filter(d => !d.satisfied).map(d => d.id);
+    const offStrip: BoardOffStripBlocker[] = adjacency.offSetBlockersOf.get(t.id)!.map(id => ({
+      id,
+      title: allById.get(id)?.title ?? externalById.get(id)?.title ?? id.slice(0, 8),
+      otherMission: !allById.has(id),
     }));
-    const depsLanded = depIds.every(d => feedLanded.get(d) === true);
-    const status = deriveBoardStatus(r, depsLanded);
+    const frontier = reduceToFrontier([...offStrip.map(b => ({ id: b.id })), ...blockers.map(id => ({ id }))], reach).map(b => b.id);
+    const status = deriveBoardStatus(r, blockers.length === 0 && offStrip.length === 0);
     const openAttempt = [...r.attempts].reverse().find(a => !TERMINAL.has(a.status));
     const activeWorker = (status === 'fixing' && openAttempt?.workers[0]) || t.workers[0] || null;
     const own = t.workers[0] ?? null;
@@ -610,7 +649,15 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       currentAction: isLiveWorker(activeWorker) ? activeWorker?.currentAction ?? null : null,
       pr: prState ? { number: prState.number, url: own?.prUrl ?? null, state: prState.state } : null,
       deps,
-      unblocks: [],
+      unblocks: adjacency.dependentsOf.get(t.id)!.map(e => ({ id: e.id, ...labelOf.get(e.id)! })),
+      blockers,
+      offStrip,
+      frontier,
+      level: adjacency.level.get(t.id)!,
+      levels: adjacency.maxLevel.get(adjacency.component.get(t.id)!)!,
+      component: adjacency.component.get(t.id)!,
+      createdAt: epoch(t.createdAt) ?? 0,
+      phaseIndex: t.missionPhaseIndex ?? null,
       lines: own && (own.linesAdded || own.linesRemoved) ? { added: own.linesAdded ?? 0, removed: own.linesRemoved ?? 0 } : null,
       attempt: 1 + r.attempts.filter(a => a.workers.length > 0 || a.status !== 'pending').length,
       waitingFor: status === 'waiting' ? activeWorker?.waitingFor ?? null : null,
@@ -620,13 +667,10 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       backend: t.backend === 'claude' || t.backend === 'codex' ? t.backend : null,
     };
   }
-  for (const bt of Object.values(tasks)) {
-    for (const d of bt.deps) tasks[d.id]?.unblocks.push({ id: bt.id, scope: bt.scope, label: bt.label });
-  }
 
   // Phases, in pulse order. No deliverables yet → no columns (an empty group
   // would draw a bare "1 TASKS 0/0"); the planning placeholder stands in.
-  const rows = ordered.filter(r => !skipped.has(r.task.id));
+  const rows = cellRows;
   const phases: BoardPhase[] = (rows.length === 0 ? [] : groupTasksByPhase(rows.map(r => r.task))).map((g, i) => {
     const ids = g.tasks.map(t => t.id);
     return {

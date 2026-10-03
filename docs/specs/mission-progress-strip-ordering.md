@@ -1,6 +1,6 @@
 ---
 title: Mission Progress Strip — Topological Order and Dependency-on-Selection
-status: draft
+status: active
 owner: builder
 last_verified: 2026-10-03
 summary: The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
@@ -8,6 +8,41 @@ domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.tsx, apps/web/src/app/app/(protected)/missions/[id]/MissionBoardParts.tsx, apps/web/src/lib/mission-task-strip.ts, apps/web/src/lib/mission-board.ts]
 related: [timeline-dependency-geometry, timeline-mobile-rail, mission-structure-view, mission-legibility]
 keywords: [landed strip, segment strip, 04 / 14, waiting on 8 dependencies, next open, tick row, topological order, queued behind, stripOrder]
+verified_by: [apps/web/src/lib/mission-task-strip.test.ts, apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx, apps/web/src/lib/condensed-timeline.test.ts]
+assertions:
+  - id: "build-mission-adjacency"
+    type: "symbol"
+    name: "buildMissionAdjacency"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "strip-order"
+    type: "symbol"
+    name: "stripOrder"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-state"
+    type: "symbol"
+    name: "stripState"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-slots"
+    type: "symbol"
+    name: "stripSlots"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-marks"
+    type: "symbol"
+    name: "stripMarks"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "strip-selection-reason"
+    type: "symbol"
+    name: "stripSelectionReason"
+    path: "apps/web/src/lib/mission-task-strip.ts"
+  - id: "mission-task-strip-test"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-task-strip.test.ts"
+  - id: "mission-task-strip-dom-test"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/missions/[id]/MissionTaskStrip.dom.test.tsx"
+  - id: "condensed-timeline-test"
+    type: "test_file"
+    path: "apps/web/src/lib/condensed-timeline.test.ts"
 supersedes: []
 ---
 
@@ -20,9 +55,10 @@ distinct textures, and MUST mark on the strip itself which cells hold the
 selected task (or which cells the selected task releases), using one adjacency
 derivation shared with the Timeline, the Structure canvas and the Activity grid.
 
-> **Status `draft`**: nothing in this spec is built. Proposed helper names are
-> written in plain text (SPEC-FORMAT rule 7); every backticked identifier exists
-> today. Promote to `active` with `verified_by` when the tests in §11 land.
+> **Status `active`**: built. The shared adjacency is `buildMissionAdjacency`
+> (`condensed-timeline.ts`); the strip's rules live in `mission-task-strip.ts`
+> (`stripOrder`, `stripState`, `stripSlots`, `stripMarks`,
+> `stripSelectionReason`).
 
 ---
 
@@ -193,7 +229,7 @@ from the shared adjacency (§6), never stored.
 
 **Rule ST-1 (gate parity)**: `ready` vs `blocked`/`queued` MUST be decided by
 blockers(T) under `isGateSatisfied`. Today `buildMissionBoard` decides ready
-from `feedLanded` (`depsLanded`) while the drawer counts `!d.ok`, where `ok` is
+from feedLanded (deleted) (`depsLanded`) while the drawer counts `!d.ok`, where `ok` is
 "landed or in review". Two definitions inside one model is how the count and
 the hatch disagree; both MUST read blockers(T).
 
@@ -332,7 +368,7 @@ There are four edge walks over mission tasks today:
 3. `buildMissionBoard` — its own `deps` / `unblocks` loops with its own
    satisfaction rule (§3.1, ST-1).
 4. `computeStructureLayout` — its own `blockerMap` / `dependentsOf` and
-   `assignRanks`.
+   assignRanks (deleted).
 
 **Rule ADJ-1**: identifyChains' pass 1 is extracted into one exported pure
 helper in `apps/web/src/lib/condensed-timeline.ts` (proposed name:
@@ -343,7 +379,7 @@ buildMissionAdjacency). Input: tasks with `id`, `status`, `dependsOn`,
   satisfied or not by `isGateSatisfied`;
 - offStripBlockersOf — unsatisfied edges whose target is not in the set;
 - level per task and maxLevel per component (Kahn longest path — the
-  algorithm `assignRanks` already implements, moved, not copied);
+  algorithm the old assignRanks implemented, moved, not copied);
 - component id per task;
 - cycle members (tasks Kahn never released).
 
@@ -625,7 +661,7 @@ else the first active cell; else the first held cell; else the last cell.
 | Location | What goes | Replaced by |
 |---|---|---|
 | `apps/web/src/lib/mission-task-strip.ts` `stripOrder` | `model.phases.flatMap(p => p.taskIds)` | §2.1 sort over the shared adjacency |
-| `mission-task-strip.ts` `openIndices` | "open = not in `BOARD_LANDED`" | active-set test (§1) |
+| `mission-task-strip.ts` openIndices (deleted) | "open = not in `BOARD_LANDED`" | active-set test (§1) |
 | `mission-task-strip.ts` `defaultStripSelection` | "first unfinished" | NX-4 |
 | `MissionTaskStrip.tsx` `StripDrawer` | the `{tick} / {n}` header | §4 header |
 | `MissionTaskStrip.tsx` `StripDrawer` | `t.deps.filter(d => !d.ok).length` (twice) | \|blockers(T)\| from the shared adjacency |
@@ -633,8 +669,8 @@ else the first active cell; else the first held cell; else the last cell.
 | `MissionTaskStrip.tsx` `LandedStrip` | `${open.length} open ›` over not-landed | NX-2 |
 | `MissionBoardParts.tsx` `StripCells` | the "Task {i + 1} of {n}, …" aria-label | §4 aria-label |
 | `MissionBoardParts.tsx` `STRIP_CELL_CLASS` | `ready` and `blocked` sharing one class | §3.2 table |
-| `mission-board.ts` `buildMissionBoard` | `BoardDep.ok` = landed-or-in-review; `depsLanded` from `feedLanded`; the `allById` filter that drops off-strip deps; the `unblocks` push loop | the shared adjacency (ADJ-2, ST-1, ST-2) |
-| `structure-layout.ts` `assignRanks` and its local `blockerMap` build | private Kahn | moved into the shared helper (ADJ-1); `computeStructureLayout` reads its levels |
+| `mission-board.ts` `buildMissionBoard` | `BoardDep.ok` = landed-or-in-review; `depsLanded` from feedLanded (deleted); the `allById` filter that drops off-strip deps; the `unblocks` push loop | the shared adjacency (ADJ-2, ST-1, ST-2) |
+| `structure-layout.ts` assignRanks (deleted) and its local `blockerMap` build | private Kahn | moved into the shared helper (ADJ-1); `computeStructureLayout` reads its levels |
 | `condensed-timeline.ts` `identifyChains` pass 1 and `collapseTerminalChains` edge loop | two local adjacency builds | the shared helper |
 | `MissionProgressBar.tsx` `FullBar`, `StackedBar`, mini branch | three inline copies of `const order = { solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }` + sort | one exported state-compaction helper, used by all three (ADDR-2 keeps them state-compacted; there must be one copy, not three) |
 
@@ -680,8 +716,11 @@ Each criterion is checkable against a board model built from fixtures
 - **AC-12**: GIVEN a landed cell selected, WHEN the strip renders, THEN no
   tick has `data-mark`.
 - **AC-13**: GIVEN any selected held task, WHEN the drawer renders, THEN the
-  "waiting on N" count equals the number of marked ticks plus the number of
-  off-strip blockers.
+  "waiting on N" count equals |blockers(T)| (on-strip plus off-strip) and every
+  on-strip member of blockers(T) has a marked tick. Transitive marks beyond
+  blockers(T) are extra context, not counted: in a linear chain A→B→C→D→E,
+  selecting E reads "waiting on 1" and marks D, C and B (§7.1). Where every
+  upstream task is a direct dependency (§7.8) count and marks coincide.
 - **AC-14** (rejection): GIVEN any selected cell, WHEN the drawer renders,
   THEN its header matches no `/\d+ \/ \d+/` and reads `{pos} · LEVEL l OF L`
   (or `{pos}` alone for a single-level component).
@@ -723,7 +762,7 @@ Each criterion is checkable against a board model built from fixtures
   "waiting on N dependencies" line
 - `apps/web/src/app/app/(protected)/missions/[id]/mission-page-query.ts` —
   loads the board input; gains off-strip dependency rows (ST-2)
-- `apps/web/src/lib/mission-task-strip.ts` — `stripOrder`, `openIndices`,
+- `apps/web/src/lib/mission-task-strip.ts` — `stripOrder`, openIndices (deleted),
   `nextOpenIndex`, `defaultStripSelection`, `stripCaretLeft`, `stripTick`
 - `apps/web/src/lib/mission-board.ts` — `buildMissionBoard`, `BoardTask`,
   `BoardDep`, `BoardStatus`, `BOARD_LANDED`
@@ -732,7 +771,7 @@ Each criterion is checkable against a board model built from fixtures
 - `apps/web/src/lib/task-presentation.ts` — `isGateSatisfied`,
   `deriveChainPosition`, `reduceToFrontier`
 - `apps/web/src/lib/structure-layout.ts` — `computeStructureLayout`,
-  `assignRanks`
+  assignRanks (deleted)
 - `apps/web/src/components/MissionProgressBar.tsx` — `MissionProgressBar`
   (delete list only)
 - `apps/web/src/app/globals.css` — `fleet-hatch`, `fleet-hatch-future`,
