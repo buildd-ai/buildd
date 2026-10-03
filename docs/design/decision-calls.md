@@ -2,7 +2,9 @@
 status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 # Steps 1-6 shipped: the client, policy wiring, benchmark, the classifyTask
-# shadow (since replaced) and the first confidence-gated apply.
+# shadow (since replaced) and the first confidence-gated apply. 2026-10-03:
+# shadow-first retired as the default rollout; the decision ledger and
+# task-role-routing's default-apply flip shipped (Point 2b).
 assertions:
   - id: "decision-client"
     type: "symbol"
@@ -16,6 +18,18 @@ assertions:
     type: "symbol"
     name: "gateTaskCategory"
     path: "apps/web/src/lib/task-category-decision.ts"
+  - id: "decision-ledger-record"
+    type: "symbol"
+    name: "recordDecision"
+    path: "packages/core/decision-ledger.ts"
+  - id: "decision-ledger-query"
+    type: "symbol"
+    name: "queryDecisionLedger"
+    path: "packages/core/decision-ledger.ts"
+  - id: "task-role-apply-default"
+    type: "symbol"
+    name: "applyTaskRoleDecision"
+    path: "apps/web/src/lib/task-role-apply.ts"
 ---
 
 # decision-calls

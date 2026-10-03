@@ -4767,6 +4767,61 @@ export const orchestrationDecisions = pgTable('orchestration_decisions', {
 export type OrchestrationDecision = typeof orchestrationDecisions.$inferSelect;
 export type NewOrchestrationDecision = typeof orchestrationDecisions.$inferInsert;
 
+// ── Decision ledger (generic) ────────────────────────────────────────────────
+//
+// knowledge-base: buildd/design/decision-calls.md "The decision ledger". One row
+// per decision-call attempt for a capability that is not already covered by its
+// own specialized table (orchestration's hold/start and manifest decisions keep
+// writing to `orchestration_decisions`, which carries cohort/propensity fields
+// this table does not need). Written by packages/core/decision-ledger.ts,
+// best-effort after the decision; a failed insert costs a row, never the
+// caller's request. Content-free beyond the inputs fingerprint and opaque
+// labels: no task title, description or criterion text.
+export const decisionRecords = pgTable('decision_records', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id'),
+  taskId: uuid('task_id'),
+  // The opt_in/built_in InferenceCapability id (e.g. 'task_role_shadow', 'mission_goal_quality').
+  capability: text('capability').notNull(),
+  // A hash of the inputs the model actually saw (state + question set), so two
+  // looks at the same facts are recognizably the same decision.
+  fingerprint: text('fingerprint').notNull(),
+  promptVersion: text('prompt_version'),
+  model: text('model'),
+  minConfidence: real('min_confidence'),
+  // The deterministic rule's answer, when the site has one (null where there is
+  // no prior rule — e.g. role inference had no default before Jev).
+  ruleAnswer: text('rule_answer'),
+  // What Jev answered, and how confident it was. Null on a failed/fallback call.
+  verdict: text('verdict'),
+  confidence: real('confidence'),
+  // The answer actually in effect after the gate: the rule's answer on fallback,
+  // Jev's answer when applied.
+  appliedAnswer: text('applied_answer'),
+  applied: boolean('applied').notNull().default(false),
+  status: text('status').notNull().$type<'applied' | 'suggested' | 'fallback'>(),
+  // fallback: capability_disabled | missing_key | timeout | provider_error | parse | no_candidates
+  // suggested: below_threshold | not_candidate | unmeasured_model | lost_race | rail_blocked
+  reason: text('reason'),
+  latencyMs: integer('latency_ms'),
+  inputTokens: integer('input_tokens'),
+  costUsd: real('cost_usd'),
+  // A later human correction of an applied verdict, if any. Set together.
+  humanOverride: jsonb('human_override').$type<Record<string, unknown>>(),
+  overriddenAt: timestamp('overridden_at', { withTimezone: true }),
+  overriddenBy: uuid('overridden_by'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceCreatedIdx: index('decision_records_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  capabilityCreatedIdx: index('decision_records_capability_created_idx').on(t.capability, t.createdAt),
+  taskIdx: index('decision_records_task_idx').on(t.taskId),
+}));
+
+export type DecisionRecord = typeof decisionRecords.$inferSelect;
+export type NewDecisionRecord = typeof decisionRecords.$inferInsert;
+
 // The final touched-file label for a decided task, one row per worker session,
 // written at terminal worker status BEFORE workers.observed_touches is cleared
 // (apps/web/src/app/api/workers/[id]/route.ts). Only for tasks that have an
