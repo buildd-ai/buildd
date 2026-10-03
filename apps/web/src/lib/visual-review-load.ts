@@ -14,6 +14,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import type { HumanShotReview, VisualQaVerdict, VisualQaViewport, VisualReviewModel } from '@buildd/shared';
 import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE } from '@buildd/core/surface-audit';
+import { captureTrunk, resolveVisualQaCaptureRef } from '@buildd/core/visual-qa-capture-ref';
 import { loadBrowserRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { browserRunnerOnline } from './visual-audit-runner';
@@ -24,6 +25,7 @@ import {
   type VisualReviewTaskInput,
 } from './visual-review-model';
 import {
+  missionCaptureRefQuery,
   roundCapNoteQuery,
   visualReviewTasksQuery,
   visualReviewWorkersQuery,
@@ -89,6 +91,11 @@ export function toHumanShotReview(r: ReviewRow): HumanShotReview {
 }
 
 type TaskRow = VisualReviewTaskInput & { pathManifest?: unknown };
+type CaptureRefRow = {
+  workingBranch: string | null;
+  integrationBranchEnabled: boolean | null;
+  gitConfig: { targetBranch?: string; defaultBranch?: string } | null;
+};
 type WorkerRow = NonNullable<VisualReviewTaskInput['workers']>[number] & { taskId: string | null };
 
 /**
@@ -101,13 +108,21 @@ export async function loadVisualReview(
   opts: { now?: number } = {},
 ): Promise<VisualReviewModel> {
   const now = opts.now ?? Date.now();
-  const [shotRows, taskRows, workerRows, reviewRows, capRows] = await Promise.all([
+  const [shotRows, taskRows, workerRows, reviewRows, capRows, refRows] = await Promise.all([
     visualShotsQuery(db, mission.id) as Promise<VisualReviewShotRow[]>,
     visualReviewTasksQuery(db, mission.id) as Promise<TaskRow[]>,
     visualReviewWorkersQuery(db, mission.id) as Promise<WorkerRow[]>,
     visualShotReviewsQuery(db, mission.id) as Promise<ReviewRow[]>,
     roundCapNoteQuery(db, mission.id, SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE) as Promise<Array<{ id: string }>>,
+    missionCaptureRefQuery(db, mission.id) as Promise<CaptureRefRow[]>,
   ]);
+  // No live branch check here (no GitHub call on a read): a trunk shot taken
+  // because the branch was gone records refSource integration_missing, and
+  // captureRefMatch never calls that one wrong.
+  const refRow = refRows[0];
+  const captureRef = refRow
+    ? resolveVisualQaCaptureRef({ mission: refRow, trunk: captureTrunk(refRow.gitConfig) }).ref
+    : null;
 
   const workersByTask = new Map<string, WorkerRow[]>();
   for (const w of workerRows) {
@@ -139,6 +154,7 @@ export async function loadVisualReview(
       { context: t.context },
       (t.dependsOn ?? []).map(d => (byId.get(d) as TaskRow | undefined)?.pathManifest ?? null),
     ),
+    captureRef,
     now,
   });
 }

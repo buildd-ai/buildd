@@ -172,6 +172,14 @@ describe('status derivation — queued is never shown as working', () => {
     expect(header).toContain('**Fixing · fix 1 of 3**');
   });
 
+  it('a queued fix cancelled by a newer approval reads as done, not a loss', () => {
+    const header = headerOf(renderPrActivityComment([
+      queued, fixing, { kind: 'fix_superseded_by_approval', at: at(20) },
+    ]));
+    expect(header).toContain(`${GLYPH.done} **Fix cancelled · already approved**`);
+    expect(header).not.toContain(SPINNER_PATH);
+  });
+
   for (const kind of ['review_escalated', 'review_failed', 'human_review_required', 'ci_exhausted'] as const) {
     it(`${kind} flags a human and stops moving`, () => {
       const body = renderPrActivityComment([reviewing, { kind, at: at(5) }]);

@@ -112,6 +112,8 @@ export const MISSION_TASK_COLUMNS = {
   outputRequirement: true,
   // Board / Lanes: the short label a tile and a bar draw (taskDisplayLabel).
   label: true,
+  // Board: the Landed drawer's task actions (Retry on / Switch to).
+  backend: true,
 } as const;
 
 /** `mission.tasks` for the detail page: newest first, three workers each, five artifacts per worker. */

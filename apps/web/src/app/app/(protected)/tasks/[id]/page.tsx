@@ -21,7 +21,6 @@ import LocalTime from '../LocalTime';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
 import DeleteTaskButton from './DeleteTaskButton';
-import StartTaskButton from './StartTaskButton';
 import RealTimeWorkerView from './RealTimeWorkerView';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
@@ -54,6 +53,7 @@ import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
+import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
@@ -91,6 +91,11 @@ import { formatElapsed } from './format-elapsed';
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
 const BADGED_EXIT_CAUSES = new Set(['budget_limited', 'infra_failure', 'never_started', 'silent_start']);
+
+/** The task's mission executor, for the action zone's `claim_task` hint. */
+function missionExecutorOf(row: { executor?: string | null } | null | undefined): 'runner' | 'local' | null {
+  return row?.executor === 'local' ? 'local' : row?.executor === 'runner' ? 'runner' : null;
+}
 
 const CATEGORY_COLORS: Record<string, string> = {
   bug: 'bg-cat-bug/15 text-cat-bug',
@@ -151,7 +156,7 @@ export default async function TaskDetailPage({
       creatorAccount: { columns: { id: true, name: true } },
       creatorWorker: {
         columns: { id: true, name: true },
-        with: { task: { columns: { id: true, roleSlug: true } } },
+        with: { task: { columns: { id: true, roleSlug: true, title: true } } },
       },
       schedule: { columns: { id: true, name: true } },
     },
@@ -390,6 +395,7 @@ export default async function TaskDetailPage({
     isSelf: !!creatorAccountName && viewerNames.includes(creatorAccountName.toLowerCase()),
     creatorRoleSlug: task.creatorWorker?.task?.roleSlug ?? null,
     creatorWorkerTaskId: task.creatorWorker?.task?.id ?? null,
+    creatorWorkerTaskTitle: task.creatorWorker?.task?.title ?? null,
     scheduleName: task.schedule?.name ?? null,
     missionTitle: task.mission?.title ?? null,
     parentTaskTitle: task.parentTask?.title ?? null,
@@ -920,15 +926,26 @@ export default async function TaskDetailPage({
                 <div data-testid="task-origin-clause">{[origin.actor, ...origin.parts].filter(Boolean).join(' · ')}</div>
               )}
               {origin.links.length > 0 && (
-                <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  {origin.links.map(link => (
-                    link.href.startsWith('/') ? (
-                      <Link key={`${link.key}-${link.href}`} href={link.href} className="text-accent-text hover:underline">{link.label}</Link>
-                    ) : (
-                      <a key={`${link.key}-${link.href}`} href={link.href} target="_blank" rel="noopener noreferrer" className="text-accent-text hover:underline">{link.label} ↗</a>
-                    )
-                  ))}
-                </div>
+                <ul data-testid="task-origin-links" className="space-y-1.5 pt-1">
+                  {originLinkCards(origin.links).map(card => {
+                    const body = (
+                      <>
+                        <span className="block text-eyebrow uppercase text-text-muted">{card.kind}</span>
+                        <span className="block truncate text-text-primary" title={card.title}>{card.title}{card.external ? ' ↗' : ''}</span>
+                      </>
+                    );
+                    const cls = 'block border border-border-default bg-surface-2 px-2.5 py-1.5 hover:border-border-strong';
+                    return (
+                      <li key={card.key}>
+                        {card.external ? (
+                          <a href={card.href} target="_blank" rel="noopener noreferrer" className={cls}>{body}</a>
+                        ) : (
+                          <Link href={card.href} className={cls}>{body}</Link>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
               {origin.shipped && (
                 <div data-testid="task-origin-shipped" className="text-text-secondary">
@@ -1139,25 +1156,26 @@ export default async function TaskDetailPage({
         </div>
 
         {/* Action first (W6): the phase's one decision, before anything to read.
-            Retry/switch is the task sheet's own TaskActionZone, so the sheet and
-            the page cannot offer different things for a failure. Start keeps
-            its richer button (local-runner targeting, capacity). An open
+            The task sheet's own TaskActionZone, for a start and a failure alike,
+            so the sheet, this page and the mission drawer cannot offer
+            different things. The page alone adds runner targeting. An open
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
-        {(phase === 'failed' || canStart) && (
+        {(phase === 'failed' || canStart || isBlocked) && (
           <div className="mb-6" data-testid="task-page-action-zone">
-            {phase === 'failed' && (
-              <TaskPageActionZone
-                taskId={task.id}
-                phase={phase}
-                isBlocked={false}
-                blockedByCount={0}
-                backend={(task.backend as 'claude' | 'codex' | null) ?? null}
-                lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
-                worker={null}
-              />
-            )}
-            {canStart && <StartTaskButton taskId={task.id} workspaceId={task.workspaceId} />}
+            <TaskPageActionZone
+              taskId={task.id}
+              workspaceId={task.workspaceId}
+              phase={phase}
+              isBlocked={isBlocked}
+              blockedByCount={unresolvedDeps.length}
+              backend={(task.backend as 'claude' | 'codex' | null) ?? null}
+              lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
+              worker={null}
+              roleSlug={task.roleSlug}
+              missionExecutor={missionExecutorOf(missionContextRow)}
+              runnerPicker
+            />
           </div>
         )}
 

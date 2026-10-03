@@ -80,3 +80,38 @@ describe('resolvePageSource', () => {
     expect(r.preview).toMatchObject({ state: 'unreadable' });
   });
 });
+
+describe('resolvePageSource: the capture ref (visual-qa-auditor.md, "Which ref is captured")', () => {
+  const BRANCH = 'mission/settings-abcd1234';
+  const MISSION = { workingBranch: BRANCH, integrationBranchEnabled: true };
+  const branchExists = { [`/repos/${REPO}/git/ref/heads/${BRANCH}`]: { ref: `refs/heads/${BRANCH}` } };
+
+  it('mission-branch: captures the integration branch, and the preview commit is its head, not trunk', async () => {
+    const get = github({ ...ready, ...branchExists });
+    const r = await resolvePageSource({ get, repoFullName: REPO, gitConfig: { visualQa: { pageSource: 'auto' }, defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.captureRef).toEqual({ ref: BRANCH, source: 'mission_integration', integrationBase: BRANCH });
+    expect(get.calls).toContain(`/repos/${REPO}/commits/${encodeURIComponent(BRANCH)}`);
+    expect(get.calls).not.toContain(`/repos/${REPO}/commits/dev`);
+  });
+
+  it('mission-branch whose branch vanished: trunk, sourced integration_missing', async () => {
+    const r = await resolvePageSource({ get: github(ready), repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.captureRef).toEqual({ ref: 'dev', source: 'integration_missing', integrationBase: BRANCH });
+  });
+
+  it('an unreadable branch check is treated as present: falling back to trunk is the error this closes', async () => {
+    const get = github({ ...ready, [`/repos/${REPO}/git/ref/heads/${BRANCH}`]: new Error('GitHub API error: 500 boom') });
+    const r = await resolvePageSource({ get, repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
+    expect(r.captureRef.ref).toBe(BRANCH);
+  });
+
+  it('sandbox still names the capture ref; no mission or a direct mission is trunk with no branch check', async () => {
+    const sandbox = await resolvePageSource({ get: github(branchExists), repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: MISSION });
+    expect(sandbox.decision).toMatchObject({ ok: true, source: 'sandbox' });
+    expect(sandbox.captureRef.ref).toBe(BRANCH);
+    const get = github(ready);
+    const direct = await resolvePageSource({ get, repoFullName: REPO, gitConfig: { defaultBranch: 'dev' }, mission: { ...MISSION, integrationBranchEnabled: false } });
+    expect(direct.captureRef).toEqual({ ref: 'dev', source: 'trunk', integrationBase: null });
+    expect(get.calls).toHaveLength(0);
+  });
+});
