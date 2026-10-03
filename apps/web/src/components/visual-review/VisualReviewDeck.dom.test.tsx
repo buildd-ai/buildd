@@ -619,6 +619,18 @@ describe('optimistic apply with rollback', () => {
   });
 });
 
+describe('dev mode', () => {
+  it('under StrictMode the outcome still lands (the mounted guard survives the simulated remount)', async () => {
+    const { StrictMode } = await import('react');
+    const t = createFixtureVisualReviewTransport('needs_you', { scenario: 'deck' }, { latencyMs: 50 });
+    act(() => root.render(<StrictMode><Connected transport={t} model={t.model()} /></StrictMode>));
+    key('y');
+    await wait(200);
+    await flush();
+    expect(q('deck-toast-outcome')!.textContent).toBe('Marked fine.');
+  });
+});
+
 describe('undo over the real server contract', () => {
   it('takes back a two-viewport tap with one call, not one per row', async () => {
     const base = createFixtureVisualReviewTransport('needs_you', { needsYou: 'unsure', scenario: 'deck' });

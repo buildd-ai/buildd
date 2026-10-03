@@ -284,7 +284,8 @@ function DeckInner({
   const [notice, setNotice] = useState<string | null>(null);
   const toastSeq = useRef(0);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  // Set on every mount: StrictMode's simulated unmount would otherwise leave it false and drop every answer.
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   // "Still broken" on one viewport is not a fix for the other unless both are fix checks.
   const bothDefault = !!sibling && !isDone(sibling) && sibling.current.agentVerdict === focused?.current.agentVerdict
