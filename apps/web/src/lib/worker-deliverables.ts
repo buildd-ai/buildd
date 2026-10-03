@@ -139,10 +139,11 @@ export async function getWorkerDeliverableArtifactCount(workerId: string): Promi
           ),
         ),
       ),
-      columns: { id: true },
+      columns: { id: true, metadata: true },
     });
 
-    return deliverableArtifacts.length;
+    // Rejected completion prose is evidence of a refusal, never a deliverable.
+    return deliverableArtifacts.filter(row => !(row.metadata as Record<string, unknown> | null)?.salvaged).length;
   } catch {
     return 0;
   }

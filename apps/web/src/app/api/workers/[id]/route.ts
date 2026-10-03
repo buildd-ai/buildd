@@ -1,10 +1,11 @@
+import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
-import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
+import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -1261,7 +1262,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1284,7 +1285,7 @@ export async function PATCH(
   // Captured outside the closure: narrowing of `worker` does not survive into a
   // function body.
   const workerStartedAt = worker.startedAt ?? null;
-  async function hasDeliverableArtifact(): Promise<boolean> {
+  async function hasDeliverableArtifact(strict = false): Promise<boolean> {
     // startedAt is written on the first `running` PATCH, so a completing worker
     // has one; epoch keeps a null from excluding everything.
     const workStart = workerStartedAt ? new Date(workerStartedAt) : new Date(0);
@@ -1298,7 +1299,14 @@ export async function PATCH(
           and(eq(artifacts.missionId, taskMissionId), isNull(artifacts.workerId), gte(artifacts.updatedAt, workStart)),
         )
       : eq(artifacts.workerId, id);
-    const rows = await db.query.artifacts.findMany({ where, limit: 1 });
+    const rows = await db.query.artifacts.findMany({
+      where: strict ? and(where,
+        sql`COALESCE(${artifacts.metadata}->>'salvaged', 'false') <> 'true'`,
+        sql`COALESCE(${artifacts.key}, '') NOT LIKE 'cloud-run-report:%'`,
+        or(not(inArray(artifacts.type, ['screenshot', 'diff', 'file', 'data', 'link', 'recording', 'calendar_event'])), isNotNull(artifacts.key)),
+      ) : where,
+      limit: 1,
+    });
     return rows.length > 0;
   }
 
@@ -1587,7 +1595,7 @@ export async function PATCH(
         // future arm cannot be added that persists the payload and forgets the
         // ledger (or the reverse).
         const frictionSignature = fireGateEvent({
-          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          gate: reason === 'silent_completion' ? GATE_SLUGS.SILENT_COMPLETION : GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'rejected',
           reason: `completion refused: outputRequirement ${reason} not satisfied`,
@@ -1664,6 +1672,58 @@ export async function PATCH(
 
         return frictionSignature;
       };
+
+      if (isSilentCompletion({
+        status, outputRequirement: outputReq, kind: terminalTaskRow[0]?.kind,
+        pathManifest: terminalTaskRow[0]?.pathManifest, taskClass: terminalTaskRow[0]?.taskClass,
+        isReviewer: isReviewerTask, commitCount: effectiveCommits,
+        filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
+        dirtyWorktree: effectiveDirtyWorktree,
+        observedTouches: [...(worker.observedTouches ?? []), ...((updates.observedTouches as string[] | undefined) ?? [])],
+        hasPR, mergedAt: worker.mergedAt, discardEdits,
+        summary: body.summary, summarySource: body.summarySource,
+      }) && !(await hasDeliverableArtifact(true))) {
+        const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
+        const message = 'Silent completion refused: no editing evidence or deliverable, and the summary is unauthored narration or a fragment.';
+        // Fence on the active worker: duplicate completion requests cannot spend
+        // the retry budget twice or overwrite another attempt's outcome.
+        const failed = await db.update(workers).set({
+          status: 'failed', error: message, exitCause: 'code_failure',
+          completedAt: new Date(), updatedAt: new Date(),
+        }).where(and(eq(workers.id, id), eq(workers.status, worker.status))).returning({ id: workers.id });
+        if (failed.length && worker.taskId) {
+          if ((LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status) && account.authType === 'oauth') {
+            await db.update(accounts).set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` }).where(eq(accounts.id, account.id));
+          }
+          const previousContext = (terminalTaskRow[0]?.context ?? {}) as Record<string, unknown>;
+          const next = silentCompletionRetryContext(previousContext);
+          const settled = await db.update(tasks).set({
+            status: next.retry ? 'pending' : 'failed', context: next.context,
+            claimedBy: null, claimedAt: null, startAt: null,
+            result: { summarySource: 'fallback' },
+            updatedAt: new Date(),
+          }).where(and(
+            eq(tasks.id, worker.taskId),
+            eq(tasks.status, terminalTaskRow[0]!.status),
+            sql`COALESCE(${tasks.context}->>'silentCompletionRetryCount', '0') = ${String(previousContext.silentCompletionRetryCount ?? 0)}`,
+          )).returning({ id: tasks.id });
+          if (settled.length && !next.retry) {
+            await db.insert(missionNotes).values({
+              missionId: taskMissionId, taskId: worker.taskId,
+              authorType: 'system', type: 'warning', status: 'open',
+              title: 'Silent completion retry exhausted', body: message,
+            });
+          }
+          await releaseAndNotify(worker.taskId, 'abandoned');
+          if (settled.length) {
+            await triggerEvent(channels.workspace(worker.workspaceId), events.TASK_UPDATED, { taskId: worker.taskId, status: next.retry ? 'pending' : 'failed' });
+            if (!next.retry) await resolveCompletedTask(worker.taskId, worker.workspaceId);
+          }
+          await triggerEvent(channels.worker(id), events.WORKER_FAILED, { workerId: id, taskId: worker.taskId, status: 'failed', error: message });
+          await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_FAILED, { workerId: id, taskId: worker.taskId, status: 'failed', error: message });
+        }
+        return NextResponse.json({ error: message, hint: 'silent_completion', gate: GATE_SLUGS.SILENT_COMPLETION, frictionSignature }, { status: 400 });
+      }
 
       // A visual-auditor task (the mission's [surface audit]) is gated on its
       // own evidence, which REPLACES hasDeliverableArtifact: a summary, a PR or

@@ -3080,6 +3080,54 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedWorkerSet.linesRemoved).toBe(0);
   });
 
+  describe('silent completion refusal', () => {
+    it.each([
+      { count: 0, missionId: null },
+      { count: 0, missionId: 'mission-1' },
+      { count: 1, missionId: null },
+    ])('fails the worker and bounds the retry for %j', async ({ count, missionId }) => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running',
+        workspaceId: 'ws-1', taskId: 'task-1', commitCount: 0, filesChanged: 0,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', status: 'in_progress', kind: 'writing', missionId,
+        outputRequirement: 'auto', context: { silentCompletionRetryCount: count },
+      });
+      const workerSets: any[] = [];
+      const taskSets: any[] = [];
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock((values: any) => {
+          workerSets.push(values);
+          return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'worker-1' }])) })) };
+        }),
+      }));
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((values: any) => {
+          taskSets.push(values);
+          return { where: mock(() => ({ returning: mock(() => Promise.resolve([{ id: 'task-1' }])) })) };
+        }),
+      }));
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed', summarySource: 'agent',
+          summary: 'Checking the code.\n\n---\n\nNow locating the file.',
+        },
+      }), { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('silent_completion');
+      expect(workerSets.some(v => v.status === 'failed')).toBe(true);
+      expect(workerSets.some(v => v.rejectedCompletionPayload?.reason === 'silent_completion')).toBe(true);
+      const settled = taskSets.find(v => v.context?.silentCompletionRetryCount === 1);
+      expect(settled.status).toBe(count === 0 ? 'pending' : 'failed');
+      expect(settled.claimedBy).toBeNull();
+      expect(settled.context.failureContext.priorSummaryUnauthored).toBe(true);
+      expect(mockTriggerEvent).toHaveBeenCalled();
+    });
+  });
+
   describe('output requirement validation ordering', () => {
     it('refuses completion when commits exist but no PR or artifact (auto mode)', async () => {
       let taskUpdateCalled = false;
