@@ -265,6 +265,20 @@ an enum) to allow extension without migrations.
   still refuses. GIVEN the same shape via `create_pr`'s `prUrl` parameter
   instead (registering an externally-created PR), completion succeeds too,
   unrelated to this fallback.
+- AC-3k: GIVEN completion with effective `auto` or `pr_required`, an ordinary
+  work task of kind engineering, writing or design (or with a concrete manifest),
+  no commits, changed files, dirty worktree or observed session touches, and no
+  registered, auto-detected or referenced PR, deliverable artifact, verified merge
+  or explicit `discardEdits`, WHEN the summary has fallback provenance, the fallback
+  tail separator, no terminal punctuation, or forward-looking narration without a
+  past-tense outcome sentence THEN completion is refused with `silent_completion`.
+  The rejected payload is preserved and the worker fails. The task requeues once
+  using `context.silentCompletionRetryCount`, whether mission-linked or standalone;
+  `failureContext` marks the prior summary unauthored. A recurrence permanently
+  fails the task and posts a warning. Reviewer and bookkeeping tasks are exempt;
+  `artifact_required` and `none` retain their existing contracts. A punctuated
+  authored outcome with no edits remains valid. Reaper completion checks the same
+  predicate against its independently verified deliverable evidence.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`

@@ -242,6 +242,12 @@ describe('getWorkerDeliverableArtifactCount', () => {
     expect(count).toBe(1);
   });
 
+  it('does not turn salvaged rejection prose into a deliverable', async () => {
+    mockArtifactsFindMany.mockImplementationOnce(() => [{ id: 'artifact-salvaged', metadata: { salvaged: true } }]);
+    const { getWorkerDeliverableArtifactCount } = await import('./worker-deliverables');
+    expect(await getWorkerDeliverableArtifactCount('worker-salvaged')).toBe(0);
+  });
+
   it('handles database errors gracefully', async () => {
     // DB error should return 0, not throw
     mockArtifactsFindMany.mockImplementationOnce(() => {

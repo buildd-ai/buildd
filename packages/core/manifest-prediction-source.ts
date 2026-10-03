@@ -40,6 +40,7 @@ import {
   type OrchestrationDecisionDeps,
   type OrchestrationDecisionRow,
 } from './orchestration-decision';
+import { loadTaskPrDiffs, type LoadTaskPrDiffs } from './task-pr-diffs';
 import type { DecisionAccess } from './decision-client';
 import { manifestPickIdentity, resolveApplyingFraction, type PromotionEvidence } from './orchestration-promotion';
 import {
@@ -436,7 +437,7 @@ export function manifestPredictionsWhere(opts: { workspaceId: string; since: Dat
  * task's PR merged), with candidate misses and same-task baselines. Never the
  * caller manifest. Workspace-scoped reads throughout.
  */
-export async function loadManifestPredictionLabels(opts: { workspaceId: string; since: Date; until: Date; limit?: number }) {
+export async function loadManifestPredictionLabels(opts: { workspaceId: string; since: Date; until: Date; limit?: number }, deps: { loadPrDiffs?: LoadTaskPrDiffs } = {}) {
   const { labelsWhere, prWorkersWhere } = await import('./orchestration-ledger-source');
   const { orchestrationTouchLabels } = await import('./db/schema');
   const { labelManifestPrediction } = await import('./manifest-prediction');
@@ -453,29 +454,42 @@ export async function loadManifestPredictionLabels(opts: { workspaceId: string; 
       taskId: orchestrationTouchLabels.taskId,
       workerStatus: orchestrationTouchLabels.workerStatus,
       touchedPaths: orchestrationTouchLabels.touchedPaths,
+      truncated: orchestrationTouchLabels.truncated,
       prNumber: orchestrationTouchLabels.prNumber,
     }).from(orchestrationTouchLabels).where(labelsWhere(scope)),
-    db.select({ taskId: workers.taskId, mergedAt: workers.mergedAt }).from(workers).where(prWorkersWhere(scope)),
+    db.select({ taskId: workers.taskId, mergedAt: workers.mergedAt, prNumber: workers.prNumber, prUrl: workers.prUrl }).from(workers).where(prWorkersWhere(scope)),
   ]);
   const merged = new Set((prs as Array<{ taskId: string | null; mergedAt: Date | null }>).filter(p => p.taskId && p.mergedAt).map(p => p.taskId!));
+  const prRefs = [...prs, ...labels.filter(l => l.prNumber && !prs.some(pr => pr.taskId === l.taskId && pr.prNumber === l.prNumber)).map(l => ({ taskId: l.taskId, prNumber: l.prNumber }))];
+  const prDiffs = await (deps.loadPrDiffs ?? loadTaskPrDiffs)(opts.workspaceId, prRefs);
   return predictions.map(p => {
-    const touched = (labels as Array<{ taskId: string; workerStatus: string; touchedPaths: string[] }>)
-      .filter(l => l.taskId === p.taskId)
+    const diffs = prDiffs.get(p.taskId) ?? [];
+    const taskLabels = (labels as Array<{ taskId: string; workerStatus: string; touchedPaths: string[]; truncated?: boolean }>).filter(l => l.taskId === p.taskId);
+    const reasons = [
+      ...diffs.filter(diff => diff.status !== 'complete').map(diff => diff.status === 'incomplete' ? `pr_diff_${diff.reason}` : 'pr_diff_closed'),
+      ...(taskLabels.some(l => l.truncated && !FAILED_STATUSES.has(l.workerStatus)) ? ['touch_labels_truncated'] : []),
+    ];
+    const touched = taskLabels
       .map(l => ({ paths: l.touchedPaths ?? [], landed: merged.has(p.taskId), failed: FAILED_STATUSES.has(l.workerStatus) }));
+    for (const diff of diffs) if (diff.status === 'complete') touched.push({ paths: diff.files, landed: merged.has(p.taskId), failed: false });
     return {
+      prDiffs: diffs,
       predictionId: p.id,
       taskId: p.taskId,
       decisionId: p.decisionId,
       candidatePolicyVersion: p.candidatePolicyVersion,
       fingerprints: (p.picks as Array<{ fingerprint?: string }>).map(k => k.fingerprint ?? null),
-      label: labelManifestPrediction({
+      label: reasons.length ? {
+        status: 'missing' as const, reason: 'incomplete_observation' as const, reasons,
+        observedPaths: [...new Set(touched.filter(t => !t.failed).flatMap(t => t.paths))].sort(),
+      } : labelManifestPrediction({
         prediction: {
           candidates: p.candidates,
           selected: p.selected,
           picks: p.picks as never,
           stop: p.stopReason as never,
           complete: p.complete,
-          unknownScope: p.unknownScope,
+          unknownScope: p.unknownScope || diffs.some(diff => diff.status !== 'complete'),
           allApplied: p.allApplied,
           decisionId: p.decisionId,
           candidatePolicyVersion: p.candidatePolicyVersion,
