@@ -1,8 +1,8 @@
 ---
 title: Workspace Onboarding
-status: draft
+status: active
 owner: max
-last_verified: 2026-10-02
+last_verified: 2026-10-03
 summary: Onboarding MUST derive a workspace's readiness from observable repo facts without writing, and every change it proposes to the repo MUST arrive as an owner-merged PR from a non-default branch.
 domain: surfaces
 surfaces: [packages/core/workspace-readiness.ts, apps/web/src/app/api/workspaces/[id]/readiness/route.ts, packages/core/onboarding-scaffold.ts, packages/core/onboarding-spec.ts]
@@ -10,6 +10,44 @@ related: [team-workspace-mission-onboarding, mcp-action-contracts]
 keywords: [readiness report, scaffold PR, author_spec, onboarding skill, buildd-ready, nextStep, anti-blind-copy, interview]
 verified_by: [packages/core/__tests__/workspace-readiness.test.ts, apps/web/src/app/api/workspaces/[id]/readiness/route.test.ts, packages/core/__tests__/onboarding-render.test.ts, packages/core/__tests__/onboarding-scaffold.test.ts, apps/web/src/app/api/workspaces/[id]/onboarding/scaffold/route.test.ts, packages/core/__tests__/onboarding-spec.test.ts, apps/web/src/app/api/workspaces/[id]/onboarding/spec/route.test.ts, packages/core/__tests__/mcp-tools-manage-workspaces.test.ts, scripts/mcp-consumer-skill-action-drift.test.ts, scripts/mcp-consumer-skill-instructions.test.ts, scripts/workspace-onboarding-skill.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "compute-readiness"
+    type: "symbol"
+    name: "computeReadiness"
+    path: "packages/core/workspace-readiness.ts"
+  - id: "author-spec"
+    type: "symbol"
+    name: "authorSpec"
+    path: "packages/core/onboarding-spec.ts"
+  - id: "plan-scaffold"
+    type: "symbol"
+    name: "planScaffold"
+    path: "packages/core/onboarding-scaffold.ts"
+  - id: "readiness-route"
+    type: "route"
+    method: "GET"
+    path: "/api/workspaces/[id]/readiness"
+    file: "apps/web/src/app/api/workspaces/[id]/readiness/route.ts"
+  - id: "scaffold-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/onboarding/scaffold"
+    file: "apps/web/src/app/api/workspaces/[id]/onboarding/scaffold/route.ts"
+  - id: "spec-route"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/onboarding/spec"
+    file: "apps/web/src/app/api/workspaces/[id]/onboarding/spec/route.ts"
+  - id: "readiness-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/workspace-readiness.test.ts"
+  - id: "onboarding-spec-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/onboarding-spec.test.ts"
+  - id: "manage-workspaces-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/mcp-tools-manage-workspaces.test.ts"
 ---
 
 # Workspace Onboarding
@@ -17,10 +55,8 @@ supersedes: []
 Promoted from `docs/design/workspace-onboarding.md` (now Implemented). The design
 holds the rationale and the rejected alternatives; this file holds the contract.
 
-**Status is `draft`** under SPEC-FORMAT rule 9. Fourteen of the sixteen criteria
-are asserted by tests that exist today; AC-12 is guarded for its frontmatter
-clause only, and AC-16 has no direct guard (see each criterion). Promote to
-`active` once those two are closed.
+All sixteen acceptance criteria are now asserted by tests: AC-12's `spec_compare`
+retrieval clause and AC-16 were the last two to close (see each criterion).
 
 ## Onboarding path
 
@@ -73,7 +109,7 @@ pure function of repo facts and no step writes to the repo's default branch.
 - AC-11: GIVEN `author_spec` answers WHEN the spec is rendered THEN it is one flat file under the detected spec root (or the default when none), `status: draft`, each block has at least 3 ACs including one rejection case, and the text contains no "should" or "may".
   Verified by: packages/core/__tests__/onboarding-spec.test.ts ("authorSpec: blocks (AC-11)", "where the file goes"), apps/web/src/app/api/workspaces/[id]/onboarding/spec/route.test.ts ("the file is flat under the detected spec root").
 - AC-12: GIVEN a generated spec WHEN it is validated THEN it passes `specs:check`-style frontmatter validation for the default format's required fields, and after the PR merges `spec_compare` returns it.
-  Verified by (frontmatter clause only): packages/core/__tests__/onboarding-spec.test.ts ("authorSpec: frontmatter (AC-12)"). The `spec_compare` retrieval clause has no test yet.
+  Verified by: packages/core/__tests__/onboarding-spec.test.ts ("authorSpec: frontmatter (AC-12)", "authorSpec → spec_compare retrieval (AC-12)" — runs the authored markdown through the real `fileToChunks`/`ingestFiles` path into `{workspaceId}:docs` and confirms `spec_compare` retrieves it).
 - AC-13: GIVEN the `workspace-onboarding` skill WHEN it names a backticked action that is not in `allActions` or a documented group sub-action THEN the drift gate fails.
   Verified by: scripts/mcp-consumer-skill-action-drift.test.ts ("action drift gate mechanics").
 - AC-14: GIVEN the MCP server WHEN `buildd://workspace/onboarding` is read THEN it returns exactly the contents of `.claude/skills/workspace-onboarding/SKILL.md`.
@@ -81,7 +117,7 @@ pure function of repo facts and no step writes to the repo's default branch.
 - AC-15: GIVEN no Vercel deployments and no GitHub deployment permission WHEN `computeReadiness` runs THEN `visual-qa-source` resolves to `sandbox` or `missing`, never an error, and the rest of the report is unaffected.
   Verified by: packages/core/__tests__/workspace-readiness.test.ts ("visual-qa-source (AC-15)"), apps/web/src/app/api/workspaces/[id]/readiness/route.test.ts ("a workspace with no GitHub deployment access still gets the rest of the report").
 - AC-16: GIVEN a workspace that never calls `readiness`, `scaffold` or `author_spec` WHEN the work ships THEN no flag, field or schema column it added changes that workspace's behaviour.
-  Not yet verified by a test. Structurally: the only schema change is an optional `gitConfig.onboarding` TypeScript field with no migration, and the three actions are new.
+  Verified by: packages/core/__tests__/workspace-readiness.test.ts ("gitConfig.onboarding absence changes nothing (AC-16)"), packages/core/__tests__/mcp-tools-manage-workspaces.test.ts ("passes gitConfig through verbatim whether or not onboarding config is present (AC-16)"). Structurally: the only schema change is an optional `gitConfig.onboarding` TypeScript field with no migration, and the three actions are new.
 
 **Code surface**:
 

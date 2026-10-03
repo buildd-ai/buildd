@@ -8,6 +8,9 @@ import {
   type SpecInterviewAnswers,
 } from '@buildd/shared';
 import { authorSpec, buildAuthorSpecTaskDescription, resolveSpecsRoot, DEFAULT_SPECS_ROOT } from '../onboarding-spec';
+import { ingestFiles } from '../knowledge-store/ingest';
+import type { KnowledgeStore, QueryParams, QueryResult, UpsertChunk } from '../knowledge-store/types';
+import { handleBuilddAction, type ActionContext, type ApiFn } from '../mcp-tools';
 
 // A Python service with none of buildd's layout, names or toolchain.
 const FILES = [
@@ -164,6 +167,84 @@ describe('authorSpec: frontmatter (AC-12)', () => {
   test('a summary containing a colon is quoted so the frontmatter stays flat YAML', () => {
     const r = ok({ answers: answers({ description: 'Ledger MUST post: debits equal credits. Accountants read it.' }) });
     expect(frontmatter(r.markdown).summary.startsWith('"')).toBe(true);
+  });
+});
+
+// A minimal in-memory KnowledgeStore whose `query` actually does lexical
+// substring matching over what `upsert` stored, instead of the always-empty
+// `query` every other mock store in this codebase uses. spec_compare needs a
+// store that can genuinely return what was ingested so this test proves
+// retrievability, not just that ingestion didn't throw.
+function makeLexicalStore(): KnowledgeStore {
+  const byNamespace = new Map<string, UpsertChunk[]>();
+  return {
+    async upsert(namespace, chunks) {
+      byNamespace.set(namespace, [...(byNamespace.get(namespace) ?? []), ...chunks]);
+    },
+    async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
+      const chunks = byNamespace.get(namespace) ?? [];
+      const terms = params.text.toLowerCase().split(/\s+/).filter(Boolean);
+      const corpus = namespace.endsWith(':code') ? 'code' : 'docs';
+      return chunks
+        .map((c) => {
+          const haystack = `${c.lexicalText ?? c.content}`.toLowerCase();
+          const hits = terms.filter((t) => haystack.includes(t)).length;
+          return { c, hits };
+        })
+        .filter((x) => x.hits > 0)
+        .sort((a, b) => b.hits - a.hits)
+        .map(({ c, hits }): QueryResult => ({
+          id: c.id,
+          namespace,
+          corpus,
+          sourceType: c.sourceType,
+          sourcePath: c.sourcePath ?? null,
+          sourceUrl: c.sourceUrl ?? null,
+          content: c.content,
+          metadata: c.metadata ?? {},
+          score: hits / terms.length,
+        }));
+    },
+    async delete() {},
+    async deleteBySource(namespace, selector) {
+      const existing = byNamespace.get(namespace) ?? [];
+      byNamespace.set(namespace, existing.filter((c) => c.sourcePath !== selector.sourcePath));
+    },
+    async listNamespaces() {
+      return [...byNamespace.keys()];
+    },
+  };
+}
+
+describe('authorSpec → spec_compare retrieval (AC-12)', () => {
+  test('a spec authored by onboarding is retrievable by spec_compare once indexed through the real ingest path', async () => {
+    const WS_ID = 'ws-onboarding-1';
+    const r = ok();
+    const store = makeLexicalStore();
+
+    // The same path every real spec file takes into the knowledge store:
+    // fileToChunks (via chunkMarkdown) -> upsert, under {workspaceId}:docs —
+    // the exact namespace spec_compare reads.
+    await ingestFiles(store, WS_ID, 'docs', [{ path: r.path, content: r.markdown }]);
+
+    const ctx: ActionContext = {
+      workspaceId: WS_ID,
+      getWorkspaceId: async () => WS_ID,
+      getLevel: async () => 'admin',
+      knowledgeStore: store,
+    } as unknown as ActionContext;
+
+    const result = await handleBuilddAction(
+      (async () => ({})) as unknown as ApiFn,
+      'spec_compare',
+      { feature: 'post a balanced entry' },
+      ctx,
+    );
+
+    expect(result.isError).toBeFalsy();
+    const out = result.content[0].text;
+    expect(out).toContain('SPEC evidence');
+    expect(out).toContain(r.path);
   });
 });
 
