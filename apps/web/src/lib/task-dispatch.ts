@@ -317,9 +317,13 @@ async function wakeOptInWebhookOrBroadcast(
 
 /**
  * Wake runners for a task an automatic or manual retry just put back to
- * `pending` (worker auto-retry / loop requeue, the reassign route) or whose
- * deferred `startAt` has passed (deferred-dispatch-sweep). Webhook only when
- * it lists 'task.retry'; see wakeOptInWebhookOrBroadcast.
+ * `pending` (worker auto-retry / loop requeue, the reassign route), whose
+ * deferred `startAt` has passed (deferred-dispatch-sweep), or that is still
+ * `pending` and was registered as a path-claim waiter on a claim that just
+ * released (path-claim-release.ts's `dispatchQueuedWaiters` — the claim loop's
+ * own path-overlap backstop otherwise only re-checks on the next poll, which
+ * defaults to a full hour). Webhook only when it lists 'task.retry'; see
+ * wakeOptInWebhookOrBroadcast.
  */
 export async function dispatchRetriedTask(
   task: DispatchTask & { startAt?: Date | string | null },

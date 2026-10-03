@@ -18,6 +18,9 @@ const mockEnqueue = mock(async () => true);
 const mockRearm = mock(async () => {});
 const mockWorkersFindMany = mock(async () => [] as any[]);
 const mockTasksFindFirst = mock(async () => null as any);
+const mockTasksFindMany = mock(async () => [] as any[]);
+const mockWorkspacesFindMany = mock(async () => [] as any[]);
+const mockDispatchRetriedTask = mock(async (_task: any, _workspace: any) => {});
 
 mock.module('@buildd/core/path-claim', () => ({
   releaseClaims: mockReleaseClaims,
@@ -37,20 +40,30 @@ mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
 }));
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchRetriedTask: (...args: any[]) => mockDispatchRetriedTask(...args),
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findMany: (...args: any[]) => mockWorkersFindMany(...args) },
-      tasks: { findFirst: (...args: any[]) => mockTasksFindFirst(...args) },
+      tasks: {
+        findFirst: (...args: any[]) => mockTasksFindFirst(...args),
+        findMany: (...args: any[]) => mockTasksFindMany(...args),
+      },
+      workspaces: { findMany: (...args: any[]) => mockWorkspacesFindMany(...args) },
     },
   },
 }));
 mock.module('@buildd/core/db/schema', () => ({
   workers: { taskId: 'task_id', mergedAt: 'merged_at', prLifecycleStatus: 'pr_lifecycle_status', prNumber: 'pr_number' },
   tasks: { id: 'id', status: 'status' },
+  workspaces: { id: 'id' },
 }));
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ type: 'eq', a, b }),
+  and: (...args: any[]) => ({ type: 'and', args }),
+  inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
 }));
 
 const { releaseAndNotify, deliverPathReleased, resolveReleaseReasonForTask } = await import('./path-claim-release');
@@ -70,6 +83,12 @@ beforeEach(() => {
   mockWorkersFindMany.mockResolvedValue([]);
   mockTasksFindFirst.mockReset();
   mockTasksFindFirst.mockResolvedValue(null);
+  mockTasksFindMany.mockReset();
+  mockTasksFindMany.mockResolvedValue([]);
+  mockWorkspacesFindMany.mockReset();
+  mockWorkspacesFindMany.mockResolvedValue([]);
+  mockDispatchRetriedTask.mockReset();
+  mockDispatchRetriedTask.mockImplementation(async () => {});
 });
 
 describe('releaseAndNotify', () => {
@@ -246,6 +265,67 @@ describe('deliverPathReleased — selective narrowing', () => {
       waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'src/a.ts' }],
     }, 'narrowed');
     expect(mockRearm).toHaveBeenCalledWith(HOLDER, WAITER_A);
+  });
+
+  it('dispatch-wakes a still-pending waiter immediately instead of waiting for the fallback poll', async () => {
+    mockTasksFindMany.mockResolvedValue([
+      { id: WAITER_A, title: 'Waiting task', description: null, workspaceId: WS, mode: 'execution', priority: 0, missionId: null, backend: null, roleSlug: null, runnerPreference: 'any', startAt: null },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: WS, name: 'ws', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null }]);
+
+    await deliverPathReleased(HOLDER, {
+      workspaceId: WS,
+      releasedPaths: ['src/a.ts'],
+      notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'src/a.ts' }],
+    }, 'merged');
+
+    expect(mockDispatchRetriedTask).toHaveBeenCalledTimes(1);
+    const [dispatchedTask, dispatchedWorkspace] = mockDispatchRetriedTask.mock.calls[0] as any[];
+    expect(dispatchedTask.id).toBe(WAITER_A);
+    expect(dispatchedWorkspace.id).toBe(WS);
+    // The live-worker message still goes out too — this adds a wake, it does
+    // not replace the existing notification.
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('never dispatch-wakes a waiter the query does not return as pending (already reclaimed or terminal)', async () => {
+    // The DB query itself filters on status = 'pending'; a waiter that raced
+    // into another status simply is not in the result set.
+    mockTasksFindMany.mockResolvedValue([]);
+
+    await deliverPathReleased(HOLDER, {
+      workspaceId: WS,
+      releasedPaths: ['src/a.ts'],
+      notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'src/a.ts' }],
+    }, 'merged');
+
+    expect(mockDispatchRetriedTask).not.toHaveBeenCalled();
+    // The worker-message path is unaffected — it is a separate wake for a
+    // live agent, not gated on pending status.
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dispatch-wake failure for one waiter does not block delivery to others', async () => {
+    mockTasksFindMany.mockResolvedValue([
+      { id: WAITER_A, title: 'A', description: null, workspaceId: WS, mode: 'execution', priority: 0, missionId: null, backend: null, roleSlug: null, runnerPreference: 'any', startAt: null },
+      { id: WAITER_B, title: 'B', description: null, workspaceId: WS, mode: 'execution', priority: 0, missionId: null, backend: null, roleSlug: null, runnerPreference: 'any', startAt: null },
+    ]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: WS, name: 'ws', repo: null, webhookConfig: null, githubInstallationId: null, githubRepoId: null }]);
+    mockDispatchRetriedTask.mockImplementationOnce(async () => { throw new Error('dispatch failed'); });
+
+    await deliverPathReleased(HOLDER, {
+      workspaceId: WS,
+      releasedPaths: ['src/a.ts', 'src/b.ts'],
+      notifiedWaiters: [WAITER_A, WAITER_B],
+      waiters: [
+        { waitingTaskId: WAITER_A, blockedPath: 'src/a.ts' },
+        { waitingTaskId: WAITER_B, blockedPath: 'src/b.ts' },
+      ],
+    }, 'merged');
+
+    expect(mockDispatchRetriedTask).toHaveBeenCalledTimes(2);
   });
 
   it('never throws, even when the Pusher fan-out fails', async () => {
