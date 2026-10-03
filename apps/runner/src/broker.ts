@@ -14,7 +14,8 @@
  */
 
 import { hostname } from 'os';
-import { existsSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { buildClaudeCredentialsFile } from './claude-auth';
 import { runnerRefreshCredential } from './credential-refresh';
 import { hostRunnerRefusalHint } from './host-runner-refusal';
 
@@ -429,22 +430,24 @@ class CredentialBroker {
 
   /**
    * Write a fresh access_token to every registered credential file for this secretId.
-   * File format matches materializeClaudeConfigDir: `{ type, access_token, expires_at? }`.
+   * Same shape materializeClaudeConfigDir writes (`claudeAiOauth`, camelCase) —
+   * the CLI ignores anything else and drops to "Not logged in" — and the same
+   * scopes that file declared, read back from it.
    */
   private updateCredentialFiles(secretId: string, accessToken: string, expiresAt: string | null): void {
     const workers = this.credentialFiles.get(secretId);
     if (!workers || workers.size === 0) return;
-    const credentials: Record<string, unknown> = {
-      type: 'oauth_token',
-      access_token: accessToken,
-      ...(expiresAt != null ? { expires_at: Math.floor(new Date(expiresAt).getTime() / 1000) } : {}),
-    };
-    const content = JSON.stringify(credentials);
+    const expiry = expiresAt != null ? new Date(expiresAt) : null;
     for (const [workerId, filePath] of workers) {
       try {
+        let scopes: unknown[] | undefined;
+        try {
+          const current = JSON.parse(readFileSync(filePath, 'utf-8')) as { claudeAiOauth?: { scopes?: unknown } };
+          if (Array.isArray(current.claudeAiOauth?.scopes)) scopes = current.claudeAiOauth.scopes;
+        } catch { /* unreadable: fall back to the legacy scope set */ }
         // File was created by materializeClaudeConfigDir with mode 0600; writeFileSync
         // preserves existing permissions — no chmod needed here.
-        writeFileSync(filePath, content);
+        writeFileSync(filePath, JSON.stringify(buildClaudeCredentialsFile(accessToken, expiry, scopes)));
         console.log(`[broker] Updated credential file for worker ${workerId} (secretId=${secretId})`);
       } catch (err) {
         console.warn(`[broker] Failed to update credential file for worker ${workerId}:`, err instanceof Error ? err.message : String(err));

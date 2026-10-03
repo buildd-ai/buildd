@@ -1,7 +1,7 @@
 /**
  * Away delivery: push a person's pending watch events to their own Pushover
  * key when they are not looking at buildd.
- * (docs/design/subscriptions-and-notifications.md, Presence, Delivery routing
+ * (knowledge-base: buildd/design/subscriptions-and-notifications.md, Presence, Delivery routing
  * step 6, Limits.)
  *
  * Trigger: a cron (`/api/cron/notify-away`, cron-manifest.json), gated by a

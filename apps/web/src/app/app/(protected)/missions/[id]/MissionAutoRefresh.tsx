@@ -2,7 +2,7 @@
 
 /**
  * Keeps the mission page live without re-rendering it on every heartbeat
- * (docs/design/mission-feed-mobile-continuity.md, "Realtime" and "Freeze
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, "Realtime" and "Freeze
  * rule", slice S7, AC-17).
  *
  * - Subscribes to the workspace and mission Pusher channels and hands every

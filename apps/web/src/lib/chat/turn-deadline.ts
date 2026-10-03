@@ -1,5 +1,5 @@
 /**
- * A chat turn's wall clock (docs/design/agent-chat.md → The limits on each turn).
+ * A chat turn's wall clock (knowledge-base: buildd/design/agent-chat.md → The limits on each turn).
  *
  * Three pieces, all measured from when the turn started (the request), not
  * from when the model call started, so routing, limits and the docked-object

@@ -384,7 +384,7 @@ const MISSION_STATE_LABEL: Record<MissionDisplayState, string> = {
   // LOCAL_SESSION_QUIET_MS (lib/local-strand.ts): nothing will claim it.
   stranded: 'STRANDED',
   blocked: 'BLOCKED',
-  // "STALLED", not "IDLE" (docs/design/mission-feed-mobile-continuity.md, one
+  // "STALLED", not "IDLE" (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, one
   // vocabulary): the Home/list health chip already said STALLED for the same
   // condition — open work, no live worker — so the detail header reading IDLE
   // made one mission look like two states. `MissionHealth`'s scheduling

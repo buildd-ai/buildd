@@ -608,6 +608,29 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   }
 }
 
+/* ── Type scale (docs/design/design-system.md §3) ──
+ * One variable per role, exposed as Tailwind `text-chip`, `text-eyebrow`, … so a
+ * call site writes one class instead of a `text-[Npx] md:text-[Npx]` pair.
+ * Mobile values first; the md block only changes the roles that differ. */
+:root {
+  --type-chip: 11px;
+  --type-eyebrow: 11px;
+  --type-meta: 12px;
+  --type-body: 13px;
+  --type-title: 14px;
+  --type-lede: 16px;
+  --type-heading: 20px;
+  --type-display: 28px;
+}
+@media (width >= 48rem) {
+  :root {
+    --type-chip: 10px;
+    --type-lede: 15px;
+    --type-heading: 24px;
+    --type-display: 40px;
+  }
+}
+
 /* Mobile type floor: nothing under 11px below md. Desktop keeps the 9-10px mono
  * caption rhythm; phones get 11px. Must stay after every class it lifts.
  * Guarded by mobile-type-floor.test.ts. */
@@ -653,7 +676,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .fleet-hatch-err { background-image: repeating-linear-gradient(135deg, var(--fleet-err-soft) 0 3px, transparent 3px 5px); }
 }
 
-/* ── Chat canvas (docs/design/chat-canvas.md). Two materials, one rule: the
+/* ── Chat canvas (knowledge-base: buildd/design/chat-canvas.md). Two materials, one rule: the
  * conversation is soft (Plex Sans, gentle tints, rounded bubbles, no frames)
  * and fleet objects inside it (a mission, an approval, a question, a task)
  * stay hard and square. Orange still means action or live, never decoration:
@@ -678,7 +701,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 @layer components {
   .font-convo { font-family: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
 }
-/* ── Chat v3 foreground (docs/design/chat-canvas.md, "Mobile canvas"). The
+/* ── Chat v3 foreground (knowledge-base: buildd/design/chat-canvas.md, "Mobile canvas"). The
  * foreground is square: no radius, 1px rules, offset shadows. Colour carries
  * meaning only: calm (teal), needs you (copper), thinking (blue/violet),
  * landed (green). Components read these roles, never the hex. */
@@ -774,7 +797,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 @media (prefers-reduced-motion: reduce) {
   .canvas-rise { animation: none; }
 }
-/* ── The sea (docs/design/chat-canvas.md, "The sea"): the one soft element on
+/* ── The sea (knowledge-base: buildd/design/chat-canvas.md, "The sea"): the one soft element on
  * the chat surface. Round blurred pools drift behind the canvas; colour is the
  * mood (sea.ts), cross-faded through a registered colour property so a mood
  * change never snaps. Transform-only motion. The rest of the surface is square. */
@@ -827,7 +850,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
     vertical-align: -.14em; background: var(--mood-thinking);
   }
 }
-/* Desktop (docs/design/chat-v3-desktop.md): the stage is wide, so the same
+/* Desktop (knowledge-base: buildd/design/chat-v3-desktop.md): the stage is wide, so the same
  * pools grow to about 300-560px. `scale` grows each pool and its blur as one,
  * so the peak it paints, and the AA cap above, stay the same. */
 @media (min-width: 1024px) {
@@ -856,7 +879,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .thinking-tick, .step-active { animation: none; }
 }
 
-/* ── Chat on the kit (docs/design/shared-ai-kit.md, 1c "Theming"). buildd's
+/* ── Chat on the kit (knowledge-base: buildd/design/shared-ai-kit.md, 1c "Theming"). buildd's
  * tools menu, tier picker, approval and setup cards and the empty canvas are
  * the kit's components (@builddai/ai-kit/chat/react). They read only these
  * --kit-* properties, mapped here once from the chat roles above, so they
@@ -897,7 +920,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
 }
 
 /* buildd's look for the kit's classes: the v3 chat foreground
- * (docs/design/chat-canvas.md). Same layer as the kit's styles.css and later
+ * (knowledge-base: buildd/design/chat-canvas.md). Same layer as the kit's styles.css and later
  * in source, so these win without !important, and Tailwind utilities still
  * win over both. */
 @layer components {
@@ -1136,7 +1159,7 @@ textarea.kit-composer-input:focus-visible { outline: none; }
   .buildd-thread .kit-msg-foot > .buildd-feedback { align-self: flex-start; }
   /* Nothing to say (no objects, no thumbs yet): no gap either. */
   .buildd-thread .kit-msg-foot:empty { display: none; }
-  /* The turn in flight (docs/design/chat-canvas.md, "Thinking"): a square
+  /* The turn in flight (knowledge-base: buildd/design/chat-canvas.md, "Thinking"): a square
      panel with a plain blue left rule, BUILDD / THINKING and three ticking
      squares, the steps in plain words, then what the agent is saying. No
      glow here; the surface's one glow is the composer sweep. */

@@ -1,5 +1,5 @@
 /**
- * OpenRouter usage rankings as a popularity prior (docs/design/tier-weights.md §4a).
+ * OpenRouter usage rankings as a popularity prior (knowledge-base: buildd/design/tier-weights.md §4a).
  *
  * Pure: parse the `rankings-daily` dataset, map its permaslugs to our model
  * ids, and turn rank into a percentile. The fetch and the cache live in

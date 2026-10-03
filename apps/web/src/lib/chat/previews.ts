@@ -1,7 +1,7 @@
 /**
  * Approval-card previews: for a proposed write, exactly what will change, as
  * before → after, built from the target's current state through the chat's
- * reach-guarded reads (docs/design/agent-chat.md → Approval cards).
+ * reach-guarded reads (knowledge-base: buildd/design/agent-chat.md → Approval cards).
  *
  *   "Hold task: checkout · Stripe in currency (running on dune)"
  *     Claims: open → held

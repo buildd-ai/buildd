@@ -6,7 +6,7 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { type SkillBundle, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
+import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -48,6 +48,9 @@ import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadW
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
 import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
+import { CbmInjector, createCbmInjectionHook, isCbmInjectionEnabled, recordUnsupportedTrigger } from './cbm-injection';
+import { CbmGraphClient } from './cbm-graph-client';
+import { emptyCbmInjectionMetrics } from '@buildd/core/cbm-injection';
 import { toolActionMilestone, appendMilestone } from './tool-milestones';
 import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
@@ -75,6 +78,7 @@ import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
+import { withFleetIdentity } from './fleet-identity';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -126,6 +130,7 @@ import {
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
+import { questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
 import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -755,6 +760,14 @@ export class WorkerManager {
   // Call it for free text; use `.body()` for anything already parsed, so field
   // names (not string escaping) decide what the generic patterns may rewrite.
   private secretRedactors = new Map<string, SecretRedactor>();
+  /**
+   * CBM search injection, per live session (cbm-injection.ts). Kept off
+   * LocalWorker: the injector holds the session's searched symbols in memory,
+   * and LocalWorker is serialised to the UI. Only its counts reach the worker
+   * (`cbmInjection`) and resultMeta.
+   */
+  private cbmInjectors = new Map<string, CbmInjector>();
+  private cbmGraphClients = new Map<string, CbmGraphClient>();
   // Per-worker BYO evidence writers (command_output / test_report). Built next
   // to the redactor in startSession and dropped with it. Best-effort only.
   private evidenceWriters = new Map<string, EvidenceWriter>();
@@ -785,6 +798,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       pendingPermissionRequests: this.pendingPermissionRequests,
       onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
+      parkQuestion: (worker, toolInput, toolUseId) => this.parkQuestion(worker, toolInput, toolUseId),
     });
     this.recoveryManager = new RecoveryManager({
       workers: this.workers,
@@ -1031,11 +1045,11 @@ export class WorkerManager {
     }
   }
 
-  /** Environment as sent on the heartbeat: the scan plus post-update canary status. */
+  /** Environment as sent on the heartbeat: the scan, post-update canary status and (`--once`) the fleet identity. */
   private heartbeatEnvironment(): WorkerEnvironment | undefined {
     const canary = getUpdateCanary();
-    if (!this.environment || !canary) return this.environment;
-    return { ...this.environment, updateCanary: canary.report() };
+    const env = !this.environment || !canary ? this.environment : { ...this.environment, updateCanary: canary.report() };
+    return withFleetIdentity(env, this.config.fleetIdentity);
   }
 
   /** Push a heartbeat right away (e.g. so a canary trip reaches the server before a restart). */
@@ -1828,7 +1842,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1984,6 +1998,10 @@ export class WorkerManager {
       worker.mcpSecrets = claimedWorker.mcpSecrets;
       console.log(`[Worker ${claimedWorker.id}] Received ${Object.keys(claimedWorker.mcpSecrets).length} MCP credential secret(s): ${Object.keys(claimedWorker.mcpSecrets).join(', ')}`);
     }
+    if (claimedWorker.questionGate) {
+      worker.questionGate = claimedWorker.questionGate;
+      console.log(`[Worker ${claimedWorker.id}] Question gate on: experiment ${claimedWorker.questionGate.experimentId} arm ${claimedWorker.questionGate.arm}`);
+    }
     if (claimedWorker.cbmExperiment?.withheld) {
       worker.cbmExperimentWithheld = true;
       console.log(`[Worker ${claimedWorker.id}] CBM withheld by experiment ${claimedWorker.cbmExperiment.experimentId} (policy v${claimedWorker.cbmExperiment.policyVersion})`);
@@ -2026,6 +2044,13 @@ export class WorkerManager {
     }
     if ((claimedWorker as any).cbmDisabled) {
       (worker as any).cbmDisabled = true;
+    }
+    if (claimedWorker.claudeTokenScopes?.length) {
+      worker.claudeTokenScopes = claimedWorker.claudeTokenScopes;
+    }
+    if (claimedWorker.claudeAiArtifacts) {
+      worker.claudeAiArtifacts = claimedWorker.claudeAiArtifacts;
+      console.log(`[Worker ${claimedWorker.id}] claude.ai artifact access: ${claimedWorker.claudeAiArtifacts}`);
     }
     if ((claimedWorker as any).degradedConnectors?.length) {
       worker.degradedConnectors = (claimedWorker as any).degradedConnectors;
@@ -2685,6 +2710,65 @@ export class WorkerManager {
 
     this.emit({ type: 'worker_update', worker });
     storeSaveWorker(worker);
+  }
+
+  /**
+   * Park an AskUserQuestion: waiting state, milestone, the server's
+   * waiting_input row (with the question brief), and under inputAsRetry the
+   * session abort. Called from handleMessage, or for a gated worker from the
+   * PreToolUse hook once the question gate let the question through.
+   */
+  async parkQuestion(worker: LocalWorker, input: Record<string, unknown>, toolUseId?: string): Promise<void> {
+    const questions = input.questions as Array<{ question: string; header?: string }> | undefined;
+    const firstQuestion = questions?.[0];
+    const questionText = firstQuestion?.question || 'Awaiting input';
+    console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
+    const question = questionFromToolInput(worker, input, toolUseId);
+    worker.waitingFor = question;
+    worker.currentAction = questionHeader(input) || 'Question';
+    this.addMilestone(worker, { type: 'status', label: `Question: ${questionHeader(input) || 'Awaiting input'}`, ts: Date.now() });
+
+    if (this.config.inputAsRetry !== false) {
+      // inputAsRetry mode: snapshot state, sync notification, then abort.
+      // The retry/loop system will create a follow-up task with the user's answer.
+      console.log(`[Worker ${worker.id}] inputAsRetry: aborting session — question="${questionText.slice(0, 60)}"`);
+      worker.error = `needs_input: ${questionText}`;
+      // Persist waitingFor on the worker so the post-loop cleanup
+      // re-sends it with the failed update (defense in depth — if the
+      // waiting_input update below races and loses, the cleanup still
+      // carries the structured question to the server).
+      const parked = { ...question };
+      delete parked.toolUseId;
+      worker.waitingFor = parked;
+      // Await the waiting_input sync — fire-and-forget races against
+      // the cleanup's status=failed update and the server then 409s
+      // this one as "worker already terminated", dropping waitingFor.
+      try {
+        await this.buildd.updateWorker(worker.id, {
+          status: 'waiting_input',
+          currentAction: worker.currentAction,
+          waitingFor: questionPayload(question) as any,
+        });
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] waiting_input sync failed:`, err);
+      }
+      storeSaveWorker(worker);
+      // Abort the subprocess — the post-loop cleanup will detect worker.error
+      // and mark the worker as failed with the needs_input context.
+      const session = this.sessions.get(worker.id);
+      if (session) {
+        session.abortController.abort();
+      }
+    } else {
+      // Default mode: block and wait for user input via the debug UI
+      worker.status = 'waiting';
+      this.buildd.updateWorker(worker.id, {
+        status: 'waiting_input',
+        currentAction: worker.currentAction,
+        waitingFor: questionPayload(question) as any,
+      }).catch(() => {});
+      storeSaveWorker(worker);
+    }
   }
 
   /**
@@ -3352,9 +3436,12 @@ export class WorkerManager {
             worker.id,
             claudeTokenForSession,
             claudeTokenExpiry,
-            this.config.workspaceIsolationRoot
-              ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
-              : undefined,
+            {
+              ...(this.config.workspaceIsolationRoot
+                ? { isolationRoot: this.config.workspaceIsolationRoot, workspaceId: task.workspaceId }
+                : {}),
+              scopes: worker.claudeTokenScopes,
+            },
           );
           claudeConfigDir = _cd;
           cleanEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
@@ -3436,6 +3523,14 @@ export class WorkerManager {
           console.error(`[Worker ${worker.id}] Failed to resolve role env:`, err);
         }
       }
+
+      // claude.ai artifact access (Artifact / DesignSync tools). Applied after
+      // every other env source, role env secrets included, so the claim's
+      // resolved flag is the only thing that sets CLAUDE_CODE_ARTIFACT. Opted
+      // in, it also swaps the --once image's umbrella no-traffic switch (which
+      // withholds the tool) for its telemetry/error-report/updater parts.
+      // Codex has no such tool. See @buildd/shared claude-ai-artifacts.ts.
+      applyClaudeAiArtifactEnv(cleanEnv, isCodexTask ? 'off' : (worker.claudeAiArtifacts ?? 'off'));
 
       // Provision gate — prove the environment is runnable BEFORE the budget loop.
       // cleanEnv is now fully assembled (server creds + connector + role secrets),
@@ -4136,6 +4231,50 @@ export class WorkerManager {
       });
       if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
 
+      // CBM search injection (docs/design/cbm-search-injection.md). Claude
+      // workers with CBM enforced get a PostToolUse hook that answers their
+      // identifier searches from the graph; the runner's own graph client starts
+      // here in the background so it never sits on the agent's critical path.
+      // Codex has no post-tool seam, so its searches are only counted. A closing
+      // turn keeps the counts it already has and gets no hook.
+      let cbmInjector: CbmInjector | undefined;
+      if (!isClosingTurn) {
+        worker.cbmInjection = undefined;
+        if (isCodexTask) {
+          if (worker.cbmOutcome !== 'disabled') worker.cbmInjection = emptyCbmInjectionMetrics(false, 'unsupported_backend');
+        } else if (cbmEnforced && !cbmMountBlocked && worker.cbmOutcome === 'enforced' && cbmCacheDir) {
+          if (!isCbmInjectionEnabled()) {
+            worker.cbmInjection = emptyCbmInjectionMetrics(false, 'kill_switch');
+          } else try {
+            const injectRuntimeDir = ensureCbmRuntimeDir(cbmCacheDir, join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`));
+            const client = new CbmGraphClient({
+              binaryPath: cbmBinaryPath ?? cbmActivation.cbmBinaryPath!,
+              env: buildCbmMcpEntry(cwd, cbmCacheDir, injectRuntimeDir).env,
+              worktreePath: cwd,
+              ...(cbmSharedCache && cbmActivation.cbmProject ? { project: cbmActivation.cbmProject } : {}),
+              log: msg => console.warn(`[Worker ${worker.id}] ${msg}`),
+            });
+            client.start();
+            this.cbmGraphClients.set(worker.id, client);
+            cbmInjector = new CbmInjector({
+              graph: client,
+              decide: (facts, timeoutMs) => this.buildd.decideCbmInjection(worker.id, facts, timeoutMs),
+              worktreePath: cwd,
+              task: { kind: task.kind ?? null, category: (task as { category?: string | null }).category ?? null, pathManifest: task.pathManifest ?? null },
+            });
+            this.cbmInjectors.set(worker.id, cbmInjector);
+            worker.cbmInjection = cbmInjector.snapshot();
+          } catch (err) {
+            // Injection is an accelerator; it must never cost the task.
+            cbmInjector = undefined;
+            this.cbmInjectors.delete(worker.id);
+            this.cbmGraphClients.get(worker.id)?.stop();
+            this.cbmGraphClients.delete(worker.id);
+            console.warn(`[Worker ${worker.id}] CBM injection unavailable: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+
       // Block CBM tools that write to the repo or delete indexes. Applied
       // unconditionally: a codebase-memory server can also arrive via the SDK's own
       // project .mcp.json load (settingSources includes 'project'), where it never
@@ -4212,6 +4351,12 @@ export class WorkerManager {
           ...(!isCodexTask && cwd !== repoPath
             ? [{ hooks: [this.hookFactory.createWorktreeConfinementHook(worker, cwd, repoPath)] }]
             : []),
+          // claude.ai artifact gate: read/list/get when opted in, publish only
+          // for producer roles, delete never. Registered even when not opted
+          // in, so a tool that shows up some other way is still refused.
+          ...(!isCodexTask
+            ? [{ hooks: [this.hookFactory.createClaudeAiArtifactHook(worker, worker.claudeAiArtifacts ?? 'off')] }]
+            : []),
           { hooks: [this.hookFactory.createPermissionHook(worker, { inputPolicy })] },
           // Path-claim hook: auto-claims file paths on Edit/Write/MultiEdit (§6c).
           // Advisory + fail-open — never blocks the edit; Codex tasks have no PreToolUse hooks.
@@ -4247,7 +4392,14 @@ export class WorkerManager {
               }]
             : []),
         ],
-        PostToolUse: [{ hooks: [this.hookFactory.createTeamTrackingHook(worker)] }],
+        PostToolUse: [
+          { hooks: [this.hookFactory.createTeamTrackingHook(worker)] },
+          // CBM search injection. Runs after the tool, resolves within 1.5s by
+          // its own budget; the timeout here is only a backstop.
+          ...(cbmInjector
+            ? [{ matcher: 'Bash|Grep', timeout: 5, hooks: [createCbmInjectionHook(cbmInjector)] }]
+            : []),
+        ],
         PostToolUseFailure: [{ hooks: [this.hookFactory.createMcpFailureHook(worker, queryOptions.mcpServers, this.config.apiKey)] }],
         Notification: [{ hooks: [this.hookFactory.createNotificationHook(worker)] }],
         PreCompact: [{ hooks: [this.hookFactory.createPreCompactHook(worker)] }],
@@ -4822,6 +4974,8 @@ export class WorkerManager {
         const outputTokens = totals?.outputTokens;
 
         // CBM observability: attach per-task metrics to resultMeta before completion.
+        const liveInjector = this.cbmInjectors.get(worker.id);
+        if (liveInjector) worker.cbmInjection = liveInjector.snapshot();
         if (worker.cbmOutcome !== undefined) {
           const cbmMetrics = buildCbmMetrics(worker)!;
           // Merge into resultMeta so all metrics travel together to the server.
@@ -5250,6 +5404,22 @@ export class WorkerManager {
         // task's build wants. A no-op unless the wait budget expired.
         if (stopBackgroundCbmIndex(worker.id)) {
           console.log(`[Worker ${worker.id}] CBM: stopped the backgrounded index at teardown`);
+        }
+
+        // CBM search injection: keep its counts on the worker (a closing turn
+        // or a late completion still reports them), then end the runner's own
+        // graph server and its runtime dir. Before the cache dir goes, for the
+        // same reason as the indexer above.
+        const endedInjector = this.cbmInjectors.get(worker.id);
+        if (endedInjector) {
+          worker.cbmInjection = endedInjector.snapshot();
+          this.cbmInjectors.delete(worker.id);
+        }
+        const injectClient = this.cbmGraphClients.get(worker.id);
+        if (injectClient) {
+          injectClient.stop();
+          this.cbmGraphClients.delete(worker.id);
+          try { rmSync(join('/tmp', `cbm-inj-${worker.id.slice(0, 8)}`), { recursive: true, force: true }); } catch { /* best-effort */ }
         }
 
         // Clean up the per-worker CBM cache dir (ephemeral per design doc §4.2).
@@ -5783,6 +5953,15 @@ export class WorkerManager {
             worker.pendingActionEvents.push({ action: builddAction, ts: Date.now() });
           }
 
+          // CBM search injection: uptake windows and the already-edited set, or
+          // (Codex) the count of searches it could not answer. Never touches the
+          // CBM counters below — the runner's lookups are not agent calls.
+          const cbmInjector = this.cbmInjectors.get(worker.id);
+          if (cbmInjector) cbmInjector.observeToolCall(toolName, input);
+          else if (worker.cbmInjection?.disabledReason === 'unsupported_backend') {
+            recordUnsupportedTrigger(worker.cbmInjection, toolName, input);
+          }
+
           // CBM observability: count per-tool CBM calls and file-access tool calls.
           if (toolName.startsWith('mcp__codebase-memory__')) {
             const cbmTool = toolName.slice('mcp__codebase-memory__'.length);
@@ -5853,8 +6032,10 @@ export class WorkerManager {
             worker.currentAction = redactAction(`Reading ${input.file_path}`);
           } else if (toolName === 'Edit') {
             worker.currentAction = redactAction(`Editing ${input.file_path}`);
+            if (typeof input.file_path === 'string') worker.lastEditedFile = redactAction(worktreeRelative(input.file_path, worker.worktreePath));
           } else if (toolName === 'Write') {
             worker.currentAction = redactAction(`Writing ${input.file_path}`);
+            if (typeof input.file_path === 'string') worker.lastEditedFile = redactAction(worktreeRelative(input.file_path, worker.worktreePath));
           } else if (toolName === 'Bash') {
             const cmd = input.command || '';
             worker.currentAction = redactAction(`Running: ${(cmd as string).slice(0, 40)}...`);
@@ -5881,71 +6062,13 @@ export class WorkerManager {
             // PreToolUse hook denies it and the session continues.
             console.log(`[Worker ${worker.id}] AskUserQuestion with no question text — not parking (toolUseId=${block.id})`);
           } else if (toolName === 'AskUserQuestion') {
-            // Agent is asking a question — standalone status milestone + waiting state
-            const questions = input.questions as Array<{ question: string; header?: string; options?: Array<{ label: string; description?: string }> }> | undefined;
-            const firstQuestion = questions?.[0];
-            const toolUseId = block.id as string | undefined;
-            const questionText = firstQuestion?.question || 'Awaiting input';
-            console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
-            worker.waitingFor = {
-              type: 'question',
-              prompt: questionText,
-              options: firstQuestion?.options,
-              toolUseId,
-            };
-            worker.currentAction = firstQuestion?.header || 'Question';
-            this.addMilestone(worker, { type: 'status', label: `Question: ${firstQuestion?.header || 'Awaiting input'}`, ts: Date.now() });
-
-            if (this.config.inputAsRetry !== false) {
-              // inputAsRetry mode: snapshot state, sync notification, then abort.
-              // The retry/loop system will create a follow-up task with the user's answer.
-              console.log(`[Worker ${worker.id}] inputAsRetry: aborting session — question="${questionText.slice(0, 60)}"`);
-              worker.error = `needs_input: ${questionText}`;
-              // Persist waitingFor on the worker so the post-loop cleanup
-              // re-sends it with the failed update (defense in depth — if the
-              // waiting_input update below races and loses, the cleanup still
-              // carries the structured question to the server).
-              worker.waitingFor = {
-                type: 'question',
-                prompt: questionText,
-                options: firstQuestion?.options as any,
-              };
-              // Await the waiting_input sync — fire-and-forget races against
-              // the cleanup's status=failed update and the server then 409s
-              // this one as "worker already terminated", dropping waitingFor.
-              try {
-                await this.buildd.updateWorker(worker.id, {
-                  status: 'waiting_input',
-                  currentAction: worker.currentAction,
-                  waitingFor: {
-                    type: 'question',
-                    prompt: questionText,
-                    options: firstQuestion?.options as any,
-                  },
-                });
-              } catch (err) {
-                console.warn(`[Worker ${worker.id}] waiting_input sync failed:`, err);
-              }
-              storeSaveWorker(worker);
-              // Abort the subprocess — the post-loop cleanup will detect worker.error
-              // and mark the worker as failed with the needs_input context.
-              const session = this.sessions.get(worker.id);
-              if (session) {
-                session.abortController.abort();
-              }
+            if (worker.questionGate) {
+              // Gated worker: the PreToolUse hook checks the question first and
+              // parks it only if it passes (question-gate.ts). Parking here too
+              // would notify a person about a question the gate sends back.
+              console.log(`[Worker ${worker.id}] AskUserQuestion detected — gated, parking deferred to the PreToolUse hook (toolUseId=${block.id})`);
             } else {
-              // Default mode: block and wait for user input via the debug UI
-              worker.status = 'waiting';
-              this.buildd.updateWorker(worker.id, {
-                status: 'waiting_input',
-                currentAction: worker.currentAction,
-                waitingFor: {
-                  type: 'question',
-                  prompt: questionText,
-                  options: firstQuestion?.options,
-                },
-              }).catch(() => {});
-              storeSaveWorker(worker);
+              await this.parkQuestion(worker, input, block.id as string | undefined);
             }
           }
         }

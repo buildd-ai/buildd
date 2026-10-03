@@ -1,5 +1,5 @@
 /**
- * The landing backstop sweeper (docs/design/pr-landing-guarantee.md §F).
+ * The landing backstop sweeper (knowledge-base: buildd/design/pr-landing-guarantee.md §F).
  *
  * Every door that can land a PR is event-driven, and events get lost. This is
  * the pass that notices an approved, green, unmerged PR nobody is acting on and

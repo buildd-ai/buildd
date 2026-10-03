@@ -1,6 +1,6 @@
 /**
  * Which role slugs are effective for one workspace — the per-task resolution
- * docs/design/role-routing.md §3.1 prescribes, the same scoping
+ * knowledge-base: buildd/design/role-routing.md §3.1 prescribes, the same scoping
  * `checkConnectorRouting` uses: rows of the workspace's team whose
  * `workspaceId` is NULL (team default) or this workspace (override), keyed by
  * slug, the workspace row winning.

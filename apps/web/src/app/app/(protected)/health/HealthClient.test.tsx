@@ -396,6 +396,37 @@ describe('HealthClient — Trend', () => {
     expect(html).not.toContain('data-testid="seat-auth-confession"');
   });
 
+  it('shows the top 8 tools, then every tool grouped by server behind an expander', () => {
+    const names = [
+      'Bash', 'Read', 'Edit', 'Grep', 'mcp__buildd__buildd', 'Write', 'Glob', 'TodoWrite',
+      'mcp__codebase-memory__search_graph', 'mcp__buildd__recall', 'ToolSearch', 'mcp__dispatch__dispatch_read',
+    ];
+    const byTool = names.map((name, i) => ({ name, calls: 100 - i, share: (100 - i) / 1000, tasks: 5, exactCalls: 100 - i, exactTasks: 5 }));
+    const html = render({ consumption: consumption({ tools: { ...consumption().tools, byTool } }) });
+    const section = html.slice(html.indexOf('data-testid="health-section-consumption"'), html.indexOf('data-testid="consumption-by-model"'));
+    const head = section.slice(0, section.indexOf('data-testid="consumption-all-tools"'));
+    // Top rows: the first eight, and nothing below them.
+    expect(head).toContain('TodoWrite');
+    expect(head).not.toContain('search_graph');
+    expect(section).toContain('Show all 12 tools');
+    // The expander lists every tool, exactly once, under its server.
+    expect(section.match(/data-testid="consumption-all-tools-row"/g)?.length).toBe(12);
+    for (const n of names) expect(section).toContain(`title="${n}"`);
+    const groups = section.slice(section.indexOf('data-testid="consumption-all-tools"'));
+    expect(groups.indexOf('Built-in')).toBeLessThan(groups.indexOf('>buildd<'));
+    expect(groups.indexOf('>buildd<')).toBeLessThan(groups.indexOf('>codebase-memory<'));
+    expect(groups.indexOf('>codebase-memory<')).toBeLessThan(groups.indexOf('Other MCP'));
+    // Links on to the drill-down for the finer breakdowns.
+    expect(groups).toContain('href="/app/health/usage?window=7d"');
+    // Coverage label and floor marking are unchanged.
+    expect(section).toContain('≥31/40');
+  });
+
+  it('offers no expander when the top rows already list every tool', () => {
+    const html = render({ consumption: consumption() });
+    expect(html).not.toContain('data-testid="consumption-all-tools"');
+  });
+
   it('marks reconstructed tool coverage as a floor, and keeps the scan caveat beside it', () => {
     const html = render({
       consumption: consumption({
@@ -433,6 +464,7 @@ describe('HealthClient — Trend', () => {
         fileAccessDeltaPct: null,
         deltasSuppressedBecause: 'no_graph_tool_calls_observed',
         topTools: [],
+        tools: { sessions: 0, totalCalls: 0, tools: [] },
       },
     });
     expect(html).toContain('Never queried');

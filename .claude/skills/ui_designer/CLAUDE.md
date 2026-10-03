@@ -1,30 +1,17 @@
 # Buildd UI Designer
 
-Apply the buildd brand identity to all UI work. **Brutalist/editorial control-room**: square corners, hard offset shadows, mono headings, one orange accent. "Everything has a place — the borders do the talking."
+Apply the buildd brand identity to all UI work. **Brutalist/editorial control-room**: square corners, hard offset shadows, mono everywhere, one orange accent. "Everything has a place — the borders do the talking."
 
-Canonical spec: `docs/design/mobile-feed-spec.md`. Executable source of truth: `apps/web/src/app/globals.css`.
+**One file to read: `docs/design/design-system.md`** — direction, tokens, type scale, primitives, copy rules. Executable source of truth: `apps/web/src/app/globals.css` + `apps/web/tailwind.config.ts`; if anything disagrees, `globals.css` wins.
 
 ## Quick Rules
 
-1. **Color = Meaning** — Only the accent + status colors are bright. Everything else is warm neutrals. No gradients, ever.
-2. **Surfaces (dark)** — `#1a1816` > `#211f1c` > `#2a2724` > `#302c28` (warm charcoal, never pure black). Light: `#e7e3db` paper, `#ffffff` cards.
-3. **Accent** — `#f4811f` (classic Apple orange) for CTAs, active states, progress fills. For accent *text on light*, use `--accent-text`/`--accent-deep` (`#b5450c`) — pure orange fails small-text contrast.
-4. **Status** — success/warning/error/info tokens only (`--status-*`). Never as decorative button/card backgrounds.
-5. **Fonts** — IBM Plex Mono (headings, labels, data, meta — the default voice), Outfit (long-form body), Fraunces (marketing only, never product UI).
-6. **Themes** — Day/Night via `[data-theme]` on `:root`. Always use CSS vars, never hardcode hex.
-7. **Corners** — **radius 0 everywhere.** Tailwind `rounded-sm/md/lg/xl` map to 0; never use `rounded-full`/`rounded-[Npx]` on surfaces or buttons.
-8. **Shadows** — hard offset only: `var(--card-shadow)` = `5px 5px 0 0` solid, blur 0. Never `shadow-md`/`shadow-lg`/soft blur.
-9. **Cards** — `var(--card)` bg + **2px `var(--border-strong)` border** + `var(--card-shadow)`. Use the `.card` utility.
-10. **Buttons** — primary: `bg-primary text-white hover:bg-primary-hover`, square. Secondary: `bg-surface-3` + `border-border-strong`. No status-color buttons.
+1. **Color = Meaning** — only the accent and status colours are bright; no gradients.
+2. **Tokens only** — `bg-surface-*`, `bg-card`, `text-text-*`, `border-border-*`, `*-status-*`, `*-accent*`. Never raw hex.
+3. **Accent text** — use `--accent-text` (`text-accent-text`); pure orange fails small-text contrast on Day.
+4. **Corners 0, shadows hard** — no `rounded-[Npx]`, no blur.
+5. **Type scale** — a design-system §3 role, not `text-[Npx]`; nothing under 11px on mobile.
+6. **Primitives** — Chip, Eyebrow, Section, Lede, PrimaryAction, Disclosure, Sheet (design-system §4); don't hand-roll chips or sheets.
+7. **Copy** — plain words in headlines; no paths, symbols or PR numbers (design-system §5).
 
-## Reference Files
-
-Load as needed:
-
-| File | Contents |
-|------|----------|
-| `references/tokens.md` | Full design token table (colors, spacing, radius) |
-| `references/typography.md` | Font stack, type scale, hierarchy |
-| `references/components.md` | Button, badge, input, card, sidebar, nav specs |
-
-**If a reference file contradicts `globals.css`, `globals.css` wins** — flag the drift instead of following the stale doc.
+`references/*.md` now only point at the design reference.

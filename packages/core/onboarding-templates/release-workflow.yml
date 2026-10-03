@@ -1,0 +1,65 @@
+# Release workflow.
+#
+# Run it by hand ("Run workflow") to open a release pull request from
+# `{{sourceBranch}}` into `{{targetBranch}}`. Merging that PR is the release:
+# every push to `{{targetBranch}}` is tagged.
+#
+# Needs: Settings > Actions > General > "Allow GitHub Actions to create and
+# approve pull requests" turned on.
+#
+# TODO(owner): if merging into `{{targetBranch}}` does not deploy by itself, add
+# the deploy step to the `tag` job below.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Open the release PR even if {{targetBranch}} already contains everything on {{sourceBranch}}
+        type: boolean
+        default: false
+  push:
+    branches: [{{targetBranch}}]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-release-pr:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check there is something to release
+        id: ahead
+        run: |
+          ahead=$(git rev-list --count "origin/{{targetBranch}}..origin/{{sourceBranch}}")
+          echo "count=$ahead" >> "$GITHUB_OUTPUT"
+          echo "$ahead commit(s) on {{sourceBranch}} not yet on {{targetBranch}}"
+      - name: Open the release PR
+        if: steps.ahead.outputs.count != '0' || inputs.force
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh pr list --base "{{targetBranch}}" --head "{{sourceBranch}}" --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            echo "Release PR #$existing is already open"
+          else
+            gh pr create --base "{{targetBranch}}" --head "{{sourceBranch}}" \
+              --title "Release $(date -u +%Y-%m-%d)" \
+              --body "Promotes {{sourceBranch}} to {{targetBranch}}."
+          fi
+
+  tag:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag the release
+        run: |
+          tag="{{tagPrefix}}$(date -u +%Y.%m.%d-%H%M)"
+          git tag "$tag"
+          git push origin "$tag"

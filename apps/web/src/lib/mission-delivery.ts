@@ -1,5 +1,5 @@
 /**
- * The mission Delivery stepper (docs/design/mission-feed-mobile-continuity.md,
+ * The mission Delivery stepper (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * W2 "Delivery", addendum D5). Pure.
  *
  * One line, directly under the situation, that answers "what is left before

@@ -33,7 +33,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### knowledge (2)
 
-- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-08-30
+- [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-10-02
   Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
 - [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-08-31
   The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
@@ -107,7 +107,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
 - [Base Refresh Classification](./base-refresh-classification.md) · @max — verified 2026-10-01
   A behind-only PR MUST be refreshed agent-free via a head-pinned branch update; only a verified textual conflict dispatches a conflict agent, and an unknown semantic verdict never clears a merge.
-- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-09-20
+- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-02
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-09-27
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
@@ -122,12 +122,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
 
-## Draft (2)
+## Draft (3)
 
 - [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-01
   Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
+- [Workspace Onboarding](./workspace-onboarding.md) · @max — verified 2026-10-02
+  Onboarding MUST derive a workspace's readiness from observable repo facts without writing, and every change it proposes to the repo MUST arrive as an owner-merged PR from a non-default branch.
 
 ## Superseded (2)
 

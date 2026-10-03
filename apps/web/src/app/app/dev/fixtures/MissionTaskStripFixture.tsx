@@ -56,7 +56,7 @@ export default function MissionTaskStripFixture() {
         <h1 className="mt-1 font-mono text-[18px] font-semibold">{`Mission Landed strip: ${variant}`}</h1>
         <nav aria-label="Fixture states" className="-mx-4 mt-3 flex gap-1.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:px-0">
           {missionTaskStripLinks().map(l => (
-            <a key={l.href} href={l.href} className="shrink-0 border border-border-default bg-surface-2 px-2.5 py-1.5 font-mono text-[12px] text-text-secondary hover:border-border-strong hover:text-text-primary">
+            <a key={l.href} href={l.href} className="shrink-0 border border-border-default bg-surface-2 px-2.5 py-1.5 font-mono text-meta text-text-secondary hover:border-border-strong hover:text-text-primary">
               {l.label}
             </a>
           ))}

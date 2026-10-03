@@ -1,0 +1,29 @@
+# Environment contract, consumed by `buildd env verify`.
+# Generated from the detected toolchain. It proves the repo is runnable before an
+# agent (or CI, or a human on a fresh clone) starts work on it. Every command
+# here was detected; a `TODO(owner)` line means it could not be.
+<!-- keep-if: runtime -->
+toolchain:
+  runtime: {{runtimeYaml}}
+<!-- /keep-if -->
+<!-- keep-if: installCommand -->
+install:
+  command: {{installCommandYaml}}
+<!-- /keep-if -->
+<!-- keep-if: !installCommand -->
+# TODO(owner): no install command detected. Add `install: { command: ... }`.
+<!-- /keep-if -->
+<!-- keep-if: readinessCommand -->
+readiness:
+  # Cheap, meaningful proof the tree is coherent. A failing exit code blocks the agent.
+  command: {{readinessCommandYaml}}
+  timeout: {{readinessTimeout}}
+<!-- /keep-if -->
+<!-- keep-if: !readinessCommand -->
+# TODO(owner): no readiness command detected. Add `readiness: { command: ..., timeout: 120 }`
+# with a fast test or typecheck that proves the tree is coherent.
+<!-- /keep-if -->
+<!-- keep-if: requiredEnv -->
+env:
+  required: [{{requiredEnv}}]
+<!-- /keep-if -->

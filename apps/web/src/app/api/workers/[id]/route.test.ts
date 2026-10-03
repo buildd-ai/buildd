@@ -316,6 +316,11 @@ mock.module('@/lib/migration-inspector', () => ({
   inspectPullRequestMigrations: mockInspectPullRequestMigrations,
 }));
 
+// The task "What shipped" record is its own module (lib/task-shipped-store);
+// here only that completion hands it the agent's output.
+const mockStoreTaskShippedRecord = mock((_input: unknown) => Promise.resolve(null));
+mock.module('@/lib/task-shipped-store', () => ({ storeTaskShippedRecord: mockStoreTaskShippedRecord }));
+
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mock(() => Promise.resolve()),
   // Include checkDependsOnResolved so this mock doesn't break downstream
@@ -2458,6 +2463,52 @@ describe('PATCH /api/workers/[id]', () => {
       c[0]?.title === 'Agent needs your input' && c[0]?.url?.includes('/respond')
     )).toBe(true);    // ...on the channel of the team that owns the workspace, never the operator's.
     expect(mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention' && 'workspaceId' in c[0])).toBe(true);
+  });
+
+  it('stores a sanitized question brief and puts its context and default in the notification', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) };
+      }),
+    });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null });
+    mockNotify.mockClear();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'waiting_input',
+        waitingFor: {
+          type: 'question',
+          prompt: 'Should it use local time or UTC?',
+          context: 'isWeekend() decides weekend surcharges.',
+          options: [{ label: 'Local time', description: 'Own calendar.', consequence: 'Own calendar.', recommended: true }, { label: 'UTC', consequence: 42 }],
+          recommended: { label: 'Local time', reason: 'Own calendar.' },
+          where: { taskTitle: 'Weekend surcharge', branch: 7 },
+        },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+
+    expect(capturedSet.waitingFor).toMatchObject({
+      type: 'question',
+      prompt: 'Should it use local time or UTC?',
+      context: 'isWeekend() decides weekend surcharges.',
+      recommended: { label: 'Local time', reason: 'Own calendar.' },
+      where: { taskTitle: 'Weekend surcharge' },
+    });
+    expect(capturedSet.waitingFor.options[1]).toEqual({ label: 'UTC' });
+    const call = mockNotify.mock.calls.find((c: any[]) => c[0]?.title === 'Agent needs your input');
+    expect(call![0].message.split('\n')).toEqual([
+      'Should it use local time or UTC?',
+      'isWeekend() decides weekend surcharges.',
+      'Recommended: Local time. Own calendar.',
+    ]);
   });
 
   it('clears waitingFor when worker resumes running', async () => {
@@ -10071,6 +10122,26 @@ describe('PATCH /api/workers/[id]', () => {
       // Must contain structured machine-generated content
       expect(capturedTaskSet.result.summary).toContain('Completed in 10 turns');
       expect(capturedTaskSet.result.summary).toContain('PR #42');
+    });
+
+    it('hands the completion output to the task What shipped store', async () => {
+      mockStoreTaskShippedRecord.mockClear();
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-sensitive' }]) })) })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      setupSensitiveWorker({ branch: 'buildd/test-branch', prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42, turns: 3 });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
+      const structuredOutput = { shipped: { lede: 'A plain sentence about what changed.' } };
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'done', summarySource: 'agent', structuredOutput },
+      });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(mockStoreTaskShippedRecord).toHaveBeenCalledTimes(1);
+      expect(mockStoreTaskShippedRecord.mock.calls[0][0]).toMatchObject({ structuredOutput, summarySource: 'agent' });
     });
 
     it('standard workspace preserves currentAction prose unchanged', async () => {

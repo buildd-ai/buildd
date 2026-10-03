@@ -14,7 +14,7 @@ import { eq, and, inArray, isNotNull, isNull, sql, desc } from 'drizzle-orm';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import { policyValue } from '@/lib/policy-overrides';
 
 type WorkspacePolicyRow = Parameters<typeof resolvePolicy>[0] & { id: string; name: string };
 
@@ -121,6 +121,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
           body: true,
           status: true,
           supersededByPrNumber: true,
+          abandonedAt: true,
           createdAt: true,
         },
       })
@@ -196,7 +197,7 @@ export async function loadPrAttention(wsIds: string[], opts: { workerIds?: strin
       const completedRetries = retries.filter(t =>
         ['completed', 'failed', 'cancelled'].includes(t.status),
       );
-      if (completedRetries.length >= DEFAULT_MAX_CONFLICT_ITERATIONS) {
+      if (completedRetries.length >= policyValue('maxConflictIterations')) {
         // completedRetries is sorted desc by createdAt — first = most recent
         deadZoneExhaustedMap.set(w.id, { lastRetryTaskId: completedRetries[0]?.id ?? null });
       }

@@ -1,5 +1,5 @@
 /**
- * Model plans for sibling apps: `POST /api/ai/plan` (docs/design/shared-ai-kit.md §2).
+ * Model plans for sibling apps: `POST /api/ai/plan` (knowledge-base: buildd/design/shared-ai-kit.md §2).
  *
  * An app asks "for tier X, surface Y, task kind Z, with these provider keys,
  * which model do I call, and may I spend?". buildd answers from the same

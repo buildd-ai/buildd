@@ -228,6 +228,7 @@ export default async function MissionDetailPage({
             body: true,
             status: true,
             supersededByPrNumber: true,
+            abandonedAt: true,
             createdAt: true,
           },
           orderBy: desc(missionNotes.createdAt),
@@ -842,7 +843,7 @@ export default async function MissionDetailPage({
   const goalCriteriaStateFull = (mission as any).goalCriteriaState as GoalCriteriaState | null;
   const autoVerifyFlag = (mission as any).autoVerify as boolean | null;
 
-  // ── Mission feed (docs/design/mission-feed-mobile-continuity.md) ──────────
+  // ── Mission feed (knowledge-base: buildd/design/mission-feed-mobile-continuity.md) ──────────
   // Every mission task in the one input shape the pulse, the grouped list and
   // the task sheet all read — so the header pulse, the list and `n / N` count
   // the same rows (addendum D1). Attempts and bookkeeping are folded by the

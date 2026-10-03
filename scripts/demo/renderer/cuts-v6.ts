@@ -26,6 +26,8 @@ const union = (rs: Rect[]): Rect => {
 };
 const center = (r: Rect) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const ghost = (r: Rect): Rect => ({ ...center(r), w: 0, h: 0 });
+/** A tap on a control: the mark outlines the control (demo:review: a square at its centre cut through the label). */
+const press = (at: number, rect: Rect) => ({ at, ...center(rect), rect });
 const at = (k: CamKey, t: number): CamKey => ({ ...k, at: t });
 
 /**
@@ -129,7 +131,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     caption: 'It drafts the mission, and what done means.',
     spot: [key(0.2, [crit]), { ...key(3.0, [edit]), cross: true }],
     camera: [at(f('s02-thread', specCrop, 1.1), 0), at(f('s02-thread', specCrop, 1.06), 1)],
-    taps: [{ at: 3.9, ...center(edit) }],
+    taps: [press(3.9, edit)],
     controls: [edit, confirm],
   };
 
@@ -148,8 +150,17 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     caption: 'When it reads right, you confirm.',
     spot: [key(0.2, [crit]), { ...key(1.4, [confirm]), cross: true }],
     camera: [at(f('s02-thread', specCrop, 1.12), 0), at(f('s02-thread', specCrop, 1.12), 1)],
-    taps: [{ at: 2.6, ...center(confirm) }],
+    taps: [press(2.6, confirm)],
     controls: [confirm, edit],
+  };
+
+  // After Confirm: the thread shows the filed mission (its object card). The plan beat ends here.
+  const obj = s.box('s04-rule-card', 'object-card');
+  const filed: Shot = {
+    id: 'filed', layout: 'screen', dur: 4, images: [s.img('s04-rule-card')],
+    caption: 'Filed. Now the agents start.',
+    spot: [key(0.2, [obj])],
+    camera: [at(f('s04-rule-card', obj, 1.25), 0), at(f('s04-rule-card', obj, 1.18), 1)],
   };
 
   const phrase = s.text('s04-rule-card', 'From now on, keep the public API backward compatible.');
@@ -168,7 +179,7 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
       const g = (rect: Rect, pad: number) => aim({ ...o, minPx: Math.min(o.minPx, RULE_MIN_PX) }, s.img('s04-rule-card'), rect, pad);
       return [at(f('s04-rule-card', phrase.block, 2.0), 0), at(f('s04-rule-card', phrase.block, 2.0), 0.33), at(g(union([phrase.block, rcard]), 1.12), 0.55), at(g(rcard, 1.25), 1)];
     })(),
-    taps: [{ at: 4.3, ...center(save) }],
+    taps: [press(4.3, save)],
     controls: [save],
   };
 
@@ -201,31 +212,47 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     camera: [at(f('s08-home', fleetBox, 1.1), 0), at(f('s08-home', fleetBox, 1.1), 3.4 / 5.5), at(f('s08-home', agents, 2.2), 1)],
     plucks: live.map((_, i) => ({ at: 0.5 + i * 0.42, note: i })),
   };
+  if (o.beat) {
+    // A beat stays on the runner table (the machines its headline names); the push onto "6/8" is film-only.
+    // It lights the runner column (each machine and its two slots), sized to read and never cropped:
+    // the whole table left its text ~7px tall at 700 wide (demo:review).
+    const runners = union(s.boxes('s08-home', 'fleet-runner'));
+    const img = s.img('s08-home');
+    const css = img.width / 2;
+    const fits = o.frame.width / (runners.w * css * 1.01);
+    const g = (pad: number, t: number) => aim({ ...o, minPx: Math.min(o.minPx, fits) }, img, runners, pad, t);
+    fleet.spot = [key(0, [runners])];
+    fleet.camera = [g(1.03, 0), g(1.02, 1)];
+  }
 
   const opt = s.box('s09-question', 'question-option', 0, 'phone');
   const question: Shot = {
     id: 'question', layout: 'phone', dur: 5.5,
     images: [s.img('s09-question', 'phone'), { ...s.img('s14-answered', 'phone', 3.3), fade: 0 }],
-    caption: [{ at: 0, text: 'When a choice matters, it asks.' }, { at: 2.8, text: 'You answer from your phone.' }],
+    caption: [{ at: 0, text: 'When a choice matters, it asks.' }, { at: 2.2, text: 'You answer from your phone.' }],
     camera: [{ at: 0, cx: 0.5, cy: 0.5, zoom: 1 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 1.04 }],
-    taps: [{ at: 3.1, ...center(opt) }],
+    // The tap ends before the still swaps to the answered layout at 3.3s.
+    taps: [press(2.3, opt)],
   };
   if (o.beat) {
-    // A beat crops into the phone screen itself (no device): the question and its options.
+    // A beat crops into the phone screen itself (no device): the question and its options. After the
+    // swap the light lets go: the spotlight's boxes belong to the question layout, not the answered one.
+    // (The film keeps the device, with its caption beside it; demo:review notes its text is small.)
     const all = union(s.boxes('s09-question', 'question-option', 'phone'));
     const lift = Math.min(all.y, 0.3); // up to the question itself, not just its options
     const ask = { x: all.x, y: all.y - lift, w: all.w, h: all.h + lift };
     const phone = s.img('s09-question', 'phone');
     Object.assign(question, {
       layout: 'screen',
-      spot: [key(0.3, [ask]), key(2.6, [opt])],
+      spot: [key(0.3, [ask]), key(1.4, [opt]), { ...key(3.3, [ask], 0), cross: true }],
       camera: [aim(o, phone, ask, 1.15, 0), aim(o, phone, ask, 1.1, 1)],
     });
   }
 
   const routes = s.boxes('s10-screens', 'visual-review-route');
+  const thumbs = s.boxes('s10-screens', 'visual-review-thumb');
   const screens: Shot = {
-    id: 'screens', layout: 'screen', dur: 4, images: [s.img('s10-screens')],
+    id: 'screens', layout: 'screen', dur: 4, images: [s.img('s10-screens')], artifacts: thumbs,
     caption: 'It screenshots its own change, phone and desktop.',
     spot: [key(0.3, [routes[0], ghost(routes[0])]), key(2.0, [routes[0], routes[1]])],
     // A held frame on both routes; only the light moves.
@@ -234,8 +261,10 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
 
   const btn = s.box('s11-deck', 'deck-looks-right');
   const deck = s.box('s11-deck', 'visual-review-deck');
-  // For a beat: the buttons and the bottom of the desktop screenshot just above them.
-  const verdict: Rect = { x: btn.x - 0.12, y: btn.y - 0.18, w: btn.w + 0.12, h: btn.h + 0.18 };
+  // For a beat: the verdict, never cropped. Both buttons where they fit at a readable zoom (desktop),
+  // Looks right alone on a phone. The whole deck is too wide to read, so a beat does not light it.
+  const pair: Rect = { x: Math.max(0, btn.x - btn.w - 0.012), y: btn.y - 0.03, w: 2 * btn.w + 0.012, h: btn.h + 0.03 };
+  const verdict = o.frame.height > o.frame.width ? btn : pair;
   const review: Shot = {
     id: 'review', layout: 'screen', dur: 4.5,
     images: [s.img('s11-deck'), { ...s.img('s12-deck-agreed', 'desktop', 3.0), fade: 0 }],
@@ -243,11 +272,14 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     // Deck to button is a cross-fade: a glide would drag a lit band across both buttons.
     spot: [key(0.3, [deck], o.dim * 0.8), { ...key(1.8, [btn], o.dim * 0.8), cross: true }, key(3.2, [btn], 0)],
     camera: o.beat
-      ? [f('s11-deck', deck, 1.1, 0), f('s11-deck', deck, 1.1, 1.2 / 4.5), f('s11-deck', verdict, 1.1, 2.0 / 4.5), f('s11-deck', verdict, 1.1, 1)]
+      ? [f('s11-deck', verdict, 1.08, 0), f('s11-deck', verdict, 1.06, 1)]
       : [{ at: 0, cx: 0.5, cy: 0.5, zoom: 0.8 }, { at: 1, cx: 0.5, cy: 0.5, zoom: 0.815 }],
-    taps: [{ at: 2.8, ...center(btn) }],
+    taps: [press(2.8, btn)],
     controls: [btn],
+    // The screenshot in the deck (everything above its verdict bar) is a picture of a page.
+    artifacts: [{ x: deck.x, y: deck.y, w: deck.w, h: Math.max(0, btn.y - 0.03 - deck.y) }],
   };
+  if (o.beat) review.spot = [key(0.3, [verdict]), { ...key(1.6, [btn]), cross: true }, key(3.2, [btn], 0)];
 
   const rec = s.box('s13-complete', 'mission-completion-record');
   const band = s.box('s13-complete', 'goal-band');
@@ -259,8 +291,21 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     camera: [at(f('s13-complete', union([band, rec]), 1.1), 0), at(f('s13-complete', union([band, rec]), 1.06), 1)],
     chime: 0.9,
   };
+  if (o.beat) {
+    // A beat holds the goal band alone, large enough to read at page size: the
+    // "4/4 criteria" is what its headline claims. One wide crop on band and
+    // record left the band's text ~5px tall at 700px wide, and a pan between
+    // the two smeared at the loop seam (demo:review caught both).
+    const img = s.img('s13-complete');
+    // As large as reads well, but never wider than the frame: on a phone the band's full width sets the zoom.
+    const css = img.width / 2;
+    const fits = o.frame.width / (band.w * css * 1.07);
+    const big = (pad: number, t: number) => aim({ ...o, minPx: Math.min(2.2, fits) }, img, band, pad, t);
+    done.spot = [key(0.3, [band])];
+    done.camera = [big(1.1, 0), big(1.07, 1)];
+  }
 
-  return [ask, reads, criteria, editing, confirming, rule, rules, board, fleet, question, screens, review, done];
+  return [ask, reads, criteria, editing, confirming, filed, rule, rules, board, fleet, question, screens, review, done];
 }
 
 /**
@@ -314,7 +359,7 @@ function keyStills(shots: Shot[], want: Record<string, [string, number]>): Recor
 }
 
 /** Shots only the site's beats use: the film goes straight from the rule card to the Board. */
-const BEAT_ONLY = ['rules'];
+const BEAT_ONLY = ['rules', 'filed'];
 
 export function v6aFilm(s: Stills): Cut {
   const shots = v6aShots(s).filter((x) => !BEAT_ONLY.includes(x.id));
@@ -322,7 +367,7 @@ export function v6aFilm(s: Stills): Cut {
     'fanout-mid': ['board', 1.6], approval: ['confirm', 2.9], 'visual-review': ['review', 2.2], done: ['done', 3.0],
     'chat-read': ['reads', 2.8], criteria: ['criteria', 2.0], edit: ['edit', 3.8], 'rule-origin': ['rule', 1.6], 'fleet-mid': ['fleet', 2.2],
   });
-  return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: true, theme: 'dark', keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
+  return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: true, theme: 'dark', dip: true, keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
 }
 
 export function v6aHero(s: Stills): Cut {
@@ -370,13 +415,24 @@ export function v6xFilm(s: Stills): Cut {
   return { name: 'full', ...FRAME, fade: FADE, fadeOut: 0.9, captions: false, theme: 'dark', keyStills: keys, poster: keys['fleet-mid'] ?? 0, shots };
 }
 
-export function v6xHero(s: Stills, theme: 'dark' | 'light' = 'dark'): Cut {
-  const all = v6xShots(s);
-  const pick = (id: string) => ({ ...all.find((x) => x.id === id)!, dur: 4, taps: undefined });
-  const shots = [pick('plan'), pick('fleet'), pick('review'), pick('done')];
-  // Poster: most of the fleet lit. Frame 0 is the plan before any tile lands.
-  const poster = +(shotStarts({ shots })[1] + 3).toFixed(2);
-  return { name: 'hero', ...FRAME, fade: FADE, loop: true, captions: false, theme, poster, shots };
+/**
+ * The site hero, after the pitch "Agents say they're done. buildd checks.":
+ * four checks a person wrote and four agents' bars. Each agent fills its bar
+ * (it says it's done), then buildd ticks its check; after the last, one
+ * "Done.". One shot that resets to its first frame, so the loop has no seam.
+ * Big shapes, four short lines of text. `mobile` lays it out for 720x900.
+ */
+export function v6xHero(_s: Stills, theme: 'dark' | 'light' = 'dark', o: { mobile?: boolean } = {}): Cut {
+  const motion: Motion = {
+    kind: 'verify', label: 'Done when',
+    checks: ['Invoices show EUR', 'Public API intact', 'EUR invoice pays', 'Rounding written down'],
+    colors: [B, B, R, B],
+    from: 0.5, stagger: 0.3, grow: 2.6, spread: 1.1, lag: 0.45, doneAt: 8.5, resetAt: 12.0, resetDur: 1.2,
+  };
+  const frame = o.mobile ? { width: 720, height: 900, fps: FRAME.fps } : FRAME;
+  const shots: Shot[] = [{ id: 'verify', layout: 'motion', dur: 13.2, images: [], motion }];
+  // Poster: every check ticked and Done up.
+  return { name: o.mobile ? 'hero-mobile' : 'hero', ...frame, fade: FADE, loop: true, captions: false, theme, poster: 10.5, shots };
 }
 
 // ── Checks run by render.ts before a frame is drawn (and by the tests) ─────
@@ -430,8 +486,8 @@ export function askButtonShots(manifest: any): string[] {
 export const BEATS = ['spec', 'plan', 'rules', 'fleet', 'decide', 'review', 'done'] as const;
 export type Beat = (typeof BEATS)[number];
 const BEAT_SHOTS: Record<Beat, string[]> = {
-  spec: ['criteria', 'edit'],
-  plan: ['confirm', 'board'],
+  spec: ['criteria'],
+  plan: ['confirm', 'filed'],
   rules: ['rule', 'rules'],
   fleet: ['fleet'],
   decide: ['question'],
@@ -451,8 +507,10 @@ export function v6aBeats(s: Stills, opts: { mobile?: boolean; theme?: 'dark' | '
   // Taps stay: they are also the on-screen tap ring. Beats are encoded silent.
   const quiet = (x: Shot): Shot => ({ ...x, caption: undefined, chime: undefined });
   return BEATS.map((beat) => ({
-    name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme,
+    name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme, dip: true,
     shots: BEAT_SHOTS[beat].map((id) => quiet(all.find((x) => x.id === id)!)),
+    // The spec poster is the criteria list fully lit (render.ts otherwise takes 60% in, mid-typing).
+    ...(beat === 'spec' ? { poster: 2.0 } : {}),
   }));
 }
 

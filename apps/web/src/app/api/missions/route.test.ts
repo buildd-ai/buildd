@@ -256,6 +256,48 @@ describe('POST /api/missions', () => {
     expect(insertedScheduleValues).toBeNull();
   });
 
+  // The pre-filed-task heuristic in runMission() only ever sees tasks filed
+  // BEFORE this same create request — it runs runMission() synchronously as
+  // part of mission creation, before the caller has had a chance to file
+  // anything. decomposition:"none" lets a creator who is about to file the
+  // task chain itself say so up front, persisted before the organizer's
+  // planning task exists (see the create insert values below).
+  it('decomposition:"none" sets decompositionSkipped=true on the mission row at create time', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Pre-filed by creator', orchestrationMode: 'auto', decomposition: 'none' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.decompositionSkipped).toBe(true);
+  });
+
+  it('decomposition:"auto" (default) does not set decompositionSkipped at create time', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Let the organizer decompose' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues).not.toBeNull();
+    expect(insertedMissionValues.decompositionSkipped).toBeUndefined();
+  });
+
+  it('rejects an invalid decomposition value', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad value', decomposition: 'skip-everything' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/decomposition/i);
+  });
+
   it('API-created mission auto-enables heartbeat without default active hours (opt-in)', async () => {
     mockGetCurrentUser.mockReturnValue(null as any);
     mockAuthenticateApiKey.mockReturnValue({ id: 'api-1', level: 'admin', teamId: 'team-1' } as any);

@@ -183,6 +183,41 @@ describe('buildPromptWithComposition — task description truncation', () => {
   });
 });
 
+describe('buildPromptWithComposition — design source', () => {
+  const url = 'https://claude.ai/artifact/exampleCanvas1';
+  const withDesign = (designSource: Record<string, unknown>, claudeAiArtifacts?: 'read' | 'publish') => baseCtx({
+    task: { ...baseCtx().task, context: { designSource } } as unknown as BuilddTask,
+    worker: { id: 'worker-1', workspaceName: 'ws', claudeAiArtifacts } as unknown as LocalWorker,
+  });
+  const section = (ctx: PromptContext) => {
+    const { promptText, sections } = buildPromptWithComposition(ctx);
+    return { promptText, rendered: sections.find(s => s.name === 'design-source')!.rendered };
+  };
+
+  it('renders nothing without a design source', () => {
+    expect(section(baseCtx()).rendered).toBe(false);
+  });
+
+  it('an opted-in worker is told to read the canvas with the Artifact tool', () => {
+    const { promptText, rendered } = section(withDesign({ sourceUrl: url, artifactKeys: ['design:x/main'] }, 'read'));
+    expect(rendered).toBe(true);
+    expect(promptText).toContain(`Artifact list url=${url} scope=files`);
+    expect(promptText).toContain('design:x/main');
+  });
+
+  it('a worker that is not opted in uses the copy-in keys and never the URL', () => {
+    const { promptText } = section(withDesign({ sourceUrl: url, artifactKeys: ['design:x/main'] }));
+    expect(promptText).toContain('design:x/main');
+    expect(promptText).not.toContain('Artifact list');
+    expect(promptText).toContain('Do not fetch claude.ai');
+  });
+
+  it('not opted in and no copy-in keys: says the design is unreachable instead of guessing', () => {
+    const { promptText } = section(withDesign({ sourceUrl: url }));
+    expect(promptText).toContain('no copy-in artifact keys');
+  });
+});
+
 describe('buildPromptWithComposition — per-section byte accounting', () => {
   it('reports every known section, rendered or not', () => {
     const ctx = baseCtx();
@@ -195,6 +230,7 @@ describe('buildPromptWithComposition — per-section byte accounting', () => {
       'user-preferences',
       'resolved-context-providers',
       'task-description',
+      'design-source',
       'work-kind',
       'handoff-requirement',
       'output-requirement',

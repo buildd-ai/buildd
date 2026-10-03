@@ -1,6 +1,6 @@
 /**
  * What the task page may call an "Execution plan", and what it may print twice
- * (docs/design/mission-feed-mobile-continuity.md, addendum D9). Pure.
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md, addendum D9). Pure.
  *
  * A reviewer pass or a retry is an attempt at its parent, not a step of a plan.
  * Children of a builder are almost always attempts, so the page's sibling/child

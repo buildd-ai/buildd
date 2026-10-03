@@ -10,17 +10,14 @@
  * happens at /complete.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import { knowledgeIngestJobs } from '@buildd/core/db/schema';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 import { FULL_LEASE_MS } from '@/lib/knowledge-ingest-lease';
 import { isUuid } from '@/lib/uuid';
-import {
-  shouldIngestFile,
-  classifyIngestCorpus,
-} from '@buildd/core/knowledge-store/ingest-filter';
+import { ingestFileBatch } from '@/lib/knowledge-ingest-batch';
 
 // Stay under serverless request-body limits (~4.5 MB) with JSON overhead room.
 export const MAX_BATCH_TOTAL_BYTES = 4 * 1024 * 1024;
@@ -111,77 +108,8 @@ export async function POST(
     });
 
   try {
-    // Dynamic import keeps this module light for route tests (the store pulls
-    // in drizzle/pgvector machinery at load time) — same as knowledge-ingest.ts.
-    const { PgVectorStore, getVoyageEmbedder, buildNamespace, ingestFiles } =
-      await import('@buildd/core/knowledge-store');
-    const store = new PgVectorStore(getVoyageEmbedder('voyage-code-3'));
-
-    let filesDeleted = 0;
-    for (const path of deletions) {
-      const corpus = classifyIngestCorpus(path);
-      if (!corpus) continue;
-      await store.deleteBySource(buildNamespace(job.workspaceId, corpus), { sourcePath: path });
-      filesDeleted++;
-    }
-
-    // Build per-corpus file lists, checking file_hash to skip unchanged files.
-    const sources: Record<'code' | 'docs', Array<{ path: string; content: string; fileHash?: string }>> = {
-      code: [],
-      docs: [],
-    };
-    let filesSkipped = 0;
-    let skippedUnchanged = 0;
-    for (const file of files) {
-      const sizeBytes = Buffer.byteLength(file.content, 'utf8');
-      if (!shouldIngestFile(file.path, { sizeBytes })) {
-        filesSkipped++;
-        continue;
-      }
-      const corpus = classifyIngestCorpus(file.path);
-      if (!corpus) {
-        filesSkipped++;
-        continue;
-      }
-      // Hash-skip: if the caller supplied a fileHash and a chunk already exists
-      // for this path with the same file_hash, the file is unchanged — skip it.
-      if (file.fileHash) {
-        const ns = buildNamespace(job.workspaceId, corpus);
-        const existing = await db.execute(
-          sql`SELECT 1 FROM knowledge_chunks
-              WHERE namespace = ${ns}
-                AND source_path = ${file.path}
-                AND file_hash = ${file.fileHash}
-                AND is_current = true
-              LIMIT 1`,
-        );
-        if (existing.rows.length > 0) {
-          skippedUnchanged++;
-          // Bump updated_at so the sweep at job completion doesn't prune these chunks.
-          await db.execute(
-            sql`UPDATE knowledge_chunks
-                SET updated_at = NOW()
-                WHERE namespace = ${ns}
-                  AND source_path = ${file.path}
-                  AND file_hash = ${file.fileHash}`,
-          );
-          continue;
-        }
-      }
-      sources[corpus].push(file);
-    }
-
-    let filesIngested = 0;
-    let chunksUpserted = 0;
-    for (const corpus of ['code', 'docs'] as const) {
-      if (sources[corpus].length === 0) continue;
-      const sourceFiles = sources[corpus].map(f => ({ ...f }));
-      const res = await ingestFiles(store, job.workspaceId, corpus, sourceFiles);
-      filesIngested += res.files;
-      chunksUpserted += res.chunks;
-    }
-
-    return NextResponse.json({ filesIngested, chunksUpserted, filesSkipped, filesDeleted, skippedUnchanged });
+    const result = await ingestFileBatch(job.workspaceId, files, deletions);
+    return NextResponse.json(result);
   } catch (err) {
     console.error(`[knowledge-ingest] files batch failed for job ${id}:`, err);
     return NextResponse.json({ error: 'Batch ingest failed' }, { status: 500 });

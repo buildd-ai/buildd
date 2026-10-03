@@ -1197,6 +1197,7 @@ export function buildCbmMetrics(worker: {
   cbmSeedRefresh?: SeedRefreshOutcome;
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
+  cbmInjection?: CbmMetrics['injection'];
 }): CbmMetrics | undefined {
   if (worker.cbmOutcome === undefined) return undefined;
   const cbmCounts = worker.cbmToolCounts ?? {};
@@ -1220,6 +1221,8 @@ export function buildCbmMetrics(worker: {
     readCount: fileAccess.read,
     grepCount: fileAccess.grep,
     globCount: fileAccess.glob,
+    // The runner's own lookups, kept apart from the agent's counters above.
+    ...(worker.cbmInjection && { injection: worker.cbmInjection }),
   };
 }
 

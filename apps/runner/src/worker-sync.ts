@@ -1,4 +1,5 @@
 import { TERMINAL_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+import { questionPayload } from './question-gate.js';
 import type { LocalWorker, CheckpointEventType } from './types';
 import type { BuilddClient } from './buildd';
 import type { LocalUIConfig } from './types';
@@ -450,11 +451,14 @@ export class WorkerSync {
         consumeInstructions: true,
       } as Parameters<BuilddClient['updateWorker']>[1] & { consumeInstructions?: boolean };
       if (worker.status === 'waiting' && worker.waitingFor) {
-        update.waitingFor = {
-          type: worker.waitingFor.type,
-          prompt: worker.waitingFor.prompt,
-          options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
-        };
+        update.waitingFor = worker.waitingFor.type === 'question'
+          // Keep the question brief (context, per-option consequence, recommended, where).
+          ? questionPayload(worker.waitingFor) as any
+          : {
+              type: worker.waitingFor.type,
+              prompt: worker.waitingFor.prompt,
+              options: worker.waitingFor.options?.map((o: any) => typeof o === 'string' ? o : o.label),
+            };
       }
       let response: Awaited<ReturnType<BuilddClient['updateWorker']>>;
       try {

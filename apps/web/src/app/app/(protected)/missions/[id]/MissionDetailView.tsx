@@ -1,5 +1,5 @@
 /**
- * The mission detail page's composition (docs/design/mission-feed-mobile-continuity.md,
+ * The mission detail page's composition (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * W2 and W3). `page.tsx` loads and derives; this renders, in the order the
  * page answers its question — "is this mission done, and if not, what is it
  * waiting on and what is left":

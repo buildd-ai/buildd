@@ -1,4 +1,6 @@
 import type { TaskStatusValue, WorkerStatusValue, MissionStatusValue } from './status';
+import type { RunnerFleetIdentity } from './runner-fleet';
+import type { ClaudeAiArtifactAccess } from './claude-ai-artifacts';
 
 // ============================================================================
 // UTILS
@@ -858,6 +860,36 @@ export interface WaitingForOption {
   label: string;
   description?: string;
   recommended?: boolean;
+  /**
+   * What choosing this option leads to, in one line (question brief). Absent
+   * on older questions; renderers fall back to `description`.
+   */
+  consequence?: string;
+}
+
+/**
+ * Where a question was asked from, filled in by the runner from facts it has
+ * (never by the agent): the task, its branch, the file last edited.
+ */
+export interface QuestionWhere {
+  taskTitle?: string;
+  branch?: string;
+  file?: string;
+}
+
+/** Claim-time marker for the question-gate experiment (see ClaimTasksResponse). */
+export interface QuestionGateMarker {
+  experimentId: string;
+  policyVersion: number;
+  arm: 'control' | 'treatment';
+  /** Pushbacks per worker before a question is sent as-is. */
+  maxPushbacks: number;
+}
+
+/** The agent's recommended default for a question, and why (one line). */
+export interface QuestionRecommendation {
+  label: string;
+  reason?: string;
 }
 
 export interface WaitingFor {
@@ -871,6 +903,16 @@ export interface WaitingFor {
    * rather than accepted silently.
    */
   contractViolation?: boolean;
+  /**
+   * Question brief (module header: packages/core/question-brief.ts): at most two
+   * sentences saying which task this is and exactly what is being decided.
+   * Optional; questions without it still render.
+   */
+  context?: string;
+  /** The agent's recommended option and why. */
+  recommended?: QuestionRecommendation;
+  /** Deterministic origin facts the runner adds. */
+  where?: QuestionWhere;
 }
 
 /** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */
@@ -1125,6 +1167,13 @@ export interface WorkerEnvironment {
    * runner rolled itself back.
    */
   updateCanary?: RunnerUpdateCanaryReport;
+  /**
+   * What this runner is in the fleet (./runner-fleet): a `--once` run reports
+   * `ephemeral: true`, concurrency 1, its executor and, in a cloud container,
+   * the dispatcher's group. Absent on host runners and on older builds; the
+   * server then derives it from the heartbeat URL.
+   */
+  fleet?: RunnerFleetIdentity;
 }
 
 export interface RunnerUpdateCanaryReport {
@@ -1534,6 +1583,18 @@ export interface ClaimTasksResponse {
      * no mount, no steering, every CBM tool denied.
      */
     cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
+    /**
+     * Set when the team runs a `question_gate` experiment and the runner sent
+     * the `question_gate` feature. The runner then routes AskUserQuestion
+     * through POST /api/workers/[id]/question-check before parking.
+     */
+    questionGate?: QuestionGateMarker;
+    /**
+     * claude.ai artifact access for this session, resolved from the role's
+     * `metadata.claudeAiArtifacts` and the task's `context.claudeAiArtifacts`.
+     * Absent means off. See claude-ai-artifacts.ts.
+     */
+    claudeAiArtifacts?: ClaudeAiArtifactAccess;
     /** Decrypted server-managed API key (inline) */
     serverApiKey?: string;
     /** Decrypted server-managed OAuth token (inline) */
@@ -1547,6 +1608,12 @@ export interface ClaimTasksResponse {
     claudeAccessToken?: string;
     /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
     claudeTokenExpiresAt?: string | null;
+    /**
+     * OAuth scopes the managed claude_credential was granted, when recorded
+     * (the dashboard login records them). The runner writes these into the
+     * worker's .credentials.json; absent means the legacy `['user:inference']`.
+     */
+    claudeTokenScopes?: string[];
     /**
      * The team's agent model endpoint, when it won the §2 ranking for this task
      * (docs/design/agent-model-endpoint.md). When set, serverApiKey,
@@ -1764,7 +1831,7 @@ export interface LoopHistoryEntry {
  * conformance checks and audits can compare the two. First write wins:
  * `declared` is set at creation, or on the first runtime mutation for a task
  * created before this column existed. See
- * docs/design/conflict-aware-orchestration.md §1.
+ * knowledge-base: buildd/design/conflict-aware-orchestration.md §1.
  */
 export interface PathDeclaration {
   declared: string[] | null;
@@ -2760,9 +2827,41 @@ export interface GateAnalytics {
   truncatedGates: number;
 }
 
+/** One full knowledge-ingest job no runner has taken (GET /api/health/failures `stalledIngest`). */
+export interface StalledIngestJob {
+  id: string;
+  workspaceId: string;
+  /** "owner/name" */
+  repo: string;
+  /** `stalled`: queued past the stall window, waiting on the serverless fallback. `fallback`: the fallback is running it. */
+  state: 'stalled' | 'fallback';
+  /** How long the job has waited (queued age, or since creation once the fallback runs it). */
+  ageMs: number;
+  attempts: number;
+  /** Why the last runner to claim it handed it back (e.g. its checkout cannot fetch). */
+  checkoutReason?: string;
+  /** Fallback cursor over the repo's ingestible files. */
+  progress?: { cursor: number; total: number | null };
+  /** Last failing fallback slice, when the most recent tick failed. */
+  lastError?: string;
+}
+
+/**
+ * Full knowledge-ingest jobs that are stuck or being rescued. These never
+ * become failed workers, so without this block they are invisible to
+ * get_failure_analytics. Omitted from the response when there are none.
+ */
+export interface StalledIngestReport {
+  stalled: number;
+  inFallback: number;
+  oldestAgeMs: number;
+  /** Oldest first, capped; the counts cover every job. */
+  jobs: StalledIngestJob[];
+}
+
 /**
  * How long approved-and-green PRs wait before they land, from the `pr_landing`
- * gate events (docs/design/pr-landing-guarantee.md §J). A regression shows up
+ * gate events (knowledge-base: buildd/design/pr-landing-guarantee.md §J). A regression shows up
  * here before anyone files a friction report.
  */
 export interface LandingMetrics {
@@ -2809,7 +2908,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage';
+export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage' | 'question_gate';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
@@ -2979,6 +3078,17 @@ export interface FleetRunner {
   maxSlots: number;
   online: boolean;
   slots: FleetSlot[];
+  /**
+   * Set when this row is an elastic group of ephemeral `--once` runs (one cloud
+   * dispatcher, lib/fleet-view.ts) rather than one machine. Its slots are its
+   * live runs, one each; finished runs leave the group.
+   */
+  elastic?: {
+    executor: 'host' | 'cloud' | null;
+    group: string | null;
+    /** Live runs in the group now (== slots.length). */
+    running: number;
+  };
 }
 
 export interface FleetSnapshot {
@@ -3123,4 +3233,65 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+}
+
+// ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
+// The readiness report is recomputed from the repo on every request and never
+// stored; only what the repo cannot tell us is persisted, in
+// `workspaces.gitConfig.onboarding`. Absent means current behaviour.
+
+export type WorkspaceReadinessItemId =
+  | 'agent-instructions'
+  | 'spec-root'
+  | 'spec-format'
+  | 'test-command'
+  | 'typecheck-command'
+  | 'build-command'
+  | 'env-manifest'
+  | 'migrations-dir'
+  | 'merge-policy'
+  | 'release-path'
+  | 'visual-qa-source';
+
+export type WorkspaceReadinessNextStep =
+  | 'link-repo'
+  | 'review-policy'
+  | 'propose-fixes'
+  | 'author-spec'
+  | 'first-mission'
+  | 'done';
+
+export interface WorkspaceOnboardingConfig {
+  /** Items the owner said are not for this repo. */
+  waived?: Record<string, { reason: string; at: string }>;
+  /** The open scaffold PR, when one exists. */
+  scaffoldPr?: { number: number; branch: string };
+  lastSeenPolicyInitAt?: string;
+}
+
+export interface WorkspaceReadinessItem {
+  id: WorkspaceReadinessItemId;
+  label: string;
+  /** `unknown` = could not tell (truncated tree, unreadable manifest, detector not available). */
+  status: 'detected' | 'missing' | 'unknown';
+  importance: 'core' | 'recommended';
+  evidence: Array<{ kind: 'path' | 'manifest' | 'signal' | 'absent'; paths?: string[]; note: string }>;
+  fix: {
+    kind: 'scaffold' | 'apply-config' | 'owner-decision' | 'none';
+    summary: string;
+    templateId?: string;
+    configPatch?: Record<string, unknown>;
+  } | null;
+  /** The detected value when there is one: a command, a directory, a source name. */
+  value?: string;
+  waived?: { reason: string; at: string };
+}
+
+/** Response of `GET /api/workspaces/[id]/readiness`. */
+export interface WorkspaceReadinessReport {
+  items: WorkspaceReadinessItem[];
+  nextStep: WorkspaceReadinessNextStep;
+  skill: 'workspace-onboarding';
+  /** The git tree response was truncated. */
+  truncated: boolean;
 }

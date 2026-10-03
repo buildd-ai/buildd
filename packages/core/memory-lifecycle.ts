@@ -1,6 +1,6 @@
 /**
  * The memory lifecycle pass: promotion, expiry, re-verify flags and
- * candidate extraction (docs/design/memory-done-right.md, "Write: candidates,
+ * candidate extraction (knowledge-base: buildd/design/memory-done-right.md, "Write: candidates,
  * then promotion"). The rules are in ./memory-candidates; this is the SQL and
  * the orchestration.
  *

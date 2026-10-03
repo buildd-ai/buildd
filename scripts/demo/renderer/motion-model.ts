@@ -9,6 +9,10 @@
  *   phone   a phone with one question and two options; one is tapped
  *   screens two screenshot frames, each stamped with a check
  *   done    "Done." and one line of what was verified
+ *   verify  the hero: a short list of checks and the agents' bars. Each agent
+ *           fills its bar ("I'm done"), then its check ticks (buildd checks);
+ *           after the last, one "Done.". It resets to its first frame by the
+ *           end, so a single-shot loop has no seam.
  */
 import type { FleetRunner } from './timeline';
 
@@ -18,7 +22,8 @@ export type Motion =
   | { kind: 'fleet'; label: string; runners: FleetRunner[]; from: number; stagger: number; grow: number; total: number }
   | { kind: 'phone'; label: string; question: string; options: [string, string]; tapAt: number }
   | { kind: 'screens'; label: string; images: [{ src: string; width: number; height: number }, { src: string; width: number; height: number }]; checks: [number, number] }
-  | { kind: 'done'; label: string; title: string; sub: string; from: number };
+  | { kind: 'done'; label: string; title: string; sub: string; from: number }
+  | { kind: 'verify'; label: string; checks: string[]; colors: string[]; from: number; stagger: number; grow: number; spread: number; lag: number; doneAt: number; resetAt: number; resetDur: number };
 
 function ease(u: number) {
   const x = Math.min(1, Math.max(0, u));
@@ -74,6 +79,39 @@ export function doneIn(m: Extract<Motion, { kind: 'done' }>, local: number): num
   return ease((local - m.from) / 0.6);
 }
 
+type Verify = Extract<Motion, { kind: 'verify' }>;
+
+/** When agent i's bar is full: it reports done. Later agents take longer. */
+export function verifyFull(m: Verify, i: number): number {
+  return m.from + i * m.stagger + m.grow + i * m.spread;
+}
+
+/** When check i ticks: buildd checks the agent's claim, `lag` after it. */
+export function verifyTick(m: Verify, i: number): number {
+  return verifyFull(m, i) + m.lag;
+}
+
+/**
+ * The hero at `local`: each bar's fill and each check (0..1), whether the bars
+ * show, and Done (0..1). Done and the bars never share a frame: the bars leave
+ * just before Done comes in, and at the reset Done leaves before the (empty)
+ * bars come back. Everything is back at its first frame by the end of the
+ * shot (resetAt + resetDur), so a single-shot loop has no seam.
+ */
+export function verifyAt(m: Verify, local: number): { bars: number[]; checks: number[]; barsShown: number; done: number } {
+  const keep = 1 - ease((local - m.resetAt) / m.resetDur);
+  const q = (x: number) => +x.toFixed(6);
+  const reset = local >= m.resetAt;
+  const doneOut = 1 - ease((local - m.resetAt) / 0.5);
+  const barsBack = ease((local - (m.resetAt + 0.55)) / 0.5);
+  return {
+    bars: m.checks.map((_, i) => q(reset ? 0 : ease((local - (m.from + i * m.stagger)) / (m.grow + i * m.spread)))),
+    checks: m.checks.map((_, i) => q(ease((local - verifyTick(m, i)) / 0.25) * keep)),
+    barsShown: q(reset ? barsBack : 1 - ease((local - (m.doneAt - 0.5)) / 0.45)),
+    done: q(ease((local - m.doneAt) / 0.6) * doneOut),
+  };
+}
+
 /** The sounds a motion beat makes, in seconds into its shot. */
 export function motionCues(m: Motion): Array<{ type: 'key' | 'tap' | 'pluck' | 'chime'; at: number; note?: number }> {
   switch (m.kind) {
@@ -93,5 +131,6 @@ export function motionCues(m: Motion): Array<{ type: 'key' | 'tap' | 'pluck' | '
     case 'phone': return [{ type: 'tap', at: m.tapAt }];
     case 'screens': return m.checks.map((at) => ({ type: 'tap' as const, at }));
     case 'done': return [{ type: 'chime', at: m.from + 0.2 }];
+    case 'verify': return [...m.checks.map((_, i) => ({ type: 'pluck' as const, at: verifyTick(m, i), note: i })), { type: 'chime' as const, at: m.doneAt + 0.2 }];
   }
 }

@@ -2,7 +2,7 @@
 
 /**
  * TaskActionZone: the one decision a task's phase needs, done in place
- * (docs/design/mission-feed-mobile-continuity.md W4/W6). Answer when it asks,
+ * (knowledge-base: buildd/design/mission-feed-mobile-continuity.md W4/W6). Answer when it asks,
  * retry (or switch backend) when it failed, run now when it is queued, say why
  * when it is blocked, and give a local mission's task its `claim_task` command.
  *
@@ -19,6 +19,8 @@
 import { useCallback, useState } from 'react';
 import Link from 'next/link';
 import WorkerRespondInput from '@/components/WorkerRespondInput';
+import AnswerRecorded from '@/components/AnswerRecorded';
+import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import Spinner from '@/components/Spinner';
 import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
@@ -37,6 +39,18 @@ import {
   taskActionSet,
 } from '@/lib/task-actions';
 
+/** Phases that mean the agent took the answer and moved on: the confirmation stands down. */
+const MOVED_ON: ReadonlySet<TaskPhase> = new Set<TaskPhase>(['running', 'completed', 'failed', 'plan_review']);
+
+/**
+ * What clears an answer's confirmation: another worker, or the agent moving
+ * on. Not the question disappearing: the refetch after an answer drops it
+ * (the resume path keeps the worker `waiting_input`, so the phase holds).
+ */
+export function answerResetKey(workerId: string | null | undefined, phase: TaskPhase): string {
+  return `${workerId ?? ''}:${MOVED_ON.has(phase) ? phase : ''}`;
+}
+
 export interface TaskActionZoneProps {
   taskId: string;
   workspaceId: string;
@@ -46,7 +60,7 @@ export interface TaskActionZoneProps {
   blockedByCount: number;
   backend: 'claude' | 'codex' | null;
   lastError: { excerpt: string } | null;
-  worker: { id: string; waitingFor: { prompt: string; options?: string[] } | null } | null;
+  worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
   roleSlug?: string | null;
@@ -59,8 +73,8 @@ export interface TaskActionZoneProps {
   onChanged?: () => void | Promise<void>;
 }
 
-const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-[12px] font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
-const QUIET_BTN = 'inline-flex min-h-11 items-center px-3 font-mono text-[12px] text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50';
+const SECONDARY_BTN = 'inline-flex min-h-11 items-center justify-center gap-1.5 border-2 border-border-strong px-3 font-mono text-meta font-medium text-text-primary hover:bg-surface-3 disabled:opacity-50';
+const QUIET_BTN = 'inline-flex min-h-11 items-center px-3 font-mono text-meta text-text-secondary hover:bg-surface-3 hover:text-text-primary disabled:opacity-50';
 
 export default function TaskActionZone({
   taskId,
@@ -96,6 +110,20 @@ export default function TaskActionZone({
   const otherBackend = otherBackendOf(backend);
   const local = missionExecutor === 'local';
 
+  // Owned here, not by the input: the refetch below drops the question, and
+  // with it the input, but the answer stays on screen until the agent moves.
+  const answer = useAnswerSubmit({
+    workerId: worker?.id ?? null,
+    taskId,
+    resetKey: answerResetKey(worker?.id, phase),
+    onAnswered: onChanged,
+  });
+
+  const isWaiting = phase === 'waiting_input';
+  // Server-derived: answered (the question is gone) but the worker has not
+  // resumed yet. Covers an answer sent from another surface too.
+  const answeredAwaitingAgent = isWaiting && !!worker && !worker.waitingFor;
+
   const retry = useCallback(async (which: 'same' | 'switch') => {
     setRetrying(which);
     setRetryError(null);
@@ -122,13 +150,18 @@ export default function TaskActionZone({
       className="space-y-3 empty:hidden"
     >
       {/* Needs input → respond inline */}
-      {has('answer') && worker?.waitingFor && (
+      {answer.outcome || answeredAwaitingAgent ? (
+        <AnswerRecorded outcome={answer.outcome} awaitingAgent={!MOVED_ON.has(phase)} />
+      ) : has('answer') && worker?.waitingFor && (
         <div className="border-2 border-status-warning p-4">
           <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-status-warning">Needs input</span>
           <WorkerRespondInput
             workerId={worker.id}
+            taskId={taskId}
             question={worker.waitingFor.prompt}
             options={worker.waitingFor.options}
+            context={worker.waitingFor.context}
+            answer={answer}
           />
         </div>
       )}
@@ -171,7 +204,7 @@ export default function TaskActionZone({
               </Link>
             )}
           </div>
-          {retryError && <p className="font-mono text-[12px] text-status-error">{retryError}</p>}
+          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
         </div>
       )}
 
@@ -190,7 +223,7 @@ export default function TaskActionZone({
       {/* Queued → run now (a local mission's task: claim it from a session first) */}
       {showRunNow && (
         <div className="space-y-3 border border-border-default p-4">
-          {!hideQueuedNote && <p className="font-mono text-[12px] text-text-secondary">
+          {!hideQueuedNote && <p className="font-mono text-meta text-text-secondary">
             {local
               ? "Waiting for a local session to claim it. Runners never pick up this mission's tasks."
               : 'Waiting for a runner to claim it.'}
@@ -219,10 +252,10 @@ export default function TaskActionZone({
               ? <span aria-hidden="true" className="font-mono text-status-success">✓</span>
               : <Spinner size="sm" className={start.status === 'queued' ? 'text-status-warning' : 'text-status-success'} aria-label="Start requested" />}
             <div className="font-mono">
-              <p className="text-[12px] font-medium text-text-primary">
+              <p className="text-meta font-medium text-text-primary">
                 {start.status === 'accepted' ? 'Task started' : start.status === 'queued' ? 'Queued at front' : 'Start requested'}
               </p>
-              <p className="text-[11px] text-text-secondary">
+              <p className="text-eyebrow text-text-secondary">
                 {start.status === 'accepted'
                   ? 'A worker claimed the task.'
                   : start.status === 'queued'
@@ -232,7 +265,7 @@ export default function TaskActionZone({
             </div>
           </div>
           {start.status === 'queued' && start.fleet && (
-            <p className={`border border-border-default bg-surface-3 p-2 font-mono text-[11px] ${start.fleet.count === 0 ? 'text-status-warning' : 'text-text-secondary'}`}>
+            <p className={`border border-border-default bg-surface-3 p-2 font-mono text-eyebrow ${start.fleet.count === 0 ? 'text-status-warning' : 'text-text-secondary'}`}>
               {formatFleetStatus(start.fleet, roleSlug)}
             </p>
           )}
@@ -243,19 +276,19 @@ export default function TaskActionZone({
       {start.status === 'gated' && refusal && (
         <div data-testid="task-start-refusal" data-gate={refusal.gateReason} className="space-y-3 border border-status-warning p-4">
           <div>
-            <p className="mb-1 font-mono text-[12px] font-medium text-status-warning">
+            <p className="mb-1 font-mono text-meta font-medium text-status-warning">
               {getGateReasonTitle(refusal, { deferredStartLabel: deferredLabel })}
             </p>
-            <p className="font-mono text-[11px] text-text-muted">
+            <p className="font-mono text-eyebrow text-text-muted">
               {getGateReasonSubtitle(refusal, { blockingCount: refusal.blockingDeps?.length })}
             </p>
             {refusal.error && refusal.error !== getGateReasonSubtitle(refusal) && (
-              <p className="mt-1 font-mono text-[11px] text-text-secondary">{refusal.error}</p>
+              <p className="mt-1 font-mono text-eyebrow text-text-secondary">{refusal.error}</p>
             )}
             {refusal.gateReason === 'unmerged_dep_pr' && (refusal.blockingDeps?.length ?? 0) > 0 && (
               <ul className="mt-2 space-y-1">
                 {refusal.blockingDeps!.map((dep, i) => (
-                  <li key={i} className="font-mono text-[11px]">
+                  <li key={i} className="font-mono text-eyebrow">
                     {dep.taskTitle && <span className="mr-1.5 text-text-secondary">{dep.taskTitle}</span>}
                     {dep.prUrl
                       ? <a href={dep.prUrl} target="_blank" rel="noopener noreferrer" className="text-accent-text hover:underline">PR #{dep.prNumber ?? '?'} ↗</a>
@@ -265,13 +298,13 @@ export default function TaskActionZone({
               </ul>
             )}
             {canOfferForce(refusal) && start.fleet && (
-              <p className="mt-2 border border-border-default bg-surface-3 p-2 font-mono text-[11px] text-text-muted">
+              <p className="mt-2 border border-border-default bg-surface-3 p-2 font-mono text-eyebrow text-text-muted">
                 {formatFleetStatus(start.fleet, roleSlug)}
               </p>
             )}
           </div>
           {refusal.gateReason === 'workspace_cap_reached' && (
-            <div className="flex flex-wrap items-center gap-2 font-mono text-[12px]">
+            <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
               <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
               <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
@@ -298,7 +331,7 @@ export default function TaskActionZone({
                 data-action="force_start"
                 onClick={() => start.start({ forceOverride: true, targetLocalUiUrl: target || undefined })}
                 disabled={starting}
-                className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                className="min-h-11 border-2 border-status-warning bg-status-warning px-3 font-mono text-meta font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
                 {start.pending === 'force' ? 'Force starting…' : refusal.gateReason === 'deferred_start' ? 'Start now anyway' : 'Force start'}
               </button>
@@ -312,7 +345,7 @@ export default function TaskActionZone({
 
       {start.status === 'failed' && start.error && (
         <div className="flex flex-wrap items-center gap-2">
-          <p role="alert" className="font-mono text-[12px] text-status-error">{start.error}</p>
+          <p role="alert" className="font-mono text-meta text-status-error">{start.error}</p>
           <button type="button" onClick={start.dismiss} className={QUIET_BTN}>Try again</button>
         </div>
       )}

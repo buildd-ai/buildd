@@ -25,3 +25,8 @@ export {
 export { memoryPlanStore, type PlanStore, type StoredPlan } from './store';
 export { toWireReceipt, USAGE_RECORD_KEYS, USAGE_TOKEN_KEYS, MAX_USAGE_RECORDS } from './receipt';
 export { toCallConfig, gatewayModel, PROVIDER_BASE_URLS, type CallConfig, type CallConfigOptions, type GatewayConfig } from './call-config';
+export {
+  ROUTES, ROUTE_IDS, isRouteId, routeServes, routeOrder, routeModelId, openRouterModelId,
+  routeAuthHeaders, routeAttributionHeaders,
+  type RouteId, type RouteSpec, type RouteWire, type GatewayNaming,
+} from './routes';

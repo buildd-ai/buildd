@@ -130,6 +130,37 @@ describe('POST /api/knowledge/ingest-jobs/[id]/complete', () => {
     expect((await POST(createRequest({}), params())).status).toBe(400);
   });
 
+  // A runner whose checkout cannot fetch hands the job back with the reason.
+  it('released: requeues the job, records why, and keeps its stall clock running', async () => {
+    jobRow = { ...runningJob, leaseOwner: 'runner-a', stats: { prior: 1 } };
+    const res = await POST(
+      createRequest({ status: 'released', error: 'git fetch origin failed: Permission denied (publickey).' }),
+      params(),
+    );
+    expect(res.status).toBe(200);
+    const set = updateCalls.find(c => c.set.status)!.set;
+    expect(set.status).toBe('queued');
+    expect(set.leaseOwner).toBeNull();
+    expect(set.leaseExpiresAt).toBeNull();
+    expect(set.startedAt).toBeNull();
+    // NULL heartbeat: queued age falls back to created_at, so the release does
+    // not restart the wait before the serverless fallback picks the job up.
+    expect(set.heartbeatAt).toBeNull();
+    expect(set.finishedAt).toBeUndefined();
+    expect(set.error).toBeUndefined();
+    expect(set.stats.prior).toBe(1);
+    expect(set.stats.checkoutReport).toMatchObject({
+      owner: 'runner-a',
+      reason: expect.stringContaining('publickey'),
+    });
+    expect(deleteCalls.length).toBe(0);
+  });
+
+  it('released: 400 without a reason', async () => {
+    const res = await POST(createRequest({ status: 'released' }), params());
+    expect(res.status).toBe(400);
+  });
+
   it('returns 409 when the job is not in running state (atomic transition)', async () => {
     transitionResult = []; // UPDATE ... WHERE status='running' matched nothing
     const res = await POST(createRequest({ status: 'done' }), params());

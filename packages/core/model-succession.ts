@@ -1,5 +1,5 @@
 /**
- * Family succession for tier pool arms (docs/design/tier-weights.md §4b).
+ * Family succession for tier pool arms (knowledge-base: buildd/design/tier-weights.md §4b).
  *
  * A newer release of an arm's family is a reason to lower that arm's cap in an
  * explore pool, and to propose the newer model as a challenger. Everything

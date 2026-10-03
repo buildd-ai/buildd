@@ -54,7 +54,8 @@ function safeEqual(a: string, b: string): boolean {
 
 export async function POST(req: NextRequest) {
   const apiKey = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ?? null;
-  const account = await authenticateApiKey(apiKey);
+  // Pass the request: without it a capability-scoped key is refused outright.
+  const account = await authenticateApiKey(apiKey, req);
   if (!account) return fail(401, 'Unauthorized');
   if (account.level === 'trigger') return fail(403, 'Trigger tokens cannot request a model endpoint');
 

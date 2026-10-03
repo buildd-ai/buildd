@@ -10,6 +10,7 @@ import { join } from 'path';
 import {
   runOnce,
   runResume,
+  unrestoredResumeAction,
   runParkOrphan,
   pidsToStop,
   parseOnceArgs,
@@ -31,6 +32,7 @@ import {
   type RunOnceDeps,
   type OnceWorkerManager,
 } from '../../src/run-once';
+import { withFleetIdentity } from '../../src/fleet-identity';
 
 const TASK_ID = 'task-1234abcd';
 const TASK = { id: TASK_ID, title: 'Example task', workspaceId: 'ws-1', workspace: { name: 'example', repo: 'https://github.com/example/repo' } };
@@ -306,6 +308,7 @@ describe('runResume (--resume-worker)', () => {
       restore: async () => { calls.push('restore'); return { ok: true, kind: 'waiting' }; },
       reattach: async () => { calls.push('reattach'); return 'ok'; },
       unpark: async () => { calls.push('unpark'); },
+      settleUnrestored: async () => { calls.push('settle'); },
       adopt: async () => { calls.push('adopt'); return true; },
       discardBundle: async () => { calls.push('discard'); },
       ...over,
@@ -325,13 +328,88 @@ describe('runResume (--resume-worker)', () => {
     expect(logs).toContain(`${RESUMED_LINE_PREFIX}worker-7`);
   });
 
-  test('restore failure: no re-attach; the park is cleared so the ack-deadline sweep degrades the answer', async () => {
+  test('restore failure: no re-attach; the park is cleared, then the worker is settled (failed unless an answer is waiting)', async () => {
     const { wm } = fakeManager();
-    const { port, calls } = resumePort({ restore: async () => { calls.push('restore'); return { ok: false, reason: 'bundle missing' }; } });
+    const settled: Array<[string, string, string | undefined]> = [];
+    const { port, calls } = resumePort({
+      restore: async () => { calls.push('restore'); return { ok: false, reason: 'bundle missing', kind: 'orphan' }; },
+      settleUnrestored: async (id, reason, kind) => { calls.push('settle'); settled.push([id, reason, kind]); },
+    });
     const { d } = deps(wm);
     expect(await runResume({ workerId: 'worker-7' }, { ...d, resume: port })).toBe(EXIT_FAILED);
-    expect(calls).toEqual(['restore', 'unpark']);
+    expect(calls).toEqual(['restore', 'unpark', 'settle']);
+    expect(settled).toEqual([['worker-7', 'bundle missing', 'orphan']]);
   });
+
+  test('a throwing restore is settled the same way (kind unknown)', async () => {
+    const { wm } = fakeManager();
+    const settled: Array<string | undefined> = [];
+    const { port } = resumePort({
+      restore: async () => { throw new Error('boom'); },
+      settleUnrestored: async (_id, _reason, kind) => { settled.push(kind); },
+    });
+    const { d } = deps(wm);
+    expect(await runResume({ workerId: 'worker-7' }, { ...d, resume: port })).toBe(EXIT_FAILED);
+    expect(settled).toEqual([undefined]);
+  });
+
+  test('a settle that throws does not change the exit code', async () => {
+    const { wm } = fakeManager();
+    const { port } = resumePort({
+      restore: async () => ({ ok: false, reason: 'x' }),
+      settleUnrestored: async () => { throw new Error('network'); },
+    });
+    const { d } = deps(wm);
+    expect(await runResume({ workerId: 'worker-7' }, { ...d, resume: port })).toBe(EXIT_FAILED);
+  });
+});
+
+describe('unrestoredResumeAction: what a failed resume does with the worker', () => {
+  test('an answer is waiting (waiting_input): leave it, the ack-deadline sweep degrades it into a cold continuation', () => {
+    expect(unrestoredResumeAction('waiting_input', 'waiting')).toBe('leave');
+    expect(unrestoredResumeAction('waiting_input', undefined)).toBe('leave');
+  });
+
+  test('an orphan park (still running, nothing queued, nothing will ever drive it): fail it', () => {
+    expect(unrestoredResumeAction('running', 'orphan')).toBe('fail');
+    expect(unrestoredResumeAction('running', undefined)).toBe('fail');
+  });
+
+  test('already terminal: nothing to do', () => {
+    for (const s of ['completed', 'failed', 'superseded']) expect(unrestoredResumeAction(s, 'orphan')).toBe('leave');
+  });
+
+  test('status unknown (the lookup failed): fail only what is known to be an orphan', () => {
+    expect(unrestoredResumeAction(null, 'orphan')).toBe('fail');
+    expect(unrestoredResumeAction(null, 'waiting')).toBe('leave');
+    expect(unrestoredResumeAction(null, undefined)).toBe('leave');
+  });
+});
+
+test('the CLI wiring settles an unrestored worker from its server status, through the normal failed PATCH', () => {
+  const src = readFileSync(join(import.meta.dir, '../../src/run-once.ts'), 'utf-8');
+  const wiring = src.slice(src.indexOf('settleUnrestored: async (workerId, reason, kind) =>'));
+  expect(wiring).toContain('client.getWorkerRemote(workerId)');
+  expect(wiring).toContain("unrestoredResumeAction(remote?.status, kind) !== 'fail'");
+  expect(wiring).toMatch(/client\.updateWorker\(workerId, \{\s*status: 'failed'/);
+  // The manifest's kind reaches a failure that happens after it was read.
+  expect(src).toContain("return { ok: false, reason: err instanceof Error ? err.message : String(err), kind };");
+});
+
+describe('runResume (--resume-worker), continued', () => {
+  function resumePort(over: Partial<ResumePort> = {}) {
+    const calls: string[] = [];
+    const port: ResumePort = {
+      restore: async () => { calls.push('restore'); return { ok: true, kind: 'waiting' }; },
+      reattach: async () => { calls.push('reattach'); return 'ok'; },
+      unpark: async () => { calls.push('unpark'); },
+      settleUnrestored: async () => { calls.push('settle'); },
+      adopt: async () => { calls.push('adopt'); return true; },
+      discardBundle: async () => { calls.push('discard'); },
+      ...over,
+    };
+    return { port, calls };
+  }
 
   test('re-attach refused (another container won, or expired): exit 3, nothing adopted', async () => {
     const { wm } = fakeManager();
@@ -461,6 +539,61 @@ describe('buildOnceConfig', () => {
     expect(c.localUiUrl).toContain(TASK_ID);
     // Input is not mutated.
     expect(base.acceptRemoteTasks).toBe(true);
+  });
+
+  test('a cloud container reports executor cloud, its dispatcher group, one slot, ephemeral', () => {
+    const c = buildOnceConfig(base, { taskId: TASK_ID, host: 'box', env: { BUILDD_EXECUTOR: 'cloud', BUILDD_RUNNER_GROUP: 'my-dispatcher' } });
+    expect(c.fleetIdentity).toEqual({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' });
+  });
+
+  test('a host --once run is ephemeral too, with no group', () => {
+    const c = buildOnceConfig(base, { taskId: TASK_ID, host: 'box', env: { BUILDD_RUNNER_GROUP: 'ignored-off-cloud' } });
+    expect(c.fleetIdentity).toEqual({ executor: 'host', ephemeral: true, concurrency: 1, group: null });
+  });
+
+  test('an unusable group name is dropped, not sent', () => {
+    const c = buildOnceConfig(base, { taskId: TASK_ID, host: 'box', env: { BUILDD_EXECUTOR: 'cloud', BUILDD_RUNNER_GROUP: 'has spaces/and slashes' } });
+    expect(c.fleetIdentity?.group).toBeNull();
+  });
+});
+
+describe('heartbeat environment of a --once run', () => {
+  test('the identity rides on the scanned environment', () => {
+    const scanned: any = { tools: [], envKeys: ['browser'], mcp: [], labels: { hostname: 'box' }, scannedAt: 't' };
+    const fleet = { executor: 'cloud' as const, ephemeral: true, concurrency: 1, group: 'g' };
+    expect(withFleetIdentity(scanned, fleet)).toEqual({ ...scanned, fleet });
+    expect(scanned.fleet).toBeUndefined();
+  });
+
+  test('before the scan finishes the identity is still sent', () => {
+    const fleet = { executor: 'cloud' as const, ephemeral: true, concurrency: 1, group: 'g' };
+    expect(withFleetIdentity(undefined, fleet)?.fleet).toEqual(fleet);
+  });
+
+  test('a long-lived runner sends its environment unchanged', () => {
+    const scanned: any = { tools: [], envKeys: [], mcp: [], labels: {}, scannedAt: 't' };
+    expect(withFleetIdentity(scanned, undefined)).toBe(scanned);
+    expect(withFleetIdentity(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('runOnce — leaving the fleet', () => {
+  test('sends a last heartbeat after the final sync and before teardown, so the run reads as ended', async () => {
+    const { wm, calls } = fakeManager({ statuses: ['working', 'done'] });
+    (wm as any).sendHeartbeatNow = async () => { calls.push('heartbeat'); };
+    const { d } = deps(wm);
+    await runOnce({ taskId: TASK_ID }, d);
+    expect(calls).toContain('heartbeat');
+    expect(calls.indexOf('flushToServer')).toBeLessThan(calls.indexOf('heartbeat'));
+    expect(calls.indexOf('heartbeat')).toBeLessThan(calls.indexOf('destroy'));
+  });
+
+  test('a failing last heartbeat never blocks teardown', async () => {
+    const { wm, calls } = fakeManager({ statuses: ['working', 'done'] });
+    (wm as any).sendHeartbeatNow = async () => { throw new Error('offline'); };
+    const { d } = deps(wm);
+    expect(await runOnce({ taskId: TASK_ID }, d)).toBe(EXIT_COMPLETED);
+    expect(calls).toContain('destroy');
   });
 });
 

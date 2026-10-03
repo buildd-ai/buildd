@@ -26,7 +26,8 @@ import { githubApi } from '@/lib/github';
 import { resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { checkPrIsDraft, fetchCIFailureLogs, fetchCommitAuthor, isBuilddWorkerCommit } from '@/lib/ci-failure-inspect';
 import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
-import { buildCIRetryTask, DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
+import { buildCIRetryTask } from '@/lib/ci-retry';
+import { policyValue } from '@/lib/policy-overrides';
 import { LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
@@ -237,7 +238,7 @@ export async function POST(
     ciRunId: ciLogs.runId,
     ciFailedJobId: ciLogs.failedJobId,
     ciRunUrl: ciLogs.runUrl,
-    workspaceMaxCiRetries: DEFAULT_MAX_CI_RETRIES,
+    workspaceMaxCiRetries: policyValue('maxCiRetries'),
     foreignHeadSha,
     foreignCommitAuthor: foreignHeadSha
       ? (commitAuthor.login ?? commitAuthor.name ?? commitAuthor.email ?? 'unknown')

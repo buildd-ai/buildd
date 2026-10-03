@@ -33,7 +33,7 @@ export default function RunnerPicker({ workspaceId, value, onChange, disabled }:
         data-testid="runner-picker-toggle"
         onClick={() => setOpen(o => !o)}
         disabled={disabled}
-        className="min-h-11 self-start px-3 font-mono text-[12px] text-text-secondary hover:text-text-primary border border-border-default disabled:opacity-50"
+        className="min-h-11 self-start px-3 font-mono text-meta text-text-secondary hover:text-text-primary border border-border-default disabled:opacity-50"
       >
         {value ? available.find(ui => ui.localUiUrl === value)?.accountName ?? 'Worker' : 'Any available worker'}{' '}
         {open ? '▲' : '▾'}
@@ -67,13 +67,13 @@ export default function RunnerPicker({ workspaceId, value, onChange, disabled }:
               {ui.environment && (
                 <div className="mt-1.5 space-y-0.5">
                   {ui.environment.tools.length > 0 && (
-                    <p className="text-[11px] text-text-muted truncate">
+                    <p className="text-eyebrow text-text-muted truncate">
                       <span className="text-text-secondary">Tools:</span>{' '}
                       {ui.environment.tools.map(t => t.version ? `${t.name} ${t.version}` : t.name).join(', ')}
                     </p>
                   )}
                   {ui.environment.envKeys.length > 0 && (
-                    <p className="text-[11px] text-text-muted truncate">
+                    <p className="text-eyebrow text-text-muted truncate">
                       <span className="text-text-secondary">Env:</span>{' '}
                       {ui.environment.envKeys.length <= 3
                         ? ui.environment.envKeys.join(', ')
@@ -81,7 +81,7 @@ export default function RunnerPicker({ workspaceId, value, onChange, disabled }:
                     </p>
                   )}
                   {ui.environment.mcp.length > 0 && (
-                    <p className="text-[11px] text-text-muted truncate">
+                    <p className="text-eyebrow text-text-muted truncate">
                       <span className="text-text-secondary">MCP:</span>{' '}
                       {ui.environment.mcp.join(', ')}
                     </p>

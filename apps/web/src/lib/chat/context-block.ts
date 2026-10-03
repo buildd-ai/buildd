@@ -1,5 +1,5 @@
 /**
- * The per-turn context block (docs/design/agent-chat.md → Context on every turn).
+ * The per-turn context block (knowledge-base: buildd/design/agent-chat.md → Context on every turn).
  *
  * Models read "today" from their training data unless told, so every turn gets
  * the real local date and time, in the user's zone, with the zone named. Pure:

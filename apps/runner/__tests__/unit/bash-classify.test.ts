@@ -14,6 +14,8 @@
 import { describe, test, expect } from 'bun:test';
 import {
   classifyBashCommand,
+  classifyBashSearch,
+  shapeOfSearchPattern,
   recordBashCommand,
   emptyBashCommandCounts,
   totalBashCommands,
@@ -318,5 +320,36 @@ describe('recordBashCommand', () => {
     const counts: BashCommandCounts = emptyBashCommandCounts();
     for (const cmd of nasty) expect(() => recordBashCommand(counts, cmd)).not.toThrow();
     expect(counts.total).toBe(nasty.length);
+  });
+});
+
+describe('classifyBashSearch — the CBM search injection trigger', () => {
+  test('returns the identifier only for an identifier-shaped code search', () => {
+    expect(classifyBashSearch('rg -n recordToolCall apps/runner').identifier).toBe('recordToolCall');
+    expect(classifyBashSearch('cd apps && grep -rn --include=*.ts recordToolCall .').identifier).toBe('recordToolCall');
+    expect(classifyBashSearch('git grep -n -e recordToolCall').identifier).toBe('recordToolCall');
+    expect(classifyBashSearch("rg 'recordToolCall'").identifier).toBe('recordToolCall');
+  });
+
+  test('null for every other shape and bucket', () => {
+    for (const cmd of ['rg "record(Tool|Bash)Call"', 'rg "record tool call"', 'rg apps/runner/src', 'rg --help', 'bun run test', 'ps aux | grep bunServer', 'git status']) {
+      expect(classifyBashSearch(cmd).identifier).toBeNull();
+    }
+  });
+
+  test('its classification is exactly classifyBashCommand, and the counters never see the identifier', () => {
+    const cmd = 'rg -n recordToolCall';
+    expect(classifyBashSearch(cmd).classification).toEqual(classifyBashCommand(cmd));
+    expect(classifyBashCommand(cmd)).toEqual({ bucket: 'code_search', searchShape: 'identifier' });
+    const counts = emptyBashCommandCounts();
+    recordBashCommand(counts, cmd);
+    expect(JSON.stringify(counts)).not.toContain('recordToolCall');
+  });
+
+  test('shapeOfSearchPattern is the same rule the Grep tool trigger uses', () => {
+    expect(shapeOfSearchPattern('recordToolCall')).toBe('identifier');
+    expect(shapeOfSearchPattern('record(Tool|Bash)Call')).toBe('regex');
+    expect(shapeOfSearchPattern('**/*.ts')).toBe('path_glob');
+    expect(shapeOfSearchPattern('two words')).toBe('quoted_phrase');
   });
 });

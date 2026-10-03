@@ -157,3 +157,98 @@ describe('manage_workspaces update — team changes go through the checked move'
     expect('teamId' in JSON.parse((api.mock.calls[0] as any)[1].body)).toBe(false);
   });
 });
+
+describe('manage_workspaces readiness', () => {
+  const report = {
+    items: [
+      { id: 'agent-instructions', status: 'detected', importance: 'core', evidence: [], fix: { kind: 'none', summary: 'Nothing to fix.' } },
+      { id: 'spec-root', status: 'missing', importance: 'core', evidence: [], fix: { kind: 'scaffold', summary: 'Create a spec directory.', templateId: 'spec-root' } },
+      { id: 'test-command', status: 'detected', importance: 'core', value: 'uv run pytest', evidence: [], fix: null },
+      { id: 'build-command', status: 'unknown', importance: 'recommended', evidence: [], fix: null, waived: { reason: 'no build step', at: '2026-01-01T00:00:00Z' } },
+    ],
+    nextStep: 'propose-fixes',
+    skill: 'workspace-onboarding',
+    truncated: true,
+  };
+
+  const run = (mockApi: ReturnType<typeof mock>, params: Record<string, unknown> = { action: 'readiness', workspaceId: WORKSPACE_ID }) =>
+    handleBuilddAction(mockApi as unknown as ApiFn, 'manage_workspaces', params, createContext());
+
+  it('reads the readiness route with a single GET and reports nextStep and the skill to load', async () => {
+    const mockApi = mock().mockResolvedValue(report);
+    const result = await run(mockApi);
+
+    expect(mockApi).toHaveBeenCalledTimes(1);
+    expect(mockApi.mock.calls[0]).toEqual([`/api/workspaces/${WORKSPACE_ID}/readiness`]);
+    const out = result.content[0].text;
+    expect(out).toContain('Next step: propose-fixes');
+    expect(out).toContain('Skill: workspace-onboarding');
+    expect(out).toContain('truncated');
+    expect(out).toContain('- [missing] spec-root (core) -> scaffold: Create a spec directory.');
+    expect(out).toContain('- [detected] test-command (core) = uv run pytest');
+    expect(out).toContain('(waived: no build step)');
+    expect(out).not.toContain('Nothing to fix');
+  });
+
+  it("surfaces 'link-repo' for a workspace with no repo", async () => {
+    const mockApi = mock().mockResolvedValue({ ...report, items: [], nextStep: 'link-repo', truncated: false });
+    const result = await run(mockApi);
+    expect(result.content[0].text).toContain('Next step: link-repo');
+    expect(result.content[0].text).not.toContain('truncated');
+  });
+
+  it('uses the context workspace when workspaceId is omitted', async () => {
+    const mockApi = mock().mockResolvedValue(report);
+    await run(mockApi, { action: 'readiness' });
+    expect(mockApi.mock.calls[0][0]).toBe(`/api/workspaces/${WORKSPACE_ID}/readiness`);
+  });
+
+  it('is named in the action docs and does not change what init calls', async () => {
+    expect(buildParamsDescription(['manage_workspaces'])).toContain('action=readiness');
+    const mockApi = mock().mockRejectedValue(new Error('no repo'));
+    await run(mockApi, { action: 'init', workspaceId: WORKSPACE_ID });
+    expect(mockApi.mock.calls[0][0]).toBe(`/api/workspaces/${WORKSPACE_ID}/policy-init`);
+  });
+});
+
+describe('manage_workspaces author_spec', () => {
+  const answers = { title: 'Checkout', description: 'Charges carts.', capabilities: [] };
+  const run = (mockApi: ReturnType<typeof mock>, params: Record<string, unknown> = {}) =>
+    handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_workspaces',
+      { action: 'author_spec', workspaceId: WORKSPACE_ID, answers, ...params },
+      createContext(),
+    );
+
+  it('posts the answers with confirm false by default and renders the draft', async () => {
+    const mockApi = mock().mockResolvedValue({
+      dryRun: true, path: 'docs/specs/checkout.md', format: 'default', warnings: ['domain defaulted'], markdown: '---\ntitle: Checkout\n---',
+    });
+    const result = await run(mockApi);
+
+    expect(mockApi.mock.calls[0][0]).toBe(`/api/workspaces/${WORKSPACE_ID}/onboarding/spec`);
+    const body = JSON.parse((mockApi.mock.calls[0] as any)[1].body);
+    expect(body).toEqual({ answers, confirm: false });
+    const out = result.content[0].text;
+    expect(out).toContain('Dry run: nothing created');
+    expect(out).toContain('docs/specs/checkout.md');
+    expect(out).toContain('- domain defaulted');
+    expect(out).toContain('title: Checkout');
+  });
+
+  it('forwards confirm and owner and reports the created task', async () => {
+    const mockApi = mock().mockResolvedValue({
+      dryRun: false, path: 'docs/specs/checkout.md', format: 'mirrored', markdown: 'x', task: { id: 'abc', baseBranch: 'main' },
+    });
+    const result = await run(mockApi, { confirm: true, owner: 'octocat' });
+    const body = JSON.parse((mockApi.mock.calls[0] as any)[1].body);
+    expect(body).toEqual({ answers, owner: 'octocat', confirm: true });
+    expect(result.content[0].text).toContain('Created task abc (PR base: main)');
+    expect(result.content[0].text).not.toContain('```markdown');
+  });
+
+  it('is named in the action docs', () => {
+    expect(buildParamsDescription(['manage_workspaces'])).toContain('action=author_spec');
+  });
+});

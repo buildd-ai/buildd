@@ -45,6 +45,12 @@ test('mission reads use task reading and mutations require mission administratio
   expect(requiredScopeForAction('manage_missions', { action: 'arm' })).toBe('missions:admin');
 });
 
+test('workspace readiness is a read, matching its GET route; workspace mutations stay admin', () => {
+  expect(requiredScopeForAction('manage_workspaces', { action: 'readiness' })).toBe('tasks:read');
+  expect(requiredScopeForAction('manage_workspaces', { action: 'update' })).toBe('workspaces:admin');
+  expect(requiredScopeForAction('manage_missions', { action: 'readiness' })).toBe('missions:admin');
+});
+
 test('legacy levels map to displayed presets without migrating permissions', () => {
   expect(LEGACY_LEVEL_PRESET).toEqual({ worker: 'runner', trigger: 'ci', admin: 'admin' });
 });

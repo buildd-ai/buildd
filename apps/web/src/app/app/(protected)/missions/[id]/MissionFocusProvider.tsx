@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * The mission page's single selection (docs/design/mission-feed-mobile-continuity.md,
+ * The mission page's single selection (knowledge-base: buildd/design/mission-feed-mobile-continuity.md,
  * W3 "Pulse interaction", "Scroll", and the freeze rule).
  *
  * One store owns:

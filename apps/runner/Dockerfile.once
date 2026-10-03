@@ -90,6 +90,17 @@ COPY --chmod=0755 apps/runner/scripts/buildd-once.sh /usr/local/bin/buildd-once
 # the runner's agent env allowlist (agent-env.ts), so root would silently lose
 # bypass mode. The base image's `bun` user (uid 1000) avoids the question.
 # /opt/buildd stays root-owned, so the agent cannot rewrite the runner.
+#
+# CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also withholds Claude Code's
+# claude.ai Artifact tool. For a session whose role or task opts in to
+# claude.ai artifact access, the runner drops it from that session's env only
+# and sets its parts instead (DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING,
+# DISABLE_AUTOUPDATER, DISABLE_BUG_COMMAND), so telemetry and updates stay off.
+# The egress trade-off: an opted-in session can make the Artifact tool's calls
+# to the Anthropic API (the same host it already uses for inference) and any
+# other call the CLI treats as non-essential that has no switch of its own;
+# the egress proxy still decides what leaves the container. Every other
+# session keeps the umbrella switch. See packages/shared/src/claude-ai-artifacts.ts.
 ENV HOME=/home/bun \
     BUILDD_HOME=/home/bun/.buildd \
     BUILDD_REPO_ROOT=/opt/buildd \

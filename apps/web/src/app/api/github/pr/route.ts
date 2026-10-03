@@ -1531,6 +1531,9 @@ export async function PUT(req: NextRequest) {
         headSha,
         policy,
         {
+          // The task's own mission: a task PR into its integration branch
+          // skips the size cap, same as the other merge doors.
+          mission: mission ?? null,
           releaseConfig: workspace.releaseConfig,
           workspaceId: workspace.id,
           taskId: worker.taskId ?? null,

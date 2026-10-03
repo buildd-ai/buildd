@@ -7,7 +7,7 @@ import { and, eq, gte, inArray } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
-import { aggregateCbm, type CbmRow } from '@/lib/cbm-insight';
+import { aggregateCbm, aggregateCbmInjection, type CbmRow } from '@/lib/cbm-insight';
 
 /** Parse a window string like "24h", "7d", "30d" into milliseconds. */
 function parseWindowMs(window: string): number {
@@ -32,6 +32,10 @@ function parseWindowMs(window: string): number {
  *   3. What is the index fallback rate?  → eligibleFallbackRate (0–1; target <0.05)
  *                                          plus indexBuild.failureRate for a
  *                                          graph that was built and failed.
+ *   4. Is search injection earning its place? → injection.injectedRate and
+ *                                          injection.uptakeRate, with
+ *                                          injection.killMetric.verdict
+ *                                          (docs/design/cbm-search-injection.md).
  *
  * Cohort rules (both are load-bearing — see the inline comments below):
  *   - ACTIVE  = outcome 'enforced' OR 'legacy_mcp_json' (CBM was mounted, however
@@ -116,6 +120,7 @@ function emptyResponse(window: string, windowStart: Date) {
     window,
     windowStart: windowStart.toISOString(),
     totalTracked: 0,
+    injection: aggregateCbmInjection([]),
     fallbackRate: null,
     eligibleFallbackRate: null,
     eligibility: { eligibleCount: 0, fallbackCount: 0, byDesignSkipCount: 0, byDesignSkips: {} },

@@ -23,7 +23,7 @@ export default function SituationTaskAffordance({ label, href, taskId }: { label
         data-testid="mission-primary-action-strip"
         data-task-ref={taskId}
         onClick={() => strip.store.select(taskId, { focus: true })}
-        className="inline-flex min-h-11 items-center gap-1.5 font-mono text-[12px] font-semibold text-accent-text hover:underline"
+        className="inline-flex min-h-11 items-center gap-1.5 font-mono text-meta font-semibold text-accent-text hover:underline"
       >
         {`${label} · ${n}`}
         <span aria-hidden="true">↓</span>
@@ -35,7 +35,7 @@ export default function SituationTaskAffordance({ label, href, taskId }: { label
       data-testid="mission-primary-action"
       href={href}
       data-task-id={taskId}
-      className="inline-flex min-h-11 w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-accent text-white font-mono text-[13px] font-semibold hover:bg-accent/90 transition-colors"
+      className="inline-flex min-h-11 w-full md:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-accent text-white font-mono text-body font-semibold hover:bg-accent/90 transition-colors"
     >
       {label} →
     </Link>

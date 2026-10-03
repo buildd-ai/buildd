@@ -30,7 +30,7 @@ export const MISSION_TASK_BASE_COLUMNS = {
 
 export const MISSION_WORKER_BASE_COLUMNS = {
   id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true,
-  prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true,
+  prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true, abandonedAt: true,
 } as const;
 
 const MISSION_WITH_SHARED = {

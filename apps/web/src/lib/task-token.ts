@@ -1,4 +1,5 @@
 import { createHash, createHmac, hkdfSync, timingSafeEqual } from 'crypto';
+import { TOKEN_PRESETS, type TokenScope } from '@buildd/core/token-scopes';
 
 /**
  * Per-task runner token for a cloud container.
@@ -26,6 +27,21 @@ import { createHash, createHmac, hkdfSync, timingSafeEqual } from 'crypto';
  */
 
 export const TASK_TOKEN_PREFIX = 'bldt_';
+
+/**
+ * What a scoped key must hold to mint task tokens, and keep holding for them
+ * to authenticate: the runner preset, which covers every route a task token
+ * may call. `admin` holds them all. A legacy (unscoped) key always qualifies.
+ * The token is worker-level and confined to one task, so it never does more
+ * than the key that minted it.
+ */
+export const TASK_TOKEN_MINTING_SCOPES: readonly TokenScope[] = TOKEN_PRESETS.runner.scopes;
+
+/** The runner capabilities `scopes` lacks; empty when it may mint (or is a legacy key). */
+export function missingTaskTokenScopes(scopes: readonly string[] | null | undefined): TokenScope[] {
+  if (scopes == null || scopes.includes('admin')) return [];
+  return TASK_TOKEN_MINTING_SCOPES.filter(s => !scopes.includes(s));
+}
 
 /** Default and maximum lifetime. Covers a long run plus the input wait of `--once`. */
 export const TASK_TOKEN_DEFAULT_TTL_MS = 8 * 60 * 60 * 1000;

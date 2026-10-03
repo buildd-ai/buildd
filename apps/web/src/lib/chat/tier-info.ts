@@ -1,7 +1,7 @@
 /**
  * What the composer's tier switch shows for each chat tier: the model the
  * team's admin mapped it to, and the expected price per 1k tokens. A pooled
- * tier (docs/design/tier-model-pools.md) serves several models, so its price is
+ * tier (knowledge-base: buildd/design/tier-model-pools.md) serves several models, so its price is
  * the average over them, weighted by the pool's traffic allocation when it has
  * one; `models` carries the list.
  *

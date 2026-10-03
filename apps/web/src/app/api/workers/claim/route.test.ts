@@ -25,6 +25,11 @@ const mockWorkersInsert = mock(() => ({
     returning: mock(() => [{ id: 'worker-1', taskId: 'task-1', branch: 'buildd/test', status: 'idle' }]),
   })),
 }));
+const mockErrorTracesTable = { __table: 'worker_error_traces' };
+const errorTraceRows: any[] = [];
+const mockErrorTracesInsert = mock(() => ({
+  values: mock((v: any) => { errorTraceRows.push(...(Array.isArray(v) ? v : [v])); return Promise.resolve(); }),
+}));
 const mockDbExecute = mock(() => Promise.resolve({
   rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
 }));
@@ -145,7 +150,7 @@ mock.module('@buildd/core/db', () => ({
       }
       return mockTasksUpdate();
     },
-    insert: (table: any) => mockWorkersInsert(),
+    insert: (table: any) => table === mockErrorTracesTable ? mockErrorTracesInsert() : mockWorkersInsert(),
     delete: (table: any) => ({ where: mock(() => Promise.resolve()) }),
     select: mockDbSelect,
     execute: mockDbExecute,
@@ -159,8 +164,9 @@ mock.module('@buildd/core/db', () => ({
 // reach model-catalog-cache's own DB miss and then perform a REAL network
 // fetch to OpenRouter on every claim test. Empty catalog reproduces the exact
 // pre-existing behavior (falls through to TIER_DEFAULTS).
+const mockGetCatalog = mock(() => Promise.resolve([] as any[]));
 mock.module('@buildd/core/model-catalog-cache', () => ({
-  getCachedOpenRouterCatalog: mock(() => Promise.resolve([] as any[])),
+  getCachedOpenRouterCatalog: (...a: any[]) => (mockGetCatalog as any)(...a),
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -199,6 +205,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
   missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
+  workerErrorTraces: mockErrorTracesTable,
   workspaces: { id: 'id', accessMode: 'accessMode', teamId: 'teamId' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
   secrets: { accountId: 'accountId', purpose: 'purpose', label: 'label', teamId: 'teamId', workspaceId: 'workspaceId' },
@@ -1601,6 +1608,98 @@ describe('POST /api/workers/claim', () => {
         mockDrawAgentPoolArm.mockResolvedValue({ arm: { id: 'arm-1' } });
         await POST(claimReq());
         expect(mockRecordAgentPoolAssignment).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('dispatch model guard', () => {
+      const entry = (id: string, createdDay: number, input = 2) => ({
+        id, canonicalId: null, openRouterId: `anthropic/${id}`, provider: 'anthropic', displayName: id,
+        contextLength: 1_000_000, created: 1_790_000_000 + createdDay * 86_400, input, output: input * 5, cacheRead: 0, cacheWrite: 0,
+      });
+      // opus-5-5 is the newest model with a recorded CLI floor; sonnet-5-5 postdates it.
+      const CATALOG = [
+        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15),
+      ];
+      const BAD = 'claude-sonnet-5-5';
+
+      beforeEach(() => {
+        mockGetCatalog.mockResolvedValue(CATALOG as any);
+        errorTraceRows.length = 0;
+        mockDrawAgentPoolArm.mockReset();
+        mockDrawAgentPoolArm.mockResolvedValue(null);
+        mockApplyAgentPoolArm.mockReset();
+        mockApplyAgentPoolArm.mockReturnValue(null);
+        mockRecordAgentPoolAssignment.mockReset();
+        mockRecordAgentPoolAssignment.mockResolvedValue(undefined);
+      });
+      afterEach(() => {
+        mockGetCatalog.mockResolvedValue([]);
+        mockTasksUpdate.mockReturnValue({
+          set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+        });
+      });
+
+      it('a pinned id the runner would reject is not launched: the tier default runs and the rejection is traced', async () => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), context: { model: BAD } }]);
+        const res = await POST(claimReq());
+        expect((await res.json()).workers.length).toBe(1);
+
+        const claimSet = sets.find(v => v.status === 'assigned');
+        expect(claimSet.predictedModel).not.toBe(BAD);
+        expect(claimSet.context.model).toBe('claude-sonnet-5');
+
+        expect(errorTraceRows).toHaveLength(1);
+        expect(errorTraceRows[0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', pattern: 'dispatch_model_rejected', source: 'claim' });
+        expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from pin (newer_than_floor_table)`);
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+      });
+
+      it('a pool challenger on an unvouched id never reaches the runner: the incumbent is served and the arm is un-served', async () => {
+        const sets = setup();
+        const draw: any = { arm: { id: 'arm-2' }, served: true, assignedModel: BAD, eligibility: {} };
+        mockDrawAgentPoolArm.mockResolvedValue(draw);
+        // The real applyAgentPoolArm consults the closure it is handed; assert on that closure.
+        mockApplyAgentPoolArm.mockImplementation((_d: any, args: any) => (args.clientCanServe(BAD) ? { model: BAD, provider: 'anthropic' } : null));
+        await POST(claimReq());
+
+        const claimSet = sets.find(v => v.status === 'assigned');
+        expect(claimSet.predictedModel).toBe('claude-sonnet-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(errorTraceRows).toHaveLength(1);
+        expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from tier_pool_arm`);
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+      });
+
+      it('an arm the guard rejects after it was served is un-served in the recorded assignment', async () => {
+        const sets = setup();
+        const draw: any = { arm: { id: 'arm-2' }, served: true, assignedModel: BAD, eligibility: {} };
+        mockDrawAgentPoolArm.mockResolvedValue(draw);
+        mockApplyAgentPoolArm.mockReturnValue({ model: BAD, provider: 'anthropic' });
+        await POST(claimReq());
+
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(draw.served).toBe(false);
+        expect(draw.assignedModel).toBe('claude-sonnet-5');
+        expect(draw.eligibility).toMatchObject({ fallback: 'model_unrecognized' });
+        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5' });
+      });
+
+      it('a recognised model is left alone and leaves no trace', async () => {
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), context: { model: 'claude-opus-5-5' } }]);
+        await POST(claimReq());
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-opus-5-5');
+        expect(errorTraceRows).toHaveLength(0);
+      });
+
+      it('an empty catalog is "learned nothing": nothing is rejected', async () => {
+        mockGetCatalog.mockResolvedValue([]);
+        const sets = setup();
+        mockTasksFindMany.mockResolvedValue([{ ...experimentTask(), context: { model: BAD } }]);
+        await POST(claimReq());
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe(BAD);
+        expect(errorTraceRows).toHaveLength(0);
       });
     });
 

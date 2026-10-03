@@ -204,6 +204,8 @@ export interface ContainerEnvSource {
   WARM_REPOS?: string;
   /** `1` turns on parking a waiting worker (see resumableRunsEnabled). */
   RESUMABLE_RUNS?: string;
+  /** This deployment's runner group (its Worker name); see RUNNER_GROUP_CONTAINER_ENV. */
+  RUNNER_GROUP?: string;
 }
 
 /**
@@ -237,6 +239,16 @@ export const ANTHROPIC_API_KEY_PLACEHOLDER = 'sk-ant-placeholder-replaced-at-egr
  */
 export const CLOUD_EXECUTOR = 'cloud';
 
+/**
+ * The runner group every container of this deployment reports on its
+ * heartbeat (packages/shared/src/runner-fleet.ts), so the fleet shows one
+ * elastic group per dispatcher instead of one "machine" per run. The value is
+ * the Worker name: wrangler.jsonc sets the var, and deploy.ts --name rewrites
+ * it with the name. The default covers a Worker deployed before the var.
+ */
+export const RUNNER_GROUP_CONTAINER_ENV = 'BUILDD_RUNNER_GROUP';
+export const DEFAULT_RUNNER_GROUP = 'buildd-cloud-runner';
+
 /** Prefix of a per-task token (apps/web/src/lib/task-token.ts). */
 export const TASK_TOKEN_PREFIX = 'bldt_';
 
@@ -256,17 +268,35 @@ export const TASK_TOKEN_PREFIX = 'bldt_';
  * handler and arrive with only the placeholder key. For the same reason the
  * proxy settings (MODEL_PROXY_*) stay in the Worker.
  */
+/**
+ * apps/runner/Dockerfile.once's ENV, passed explicitly with every exec: a
+ * process exec'd in a Cloudflare container starts with only the env it is
+ * given, so the image ENV (sandbox off, non-essential Claude Code traffic off,
+ * the buildd paths) never reached the runner. lifecycle.test.ts keeps this
+ * equal to the Dockerfile.
+ */
+export const IMAGE_ENV: Readonly<Record<string, string>> = {
+  HOME: '/home/bun',
+  BUILDD_HOME: '/home/bun/.buildd',
+  BUILDD_REPO_ROOT: '/opt/buildd',
+  BUILDD_DISABLE_AUTO_UPDATE: '1',
+  BUILDD_DISABLE_SANDBOX: '1',
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+};
+
 export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): Record<string, string> {
   if (!env.BUILDD_SERVER) throw new Error('BUILDD_SERVER is not set');
   if (typeof taskToken !== 'string' || !taskToken.startsWith(TASK_TOKEN_PREFIX)) {
     throw new Error('the container credential must be a per-task token');
   }
   const out: Record<string, string> = {
+    ...IMAGE_ENV,
     BUILDD_SERVER: env.BUILDD_SERVER,
     BUILDD_API_KEY: taskToken,
     ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
     BUILDD_DISABLE_AUTO_UPDATE: '1',
     BUILDD_EXECUTOR: CLOUD_EXECUTOR,
+    [RUNNER_GROUP_CONTAINER_ENV]: env.RUNNER_GROUP || DEFAULT_RUNNER_GROUP,
   };
   const optional = ['MODEL', 'PUSHER_KEY', 'PUSHER_CLUSTER', 'BUILDD_ONCE_MAX_WAIT_MS'] as const;
   for (const key of optional) {

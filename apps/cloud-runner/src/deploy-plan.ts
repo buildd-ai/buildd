@@ -76,6 +76,51 @@ export const SNAPSHOT_BUCKET = {
   ],
 } as const;
 
+/** The Worker name in wrangler.jsonc. */
+const DEFAULT_WORKER_NAME = 'buildd-cloud-runner';
+
+export interface DeployNames {
+  worker: string;
+  bucket: string;
+  /** True when the names differ from wrangler.jsonc, so deploy needs a generated config. */
+  custom: boolean;
+}
+
+/**
+ * The Worker and snapshot bucket names for one deployment. `--name` lets an
+ * account host the runner under its own name (e.g. a neutral one for an
+ * evaluation); the bucket follows the Worker so two deployments in one
+ * account never share snapshots. Cloudflare allows lowercase letters, digits
+ * and dashes; the bucket suffix must still fit R2's 63-character limit.
+ */
+export function deployNames(name?: string): DeployNames {
+  if (name === undefined) return { worker: DEFAULT_WORKER_NAME, bucket: SNAPSHOT_BUCKET.name, custom: false };
+  if (!/^[a-z0-9][a-z0-9-]{0,44}$/.test(name)) {
+    throw new Error(`invalid Worker name "${name}": use 1-45 lowercase letters, digits or dashes, not starting with a dash`);
+  }
+  if (name === DEFAULT_WORKER_NAME) return deployNames();
+  return { worker: name, bucket: `${name}-snapshots`, custom: true };
+}
+
+/**
+ * wrangler.jsonc with the Worker name, its runner group (vars.RUNNER_GROUP)
+ * and snapshot bucket replaced, for `wrangler -c`. Everything else is
+ * byte-for-byte the checked-in config, so a custom-named deploy cannot drift
+ * from the default one. Throws if any field is missing rather than deploying
+ * a half-renamed Worker.
+ */
+export function renderWranglerConfig(base: string, names: DeployNames): string {
+  const swap = (text: string, re: RegExp, value: string, field: string) => {
+    const hits = text.match(new RegExp(re.source, 'gm'))?.length ?? 0;
+    if (hits !== 1) throw new Error(`wrangler.jsonc: expected one ${field}, found ${hits}`);
+    return text.replace(re, (_m, pre: string) => `${pre}"${value}"`);
+  };
+  const named = swap(base, /^(\s*"name":\s*)"[^"]*"/m, names.worker, '"name"');
+  // The fleet groups this deployment's runs under its Worker name.
+  const grouped = swap(named, /("RUNNER_GROUP":\s*)"[^"]*"/m, names.worker, '"RUNNER_GROUP"');
+  return swap(grouped, /("bucket_name":\s*)"[^"]*"/m, names.bucket, '"bucket_name"');
+}
+
 export type DeployStep =
   | { kind: 'ensure_snapshot_bucket' }
   | { kind: 'wrangler_deploy' }
@@ -245,14 +290,14 @@ function planModelProxy(
 }
 
 /** One line per step, secrets redacted, for --dry-run and the run log. */
-export function describePlan(plan: DeployPlan): string[] {
+export function describePlan(plan: DeployPlan, names: DeployNames = deployNames()): string[] {
   if (!plan.ok) return [`error: ${plan.error}`];
   const lines = plan.steps.map((s) => {
     switch (s.kind) {
       case 'ensure_snapshot_bucket':
-        return `wrangler r2 bucket create ${SNAPSHOT_BUCKET.name} (if missing) + lifecycle ${SNAPSHOT_BUCKET.lifecycle.map(r => `${r.prefix} ${r.expireDays}d`).join(', ')}`;
+        return `wrangler r2 bucket create ${names.bucket} (if missing) + lifecycle ${SNAPSHOT_BUCKET.lifecycle.map(r => `${r.prefix} ${r.expireDays}d`).join(', ')}`;
       case 'wrangler_deploy':
-        return 'wrangler deploy (apps/cloud-runner)';
+        return names.custom ? `wrangler deploy --name ${names.worker} (apps/cloud-runner, generated config)` : 'wrangler deploy (apps/cloud-runner)';
       case 'put_secret':
         return `wrangler secret put ${s.name} = ${PLAIN_SECRET_NAMES.has(s.name) ? s.value : redact(s.value)} (${s.reason})`;
       case 'set_webhook':

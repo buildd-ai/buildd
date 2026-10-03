@@ -7,15 +7,7 @@ import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePull
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
-import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
-import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
-import {
-  fetchPrRetryGate,
-  fetchCIFailureLogs,
-  fetchCommitAuthor,
-  isBuilddWorkerCommit,
-} from '@/lib/ci-failure-inspect';
-import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
+import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
 import {
   reviewRowFromEvent,
   commentRowFromEvent,
@@ -46,10 +38,9 @@ import {
 import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
-import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
+import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
-import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
@@ -58,10 +49,6 @@ import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { buildWorkflowRunOutcome, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
-import {
-  prepareSubjectFiling,
-  recordSubjectMatchObserved,
-} from '@/lib/subject-anchor-observer';
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
@@ -77,17 +64,17 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { conformanceManifest } from '@/lib/path-declaration';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
-import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
-import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner, listWorkspaceRoles } from '@/lib/pr-review-request';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { deliverPrReviewCallback, readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { dependencyBotPushRefusal, isDependencyBotAuthor, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
+import { detectPrSupersession } from '@/lib/pr-supersession-detect';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -280,18 +267,6 @@ async function backLinkInstallationRepos(installationId: number, source: string)
 const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
 // PR lifecycle statuses that must not be overwritten by any later CI event:
 // TERMINAL_PR_LIFECYCLE (merged, closed, unresolvable) via isTerminalPrLifecycle.
-
-/**
- * True for the bookkeeping task `resolveOrAdoptPrOwner` creates for a PR
- * buildd did not open. Its `status` is always 'completed' (the PR already
- * exists — a pending row here would be claimable and "redone"), which would
- * otherwise look identical to a task whose real agent work genuinely
- * finished. Callers that gate on terminal status must exempt this case.
- */
-function isAdoptedPrTask(task: { context: unknown }): boolean {
-  const context = task.context as Record<string, unknown> | null;
-  return !!context?.adoptedPr;
-}
 
 /**
  * Create a buildd task from a labeled GitHub issue (spec §3). Idempotent per
@@ -1163,6 +1138,19 @@ async function handlePullRequestEvent(event: {
         .update(workers)
         .set({ prLifecycleStatus: 'closed', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
+      // Where did the work go? Claims and sibling tasks only nominate; an edge
+      // is recorded only if the content verifies (lib/pr-supersession-detect.ts).
+      // GitHub-heavy, so after(); the hourly pr-reconcile sweep is the backstop.
+      const closedWorkerId = worker.id;
+      const detect = () => detectPrSupersession({ workerId: closedWorkerId, via: 'webhook' }).then(
+        r => console.log(`[webhook] supersession detection for PR #${pr.number}: ${r.outcome}`),
+        e => console.error(`[webhook] supersession detection failed for PR #${pr.number}:`, e),
+      );
+      try {
+        after(detect);
+      } catch {
+        await detect();
+      }
     }
     await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
       taskId: worker.taskId,
@@ -1667,19 +1655,10 @@ async function reportMissionGateRetarget(opts: {
 }
 
 /**
- * CI check suite failed → create a bounded fix task for the buildd worker's PR
- * and dispatch it to a runner. Part of the Ralph loop: CI fails → fix task →
- * agent fixes on the same branch → CI re-runs → (with autoMergePR) merges.
- *
- * Guard rails:
- * - Only acts on PRs created by a buildd worker.
- * - Skips draft, merged and closed PRs, and owners that failed or were cancelled.
- *   A completed owner still gets the retry: its PR is open and red.
- * - Never stacks on a fix attempt for the same PR that is still pending/running.
- * - Dedupes structurally by workspace + PR + failed head SHA.
- * - Honors gitConfig.maxCiRetries (default 3; 0 disables), counted from the CI
- *   retries already filed for the PR. On exhaustion, marks the owner task
- *   failed and notifies the mission instead of looping.
+ * CI check suite failed → hand each PR in the suite to `retryCiFailureForPr`
+ * (lib/ci-failure-retry.ts), which files a bounded CI-fix task or records why
+ * not. The red-PR sweep (lib/ci-red-sweep.ts) calls the same function for a PR
+ * this event could not act on.
  */
 async function handleCheckSuiteFailure(
   checkSuite: GitHubCheckSuiteEvent['check_suite'],
@@ -1688,438 +1667,13 @@ async function handleCheckSuiteFailure(
 ) {
   for (const pr of checkSuite.pull_requests) {
     try {
-      let worker = await db.query.workers.findFirst({
-        where: workerOwnsPr(repository.full_name, pr.number),
-        with: { task: true },
-      });
-
-      if (!worker?.task) {
-        // No worker owns this PR — a release PR opened by `workflow_dispatch`,
-        // a hand-pushed PR, or an external contribution. Adopt it through the
-        // SAME path `request_pr_review` uses (see resolveOrAdoptPrOwner), then
-        // fall through to the normal retry logic below. Adoption is scoped to
-        // repos this workspace actually manages, and skipped for forks — a
-        // fork's CI failure is not buildd's to fix.
-        const adoptingWorkspace = await db.query.workspaces.findFirst({
-          where: workspaceRepoMatches(repository.full_name),
-        });
-        if (!adoptingWorkspace) {
-          continue;
-        }
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let prData: any = null;
-        try {
-          prData = await githubApi(installationId, `/repos/${repository.full_name}/pulls/${pr.number}`);
-        } catch (err) {
-          console.warn(`[webhook] Could not fetch PR #${pr.number} on ${repository.full_name} for adoption:`, err);
-        }
-        if (!prData?.number) {
-          continue;
-        }
-
-        const headRepoFullName = prData.head?.repo?.full_name as string | undefined;
-        const isFork = !!headRepoFullName && headRepoFullName.toLowerCase() !== repository.full_name.toLowerCase();
-        if (isFork) {
-          console.log(`[webhook] Skipping adoption of fork PR #${pr.number} on ${repository.full_name}`);
-          continue;
-        }
-
-        // Renovate/Dependabot own their branch and stop rebasing it the moment
-        // anyone else commits — a CI fix from buildd would hijack the PR.
-        if (isDependencyBotAuthor(prData.user)) {
-          console.log(
-            `[webhook] Skipping adoption of dependency-bot PR #${pr.number} on ${repository.full_name} (author: ${prData.user?.login})`,
-          );
-          fireGateEvent({
-            gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
-            surface: 'webhook:check_suite',
-            outcome: 'rejected',
-            reason: 'CI failed on a dependency-bot PR — not adopted, the bot owns the branch',
-            workspaceId: adoptingWorkspace.id,
-            callerOrigin: 'system',
-            detail: { prNumber: pr.number, repo: repository.full_name, author: prData.user?.login ?? null, stage: 'adoption' },
-          });
-          continue;
-        }
-
-        const { ownerWorker } = await resolveOrAdoptPrOwner({
-          workspaceId: adoptingWorkspace.id,
-          installationId,
-          repoFullName: repository.full_name,
-          prNumber: pr.number,
-          pr: prData,
-          creationSource: 'webhook',
-        });
-
-        worker = await db.query.workers.findFirst({
-          where: eq(workers.id, ownerWorker.id),
-          with: { task: true },
-        });
-        if (!worker?.task) {
-          continue;
-        }
-      }
-      const task = worker.task;
-
-      // Already adopted (an explicit request_pr_review) — reviewing a bot PR is
-      // fine, pushing a CI fix to its branch is not.
-      if (isDependencyBotPrContext(task.context)) {
-        console.log(`[webhook] No CI-fix for dependency-bot PR #${pr.number} on ${repository.full_name}`);
-        fireGateEvent({
-          gate: GATE_SLUGS.DEPENDENCY_BOT_PR,
-          surface: 'webhook:check_suite',
-          outcome: 'rejected',
-          reason: dependencyBotPushRefusal(pr.number),
-          workspaceId: task.workspaceId,
-          taskId: task.id,
-          workerId: worker.id,
-          callerOrigin: 'system',
-          detail: { prNumber: pr.number, repo: repository.full_name, stage: 'ci_fix' },
-        });
-        continue;
-      }
-
-      // A failed or cancelled owner must not spawn retry children: failed is what
-      // the exhaustion path below sets, and cancelled is a human stopping the
-      // work. Surface the failure to the mission feed instead (AC-5).
-      //
-      // 'completed' is NOT a stop. Workers call complete_task right after they
-      // push, so a PR's root task and every review/conflict/CI fix attempt on it
-      // are 'completed' by the time CI reports. A completed task whose PR is
-      // open and red has not finished its job. What actually ends the loop is
-      // checked below: a merged/closed PR, an in-flight fix, the budget.
-      const ownerStopped = task.status === 'failed' || task.status === 'cancelled';
-      if (ownerStopped && !isAdoptedPrTask(task)) {
-        if (task.missionId) {
-          await notifyMissionPrReady(task.missionId, {
-            title: `CI failing on ${task.status} task PR`,
-            prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
-            prNumber: pr.number,
-            headSha: checkSuite.head_sha,
-            reason: 'ci_failed',
-            message: `${task.title} — CI failed on the ${task.status} task's PR. Needs a human.`,
-          });
-        }
-        continue;
-      }
-
-      // A late failure on a PR that already landed or was closed is not ours to fix.
-      if (isTerminalPrLifecycle(worker.prLifecycleStatus)) {
-        console.log(`Skipping CI retry for PR #${pr.number} on ${repository.full_name}: PR is ${worker.prLifecycleStatus}`);
-        continue;
-      }
-
-      const workspace = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, task.workspaceId),
-      });
-      if (!workspace) {
-        console.log(`No workspace found for task ${task.id}, skipping CI retry`);
-        continue;
-      }
-
-      // Guard: skip draft PRs (not ready for CI feedback) and merged/closed ones
-      // (the lifecycle column above can lag the webhook that closed the PR).
-      const prGate = await fetchPrRetryGate(installationId, repository.full_name, pr.number);
-      if (prGate.draft) {
-        console.log(`Skipping CI retry for draft PR #${pr.number} on ${repository.full_name}`);
-        continue;
-      }
-      if (prGate.closed) {
-        console.log(`Skipping CI retry for ${prGate.merged ? 'merged' : 'closed'} PR #${pr.number} on ${repository.full_name}`);
-        continue;
-      }
-
-      // Every fix attempt filed for this PR: one in flight means another push
-      // is coming, so a retry now would stack on it; the rest are the budget.
-      const fixAttempts = await db
-        .select({
-          id: tasks.id,
-          status: tasks.status,
-          creationSource: tasks.creationSource,
-          outputRequirement: tasks.outputRequirement,
-          ciRetryPrNumber: tasks.ciRetryPrNumber,
-          context: tasks.context,
-          createdAt: tasks.createdAt,
-        })
-        .from(tasks)
-        .where(and(
-          eq(tasks.workspaceId, task.workspaceId),
-          or(
-            eq(tasks.ciRetryPrNumber, pr.number),
-            eq(tasks.reviewerRetryPrNumber, pr.number),
-            eq(tasks.conflictRetryPrNumber, pr.number),
-          ),
-        ));
-      const { inFlight, ciRetriesUsed } = summarizePrFixAttempts(fixAttempts, pr.number);
-      if (inFlight) {
-        console.log(
-          `Skipping CI retry for PR #${pr.number} on ${repository.full_name}: fix attempt ${inFlight.id} is still ${inFlight.status}`,
-        );
-        continue;
-      }
-
-      // Fetch CI failure logs and commit authorship in parallel to minimise latency.
-      const [ciLogs, commitAuthor] = await Promise.all([
-        fetchCIFailureLogs(installationId, repository.full_name, checkSuite.head_sha),
-        fetchCommitAuthor(installationId, repository.full_name, checkSuite.head_sha),
-      ]);
-      const failureContext = ciLogs.summary ||
-        `CI check suite failed on ${repository.full_name} PR #${pr.number} (SHA: ${checkSuite.head_sha})`;
-
-      // Schema drift is diagnose-only — never a fix agent, automatic or manual.
-      // Classified by check name (the only reliable signal here); see
-      // ci-drift-diagnose.ts for why. This skips buildCIRetryTask entirely,
-      // for both a pre-existing worker's PR and one just adopted above.
-      if (isSchemaDriftFailure(ciLogs.failedJobNames)) {
-        const diagnoseTask = buildDriftDiagnoseTask({
-          originalTask: {
-            id: task.id,
-            title: task.title,
-            workspaceId: task.workspaceId,
-            missionId: task.missionId ?? null,
-          },
-          repoFullName: repository.full_name,
-          prNumber: pr.number,
-          headSha: checkSuite.head_sha,
-          failureContext,
-          ciRunUrl: ciLogs.runUrl,
-        });
-
-        // The diagnose task re-attempts the PR's owner task, so it carries the
-        // same identity as the CI retry below would (Rule P1-7).
-        const diagnoseIdentity = await inheritAttemptIdentity(diagnoseTask.parentTaskId);
-
-        const [newDiagnoseTask] = await db
-          .insert(tasks)
-          .values({
-            workspaceId: diagnoseTask.workspaceId,
-            title: diagnoseTask.title,
-            description: diagnoseTask.description,
-            parentTaskId: diagnoseTask.parentTaskId,
-            ...diagnoseIdentity,
-            ciRetryPrNumber: pr.number,
-            ciRetryHeadSha: checkSuite.head_sha,
-            missionId: diagnoseTask.missionId,
-            context: diagnoseTask.context,
-            creationSource: diagnoseTask.creationSource,
-            taskClass: diagnoseTask.taskClass,
-            outputRequirement: diagnoseTask.outputRequirement,
-            status: 'pending',
-            priority: 7,
-          })
-          .onConflictDoNothing()
-          .returning();
-
-        if (newDiagnoseTask) {
-          await dispatchNewTask(newDiagnoseTask, workspace);
-          console.log(`Created drift-diagnose task ${newDiagnoseTask.id} for PR #${pr.number} on ${repository.full_name} (iteration skipped — diagnose only)`);
-          await appendPrActivity({
-            installationId,
-            repoFullName: repository.full_name,
-            prNumber: pr.number,
-            entry: {
-              kind: 'ci_fixing',
-              detail: 'schema drift · diagnose only',
-              url: ciLogs.runUrl,
-              taskUrl: taskActivityUrl(newDiagnoseTask.id),
-            },
-            workspaceId: diagnoseTask.workspaceId,
-          });
-        } else {
-          console.log(`Skipping duplicate drift-diagnose task for ${diagnoseTask.workspaceId}/PR #${pr.number}/${checkSuite.head_sha}`);
-        }
-        continue;
-      }
-
-      // Non-worker commits (human pushes, GitHub Actions, etc.) still need a fix
-      // task — the PR is red — but must NOT consume a retry attempt against
-      // maxCiRetries. Only buildd-agent-authored SHAs burn the budget.
-      const isWorkerCommit = isBuilddWorkerCommit(commitAuthor);
-      const foreignHeadSha = !isWorkerCommit;
-      const foreignCommitAuthor = foreignHeadSha
-        ? (commitAuthor.login ?? commitAuthor.name ?? commitAuthor.email ?? 'unknown')
-        : undefined;
-
-      if (foreignHeadSha) {
-        console.log(
-          `[webhook] PR #${pr.number} on ${repository.full_name}: head SHA ${checkSuite.head_sha} ` +
-          `was NOT committed by the buildd worker (author: ${foreignCommitAuthor}). ` +
-          `Creating retry task without consuming an attempt.`
-        );
-      }
-
-      // The owner's own counter is only trustworthy while it is the live
-      // attempt; the filed retries are the floor either way.
-      const ownerCtx = (task.context as Record<string, unknown>) || {};
-      const currentIteration = Math.max(
-        typeof ownerCtx.iteration === 'number' ? ownerCtx.iteration : 0,
-        ciRetriesUsed,
-      );
-      const taskCtx = { ...ownerCtx, iteration: currentIteration };
-
-      const retryTask = buildCIRetryTask({
-        originalTask: {
-          id: task.id,
-          title: task.title,
-          description: task.description,
-          workspaceId: task.workspaceId,
-          context: taskCtx,
-          missionId: task.missionId ?? null,
-        },
-        worker: { id: worker.id, branch: worker.branch, prNumber: worker.prNumber },
-        failureContext,
+      await retryCiFailureForPr({
         repoFullName: repository.full_name,
-        ciRunId: ciLogs.runId,
-        ciFailedJobId: ciLogs.failedJobId,
-        ciRunUrl: ciLogs.runUrl,
-        workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
-        foreignHeadSha,
-        foreignCommitAuthor,
+        prNumber: pr.number,
+        headSha: checkSuite.head_sha,
+        installationId,
+        surface: 'webhook:check_suite',
       });
-
-      if (!retryTask) {
-        // Retries exhausted or disabled — fail the task and escalate to a human.
-        // Two distinct causes need different human responses:
-        //   • foreignHeadSha: retries disabled (0); a non-worker commit triggered CI failure.
-        //   • !foreignHeadSha: the buildd agent genuinely exhausted its N attempts.
-        const exhaustionDetail = foreignHeadSha
-          ? `CI retries are disabled for this workspace. A non-worker commit by ${foreignCommitAuthor ?? 'an external contributor'} triggered a CI failure on PR #${pr.number}.`
-          : `The buildd agent failed ${currentIteration} time(s) and has exhausted its retry budget on PR #${pr.number}.`;
-        const missionTitle = foreignHeadSha
-          ? 'CI failing — retries disabled (non-worker push)'
-          : 'CI failing — agent retries exhausted';
-        const missionMessage = foreignHeadSha
-          ? `${task.title} — CI failed after a non-worker push by ${foreignCommitAuthor ?? 'external'}. Retries are disabled. Needs a human.`
-          : `${task.title} — CI still failing after ${currentIteration} agent attempt(s). Needs a human.`;
-
-        console.log(`CI retries exhausted/disabled for task ${task.id} on ${repository.full_name}#${pr.number}. ${exhaustionDetail}`);
-        await db
-          .update(tasks)
-          .set({
-            status: 'failed',
-            // Merge, never replace: result.nextSuggestion is the agent's handoff
-            // advice and Home's blocked card leads with it. Overwriting the
-            // whole object here would delete the only guidance the human gets.
-            result: {
-              ...((task.result as Record<string, unknown> | null) ?? {}),
-              summary: `CI retry stopped — ${exhaustionDetail}\n\n${failureContext}`,
-            },
-            updatedAt: new Date(),
-          })
-          .where(eq(tasks.id, task.id));
-        if (task.missionId) {
-          await notifyMissionPrReady(task.missionId, {
-            title: missionTitle,
-            prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
-            prNumber: pr.number,
-            headSha: checkSuite.head_sha,
-            reason: 'ci_failed',
-            message: missionMessage,
-          });
-        }
-        await appendPrActivity({
-          installationId,
-          repoFullName: repository.full_name,
-          prNumber: pr.number,
-          entry: { kind: 'ci_exhausted', note: exhaustionDetail, url: ciLogs.runUrl },
-          workspaceId: task.workspaceId,
-        });
-        continue;
-      }
-
-      const subjectObservation = await prepareSubjectFiling({
-        workspaceId: retryTask.workspaceId,
-        workspaceRepo: repository.full_name,
-        gitConfig: workspace.gitConfig,
-        title: retryTask.title,
-        description: retryTask.description,
-        context: {
-          ...retryTask.context,
-          ciRetryPrNumber: pr.number,
-          ciRetryHeadSha: checkSuite.head_sha,
-        },
-        systemContext: {
-          origin: 'retry',
-          prNumber: pr.number,
-          headSha: checkSuite.head_sha,
-          branch: worker.branch,
-        },
-        origin: 'webhook',
-      });
-
-      // An attempt inherits the backend, role, routing kind and phase (Rule P1-7)
-      // of the task it re-attempts.
-      const retryIdentity = await inheritAttemptIdentity(retryTask.parentTaskId);
-
-      const [newTask] = await db
-        .insert(tasks)
-        .values({
-          workspaceId: retryTask.workspaceId,
-          title: retryTask.title,
-          description: retryTask.description,
-          parentTaskId: retryTask.parentTaskId,
-          ...retryIdentity,
-          ciRetryPrNumber: pr.number,
-          ciRetryHeadSha: checkSuite.head_sha,
-          missionId: retryTask.missionId,
-          context: retryTask.context,
-          creationSource: retryTask.creationSource,
-          taskClass: retryTask.taskClass,
-          status: 'pending',
-          priority: 7, // CI fix is urgent
-          ...subjectObservation.taskValues,
-        })
-        .onConflictDoNothing()
-        .returning();
-
-      if (newTask) {
-        if (subjectObservation.anchor && subjectObservation.match) {
-          await recordSubjectMatchObserved({
-            workspaceId: retryTask.workspaceId,
-            origin: 'webhook',
-            reportingTaskId: newTask.id,
-            anchor: subjectObservation.anchor,
-            match: subjectObservation.match,
-          });
-        }
-        await dispatchNewTask(newTask, workspace);
-        console.log(`Created CI retry task ${newTask.id} for failed PR #${pr.number} on ${repository.full_name} (iteration ${retryTask.context.iteration})`);
-        // ci_job_log evidence (byo-evidence-storage AC-3). After dispatch, and
-        // never throws: evidence is diagnostics, the retry is the product.
-        const captureEvidence = () => captureCiJobLogEvidence({
-          installationId,
-          repoFullName: repository.full_name,
-          failedJobId: ciLogs.failedJobId,
-          workspaceId: retryTask.workspaceId,
-          retryTaskId: newTask.id,
-          parentTaskId: retryTask.parentTaskId,
-          workerId: worker.id,
-          prNumber: pr.number,
-        });
-        try {
-          after(captureEvidence);
-        } catch {
-          // Outside a request scope (tests, direct invocation) — run inline.
-          await captureEvidence();
-        }
-        await appendPrActivity({
-          installationId,
-          repoFullName: repository.full_name,
-          prNumber: pr.number,
-          // Queued: the claim route writes `fix_started` once a worker has it.
-          entry: {
-            kind: 'ci_fixing',
-            iteration: typeof retryTask.context.iteration === 'number' ? retryTask.context.iteration : null,
-            maxIterations: typeof retryTask.context.maxIterations === 'number' ? retryTask.context.maxIterations : null,
-            url: ciLogs.runUrl,
-            taskUrl: taskActivityUrl(newTask.id),
-          },
-          workspaceId: retryTask.workspaceId,
-        });
-      } else {
-        console.log(`Skipping duplicate CI retry for ${task.workspaceId}/PR #${pr.number}/${checkSuite.head_sha}`);
-      }
     } catch (error) {
       console.error(`Error creating CI retry task for PR #${pr.number} on ${repository.full_name}:`, error);
     }
@@ -2912,15 +2466,24 @@ function isDefaultBranch(branch: string | null | undefined, defaultBranch: strin
 }
 
 /**
- * `push`: commit messages on the default branch go to the revert ledger (a
- * `git revert` of a merge commit names its sha). Inert unless the GitHub App
- * subscribes to push events; the push-triggered workflow_run covers the head
- * commit either way.
+ * `push` to the default branch does two things:
+ *  - commit messages go to the revert ledger (a `git revert` of a merge commit
+ *    names its sha);
+ *  - docs files the push touched are ingested into the bound workspaces' `docs`
+ *    corpus, so a repo that is committed to directly (no merged PR) stays
+ *    searchable. See enqueuePushIngestJobs in lib/knowledge-ingest.ts.
+ *
+ * Inert unless the GitHub App subscribes to push events; the push-triggered
+ * workflow_run still covers the head commit for the revert ledger either way.
  */
 async function handlePushEvent(event: {
   ref?: string;
+  after?: string;
+  deleted?: boolean;
+  size?: number;
   repository?: { full_name?: string; default_branch?: string };
-  commits?: Array<{ id?: string; message?: string }>;
+  commits?: Array<{ id?: string; message?: string; added?: string[]; modified?: string[]; removed?: string[] }>;
+  head_commit?: { message?: string } | null;
 }): Promise<void> {
   const repo = event.repository?.full_name;
   const branch = event.ref?.startsWith('refs/heads/') ? event.ref.slice('refs/heads/'.length) : null;
@@ -2929,6 +2492,37 @@ async function handlePushEvent(event: {
     if (!c.id || !c.message) continue;
     await recordPrReverts({ repoFullName: repo, revertedBy: c.id, text: c.message })
       .catch(err => console.error(`[webhook] recordPrReverts failed for ${c.id} on ${repo}:`, err));
+  }
+
+  // Best-effort, like the merged-PR enqueue: never fails the webhook. The jobs
+  // run in after(); a lost run is reclaimed through the lease (see the
+  // pull_request handler's note on durability).
+  try {
+    const { jobIds } = await enqueuePushIngestJobs({
+      repoFullName: repo,
+      after: event.after ?? '',
+      size: event.size,
+      commits: event.commits ?? [],
+      headCommitMessage: event.head_commit?.message ?? event.commits?.at(-1)?.message ?? null,
+      deleted: event.deleted,
+    });
+    if (jobIds.length > 0) {
+      try {
+        after(() =>
+          Promise.allSettled(
+            jobIds.map(id =>
+              runDiffIngestJob(id).catch(err =>
+                console.error(`[knowledge-ingest] job ${id} execution failed:`, err),
+              ),
+            ),
+          ),
+        );
+      } catch (err) {
+        console.warn('[knowledge-ingest] after() unavailable; jobs remain queued:', err);
+      }
+    }
+  } catch (err) {
+    console.error('[knowledge-ingest] push enqueue failed (non-fatal):', err);
   }
 }
 

@@ -63,6 +63,14 @@ const cbm = (over: Partial<CbmHealthSummary> = {}): CbmHealthSummary => ({
   fileAccessDeltaPct: null,
   deltasSuppressedBecause: null,
   topTools: [],
+  tools: {
+    sessions: 16,
+    totalCalls: 40,
+    tools: [
+      { tool: 'search_graph', calls: 30, sessions: 8, share: 0.75 },
+      { tool: 'trace_path', calls: 10, sessions: 4, share: 0.25 },
+    ],
+  },
   ...over,
 });
 
@@ -332,5 +340,107 @@ describe('UsageClient — buildd action breakdown', () => {
     // That classification is task-conditional and its contract is not settled
     // here; a guessed taxonomy would compete with the real one.
     expect(render()).toContain('No runtime/work split');
+  });
+});
+
+describe('UsageClient — shell buckets and search shapes', () => {
+  const classified = (i: number) =>
+    worker({
+      workerId: `b${i}`,
+      taskId: `b-${i}`,
+      resultMeta: {
+        toolCounts: { Read: 2, Bash: 6 },
+        bashCommandCounts: {
+          total: 6,
+          buckets: { code_search: 3, test: 2, git: 1 },
+          searchShapes: { identifier: 2, regex: 1 },
+        },
+      } as any,
+    });
+
+  it('breaks shell calls into every bucket, with share of shell', () => {
+    const html = render({ rows: [classified(0), classified(1)] });
+    const shell = html.slice(html.indexOf('data-testid="usage-section-shell"'), html.indexOf('data-testid="usage-section-adoption"'));
+    expect(shell).toContain('data-testid="usage-bash-buckets"');
+    for (const b of ['code_search', 'file_find', 'test', 'build', 'gh', 'git', 'file_write', 'file_read', 'other']) {
+      expect(shell).toContain(`>${b}<`);
+    }
+    expect(shell).toContain('12 of 12 shell calls');
+    expect(shell).toContain('50%');
+  });
+
+  it('shows the search shapes under code_search and names identifier as the index baseline', () => {
+    const html = render({ rows: [classified(0)] });
+    for (const shape of ['identifier', 'regex', 'quoted_phrase', 'path_glob', 'unknown']) {
+      expect(html).toContain(`>${shape}<`);
+    }
+    expect(html).toContain('share of 3 searches');
+    expect(html).toContain('a structural index could answer');
+  });
+
+  it('keeps the breakdown on the exact-histogram population and offers no delta', () => {
+    const html = render({
+      rows: [classified(0), classified(1)],
+      previous: { stats: computeUsageStats([classified(0)], 'none'), truncated: false },
+    });
+    const shell = html.slice(html.indexOf('data-testid="usage-section-shell"'), html.indexOf('data-testid="usage-section-adoption"'));
+    expect(shell).toContain('across 2 of 2 tasks with an exact histogram');
+    expect(shell).not.toContain('vs prev');
+    expect(shell).not.toMatch(/[+-]\d+%/);
+  });
+
+  it('says the calls were never classified when every worker predates the classifier', () => {
+    const html = render();
+    expect(html).toContain('data-testid="usage-bash-buckets-empty"');
+    expect(html).toContain('predates the command classifier');
+    expect(html).not.toContain('data-testid="usage-bash-buckets"');
+  });
+});
+
+describe('UsageClient — codebase-graph tools', () => {
+  it('lists every graph tool beside the adoption line, over sessions', () => {
+    const html = render();
+    const graph = html.slice(html.indexOf('data-testid="usage-section-adoption"'));
+    expect(graph).toContain('data-testid="usage-cbm-tools"');
+    expect(graph).toContain('search_graph');
+    expect(graph).toContain('trace_path');
+    expect(graph).toContain('over 16 sessions');
+    // Session-keyed, so it never claims tasks.
+    const block = graph.slice(graph.indexOf('data-testid="usage-cbm-tools"'), graph.indexOf('data-testid="usage-section-actions"'));
+    expect(block).not.toContain('tasks');
+  });
+
+  it('renders no tool list when no session had the graph', () => {
+    expect(render({ cbm: null })).not.toContain('data-testid="usage-cbm-tools"');
+  });
+});
+
+describe('UsageClient — the full buildd action list', () => {
+  it('lists every action with a share, not a top slice', () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ workerId: 'w1', action: `action_${String(i).padStart(2, '0')}` }));
+    const html = render({ actions: actionPanel({ rows: many }) });
+    expect(html.match(/data-testid="usage-action-row"/g)?.length).toBe(12);
+    expect(html).not.toMatch(/\+\d+ more/);
+    expect(html).toContain('12 buildd calls across 12 actions');
+    expect(html).toContain('8%');
+  });
+
+  it('says "not yet recorded" when an empty window opens before capture', () => {
+    const html = render({ actions: actionPanel({ rows: [], windowStart: new Date('2026-08-01T00:00:00Z') }) });
+    expect(html).toContain('data-testid="usage-actions-empty"');
+    expect(html).toContain('not yet recorded');
+  });
+});
+
+describe('UsageClient — 390pt', () => {
+  it('truncates long names with the full name in the title, and never fixes a row wider than a phone', () => {
+    const long = 'a_really_long_action_name_that_would_overflow_a_phone_row';
+    const html = render({ actions: actionPanel({ rows: [{ workerId: 'w1', action: long }] }) });
+    expect(html).toContain(`title="${long}"`);
+    // The action label is narrower on a phone than on desktop.
+    expect(html).toContain('w-28 sm:w-44');
+    // No fixed pixel widths anywhere in the markup.
+    expect(html).not.toMatch(/w-\[\d{3,}px\]/);
+    expect(html).not.toMatch(/min-w-\[\d{3,}px\]/);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { SNAPSHOT_BUCKET, planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
+import { SNAPSHOT_BUCKET, deployNames, renderWranglerConfig, planDeploy, describePlan, dispatchUrl, DISPATCH_EVENTS, type DeployInputs, type DeployStep } from './deploy-plan';
 
 const URL_ = 'https://buildd-cloud-runner.example.workers.dev';
 const DISPATCH = `${URL_}/dispatch`;
@@ -32,6 +32,39 @@ describe('snapshot bucket', () => {
       { id: 'warm-expiry', prefix: 'warm/', expireDays: 14 },
       { id: 'park-expiry', prefix: 'park/', expireDays: 2 },
     ]);
+  });
+});
+
+describe('deploy names', () => {
+  const base = () => require('fs').readFileSync(require('path').join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8') as string;
+  const parse = (t: string) => JSON.parse(t.replace(/^\s*\/\/.*$/gm, '')) as { name: string; r2_buckets: Array<{ bucket_name: string }> };
+
+  it('defaults to the names in wrangler.jsonc, so a plain deploy needs no generated config', () => {
+    expect(deployNames()).toEqual({ worker: 'buildd-cloud-runner', bucket: SNAPSHOT_BUCKET.name, custom: false });
+    const cfg = parse(base());
+    expect(cfg.name).toBe(deployNames().worker);
+  });
+
+  it('derives the bucket from a custom Worker name', () => {
+    expect(deployNames('agent-runtime-spike')).toEqual({ worker: 'agent-runtime-spike', bucket: 'agent-runtime-spike-snapshots', custom: true });
+  });
+
+  it('rejects names Cloudflare would refuse or that could escape the config', () => {
+    for (const bad of ['', 'Upper', '-lead', 'has space', 'a"b', 'x'.repeat(50)]) expect(() => deployNames(bad)).toThrow();
+  });
+
+  it('renders a config with only the Worker name, its runner group and the bucket changed', () => {
+    const out = renderWranglerConfig(base(), deployNames('agent-runtime-spike'));
+    const a = parse(base()) as any, b = parse(out) as any;
+    expect(b.name).toBe('agent-runtime-spike');
+    expect(b.r2_buckets).toEqual([{ binding: 'SNAPSHOTS', bucket_name: 'agent-runtime-spike-snapshots' }]);
+    // The fleet shows this deployment's runs as one group under its own name.
+    expect(b.vars.RUNNER_GROUP).toBe('agent-runtime-spike');
+    expect({ ...b, name: a.name, r2_buckets: a.r2_buckets, vars: { ...b.vars, RUNNER_GROUP: a.vars.RUNNER_GROUP } }).toEqual(a);
+  });
+
+  it('fails loudly if wrangler.jsonc no longer has the fields it rewrites', () => {
+    expect(() => renderWranglerConfig('{ "main": "src/index.ts" }', deployNames('agent-runtime-spike'))).toThrow();
   });
 });
 

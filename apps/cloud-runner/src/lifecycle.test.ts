@@ -16,6 +16,7 @@ import {
   WORKER_ID_LINE_PREFIX,
   appendTail,
   buildContainerEnv,
+  IMAGE_ENV,
   warmReposEnabled,
   crashReportAction,
   parseTaskTokenResponse,
@@ -27,8 +28,19 @@ import {
   parseWorkerIdLine,
   resolveInactivityTimeoutMs,
   runnerCommand,
+  DEFAULT_RUNNER_GROUP,
+  RUNNER_GROUP_CONTAINER_ENV,
   type RunState,
 } from './lifecycle';
+import { RUNNER_GROUP_ENV, onceFleetIdentity } from '../../../packages/shared/src/runner-fleet';
+
+describe('runner group contract with the runner', () => {
+  test('the container env name is the one the runner reads, and the runner reports the group', () => {
+    expect(RUNNER_GROUP_CONTAINER_ENV).toBe(RUNNER_GROUP_ENV);
+    const env = buildContainerEnv({ BUILDD_SERVER: 's', RUNNER_GROUP: 'my-dispatcher' }, 'bldt_a');
+    expect(onceFleetIdentity(env)).toEqual({ executor: 'cloud', ephemeral: true, concurrency: 1, group: 'my-dispatcher' });
+  });
+});
 
 describe('exit code contract with run-once.ts', () => {
   test('codes and the worker-id prefix match the runner', () => {
@@ -178,11 +190,13 @@ describe('container env', () => {
   test('minimal env with a placeholder model key, the cloud marker and no GitHub token', () => {
     const env = buildContainerEnv({ BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' }, 'bldt_task');
     expect(env).toEqual({
+      ...IMAGE_ENV,
       BUILDD_SERVER: 'http://127.0.0.1:9',
       BUILDD_API_KEY: 'bldt_task',
       ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_PLACEHOLDER,
       BUILDD_DISABLE_AUTO_UPDATE: '1',
       BUILDD_EXECUTOR: 'cloud',
+      BUILDD_RUNNER_GROUP: 'buildd-cloud-runner',
     });
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
@@ -219,6 +233,23 @@ describe('container env', () => {
     }, 'bldt_task');
     expect(env.PUSHER_KEY).toBe('pk');
     expect('MODEL' in env).toBe(false);
+  });
+
+  test('every container of one deployment reports the same runner group: the Worker name', () => {
+    expect(buildContainerEnv({ BUILDD_SERVER: 's', RUNNER_GROUP: 'my-dispatcher' }, 'bldt_a').BUILDD_RUNNER_GROUP).toBe('my-dispatcher');
+    expect(buildContainerEnv({ BUILDD_SERVER: 's', RUNNER_GROUP: 'my-dispatcher' }, 'bldt_b').BUILDD_RUNNER_GROUP).toBe('my-dispatcher');
+    // A Worker deployed before the var existed still groups, under the default name.
+    expect(buildContainerEnv({ BUILDD_SERVER: 's' }, 'bldt_a').BUILDD_RUNNER_GROUP).toBe(DEFAULT_RUNNER_GROUP);
+    expect(DEFAULT_RUNNER_GROUP).toBe('buildd-cloud-runner');
+  });
+
+  test('wrangler.jsonc sets RUNNER_GROUP to the Worker name', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const raw = readFileSync(join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8');
+    const parsed = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, ''));
+    expect(parsed.vars.RUNNER_GROUP).toBe(parsed.name);
+    expect(parsed.vars.RUNNER_GROUP).toBe(DEFAULT_RUNNER_GROUP);
   });
 
   test('warm repos: the flag and the snapshot URL only when the Worker turned them on', () => {
@@ -283,5 +314,26 @@ describe('config', () => {
     for (let i = 0; i < 50; i++) tail = appendTail(tail, `line ${i}`, 5);
     expect(tail).toEqual(['line 45', 'line 46', 'line 47', 'line 48', 'line 49']);
     expect(appendTail([], 'x'.repeat(1000))[0]!.length).toBeLessThan(500);
+  });
+});
+
+describe('IMAGE_ENV: the image ENV, passed explicitly (a Cloudflare exec does not inherit it)', () => {
+  test('matches every ENV variable in apps/runner/Dockerfile.once', async () => {
+    const { readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const text = readFileSync(join(import.meta.dir, '..', '..', 'runner', 'Dockerfile.once'), 'utf8');
+    const block = text.match(/^ENV ((?:.*\\\n)*.*)$/m)![1];
+    const vars = Object.fromEntries(block.split(/\\\n/).map(l => l.trim()).filter(Boolean).map(l => {
+      const i = l.indexOf('=');
+      return [l.slice(0, i), l.slice(i + 1)];
+    }));
+    expect(IMAGE_ENV).toEqual(vars);
+    expect(IMAGE_ENV.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+  });
+
+  test('the container env carries it, and the run values win', () => {
+    const env = buildContainerEnv({ BUILDD_SERVER: 'https://buildd.example' }, 'bldt_x');
+    for (const [k, v] of Object.entries(IMAGE_ENV)) expect(env[k]).toBe(v);
+    expect(env.BUILDD_API_KEY).toBe('bldt_x');
   });
 });

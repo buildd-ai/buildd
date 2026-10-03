@@ -1,7 +1,7 @@
 /**
  * GET /api/cron/chat-retro
  *
- * Daily chat session retro pass (experiment; docs/design/chat-session-retro.md,
+ * Daily chat session retro pass (experiment; knowledge-base: buildd/design/chat-session-retro.md,
  * code in apps/web/src/lib/chat-retro/, removal in its REMOVAL.md).
  *
  * For teams that opted in (teams.chat_retro.lessons), each conversation window

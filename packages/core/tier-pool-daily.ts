@@ -1,5 +1,5 @@
 /**
- * The daily plan for one tier pool (docs/design/tier-weights.md §3c, §4).
+ * The daily plan for one tier pool (knowledge-base: buildd/design/tier-weights.md §3c, §4).
  *
  * Pure: the pool, its evidence, the catalog and the team's cached rankings
  * come in; a list of actions comes out. `./tier-pool-daily-source.ts` loads

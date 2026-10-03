@@ -32,6 +32,7 @@ import { situationDetail, type MissionSituation, type WaitingOnDescriptor, type 
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { strandCtaFor } from '@/lib/mission-list-card';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
+import ClosedPrResolution, { type ClosedPrItem } from './ClosedPrResolution';
 import SituationTaskAffordance from './SituationTaskAffordance';
 
 /**
@@ -136,6 +137,24 @@ export function affordanceFor(
   }
 }
 
+/**
+ * One row per closed PR, carrying the unverified suggestion when detection
+ * left one. `prNumbers` is parallel to `taskIds` whenever every PR has a
+ * number, which a closed PR always does; a suggestion's own entry wins.
+ */
+export function closedPrItems(focus: Extract<WaitingOnDescriptor, { kind: 'pr_closed_unmerged' }>): ClosedPrItem[] {
+  const byTask = new Map((focus.suggestions ?? []).map(s => [s.taskId, s]));
+  const aligned = focus.prNumbers.length === focus.taskIds.length;
+  return focus.taskIds.map((taskId, i) => {
+    const s = byTask.get(taskId);
+    return {
+      taskId,
+      prNumber: s?.prNumber ?? (aligned ? focus.prNumbers[i] : null),
+      ...(s ? { suggestion: s.suggestion } : {}),
+    };
+  });
+}
+
 function taskAffordance(label: string, taskId: string | undefined, missionId: string): PrimaryAffordance {
   if (!taskId) return null;
   return { kind: 'internal', label, href: missionTaskHref({ missionId, taskId, mode: 'sheet' }), taskId };
@@ -235,6 +254,10 @@ export default function MissionSituationBlock({ missionId, situation, because, c
       )}
 
       {strand && <ContinueOnRunnerCta strand={strand} className="mt-2.5" />}
+
+      {situation.focus?.kind === 'pr_closed_unmerged' && (
+        <ClosedPrResolution missionId={missionId} items={closedPrItems(situation.focus)} />
+      )}
 
       {affordance && (
         <div className="mt-2.5">

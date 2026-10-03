@@ -246,6 +246,31 @@ describe('alertOnLanding: copy and tap URL', () => {
   });
 });
 
+describe('actionsForReason: rules only a person on GitHub can clear', () => {
+  it.each(['needs_human:deny_path', 'needs_human:migration'])('%s offers only Review on GitHub, never a retry that cannot change the outcome', (reason) => {
+    expect(actionsForReason(reason)).toEqual({ primary: 'review_on_github', options: ['review_on_github'] });
+  });
+
+  it.each(['needs_human:branch_protection', 'needs_human:dependency_bot', 'needs_human:unsafe_other'])('%s leads with Review on GitHub and keeps Retry landing for after the person acts', (reason) => {
+    expect(actionsForReason(reason)).toEqual({ primary: 'review_on_github', options: ['review_on_github', 'retry_landing'] });
+  });
+
+  it('review on GitHub is a link, not something the server runs', () => {
+    expect(overrideForAction('needs_human:deny_path', 'review_on_github')).toBeNull();
+  });
+});
+
+describe('alertOnLanding: a protected-path page links straight to the diff', () => {
+  it('points the tap at the PR files on GitHub and names it', async () => {
+    const { deps, state } = makeDeps();
+    await alertOnLanding(base(human('deny_path', 'touches protected path (.github/workflows)')), deps);
+    const { url, urlTitle, title } = state.sent[0].payload;
+    expect(url).toBe('https://github.com/org/repo/pull/42/files');
+    expect(urlTitle).toBe('Review on GitHub');
+    expect(title).toBe("PR #42 won't land: it touches a protected path");
+  });
+});
+
 describe('actionsForReason: what one tap does', () => {
   it.each([
     ['needs_fix', 'fix_stuck:ci_fix', 'ci_fix'],

@@ -4,7 +4,7 @@
  * drift. Pure: no DB access.
  *
  * Precedence (docs/specs/model-routing-and-tiers.md, "Claim-time model
- * resolution"; docs/design/role-routing.md §4):
+ * resolution"; knowledge-base: buildd/design/role-routing.md §4):
  *   1. `context.model` pin
  *   2. `tasks.tier`
  *   3. the role's `model` when it is an exact model id

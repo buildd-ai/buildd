@@ -62,6 +62,7 @@ describe('DEFAULT_ROLES', () => {
           updatedAt: now.toISOString(),
         },
         defaultRoleVersion: bySlug.builder.version,
+        claudeAiArtifacts: 'read',
       });
       expect(defaultRoleMetadata(bySlug.reviewer, now)).toEqual({
         routing: { disabled: true, updatedAt: now.toISOString() },
@@ -484,6 +485,27 @@ describe('DEFAULT_ROLES', () => {
     expect(c).toContain('`tier`');
     expect(c).toContain('premium');
     expect(c).toContain('budget');
+  });
+});
+
+// claude.ai artifact access (@buildd/shared claude-ai-artifacts.ts): read-only
+// for the roles that consume designs, off for every other seeded role, and no
+// seeded role may publish.
+describe('claudeAiArtifacts on seeded roles', () => {
+  const now = new Date('2026-10-02T00:00:00.000Z');
+  const access = (slug: string) =>
+    defaultRoleMetadata(DEFAULT_ROLES.find(r => r.slug === slug)!, now).claudeAiArtifacts;
+
+  it('builder and the visual auditor read claude.ai artifacts', () => {
+    expect(access('builder')).toBe('read');
+    expect(access(VISUAL_AUDITOR_ROLE_SLUG)).toBe('read');
+  });
+
+  it('every other seeded role leaves it unset', () => {
+    for (const role of DEFAULT_ROLES) {
+      if (role.slug === 'builder' || role.slug === VISUAL_AUDITOR_ROLE_SLUG) continue;
+      expect(defaultRoleMetadata(role, now).claudeAiArtifacts).toBeUndefined();
+    }
   });
 });
 

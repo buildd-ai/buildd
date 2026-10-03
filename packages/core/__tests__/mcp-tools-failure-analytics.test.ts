@@ -597,3 +597,38 @@ describe('get_failure_analytics family="gate" landing metrics', () => {
     expect(out).not.toContain('PR landing');
   });
 });
+
+describe('get_failure_analytics stalled ingest jobs', () => {
+  let mockApi: ReturnType<typeof mock>;
+  beforeEach(() => { mockApi = mock(); });
+
+  it('names stalled full ingest jobs under the overview, with the runner reason and fallback progress', async () => {
+    mockApi.mockResolvedValueOnce({
+      analytics: analytics(),
+      stalledIngest: {
+        stalled: 1,
+        inFallback: 1,
+        oldestAgeMs: 3 * 24 * 3600_000,
+        jobs: [
+          { id: 'aaaaaaaa-job-1', workspaceId: MOCK_WORKSPACE_ID, repo: 'test-org/big-repo', state: 'fallback', ageMs: 3 * 24 * 3600_000, attempts: 0, progress: { cursor: 120, total: 400 } },
+          { id: 'bbbbbbbb-job-2', workspaceId: MOCK_WORKSPACE_ID, repo: 'test-org/docs', state: 'stalled', ageMs: 2 * 3600_000, attempts: 1, checkoutReason: 'git fetch origin failed: Permission denied (publickey).' },
+        ],
+      },
+    });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, {}, ctx());
+    const out = res.content[0].text;
+    expect(out).toContain('Stalled knowledge ingest');
+    expect(out).toContain('test-org/big-repo');
+    expect(out).toContain('120/400');
+    expect(out).toContain('publickey');
+    // Cited by short id, never the full row UUID.
+    expect(out).toContain('bbbbbbbb');
+    expect(out).not.toContain('bbbbbbbb-job');
+  });
+
+  it('says nothing about ingest when no job is stuck', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, {}, ctx());
+    expect(res.content[0].text).not.toContain('Stalled knowledge ingest');
+  });
+});

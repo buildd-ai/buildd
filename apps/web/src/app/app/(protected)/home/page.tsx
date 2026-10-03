@@ -258,7 +258,7 @@ export default async function HomePage({
   let teamTz: string | null = null;
   // Owners/admins run the fleet; members see their asks and missions first.
   let audience: HomeAudience = 'operator';
-  // Agent chat on Home (docs/design/agent-chat.md, "Who sees what first").
+  // Agent chat on Home (knowledge-base: buildd/design/agent-chat.md, "Who sees what first").
   let chatPlacement: HomeChatPlacement = { kind: 'none' };
   let chatRecent: ConversationListItem[] = [];
   let chatTeamId: string | null = null;
