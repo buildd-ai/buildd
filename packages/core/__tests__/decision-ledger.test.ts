@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   decisionLedgerWhere,
+  recordChallengerRun,
   recordDecision,
   rowFromRecord,
   type DecisionLedgerFilters,
@@ -49,7 +50,7 @@ describe('recordDecision', () => {
 
   it('never throws when the insert fails', async () => {
     const insert = mock(async () => { throw new Error('db down'); });
-    await expect(recordDecision(BASE, { insert })).resolves.toBeUndefined();
+    await expect(recordDecision(BASE, { insert })).resolves.toBeNull();
   });
 
   it('writes a fallback row with no verdict on a failed/timed-out call', async () => {
@@ -105,5 +106,57 @@ describe('decisionLedgerWhere', () => {
     const since = new Date('2026-10-01T00:00:00Z');
     const until = new Date('2026-10-02T00:00:00Z');
     expect(renderWhere(f({ since, until }))).toContain('created_at');
+  });
+});
+
+describe('recordDecision: row id and decision-kind fields', () => {
+  it('resolves to the inserted row id, which challengers and outcome labels attach to', async () => {
+    const insert = mock(async () => 'rec-1');
+    await expect(recordDecision(BASE, { insert })).resolves.toBe('rec-1');
+  });
+
+  it('defaults the decision-kind fields so an older call site writes a full row', () => {
+    const row = rowFromRecord(BASE);
+    expect(row).toMatchObject({
+      policyVersion: null, provider: null, attemptCount: null, escalated: false, failureClass: null,
+      subjectType: null, subjectId: null, experimentId: null, experimentArm: null, propensity: null,
+    });
+  });
+});
+
+describe('recordChallengerRun', () => {
+  const attempted = {
+    status: 'attempted' as const, skipReason: null, appliedDecision: 'run', appliedSource: 'model' as const, agrees: false,
+    attempt: {
+      index: 1, role: 'challenger' as const, provider: 'openrouter', model: 'acme/rich-1', modelVersion: 'acme/rich-1-2026',
+      outcome: 'decided' as const, decision: 'skip', confidence: 0.91, reasonCode: 'model_skip', threshold: 0.8,
+      failure: null, applied: false, escalatedFrom: null, latencyMs: 42.4, providerAttempts: 1,
+      usage: { inputTokens: 10, outputTokens: 1, costUsd: 0.0003 },
+    },
+  };
+
+  it('maps an attempted run onto one row, with agreement against the applied answer', async () => {
+    const insert = mock(async () => {});
+    await recordChallengerRun({ decisionRecordId: 'rec-1', teamId: 'team-1', capability: 'buildd.x', challengerKey: 'openrouter/acme/rich-1', run: attempted }, { insert });
+    expect(insert.mock.calls[0][0]).toEqual({
+      decisionRecordId: 'rec-1', teamId: 'team-1', capability: 'buildd.x', challengerKey: 'openrouter/acme/rich-1',
+      status: 'attempted', skipReason: null, provider: 'openrouter', model: 'acme/rich-1', modelVersion: 'acme/rich-1-2026',
+      outcome: 'decided', decision: 'skip', confidence: 0.91, appliedAnswer: 'run', agrees: false, failureKind: null,
+      latencyMs: 42, costUsd: 0.0003,
+    });
+  });
+
+  it('maps a skip with its reason and no attempt fields', async () => {
+    const insert = mock(async () => {});
+    await recordChallengerRun({
+      decisionRecordId: 'rec-1', teamId: 'team-1', capability: 'buildd.x', challengerKey: 'k',
+      run: { status: 'skipped', skipReason: 'no_route', appliedDecision: 'run', appliedSource: 'model', attempt: null, agrees: null },
+    }, { insert });
+    expect(insert.mock.calls[0][0]).toMatchObject({ status: 'skipped', skipReason: 'no_route', provider: null, decision: null, agrees: null, latencyMs: null });
+  });
+
+  it('never throws', async () => {
+    const insert = mock(async () => { throw new Error('db down'); });
+    await expect(recordChallengerRun({ decisionRecordId: 'r', teamId: 't', capability: 'c', challengerKey: 'k', run: attempted }, { insert })).resolves.toBeUndefined();
   });
 });

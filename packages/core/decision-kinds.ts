@@ -26,6 +26,7 @@ import {
 } from '@builddai/ai-kit/decide';
 import { INFERENCE_CAPABILITIES, type InferenceCapability } from './inference-policy';
 import { isJevModel, normalizeDecisionModel, type DecisionModelConfig } from './decision-model';
+import type { DecisionReadoutAdapter } from './decision-readout';
 
 export type {
   DecisionAttempt,
@@ -52,6 +53,15 @@ export interface BuilddDecisionKindBinding {
   escalation?: DecisionModelConfig | null;
   /** Models beyond Jev this kind's thresholds were measured on. A pick from any other is recorded, never applied. */
   measuredModels?: readonly string[];
+  /**
+   * A model asked after the decision is made, out of band, to measure it
+   * against the applied answer (`decision-policy.ts`). Never applied.
+   * `fraction` is the share of subjects asked (default 1), drawn per subject
+   * through `experiment-randomizer.ts`.
+   */
+  challenger?: (DecisionModelConfig & { fraction?: number }) | null;
+  /** How the shared readout counts and scores this kind. The only kind-specific readout logic. */
+  readout?: DecisionReadoutAdapter;
 }
 
 export interface BuilddDecisionKind<K extends string, F, D extends string, Q extends DecisionQuestions>
@@ -82,6 +92,14 @@ export function defineBuilddDecisionKind<const K extends string, F, const D exte
   if (binding.escalation) {
     const checked = normalizeDecisionModel(binding.escalation);
     if (!checked.ok) throw new Error(`decision kind '${config.kind}': escalation ${checked.error}`);
+  }
+  if (binding.challenger) {
+    const { fraction, ...model } = binding.challenger;
+    const checked = normalizeDecisionModel(model);
+    if (!checked.ok) throw new Error(`decision kind '${config.kind}': challenger ${checked.error}`);
+    if (fraction !== undefined && !(typeof fraction === 'number' && fraction >= 0 && fraction <= 1)) {
+      throw new Error(`decision kind '${config.kind}': challenger fraction must be in [0, 1]`);
+    }
   }
   // Only the config's own fields: a spread of an already-defined kind carries
   // its derived fingerprints, which `defineDecisionKind` recomputes.

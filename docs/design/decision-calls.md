@@ -4,7 +4,9 @@ status: implemented
 # Steps 1-6 shipped: the client, policy wiring, benchmark, the classifyTask
 # shadow (since replaced) and the first confidence-gated apply. 2026-10-03:
 # shadow-first retired as the default rollout; the decision ledger and
-# task-role-routing's default-apply flip shipped (Point 2b).
+# task-role-routing's default-apply flip shipped (Point 2b). Then the
+# measurable half: late outcome labels, out-of-band challengers and the
+# collection-health readout.
 assertions:
   - id: "decision-client"
     type: "symbol"
@@ -30,6 +32,18 @@ assertions:
     type: "symbol"
     name: "applyTaskRoleDecision"
     path: "apps/web/src/lib/task-role-apply.ts"
+  - id: "decision-outcome-label"
+    type: "symbol"
+    name: "labelDecisionOutcome"
+    path: "packages/core/decision-outcomes.ts"
+  - id: "decision-challenger"
+    type: "symbol"
+    name: "runBuilddChallenger"
+    path: "packages/core/decision-policy.ts"
+  - id: "decision-readout"
+    type: "symbol"
+    name: "computeDecisionReadout"
+    path: "packages/core/decision-readout.ts"
 ---
 
 # decision-calls

@@ -4812,15 +4812,89 @@ export const decisionRecords = pgTable('decision_records', {
   humanOverride: jsonb('human_override').$type<Record<string, unknown>>(),
   overriddenAt: timestamp('overridden_at', { withTimezone: true }),
   overriddenBy: uuid('overridden_by'),
+  // Decision-kind fields (packages/core/decision-policy.ts), null on rows from
+  // call sites that predate kinds. The readout groups and counts by these.
+  policyVersion: text('policy_version'),
+  provider: text('provider'),
+  // Model attempts made (cheap + escalation); 0 for a rule or a no-route fallback.
+  attemptCount: integer('attempt_count'),
+  escalated: boolean('escalated').notNull().default(false),
+  // Why nothing was applied, by owner: capability (team switch off) | key (no
+  // key/route) | provider (every attempt failed). Null when nothing failed.
+  failureClass: text('failure_class').$type<'capability' | 'key' | 'provider'>(),
+  // What the decision was about (DecisionSubjectRef): outcomes are labelled by subject.
+  subjectType: text('subject_type'),
+  subjectId: text('subject_id'),
+  // Set only when the call's assignment came from experiment-randomizer.ts;
+  // the readout reports causal lift for these rows and no others.
+  experimentId: text('experiment_id'),
+  experimentArm: text('experiment_arm'),
+  propensity: real('propensity'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   workspaceCreatedIdx: index('decision_records_workspace_created_idx').on(t.workspaceId, t.createdAt),
   capabilityCreatedIdx: index('decision_records_capability_created_idx').on(t.capability, t.createdAt),
   taskIdx: index('decision_records_task_idx').on(t.taskId),
+  subjectIdx: index('decision_records_subject_idx').on(t.teamId, t.capability, t.subjectType, t.subjectId),
 }));
 
 export type DecisionRecord = typeof decisionRecords.$inferSelect;
 export type NewDecisionRecord = typeof decisionRecords.$inferInsert;
+
+// Late outcome labels for decision_records (packages/core/decision-outcomes.ts).
+// The decision row is never rewritten: a label is its own row, first write wins
+// per (decision, source), and a later different label for the same pair is
+// reported as a conflict rather than overwriting.
+export const decisionOutcomes = pgTable('decision_outcomes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  decisionRecordId: uuid('decision_record_id').references(() => decisionRecords.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  capability: text('capability').notNull(),
+  // Who labelled: an adapter id ('task_terminal', 'pr_merged') or 'human'.
+  source: text('source').notNull(),
+  // The kind's outcome vocabulary, e.g. 'correct' | 'wrong' | 'merged'. Read by the kind's objective callback.
+  label: text('label').notNull(),
+  value: real('value'),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  decisionSourceIdx: uniqueIndex('decision_outcomes_decision_source_idx').on(t.decisionRecordId, t.source),
+  teamCapabilityIdx: index('decision_outcomes_team_capability_idx').on(t.teamId, t.capability),
+}));
+
+export type DecisionOutcome = typeof decisionOutcomes.$inferSelect;
+
+// Challenger runs against an applied decision (ai-kit runChallenger). Attempted
+// or skipped-with-reason; never applied. One row per (decision, challenger).
+export const decisionChallengerRuns = pgTable('decision_challenger_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  decisionRecordId: uuid('decision_record_id').references(() => decisionRecords.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  capability: text('capability').notNull(),
+  // Stable id of the challenger config (provider/model), the idempotency key.
+  challengerKey: text('challenger_key').notNull(),
+  status: text('status').notNull().$type<'attempted' | 'skipped'>(),
+  skipReason: text('skip_reason'),
+  provider: text('provider'),
+  model: text('model'),
+  modelVersion: text('model_version'),
+  // The attempt's outcome: decided | below_threshold | unmeasured | failed.
+  outcome: text('outcome'),
+  decision: text('decision'),
+  confidence: real('confidence'),
+  appliedAnswer: text('applied_answer'),
+  agrees: boolean('agrees'),
+  failureKind: text('failure_kind'),
+  latencyMs: integer('latency_ms'),
+  costUsd: real('cost_usd'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  decisionChallengerIdx: uniqueIndex('decision_challenger_runs_decision_key_idx').on(t.decisionRecordId, t.challengerKey),
+  teamCapabilityIdx: index('decision_challenger_runs_team_capability_idx').on(t.teamId, t.capability, t.createdAt),
+}));
+
+export type DecisionChallengerRun = typeof decisionChallengerRuns.$inferSelect;
 
 // The final touched-file label for a decided task, one row per worker session,
 // written at terminal worker status BEFORE workers.observed_touches is cleared
