@@ -112,6 +112,46 @@ LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
 team, a tie to the endpoint, only the winner delivered. The key policy does not
 bind it. Design: `docs/design/agent-model-endpoint.md`.
 
+### Cloud egress precedence vs the operator's `MODEL_PROXY_URL`
+
+A host runner has no concept of an operator proxy override: it just sends
+whichever Anthropic credential resolves. The cloud dispatcher does have one
+(`MODEL_PROXY_URL`, a Worker secret — apps/cloud-runner/README.md "Model
+routes"), and for a while that silently won even when a team had its own
+`anthropic_api_key` configured: `POST /api/runner/model-endpoint` only ever
+resolved the `agent_endpoint` side of the ranking, so a task whose winner was
+the plain API key got a 404 and egress fell through past the key straight to
+`MODEL_PROXY_URL` or AI Gateway. A team that paid for its own key never spent
+it on a cloud run.
+
+The route now also calls `resolveAnthropicAuth`
+(`apps/web/src/lib/claude-credential.ts` — the same resolver server-side
+Anthropic calls use, scoped exactly as the self-hosted runner resolves it) when
+the `agent_endpoint` ranking does not win, and returns the key, flagged
+`{ source: 'anthropic_api_key', key }`, when that resolver's winner is a plain
+API key. `resolveModelRoute` in `apps/cloud-runner/src/outbound.ts` checks that
+flag ahead of `MODEL_PROXY_URL`:
+
+- **A team's own `anthropic_api_key` beats `MODEL_PROXY_URL`.** Storing a key
+  is not an opt-in to route agents through anything — unlike `agent_endpoint`,
+  where setting one is exactly that opt-in — so an operator's Worker-level
+  proxy pin must not silently spend the team's own credential on a different
+  route. This is the one precedence flip relative to how `agent_endpoint` and
+  `MODEL_PROXY_URL` have always ranked.
+- **`agent_endpoint` vs `MODEL_PROXY_URL` is unchanged**: the operator override
+  still wins, so a self-hosted deployment that pins a Worker to one proxy keeps
+  doing so "whatever team claims through it" regardless of any `agent_endpoint`
+  a team configured.
+- **An OAuth seat or Claude credential winning the ranking is still 404.**
+  Cloud egress carries only a metered key or an `agent_endpoint`, never a seat
+  token — that stays a documented gap, not a silent one.
+- The lookup itself now runs whenever the local `ALLOW_DIRECT_ANTHROPIC` escape
+  hatch does not apply, even with `MODEL_PROXY_URL` set — previously the Worker
+  skipped it outright in that case, since nothing could have outranked the
+  override. A transient failure of that lookup (`'unavailable'`) still defers
+  to `MODEL_PROXY_URL` or refuses, exactly as it did before the key existed; it
+  never counts as "confirmed, no team key" the way a real 404 does.
+
 ## Multi-field credentials (Codex)
 
 `secrets.encryptedValue` holds a single string, so a credential with several fields is

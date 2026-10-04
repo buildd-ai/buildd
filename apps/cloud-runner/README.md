@@ -475,11 +475,19 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
 | Route | Selected when | Forwarded to | Credential added |
 |---|---|---|---|
 | `direct` | `ALLOW_DIRECT_ANTHROPIC=1` and `ANTHROPIC_DIRECT_API_KEY` (**local development only**) | `https://api.anthropic.com/...` unchanged | `x-api-key: <ANTHROPIC_DIRECT_API_KEY>` |
+| team's own Anthropic key (`proxy` shape) | buildd returns the task's own `anthropic_api_key` for this task — it won the same ranking a self-hosted runner applies (docs/credentials-architecture.md) | `https://api.anthropic.com/...` unchanged | `x-api-key: <the team's key>` |
 | `proxy` | `MODEL_PROXY_URL` is set | `<MODEL_PROXY_URL><original path and query>`, e.g. `https://litellm.example.com/v1/messages` | `Authorization: Bearer <MODEL_PROXY_KEY>` (default), or `x-api-key: <MODEL_PROXY_KEY>` with `MODEL_PROXY_AUTH_HEADER=x-api-key` |
-| team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's agent model endpoint for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
+| team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's `agent_endpoint` for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
 | `gateway` | `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` and `AI_GATEWAY_TOKEN` are set | `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic/...` | `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`; the Anthropic key lives in AI Gateway (BYOK) or Unified Billing |
 
 If none applies, model requests get `503`.
+
+**The team's own Anthropic key jumps ahead of `MODEL_PROXY_URL`** — the one
+precedence flip here. Storing a plain API key is not an opt-in to route agents
+through anything (unlike an `agent_endpoint`, which is exactly that opt-in), so
+an operator's Worker-level proxy pin must not silently spend the team's own
+credential on a different route instead. `agent_endpoint` vs `MODEL_PROXY_URL`
+is unchanged: the operator override still wins there, same as always.
 
 **Proxy** is any service that speaks the Anthropic Messages API, such as a
 LiteLLM proxy. The handler appends the container's path, so point
@@ -502,17 +510,24 @@ route. LiteLLM accepts its virtual or master key in either header. Rules:
 
 **Team endpoint.** The Worker asks buildd (`POST /api/runner/model-endpoint`,
 runner API key plus `DISPATCH_TOKEN`, like the GitHub token) on the task's
-first model request, only when neither `direct` nor `MODEL_PROXY_URL`
-applies. It is held in the `WorkerAgent`'s memory for the run: never in agent
-storage and never in the container env. A `404` means the team has none (or
-the task's own Anthropic credential outranks it) and egress falls through to
-AI Gateway. Any other failure, or a `401`/`403` from the endpoint, refuses
-model requests (`503`) for a short backoff and then asks again, so a rotated
-key takes effect mid-run and a buildd outage never silently moves spend to the
-gateway. `MODEL_PROXY_URL` stays the operator override: it pins the Worker to
-one proxy whatever team claims through it. Model aliases are not applied on
-this route: the container sends the claim's native model ids (design open
-question 2).
+first model request, whenever `direct` does not apply — including when
+`MODEL_PROXY_URL` is set, so the team's own Anthropic key (if that's what
+actually wins for this task) can still outrank it. It is held in the
+`WorkerAgent`'s memory for the run: never in agent storage and never in the
+container env. A `404` means the team has neither an `agent_endpoint` nor its
+own plain Anthropic key for this task (an OAuth seat or Claude credential
+winning instead also reads as `404` here — cloud egress does not carry a seat
+token), and egress falls through to `MODEL_PROXY_URL` or AI Gateway. Any other
+failure, or a `401`/`403` from the endpoint, refuses model requests (`503`)
+for a short backoff and then asks again, so a rotated key takes effect mid-run
+and a buildd outage never silently moves spend to a different route —
+including, now, `MODEL_PROXY_URL`: a transient lookup failure defers to it
+exactly as before, but is never treated as the confirmed "team has nothing"
+that a real `404` is. `MODEL_PROXY_URL` stays the operator override for
+everything *except* the team's own key (see "Model routes" above): it still
+pins the Worker to one proxy whatever team claims through an `agent_endpoint`.
+Model aliases are not applied on this route: the container sends the claim's
+native model ids (design open question 2).
 
 **GitHub token.** Minted by buildd, not the Worker: the App key stays in one
 place. On the container's first GitHub request (after the claim; the clone

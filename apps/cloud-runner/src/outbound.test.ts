@@ -618,6 +618,21 @@ describe('describeForwardForDebug', () => {
     expect(echo.headers.authorization).toBe(await fingerprint('Bearer proxy-secret-key'));
     expect(JSON.stringify(echo)).not.toContain('proxy-secret-key');
   });
+
+  test('team anthropic_api_key mode: fingerprints the key, even though it beat MODEL_PROXY_URL to get here', async () => {
+    const route = resolveModelRoute(
+      { MODEL_PROXY_URL: 'https://litellm.example.com', MODEL_PROXY_KEY: 'proxy-secret-key' },
+      { source: 'anthropic_api_key', baseUrl: 'https://api.anthropic.com', key: 'sk-ant-team-key', authHeader: 'x-api-key' },
+    );
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages', method: 'POST', headers: hostileHeaders() },
+      { model: route },
+    ));
+    const echo = await describeForwardForDebug(d);
+    expect(echo).toMatchObject({ url: 'https://api.anthropic.com/v1/messages', injected: 'proxy' });
+    expect(echo.headers['x-api-key']).toBe(await fingerprint('sk-ant-team-key'));
+    expect(JSON.stringify(echo)).not.toContain('sk-ant-team-key');
+  });
 });
 
 
@@ -676,11 +691,12 @@ describe('resolveModelRoute: server endpoint precedence', () => {
 });
 
 describe('needsServerModelEndpoint', () => {
-  test('false when direct or MODEL_PROXY_URL wins, true otherwise', () => {
+  test('false only when the local direct route wins; MODEL_PROXY_URL no longer skips the lookup', () => {
     expect(needsServerModelEndpoint({})).toBe(true);
     expect(needsServerModelEndpoint(GATEWAY_ENV)).toBe(true);
     expect(needsServerModelEndpoint({ ANTHROPIC_DIRECT_API_KEY: 'sk' })).toBe(true);
-    expect(needsServerModelEndpoint(PROXY)).toBe(false);
+    // A team's own Anthropic key must be checked before MODEL_PROXY_URL can win (resolveModelRoute).
+    expect(needsServerModelEndpoint(PROXY)).toBe(true);
     expect(needsServerModelEndpoint(DIRECT)).toBe(false);
   });
 });
@@ -704,6 +720,53 @@ describe('parseServerModelEndpoint', () => {
       { baseUrl: 'https://litellm.example.com', key: 'k', authHeader: 5 }]) {
       expect(() => parseServerModelEndpoint(b)).toThrow();
     }
+  });
+
+  test("source: 'anthropic_api_key' needs only a key; baseUrl/authHeader are implied", () => {
+    expect(parseServerModelEndpoint({ source: 'anthropic_api_key', key: 'sk-ant-team-key' })).toEqual({
+      source: 'anthropic_api_key', baseUrl: 'https://api.anthropic.com', key: 'sk-ant-team-key', authHeader: 'x-api-key',
+    });
+  });
+
+  test("source: 'anthropic_api_key' throws without a key, never falling through to the agent_endpoint shape", () => {
+    expect(() => parseServerModelEndpoint({ source: 'anthropic_api_key' })).toThrow();
+    expect(() => parseServerModelEndpoint({ source: 'anthropic_api_key', key: '' })).toThrow();
+  });
+
+  test('an agent_endpoint response carries no source field', () => {
+    expect(parseServerModelEndpoint({ baseUrl: 'https://litellm.example.com', key: 'k' }).source).toBeUndefined();
+  });
+});
+
+// ── Team Anthropic key at egress (task: cloud runner uses the team's own key) ─
+
+describe("resolveModelRoute: the task's own anthropic_api_key", () => {
+  const TEAM_KEY: ServerModelEndpoint = { source: 'anthropic_api_key', baseUrl: 'https://api.anthropic.com', key: 'sk-ant-team-key', authHeader: 'x-api-key' };
+
+  test('wins over the Worker MODEL_PROXY_URL override and AI Gateway, so the team spends its own key', () => {
+    expect(resolveModelRoute({ ...PROXY }, TEAM_KEY)).toEqual({ kind: 'proxy', baseUrl: 'https://api.anthropic.com', key: 'sk-ant-team-key', authHeader: 'x-api-key' });
+    expect(resolveModelRoute({ ...GATEWAY_ENV }, TEAM_KEY)).toEqual({ kind: 'proxy', baseUrl: 'https://api.anthropic.com', key: 'sk-ant-team-key', authHeader: 'x-api-key' });
+    expect(resolveModelRoute({}, TEAM_KEY)).toEqual({ kind: 'proxy', baseUrl: 'https://api.anthropic.com', key: 'sk-ant-team-key', authHeader: 'x-api-key' });
+  });
+
+  test('still loses to the local direct escape hatch', () => {
+    expect(resolveModelRoute({ ...DIRECT }, TEAM_KEY).kind).toBe('direct');
+  });
+
+  test('an ordinary agent_endpoint server route (no source) is unaffected: still beaten by MODEL_PROXY_URL', () => {
+    expect(resolveModelRoute({ ...PROXY }, SERVER)).toMatchObject({ kind: 'proxy', baseUrl: PROXY.MODEL_PROXY_URL });
+  });
+
+  test('a cloud run actually reaches api.anthropic.com with the team key, never the container header or MODEL_PROXY_KEY', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://api.anthropic.com/v1/messages?beta=true', method: 'POST', headers: hostileHeaders() },
+      { model: resolveModelRoute({ ...PROXY, ...GATEWAY_ENV }, TEAM_KEY) },
+    ));
+    expect(d.url).toBe('https://api.anthropic.com/v1/messages?beta=true');
+    expect(d.injected).toBe('proxy');
+    expect(d.headers.get('x-api-key')).toBe('sk-ant-team-key');
+    expect(d.headers.get('authorization')).toBeNull();
+    expectNoContainerCredential(d.headers);
   });
 });
 
