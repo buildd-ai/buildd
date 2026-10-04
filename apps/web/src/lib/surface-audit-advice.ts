@@ -25,6 +25,7 @@ import type {
   DecisionResult,
   decisionCall,
 } from '@buildd/core/decision-client';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 export const SURFACE_AUDIT_ADVICE_CAPABILITY = 'surface_audit_advice' as const;
 export const SURFACE_AUDIT_ADVICE_DECISION_ID = 'surface_audit_advice';
@@ -257,3 +258,6 @@ export async function adviseSurfaceAudit(input: AdviceInput, deps: AdviceDeps = 
     return null;
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(SURFACE_AUDIT_ADVICE_PROMPT_ID, { pick: SURFACE_AUDIT_ADVICE_QUESTION });

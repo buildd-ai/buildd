@@ -3,6 +3,7 @@
  */
 
 import { resolvePrompt, resolvePromptValue } from '@buildd/core/prompts';
+import { registerTextPrompt, registerValuePrompt } from '@buildd/core/prompts';
 
 // ── Defaults for heartbeat mission creation ──
 
@@ -358,3 +359,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
     actions: [...actions.fallback],
   };
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTextPrompt(ORGANIZER_CHECKLIST_PROMPT_ID, DEFAULT_MISSION_HEARTBEAT_CHECKLIST);
+registerValuePrompt(PHASE_ACTIONS_PROMPT_ID, DEFAULT_PHASE_ACTIONS);

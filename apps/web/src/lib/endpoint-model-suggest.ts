@@ -24,6 +24,7 @@ import type {
   DecisionResult,
   decisionCall,
 } from '@buildd/core/decision-client';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const ENDPOINT_MODEL_SUGGEST_CAPABILITY = 'endpoint_model_match' as const;
 export const ENDPOINT_MODEL_SUGGEST_DECISION_ID = 'endpoint_model_match';
@@ -156,3 +157,6 @@ export async function suggestEndpointModels(
     return [];
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(ENDPOINT_MODEL_SUGGEST_PROMPT_ID, ENDPOINT_MODEL_SUGGEST_INSTRUCTIONS);

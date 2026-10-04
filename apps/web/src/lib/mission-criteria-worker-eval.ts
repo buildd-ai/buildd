@@ -7,6 +7,7 @@ import type { GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } fro
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { registerTemplatePrompt } from '@buildd/core/prompts';
 
 /**
  * Batched, repo-grounded criteria evaluator.
@@ -546,3 +547,8 @@ export async function handleCriteriaWorkerEvalOutcome(
 
   return { applied: applied || marker.criterionIndices.length > 0 };
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTemplatePrompt(WORKER_EVAL_PROMPT_IDS.main, WORKER_EVAL_TEMPLATE);
+registerTemplatePrompt(WORKER_EVAL_PROMPT_IDS.commandSection, WORKER_EVAL_COMMAND_SECTION);
+registerTemplatePrompt(WORKER_EVAL_PROMPT_IDS.proseSection, WORKER_EVAL_PROSE_SECTION);

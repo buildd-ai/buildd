@@ -18,7 +18,7 @@ import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
-import { resolvePromptEntry } from '@buildd/core/prompts';
+import { registerTextPrompt, resolvePromptEntry } from '@buildd/core/prompts';
 import type { RoleOverride } from './policy-overrides';
 import { loadPolicyOverrides } from './policy-overrides-source';
 
@@ -937,6 +937,9 @@ export function rolePromptId(slug: string): string {
 
 /** Every role prompt id, for the deploy-side seed and fingerprint listing. */
 export const ROLE_PROMPT_IDS: readonly string[] = DEFAULT_ROLES.map(r => rolePromptId(r.slug));
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+for (const role of DEFAULT_ROLES) registerTextPrompt(rolePromptId(role.slug), role.content);
 
 /**
  * The default roles as this deployment resolves them. Two layers, one chain:

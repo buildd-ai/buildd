@@ -41,6 +41,7 @@ import type {
 } from '@buildd/core/decision-client';
 import type { GateCallerOrigin, RecordGateEventInput } from '@buildd/core/gate-events';
 import { CODE_RUBRIC, GOAL_QUALITY_BASELINE_RUBRIC, type GoalQualityRubric } from './goal-criteria-rubric';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const DECISION_SHADOW_LOG_PREFIX = '[decision-shadow]';
 export const GOAL_QUALITY_CAPABILITY = 'mission_goal_quality' as const;
@@ -596,3 +597,6 @@ export function goalQualityBypasses(
   }
   return rows;
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(GOAL_QUALITY_PROMPT_ID, GOAL_QUALITY_PROMPT_DEFAULT);

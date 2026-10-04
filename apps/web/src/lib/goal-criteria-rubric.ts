@@ -20,6 +20,7 @@ import { resolvePrompt, resolvePromptEntry, resolvedPromptVersion } from '@build
 import { createHash } from 'node:crypto';
 import type { GoalCriterion } from '@buildd/shared';
 import type { MemoryRecord, MemorySearchResult } from '@buildd/core/memory-store';
+import { registerTextPrompt } from '@buildd/core/prompts';
 
 export const GOAL_CRITERIA_RUBRIC_TAG = 'goal-criteria-rubric';
 export const GOAL_CRITERIA_ACCEPTED_TAG = 'goal-criteria-accepted';
@@ -225,3 +226,6 @@ export async function loadGoalQualityRubric(
     if (timer) clearTimeout(timer);
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTextPrompt(GOAL_QUALITY_RUBRIC_PROMPT_ID, GOAL_QUALITY_BASELINE_RUBRIC);

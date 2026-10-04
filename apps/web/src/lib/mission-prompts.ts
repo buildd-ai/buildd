@@ -9,6 +9,8 @@
  * Pure: no DB, no env.
  */
 
+import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
+
 export const MISSION_PROMPT_IDS = {
   criteriaRearm: 'buildd.mission.criteria_rearm',
   coordinateOnly: 'buildd.mission.coordinate_only',
@@ -110,3 +112,12 @@ export const MISSION_PROMPT_DEFAULTS = {
     + '`dependsOn` and `baseBranch` when it touches the same files as another step or as an open '
     + 'PR of this mission; beyond that, follow the Sequencing Rules in your role prompt.',
 } as const satisfies Record<Exclude<keyof typeof MISSION_PROMPT_IDS, 'criteriaRearm'>, string>;
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+// The two templates carry placeholders; the rest are plain text.
+const MISSION_TEMPLATE_KEYS = new Set<keyof typeof MISSION_PROMPT_IDS>(['criteriaRearm', 'sequencingIntegration']);
+registerTemplatePrompt(MISSION_PROMPT_IDS.criteriaRearm, CRITERIA_REARM_TEMPLATE);
+for (const [key, text] of Object.entries(MISSION_PROMPT_DEFAULTS) as Array<[keyof typeof MISSION_PROMPT_DEFAULTS, string]>) {
+  if (MISSION_TEMPLATE_KEYS.has(key)) registerTemplatePrompt(MISSION_PROMPT_IDS[key], text);
+  else registerTextPrompt(MISSION_PROMPT_IDS[key], text);
+}

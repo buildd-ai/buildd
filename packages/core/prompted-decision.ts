@@ -32,7 +32,7 @@ import {
   type DecisionQuestion,
   type DecisionQuestions,
 } from '@builddai/ai-kit/decide';
-import { activePrompt, notePromptRejected, promptShapeMismatch, resolvedPromptVersion, type ActivePrompt } from './prompts';
+import { activePrompt, notePromptRejected, promptShapeMismatch, registerPrompt, resolvedPromptVersion, type ActivePrompt } from './prompts';
 
 /** Why an override's questions do not fit the default's shape, or null when they do. */
 export function promptQuestionsMismatch(publicQuestions: DecisionQuestions, candidate: unknown): string | null {
@@ -59,6 +59,45 @@ export function promptQuestionsMismatch(publicQuestions: DecisionQuestions, cand
 }
 
 /**
+ * Check an override body against the default's questions: parse it, compare
+ * shapes, then build the definition (`define` may throw). Pure; shared by the
+ * read path below and by the seed's validation (`registerPrompt`), so a seed
+ * refuses exactly what a resolve would reject.
+ */
+export function checkQuestionsOverride<T>(
+  publicQuestions: DecisionQuestions,
+  body: string,
+  define: (questions: DecisionQuestions) => T,
+): { ok: true; value: T } | { ok: false; reason: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { ok: false, reason: 'body is not JSON' };
+  }
+  const mismatch = promptQuestionsMismatch(publicQuestions, parsed);
+  if (mismatch) return { ok: false, reason: mismatch };
+  try {
+    return { ok: true, value: define(parsed as DecisionQuestions) };
+  } catch (err) {
+    return { ok: false, reason: `definition rejected: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/** Register `id` as a JSON-questions prompt whose override must pass `checkQuestionsOverride`. */
+function registerQuestionsPrompt(id: string, publicQuestions: DecisionQuestions, define: (questions: DecisionQuestions) => unknown): void {
+  registerPrompt({
+    id,
+    format: 'json',
+    publicDefault: `${JSON.stringify(publicQuestions, null, 2)}\n`,
+    validate: body => {
+      const checked = checkQuestionsOverride(publicQuestions, body, define);
+      return checked.ok ? null : checked.reason;
+    },
+  });
+}
+
+/**
  * The override's questions for `id`, or null (no active row, or a rejected
  * one). `define` builds the definition from them and may throw; a throw is a
  * rejection too.
@@ -73,15 +112,9 @@ function resolveOverride<T>(
   if (!row) return null;
   const key = `${row.version}:${row.contentHash}`;
   if (cache.key === key) return cache.value;
-  let value: T | null = null;
-  try {
-    const parsed: unknown = JSON.parse(row.body);
-    const mismatch = promptQuestionsMismatch(publicQuestions, parsed);
-    if (mismatch) notePromptRejected(row, mismatch);
-    else value = define(parsed as DecisionQuestions, row);
-  } catch (err) {
-    notePromptRejected(row, err instanceof SyntaxError ? 'body is not JSON' : `definition rejected: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  const checked = checkQuestionsOverride(publicQuestions, row.body, questions => define(questions, row));
+  if (!checked.ok) notePromptRejected(row, checked.reason);
+  const value = checked.ok ? checked.value : null;
   cache.key = key;
   cache.value = value;
   return value;
@@ -90,6 +123,7 @@ function resolveOverride<T>(
 /** `defineDecision`, with its questions resolved through the prompts table on every read. */
 export function definePromptedDecision<const Q extends DecisionQuestions>(config: DecisionConfig<Q>): Decision<Q> {
   const base = defineDecision(config);
+  registerQuestionsPrompt(config.id, config.questions, questions => defineDecision({ ...config, questions: questions as Q }));
   const cache: { key: string | null; value: Decision<Q> | null } = { key: null, value: null };
   const current = (): Decision<Q> =>
     resolveOverride(config.id, config.questions, cache, (questions, row) => {
@@ -127,6 +161,7 @@ export function promptedDecisionKind<K extends string, F, D extends string, Q ex
   extra: X,
 ): DecisionKind<K, F, D, Q> & X {
   const base = defineDecisionKind(config);
+  registerQuestionsPrompt(config.kind, config.questions, questions => defineDecisionKind({ ...config, questions: questions as Q }));
   const cache: { key: string | null; value: DecisionKind<K, F, D, Q> | null } = { key: null, value: null };
   const current = (): DecisionKind<K, F, D, Q> =>
     resolveOverride(config.kind, config.questions, cache, questions => {
@@ -187,4 +222,22 @@ const questionsCache = new Map<string, { key: string; value: DecisionQuestions |
 /** Forget parsed question overrides. For tests (`resetPrompts` clears the rows). */
 export function resetPromptedQuestionsCache(): void {
   questionsCache.clear();
+}
+
+/** Register an id read with `promptedQuestions`; the seed applies the same two checks. */
+export function registerPromptedQuestions(id: string, publicQuestions: DecisionQuestions): void {
+  registerPrompt({
+    id,
+    format: 'json',
+    publicDefault: `${JSON.stringify(publicQuestions, null, 2)}\n`,
+    validate: body => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        return 'body is not JSON';
+      }
+      return promptQuestionsMismatch(publicQuestions, parsed) ?? promptShapeMismatch(publicQuestions, parsed);
+    },
+  });
 }

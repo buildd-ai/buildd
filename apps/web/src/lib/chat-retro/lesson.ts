@@ -15,6 +15,7 @@ import {
   type CauseLabel, type FixClassLabel, type IntentLabel, type RetroStatus,
   type SatisfiedLabel, type SkipReason, type TurnLabel,
 } from './vocab';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const GATES = { satisfied: 0.8, intent: 0.7, turn: 0.8, fixClass: 0.7 } as const;
 
@@ -294,3 +295,6 @@ export function assertContentFree(row: LessonRow): void {
     if (e.conf !== null && typeof e.conf !== 'number') throw new Error('chat_retros.evidence: non-numeric confidence');
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(CHAT_RETRO_PROMPT_ID, CHAT_RETRO_PROMPT_DEFAULT);

@@ -40,6 +40,7 @@ import type {
   DecisionResult,
   decisionCall,
 } from '@buildd/core/decision-client';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 /** Whole-call ceiling. It runs after the response is sent, or in a sweep. */
 export const DECISION_TIMEOUT_MS = 3_000;
@@ -312,3 +313,6 @@ export function scheduleTaskCategorize(
     void run();
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(TASK_CATEGORY_PROMPT_ID, TASK_CATEGORY_QUESTIONS);

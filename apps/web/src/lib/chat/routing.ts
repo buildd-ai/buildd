@@ -12,6 +12,7 @@ import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionErro
 import { promptedQuestions } from '@buildd/core/prompted-decision';
 import type { ChatTier } from './models';
 import type { ToolGroup } from './registry';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 export const CHAT_ROUTING_QUESTIONS = {
   complexity: {
@@ -478,3 +479,7 @@ function settleWorkspace(
   if (offered(input.previousWorkspaceId)) return { workspaceId: input.previousWorkspaceId!, workspaceSource: 'sticky' };
   return null;
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(TITLE_TOPIC_PROMPT_ID, { topic: TITLE_TOPIC_QUESTION });
+registerPromptedQuestions(CHAT_ROUTING_PROMPT_ID, CHAT_ROUTING_QUESTIONS);

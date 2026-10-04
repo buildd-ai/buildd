@@ -46,6 +46,7 @@ import {
 } from './criteria-reviewer-findings';
 import type { CriterionReviewerFinding } from '@buildd/shared';
 import { compareAgainstBase, COMPARE_FILE_LIMIT } from './pr-content-equivalence';
+import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -1634,3 +1635,12 @@ export async function supersedeFixTaskOnApproval(
     return { superseded: false, fixTaskId: null };
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTextPrompt(REVIEWER_LEDE_DOCTRINE_PROMPT_ID, LEDE_DOCTRINE);
+registerTextPrompt(REVIEWER_MANIFEST_DOCTRINE_PROMPT_IDS.undeclared, UNDECLARED_MANIFEST_DOCTRINE);
+registerTextPrompt(REVIEWER_MANIFEST_DOCTRINE_PROMPT_IDS.concrete, CONCRETE_MANIFEST_DOCTRINE);
+registerTextPrompt(REVIEWER_SECURITY_RULES_PROMPT_ID, SECURITY_ESCALATION_RULES_DEFAULT);
+registerTextPrompt(REVIEWER_SPEC_DOCTRINE_PROMPT_ID, SPEC_DOCTRINE);
+registerTemplatePrompt(REVIEWER_CONTEXT_PROMPT_ID, REVIEWER_CONTEXT_TEMPLATE);
+registerTemplatePrompt(DELTA_REVIEWER_CONTEXT_PROMPT_ID, DELTA_REVIEWER_CONTEXT_TEMPLATE);

@@ -44,6 +44,7 @@ import type {
 } from '@buildd/core/decision-client';
 import type { TaskKind } from '@buildd/core/model-router';
 import { readRoleRouting, renderRoutingCriterion } from './role-routing';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const SHADOW_TIMEOUT_MS = 3_000;
 export const SHADOW_DESCRIPTION_CHARS = 1_500;
@@ -563,3 +564,6 @@ export function scheduleTaskRoleShadow(
     void run();
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(TASK_ROLE_PROMPT_ID, TASK_ROLE_PROMPT_DEFAULT);

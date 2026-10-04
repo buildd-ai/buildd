@@ -18,6 +18,7 @@ import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './miss
 import { applyReviewerFindings } from './criteria-reviewer-findings';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { openMissionIntegrationPr } from './mission-pr';
+import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
 
 /**
  * Producer of goal-criteria verdicts.
@@ -757,3 +758,7 @@ export async function ensureCriteriaVerdict(
     allowWorkerDispatch: true,
   });
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTextPrompt(CRITERIA_EVAL_SYSTEM_PROMPT_ID, CRITERIA_EVAL_SYSTEM_PROMPT);
+registerTemplatePrompt(CRITERIA_EVAL_USER_PROMPT_ID, CRITERIA_EVAL_USER_TEMPLATE);

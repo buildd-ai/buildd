@@ -84,3 +84,7 @@ scripts/playwright-pin.test.ts
 # each is a door an agent run could record a deliverable through, so a new one
 # is a reviewed change. The file that adds one is never this test's neighbour.
 apps/web/src/lib/agent-capabilities/pr-write-sites.test.ts
+# Enumerates every tracked source file that resolves or registers a prompt id:
+# a new prompt-bearing module must join the prompt catalog the deploy seed and
+# the fallback alert read, and the file that adds one is never this test's neighbour.
+apps/web/src/lib/prompt-catalog.test.ts

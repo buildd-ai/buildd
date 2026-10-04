@@ -32,6 +32,7 @@ import type {
 import { deriveFeedPrState } from './mission-pulse';
 import { unmetDependencyIds, type DependencyRow } from './mission-helpers';
 import type { LocalStrand } from './local-strand';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 export const STRAND_CHOICE_CAPABILITY = 'mission_strand_choice' as const;
 export const STRAND_CHOICE_DECISION_ID = 'mission_strand_choice';
@@ -327,3 +328,6 @@ export function strandLabelLine(input: {
 export function emitDecisionLabel(line: string): void {
   console.log(line);
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(STRAND_CHOICE_PROMPT_ID, { pick: STRAND_CHOICE_QUESTION });
