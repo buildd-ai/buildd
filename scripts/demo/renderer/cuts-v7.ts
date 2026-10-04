@@ -129,7 +129,8 @@ export function v7Chapters(s: Stills): Shot[][] {
   // The chip first ("LOOPING · ATTEMPT 2/3"), then the history close enough to read why.
   const red: Shot = {
     id: 'red', layout: 'screen', dur: 3.8, images: [s.img('s06-sent-back')],
-    spot: [key(0.1, [chip('s06-sent-back')]), key(1.3, [hist('s06-sent-back')])],
+    // Both lit from the start (the chip alone left the frame a dark panel), then the light settles on the history.
+    spot: [key(0.1, [chip('s06-sent-back'), hist('s06-sent-back')]), key(1.3, [ghost(chip('s06-sent-back')), hist('s06-sent-back')])],
     camera: [f('s06-sent-back', taskCrop('s06-sent-back'), 1.05, 0), f('s06-sent-back', taskCrop('s06-sent-back'), 1.05, 0.25), f('s06-sent-back', hist('s06-sent-back'), 1.08, 0.45), f('s06-sent-back', hist('s06-sent-back'), 1.05, 1)],
   };
   const retry: Shot = {
