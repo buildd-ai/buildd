@@ -5,6 +5,10 @@ import { missionNotes, missions, workspaces } from '@buildd/core/db/schema';
 import { eq, desc, and, lt } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import {
+  authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsTask, taskScopeAllowsWorkerId,
+  type TaskScopedAccount,
+} from '@/lib/task-token-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { isUuid } from '@/lib/uuid';
@@ -23,15 +27,22 @@ const VALID_TYPES: MissionNoteType[] = ['decision', 'question', 'warning', 'sugg
 const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system', 'mcp'];
 const VALID_STATUSES: MissionNoteStatus[] = ['open', 'answered', 'dismissed'];
 
-async function resolveMissionAccess(req: NextRequest, missionId: string) {
-  const user = await getCurrentUser();
+function bearer(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  return authHeader?.replace('Bearer ', '') || null;
+}
+
+/**
+ * `apiAccount` is authenticated by the handler. A per-task token (POST only)
+ * has already been confined to its own task's mission, which stands in for
+ * the admin gate an account key must pass here.
+ */
+async function resolveMissionAccess(req: NextRequest, missionId: string, apiAccount: TaskScopedAccount | null) {
+  const user = await getCurrentUser();
 
   if (!user && !apiAccount) return null;
 
-  if (apiAccount && !hasTokenRouteAdminAccess(apiAccount, req, req.method === 'GET' ? 'tasks:read' : undefined)) return null;
+  if (apiAccount && !apiAccount.taskScope && !hasTokenRouteAdminAccess(apiAccount, req, req.method === 'GET' ? 'tasks:read' : undefined)) return null;
 
   const teamIds = await resolveAccountTeamIds(user, apiAccount);
 
@@ -60,7 +71,7 @@ export async function GET(
   if (!isUuid(id)) {
     return invalidUuid('mission id', id, 404);
   }
-  const access = await resolveMissionAccess(req, id);
+  const access = await resolveMissionAccess(req, id, await authenticateApiKey(bearer(req), req));
   if (!access) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -122,7 +133,12 @@ export async function POST(
   if (!isUuid(id)) {
     return invalidUuid('mission id', id, 404);
   }
-  const access = await resolveMissionAccess(req, id);
+  // A per-task token may post only to its own task's mission feed.
+  const apiAccount = await authenticateTaskScopedCaller(bearer(req), req);
+  if (apiAccount && !(await taskScopeAllowsMission(apiAccount, id))) {
+    return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+  }
+  const access = await resolveMissionAccess(req, id, apiAccount);
   if (!access) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -136,6 +152,14 @@ export async function POST(
     }
     if (!title || typeof title !== 'string') {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
+    }
+    // A task token pins a note only to its own task and worker: the worker is
+    // whose next check-in receives the reply.
+    if (apiAccount && taskId && !taskScopeAllowsTask(apiAccount, taskId)) {
+      return NextResponse.json({ error: 'A task token may pin a note only to its own task' }, { status: 403 });
+    }
+    if (apiAccount && !(await taskScopeAllowsWorkerId(apiAccount, workerId))) {
+      return NextResponse.json({ error: 'A task token may attribute a note only to its own worker' }, { status: 403 });
     }
 
     const effectiveAuthorType: MissionNoteAuthorType = authorType && VALID_AUTHOR_TYPES.includes(authorType)

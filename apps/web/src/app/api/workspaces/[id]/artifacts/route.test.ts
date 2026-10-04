@@ -92,6 +92,8 @@ mock.module('@buildd/core/db/schema', () => ({
     updatedAt: 'updatedAt',
   },
   workers: { id: 'id', workspaceId: 'workspaceId' },
+  // lib/task-token-auth's account lookup.
+  accounts: { id: 'id' },
   secrets: {
     teamId: 'teamId',
     accountId: 'accountId',
@@ -233,5 +235,37 @@ describe('GET /api/workspaces/[id]/artifacts — missionId query param', () => {
 
     expect(res.status).toBe(200);
     expect(mockArtifactsFindMany).toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/workspaces/[id]/artifacts — per-task token', () => {
+  const SCOPED = { id: 'account-1', level: 'worker', scopes: null, taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockArtifactsFindMany.mockReset();
+    mockArtifactsFindMany.mockResolvedValue([]);
+  });
+
+  it('lists its own workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await GET(getReq(), params('ws-1'));
+    expect(res.status).toBe(200);
+    expect(mockArtifactsFindMany).toHaveBeenCalled();
+  });
+
+  it('reads another workspace its account can reach as not found', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await GET(getReq(), params('ws-2'));
+    expect(res.status).toBe(404);
+    expect(mockArtifactsFindMany).not.toHaveBeenCalled();
+  });
+
+  it('an account key still lists any workspace it can reach', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker' });
+    const res = await GET(getReq(), params('ws-2'));
+    expect(res.status).toBe(200);
   });
 });

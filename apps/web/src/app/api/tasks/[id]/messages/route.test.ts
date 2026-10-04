@@ -132,4 +132,40 @@ describe('GET /api/tasks/[id]/messages', () => {
     expect(data.workerId).toBeNull();
     expect(data.messages).toEqual([]);
   });
+  describe('per-task token', () => {
+    const SCOPED = { id: 'acct-1', level: 'worker', teamId: 'team-1', scopes: null, taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+
+    it("reads a task's messages in its own workspace, and may not send", async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+      mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', instructionHistory: [{ type: 'instruction', message: 'stop', timestamp: 1 }] });
+      const res = await GET(req(), { params: Promise.resolve({ id: TASK_ID }) });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.messages).toHaveLength(1);
+      expect(data.canSend).toBe(false);
+    });
+
+    it('reads a task in another workspace as not found, even one its account can reach', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+      mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-2', workspace: { id: 'ws-2', teamId: 'team-1' } });
+      const res = await GET(req(), { params: Promise.resolve({ id: TASK_ID }) });
+      expect(res.status).toBe(404);
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
+
+    it('an account key still reads any workspace it can reach', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'worker', teamId: 'team-1' });
+      mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+      mockTasksFindFirst.mockResolvedValue({ id: TASK_ID, workspaceId: 'ws-2', workspace: { id: 'ws-2', teamId: 'team-1' } });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', instructionHistory: [] });
+      const res = await GET(req(), { params: Promise.resolve({ id: TASK_ID }) });
+      expect(res.status).toBe(200);
+    });
+  });
 });
