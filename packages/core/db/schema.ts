@@ -334,6 +334,16 @@ export interface WorkspaceGitConfig {
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
 
+  // Claim-time batch planner (packages/core/claim-planner.ts) in the claim
+  // route: 'off' (absent) = the legacy first-eligible walk, untouched;
+  // 'record' = plan beside the legacy picks and write both to the gate ledger;
+  // 'apply' = claim in plan order. Read only through resolveClaimPlannerConfig()
+  // (apps/web/src/app/api/workers/claim/claim-plan-input.ts).
+  claimPlanner?: 'off' | 'record' | 'apply';
+  // Planner thresholds. Absent = declared/observed scope only: predictions
+  // are ignored and the no-scope mission mutex stays.
+  claimPlannerThresholds?: { thetaOrder: number; thetaSoft: number; thetaIdle: number } | null;
+
   // Where the visual auditor's pages come from: 'sandbox' (absent = today's
   // in-worker boot), 'vercel-preview', or 'auto'. Read only through
   // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
