@@ -304,7 +304,25 @@ export async function POST(req: NextRequest) {
       // request would be wasted work on the common (non-mission) path too.
       let adoptRepo: { fullName: string; installation: { installationId: number } | null } | undefined;
       let realPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
-      if (missionBaseGuard.enforced) {
+      // Same escape hatch as the fresh-create path below (PART 2): a
+      // multi-repo mission's integration branch may be real in the mission's
+      // home repo and absent from THIS task's own repo, in which case
+      // refusing an adopted PR for disagreeing with it would refuse the only
+      // base that can actually exist here.
+      let adoptionIntegrationBaseMissing = false;
+      if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
+        const ready = await ensureIntegrationBaseForTaskPr({
+          missionId: worker.task.missionId,
+          integrationBase,
+          taskTitle: worker.task.title,
+          fallbackBase: worker.workspace?.gitConfig?.targetBranch || worker.workspace?.gitConfig?.defaultBranch || null,
+          workspaceId: worker.workspaceId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+        });
+        adoptionIntegrationBaseMissing = !ready.usable;
+      }
+      if (missionBaseGuard.enforced && !adoptionIntegrationBaseMissing) {
         // Prefer GitHub's answer over the caller's. The caller-supplied `base`
         // is a *claim* about a PR buildd never opened, and a claim is exactly
         // what this gate exists to stop being load-bearing: an agent can pass

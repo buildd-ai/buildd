@@ -101,6 +101,7 @@ import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
+import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /**
@@ -1651,11 +1652,30 @@ export async function PATCH(
                 : null,
               head: worker.branch,
             });
+            // Same escape hatch as `create_pr` (POST /api/github/pr): a
+            // multi-repo mission's integration branch may be real in the
+            // mission's home repo and absent from THIS task's own repo, in
+            // which case refusing the adoption for disagreeing with it would
+            // refuse the only base that can actually exist here.
+            let autoDetectIntegrationBaseMissing = false;
+            if (guard.enforced && terminalTaskRow[0]?.missionId && guard.integrationBase) {
+              const ready = await ensureIntegrationBaseForTaskPr({
+                missionId: terminalTaskRow[0].missionId,
+                integrationBase: guard.integrationBase,
+                taskTitle: terminalTaskRow[0].title,
+                workspaceId: worker.workspaceId,
+                taskId: worker.taskId,
+                workerId: worker.id,
+              });
+              autoDetectIntegrationBaseMissing = !ready.usable;
+            }
             const detectedBaseRef = typeof prs[0].base?.ref === 'string' ? prs[0].base.ref : null;
-            autoDetectRefusal = guard.refusal(detectedBaseRef, {
-              prNumber: prs[0].number,
-              action: 'adopt',
-            });
+            autoDetectRefusal = autoDetectIntegrationBaseMissing
+              ? null
+              : guard.refusal(detectedBaseRef, {
+                  prNumber: prs[0].number,
+                  action: 'adopt',
+                });
             if (!autoDetectRefusal) {
               // Found PR — update worker and let validation pass
               await db.update(workers).set({

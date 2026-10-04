@@ -1109,6 +1109,30 @@ describe('POST /api/github/pr', () => {
       expect(data.error).toContain(INTEGRATION_BRANCH);
     });
 
+    it("adopts a trunk-based PR when the integration branch is unusable for this task's own repo", async () => {
+      // A multi-repo mission (mission a955fed9): the integration branch lives
+      // in the mission's home repo, not necessarily this task's own repo.
+      // `ensureIntegrationBaseForTaskPr` reporting `usable: false` for THIS
+      // task must not leave adoption refusing the only base that can work —
+      // mirrors the fresh-create path's `integrationBaseMissing` escape
+      // hatch further down in this same route.
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      optedInMission();
+      mockEnsureIntegrationBaseForTaskPr.mockResolvedValue({ usable: false, recreated: false, detail: 'no_repo' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
+          base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
     it('refuses adoption when the claimed base is omitted entirely', async () => {
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker());
