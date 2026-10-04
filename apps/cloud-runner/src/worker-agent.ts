@@ -113,6 +113,19 @@ export class WorkerAgent extends Agent<Env, RunState> {
     return this.supervisor.dispatch(request);
   }
 
+  /**
+   * RPC from the dispatcher Worker, for the debug `POST /tasks/:taskId/kill`.
+   * Destroys the container without touching run state, so the supervisor
+   * sees exactly what an OOM kill or a platform stop produces.
+   */
+  async killContainer(): Promise<{ killed: boolean }> {
+    const container = this.ctx.container;
+    if (!container?.running) return { killed: false };
+    console.log(`[cloud-runner] task ${this.name}: debug kill requested; destroying the container`);
+    await container.destroy('debug kill');
+    return { killed: true };
+  }
+
   /** RPC from the dispatcher Worker, for `GET /tasks/:taskId`. */
   async getRunState(): Promise<RunState> {
     return this.supervisor.status();
