@@ -266,7 +266,20 @@ mock.module('drizzle-orm', () => ({
   isNull: (a: any) => ({ type: 'isNull', a }),
   lt: (a: any, b: any) => ({ type: 'lt', a, b }),
   inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
-  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ type: 'sql', strings: [...strings], values }),
+  sql: Object.assign(
+    // `sql.raw` fragments (the spliced outbox CTE) are inlined into the text,
+    // as drizzle renders them, so SQL assertions see them.
+    (strings: TemplateStringsArray, ...values: any[]) => {
+      const out: string[] = [strings[0]];
+      const vals: any[] = [];
+      values.forEach((v, i) => {
+        if (v && v.type === 'raw') out[out.length - 1] += v.text + strings[i + 1];
+        else { vals.push(v); out.push(strings[i + 1]); }
+      });
+      return { type: 'sql', strings: out, values: vals };
+    },
+    { raw: (text: string) => ({ type: 'raw', text }) },
+  ),
 }));
 
 const {
@@ -823,6 +836,21 @@ describe('ownership SQL', () => {
     expect(t).toContain("o.path_claim_revision = (a->>'expectedRevision')::int");
     expect(t).toContain("pc.task_id = (a->>'taskId')::uuid");
     expect(t).toContain("t.workspace_id = (a->>'workspaceId')::uuid");
+  });
+
+  it('release, narrow and lease give-back each write the waiters\' wake in the same statement', async () => {
+    addTask(A);
+    const log = await statementsFor(async () => {
+      await narrowPathClaims({ workspaceId: WS, taskId: A, paths: ['x'], surface: 't' });
+      await releaseLeaseRows({ workspaceId: WS, taskId: A, leaseIds: ['c1'], keepStatuses: [] });
+      await releaseClaims(A);
+    });
+    for (const tag of ['narrow', 'release_rows', 'release']) {
+      const t = log.find(s => s.tag === tag)!.text.replace(/\s+/g, ' ');
+      expect(t).toContain('INSERT INTO task_dispatch_outbox');
+      expect(t).toContain("FROM woken s JOIN tasks t ON t.id = s.waiting_task_id WHERE t.status = 'pending'");
+      expect(t).toContain("'path_claim.released'");
+    }
   });
 
   it('surfaces a failed batch instead of reporting an acquisition', async () => {

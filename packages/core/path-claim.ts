@@ -11,13 +11,18 @@
  *   - PATCH /api/workers/[id] (observed touches → lease; terminal status → release)
  *   - GitHub webhook (PR merged/closed → release)
  *   - stale-workers reaper (orphaned worker → release)
- *   - Workers claim route (path_claims backstop)
+ *   - Workers claim route (path_claims backstop; waiters for path_overlap
+ *     deferrals, so the blocker's release wakes the deferred task)
+ *
+ * Every release/narrow that stamps a waiter also writes a dispatch-outbox
+ * intent for each pending waiting task in the same statement
+ * (dispatch-outbox.ts); the caller kicks delivery.
  */
 
 import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
 import { db } from './db/client';
 import { pathClaims, pathClaimWaiters, missionNotes, workers, tasks } from './db/schema';
-import { and, eq, isNull, isNotNull, lt, inArray, sql } from 'drizzle-orm';
+import { and, eq, isNull, lt, inArray, sql } from 'drizzle-orm';
 import {
   pathsOverlap,
   stripTrailingSep,
@@ -206,14 +211,13 @@ export async function findStaleClaimHolderTaskIds(): Promise<string[]> {
     const prWorkers = await db.query.workers.findMany({
       where: and(
         inArray(workers.taskId, waiterOnly),
-        isNotNull(workers.prUrl),
         isNull(workers.mergedAt),
         inArray(workers.status, [...OPEN_PR_WORKER_STATUSES]),
       ),
-      columns: { taskId: true, prLifecycleStatus: true },
+      columns: { taskId: true, prUrl: true, prLifecycleStatus: true },
     });
     for (const w of prWorkers ?? []) {
-      if (w.taskId && w.prLifecycleStatus !== 'closed') terminal.delete(w.taskId);
+      if (w.taskId && w.prUrl && w.prLifecycleStatus !== 'closed') terminal.delete(w.taskId);
     }
   }
   return [...terminal];
@@ -980,7 +984,7 @@ export interface ClaimDeferralWaiter {
  * Worker statuses whose open PR the claim route's layer-1 backstop counts as
  * blocking (route.ts open-PR prefetch). Mirrored in SQL below; keep in step.
  */
-const OPEN_PR_WORKER_STATUSES = ['running', 'idle', 'starting', 'waiting_input', 'completed'] as const;
+const OPEN_PR_WORKER_STATUSES: readonly string[] = [...LIVE_WORKER_STATUSES, 'completed'];
 
 /**
  * SQL predicate text: task `<taskCol>` has a worker with an unmerged, unclosed

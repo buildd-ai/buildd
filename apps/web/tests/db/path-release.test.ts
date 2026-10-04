@@ -163,6 +163,22 @@ describe('claim-time waiter registration', () => {
     expect((await waiterRows(waiting))[0].notified_at).not.toBeNull();
   });
 
+  test('registration racing the release never leaves a silent waiter (workspace lock)', async () => {
+    // Either order is fine — register first and the release stamps it, release
+    // first and the registration sees nothing left — but an interleaving that
+    // reads the lease as held and inserts after the release stamped would lose
+    // the wake. The advisory lock is what rules that out.
+    for (let i = 0; i < 8; i++) {
+      const { holder, waiting } = await holderAndPendingWaiter(`race/${i}.ts`);
+      await Promise.all([
+        releaseClaims(holder),
+        registerClaimDeferralWaiters(workspaceId, [{ waitingTaskId: waiting, blockingTaskId: holder, blockedPath: `race/${i}.ts` }]),
+      ]);
+      expect(await releaseWakes(waiting)).toHaveLength(1);
+      expect((await waiterRows(waiting))[0].notified_at).not.toBeNull();
+    }
+  }, 30_000);
+
   test('a blocker with an open PR still blocks even with no lease left (layer 1)', async () => {
     const blocker = await seedTask(workspaceId, { status: 'completed', pathManifest: ['p/open.ts'] });
     await worker(blocker, { status: 'completed', prNumber: 101 });
