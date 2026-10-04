@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'bun:test';
+import * as hb from './heartbeat-helpers';
+import { installPrompts, resetPrompts, promptFallbackCounts } from '@buildd/core/prompts';
+import { promptContentHash } from '@buildd/core/prompts-source';
 import {
   formatHour,
   getHourOptions,
@@ -313,5 +316,37 @@ describe('detectMissionPhase', () => {
       artifacts: [{ type: 'content', key: 'ios-feature-spec' }],
     }));
     expect(result.phase).toBe('planning');
+  });
+});
+
+describe('phase actions and the organizer checklist through the prompts table', () => {
+  const row = (id: string, body: string) => ({ id, version: 1, body, contentHash: promptContentHash(body) });
+  const idle = { completedTasks: [], activeTasks: [], failedTasks: [], artifacts: [], hasWorkspace: true, prCount: 0 };
+
+  it('an active row replaces the actions; one of a different shape is rejected', () => {
+    resetPrompts();
+    const custom = Object.fromEntries(Object.keys(hb.DEFAULT_PHASE_ACTIONS).map(k => [k, [`private ${k}`]]));
+    installPrompts([row(hb.PHASE_ACTIONS_PROMPT_ID, JSON.stringify(custom))]);
+    expect(hb.detectMissionPhase(idle).actions).toEqual(['private idle']);
+
+    resetPrompts();
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      installPrompts([row(hb.PHASE_ACTIONS_PROMPT_ID, JSON.stringify({ idle: ['only one key'] }))]);
+      expect(hb.detectMissionPhase(idle).actions).toEqual(hb.DEFAULT_PHASE_ACTIONS.idle);
+      expect(promptFallbackCounts()[hb.PHASE_ACTIONS_PROMPT_ID].invalid).toBe(1);
+    } finally {
+      console.warn = warn;
+      resetPrompts();
+    }
+  });
+
+  it('the organizer checklist resolves through its own id', () => {
+    resetPrompts();
+    expect(hb.organizerChecklist()).toBe(hb.DEFAULT_MISSION_HEARTBEAT_CHECKLIST);
+    installPrompts([row(hb.ORGANIZER_CHECKLIST_PROMPT_ID, '- [ ] private checklist')]);
+    expect(hb.organizerChecklist()).toBe('- [ ] private checklist');
+    resetPrompts();
   });
 });
