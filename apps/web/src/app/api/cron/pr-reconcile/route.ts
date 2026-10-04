@@ -74,6 +74,7 @@ import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
 import { sweepClosedUnsupersededPrs } from '@/lib/pr-supersession-detect';
+import { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
@@ -109,13 +110,20 @@ export async function GET(req: NextRequest) {
     if (landingOnly) return runLandingScope(req, report);
     if (ciRedOnly) return runCiRedScope(req, report);
 
-    const [reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
       // half of this route, and a mission-sweep failure must not throw away
       // reconcile work that already landed in the database.
       sweepMissionIntegrationPrs().catch(err => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // The backstop half of keeping mission branches current with dev
+      // (lib/mission-branch-refresh.ts) — covers a lost webhook delivery.
+      // Hourly, like merge-state healing: a mission branch left stale for a
+      // full day is exactly the failure mode this exists to close. Isolated.
+      sweepMissionBranchRefresh().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
       // Stranded-task detection has nothing to do with PRs — it rides this
@@ -203,6 +211,13 @@ export async function GET(req: NextRequest) {
     if ('error' in missionPrs) {
       console.error('[MissionPrSweep] error:', missionPrs.error);
     }
+    if ('error' in branchRefresh) {
+      console.error('[MissionBranchRefresh] error:', branchRefresh.error);
+    } else {
+      console.log(
+        `[MissionBranchRefresh] scanned=${branchRefresh.scanned} merged=${branchRefresh.merged} conflicts=${branchRefresh.conflicts} skipped=${branchRefresh.skipped} errors=${branchRefresh.errors}`,
+      );
+    }
     if ('error' in stranded) {
       console.error('[StrandedSweep] error:', stranded.error);
     } else {
@@ -248,6 +263,7 @@ export async function GET(req: NextRequest) {
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
     const missionPrErrors = 'error' in missionPrs ? 1 : (missionPrs.errors ?? 0);
+    const branchRefreshErrors = 'error' in branchRefresh ? 1 : branchRefresh.errors;
     const strandedErrors = 'error' in stranded ? 1 : 0;
     const specRecheckErrors = 'error' in specRecheck ? 1 : specRecheck.rechecksFailed + specRecheck.followUpsFailed;
     const lineageErrors = 'error' in lineagePrs ? 1 : lineagePrs.stranded;
@@ -258,6 +274,7 @@ export async function GET(req: NextRequest) {
     report({
       processed:
         reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total)
+        + ('error' in branchRefresh ? 0 : branchRefresh.scanned)
         + ('error' in landing ? 0 : landing.processed)
         + ('error' in refreshRedrive ? 0 : refreshRedrive.redriven)
         + ('error' in ciRed ? 0 : ciRed.processed),
@@ -265,6 +282,7 @@ export async function GET(req: NextRequest) {
         reconcile.stamped + reconcile.closed + reconcile.unresolvable + reconcile.conflictsDetected
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
         + ('error' in missionPrs ? 0 : missionPrs.opened)
+        + ('error' in branchRefresh ? 0 : branchRefresh.merged + branchRefresh.conflicts)
         + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared)
         + ('error' in specRecheck ? 0 : specRecheck.rechecksDispatched + specRecheck.followUpsDispatched)
         + ('error' in lineagePrs ? 0 : lineagePrs.closed)
@@ -274,10 +292,10 @@ export async function GET(req: NextRequest) {
         + ('error' in closedPrs ? 0 : closedPrs.recorded + closedPrs.suggested)
         + ('error' in kernelFloor ? 0 : kernelFloor.imported + kernelFloor.enqueued),
       errors:
-        reconcile.errors + missionPrErrors + strandedErrors + specRecheckErrors + lineageErrors
+        reconcile.errors + missionPrErrors + branchRefreshErrors + strandedErrors + specRecheckErrors + lineageErrors
         + landingErrors + refreshRedriveErrors + ciRedErrors + closedPrErrors
         + ('error' in kernelFloor ? 1 : kernelFloor.errors),
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor },
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, branchRefresh, stranded, specRecheck, lineagePrs, landing, refreshRedrive, ciRed, closedPrs, kernelOutbox, trunk, kernelFloor },
     });
 
     return NextResponse.json({
@@ -286,6 +304,7 @@ export async function GET(req: NextRequest) {
       reconcile,
       deadZone,
       missionPrs,
+      branchRefresh,
       stranded,
       specRecheck,
       lineagePrs,

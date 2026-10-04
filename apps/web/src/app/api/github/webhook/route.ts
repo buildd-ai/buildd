@@ -27,6 +27,7 @@ import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { PR_OPENED_POLICY } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { maybePostWorkTrackerIssueUpdate, runMergedPrWork } from '@/lib/pr-merged-work';
+import { refreshMissionBranchesForTrunkMerge } from '@/lib/mission-branch-refresh';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
@@ -954,6 +955,26 @@ async function handlePullRequestEvent(event: {
     ).catch(e =>
       console.error(`[webhook] dark-check detection failed for ${repository.full_name}:`, e),
     );
+  }
+
+  // Keep every active mission's integration branch current with dev
+  // (docs/design/mission-delivery-arc.md P5, superseded): any PR merging
+  // into this workspace's trunk is the trigger. Scoped to trunk inside the
+  // helper — a merge into some other branch of the same repo is a no-op.
+  // Best-effort, after the response: the hourly sweep
+  // (sweepMissionBranchRefresh) is the backstop for a lost delivery.
+  if (pr.merged && event.installation && pr.base?.ref) {
+    const refreshRepo = repository.full_name;
+    const refreshBase = pr.base.ref;
+    const refresh = () =>
+      refreshMissionBranchesForTrunkMerge({ repoFullName: refreshRepo, baseRef: refreshBase }).catch(e =>
+        console.error(`[webhook] mission branch refresh failed for ${refreshRepo}@${refreshBase}:`, e),
+      );
+    try {
+      after(refresh);
+    } catch {
+      await refresh();
+    }
   }
 
   // Strategy 1: Match by prNumber on workers table (agent-created PRs)

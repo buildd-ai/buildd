@@ -230,6 +230,17 @@ export const GATE_SLUGS = {
    * The denominator for "do notified workers conflict less".
    */
   BASE_ADVANCE_NOTICE: 'base_advance_notice',
+  /**
+   * Keeping a mission's integration branch current with dev
+   * (`lib/mission-branch-refresh.ts`, docs/design/mission-delivery-arc.md P5,
+   * superseded). `accepted` = GitHub's merges API landed dev cleanly (a merge
+   * commit, no agent); `deferred` = the single-flight lease is already held
+   * (debounced) or dev has not moved past the last recorded refresh
+   * (`detail.reason`); `stranded` = a 409 conflict dispatched the
+   * conflict-resolution task named in `detail.conflictTaskId`, or one was
+   * already open and nothing new was dispatched.
+   */
+  MISSION_BRANCH_REFRESH: 'mission_branch_refresh',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];

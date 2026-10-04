@@ -794,7 +794,7 @@ export async function tryAutoMergeWorkerPr(params: {
   const mergingTask = worker.taskId
     ? await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        columns: { id: true, title: true, taskClass: true, missionId: true },
+        columns: { id: true, title: true, taskClass: true, missionId: true, context: true },
       })
     : null;
   const mergeGate = await guardMissionPrMerge(mergingTask);
@@ -815,6 +815,12 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
+  // mission-branch-refresh.ts marks its conflict-resolution task's PR this way:
+  // it IS the merge commit that catches the integration branch up with dev, so
+  // squashing it would drop that ancestry and the same conflict would reappear
+  // on the very next refresh.
+  const requireMergeCommit = (mergingTask?.context as Record<string, unknown> | null)?.requireMergeCommit === true;
+  const mergeMethod = requireMergeCommit ? 'merge' : 'squash';
   // Every rail passed. For a kernel-owned PR this door is only an adapter: the
   // kernel lands it (LandingRequested → merge_call → MergeCallResult) and owns
   // what follows — the post-merge work, and the refresh or conflict repair a
@@ -823,9 +829,9 @@ export async function tryAutoMergeWorkerPr(params: {
   const landingWorkspaceId = await workspaceIdOnce();
   const slotted = await mergeInSurfaceSlot(surfaceOrder, async () => {
     const kernel = landingWorkspaceId
-      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod: 'squash' })
+      ? await kernelLand({ workspaceId: landingWorkspaceId, installationId, repoFullName, prNumber, headSha, door: 'auto_merge', actor: 'system:auto_merge', mergeMethod })
       : null;
-    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha) };
+    return kernel ? { kernel } : { legacy: await mergePullRequest(installationId, repoFullName, prNumber, mergeMethod, headSha) };
   });
   if ('refused' in slotted) {
     console.log(`Auto-merge deferred for ${repoFullName}#${prNumber}: ${slotted.refused}`);
