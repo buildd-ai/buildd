@@ -21,7 +21,7 @@
  * CURL_CA_BUNDLE, set by buildd-once).
  */
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, relative } from 'path';
 import {
@@ -94,6 +94,53 @@ export function warmRepoEnabled(env: Record<string, string | undefined>): boolea
 export function bunCacheDir(env: Record<string, string | undefined>): string {
   if (env.BUN_INSTALL_CACHE_DIR) return env.BUN_INSTALL_CACHE_DIR;
   return join(env.BUN_INSTALL || join(env.HOME || homedir(), '.bun'), 'install', 'cache');
+}
+
+/**
+ * pnpm's content-addressable store lives here, nested inside whatever
+ * directory the cache tarball above already tars/restores (`cacheDir`), so no
+ * second artifact, metric or Worker object key is needed: it rides along as
+ * more files under the existing `cache` part and shows up in the same
+ * `cache_bytes` metric (repo.bytes.cache in the run report).
+ */
+export const PNPM_STORE_DIRNAME = 'pnpm-store';
+
+export function pnpmStoreDir(cacheDir: string): string {
+  return join(cacheDir, PNPM_STORE_DIRNAME);
+}
+
+/**
+ * The `npm_config_store_dir` to default pnpm onto (pnpm, like npm, reads any
+ * config key from `npm_config_<key>`): inside the bun cache dir, unless the
+ * operator already set one. Pure — callers (run-once.ts) apply it to the
+ * process env that both the provision gate's `pnpm install` and the agent's
+ * own subprocess (agent-env.ts's passthrough) inherit from.
+ */
+export function defaultPnpmStoreDirEnv(env: Record<string, string | undefined>): string {
+  return env.npm_config_store_dir || pnpmStoreDir(bunCacheDir(env));
+}
+
+/** Bytes of every regular file under `dir`, recursively. 0 for a missing dir; never throws. */
+export function dirSizeBytes(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  let total = 0;
+  const walk = (d: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const abs = join(d, e.name);
+      if (e.isDirectory()) walk(abs);
+      else if (e.isFile() || e.isSymbolicLink()) {
+        try { total += statSync(abs).size; } catch { /* removed mid-walk */ }
+      }
+    }
+  };
+  walk(dir);
+  return total;
 }
 
 // ── Transport ─────────────────────────────────────────────────────────────────
@@ -233,19 +280,26 @@ export function assertSnapshotSafe(clonePath: string): void {
  * rather than with tar's --exclude, whose matching differs between GNU tar
  * and bsdtar.
  */
-/** The cache's file list for `tar -T`, written to `listPath`; null when there is nothing to tar. */
-export function writeCacheFileList(cacheDir: string, listPath: string): string | null {
+/**
+ * The cache's file list for `tar -T`, written to `listPath`; null when there
+ * is nothing to tar. `skipTopLevelNames` drops whole top-level entries (by
+ * name, e.g. the pnpm store) before walking into them — used to leave a
+ * single oversized artifact out of the tarball while keeping the rest of the
+ * cache.
+ */
+export function writeCacheFileList(cacheDir: string, listPath: string, skipTopLevelNames?: ReadonlySet<string>): string | null {
   if (!existsSync(cacheDir)) return null;
   const files: string[] = [];
-  const walk = (dir: string) => {
+  const walk = (dir: string, top: boolean) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       if (CACHE_EXCLUDED_NAMES.test(e.name) || e.name.includes('\n')) continue;
+      if (top && skipTopLevelNames?.has(e.name)) continue;
       const abs = join(dir, e.name);
-      if (e.isDirectory()) walk(abs);
+      if (e.isDirectory()) walk(abs, false);
       else if (e.isFile() || e.isSymbolicLink()) files.push(relative(cacheDir, abs));
     }
   };
-  walk(cacheDir);
+  walk(cacheDir, true);
   if (files.length === 0) return null;
   mkdirSync(dirname(listPath), { recursive: true });
   writeFileSync(listPath, `${files.join('\n')}\n`);
@@ -733,7 +787,21 @@ export class WarmRepoSession {
         throw new Error(`bundle upload failed: ${repo.detail}`);
       }
       uploaded += repo.bytes;
-      const list = writeCacheFileList(this.d.cacheDir, join(this.d.tmpDir, `upload-${generation}.list`));
+      // The pnpm store (nested in cacheDir, see pnpmStoreDir) can alone be
+      // bigger than the whole cap. Measured against the same cap as the repo
+      // bundle, before tarring: skip just the store and keep the rest of the
+      // cache, rather than let the mid-stream abort (streamToMultipart's
+      // `maxBytes`) throw the entire cache tarball away.
+      const pnpmDir = pnpmStoreDir(this.d.cacheDir);
+      let skipTopLevel: Set<string> | undefined;
+      if (existsSync(pnpmDir)) {
+        const cacheBytesTotal = dirSizeBytes(this.d.cacheDir);
+        if (cacheBytesTotal > cap) {
+          skipTopLevel = new Set([PNPM_STORE_DIRNAME]);
+          this.d.log(`[warm] pnpm store left out of the cache upload: cache is ${cacheBytesTotal} bytes, over the ${cap}-byte warm snapshot cap`);
+        }
+      }
+      const list = writeCacheFileList(this.d.cacheDir, join(this.d.tmpDir, `upload-${generation}.list`), skipTopLevel);
       if (list) {
         try {
           const cache = await streamToMultipart({
