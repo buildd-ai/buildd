@@ -65,10 +65,23 @@ export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
-  'park_bytes', 'resume_layer',
+  'park_bytes', 'resume_layer', 'warm_repo_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
+
+export const WARM_UPLOAD_LINE_PREFIX = 'BUILDD_WARM_UPLOAD=';
+export const WARM_UPLOAD_SKIP_REASONS = ['too_large'] as const;
+export type WarmUploadSkipReason = typeof WARM_UPLOAD_SKIP_REASONS[number];
+export type WarmUploadLine = { skipped: WarmUploadSkipReason };
+const WARM_UPLOAD_LINE_RE = /^BUILDD_WARM_UPLOAD=skipped ([a-z_]+)$/;
+
+/** From a `BUILDD_WARM_UPLOAD=skipped <reason>` line, or null. */
+export function parseWarmUploadLine(line: string): WarmUploadLine | null {
+  const m = WARM_UPLOAD_LINE_RE.exec(line.trim());
+  const reason = m?.[1] as WarmUploadSkipReason | undefined;
+  return reason && WARM_UPLOAD_SKIP_REASONS.includes(reason) ? { skipped: reason } : null;
+}
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 export const REPO_FALLBACK_REASONS = ['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed'] as const;
@@ -562,6 +575,8 @@ export interface RunTimings {
   runnerMetrics?: RunnerMetrics;
   /** From the `BUILDD_REPO_SOURCE=` line. */
   repoSource?: RepoSourceLine;
+  /** From a `BUILDD_WARM_UPLOAD=skipped` line. */
+  warmUpload?: WarmUploadLine;
   /** A `task.scheduled` start: the time the wake was scheduled for. */
   scheduledFor?: number;
 }
@@ -620,7 +635,14 @@ export interface RunReport {
     source: 'warm' | 'clone' | null;
     fallbackReason: RepoFallbackReason | null;
     snapshotAgeMs: number | null;
-    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null };
+    /**
+     * Why the run uploaded no warm snapshot it otherwise would have:
+     * `too_large`, the repo (or its bundle as it streamed) was over the cap.
+     * Null: uploaded, or no upload was due.
+     */
+    warmUploadSkipReason: WarmUploadSkipReason | null;
+    /** `warmRepo`: the clone's object store as measured against the cap. */
+    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null; warmRepo: number | null };
   };
   /**
    * Resumable runs. `resumed`: this attempt continued a parked worker.
@@ -715,6 +737,8 @@ export function assembleRunReport(input: RunReportInput): RunReport {
   const src = t.repoSource as { source?: unknown; reason?: unknown } | undefined;
   const source = src?.source === 'warm' || src?.source === 'clone' ? src.source : null;
   const fallbackReason = source === 'clone' && REPO_FALLBACK_REASONS.includes(src?.reason as RepoFallbackReason) ? src!.reason as RepoFallbackReason : null;
+  const skipped = (t.warmUpload as { skipped?: unknown } | undefined)?.skipped;
+  const warmUploadSkipReason = WARM_UPLOAD_SKIP_REASONS.includes(skipped as WarmUploadSkipReason) ? skipped as WarmUploadSkipReason : null;
   return {
     kind: RUN_REPORT_KIND,
     version: RUN_REPORT_VERSION,
@@ -743,12 +767,14 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       source,
       fallbackReason,
       snapshotAgeMs: metric('snapshot_age_ms'),
+      warmUploadSkipReason,
       bytes: {
         clone: metric('clone_bytes'),
         restore: metric('restore_bytes'),
         fetch: metric('fetch_bytes'),
         cache: metric('cache_bytes'),
         upload: metric('warm_upload_bytes'),
+        warmRepo: metric('warm_repo_bytes'),
       },
     },
     resume: {

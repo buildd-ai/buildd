@@ -24,7 +24,7 @@ import { spawnSync } from 'child_process';
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve, sep } from 'path';
 import { WARM_BASE_REF, gitFailureText } from './warm-repo';
-import { gitRetryDelayMs, parseRetryAfter, probeRetryAfter, sleepSync } from './git-clone';
+import { branchOfRemoteRef, ensureRemoteBranch, gitRetryDelayMs, parseRetryAfter, probeRetryAfter, sleepSync } from './git-clone';
 
 export const PARK_ENV_FLAG = 'BUILDD_ONCE_PARK';
 /** At most this many parks per worker; the next wait holds the container as before. */
@@ -84,6 +84,13 @@ export interface ParkManifest {
   parkedAt: number;
   /** Absolute paths restored to the same place. */
   files: string[];
+  /**
+   * The `origin/<branch>` refs the worker measures against (the base its
+   * worktree was cut from, its PR base). A narrow (cloud) clone holds the
+   * default branch only, so the resume fetches these by name. Absent in a
+   * bundle from an older runner.
+   */
+  baseRefs?: string[];
 }
 
 export interface OpenedPark {
@@ -164,8 +171,18 @@ export function captureWip(worktree: string, ref: string, tmpDir: string): strin
   }
 }
 
+/** The commits a shallow clone's history stops at (`.git/shallow`); none for a full clone. */
+function shallowBoundary(clonePath: string): string[] {
+  if (tryGit(clonePath, ['rev-parse', '--is-shallow-repository']) !== 'true') return [];
+  const rel = tryGit(clonePath, ['rev-parse', '--git-path', 'shallow']);
+  if (!rel) return [];
+  const file = rel.startsWith('/') ? rel : join(clonePath, rel);
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf-8').split('\n').map(l => l.trim()).filter(l => /^([0-9a-f]{40}|[0-9a-f]{64})$/.test(l));
+}
+
 export function buildParkBundle(opts: {
-  worker: { id: string; taskId: string; workspaceId: string; worktreePath: string; sessionId?: string | null };
+  worker: { id: string; taskId: string; workspaceId: string; worktreePath: string; sessionId?: string | null; baseRefs?: Array<string | null | undefined> };
   paths: ParkPaths;
   kind: ParkKind;
   /** Parks before this one. */
@@ -200,8 +217,15 @@ export function buildParkBundle(opts: {
     ?? tryGit(clonePath, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${defaultBranch}`]);
   const ahead = base ? Number(tryGit(clonePath, ['rev-list', '--count', `${base}..${headSha}`]) ?? '1') : 1;
   const bundleRefs = [...(ahead > 0 ? [`refs/heads/${branch}`] : []), ...(wipSha ? [wipRef] : [])];
+  // A shallow (cloud) clone's boundary commits are excluded too, so each one
+  // the branch reaches becomes a prerequisite the resume fetches by id. In
+  // the bundle they would arrive without their parents, which the resuming
+  // clone does not have either: a task cut from a branch fetched on demand
+  // (git-clone.ts ensureRemoteBranch) shares no commit with the depth-1
+  // default branch the base is.
+  const exclude = [...(base ? [base] : []), ...shallowBoundary(clonePath)];
   if (bundleRefs.length > 0) {
-    git(clonePath, ['bundle', 'create', '-q', join(stage, 'repo.bundle'), ...bundleRefs, ...(base ? ['--not', base] : [])]);
+    git(clonePath, ['bundle', 'create', '-q', join(stage, 'repo.bundle'), ...bundleRefs, ...(exclude.length > 0 ? ['--not', ...exclude] : [])]);
   }
 
   // The park count goes with the worker, so every later park (including an
@@ -242,6 +266,7 @@ export function buildParkBundle(opts: {
     parks: opts.parks + 1,
     parkedAt: opts.now,
     files,
+    baseRefs: [...new Set((worker.baseRefs ?? []).filter((r): r is string => !!branchOfRemoteRef(r)))],
   };
   writeFileSync(join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2));
   const tarPath = join(paths.tmpDir, `park-${worker.id}.tar`);
@@ -283,7 +308,7 @@ export interface ParkNowDeps {
  * before. The bundle only counts once the server has accepted the park.
  */
 export async function parkWorkerNow(
-  worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string | null },
+  worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string | null; baseRefs?: Array<string | null | undefined> },
   kind: ParkKind,
   d: ParkNowDeps,
 ): Promise<boolean> {
@@ -297,7 +322,7 @@ export async function parkWorkerNow(
   let tarPath: string | null = null;
   try {
     const built = buildParkBundle({
-      worker: { id: worker.id, taskId: worker.taskId, workspaceId: worker.workspaceId, worktreePath: worker.worktreePath, sessionId: worker.sessionId ?? null },
+      worker: { id: worker.id, taskId: worker.taskId, workspaceId: worker.workspaceId, worktreePath: worker.worktreePath, sessionId: worker.sessionId ?? null, baseRefs: worker.baseRefs },
       paths: d.paths, kind, parks, now: Date.now(),
     });
     tarPath = built.tarPath;
@@ -496,5 +521,13 @@ export function applyParkRepo(opened: OpenedPark, clonePath: string, opts: Apply
   if (m.wipSha) {
     git(m.worktreePath, ['read-tree', '-m', '-u', 'HEAD', m.wipSha]);
     git(m.worktreePath, ['reset', '-q']);
+  }
+  // The bases the worker measures against (its PR stats, the path-claim
+  // sweep). A narrow (cloud) clone has the default branch only; a full clone
+  // already has them. Best effort: the worker runs without them, as it would
+  // after a failed fetch.
+  for (const ref of Array.isArray(m.baseRefs) ? m.baseRefs : []) {
+    const branch = typeof ref === 'string' ? branchOfRemoteRef(ref) : null;
+    if (branch) ensureRemoteBranch(clonePath, branch, { sleep, retryAfter });
   }
 }

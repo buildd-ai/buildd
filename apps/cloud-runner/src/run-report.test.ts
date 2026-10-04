@@ -9,6 +9,9 @@ import {
   RUN_PHASES,
   parseMetricLine,
   parseRepoSourceLine,
+  parseWarmUploadLine,
+  WARM_UPLOAD_LINE_PREFIX,
+  WARM_UPLOAD_SKIP_REASONS,
   recordMetric,
   applyEgressEvent,
   assembleRunReport,
@@ -51,6 +54,33 @@ describe('phase line contract with apps/runner', () => {
     for (const r of runnerPhases.REPO_FALLBACK_REASONS) {
       expect(parseRepoSourceLine(runnerPhases.formatRepoSourceLine('clone', r))).toEqual({ source: 'clone', reason: r });
     }
+  });
+});
+
+describe('warm upload skip line (a repo over the warm snapshot cap)', () => {
+  test('matches phase-lines.ts and parses back', () => {
+    expect(WARM_UPLOAD_LINE_PREFIX).toBe(runnerPhases.WARM_UPLOAD_LINE_PREFIX);
+    expect([...WARM_UPLOAD_SKIP_REASONS]).toEqual([...runnerPhases.WARM_UPLOAD_SKIP_REASONS]);
+    for (const r of runnerPhases.WARM_UPLOAD_SKIP_REASONS) {
+      expect(parseWarmUploadLine(runnerPhases.formatWarmUploadSkippedLine(r))).toEqual({ skipped: r });
+    }
+  });
+
+  test.each(['BUILDD_WARM_UPLOAD=skipped', 'BUILDD_WARM_UPLOAD=skipped sk-ant-x', 'BUILDD_WARM_UPLOAD=done', '[warm] BUILDD_WARM_UPLOAD=skipped too_large'])('rejects %p', (line) => {
+    expect(parseWarmUploadLine(line)).toBeNull();
+  });
+
+  test('the report says why there was no upload, and how big the repo measured', () => {
+    const r = assembleRunReport({
+      taskId: 'task-1', attempt: 1,
+      timings: { runnerMetrics: { warm_repo_bytes: 2_600_000_000 }, warmUpload: { skipped: 'too_large' }, repoSource: { source: 'clone', reason: 'no_snapshot' } },
+    });
+    expect(r.repo.warmUploadSkipReason).toBe('too_large');
+    expect(r.repo.bytes.warmRepo).toBe(2_600_000_000);
+    const none = assembleRunReport({ taskId: 'task-1', attempt: 1 });
+    expect(none.repo.warmUploadSkipReason).toBeNull();
+    const hostile = assembleRunReport({ taskId: 'task-1', attempt: 1, timings: { warmUpload: { skipped: 'sk-ant-leak' } } } as unknown as RunReportInput);
+    expect(hostile.repo.warmUploadSkipReason).toBeNull();
   });
 });
 
@@ -297,7 +327,7 @@ describe('assembleRunReport', () => {
     expect(r.workerId).toBeNull();
     expect(r.durationsMs).toEqual({ containerStart: null, toClaim: null, clone: null, install: null, restoreWarm: null, fetch: null, warmUpload: null, park: null, restorePark: null, toFirstModelRequest: null, total: 1_000 });
     expect(r.resume).toEqual({ resumed: false, gapMs: null, layer: null, parkBytes: null });
-    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, bytes: { clone: null, restore: null, fetch: null, cache: null, upload: null } });
+    expect(r.repo).toEqual({ source: null, fallbackReason: null, snapshotAgeMs: null, warmUploadSkipReason: null, bytes: { clone: null, restore: null, fetch: null, cache: null, upload: null, warmRepo: null } });
     expect(r.exitCode).toBeNull();
     expect(r.crashReport).toBe('no_worker_id');
     expect(r.egress.model).toEqual({ requests: 0, rejected: 0, responseBytes: 0 });
@@ -357,8 +387,8 @@ describe('assembleRunReport', () => {
     });
     expect(r.durationsMs).toMatchObject({ clone: null, restoreWarm: 300, fetch: 100, warmUpload: 800 });
     expect(r.repo).toEqual({
-      source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000,
-      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, upload: 0 },
+      source: 'warm', fallbackReason: null, snapshotAgeMs: 3_600_000, warmUploadSkipReason: null,
+      bytes: { clone: null, restore: 1_000_000, fetch: 2_048, cache: 500_000, upload: 0, warmRepo: null },
     });
   });
 

@@ -29,7 +29,7 @@ describe('phase lines', () => {
 
   test('metric lines: BUILDD_METRIC=<name> <non-negative integer>', () => {
     expect(METRIC_LINE_PREFIX).toBe('BUILDD_METRIC=');
-    expect(RUN_METRICS).toEqual(['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes', 'park_bytes', 'resume_layer']);
+    expect(RUN_METRICS).toEqual(['clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes', 'park_bytes', 'resume_layer', 'warm_repo_bytes']);
     expect(formatMetricLine('fetch_bytes', 1234.9)).toBe('BUILDD_METRIC=fetch_bytes 1234');
     expect(formatMetricLine('fetch_bytes', -5)).toBe('BUILDD_METRIC=fetch_bytes 0');
   });
