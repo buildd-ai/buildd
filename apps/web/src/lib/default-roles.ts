@@ -18,6 +18,7 @@ import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
+import { resolvePromptEntry } from '@buildd/core/prompts';
 import type { RoleOverride } from './policy-overrides';
 import { loadPolicyOverrides } from './policy-overrides-source';
 
@@ -74,6 +75,15 @@ interface DefaultRoleDefinition {
 interface DefaultRole extends DefaultRoleDefinition {
   version: number;
   supersededContentHashes: string[];
+  /**
+   * sha256 of the text this deployment ships as the role's default before a
+   * prompts row applies: the public text, and the policy-override text when a
+   * record carries one. While a prompts row is active, a seeded row still on
+   * one of these is unedited and moves to the row's text.
+   */
+  shippedContentHashes: string[];
+  /** True when `content` is an active prompts row's body (`rolePromptId`). */
+  fromPrompt: boolean;
 }
 
 const ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
@@ -902,38 +912,61 @@ export function defaultRoleMetadata(role: DefaultRole, now: Date): Record<string
   };
 }
 
-export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
-  ...r,
-  version: r.version ?? 1,
-  supersededContentHashes: r.supersededContentHashes ?? [],
-}));
-
 export function roleContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
+  ...r,
+  version: r.version ?? 1,
+  supersededContentHashes: r.supersededContentHashes ?? [],
+  shippedContentHashes: [roleContentHash(r.content)],
+  fromPrompt: false,
+}));
+
+const DEFAULT_ROLE_SLUGS = new Set(DEFAULT_ROLES.map(r => r.slug));
+
 /**
- * The default roles with the deployment's private overrides applied
- * (lib/policy-overrides.ts, `roles` in the record). An override replaces
- * `content` / `description`, may raise `version`, and adds to the hashes a
- * resync may overwrite. A slug with no default role is logged and ignored.
- * `DEFAULT_ROLES` itself stays the public text.
+ * The prompts-table id of a default role's body (`@buildd/core/prompts`). An
+ * active row replaces the role text everywhere it is resolved: seeding, resync
+ * and claim-time delivery. The public text in this file stays the fallback.
+ */
+export function rolePromptId(slug: string): string {
+  return `buildd.role.${slug}`;
+}
+
+/** Every role prompt id, for the deploy-side seed and fingerprint listing. */
+export const ROLE_PROMPT_IDS: readonly string[] = DEFAULT_ROLES.map(r => rolePromptId(r.slug));
+
+/**
+ * The default roles as this deployment resolves them. Two layers, one chain:
+ *
+ * 1. The private policy-override record (lib/policy-overrides.ts, `roles`): an
+ *    override replaces `content` / `description`, may raise `version`, and adds
+ *    to the hashes a resync may overwrite.
+ * 2. The versioned prompts table (`rolePromptId(slug)`): an active row replaces
+ *    the body that layer 1 produced. With no row, layer 1's text stands; with
+ *    neither, the public text.
+ *
+ * A slug with no default role is logged and ignored. `DEFAULT_ROLES` itself
+ * stays the public text.
  */
 export function resolveDefaultRoles(overrides: Record<string, RoleOverride> = {}): DefaultRole[] {
-  const known = new Set(DEFAULT_ROLES.map(r => r.slug));
   for (const slug of Object.keys(overrides)) {
-    if (!known.has(slug)) console.warn(`[policy-overrides] role override for unknown slug "${slug}" ignored`);
+    if (!DEFAULT_ROLE_SLUGS.has(slug)) console.warn(`[policy-overrides] role override for unknown slug "${slug}" ignored`);
   }
   return DEFAULT_ROLES.map(role => {
     const o = overrides[role.slug];
-    if (!o) return role;
-    return {
+    const base: DefaultRole = !o ? role : {
       ...role,
       content: o.content ?? role.content,
       description: o.description ?? role.description,
       version: Math.max(role.version, o.version ?? 0),
       supersededContentHashes: [...new Set([...role.supersededContentHashes, ...(o.supersededContentHashes ?? [])])],
+      shippedContentHashes: [...new Set([...role.shippedContentHashes, ...(o.content ? [roleContentHash(o.content)] : [])])],
     };
+    const prompt = resolvePromptEntry(rolePromptId(role.slug), base.content);
+    return prompt.source === 'active' ? { ...base, content: prompt.body, fromPrompt: true } : base;
   });
 }
 
@@ -957,25 +990,88 @@ export interface DefaultRoleResync {
   contentHash: string;
 }
 
+function metadataOf(row: { metadata: unknown }): Record<string, unknown> {
+  return row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+}
+
 /**
- * Which seeded role rows a version bump should update: system rows of a
- * default slug, stamped with an older `metadata.defaultRoleVersion` (absent
- * = 1), whose content is exactly an earlier shipped version. A row a team
- * edited keeps its edit. Pure; `resyncDefaultRolesForTeam` applies it.
+ * Which seeded role rows should move to the resolved text: system rows of a
+ * default slug whose content is not already it, and that are provably
+ * unedited, one of:
+ *
+ * - a version bump: stamped with an older `metadata.defaultRoleVersion`
+ *   (absent = 1) and holding exactly an earlier shipped text
+ *   (`supersededContentHashes`);
+ * - a prompts-row change: while a prompts row is active, holding exactly the
+ *   text this deployment ships without one (`shippedContentHashes`); or, at
+ *   any time, holding exactly a prompts-row text the platform wrote to this
+ *   row (`metadata.defaultRolePromptHash`). This is how a row going active,
+ *   a new version of it, or its removal reaches existing teams with no code
+ *   change. Code and override text changes still need a version bump, as
+ *   before.
+ *
+ * A row a team edited keeps its edit: any edit changes `contentHash` and
+ * leaves the stamp behind. Pure; `resyncDefaultRolesForTeam` and claim-time
+ * delivery (`deliverSeededRoleContent`) apply it.
  */
 export function planDefaultRoleResync(rows: readonly SeededRoleRow[], roles: readonly DefaultRole[] = DEFAULT_ROLES): DefaultRoleResync[] {
   const bySlug = new Map(roles.map(r => [r.slug, r]));
   const out: DefaultRoleResync[] = [];
   for (const row of rows) {
     const role = bySlug.get(row.slug);
-    if (!role || row.source !== 'system') continue;
-    const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
+    if (!role || row.source !== 'system' || !row.contentHash) continue;
+    const resolvedHash = roleContentHash(role.content);
+    if (row.contentHash === resolvedHash) continue;
+    const meta = metadataOf(row);
     const version = typeof meta.defaultRoleVersion === 'number' ? meta.defaultRoleVersion : 1;
-    if (version >= role.version) continue;
-    if (!row.contentHash || !role.supersededContentHashes.includes(row.contentHash)) continue;
-    out.push({ id: row.id, slug: role.slug, version: role.version, content: role.content, contentHash: roleContentHash(role.content) });
+    const bumped = version < role.version && role.supersededContentHashes.includes(row.contentHash);
+    const unedited = (role.fromPrompt && role.shippedContentHashes.includes(row.contentHash))
+      || meta.defaultRolePromptHash === row.contentHash;
+    if (!bumped && !unedited) continue;
+    out.push({ id: row.id, slug: role.slug, version: role.version, content: role.content, contentHash: resolvedHash });
   }
   return out;
+}
+
+/** The metadata a resync writes: the row's own, re-stamped with what was written. */
+function resyncedMetadata(row: SeededRoleRow, p: DefaultRoleResync, fromPrompt: boolean): Record<string, unknown> {
+  const { defaultRolePromptHash: _prior, ...meta } = metadataOf(row);
+  return { ...meta, defaultRoleVersion: p.version, ...promptStamp(p.contentHash, fromPrompt) };
+}
+
+/** `metadata.defaultRolePromptHash`, present only on a row holding a prompts-row text. */
+function promptStamp(contentHash: string, fromPrompt: boolean): Record<string, string> {
+  return fromPrompt ? { defaultRolePromptHash: contentHash } : {};
+}
+
+/** Apply one planned resync, guarded on the hash it read so a concurrent edit wins. */
+async function applyResync(row: SeededRoleRow, p: DefaultRoleResync, roles: readonly DefaultRole[], now: Date): Promise<void> {
+  const fromPrompt = roles.find(r => r.slug === p.slug)?.fromPrompt ?? false;
+  await db.update(workspaceSkills)
+    .set({ content: p.content, contentHash: p.contentHash, metadata: resyncedMetadata(row, p, fromPrompt), updatedAt: now })
+    .where(and(eq(workspaceSkills.id, p.id), eq(workspaceSkills.contentHash, row.contentHash!)));
+}
+
+/**
+ * The role body to deliver for a resolved role row at claim time. For an
+ * unedited seeded default role whose resolved text has changed (a prompts row
+ * went active, changed or went away; an override changed), this is the
+ * resolved text, and the row is moved to it in the background so the
+ * dashboard and later reads agree. Anything else is the row's own content.
+ * Never throws: a failed resolve or write delivers the row as stored.
+ */
+export async function deliverSeededRoleContent(row: SeededRoleRow & { content: string }): Promise<string> {
+  if (row.source !== 'system' || !DEFAULT_ROLE_SLUGS.has(row.slug)) return row.content;
+  try {
+    const roles = await currentDefaultRoles();
+    const [p] = planDefaultRoleResync([row], roles);
+    if (!p) return row.content;
+    applyResync(row, p, roles, new Date()).catch(err =>
+      console.warn(`[default-roles] resync of role "${row.slug}" failed: ${err instanceof Error ? err.message : 'unknown'}`));
+    return p.content;
+  } catch {
+    return row.content;
+  }
 }
 
 /**
@@ -988,15 +1084,10 @@ export async function resyncDefaultRolesForTeam(teamId: string): Promise<number>
     where: and(eq(workspaceSkills.teamId, teamId), eq(workspaceSkills.source, 'system')),
     columns: { id: true, slug: true, source: true, contentHash: true, metadata: true },
   }) as SeededRoleRow[];
-  const plan = planDefaultRoleResync(rows, await currentDefaultRoles());
+  const roles = await currentDefaultRoles();
+  const plan = planDefaultRoleResync(rows, roles);
   const now = new Date();
-  for (const p of plan) {
-    const row = rows.find(r => r.id === p.id)!;
-    const meta = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : {};
-    await db.update(workspaceSkills)
-      .set({ content: p.content, contentHash: p.contentHash, metadata: { ...meta, defaultRoleVersion: p.version }, updatedAt: now })
-      .where(and(eq(workspaceSkills.id, p.id), eq(workspaceSkills.contentHash, row.contentHash!)));
-  }
+  for (const p of plan) await applyResync(rows.find(r => r.id === p.id)!, p, roles, now);
   return plan.length;
 }
 
@@ -1075,7 +1166,8 @@ export async function seedDefaultRolesForTeam(teamId: string): Promise<void> {
       source: 'system',
       enabled: true,
       origin: 'manual' as const,
-      metadata: defaultRoleMetadata(role, now),
+      // A prompts-row text is stamped so a later change to that row recognises this one as unedited.
+      metadata: { ...defaultRoleMetadata(role, now), ...promptStamp(roleContentHash(role.content), role.fromPrompt) },
       color: role.color,
       model: role.model,
       isRole: role.isRole,

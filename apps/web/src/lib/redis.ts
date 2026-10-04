@@ -252,3 +252,28 @@ export async function presenceRemove(key: string, member: string): Promise<void>
 export async function presenceLive(key: string, nowMs: number): Promise<string[] | undefined> {
   return safe<string[] | undefined>('presence live', r => r.zrange<string[]>(key, `(${nowMs}`, '+inf', { byScore: true }), undefined);
 }
+
+// Distinct-member windows: one sorted set per subject, one member per distinct
+// thing seen, scored by when it falls out of the window. Same shape as
+// presence; used to count "how many different X did this caller touch lately".
+
+/**
+ * Add members to a window, prune lapsed ones and return how many distinct
+ * members are live. `null` = could not ask (no Redis, or an error).
+ */
+export async function windowMembersAdd(
+  key: string,
+  members: readonly string[],
+  expiresAtMs: number,
+  ttlSec: number,
+  nowMs: number,
+): Promise<number | null> {
+  if (members.length === 0) return safe<number | null>('window count', r => r.zcount(key, `(${nowMs}`, '+inf'), null);
+  return safe<number | null>('window add', async r => {
+    const [first, ...rest] = members.map(member => ({ score: expiresAtMs, member }));
+    await r.zadd(key, first, ...rest);
+    await r.zremrangebyscore(key, '-inf', nowMs);
+    await r.expire(key, ttlSec);
+    return r.zcard(key);
+  }, null);
+}

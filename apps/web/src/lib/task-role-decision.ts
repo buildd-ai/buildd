@@ -30,6 +30,7 @@
  * Telemetry: one `[decision-shadow]` line per look, ids, slugs, labels and
  * numbers only — never the task's text or a role's routing text.
  */
+import { resolvedPromptVersion, resolvePromptValueEntry } from '@buildd/core/prompts';
 import { createHash } from 'node:crypto';
 import { EXPLICIT_ROLE_SLUGS } from '@buildd/shared';
 // Types only at module scope. The client (and the DB layer behind it) is loaded
@@ -297,13 +298,35 @@ export function buildRoleQuestion(candidates: readonly RoleCandidate[]): { quest
     slugFor,
     question: {
       type: 'choice',
-      instructions: {
-        question: 'Which role should do the work described in `task`?',
-        rule: 'Follow the role definitions. The task title often names an action ("fix", "review", "document") that a definition assigns to a different role; the definition wins.',
-      },
+      instructions: { ...currentTaskRolePrompt().value.roleInstructions },
       criteria,
     },
   };
+}
+
+/**
+ * The question text of this decision, resolved through the versioned prompts
+ * table (`@buildd/core/prompts`): an active row's body is JSON of exactly this
+ * shape (the kind labels unchanged), else this public default runs. The role
+ * criteria are each workspace's own routing text and are never part of it.
+ */
+export const TASK_ROLE_PROMPT_ID = 'buildd.task_role';
+
+export const TASK_ROLE_PROMPT_DEFAULT = {
+  roleInstructions: {
+    question: 'Which role should do the work described in `task`?',
+    rule: 'Follow the role definitions. The task title often names an action ("fix", "review", "document") that a definition assigns to a different role; the definition wins.',
+  },
+  kind: TASK_KIND_QUESTION,
+};
+
+function currentTaskRolePrompt() {
+  return resolvePromptValueEntry(TASK_ROLE_PROMPT_ID, TASK_ROLE_PROMPT_DEFAULT);
+}
+
+/** The prompt version naming the text in effect. */
+export function taskRolePromptVersion(): string {
+  return resolvedPromptVersion(TASK_ROLE_PROMPT_VERSION, currentTaskRolePrompt());
 }
 
 /** The task fields the call may see (§5). Everything else, `context` included, is never sent. */
@@ -465,7 +488,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     if (!roleQ) return { outcome: 'too_few_candidates', fingerprint };
 
     const questions: TaskRoleQuestions = askKind
-      ? { role: roleQ.question, kind: TASK_KIND_QUESTION }
+      ? { role: roleQ.question, kind: currentTaskRolePrompt().value.kind }
       : { role: roleQ.question };
 
     const decide = deps.decide ?? (client!.decisionCall as DecideFn);
@@ -495,7 +518,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
       : null;
     const record: TaskRoleShadowRecord = {
       site: 'task_role',
-      v: `${TASK_ROLE_PROMPT_VERSION}|${res.model}`,
+      v: `${taskRolePromptVersion()}|${res.model}`,
       fingerprint,
       taskId: input.taskId,
       workspaceId: input.workspaceId,
