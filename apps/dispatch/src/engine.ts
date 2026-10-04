@@ -361,10 +361,30 @@ export class ScopeEngine {
       return;
     }
 
+    // Still `attempting` past its lease: the run that took it died mid-delivery
+    // (DO evicted or crashed). Its attempt was counted at take time, so a
+    // delivery that kills the DO every time still reaches the cap.
+    if (row.state === 'attempting') {
+      const lost = 'lost_in_flight';
+      if (row.attempt >= MAX_DELIVERY_ATTEMPTS) {
+        this.deps.store.transaction(() => {
+          this.close(row.id, 'failed', start, row.attempt, lost);
+          this.receipt(row.id, row.attempt, 'failed', { why: lost });
+        });
+        this.log({ event: 'dispatch_attempt', id: row.id, scope, target: null, outcome: 'failed', latencyMs: 0, latenessMs });
+        return;
+      }
+      this.receipt(row.id, row.attempt, 'attempted', { why: lost });
+    }
+
+    // Count the attempt when it is taken, in the same write that marks it
+    // `attempting` (the in-app claim does attempt_count + 1 likewise). The
+    // outcome write below sets the same value, so nothing is counted twice;
+    // only a reschedule refunds it.
     const attempt = row.attempt + 1;
     this.sql.exec(
-      `UPDATE intents SET state = 'attempting', next_due = ?, updated_at = ? WHERE id = ?`,
-      start + ATTEMPT_LEASE_MS, start, row.id,
+      `UPDATE intents SET state = 'attempting', attempt = ?, next_due = ?, updated_at = ? WHERE id = ?`,
+      attempt, start + ATTEMPT_LEASE_MS, start, row.id,
     );
 
     const firstSteps = env.target.steps.filter(s => s.mode === 'first');
@@ -401,11 +421,12 @@ export class ScopeEngine {
           this.receipt(row.id, attempt, 'delivered', { via: terminal.via });
           return;
         case 'rescheduled': {
-          // No attempt counted; resume at the step that asked.
+          // No attempt counted: refund the take-time increment, and resume
+          // at the step that asked.
           const nb = Math.max(terminal.notBefore, now + MIN_RESCHEDULE_MS);
           this.sql.exec(
-            `UPDATE intents SET state = 'queued', not_before = ?, next_due = ?, step = ?, updated_at = ? WHERE id = ?`,
-            nb, minOrNull(nb, row.expires_at), at, now, row.id,
+            `UPDATE intents SET state = 'queued', attempt = ?, not_before = ?, next_due = ?, step = ?, updated_at = ? WHERE id = ?`,
+            row.attempt, nb, minOrNull(nb, row.expires_at), at, now, row.id,
           );
           return;
         }

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from '@buildd/dispatch-contract';
 import {
   ALARM_BUDGET,
+  ATTEMPT_LEASE_MS,
   FAILSAFE_REARM_MS,
   MAX_CONCURRENT_DELIVERIES,
   MIN_RESCHEDULE_MS,
@@ -184,6 +185,37 @@ describe('alarm loop', () => {
     expect(all.filter(r => r.event === 'attempted')).toHaveLength(MAX_DELIVERY_ATTEMPTS - 1);
     expect(all.filter(r => r.event === 'attempted').every(r => r.why === 'relay_http_502')).toBe(true);
     expect(all.filter(r => r.event === 'failed')).toEqual([{ id: e.id, attempt: MAX_DELIVERY_ATTEMPTS, event: 'failed', why: 'relay_http_502', at: expect.any(String) }]);
+  });
+
+  test('the attempt is counted when taken, so a delivery that crashes the DO every time ends failed', async () => {
+    const h = harness();
+    h.producer.relayAnswer = () => new Promise(() => {}); // never settles: the run "dies" in flight
+    const e = envelope();
+    await h.engine.publish(SCOPE_KEY, [e]);
+    for (let i = 1; i <= MAX_DELIVERY_ATTEMPTS; i++) {
+      void h.engine.runAlarm(); // abandoned, like an evicted DO
+      await Bun.sleep(1);
+      expect(h.intent(e.id)).toMatchObject({ state: 'attempting', attempt: i });
+      h.clock.advance(ATTEMPT_LEASE_MS);
+    }
+    await h.engine.runAlarm();
+    expect(h.producer.relayCalls.map(c => c.attempt)).toEqual(Array.from({ length: MAX_DELIVERY_ATTEMPTS }, (_, i) => i + 1));
+    expect(h.intent(e.id)).toMatchObject({ state: 'failed', attempt: MAX_DELIVERY_ATTEMPTS, last_error: 'lost_in_flight' });
+    const all = [...h.producer.receipts, ...h.pendingReceipts()];
+    expect(all.filter(r => r.event === 'attempted' && r.why === 'lost_in_flight').map(r => r.attempt))
+      .toEqual(Array.from({ length: MAX_DELIVERY_ATTEMPTS - 1 }, (_, i) => i + 1));
+    expect(all.filter(r => r.event === 'failed')).toMatchObject([{ attempt: MAX_DELIVERY_ATTEMPTS, why: 'lost_in_flight' }]);
+  });
+
+  test('a normal throw counts exactly one attempt', async () => {
+    const h = harness();
+    h.producer.relayAnswer = new Error('boom');
+    const e = envelope();
+    await h.engine.publish(SCOPE_KEY, [e]);
+    await h.runNextDue();
+    expect(h.intent(e.id)).toMatchObject({ state: 'queued', attempt: 1 });
+    await h.runNextDue();
+    expect(h.intent(e.id)).toMatchObject({ state: 'queued', attempt: 2 });
   });
 
   test('a retry resumes at the step that threw, not at a step that declined', async () => {
