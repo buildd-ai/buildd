@@ -258,8 +258,12 @@ mock.module('@/lib/pushover', () => ({
 }));
 // path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
 const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
+// Claim-time waiter registration for path_overlap deferrals (its SQL is in
+// apps/web/tests/db/path-release.test.ts); here only who is registered.
+const mockRegisterClaimDeferralWaiters = mock(async (_ws: string, _entries: any[]) => ({ registered: 0, woken: [] as string[] }));
 mock.module('@buildd/core/path-claim', () => ({
   getActiveClaimsByWorkspace: mockGetActiveClaimsByWorkspace,
+  registerClaimDeferralWaiters: mockRegisterClaimDeferralWaiters,
 }));
 // Gate ledger: capture deferral events so a test can read the `detail` bag a
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
@@ -5511,6 +5515,86 @@ describe('path-overlap claim guard', () => {
     expect(data.diagnostics?.taskExclusion).toEqual({
       code: 'path_overlap',
       detail: 'Its files overlap an active claim held by task task-9 (apps/web/src/lib/mcp-oauth.ts). Wait for that task to finish, or rebase onto its work.',
+    });
+  });
+
+  // ── Claim-time waiter registration ─────────────────────────────────────────
+  // A pending task deferred for path_overlap must be woken when its blocker
+  // releases. Release only wakes rows in path_claim_waiters, so the deferral
+  // has to register one — before this, neither layer did, and the task sat
+  // out the runner's fallback poll.
+  describe('registers a waiter for each path_overlap deferral', () => {
+    beforeEach(() => {
+      mockRegisterClaimDeferralWaiters.mockReset();
+      mockRegisterClaimDeferralWaiters.mockResolvedValue({ registered: 1, woken: [] });
+    });
+    const flush = () => new Promise(r => setTimeout(r, 0));
+
+    it('layer 1: waits on the open-PR task, on its overlapping manifest path', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+        .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib', 'docs/x.md'] }]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect((await res.json()).diagnostics?.deferrals?.path_overlap).toBe(1);
+      await flush();
+      expect(mockRegisterClaimDeferralWaiters).toHaveBeenCalledTimes(1);
+      expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
+        { waitingTaskId: 'task-1', blockingTaskId: 'sibling-task', blockedPath: 'apps/web/src/lib' },
+      ]]);
+    });
+
+    it('layer 2: waits on the lease holder, on its leased path', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]));
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect((await res.json()).diagnostics?.deferrals?.path_overlap).toBe(1);
+      await flush();
+      expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
+        { waitingTaskId: 'task-1', blockingTaskId: 'task-9', blockedPath: 'apps/web/src/lib/mcp-oauth.ts' },
+      ]]);
+    });
+
+    it('registers nothing when nothing was deferred for path overlap', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+      await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      await flush();
+      expect(mockRegisterClaimDeferralWaiters).not.toHaveBeenCalled();
+    });
+
+    it('a failed registration is logged, never fails the claim', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]));
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+      mockRegisterClaimDeferralWaiters.mockRejectedValueOnce(new Error('db down'));
+      const errSpy = mock(() => {});
+      const origError = console.error;
+      console.error = errSpy as any;
+      try {
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+        expect(res.status).toBe(200);
+        await flush();
+        expect(errSpy.mock.calls.some((c: any[]) => String(c[0]).includes('claim-deferral waiters'))).toBe(true);
+      } finally {
+        console.error = origError;
+      }
     });
   });
 });
