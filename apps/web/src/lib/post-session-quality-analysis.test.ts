@@ -355,6 +355,16 @@ describe('knowledge', () => {
     expect(f.signature).toBe(verificationSignature(['retrieved_knowledge_consistent', 'mem-1']));
   });
 
+  it("does not offer the session's own PR as evidence against the memory", () => {
+    // The fixture session shipped PR 41; the contradiction is a commit.
+    const a = analyse({
+      knowledge: { claims: [{ sourceId: 'mem-1', claim: 'flag still read', contradictedBy: { kind: 'commit', ref: 'abc1234' } }] },
+    });
+    const f = a.findings.find(x => x.checkId === 'retrieved_knowledge_consistent')!;
+    expect(f.evidenceRefs).toContainEqual({ kind: 'commit', ref: 'abc1234' });
+    expect(f.evidenceRefs).not.toContainEqual({ kind: 'pr', ref: '41' });
+  });
+
   it('without reconstructable knowledge context the check is unsupported', () => {
     expect(checkResult(analyse({ knowledge: null }), 'retrieved_knowledge_consistent').verdict).toBe('unsupported');
   });
