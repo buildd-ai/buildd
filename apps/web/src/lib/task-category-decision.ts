@@ -28,6 +28,7 @@
  * `teams.enabledDecisionShadows` (the role shadow, ./task-role-decision.ts).
  * Sensitive workspaces never send task content out.
  */
+import { promptedQuestions } from '@buildd/core/prompted-decision';
 import { createHash } from 'node:crypto';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
 import { isJevModel } from '@buildd/core/decision-model';
@@ -58,6 +59,8 @@ export const OVERRIDE_MIN_CONFIDENCE = 0.9;
  * A test pins the prompt's hash to this version.
  */
 export const TASK_CATEGORY_PROMPT_VERSION = 'tc1';
+/** The prompts-table id whose active row may replace `TASK_CATEGORY_QUESTIONS`. */
+export const TASK_CATEGORY_PROMPT_ID = 'buildd.task_category';
 
 /**
  * Label definitions. Every category buildd stores, including `review`, which
@@ -244,13 +247,14 @@ export async function categorizeTask(
 
     const client = deps.decide ? null : await import('@buildd/core/decision-client');
     const decide = deps.decide ?? client!.decisionCall;
+    const prompt = promptedQuestions(TASK_CATEGORY_PROMPT_ID, TASK_CATEGORY_QUESTIONS, TASK_CATEGORY_PROMPT_VERSION);
     const res: DecisionResult<typeof TASK_CATEGORY_QUESTIONS> = await decide({
       capability: 'task_category',
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       accountId: input.accountId ?? null,
       state: buildTaskCategoryState(input.title, input.description),
-      questions: TASK_CATEGORY_QUESTIONS,
+      questions: prompt.questions,
       timeoutMs: DECISION_TIMEOUT_MS,
     });
 
@@ -274,7 +278,7 @@ export async function categorizeTask(
       })
       : { category: input.stored, source: input.callerSet ? 'caller' as const : 'keyword' as const };
     const record: TaskCategoryDecisionRecord = {
-      v: `${TASK_CATEGORY_PROMPT_VERSION}|${res.model}`,
+      v: `${prompt.promptVersion}|${res.model}`,
       source: gated.source, jev: answer.choice, confidence: answer.confidence, ...base,
     };
     const wrote = await write(input.taskId, input.stored, gated.category, record);
