@@ -56,8 +56,10 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));
 
     const lookup = kind === 'github' ? await this.githubGrant() : null;
-    // The team's agent model endpoint, only when neither the local direct
-    // route nor the Worker's MODEL_PROXY_URL override would win anyway.
+    // The team's agent model endpoint (or its own Anthropic key), skipped
+    // only when the local direct route already wins: MODEL_PROXY_URL no
+    // longer skips this, since a resolved Anthropic key must outrank it
+    // (resolveModelRoute).
     const server = kind === 'anthropic' && needsServerModelEndpoint(this.env) ? await this.modelEndpoint() : null;
     const viaServer = !!server && server !== 'unavailable';
     const decision = rewriteOutbound(

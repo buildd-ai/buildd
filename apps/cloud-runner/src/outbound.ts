@@ -142,6 +142,16 @@ export interface ServerModelEndpoint {
   kind?: string;
   /** The team's model aliases (native id → endpoint id). */
   models?: Record<string, string>;
+  /**
+   * Set only when the task's own `anthropic_api_key` resolved ahead of any
+   * `agent_endpoint` (docs/credentials-architecture.md scoping) — never an
+   * OAuth seat or Claude credential; those stay out of cloud egress. Changes
+   * precedence in `resolveModelRoute`: this beats the Worker's
+   * `MODEL_PROXY_URL` override, where an ordinary (`agent_endpoint`) server
+   * route does not. `baseUrl`/`authHeader` are still `api.anthropic.com` /
+   * `x-api-key`, so every other code path treats it as a plain `proxy` route.
+   */
+  source?: 'anthropic_api_key';
 }
 
 /**
@@ -157,29 +167,48 @@ function directAllowed(env: EgressEnv): boolean {
 }
 
 /**
- * Whether the server endpoint can affect the route at all: false when the
- * local direct route or the Worker's MODEL_PROXY_URL override wins, so the
- * handler does not ask the agent (or buildd) for it.
+ * Whether the server must be asked before the route can be decided. True
+ * whenever the local direct escape hatch does not apply — including when
+ * `MODEL_PROXY_URL` is set, unlike before `source: 'anthropic_api_key'`
+ * existed: the handler now has to find out whether the task's own Anthropic
+ * key would win before letting the operator's override claim the request
+ * (see resolveModelRoute). A team with no such key costs one extra lookup
+ * (cached for the run, same as any other outcome) and otherwise routes
+ * exactly as before.
  */
 export function needsServerModelEndpoint(env: EgressEnv): boolean {
-  return !directAllowed(env) && !env.MODEL_PROXY_URL;
+  return !directAllowed(env);
 }
 
 /**
- * Where model traffic goes. Precedence: direct (local only) > proxy (when
- * MODEL_PROXY_URL is set, the operator override) > the server-provided team
- * endpoint > gateway. The direct escape hatch needs both the opt-in var and
- * the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes nothing. A set
- * MODEL_PROXY_URL commits to the proxy: if it is invalid or has no key the
- * request is refused, never quietly sent to the gateway instead. The server
- * endpoint produces the same `proxy` shape, so rewriteOutbound is unchanged;
- * `'unavailable'` refuses. With no route configured the request is refused
- * rather than forwarded with the container's placeholder key. With `server`
- * omitted or null the result is exactly the pre-endpoint one.
+ * Where model traffic goes. Precedence: direct (local only) > the task's own
+ * `anthropic_api_key` (`server.source === 'anthropic_api_key'`) > proxy (when
+ * MODEL_PROXY_URL is set, the operator override) > the server-provided
+ * `agent_endpoint` > gateway. The direct escape hatch needs both the opt-in
+ * var and the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes
+ * nothing.
+ *
+ * The task's own Anthropic key jumps ahead of MODEL_PROXY_URL on purpose: that
+ * key is the team's own metered credential, resolved with exactly the scoping
+ * a self-hosted runner would use (docs/credentials-architecture.md); unlike an
+ * `agent_endpoint`, storing it is not an opt-in to route agents through
+ * anything, so a Worker-level proxy pin must not silently spend it on the
+ * operator's route instead. `MODEL_PROXY_URL` stays the one deliberate
+ * override: once set, it commits (invalid or keyless is refused, never a
+ * silent fall to the gateway) and still beats a team's `agent_endpoint` and
+ * `'unavailable'`, exactly as before this key existed.
+ *
+ * The server endpoint produces the same `proxy` shape either way, so
+ * rewriteOutbound is unchanged. With no route configured the request is
+ * refused rather than forwarded with the container's placeholder key. With
+ * `server` omitted or null the result is exactly the pre-endpoint one.
  */
 export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointState): ModelRoute {
   if (directAllowed(env)) {
     return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY! };
+  }
+  if (server && server !== 'unavailable' && server.source === 'anthropic_api_key') {
+    return { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
   }
   if (env.MODEL_PROXY_URL) {
     const parsed = parseModelProxyUrl(env.MODEL_PROXY_URL);
@@ -668,8 +697,22 @@ export class ModelEndpointCache {
   }
 }
 
-/** Parse and validate the buildd endpoint's JSON. Throws on anything unexpected. */
+/**
+ * Parse and validate the buildd endpoint's JSON. Throws on anything
+ * unexpected. `{ source: 'anthropic_api_key', key }` is the task's own
+ * Anthropic key (docs/credentials-architecture.md): `baseUrl`/`authHeader`
+ * are not on the wire, only implied (`api.anthropic.com` / `x-api-key`), so
+ * resolveModelRoute can treat it as an ordinary `proxy` route while still
+ * recognising `source` to rank it ahead of MODEL_PROXY_URL.
+ */
 export function parseServerModelEndpoint(body: unknown): ServerModelEndpoint {
+  const withSource = body as { source?: unknown; key?: unknown } | null;
+  if (withSource?.source === 'anthropic_api_key') {
+    if (typeof withSource.key !== 'string' || !withSource.key) {
+      throw new Error('model-endpoint response has no key');
+    }
+    return { source: 'anthropic_api_key', baseUrl: `https://${ANTHROPIC_HOST}`, key: withSource.key, authHeader: 'x-api-key' };
+  }
   const b = body as { baseUrl?: unknown; key?: unknown; authHeader?: unknown } | null;
   if (typeof b?.baseUrl !== 'string') throw new Error('model-endpoint response has no baseUrl');
   const parsed = parseModelProxyUrl(b.baseUrl);
