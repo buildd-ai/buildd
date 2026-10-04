@@ -1633,6 +1633,21 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers.length).toBe(1);
       expect(data.workers[0].task.backend).toBe('claude');
     });
+
+    it('defers a pinned Claude task when Claude is disabled team-wide', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      mockTasksFindMany.mockResolvedValueOnce([{ ...task('claude'), context: { backendPinned: true } }]);
+      mockTeamsFindFirst.mockResolvedValue({ enabledBackends: ['codex'] }); // Claude disabled
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', capabilities: ['backend:codex', 'CODEX_HOME'] } }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+      expect(data.diagnostics?.deferrals?.provider_unavailable).toBe(1);
+    });
   });
 
   it('returns empty workers when no accessible workspaces', async () => {
