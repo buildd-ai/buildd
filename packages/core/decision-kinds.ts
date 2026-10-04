@@ -19,7 +19,6 @@
  */
 
 import {
-  defineDecisionKind,
   type DecisionKind,
   type DecisionKindConfig,
   type DecisionQuestions,
@@ -27,6 +26,7 @@ import {
 import { INFERENCE_CAPABILITIES, type InferenceCapability } from './inference-policy';
 import { isJevModel, normalizeDecisionModel, type DecisionModelConfig } from './decision-model';
 import type { DecisionReadoutAdapter } from './decision-readout';
+import { promptedDecisionKind } from './prompted-decision';
 
 export type {
   DecisionAttempt,
@@ -102,10 +102,9 @@ export function defineBuilddDecisionKind<const K extends string, F, const D exte
     }
   }
   // Only the config's own fields: a spread of an already-defined kind carries
-  // its derived fingerprints, which `defineDecisionKind` recomputes.
-  const kind = defineDecisionKind(config);
-  const out = Object.freeze({
-    ...kind,
+  // its derived fingerprints, which `defineDecisionKind` recomputes. The kind's
+  // questions (and so its promptFingerprint) resolve through the prompts table.
+  const out = promptedDecisionKind(config, {
     binding: Object.freeze({ ...binding, measuredModels: Object.freeze([...(binding.measuredModels ?? [])]) }),
   }) as BuilddDecisionKind<K, F, D, Q>;
   registry.set(out.kind, out);

@@ -7,7 +7,8 @@
  * apps/runner/__tests__/unit/no-decision-definitions-in-runner.test.ts); it
  * gets the wire contract from ./question-gate.ts instead.
  */
-import { choice, defineDecision, type DecisionRun } from '@builddai/ai-kit/decide';
+import { choice, type DecisionRun } from '@builddai/ai-kit/decide';
+import { definePromptedDecision } from './prompted-decision';
 import type { BriefedQuestion } from './question-brief';
 import {
   DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,
@@ -35,7 +36,7 @@ export const QUESTION_GATE_QUESTIONS = {
   ),
 };
 
-export const QUESTION_GATE_DECISION = defineDecision({
+export const QUESTION_GATE_DECISION = definePromptedDecision({
   id: 'buildd.question_gate',
   promptVersion: QUESTION_GATE_PROMPT_VERSION,
   questions: QUESTION_GATE_QUESTIONS,
@@ -102,7 +103,7 @@ export const QUESTION_DECIDE_QUESTIONS = {
   optionIndex: choice(DECIDE_OPTION_INDEX_INSTRUCTIONS, optionSlotCriteria()),
 };
 
-export const QUESTION_DECIDE_DECISION = defineDecision({
+export const QUESTION_DECIDE_DECISION = definePromptedDecision({
   id: 'buildd.question_decide',
   promptVersion: QUESTION_DECIDE_PROMPT_VERSION,
   questions: QUESTION_DECIDE_QUESTIONS,

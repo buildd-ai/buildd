@@ -3818,6 +3818,23 @@ export const systemCache = pgTable('system_cache', {
   expiresAt: timestamp('expires_at', { withTimezone: true }),
 });
 
+// Versioned prompt text (packages/core/prompts.ts). An active row replaces the
+// public default compiled into the repo for prompt `id`; with no active row the
+// default runs. Rows are append-only versions; at most one is active per id.
+// `content_hash` is the sha256 hex of `body`; the loader skips a row whose hash
+// does not match. Read in-process by packages/core/prompts-source.ts, never per call.
+export const prompts = pgTable('prompts', {
+  id: text('id').notNull(),
+  version: integer('version').notNull(),
+  contentHash: text('content_hash').notNull(),
+  body: text('body').notNull(),
+  active: boolean('active').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.id, t.version] }),
+  oneActivePerIdIdx: uniqueIndex('prompts_one_active_per_id').on(t.id).where(sql`${t.active}`),
+}));
+
 // Tenant budget exhaustion tracking (Dispatch multi-tenant mode)
 export const tenantBudgets = pgTable('tenant_budgets', {
   id: uuid('id').primaryKey().defaultRandom(),
