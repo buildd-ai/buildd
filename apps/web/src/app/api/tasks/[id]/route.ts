@@ -203,6 +203,13 @@ export async function GET(
 }
 
 // PATCH /api/tasks/[id] - Update a task
+/**
+ * What a per-task token may change on its own task: what the task says, not
+ * how it runs or ends. Status, mission, dependencies, role, model, hold and
+ * result go through complete_task and the gates behind it, or through a person.
+ */
+const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl']);
+
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -217,7 +224,9 @@ export async function PATCH(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token may edit only its own task, and only its descriptive
+  // fields (TASK_TOKEN_PATCH_FIELDS).
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -235,6 +244,9 @@ export async function PATCH(
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
+    if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
 
     // Verify access
     if (user && !apiAccount) {
@@ -246,6 +258,14 @@ export async function PATCH(
     }
 
     const body = await req.json();
+    if (apiAccount?.taskScope && body && typeof body === 'object') {
+      const refused = Object.keys(body).filter(k => !TASK_TOKEN_PATCH_FIELDS.has(k));
+      if (refused.length > 0) {
+        return NextResponse.json({
+          error: `A task token may not change ${refused.join(', ')} on its task. Finish with complete_task; ask a person or an organizer for anything else.`,
+        }, { status: 403 });
+      }
+    }
     const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest } = body;
 
     // pathManifest is set at creation (POST /api/tasks) and only ever grows from
