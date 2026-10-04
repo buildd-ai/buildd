@@ -25,7 +25,7 @@ import {
   type ServerModelEndpointState,
 } from './outbound';
 import { rewriteOtlp } from './otel';
-import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
+import { countResponseBytes, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
 import { resumableRunsEnabled, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
 
@@ -49,7 +49,8 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     // is its exact origin (otel.ts). Otherwise null and nothing below changes.
     const otlp = rewriteOtlp({ url: request.url, headers: request.headers }, this.env);
     if (otlp) return this.forwardOtlp(request, otlp, at);
-    const kind = classifyEgressHost(new URL(request.url).hostname);
+    const host = new URL(request.url).hostname;
+    const kind = classifyEgressHost(host);
     if (kind === 'snapshot') return this.snapshot(request);
     const cls = egressClassForKind(kind);
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));
@@ -110,7 +111,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       }
       return r;
     });
-    return this.counted(cls, at, res, auth);
+    return this.counted(cls, at, res, auth, host);
   }
 
   /** An OTLP export: counted as passthrough in the run report (it is not model or GitHub traffic). */
@@ -138,11 +139,27 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
    * container has read the body. Only the class, a timestamp and a byte count
    * leave this handler; never the URL or a header.
    */
-  private async counted(cls: EgressClass, at: number, response: Promise<Response>, auth?: GithubAuthLabel): Promise<Response> {
+  private async counted(cls: EgressClass, at: number, response: Promise<Response>, auth?: GithubAuthLabel, host?: string): Promise<Response> {
     this.record({ type: 'request', cls, at, ...(auth ? { auth } : {}) });
     const res = await response;
     if (res.status >= 400) this.record({ type: 'status', cls, status: res.status, ...(auth ? { auth } : {}) });
+    if (auth && host && (res.status === 429 || res.status === 403)) this.recordThrottle(res.clone(), host);
     return countResponseBytes(res, (bytes) => this.record({ type: 'bytes', cls, bytes }));
+  }
+
+  /**
+   * A GitHub 429 or 403: GitHub's rate-limit signals into the run report
+   * (egressDetail.github.rateLimit) and one Worker log line with the task ID.
+   * Reads at most THROTTLE_BODY_PREFIX_BYTES of a clone of the body, in the
+   * background, and keeps nothing of it but a boolean. Best effort.
+   */
+  private recordThrottle(clone: Response, host: string): void {
+    const taskId = this.ctx.props?.taskId ?? 'unknown';
+    this.ctx.waitUntil(inspectGithubThrottle(clone, host).then((ev) => {
+      if (!ev) return;
+      this.record(ev);
+      console.log(throttleLogLine(taskId, ev));
+    }).catch(() => {}));
   }
 
   /** Fire-and-forget: the report is best effort and must never slow a request. */

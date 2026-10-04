@@ -26,6 +26,7 @@ import {
   type SnapshotTransport,
 } from '../../src/warm-repo';
 import { ensureIsolatedClone } from '../../src/workspace';
+import { CLOUD_CLONE_DEPTH } from '../../src/git-clone';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -105,6 +106,9 @@ function session(opts: { cacheDir?: string; free?: number | null; now?: number }
     freeBytes: () => (opts.free === undefined ? 100 * 1024 ** 3 : opts.free),
     now: () => opts.now ?? store.now,
     log: () => {},
+    // The post-restore fetch retries (git-clone.ts); never wait for real here.
+    sleep: () => {},
+    retryAfter: () => null,
   });
 }
 
@@ -357,6 +361,84 @@ describe('refresh rules', () => {
     s.refresh('failed');
     expect(store.manifests).toHaveLength(0);
     expect(store.calls.some(c => c.endsWith('/commit'))).toBe(false);
+  });
+});
+
+describe('shallow clones (cloud): the snapshot carries the shallow boundary', () => {
+  let deepOrigin: string;
+  let url: string;
+  beforeEach(() => {
+    // More history than the cloud clone depth, so the clone really is shallow.
+    deepOrigin = join(dir, 'deep.git');
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', deepOrigin]);
+    let stream = '';
+    for (let i = 0; i < CLOUD_CLONE_DEPTH + 10; i++) {
+      const data = `${i}\n`;
+      stream += `commit refs/heads/main\nmark :${i + 1}\ncommitter t <t@example.com> ${1_700_000_000 + i} +0000\ndata 3\nc${String(i).padStart(2, '0')}\n`;
+      if (i > 0) stream += `from :${i}\n`;
+      stream += `M 100644 inline f.txt\ndata ${data.length}\n${data}\n`;
+    }
+    execFileSync('git', ['fast-import', '--quiet'], { cwd: deepOrigin, input: stream });
+    git(deepOrigin, 'branch', 'mission/x', 'main~2');
+    url = `file://${deepOrigin}`;
+  });
+  const through = (s: WarmRepoSession, wsId: string) => ensureIsolatedClone({ id: wsId, repo: url }, join(dir, 'iso'), s.cloneHooks());
+
+  test('seed from a shallow clone, restore it, and the restored clone works like the clone did', () => {
+    const first = session();
+    const seeded = through(first, 'ws-seed');
+    expect(git(seeded, 'rev-parse', '--is-shallow-repository')).toBe('true');
+    first.refresh('failed');
+    expect(store.manifests).toHaveLength(1);
+    // The temporary boundary refs used to build the bundle are gone again.
+    expect(git(seeded, 'for-each-ref', 'refs/buildd/shallow')).toBe('');
+
+    // A commit lands on origin after the snapshot.
+    const work = join(dir, 'work');
+    execFileSync('git', ['clone', '-q', deepOrigin, work], { stdio: 'pipe' });
+    writeFileSync(join(work, 'LATER.md'), 'later\n');
+    git(work, 'add', '.');
+    git(work, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'later');
+    git(work, 'push', '-q', 'origin', 'HEAD:main');
+
+    lines = [];
+    const path = through(session(), 'ws-restored');
+    expect(sourceLine()).toBe('BUILDD_REPO_SOURCE=warm');
+    expect(git(path, 'rev-parse', '--is-shallow-repository')).toBe('true');
+    expect(git(path, 'fsck', '--connectivity-only', '--no-progress')).toBe('');
+    // The post-restore fetch brought the new commit without deepening history.
+    expect(git(path, 'rev-parse', 'origin/main')).toBe(git(deepOrigin, 'rev-parse', 'main'));
+    expect(Number(git(path, 'rev-list', '--count', 'origin/main'))).toBeLessThan(CLOUD_CLONE_DEPTH + 10);
+    expect(git(path, 'rev-parse', 'origin/mission/x')).toBe(git(deepOrigin, 'rev-parse', 'mission/x'));
+    expect(git(path, 'rev-parse', WARM_BASE_REF)).toBe(git(seeded, 'rev-parse', 'origin/main'));
+
+    // What setupWorktree and the PR step do: worktree off origin/<default>, commit, push a new branch, diff stats.
+    const wt = join(path, '.buildd-worktrees', 'task');
+    git(path, 'worktree', 'add', '-q', '-b', 'buildd/task', wt, 'origin/main');
+    writeFileSync(join(wt, 'task.txt'), 'task\n');
+    git(wt, 'add', '.');
+    git(wt, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-qm', 'task');
+    git(wt, 'push', '-q', 'origin', 'buildd/task');
+    expect(git(deepOrigin, 'rev-parse', 'buildd/task')).toBe(git(wt, 'rev-parse', 'HEAD'));
+    expect(git(wt, 'merge-base', 'HEAD', 'origin/main')).toBe(git(path, 'rev-parse', 'origin/main'));
+    expect(git(wt, 'rev-list', '--count', 'HEAD', '^origin/main')).toBe('1');
+
+    // And a shallow restore can seed the next generation in turn.
+    const again = session({ now: store.now + WARM_MAX_AGE_MS + 1 });
+    const restoredAgain = through(again, 'ws-third');
+    again.refresh('completed');
+    expect(store.manifests).toHaveLength(2);
+    expect(git(restoredAgain, 'for-each-ref', 'refs/buildd/shallow')).toBe('');
+  });
+
+  test('a full (host) clone bundles exactly as before: no boundary refs', () => {
+    process.env.BUILDD_EXECUTOR = 'host'; // afterEach restores it
+    const s = session();
+    const path = through(s, 'ws-host');
+    expect(git(path, 'rev-parse', '--is-shallow-repository')).toBe('false');
+    s.refresh('failed');
+    const bundle = store.files.get(`/warm/${store.manifests[0]!.generation}/repo`)!;
+    expect(bundle.toString('latin1').split('\n\n')[0]).not.toContain('refs/buildd/');
   });
 });
 

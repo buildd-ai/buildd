@@ -106,6 +106,29 @@ the cache tarball leaves out `.npmrc`, `.netrc`, `.yarnrc*`, `bunfig.toml`
 and `.env*` files, and the upload is refused when the clone has any
 `credential.*` or `http.*.extraheader` config or a remote URL with userinfo.
 
+### Clone shape and GitHub throttling
+
+In a cloud container (`BUILDD_EXECUTOR=cloud`) the clone is shallow:
+`git clone --depth 50 --no-single-branch` (`apps/runner/src/git-clone.ts`).
+Every branch tip is there, so `origin/<mission or resume branch>` resolves; a
+worktree off `origin/<branch>`, a push of a new branch and the PR stats
+(merge-base against the ref the worktree was cut from) work as on a full
+clone. A warm snapshot of a shallow clone carries its boundary as
+`refs/buildd/shallow/<commit>` refs in the bundle, written back to
+`.git/shallow` on restore; a park bundle whose base the resuming clone lacks
+fetches that commit by id (`--depth=1`). Host runners clone in full, as before.
+
+A clone that GitHub throttles (HTTP 429, or a 403 that says "rate limit") is
+retried after `Retry-After` (probed through the egress), with exponential
+backoff when there is none, for at most 60 s of waiting; a `Retry-After`
+longer than that stops at once. 401, a plain 403 and 404 are not retried. The
+post-restore and resume fetches use the same policy with a 30 s budget. A
+clone still throttled at the end is remembered for a minute (or the
+`Retry-After`), so the resolver's fallback does not send the same request
+again, and the worker is reported `failed` with `githubThrottled: true`:
+buildd books it `infra_failure` and requeues it on the infra-retry budget
+(5 / 15 / 30 min backoff, `infra_stalled` at the cap).
+
 A bad API key or an unreachable server exits **1**, not 64 or 3. The key is
 present, so it is not a usage error. The task fetch fails before any claim is
 made, so nothing was refused.

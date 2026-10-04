@@ -315,6 +315,8 @@ export class BuilddClient {
     // never sent by a live session. Tells the server's terminal-record ledger
     // to classify this outcome as 'crashed' rather than an ordinary failure.
     crashReconciled?: boolean;
+    /** The workspace clone was throttled by GitHub (git-clone.ts): the server books infra_failure and requeues with backoff. */
+    githubThrottled?: boolean;
     /**
      * The server REFUSED a mutation for this session (a 4xx, or an unqueueable
      * 5xx) rather than the session crashing. Chargeability is the SERVER's
