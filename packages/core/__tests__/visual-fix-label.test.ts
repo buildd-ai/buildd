@@ -24,9 +24,19 @@ describe('fixStatusLabel', () => {
     expect(fixStatusLabel(fix({ status: 'completed' }))).toEqual({ text: 'Task finished, no PR merged', tone: 'warning' });
   });
 
-  it('an open PR, not yet merged, says so regardless of task status', () => {
+  it('an open PR, not yet merged, says so while the task is still running', () => {
     expect(fixStatusLabel(fix({ status: 'in_progress', prUrl: 'https://example.test/pr/1', prNumber: 1 })))
       .toEqual({ text: 'PR open, not merged', tone: 'warning' });
+  });
+
+  it('a failed task outranks a PR left open from before it failed', () => {
+    expect(fixStatusLabel(fix({ status: 'failed', prUrl: 'https://example.test/pr/1', prNumber: 1 })))
+      .toEqual({ text: 'Task failed, no PR merged', tone: 'warning' });
+  });
+
+  it('a cancelled task outranks a PR left open from before it was cancelled', () => {
+    expect(fixStatusLabel(fix({ status: 'cancelled', prUrl: 'https://example.test/pr/1', prNumber: 1 })))
+      .toEqual({ text: 'Fix cancelled', tone: 'muted' });
   });
 
   it('a PR merged to trunk reads green', () => {

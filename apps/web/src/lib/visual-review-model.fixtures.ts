@@ -102,15 +102,27 @@ const ROUND_2: VisualReviewShotRow[] = [
 ];
 
 /**
- * The deck scenario's extra issues: a round-1 finding whose fix is still
- * open, and one whose fix finished without ever opening a PR (the route
- * sorts after every other issue cell here, so it never becomes the "first
- * issue" an existing test picks by `m.cells.find`).
+ * The deck scenario's other issues: a round-1 finding whose fix is still
+ * open, one whose fix merged with no screenshot since (settled), and one
+ * whose fix finished without ever opening a PR (the route sorts after every
+ * other issue cell here, so it never becomes the "first issue" an existing
+ * test picks by `m.cells.find`).
  */
 const DECK_EXTRA: VisualReviewShotRow[] = [
   shotRow('fixture-shot-09', 'fixture-w1', 'fixture-audit-1', 9, '/app/settings', 'desktop', 'issue', 'The save bar covers the last settings row at 1280px.', 'fixture-fix-2'),
-  shotRow('fixture-shot-10', 'fixture-w1', 'fixture-audit-1', 10, '/app/workspaces/:id', 'desktop', 'issue', 'The repo card overflows at 1280px.', 'fixture-fix-3'),
+  shotRow('fixture-shot-10', 'fixture-w1', 'fixture-audit-1', 10, '/app/inbox', 'mobile', 'issue', 'The unread badge overlaps the sender name.', 'fixture-fix-3'),
+  shotRow('fixture-shot-11', 'fixture-w1', 'fixture-audit-1', 11, '/app/workspaces/:id', 'desktop', 'issue', 'The repo card overflows at 1280px.', 'fixture-fix-4'),
 ];
+
+/** The settled cell's fix: merged after round 2 ran, so no screenshot shows it yet. */
+const mergedFixTask = (): VisualReviewTaskInput => ({
+  id: 'fixture-fix-3',
+  title: '[surface fix] /app/inbox: The unread badge overlaps the sender name.',
+  status: 'completed',
+  createdAt: at(20),
+  updatedAt: at(130),
+  workers: [{ id: 'fixture-wf3', status: 'completed', startedAt: at(22), prUrl: 'https://example.test/pulls/3', prNumber: 3, mergedAt: at(130) }],
+});
 
 const openFixTask = (): VisualReviewTaskInput => ({
   id: 'fixture-fix-2',
@@ -123,12 +135,12 @@ const openFixTask = (): VisualReviewTaskInput => ({
 
 /** Finished without ever opening a PR: `completed`, no PR, nothing merged. */
 const completedNoPrFixTask = (): VisualReviewTaskInput => ({
-  id: 'fixture-fix-3',
+  id: 'fixture-fix-4',
   title: '[surface fix] /app/workspaces/:id: The repo card overflows at 1280px.',
   status: 'completed',
   createdAt: at(20),
   updatedAt: at(130),
-  workers: [{ id: 'fixture-wf3', status: 'completed', startedAt: at(22) }],
+  workers: [{ id: 'fixture-wf4', status: 'completed', startedAt: at(22) }],
 });
 
 const fixTask = (status: string, merged = false): VisualReviewTaskInput => ({
@@ -211,6 +223,7 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
             auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-fix-1'] }),
             fixTask('completed', true),
             openFixTask(),
+            mergedFixTask(),
             completedNoPrFixTask(),
           ],
           reviews: [review('fixture-shot-01', '/app/tasks', 'mobile', 'ok', { relation: 'agree', createdAt: at(140) })],
@@ -263,14 +276,21 @@ function inputFor(phase: VisualReviewPhase, reason: VisualReviewNeedsYouReason =
           auditTask('fixture-audit-2', 2, 'completed', 'fixture-w2', { dependsOn: ['fixture-fix-1'] }),
           fixTask('completed', true),
         ],
-        reviews: [waived, review('fixture-shot-06', '/app/missions/:id', 'desktop', 'ok', { relation: 'agree' })],
+        reviews: [
+          waived,
+          review('fixture-shot-06', '/app/missions/:id', 'desktop', 'ok', { relation: 'agree' }),
+          // The re-shot after the merged fix, checked: Fixed.
+          review('fixture-shot-08', '/app/tasks/:id', 'mobile', 'ok', { relation: 'agree', round: 2, auditTaskId: 'fixture-audit-2' }),
+        ],
       };
   }
 }
 
 /**
  * `deck`: two rounds with mixed human reviews, an unsure cell, an issue whose
- * fix is still open and a fixed route to compare (phase `needs_you`).
+ * fix is still open, a merged fix with a new screenshot to check (Fixed /
+ * Still broken), and a merged fix with no screenshot since (settled) (phase
+ * `needs_you`).
  */
 export type VisualReviewFixtureScenario = 'deck';
 

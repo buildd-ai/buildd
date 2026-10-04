@@ -4,24 +4,48 @@
  *
  *   POST /dispatch        buildd's task webhook (task-dispatch.ts). 202 fast.
  *                         `event: 'task.resume'` + `workerId` continues a parked worker.
+ *                         `event: 'task.scheduled'` + `notBefore` (ISO) starts it then.
  *   GET  /tasks/:taskId   the task's WorkerAgent state, for debugging.
  *
  * Both require `Authorization: Bearer <DISPATCH_TOKEN>`, the token set in the
  * workspace's webhookConfig.
  */
 import { isValidTaskId, type DispatchRequest, type RunState } from './lifecycle';
-import type { DispatchResult } from './supervisor';
+import type { DispatchResult, ScheduleDispatchResult } from './supervisor';
+
+/**
+ * How far ahead a `task.scheduled` may point. buildd sends nothing further
+ * than this (task-dispatch.ts SCHEDULED_DISPATCH_MAX_AHEAD_MS); the slack
+ * covers the two clocks disagreeing.
+ */
+export const SCHEDULE_MAX_AHEAD_MS = 24 * 60 * 60 * 1000;
+export const SCHEDULE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/** Strict-ish ISO 8601 date-time, so a bare number or a word is never a date. */
+const ISO_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+function parseNotBefore(v: unknown): number | null {
+  if (typeof v !== 'string' || !ISO_DATE_TIME_RE.test(v)) return null;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) ? ms : null;
+}
 
 export interface DispatcherEnv {
   DISPATCH_TOKEN?: string;
   BUILDD_SERVER?: string;
   BUILDD_API_KEY?: string;
+  /** `1` enables POST /tasks/:id/kill, for recovery testing. Off by default. */
+  ALLOW_DEBUG_KILL?: string;
 }
 
 /** The RPC surface of a WorkerAgent stub that the Worker calls. */
 export interface AgentHandle {
   dispatch(request?: DispatchRequest): Promise<DispatchResult>;
+  /** `task.scheduled`: start a run at `notBefore` (epoch ms); a past one starts now. */
+  scheduleDispatch(notBefore: number): Promise<ScheduleDispatchResult>;
   getRunState(): Promise<RunState>;
+  /** Destroy the task's container, as an OOM kill or platform stop would. */
+  killContainer(): Promise<{ killed: boolean }>;
 }
 
 export type GetAgent = (taskId: string) => Promise<AgentHandle>;
@@ -63,11 +87,18 @@ function missingConfig(env: DispatcherEnv): string[] {
   return (['DISPATCH_TOKEN', 'BUILDD_SERVER', 'BUILDD_API_KEY'] as const).filter(k => !env[k]);
 }
 
-export async function handleRequest(request: Request, env: DispatcherEnv, getAgent: GetAgent): Promise<Response> {
+export async function handleRequest(
+  request: Request,
+  env: DispatcherEnv,
+  getAgent: GetAgent,
+  now: () => number = () => Date.now(),
+): Promise<Response> {
   const url = new URL(request.url);
   const isDispatch = url.pathname === '/dispatch';
   const taskMatch = /^\/tasks\/([^/]+)$/.exec(url.pathname);
-  if (!isDispatch && !taskMatch) return json({ error: 'not_found' }, 404);
+  // Debug only: absent (404) unless the operator opted in with ALLOW_DEBUG_KILL=1.
+  const killMatch = env.ALLOW_DEBUG_KILL === '1' ? /^\/tasks\/([^/]+)\/kill$/.exec(url.pathname) : null;
+  if (!isDispatch && !taskMatch && !killMatch) return json({ error: 'not_found' }, 404);
 
   const missing = missingConfig(env);
   if (missing.length > 0) {
@@ -90,7 +121,16 @@ export async function handleRequest(request: Request, env: DispatcherEnv, getAge
     }
     const taskId = (body as { taskId?: unknown } | null)?.taskId;
     if (!isValidTaskId(taskId)) return json({ error: 'invalid_task_id' }, 400);
-    const b = body as { event?: unknown; workerId?: unknown };
+    const b = body as { event?: unknown; workerId?: unknown; notBefore?: unknown };
+    if (b.event === 'task.scheduled') {
+      const notBefore = parseNotBefore(b.notBefore);
+      if (notBefore === null) return json({ error: 'invalid_not_before' }, 400);
+      if (notBefore - now() > SCHEDULE_MAX_AHEAD_MS + SCHEDULE_CLOCK_SKEW_MS) {
+        return json({ error: 'not_before_too_far' }, 400);
+      }
+      const agent = await getAgent(taskId);
+      return json({ taskId, ...(await agent.scheduleDispatch(notBefore)) }, 202);
+    }
     const dispatchRequest: DispatchRequest = {};
     if (b.event === 'task.resume') {
       // Worker IDs share the task ID shape (uuid-like tokens, never flags or paths).
@@ -103,6 +143,19 @@ export async function handleRequest(request: Request, env: DispatcherEnv, getAge
     // 202 for a duplicate too: buildd treats a non-2xx as "webhook failed" and
     // falls back to Pusher, which would let a polling runner race this one.
     return json({ taskId, ...result }, 202);
+  }
+
+  if (killMatch) {
+    if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+    let killId: string;
+    try {
+      killId = decodeURIComponent(killMatch[1]!);
+    } catch {
+      return json({ error: 'invalid_task_id' }, 400);
+    }
+    if (!isValidTaskId(killId)) return json({ error: 'invalid_task_id' }, 400);
+    const agent = await getAgent(killId);
+    return json({ taskId: killId, ...(await agent.killContainer()) }, 200);
   }
 
   if (request.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);

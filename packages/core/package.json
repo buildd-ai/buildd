@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.265.1",
+  "version": "0.266.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -116,6 +116,15 @@
     "./orchestration-promotion": "./orchestration-promotion.ts",
     "./orchestration-readout": "./orchestration-readout.ts",
     "./orchestration-readout-source": "./orchestration-readout-source.ts",
+    "./decision-ledger": "./decision-ledger.ts",
+    "./decision-kinds": "./decision-kinds.ts",
+    "./decision-policy": "./decision-policy.ts",
+    "./decision-outcomes": "./decision-outcomes.ts",
+    "./decision-readout": "./decision-readout.ts",
+    "./decision-readout-source": "./decision-readout-source.ts",
+    "./decision-kind-post-session-triage": "./decision-kind-post-session-triage.ts",
+    "./decision-kind-scout-probe-selection": "./decision-kind-scout-probe-selection.ts",
+    "./decision-shadow-harness": "./decision-shadow-harness.ts",
     "./manifest-prediction": "./manifest-prediction.ts",
     "./manifest-prediction-source": "./manifest-prediction-source.ts",
     "./task-area-readout": "./task-area-readout.ts",

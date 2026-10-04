@@ -9,7 +9,7 @@
  * mission's own integration branch (not trunk) never reads the same as a PR merged
  * to trunk — neither has shipped the fix where the audited page actually runs.
  */
-import type { VisualReviewFixTask } from '@buildd/shared';
+import { isTerminalTaskStatus, type VisualReviewFixTask } from '@buildd/shared';
 
 export type FixLabelTone = 'success' | 'warning' | 'muted';
 
@@ -17,8 +17,6 @@ export interface FixLabel {
   text: string;
   tone: FixLabelTone;
 }
-
-const TERMINAL_FIX_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 /**
  * `finding` continues a prior round's issue under the auditor's own convention
@@ -35,7 +33,7 @@ export function findingIsStillThere(finding: string | null | undefined): boolean
  * defect persists is never a done/success label.
  */
 export function fixStatusLabel(fix: VisualReviewFixTask, opts: { stillPresent?: boolean } = {}): FixLabel {
-  if (opts.stillPresent && TERMINAL_FIX_STATUSES.has(fix.status)) {
+  if (opts.stillPresent && isTerminalTaskStatus(fix.status)) {
     return { text: 'Fix finished, problem still present', tone: 'warning' };
   }
   if (fix.mergedAt) {
@@ -43,14 +41,16 @@ export function fixStatusLabel(fix: VisualReviewFixTask, opts: { stillPresent?: 
       ? { text: 'PR merged to mission branch only', tone: 'warning' }
       : { text: 'PR merged', tone: 'success' };
   }
-  if (fix.prUrl) {
-    return { text: 'PR open, not merged', tone: 'warning' };
-  }
+  // Checked before `prUrl`: a terminal failure outranks a PR reference left
+  // over from before the task failed or was cancelled.
   if (fix.status === 'cancelled') {
     return { text: 'Fix cancelled', tone: 'muted' };
   }
   if (fix.status === 'failed') {
     return { text: 'Task failed, no PR merged', tone: 'warning' };
+  }
+  if (fix.prUrl) {
+    return { text: 'PR open, not merged', tone: 'warning' };
   }
   if (fix.status === 'completed') {
     return { text: 'Task finished, no PR merged', tone: 'warning' };

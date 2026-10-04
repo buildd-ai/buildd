@@ -130,8 +130,12 @@ export interface CollisionCheckpoint {
 }
 
 function git(cwd: string, args: string[], timeout = 30_000): string {
+  // env must be passed explicitly: Bun's execFileSync snapshots process.env
+  // at process startup rather than reading it per call (unlike Node's), so a
+  // caller that mutates process.env at runtime (e.g. a test clearing git
+  // identity) would otherwise never reach this child process.
   return String(childProcess.execFileSync('git', args, {
-    cwd, timeout, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
+    cwd, timeout, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
   }));
 }
 

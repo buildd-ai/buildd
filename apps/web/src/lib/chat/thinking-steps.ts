@@ -4,8 +4,16 @@
  * words (never the tool's name), and the kit's ThinkingPanel draws them. The
  * labels come from the table below, keyed by the tool lifecycle; the model
  * never writes one. Pure, so the dev fixtures can use it too.
+ *
+ * Each step also carries its `weight`, decided here from the same lifecycle:
+ * `key` for what the person would want to see without asking (a write that
+ * returned an object, a failure, a change waiting on them, a refusal),
+ * `routine` for the rest (reads, counted runs, a call still running). The
+ * panel pins the latest key step under its live line and folds runs of
+ * routine ones; the browser never re-derives this.
  */
 import { STEP_PART_TYPE, type StepData } from '@builddai/ai-kit/chat/contract';
+import { chatToolIsRead, chatToolNeedsApproval } from '@buildd/shared';
 
 type Phase = 'active' | 'done' | 'failed';
 
@@ -68,6 +76,29 @@ const FALLBACK = v('Looking', 'Looked', 'something up', undefined, "Couldn't loo
 export const APPROVAL_STEP_LABEL = 'Check it with you';
 export const DENIED_STEP_LABEL = 'Not done';
 
+const FAILED_LABELS = new Set([...Object.values(VERBS), FALLBACK].map(x => x.failed));
+
+/** A read runs at once and changes nothing; anything else is a write. */
+function isWrite(tool: string, input: unknown): boolean {
+  return chatToolNeedsApproval(tool, input) || !chatToolIsRead(tool, input);
+}
+
+function returnedObjects(output: unknown): boolean {
+  const objects = output && typeof output === 'object' ? (output as { objects?: unknown }).objects : undefined;
+  return Array.isArray(objects) && objects.length > 0;
+}
+
+/**
+ * The weight of a step stored before the server sent one: a failure, a
+ * refusal or a change waiting on the person is key, everything else routine.
+ * (Whether an old write returned an object is not on the step, so those read
+ * as routine.)
+ */
+export function legacyStepWeight(s: StepData): NonNullable<StepData['weight']> {
+  if (s.weight) return s.weight;
+  return s.state === 'pending' || s.label === DENIED_STEP_LABEL || FAILED_LABELS.has(s.label) ? 'key' : 'routine';
+}
+
 function actionOf(input: unknown): string | null {
   const a = input && typeof input === 'object' ? (input as { action?: unknown }).action : undefined;
   return typeof a === 'string' && a.trim() ? a.trim() : null;
@@ -93,12 +124,13 @@ export function stepLabel(tool: string, input: unknown, phase: Phase, count = 1)
 export interface KnownCall { toolCallId: string; toolName: string; input: unknown }
 
 /** Consecutive calls of the same tool (and action): one step, counted. */
-interface Run { id: string; tool: string; input: unknown; key: string; live: Set<string>; ok: number; closed: boolean }
+interface Run { id: string; tool: string; input: unknown; key: string; live: Set<string>; ok: number; closed: boolean; objects: boolean }
 
 export interface StepTracker {
   start(toolCallId: string, toolName: string, input: unknown): StepData[];
   approval(toolCallId: string): StepData[];
-  output(toolCallId: string): StepData[];
+  /** `output`: what the call returned; a write that returned an object is a key step. */
+  output(toolCallId: string, output?: unknown): StepData[];
   error(toolCallId: string): StepData[];
   denied(toolCallId: string): StepData[];
   /** Every step's latest state, in first-seen order (for persisting). */
@@ -131,8 +163,8 @@ export function createStepTracker(opts: { known?: readonly KnownCall[]; seed?: r
   const runStep = (r: Run): StepData => {
     const n = r.live.size + r.ok;
     return set(r.live.size > 0
-      ? { id: r.id, label: stepLabel(r.tool, r.input, 'active', n), state: 'active' }
-      : { id: r.id, label: stepLabel(r.tool, r.input, 'done', n), state: 'done' });
+      ? { id: r.id, label: stepLabel(r.tool, r.input, 'active', n), state: 'active', weight: 'routine' }
+      : { id: r.id, label: stepLabel(r.tool, r.input, 'done', n), state: 'done', weight: r.objects && isWrite(r.tool, r.input) ? 'key' : 'routine' });
   };
   /**
    * Take a call out of its run. Alone in it, the run's step becomes the call's
@@ -146,11 +178,8 @@ export function createStepTracker(opts: { known?: readonly KnownCall[]; seed?: r
     if (r.live.size + r.ok === 0) { r.closed = true; return { own: r.id, out: [] }; }
     return { own: `${prefix}-${id}`, out: [runStep(r)] };
   };
-  const single = (id: string, phase: Phase): StepData[] => {
-    const c = calls.get(id);
-    if (!c) return [];
-    return [set({ id, label: stepLabel(c.tool, c.input, phase), state: 'done' })];
-  };
+  const doneWeight = (c: { tool: string; input: unknown }, output: unknown): NonNullable<StepData['weight']> =>
+    isWrite(c.tool, c.input) && returnedObjects(output) ? 'key' : 'routine';
 
   return {
     start(id, tool, input) {
@@ -161,7 +190,7 @@ export function createStepTracker(opts: { known?: readonly KnownCall[]; seed?: r
         runOf.set(id, last);
         return [runStep(last)];
       }
-      const r: Run = { id, tool, input, key, live: new Set([id]), ok: 0, closed: false };
+      const r: Run = { id, tool, input, key, live: new Set([id]), ok: 0, closed: false, objects: false };
       last = r;
       runOf.set(id, r);
       return [runStep(r)];
@@ -170,38 +199,38 @@ export function createStepTracker(opts: { known?: readonly KnownCall[]; seed?: r
       const d = detach(id, 'approval');
       const own = d?.own ?? id;
       ownOf.set(id, own);
-      return [...(d?.out ?? []), set({ id: own, label: APPROVAL_STEP_LABEL, state: 'pending' })];
+      return [...(d?.out ?? []), set({ id: own, label: APPROVAL_STEP_LABEL, state: 'pending', weight: 'key' })];
     },
-    output(id) {
+    output(id, output) {
       const r = runOf.get(id);
       if (r) {
         r.live.delete(id);
         r.ok += 1;
+        if (returnedObjects(output)) r.objects = true;
         return [runStep(r)];
       }
-      const own = ownOf.get(id);
       const c = calls.get(id);
-      if (own && c) return [set({ id: own, label: stepLabel(c.tool, c.input, 'done'), state: 'done' })];
-      return single(id, 'done');
+      if (!c) return [];
+      return [set({ id: ownOf.get(id) ?? id, label: stepLabel(c.tool, c.input, 'done'), state: 'done', weight: doneWeight(c, output) })];
     },
     error(id) {
       const d = detach(id, 'failed');
       const c = calls.get(id);
       if (!c) return [];
       const own = d?.own ?? ownOf.get(id) ?? id;
-      return [...(d?.out ?? []), set({ id: own, label: stepLabel(c.tool, c.input, 'failed'), state: 'done' })];
+      return [...(d?.out ?? []), set({ id: own, label: stepLabel(c.tool, c.input, 'failed'), state: 'done', weight: 'key' })];
     },
     denied(id) {
       const d = detach(id, 'denied');
       const own = d?.own ?? ownOf.get(id) ?? id;
       if (!d && !steps.has(own)) return [];
-      return [...(d?.out ?? []), set({ id: own, label: DENIED_STEP_LABEL, state: 'done' })];
+      return [...(d?.out ?? []), set({ id: own, label: DENIED_STEP_LABEL, state: 'done', weight: 'key' })];
     },
     steps: () => [...steps.values()],
   };
 }
 
-interface ToolLike { type: string; toolCallId?: string; state?: string; input?: unknown }
+interface ToolLike { type: string; toolCallId?: string; state?: string; input?: unknown; output?: unknown }
 
 function isToolLike<T extends { type: string }>(p: T): p is T & ToolLike & { toolCallId: string } {
   return p.type.startsWith('tool-') && typeof (p as ToolLike).toolCallId === 'string';
@@ -230,7 +259,7 @@ export function backfillSteps(parts: readonly { type: string }[]): StepData[] {
     const id = p.toolCallId;
     t.start(id, p.type.slice('tool-'.length), p.input);
     switch (p.state) {
-      case 'output-available': t.output(id); break;
+      case 'output-available': t.output(id, p.output); break;
       case 'output-error': t.error(id); break;
       case 'output-denied': t.approval(id); t.denied(id); break;
       case 'approval-requested':
@@ -265,7 +294,7 @@ export function mergeStepParts<P extends { type: string }>(parts: readonly P[], 
   return out;
 }
 
-type Chunk = { type: string; toolCallId?: string; toolName?: string; input?: unknown };
+type Chunk = { type: string; toolCallId?: string; toolName?: string; input?: unknown; output?: unknown };
 
 /**
  * Follows each tool chunk of a UI message stream with the step it moves, and
@@ -289,7 +318,7 @@ export function withThinkingSteps<C extends Chunk>(
         case 'start': emit(controller, opts.backfill ?? []); break;
         case 'tool-input-available': emit(controller, tracker.start(id!, chunk.toolName ?? '', chunk.input)); break;
         case 'tool-approval-request': emit(controller, tracker.approval(id!)); break;
-        case 'tool-output-available': emit(controller, tracker.output(id!)); break;
+        case 'tool-output-available': emit(controller, tracker.output(id!, chunk.output)); break;
         case 'tool-output-error': emit(controller, tracker.error(id!)); break;
         case 'tool-output-denied': emit(controller, tracker.denied(id!)); break;
       }

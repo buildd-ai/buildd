@@ -238,6 +238,10 @@ DELETE FROM task_area_prediction_events;
 DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;
 DELETE FROM orchestration_decisions;
+-- Model decision ledger: reasons can be prose and human overrides free-form.
+DELETE FROM decision_outcomes;
+DELETE FROM decision_challenger_runs;
+DELETE FROM decision_records;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,

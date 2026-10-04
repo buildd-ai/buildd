@@ -12,6 +12,29 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.17.0 — 2026-10-03
+
+Minor: the live turn is one line.
+
+- `StepData.weight` (new, optional): `key` | `routine`, decided by the
+  server. Absent, a `pending` step is key and anything else routine
+  (`stepWeight`).
+- `ThinkingPanel` while streaming: no header and no box. It draws a pulsing
+  square and the live step's label as a button (`aria-expanded`, 44px) that
+  unfolds the turn, plus the latest key step pinned under it. Before the
+  first step it is the square alone; once the answer streams with nothing
+  active the square goes. The live step shows its seconds after 20s
+  (`slowAfterMs`). New props `name` (the accessible name, default
+  "Working") and `renderPinned`. `title` is no longer drawn (deprecated).
+- The unfolded list (streaming or a folded finished turn): key steps as rows
+  (`data-weight="key"`), each run of two or more routine steps as one
+  "N routine steps" row that unfolds in place, the active step last.
+- `ChatThread`: `thinkingName` and `renderPinnedStep` pass through;
+  `thinkingTitle` is deprecated. An app checklist with no steps while the
+  answer streams draws nothing.
+- New helpers: `stepWeight`, `liveStep`, `pinnedStep`, `stepGroups`,
+  `THINKING_TAIL`, `THINKING_TAIL_ID`.
+
 ## 0.16.0 — 2026-10-02
 
 Minor: a route registry in `/models`:

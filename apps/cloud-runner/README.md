@@ -34,14 +34,25 @@ Both need `Authorization: Bearer <DISPATCH_TOKEN>`.
   as soon as the run is starting. A duplicate while a run is live returns
   `202` with `accepted: false` (a non-2xx would make buildd fall back to
   Pusher).
-- `GET /tasks/:taskId`: the agent's state, for debugging.
+  - `event: 'task.resume'` with `workerId` continues a parked worker
+    (Resumable runs, below).
+  - `event: 'task.scheduled'` with `notBefore` (an ISO date-time) starts the
+    run at that time instead of now (Scheduled dispatch, below). Returns
+    `202` with `{ taskId, scheduled: true, scheduledFor, replaced }`; a
+    `notBefore` already past dispatches at once (`scheduled: false` plus the
+    dispatch result). `400 invalid_not_before` for a missing or non-ISO value,
+    `400 not_before_too_far` for more than 24 h ahead (plus 5 minutes of
+    clock slack).
+- `GET /tasks/:taskId`: the agent's state, for debugging. A pending scheduled
+  wake shows as `scheduledFor` (epoch ms) and `scheduleId`.
 
 ## Lifecycle
 
 `idle → starting → running → exited`. A dispatch while `starting` or
 `running` is ignored. A dispatch after `exited` starts the next attempt in a
 fresh container. The agent never starts a run by itself: retries are buildd
-firing a new webhook, and there are no alarms or timers that poll buildd.
+firing a new webhook, and there are no timers that poll buildd. The one alarm
+is the one-shot a `task.scheduled` webhook asks for (Scheduled dispatch).
 
 | Exit | Outcome | Agent does |
 |---|---|---|
@@ -63,6 +74,19 @@ reads it from the exec'd process's output and stores it. A crash before that
 line has no worker to mark (the claim never finished, or finished just before
 the crash); server-side stale detection covers that case.
 
+The report is `PATCH /api/workers/<id>` with `status: failed` and
+`crashReconciled: true`, the flag the runner's own boot reconciliation sends
+for a session its process lost. buildd treats it as an infrastructure failure:
+the task goes back to `pending` on the infra-retry budget (backoff 5, 15, 30
+minutes, counted in `context.infraRetryCount`), and after the last attempt the
+task fails as `infra_stalled`. With `task.scheduled` in the webhook's events
+(the deploy script sets it), buildd sends the requeue at once with the backoff's
+end as `notBefore` and the agent starts the retry then. Without it, the
+deferred-dispatch sweep sends `task.retry` on its first run after the backoff
+passes; it rides the hourly `pr-reconcile` cron, so a retry can wait up to an
+hour beyond its backoff. The sweep runs either way, as the backstop. Only a `crashed` outcome is reported;
+the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
+
 **Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
 exec'd process cannot be re-attached. On the next start the agent finds the
 run marked live, destroys the container, and records `crashed` (and reports
@@ -82,6 +106,7 @@ it as above).
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 
@@ -119,6 +144,7 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
 | `egressDetail.github.unauthenticatedErrorStatuses` | Upstream 4xx/5xx on the unauthenticated forwards only, by code. A 429 here is an anonymous rate limit; a 429 only in `errorStatuses` was sent with the token |
 | `egressDetail.github.grantFetchFailures` | The github-token endpoint's refusals by status (`error`: nothing answered). The Worker log has the same line with the task ID |
+| `schedule.scheduledFor`, `.startedAt`, `.lateMs` | A run started by a `task.scheduled` wake: the time it was due, when the attempt started (= `dispatchReceivedAt`) and the difference. `scheduledFor` and `lateMs` are null for any other start (report version 4) |
 | `exitCode`, `outcome`, `crashReport`, `attempt`, `taskId`, `workerId` | As in the state |
 
 The report is built from an allowlist of typed fields; identifiers that do not
@@ -289,13 +315,14 @@ never calls that route. It then:
 2. `wrangler secret put` `BUILDD_SERVER` (`--worker-server`, default the
    buildd URL), `BUILDD_API_KEY` (the runner key) and a freshly generated
    `DISPATCH_TOKEN`
-3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true, events: ['task.created', 'task.unblocked', 'task.retry'] }`
+3. `PATCH /api/workspaces/:id` with `webhookConfig = { url: <worker>/dispatch, token, enabled: true, events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] }`
 
 `events` is the opt-in. A webhook without it gets what webhooks always got:
 new and unblocked tasks. Retries, approved-plan children and deferred-start
 re-dispatches reach a webhook only when it lists the event (`task.retry` for
 retries and the deferred sweep, `task.created` for plan children); otherwise
-they wake runners over Pusher. A re-run adds any event the workspace's webhook
+they wake runners over Pusher. `task.scheduled` makes buildd send a deferred
+task at once with its start time (Scheduled dispatch, below). A re-run adds any event the workspace's webhook
 is missing, without touching the token. PATCH merges `webhookConfig`, so keys
 it does not manage (the issue-ingest settings) are kept, and plain `http` is
 accepted only for `localhost`, `127.0.0.1` and `host.docker.internal`.
@@ -381,6 +408,32 @@ binding, streaming bodies both ways.
 
 What goes in a snapshot and what the runner refuses to upload:
 `docs/runner-container.md`, "Warm repos".
+
+### Scheduled dispatch
+
+A task buildd defers to a future `startAt` (the crash retry's backoff, a
+budget-reset deferral, a deferred-start task) is not claimable until then.
+Without help, a push-only runner hears about it only from buildd's hourly
+deferred-dispatch sweep. With `task.scheduled` in the webhook's `events`,
+buildd sends it at once instead (`notBefore` = `startAt`, at most 24 h ahead;
+anything further is left to the sweep), and the agent wakes itself:
+
+- **Schedule.** The agent creates a one-shot with the Agents SDK
+  (`this.schedule(new Date(notBefore), 'runScheduledDispatch', …)`, backed by
+  the Durable Object alarm) and records `scheduledFor` and `scheduleId` in its
+  state. A run that is live does not block this: the crash retry is requeued
+  while the crashed run is still finishing.
+- **Replace.** A later `task.scheduled` for the same task replaces the pending
+  one (last write wins): the old alarm is cancelled, and if it fires anyway
+  its id no longer matches and it does nothing.
+- **Fire.** When the alarm fires, the wake is cleared and handed to the normal
+  dispatch path. A live run makes it a no-op. A dispatch that started a run
+  before the alarm (any event) consumes the pending wake.
+- **Backstop.** buildd's sweep still sends `task.retry` once `startAt`
+  passes. If the scheduled run is live by then, that is a duplicate and is
+  ignored; if the alarm was lost, it starts the run.
+- **Report.** A run started by a wake carries `schedule.scheduledFor`,
+  `schedule.startedAt` and `schedule.lateMs` in its run report.
 
 ### Resumable runs
 

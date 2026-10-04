@@ -552,6 +552,30 @@ describe('classifyMissionWait', () => {
     expect(result?.waitUntil).toEqual(waitUntil);
   });
 
+  // An infrastructure failure (a cloud container that died under the runner,
+  // a runner restart, a stale worker) requeues the task on the infra-retry
+  // budget with a future startAt. Until then it is a self-resolving wait —
+  // "retrying at T" — not a stall and not a failure for a human to retry.
+  it('classifies a task in its infra-retry backoff as waiting until the retry', () => {
+    const retryAt = new Date(now.getTime() + 5 * 60 * 1000);
+    const result = classifyMissionWait([
+      { status: 'pending', mode: 'execution', taskClass: 'work', context: { infraRetryCount: 1 }, startAt: retryAt, loopConfig: null, loopState: null },
+    ], now);
+    expect(result?.waitUntil).toEqual(retryAt);
+    expect(result?.reason).toMatch(/infrastructure/i);
+    expect(result?.reason).toMatch(/retry/i);
+  });
+
+  it('an infra retry whose backoff has passed, or that was claimed, is no longer a wait', () => {
+    const past = new Date(now.getTime() - 60 * 1000);
+    expect(classifyMissionWait([
+      { status: 'pending', mode: 'execution', taskClass: 'work', context: { infraRetryCount: 1 }, startAt: past, loopConfig: null, loopState: null },
+    ], now)).toBeNull();
+    expect(classifyMissionWait([
+      { status: 'in_progress', mode: 'execution', taskClass: 'work', context: { infraRetryCount: 1 }, startAt: new Date(now.getTime() + 60_000), loopConfig: null, loopState: null },
+    ], now)).toBeNull();
+  });
+
   it('treats a loop task actively running (loopState=running) as real work, not a wait', () => {
     const result = classifyMissionWait([
       {

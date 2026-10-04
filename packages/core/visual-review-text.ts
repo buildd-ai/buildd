@@ -73,12 +73,12 @@ export function describeVisualPhase(
       const ok = s.effectiveOk ?? s.ok;
       const issues = s.effectiveIssues ?? s.issues;
       const head = `${ok} of ${s.shots} ok`;
-      const parts = [head];
+      const parts: string[] = [];
       if (issues > 0) parts.push(plural(issues, 'issue'));
-      if (s.reviewed > 0) parts.push(`${s.reviewed} decided by you`);
+      if (s.reviewed > 0) parts.push(`${s.reviewed} reviewed`);
       // Wrong-branch shots the auditor owes: never a question for a person.
       if (s.captureGaps) parts.push(`${plural(s.captureGaps, 'capture gap')} for the auditor`);
-      return { label: head, detail: `${parts.join(', ')}.` };
+      return { label: head, detail: parts.length > 0 ? `${parts.join(', ')}.` : `${head}.` };
     }
   }
 }
@@ -253,11 +253,14 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
     `round ${e.round}`,
     `agent: ${e.agentVerdict}`,
     e.finding ? `"${one(e.finding)}"` : 'no finding',
-    e.review
-      ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
-      : c.needsHuman ? `${who}: not reviewed yet, ${mcp ? 'needs review' : 'needs your call'}` : `${who}: not reviewed yet`,
+    c.fixCheck?.state === 'awaiting_capture'
+      ? 'fix merged, waiting for a new screenshot (nothing to decide)'
+      : e.review
+        ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
+        : c.fixCheck?.state === 'check' ? `fix merged, new screenshot to check: fixed or still broken`
+        : c.needsHuman ? `${who}: not reviewed yet, ${mcp ? 'needs review' : 'needs your call'}` : `${who}: not reviewed yet`,
   ];
-  const fix = e.fixTask;
+  const fix = e.fixTask ?? c.fixCheck?.fix ?? null;
   if (fix) {
     const stillPresent = e.agentVerdict === 'issue' && findingIsStillThere(e.finding);
     const { text: fixText } = fixStatusLabel(fix, { stillPresent });
