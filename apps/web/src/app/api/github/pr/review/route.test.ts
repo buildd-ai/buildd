@@ -16,7 +16,7 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
 const mockCreateReviewerTask = mock(() => ({ id: 'review-task-9' }) as any);
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'created', commentId: 1 }));
 const mockFindReviewTaskForPr = mock(() => null as any);
 const mockFindPrOwningWorker = mock(() => null as any);
@@ -43,7 +43,23 @@ mock.module('@/lib/workspace-resolver', () => ({ resolveWorkspace: mockResolveWo
 // real module) — it is a pure extraction function, and the delta-vs-full
 // branch this route is judged on depends on its actual behaviour, not a stub.
 mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewerTask }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 const mockCarryForward = mock(async (_p: any) => ({ carried: false, reason: 'PR diff changed' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForward }));
@@ -183,8 +199,9 @@ beforeEach(() => {
   mockGithubReposFindFirst.mockReturnValue(REPO);
   mockCreateReviewerTask.mockReset();
   mockCreateReviewerTask.mockReturnValue({ id: 'review-task-9' });
-  mockDispatchNewTask.mockReset();
-  mockDispatchNewTask.mockReturnValue(Promise.resolve());
+  mockAnnounceTaskCreated.mockReset();
+  mockWakeTask.mockReset();
+  mockAnnounceTaskCreated.mockReturnValue(Promise.resolve());
   mockAppendPrActivity.mockReset();
   mockAppendPrActivity.mockReturnValue(Promise.resolve({ action: 'created', commentId: 1 }));
   mockFindReviewTaskForPr.mockReset();
@@ -341,7 +358,8 @@ describe('POST /api/github/pr/review — adoption', () => {
     expect(res.status).toBe(201);
     expect((await res.json()).adopted).toBe(true);
     expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
 
     const taskInsert = insertCalls.find((c) => c.table === 'tasks_table')!;
     const { isDependencyBotPrContext } = await import('@/lib/dependency-bot-pr');
@@ -376,7 +394,8 @@ describe('POST /api/github/pr/review — adoption', () => {
       installationId: 5000,
       repoFullName: 'buildd-ai/buildd',
     });
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
     expect(mockAppendPrActivity.mock.calls[0][0]).toMatchObject({
       prNumber: 42,

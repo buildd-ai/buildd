@@ -24,7 +24,8 @@ const priorVerdict = { headSha: PRIOR, verdict: 'approve' as const, confidence: 
 
 function deps(over: Partial<StaleApprovalReReviewDeps> = {}): StaleApprovalReReviewDeps & {
   createReviewerTask: ReturnType<typeof mock>;
-  dispatchNewTask: ReturnType<typeof mock>;
+  announceTaskCreated: ReturnType<typeof mock>;
+  wakeTask: ReturnType<typeof mock>;
   appendPrActivity: ReturnType<typeof mock>;
 } {
   return {
@@ -36,7 +37,8 @@ function deps(over: Partial<StaleApprovalReReviewDeps> = {}): StaleApprovalReRev
     })),
     listRoles: mock(async () => [{ slug: 'reviewer', isRole: true }]),
     createReviewerTask: mock(async () => ({ id: 'review-2' })),
-    dispatchNewTask: mock(async () => {}),
+    announceTaskCreated: mock(async () => {}),
+    wakeTask: mock(async () => {}),
     appendPrActivity: mock(async () => {}),
     ...over,
   } as never;
@@ -57,7 +59,8 @@ describe('dispatchStaleApprovalReReview', () => {
       baseRef: 'dev',
       priorVerdict,
     });
-    expect(d.dispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(d.announceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(d.wakeTask).toHaveBeenCalledWith('review-2', 'task.created');
     expect(d.appendPrActivity).toHaveBeenCalledTimes(1);
   });
 
@@ -66,14 +69,14 @@ describe('dispatchStaleApprovalReReview', () => {
     const res = await dispatchStaleApprovalReReview(input, d);
     expect(res).toEqual({ outcome: 'already_reviewing', reviewTaskId: 'review-live' });
     expect(d.createReviewerTask).not.toHaveBeenCalled();
-    expect(d.dispatchNewTask).not.toHaveBeenCalled();
+    expect(d.wakeTask).not.toHaveBeenCalled();
   });
 
   it('is single-flight per head: a deduplicated reviewer for this head is not dispatched again', async () => {
     const d = deps({ createReviewerTask: mock(async () => ({ id: 'review-same-head', deduplicated: true as const })) });
     const res = await dispatchStaleApprovalReReview(input, d);
     expect(res).toEqual({ outcome: 'already_reviewing', reviewTaskId: 'review-same-head' });
-    expect(d.dispatchNewTask).not.toHaveBeenCalled();
+    expect(d.wakeTask).not.toHaveBeenCalled();
   });
 
   it('sends a full review when no prior verdict is usable', async () => {

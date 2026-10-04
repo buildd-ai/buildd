@@ -48,7 +48,7 @@ const mockResolveCreatorContext = mock(() =>
 );
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockFindIntakeWarnings = mock(() => Promise.resolve([] as any[]));
 mock.module('@buildd/core/spec-discrepancy-intake', () => ({
   findIntakeWarnings: mockFindIntakeWarnings,
@@ -127,8 +127,22 @@ mock.module('@/lib/task-service', () => ({
 }));
 
 // Mock task-dispatch
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 // Mock workspace-resolver
@@ -444,7 +458,8 @@ describe('POST /api/tasks', () => {
     mockTriggerEvent.mockReset();
     mockResolveCreatorContext.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockMissionsFindFirst.mockReset();
     // Mission links are team-scoped; default to a mission in the test workspace's team.
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
@@ -1021,14 +1036,12 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(200);
 
-    // dispatchNewTask should be called with the task, workspace, and options
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
-    expect(mockDispatchNewTask.mock.calls[0][0]).toEqual(createdTask);
-    expect(mockDispatchNewTask.mock.calls[0][2]).toEqual(
-      expect.objectContaining({
-        assignToLocalUiUrl: 'http://localhost:3456',
-      })
-    );
+    // Announced to the dashboard, and woken with the local runner as the target
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated.mock.calls[0][0]).toEqual(createdTask);
+    expect(mockWakeTask).toHaveBeenCalledWith(createdTask.id, 'task.created', {
+      targetLocalUiUrl: 'http://localhost:3456',
+    });
   });
 
   it('dispatches task on successful creation', async () => {
@@ -1052,11 +1065,11 @@ describe('POST /api/tasks', () => {
     });
     await POST(request);
 
-    expect(mockDispatchNewTask).toHaveBeenCalledWith(
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledWith(
       createdTask,
       expect.objectContaining({ id: 'ws-1' }),
-      expect.any(Object)
     );
+    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'task.created', { targetLocalUiUrl: undefined });
   });
 
   it('sets createdByAccountId from resolveCreatorContext', async () => {
@@ -1212,7 +1225,7 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.parentTaskId).toBe('parent-task-1');
   });
 
-  it('passes workspace with webhook config to dispatchNewTask', async () => {
+  it('passes workspace with webhook config to the creation announcement', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -1247,12 +1260,8 @@ describe('POST /api/tasks', () => {
     });
     await POST(request);
 
-    // dispatchNewTask receives the workspace with webhook config
-    expect(mockDispatchNewTask).toHaveBeenCalledWith(
-      createdTask,
-      workspace,
-      expect.any(Object)
-    );
+    // The announcement carries the workspace with webhook config
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledWith(createdTask, workspace);
   });
 
   it('creates task with project field set', async () => {

@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 // Mock functions for deps injected via DI (not mock.module — avoids polluting other test files)
 const mockBuildMissionContext = mock(() => Promise.resolve(null as any));
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
+const mockWakeTask = mock(() => Promise.resolve());
 const mockGetOrCreateCoordinationWorkspace = mock(() => Promise.resolve({ id: 'orchestrator-ws' }));
 const mockGetMissionSpendUsd = mock(() => Promise.resolve(0));
 const mockExhaustMissionBudget = mock(() => Promise.resolve());
@@ -139,7 +140,8 @@ import { runMission } from './mission-run';
 
 const deps = {
   buildMissionContext: mockBuildMissionContext as any,
-  dispatchNewTask: mockDispatchNewTask as any,
+  announceTaskCreated: mockAnnounceTaskCreated as any,
+  wakeTask: mockWakeTask as any,
   getOrCreateCoordinationWorkspace: mockGetOrCreateCoordinationWorkspace as any,
   getMissionSpendUsd: mockGetMissionSpendUsd as any,
   exhaustMissionBudget: mockExhaustMissionBudget as any,
@@ -168,7 +170,8 @@ function resetMissionRunMocks() {
     mockInsertOnConflictDoNothing.mockReset();
     mockInsertReturning.mockReset();
     mockBuildMissionContext.mockReset();
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     mockGetMissionSpendUsd.mockReset();
@@ -272,7 +275,8 @@ describe('runMission', () => {
     expect(insertCall.outputRequirement).toBe('none');
 
     // Verify dispatch was called
-    expect(mockDispatchNewTask).toHaveBeenCalledWith(createdTask, { id: 'ws-1', name: 'Test WS' });
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledWith(createdTask, { id: 'ws-1', name: 'Test WS' });
+    expect(mockWakeTask).toHaveBeenCalledWith(createdTask.id, 'task.created');
   });
 
   // Regression: the manual run path emitted nothing on the mission channel, so a
@@ -552,7 +556,7 @@ describe('runMission', () => {
       }),
     );
     // Must not dispatch
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('skips dispatch and pauses the mission when the heartbeat circuit breaker trips', async () => {
@@ -582,7 +586,7 @@ describe('runMission', () => {
       errorSignature: 'weekly limit',
     }));
     expect(mockInsert).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('dedupes against a cron-created schedule task when mission has a scheduleId', async () => {
@@ -616,7 +620,7 @@ describe('runMission', () => {
     expect(result.deduped).toBe(true);
     expect(result.task.id).toBe('cron-task-1');
     expect(mockInsert).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('auto-creates coordination workspace when mission has no workspaceId', async () => {
@@ -689,7 +693,7 @@ describe('runMission', () => {
     expect(result.deduped).toBe(true);
     expect(result.task?.id).toBe('task-winner');
     // Dispatch must NOT be called for the loser path
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('computes heartbeatTickAnchor from schedule.lastRunAt on an auto_retry cycle', async () => {
@@ -754,7 +758,7 @@ describe('runMission', () => {
 
     expect(result.deduped).toBe(true);
     expect(result.task).toBeNull();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('returns skippedBlocked when upstream dependency is not yet met', async () => {
@@ -954,7 +958,7 @@ describe('runMission', () => {
     expect(result.skippedBudgetExhausted).toBe(true);
     expect(mockExhaustMissionBudget).toHaveBeenCalledWith('obj-1', 'Expensive Mission', 0.05, 0.01);
     expect(mockInsert).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('allows spawn when spend < budget', async () => {
@@ -1075,7 +1079,7 @@ describe('runMission — open-PR planning gate', () => {
 
     expect(result.skippedPrOpen).toBe(true);
     expect(result.task).toBeNull();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
     const [missionId, opts] = mockNotifyMissionPrReady.mock.calls[0] as any[];
     expect(missionId).toBe('obj-1');
     expect(opts.prNumber).toBe(77);

@@ -10,7 +10,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
@@ -1522,10 +1522,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (intake.outcome.action !== 'attached') {
-      await dispatchNewTask(task, targetWorkspace, {
-        assignToLocalUiUrl,
-        runnerPreference,
-      });
+      await announceTaskCreated(task, targetWorkspace);
+      await wakeTask(task.id, 'task.created', { targetLocalUiUrl: assignToLocalUiUrl });
     }
 
     // The decision model's look at the category (lib/task-category-decision.ts):

@@ -3,7 +3,7 @@ import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
@@ -316,10 +316,11 @@ async function dispatchWorkerEvalTask(opts: {
 
   if (!task) return { ok: false, reason: 'Worker eval task insert returned no row' };
 
-  await dispatchNewTask(
+  await announceTaskCreated(
     { id: task.id, title, description: null, workspaceId: mission.workspaceId, mode: 'execution', priority: 2, missionId: mission.id },
     workspace as any,
   ).catch(e => console.error(`[criteria-worker-eval] dispatch failed for task ${task.id}:`, e));
+  await wakeTask(task.id, 'task.created');
 
   console.log(
     `[criteria-worker-eval] mission ${mission.id}: dispatched ${task.id} to evaluate criteria [${evalContext.criterionIndices.join(', ')}]`

@@ -6,7 +6,7 @@ const mockResolveOpenWorkerForUser = mock(() => ({}) as any);
 const mockMissionNotesFindMany = mock(() => Promise.resolve([] as any[]));
 const mockTasksFindFirst = mock(() => Promise.resolve(null) as any);
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null) as any);
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'updated' } as any));
 const mockSupersedeAncestorEscalations = mock(() => Promise.resolve());
 
@@ -18,7 +18,23 @@ const mockPerformLandingAction = mock((_i: any) => Promise.resolve({} as any));
 mock.module('@/lib/landing-action-run', () => ({ performLandingAction: mockPerformLandingAction }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/pr-resolve', () => ({ resolveOpenWorkerForUser: mockResolveOpenWorkerForUser }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
 
@@ -112,7 +128,8 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     mockTasksReturning.mockReset();
     mockTasksReturning.mockResolvedValue([{ id: 'apply-task-1' }]);
     mockMissionNotesValues.mockReset();
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockAppendPrActivity.mockReset();
     mockSupersedeAncestorEscalations.mockReset();
     mockPerformLandingAction.mockReset();
@@ -166,7 +183,8 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true, dispatched: true, taskId: 'apply-task-1' });
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
 
     const inserted = mockTasksValues.mock.calls[0][0];
@@ -203,7 +221,8 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true, dispatched: true, taskId: 'apply-task-1' });
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
 
     const inserted = mockTasksValues.mock.calls[0][0];
@@ -259,7 +278,8 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true, dispatched: false, taskId: 'existing-task-1' });
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
     expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
   });
 });
@@ -271,7 +291,8 @@ describe('POST /api/prs/[prNumber]/apply-recommendation — signed landing link'
     mockResolveOpenWorkerForUser.mockReset();
     mockMissionNotesFindMany.mockReset();
     mockMissionNotesFindMany.mockResolvedValue([]);
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockPerformLandingAction.mockReset();
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
     mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
@@ -303,7 +324,8 @@ describe('POST /api/prs/[prNumber]/apply-recommendation — signed landing link'
     });
     // No open escalation note is needed for a landing tap.
     expect(mockMissionNotesFindMany).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('rejects an expired link with 410 and a replayed one with 200 alreadyDone', async () => {
