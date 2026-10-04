@@ -25,6 +25,7 @@ import { initHistory, searchSessions, getSession, getArchivedData, getStats as g
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
 import { emitHeartbeatTick } from './heartbeat-log';
+import { sweepStaleSessionPromptFiles } from './session-prompt-files';
 import { heartbeatState, withClaimHealthCheck } from './claim-budget-signals';
 import { authorizeLocalRequest, escapeHtml, injectLocalToken, isLoopbackAddress, loadOrCreateLocalToken, resolveBindHost } from './local-server-auth';
 
@@ -519,6 +520,15 @@ if (ONCE_RUN) {
     env: process.env as Record<string, string | undefined>,
   });
   process.exit(code);
+}
+
+// Crash recovery: role/skill text a previous runner process left on disk (a
+// session that never reached its cleanup) plus the persistent caches older
+// runner versions kept. Sessions of another live runner are left alone.
+{
+  const swept = sweepStaleSessionPromptFiles();
+  const n = swept.sessions.length + swept.legacy.length;
+  if (n > 0) console.log(`[session-prompts] Removed ${n} leftover role/skill dir(s) from earlier runs`);
 }
 
 // Initialize clients (null if no API key - will show setup UI)

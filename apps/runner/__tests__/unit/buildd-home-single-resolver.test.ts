@@ -23,10 +23,8 @@ const ALLOWLIST: Record<string, string> = {
   // Takes an explicit env and is imported by raw-`bun test` integration
   // files that do not set BUILDD_HOME; it only reads a token file.
   'local-server-auth.ts': 'env-injected token lookup, not a store',
-  // Follow-ups: both ignore BUILDD_HOME entirely today, so routing them through
-  // the resolver changes where production reads/writes, not just test safety.
-  // roles.ts is also owned by an in-flight PR.
-  'roles.ts': 'follow-up: role checkouts ignore BUILDD_HOME',
+  // Follow-up: ignores BUILDD_HOME entirely today, so routing it through the
+  // resolver changes where production reads/writes, not just test safety.
   'login.ts': 'follow-up: login config ignores BUILDD_HOME',
 };
 

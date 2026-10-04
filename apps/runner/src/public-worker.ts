@@ -33,6 +33,11 @@ export const WITHHELD_WORKER_FIELDS = [
   'assertionReAuthFailed',
   'roleEnvSecrets', // resolved secret VALUES (ENV_NAME -> value), never client-safe
   'modelEndpoint', // the team agent model endpoint's key
+  // Prompt text: the role persona, the skill bodies and the packaged role
+  // bundle. Not credentials, but never echoed to a client either.
+  'roleInstructions',
+  'skillBundles',
+  'roleBundle',
 ] as const satisfies ReadonlyArray<keyof LocalWorker>;
 
 export type WithheldWorkerField = (typeof WITHHELD_WORKER_FIELDS)[number];
@@ -132,8 +137,6 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   currentPromptId: true,
   commandLifecycle: true,
   modelCapabilities: true,
-  roleInstructions: true,
-  skillBundles: true,
   roleEnvMissing: true,
   modelEndpointIgnored: true,
   githubCredentials: true, // a mode marker; the token itself is never on the worker
@@ -148,6 +151,9 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   codexCredential: false,
   modelEndpoint: false,
   roleConfig: false,
+  roleInstructions: false,
+  skillBundles: false,
+  roleBundle: false,
   assertionTokenCache: false,
   assertionReAuthFailed: false,
   roleEnvSecrets: false,

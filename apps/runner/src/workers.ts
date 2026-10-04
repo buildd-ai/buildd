@@ -14,7 +14,8 @@ import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { syncSkillToLocal } from './skills.js';
-import { resolveRoleEnv, unmetRoleEnv, RoleEnvGapLog, getRoleDir, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleConfig, type RoleInstructions } from './roles.js';
+import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, writeSessionRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
+import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
@@ -1594,7 +1595,7 @@ export class WorkerManager {
   private async startClaimedWorker(claimedWorker: any): Promise<LocalWorker | null> {
     const prepared = await this.prepareClaimedWorker(claimedWorker);
     if (prepared.kind !== 'ready') return null;
-    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.role);
   }
 
   /**
@@ -1613,7 +1614,7 @@ export class WorkerManager {
     claimedWorker: any,
     fallbackTask?: BuilddTask,
   ): Promise<
-    | { kind: 'ready'; task: BuilddTask; cwd: string; overlayFrom?: string }
+    | { kind: 'ready'; task: BuilddTask; cwd: string; role?: { bundle: RoleBundle; overlay: boolean } }
     | { kind: 'no_task' }
     | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string; githubThrottled?: boolean }
   > {
@@ -1661,9 +1662,10 @@ export class WorkerManager {
       return { kind: 'unresolvable', task, wsName, repoHint };
     }
 
-    // Role cwd + overlay source. The overlay itself is deferred to
-    // startFromClaim, which runs it against the worktree once one exists.
-    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath);
+    // Role cwd + bundle (fetched per claim, held in memory). The overlay is
+    // deferred to startFromClaim, which runs it against the worktree once one
+    // exists; role skill files are written per session in startSession.
+    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath, claimedWorker.id);
     if (roleCwd.cwd !== workspacePath) {
       console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${roleCwd.cwd}`);
     }
@@ -1678,7 +1680,7 @@ export class WorkerManager {
       notifyBrokerCredentials(pendingRefreshes);
     }
 
-    return { kind: 'ready', task, cwd: roleCwd.cwd, overlayFrom: roleCwd.overlayFrom };
+    return { kind: 'ready', task, cwd: roleCwd.cwd, ...(roleCwd.roleBundle ? { role: { bundle: roleCwd.roleBundle, overlay: !!roleCwd.overlay } } : {}) };
   }
 
   /**
@@ -1895,15 +1897,15 @@ export class WorkerManager {
       );
     }
     if (prepared.kind !== 'ready') return null; // unreachable: `task` is the fallback
-    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.role);
   }
 
   private async startFromClaim(
     claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
-    /** Role directory to overlay into the session cwd once the worktree exists. */
-    roleOverlayDir?: string,
+    /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
+    role?: { bundle: RoleBundle; overlay: boolean },
   ): Promise<LocalWorker | null> {
 
     // Refresh the runner heartbeat record immediately so the stale-workers cron
@@ -2081,6 +2083,7 @@ export class WorkerManager {
       worker.codexCredential = claimedWorker.codexCredential;
       console.log(`[Worker ${claimedWorker.id}] Received Codex credential for accountId=${claimedWorker.codexCredential.accountId}`);
     }
+    if (role) worker.roleBundle = role.bundle;
     if (claimedWorker.roleConfig) {
       worker.roleConfig = claimedWorker.roleConfig;
       console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
@@ -2341,9 +2344,9 @@ export class WorkerManager {
     // `git worktree add` only checks out tracked content, so role skills and
     // .mcp.json written into the base clone first never reached the directory
     // the agent actually runs in (and `settingSources: 'project'` reads from).
-    if (roleOverlayDir && !startBlock) {
+    if (role?.overlay && !startBlock) {
       try {
-        await overlayRoleFiles(roleOverlayDir, sessionCwd);
+        await overlayRoleFiles(role.bundle, sessionCwd);
       } catch (err) {
         // Non-fatal: the persona still arrives via the system prompt. Visible
         // rather than silent, because missing skills change what the agent can do.
@@ -3015,9 +3018,9 @@ export class WorkerManager {
    * the server). The claim-delivered source is independent of `roleConfig` so
    * an MCP-registered role with no R2 bundle still gets its declared vars.
    */
-  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
-    const fileBased = worker.roleConfig
-      ? await resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>)
+  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleBundle' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    const fileBased = worker.roleBundle
+      ? resolveRoleEnvMapping(worker.roleBundle.envMapping, process.env as Record<string, string>)
       : { resolved: {}, missing: [] };
     return {
       resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
@@ -3108,6 +3111,9 @@ export class WorkerManager {
     // Per-worker CLAUDE_CONFIG_DIR for managed claude_credential tokens.
     // Cleaned up in finally — never persist between runs (access_token is refreshed at claim time).
     let claudeConfigDir: string | undefined;
+    // Set when this session wrote role/skill files into <cwd>/.claude/skills,
+    // which the SDK reads only through the `project` setting source.
+    let wroteSessionSkills = false;
     // Codex AGENTS.md handle (Phase 2A): records whether we created or appended
     // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
     // and avoid dirtying the repo.
@@ -3240,17 +3246,32 @@ export class WorkerManager {
           )
         : [];
 
-      // Sync skills to disk for native SDK discovery (no prompt injection).
+      // Write role and skill files for THIS session only (no prompt injection,
+      // no cross-task disk cache): into <cwd>/.claude/skills, where the SDK
+      // discovers them via the `project` setting source. Recorded in the
+      // worker's session manifest and removed in this invocation's finally.
       // Bundles arrive on the claim response (worker.skillBundles), resolved
       // from task.context.skillSlugs by attachSkillBundles server-side —
       // never on task.context itself, which only ever carries the slugs.
       const skillBundles = worker.skillBundles;
       const skillSlugs: string[] = (task.context as any)?.skillSlugs || [];
 
+      if (worker.roleBundle) {
+        try {
+          await writeSessionRoleFiles(worker.roleBundle, cwd, worker.id);
+          if (worker.roleBundle.skills.length > 0) wroteSessionSkills = true;
+        } catch (err) {
+          const label = `Role file write failed: ${err instanceof Error ? err.message : String(err)}`;
+          console.warn(`[Worker ${worker.id}] ${label}`);
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+        }
+      }
+
       if (skillBundles && skillBundles.length > 0) {
         for (const bundle of skillBundles) {
           try {
-            await syncSkillToLocal(bundle);
+            await syncSkillToLocal(bundle, { sessionCwd: cwd, workerId: worker.id });
+            wroteSessionSkills = true;
             this.addMilestone(worker, { type: 'status', label: `Skill synced: ${bundle.name}`, ts: Date.now() });
             if (!skillSlugs.includes(bundle.slug)) {
               skillSlugs.push(bundle.slug);
@@ -4256,16 +4277,21 @@ export class WorkerManager {
           : {}),
         abortController,
         env: cleanEnv,
-        settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
-        // 'user' is needed for skills in ~/.claude/skills, but must not carry
-        // the host operator's own CLAUDE.md / rules into the worker. 'project'
-        // walks every ancestor of the cwd, which for a nested worktree includes
-        // the primary clone — its CLAUDE.md arrived headed with the primary path
-        // and sent agents there (see primaryCloneMemoryExcludes).
+        // 'user' keeps the operator's own ~/.claude/skills available, but must
+        // not carry the host operator's own CLAUDE.md / rules into the worker.
+        // 'project' loads CLAUDE.md AND the session skills written into
+        // <cwd>/.claude/skills — so a workspace that opted out of CLAUDE.md
+        // still gets 'project' when this session wrote skills, with the
+        // project memory files excluded instead. 'project' walks every ancestor
+        // of the cwd, which for a nested worktree includes the primary clone —
+        // its CLAUDE.md arrived headed with the primary path and sent agents
+        // there (see primaryCloneMemoryExcludes).
+        settingSources: useClaudeMd || wroteSessionSkills ? ['user', 'project'] : ['user'],
         settings: {
           claudeMdExcludes: [
             ...hostUserMemoryExcludes(homedir(), cleanEnv.CLAUDE_CONFIG_DIR),
             ...primaryCloneMemoryExcludes(cwd, repoPath),
+            ...(!useClaudeMd && wroteSessionSkills ? projectMemoryExcludes(cwd) : []),
           ],
         },
         permissionMode,
@@ -5595,6 +5621,10 @@ export class WorkerManager {
       if (agentRunnerHome) {
         cleanupAgentRunnerHome(agentRunnerHome);
       }
+      // Role and skill text written for this session. Unconditional and per
+      // invocation, like the runner home above: a resumed or closing-turn
+      // session writes its own copy from the in-memory bundles.
+      cleanupSessionPromptFiles(worker.id);
       if (delegatedToClosingTurn) {
         // The nested closing-turn call above already ran ITS OWN full
         // try/catch/finally to completion — including this exact cleanup
