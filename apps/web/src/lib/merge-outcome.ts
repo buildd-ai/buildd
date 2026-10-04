@@ -66,18 +66,3 @@ export function resolveMergeOutcome(
 
   return { kind: 'error', message: message || 'Merge failed' };
 }
-
-/**
- * Minimum quiet period before a tab regaining visibility re-renders Home.
- * Long enough that flicking between tabs doesn't hammer the server component,
- * short enough that a tab left open overnight is never acted on stale.
- */
-export const MIN_VISIBILITY_REFRESH_MS = 30_000;
-
-export function shouldRefreshOnVisible(
-  lastRefreshAt: number,
-  now: number,
-  minIntervalMs: number = MIN_VISIBILITY_REFRESH_MS,
-): boolean {
-  return now - lastRefreshAt >= minIntervalMs;
-}
