@@ -141,6 +141,8 @@ export async function PATCH(
       .where(eq(accounts.id, id))
       .returning();
 
+    invalidateAccountCacheByHash(account.apiKey);
+
     return NextResponse.json({
       maxConcurrentWorkers: updated[0]?.maxConcurrentWorkers || maxConcurrentWorkers,
     });

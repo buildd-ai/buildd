@@ -8,6 +8,7 @@ const mockAccountsFindFirst = mock(() => null as any);
 const mockAccountsDelete = mock(() => ({
   where: mock(() => Promise.resolve()),
 }));
+const mockInvalidateAccountCacheByHash = mock(() => {});
 let lastMaxConcurrentWorkers = 10;
 const mockReturning = mock(() => Promise.resolve([{ id: '11111111-1111-4111-8111-111111111111', maxConcurrentWorkers: lastMaxConcurrentWorkers }]));
 const mockWhere = mock(() => ({ returning: mockReturning }));
@@ -32,6 +33,11 @@ mock.module('@/lib/team-access', () => ({
 
 mock.module('@/lib/key-level-policy', () => ({
   canAdministerTeamKeys: (role: string | null) => role === 'owner' || role === 'admin',
+}));
+
+mock.module('@/lib/api-auth', () => ({
+  invalidateAccountCacheByHash: mockInvalidateAccountCacheByHash,
+  invalidateAccountWorkspaceCache: mock(() => {}),
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -179,8 +185,9 @@ describe('PATCH /api/accounts/[id] — maxConcurrentWorkers (team owners and adm
     mockGetUserTeamRole.mockReset();
     mockGetUserTeamRole.mockResolvedValue('owner');
     mockAccountsFindFirst.mockReset();
-    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1' });
+    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', apiKey: 'bld_test123' });
     mockUpdateSet.mockClear();
+    mockInvalidateAccountCacheByHash.mockClear();
     process.env.NODE_ENV = 'production';
   });
 
@@ -244,7 +251,7 @@ describe('PATCH /api/accounts/[id] — maxConcurrentWorkers (team owners and adm
     expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 
-  it('lets a team admin update maxConcurrentWorkers', async () => {
+  it('lets a team admin update maxConcurrentWorkers and invalidates the cache', async () => {
     mockGetUserTeamRole.mockResolvedValue('admin');
     const req = new NextRequest('http://localhost:3000/api/accounts/account-1', {
       method: 'PATCH',
@@ -255,9 +262,10 @@ describe('PATCH /api/accounts/[id] — maxConcurrentWorkers (team owners and adm
     const data = await res.json();
     expect(data.maxConcurrentWorkers).toBe(10);
     expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateAccountCacheByHash).toHaveBeenCalledWith('bld_test123');
   });
 
-  it('lets a team owner update maxConcurrentWorkers', async () => {
+  it('lets a team owner update maxConcurrentWorkers and invalidates the cache', async () => {
     const req = new NextRequest('http://localhost:3000/api/accounts/account-1', {
       method: 'PATCH',
       body: JSON.stringify({ maxConcurrentWorkers: 3 }),
@@ -266,5 +274,6 @@ describe('PATCH /api/accounts/[id] — maxConcurrentWorkers (team owners and adm
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.maxConcurrentWorkers).toBe(3);
+    expect(mockInvalidateAccountCacheByHash).toHaveBeenCalledWith('bld_test123');
   });
 });
