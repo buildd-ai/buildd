@@ -1132,4 +1132,21 @@ describe('DELETE /api/workspaces/[id]', () => {
     const data = await res.json();
     expect(data.success).toBe(true);
   });
+
+  // Owner only: an admin or member answers like a missing workspace. The mock
+  // honours a requiredRole the way team-access does, so this asserts the role
+  // decision whichever way the route asks for it.
+  for (const role of ['admin', 'member'] as const) {
+    it(`404s a session ${role} and deletes nothing`, async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      const rank = { owner: 3, admin: 2, member: 1 } as const;
+      mockVerifyWorkspaceAccess.mockImplementation(async (_u: string, _w: string, required?: keyof typeof rank) =>
+        required && rank[role] < rank[required] ? null : { teamId: 'team-1', role });
+
+      const res = await DELETE(createMockRequest({ method: 'DELETE' }), { params: mockParams });
+
+      expect(res.status).toBe(404);
+      expect(mockWorkspacesDelete).not.toHaveBeenCalled();
+    });
+  }
 });

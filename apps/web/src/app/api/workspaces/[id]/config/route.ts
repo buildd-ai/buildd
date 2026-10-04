@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { roleHas } from '@/lib/permissions';
 import { parseMergePolicy, findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import type { WorkspacePolicyConfig, WorkspacePolicyPreset, RiskClassName } from '@buildd/shared';
 
@@ -144,7 +145,7 @@ async function verifyWriteAccess(
     if (user && !apiAccount) {
         const access = await verifyWorkspaceAccess(user.id, workspaceId);
         if (!access) return 'not_found';
-        return access.role === 'owner' || access.role === 'admin' ? 'ok' : 'forbidden';
+        return roleHas(access.role, 'manage_workspace_settings') ? 'ok' : 'forbidden';
     }
     if (apiAccount) {
         const ws = await db.query.workspaces.findFirst({

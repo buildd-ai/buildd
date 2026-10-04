@@ -20,10 +20,13 @@
  *
  * Imports no app module at runtime: team-access.ts builds its admin-tier
  * helpers on this file, and many route tests replace team-access wholesale.
+ * The schema is a namespace import for the same reason: route tests mock it
+ * with only the tables they touch, and a named import of a table the mock
+ * leaves out fails at link time even for a route that only calls `roleHas`.
  */
 import { cache } from 'react';
 import { db } from '@buildd/core/db';
-import { teamMembers, teams } from '@buildd/core/db/schema';
+import * as schema from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
@@ -240,11 +243,11 @@ export function keyLevelHas(level: string | null | undefined, permission: Permis
 export const getUserTeamRoles = cache(async (userId: string): Promise<Map<string, TeamRole | string>> => {
   const [memberships, personalTeam] = await Promise.all([
     db.query.teamMembers.findMany({
-      where: eq(teamMembers.userId, userId),
+      where: eq(schema.teamMembers.userId, userId),
       columns: { teamId: true, role: true },
     }),
     db.query.teams.findFirst({
-      where: eq(teams.slug, `personal-${userId}`),
+      where: eq(schema.teams.slug, `personal-${userId}`),
       columns: { id: true },
     }),
   ]);
