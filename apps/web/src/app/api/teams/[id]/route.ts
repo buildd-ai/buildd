@@ -9,22 +9,16 @@ import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { isValidTimezone } from '@buildd/core/timezone';
 import { isUuid } from '@/lib/uuid';
 import { isChatTierName } from '@buildd/shared';
-
-type TeamRole = 'owner' | 'admin' | 'member';
+import { roleHas, type Permission, type TeamRole } from '@/lib/permissions';
 
 /** Fits numeric(10, 2) with room to spare; anything above is a typo. */
 const MAX_CHAT_BUDGET_USD = 100_000;
 
-const ROLE_HIERARCHY: Record<TeamRole, number> = {
-  owner: 3,
-  admin: 2,
-  member: 1,
-};
-
+/** The caller's role in the team, or null when not a member or `permission` is not held. */
 async function verifyTeamAccess(
   userId: string,
   teamId: string,
-  requiredRole?: TeamRole
+  permission?: Permission
 ): Promise<{ role: TeamRole } | null> {
   const membership = await db.query.teamMembers.findFirst({
     where: and(
@@ -37,7 +31,7 @@ async function verifyTeamAccess(
 
   const role = membership.role as TeamRole;
 
-  if (requiredRole && ROLE_HIERARCHY[role] < ROLE_HIERARCHY[requiredRole]) {
+  if (permission && !roleHas(role, permission)) {
     return null;
   }
 
@@ -156,7 +150,7 @@ export async function PATCH(
   const user = session.user;
 
   try {
-    const access = await verifyTeamAccess(user.id, id, 'admin');
+    const access = await verifyTeamAccess(user.id, id, 'manage_team_settings');
     if (!access) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
@@ -304,7 +298,7 @@ export async function DELETE(
   const user = session.user;
 
   try {
-    const access = await verifyTeamAccess(user.id, id, 'owner');
+    const access = await verifyTeamAccess(user.id, id, 'delete_team');
     if (!access) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }

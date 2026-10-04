@@ -23,10 +23,10 @@ import {
 import { parseUpdateEvidenceBackend } from '@/lib/evidence-backend-input';
 import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
 import { isUuid } from '@/lib/uuid';
+import { roleHas } from '@/lib/permissions';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-const isAdmin = (role: string) => role === 'admin' || role === 'owner';
 const notFound = () => NextResponse.json({ error: 'Evidence backend not found' }, { status: 404 });
 
 async function load(req: NextRequest, id: string) {
@@ -53,7 +53,7 @@ export async function PATCH(req: NextRequest, { params }: RouteContext) {
   const found = await load(req, id);
   if (!found.row) return found.res;
   const { viewer, row } = found;
-  if (!isAdmin(viewer.role)) {
+  if (!roleHas(viewer.role, 'manage_evidence_backends')) {
     return NextResponse.json({ error: 'Configuring evidence storage requires team admin or owner' }, { status: 403 });
   }
 
@@ -96,7 +96,7 @@ export async function DELETE(req: NextRequest, { params }: RouteContext) {
   const found = await load(req, id);
   if (!found.row) return found.res;
   const { viewer, row } = found;
-  if (!isAdmin(viewer.role)) {
+  if (!roleHas(viewer.role, 'manage_evidence_backends')) {
     return NextResponse.json({ error: 'Configuring evidence storage requires team admin or owner' }, { status: 403 });
   }
 
