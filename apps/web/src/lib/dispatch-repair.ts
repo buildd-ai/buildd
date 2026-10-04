@@ -7,7 +7,8 @@
 import { db } from '@buildd/core/db';
 import { sql, type SQL } from 'drizzle-orm';
 import { dispatchOutboxHealth, listFutureDispatches } from '@buildd/core/dispatch-outbox';
-import { DISPATCH_DUE_QUEUE } from '@/lib/dispatch-authority';
+import { findPendingTasksWithResolvedDepsAndNoWake } from '@buildd/core/dispatch-dependents';
+import { DISPATCH_DUE_QUEUE, wakeTasks } from '@/lib/dispatch-authority';
 import { clearDueThrough, markDue } from '@/lib/redis';
 
 export { dispatchOutboxHealth };
@@ -57,6 +58,17 @@ export async function backfillStartAtWakes(limit?: number): Promise<number> {
   const result = await db.execute(backfillStartAtWakesSql(limit));
   const rows = (result as { rows?: Array<{ n?: unknown }> }).rows ?? [];
   return Number(rows[0]?.n ?? 0);
+}
+
+/**
+ * Pending tasks whose dependencies resolved with no wake since: the enqueue
+ * after the resolving write never ran. Woken here so the floor's drain sends
+ * them; the finder (packages/core/dispatch-dependents.ts) bounds how often.
+ */
+export async function repairDependencyWakes(): Promise<number> {
+  const ids = await findPendingTasksWithResolvedDepsAndNoWake();
+  await wakeTasks(ids, 'dependency.satisfied');
+  return ids.length;
 }
 
 // ── Timer index (Redis) ────────────────────────────────────────────────────

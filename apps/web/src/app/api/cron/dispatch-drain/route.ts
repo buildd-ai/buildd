@@ -16,7 +16,8 @@
 //   - no param, hourly: the floor, and the only place reconciliation lives.
 //     Drains anything a kick missed, re-seeds the due-queue from the table
 //     (so a lost publish costs an hour, not the wake), backfills startAt
-//     wakes for tasks deferred before the outbox existed, and reports outbox
+//     wakes for tasks deferred before the outbox existed, wakes pending tasks
+//     whose dependencies resolved with no wake recorded, and reports outbox
 //     health: overdue, stuck and failed intents. Repair, not the path.
 //
 // This replaces lib/deferred-dispatch-sweep.ts, the hourly "nudge tasks whose
@@ -39,6 +40,7 @@ import {
   backfillStartAtWakes,
   dispatchOutboxHealth,
   markDispatchBacklog,
+  repairDependencyWakes,
   settleDispatchTimer,
 } from '@/lib/dispatch-repair';
 
@@ -111,19 +113,16 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
     return NextResponse.json(result);
   }
 
-  // Floor tick. The backfill runs first so its scheduled rows are published by
-  // the reseed below; it never adds anything due now, so the drain is unaffected.
+  // Floor tick. Repairs run before the drain: the dependency repair adds wakes
+  // due now, which this drain then sends; the startAt backfill adds only future
+  // ones, which the reseed below publishes.
   const startAtBackfilled = await isolate(backfillStartAtWakes());
+  const dependencyWakes = await isolate(repairDependencyWakes());
   const { totals } = await drainDue();
   const timer = await isolate((async () => {
     await reseedDispatchTimer();
     if (!totals.exhausted) await markDispatchBacklog();
   })());
-  // TODO(dispatch-deps backstop): call the resolved-dependency repair here
-  // (pending tasks whose dependencies resolved with no wake recorded) once the
-  // dependency slice ships it. Until then a lost dependency wake waits for a
-  // runner's poll, exactly as before the outbox.
-  const dependencyRepair = { skipped: 'not_wired' as const };
   const health = await isolate(dispatchOutboxHealth());
 
   if (!failed(health)) {
@@ -136,20 +135,22 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   }
 
   const backfilledCount = failed(startAtBackfilled) ? 0 : (startAtBackfilled as number);
-  const repairErrors = [startAtBackfilled, timer, health].filter(failed).length;
+  const dependencyCount = failed(dependencyWakes) ? 0 : (dependencyWakes as number);
+  const repairErrors = [startAtBackfilled, dependencyWakes, timer, health].filter(failed).length;
   const result = {
     gate: gate.reason,
     drain: totals,
     timer: failed(timer) ? timer : 'reseeded',
-    repair: { startAtBackfilled, dependencyRepair, health },
+    repair: { startAtBackfilled, dependencyWakes, health },
   };
   console.log(
     `[dispatch-drain] floor claimed=${totals.claimed} delivered=${totals.delivered} skipped=${totals.skipped}` +
-    ` failed=${totals.failed} rounds=${totals.rounds} startAtBackfilled=${backfilledCount} repairErrors=${repairErrors}`,
+    ` failed=${totals.failed} rounds=${totals.rounds} startAtBackfilled=${backfilledCount}` +
+    ` dependencyWakes=${dependencyCount} repairErrors=${repairErrors}`,
   );
   report({
     processed: totals.claimed,
-    changed: totals.delivered + backfilledCount,
+    changed: totals.delivered + backfilledCount + dependencyCount,
     errors: totals.failed + repairErrors,
     result,
   });

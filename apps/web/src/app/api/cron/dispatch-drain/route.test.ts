@@ -45,6 +45,7 @@ let health = { overdue: 0, stuck: 0, failed: 0 };
 const backfillStartAtWakes = mock(async () => 0);
 const settleDispatchTimer = mock(async (_ms: number) => {});
 const markDispatchBacklog = mock(async () => {});
+const repairDependencyWakes = mock(async () => 0);
 mock.module('@/lib/dispatch-repair', () => ({
   START_AT_BACKFILL_LIMIT: 500,
   DISPATCH_BACKLOG_MEMBER: 'backlog',
@@ -53,6 +54,7 @@ mock.module('@/lib/dispatch-repair', () => ({
   dispatchOutboxHealth: async () => health,
   settleDispatchTimer,
   markDispatchBacklog,
+  repairDependencyWakes,
 }));
 
 const { GET } = await import('./route');
@@ -66,7 +68,7 @@ beforeEach(() => {
   dueCount = 0;
   drainResults = [];
   health = { overdue: 0, stuck: 0, failed: 0 };
-  for (const m of [drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog]) m.mockClear();
+  for (const m of [drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
 });
 
 describe('GET /api/cron/dispatch-drain', () => {
@@ -94,6 +96,7 @@ describe('GET /api/cron/dispatch-drain', () => {
     // Repair is the floor tick's job, not the timer's.
     expect(reseedDispatchTimer).not.toHaveBeenCalled();
     expect(backfillStartAtWakes).not.toHaveBeenCalled();
+    expect(repairDependencyWakes).not.toHaveBeenCalled();
     expect(reports[0]).toMatchObject({ job: 'dispatch-drain:due', processed: 29, changed: 28, errors: 1 });
   });
 
@@ -121,16 +124,20 @@ describe('GET /api/cron/dispatch-drain', () => {
     expect(markDispatchBacklog).toHaveBeenCalledTimes(1);
   });
 
-  it('floor tick drains, backfills startAt wakes, reseeds the timer and reports outbox health', async () => {
+  it('floor tick repairs dependency and startAt wakes, drains, reseeds the timer and reports outbox health', async () => {
     drainResults = [batch(1)];
     backfillStartAtWakes.mockResolvedValueOnce(2);
+    repairDependencyWakes.mockResolvedValueOnce(4);
     health = { overdue: 1, stuck: 0, failed: 3 };
     const body = await (await call()).json();
     expect(backfillStartAtWakes).toHaveBeenCalledTimes(1);
     expect(drainDispatchOutbox).toHaveBeenCalledTimes(1);
     expect(reseedDispatchTimer).toHaveBeenCalledTimes(1);
-    expect(body.repair).toMatchObject({ startAtBackfilled: 2, health: { overdue: 1, stuck: 0, failed: 3 } });
-    expect(reports[0]).toMatchObject({ job: 'dispatch-drain', changed: 3 });
+    expect(repairDependencyWakes).toHaveBeenCalledTimes(1);
+    // Repaired wakes are queued before the drain, so the same tick sends them.
+    expect(repairDependencyWakes.mock.invocationCallOrder[0]).toBeLessThan(drainDispatchOutbox.mock.invocationCallOrder[0]);
+    expect(body.repair).toMatchObject({ startAtBackfilled: 2, dependencyWakes: 4, health: { overdue: 1, stuck: 0, failed: 3 } });
+    expect(reports[0]).toMatchObject({ job: 'dispatch-drain', changed: 7 });
     expect(reports[0].unrecorded).toBeUndefined();
   });
 

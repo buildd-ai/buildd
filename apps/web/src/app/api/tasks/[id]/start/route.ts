@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray, ne } from 'drizzle-orm';
-import { triggerEvent, channels, events } from '@/lib/pusher';
+import { wakeTask } from '@/lib/dispatch-authority';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -18,7 +18,7 @@ import { BYPASS_HELD_GATE_KEY, BYPASS_MISSION_BUDGET_KEY, CAP_EXEMPT_KEY, hasByp
  *
  * Start a pending task by notifying workers to claim it.
  * Supports dual auth: API key (Bearer) or session cookie.
- * - Broadcasts TASK_ASSIGNED event to workers
+ * - Wakes it through the dispatch authority (cause `manual.start`)
  * - Optionally targets a specific runner instance
  *
  * Body:
@@ -342,32 +342,9 @@ export async function POST(
       targetLocalUiUrl: targetLocalUiUrl || null,
     }));
 
-    // Build minimal task payload for Pusher (10KB event limit).
-    // Full task data (with context, attachments, workspace config) is fetched
-    // via the claim API. Sending the full object can exceed Pusher's limit
-    // and cause silent delivery failure.
-    const taskPayload = {
-      id: task.id,
-      title: task.title,
-      description: task.description,
-      workspaceId: task.workspaceId,
-      status: task.status,
-      mode: task.mode,
-      priority: task.priority,
-      workspace: task.workspace ? {
-        name: task.workspace.name,
-        repo: task.workspace.repo,
-      } : undefined,
-    };
-
-    // Broadcast to workers
-    // If targetLocalUiUrl is provided, only that worker will claim it
-    // Otherwise, any available worker can claim it
-    await triggerEvent(
-      channels.workspace(task.workspaceId),
-      events.TASK_ASSIGNED,
-      { task: taskPayload, targetLocalUiUrl: targetLocalUiUrl || null }
-    );
+    // The wake re-evaluates; the claim route still applies every gate this
+    // route did not override. Delivery sends the (targeted) TASK_ASSIGNED.
+    await wakeTask(task.id, 'manual.start', { targetLocalUiUrl: targetLocalUiUrl || null });
 
     return NextResponse.json({
       started: true,

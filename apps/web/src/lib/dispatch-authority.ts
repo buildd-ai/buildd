@@ -329,11 +329,14 @@ export async function deliverTaskDispatch(row: ClaimedDispatch): Promise<string>
   }
 
   const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig | null | undefined;
-  if (webhookConfig?.enabled && webhookConfig.url) {
-    const notHeldOrLocal = await isTaskNotHeldOrLocal(task.id).catch(() => false);
-    if (webhookWants(webhookConfig, task, route, notHeldOrLocal) && await dispatchToWebhook(webhookConfig, task, route.event, undefined, { cause, dispatchId: row.id })) {
-      return 'webhook';
-    }
+  // The held gate is a query; ask it only once the pure policy says yes.
+  if (
+    webhookConfig
+    && webhookWants(webhookConfig, task, route, true)
+    && await isTaskNotHeldOrLocal(task.id).catch(() => false)
+    && await dispatchToWebhook(webhookConfig, task, route.event, undefined, { cause, dispatchId: row.id })
+  ) {
+    return 'webhook';
   }
 
   if (route.githubActions) {

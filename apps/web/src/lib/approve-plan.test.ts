@@ -135,12 +135,21 @@ mock.module('./effective-roles', () => ({
   },
 }));
 
-const dispatchCalls: any[][] = [];
-mock.module('./task-dispatch', () => ({
-  dispatchPlanChildTask: (...args: any[]) => {
-    dispatchCalls.push(args);
-    return Promise.resolve();
-  },
+const wakeCalls: Array<{ ids: string[]; cause: string }> = [];
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: async (id: string, cause: string) => { wakeCalls.push({ ids: [id], cause }); },
+  wakeTasks: async (ids: readonly string[], cause: string) => { wakeCalls.push({ ids: [...ids], cause }); },
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
 }));
 
 import { approvePlan } from './approve-plan';
@@ -159,7 +168,7 @@ function reset() {
   updateCalls.length = 0;
   effectiveRoles = new Set();
   resolveEffectiveRoleSlugsCalls.length = 0;
-  dispatchCalls.length = 0;
+  wakeCalls.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
   workspaceRow = { gitConfig: null };
   missionRow = null;
@@ -740,41 +749,35 @@ describe('approvePlan — a plan step\'s role reaches the row only if the worksp
 describe('approvePlan — waking runners for ready children', () => {
   beforeEach(reset);
 
-  const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true };
-
-  it('dispatches only the children with no dependency through dispatchPlanChildTask, with the workspace', async () => {
-    workspaceRow = { id: 'ws-1', gitConfig: null, webhookConfig };
+  it('wakes only the children with no dependency, as plan_child.ready, in one call', async () => {
+    workspaceRow = { id: 'ws-1', gitConfig: null };
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
-
-    expect(dispatchCalls).toHaveLength(1);
-    // dispatchPlanChildTask, not dispatchUnblockedTask: the webhook leg is
-    // opt-in via webhookConfig.events and it never starts an Actions run.
-    const [task, workspace, options] = dispatchCalls[0];
-    expect(task.id).toBe(NEXT_IDS[0]);
-    expect(task.title).toBe('Add schema migration');
-    expect(task.workspaceId).toBe('ws-1');
-    expect(workspace.webhookConfig).toEqual(webhookConfig);
-    expect(options).toBeUndefined();
+    // The dependent children are woken by checkDependsOnResolved when their
+    // dependency resolves; until then their creation wake is deferred by the claim.
+    expect(wakeCalls).toEqual([{ ids: [NEXT_IDS[0]], cause: 'plan_child.ready' }]);
   });
 
-  it('carries the child roleSlug so the webhook consumer can route it', async () => {
-    effectiveRoles = new Set(['builder']);
-    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Solo step', roleSlug: 'builder' }] as any);
-    expect(dispatchCalls).toHaveLength(1);
-    expect(dispatchCalls[0][0].roleSlug).toBe('builder');
-  });
-
-  it('does not wake anything for a held mission', async () => {
+  // Held and local-executor missions are refused by the claim route, and the
+  // dispatcher already declines to cold-start a webhook consumer for them. The
+  // trigger wrote a wake for every child anyway, so skipping the label here
+  // saves nothing and only loses why the task became runnable.
+  it('still wakes a held mission\'s children; the claim route holds them', async () => {
     planningTaskRow.missionId = 'mission-1';
     missionRow = { isHeld: true, executor: 'runner' };
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
-    expect(dispatchCalls).toHaveLength(0);
+    expect(wakeCalls).toEqual([{ ids: [NEXT_IDS[0]], cause: 'plan_child.ready' }]);
   });
 
-  it('does not wake runners for a local-executor mission', async () => {
+  it('still wakes a local-executor mission\'s children; the claim route keeps runners off them', async () => {
     planningTaskRow.missionId = 'mission-1';
     missionRow = { isHeld: false, executor: 'local' };
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
-    expect(dispatchCalls).toHaveLength(0);
+    expect(wakeCalls).toEqual([{ ids: [NEXT_IDS[0]], cause: 'plan_child.ready' }]);
+  });
+
+  it('does not need the workspace row to wake', async () => {
+    workspaceRow = null;
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(wakeCalls).toEqual([{ ids: [NEXT_IDS[0]], cause: 'plan_child.ready' }]);
   });
 });

@@ -10,7 +10,7 @@ import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, ty
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
 import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
-import { dispatchPlanChildTask } from './task-dispatch';
+import { wakeTasks } from '@/lib/dispatch-authority';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 
 /**
@@ -165,12 +165,8 @@ export async function approvePlan(
   const workspace = task.workspaceId
     ? await db.query.workspaces.findFirst({
         where: eq(workspaces.id, task.workspaceId),
-        // gitConfig for branch prediction; the rest wakes runners for the
-        // children this plan creates (dispatchPlanChildTask).
-        columns: {
-          id: true, name: true, repo: true, gitConfig: true, webhookConfig: true,
-          githubInstallationId: true, githubRepoId: true,
-        },
+        // gitConfig for branch prediction.
+        columns: { id: true, gitConfig: true },
       })
     : null;
 
@@ -185,7 +181,7 @@ export async function approvePlan(
   const mission = task.missionId
     ? await db.query.missions.findFirst({
         where: eq(missions.id, task.missionId),
-        columns: { workingBranch: true, integrationBranchEnabled: true, isHeld: true, executor: true },
+        columns: { workingBranch: true, integrationBranchEnabled: true },
       })
     : null;
   const integrationBase = missionIntegrationBase(mission);
@@ -451,49 +447,34 @@ export async function approvePlan(
     }
   }
 
-  await wakeRunnersForReadyChildren(survivingPlan, refToId, createdByRef, workspace, mission);
+  await wakeReadyChildren(survivingPlan, refToId, createdByRef);
 
   return { taskIds: createdTaskIds, ...(droppedSteps.length > 0 ? { droppedSteps } : {}) };
 }
 
 /**
- * Wake runners for the children that are claimable the moment the plan lands:
- * those with no resolved dependency. The rest are woken by
- * checkDependsOnResolved when their last dependency completes.
+ * Label the wake for the children that are claimable the moment the plan
+ * lands: those with no resolved dependency. Each child's insert already wrote
+ * a durable wake (the outbox trigger); this records why and kicks delivery.
+ * The dependent children are woken as `dependency.satisfied` by
+ * checkDependsOnResolved when their last dependency resolves.
  *
- * Without this, plan children reached a runner only by polling, so a
- * push-dispatched workspace (webhookConfig, no Pusher subscriber) never heard
- * about them. The webhook is used only when it lists 'task.created' in
- * `events`; otherwise this is a Pusher TASK_ASSIGNED wake (dispatchPlanChildTask). Skipped for a held mission (nothing is claimable until it is
- * armed) and a local-executor mission (runners must never auto-claim it).
- * Best-effort: a failed wake never fails the approval — the poll still finds
- * the task.
+ * Not skipped for a held or local-executor mission: the claim route refuses
+ * those, and delivery already declines to cold-start a webhook consumer for
+ * them. Best-effort: a failed label never fails the approval.
  */
-async function wakeRunnersForReadyChildren(
+async function wakeReadyChildren(
   plan: PlanStep[],
   refToId: Record<string, string>,
   createdByRef: Record<string, typeof tasks.$inferSelect>,
-  workspace: Parameters<typeof dispatchPlanChildTask>[1] | null | undefined,
-  mission: { isHeld?: boolean | null; executor?: string | null } | null | undefined,
 ): Promise<void> {
-  if (!workspace) return;
-  if (mission?.isHeld || mission?.executor === 'local') return;
-
-  for (const step of plan) {
-    const hasDeps = (step.dependsOn ?? []).some((ref) => !!refToId[ref]);
-    const created = createdByRef[step.ref];
-    if (hasDeps || !created) continue;
-    await dispatchPlanChildTask(
-      {
-        ...created,
-        mode: created.mode ?? undefined,
-        priority: created.priority ?? undefined,
-      },
-      workspace,
-    ).catch((err) =>
-      console.error(`[approve-plan] dispatch failed for task ${created.id}:`, err),
-    );
-  }
+  const ready = plan
+    .filter((step) => !(step.dependsOn ?? []).some((ref) => !!refToId[ref]))
+    .map((step) => createdByRef[step.ref]?.id)
+    .filter((id): id is string => !!id);
+  await wakeTasks(ready, 'plan_child.ready').catch((err) =>
+    console.error('[approve-plan] plan child wake failed:', err),
+  );
 }
 
 /**

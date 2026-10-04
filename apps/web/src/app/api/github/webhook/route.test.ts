@@ -677,7 +677,7 @@ function resetAll() {
   mockWorkerOwnsPrUrl.mockClear();
   mockWorkspaceRepoMatches.mockClear();
   mockAnnounceTaskCreated.mockReset();
-  mockWakeTask.mockReset();
+  mockWakeTask.mockClear();
   mockCaptureCiJobLogEvidence.mockClear();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
@@ -1256,7 +1256,7 @@ describe('POST /api/github/webhook', () => {
       expect((inserted.context as any).baseBranch).toBe('buildd/abc12345-fix');
       expect(insertCalls[0].conflict).toBe('nothing');
       expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
-      expect(mockWakeTask).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'ci.retry']]);
     });
 
     // byo-evidence-storage AC-3: the failed job's log is captured as evidence

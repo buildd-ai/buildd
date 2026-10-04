@@ -104,6 +104,28 @@ describe('explicit enqueue', () => {
     expect(rows[0].causes).toEqual(['task.created', 'ci.retry']);
   });
 
+  test('batched with the mutation: both land, or neither does', async () => {
+    const id = await seedTask(workspaceId);
+    await expect(db.batch([
+      db.execute(sql`UPDATE tasks SET priority = 9 WHERE id = ${id}::uuid`),
+      db.execute(enqueueDispatchSql({ taskId: id, cause: 'dependency.satisfied' })),
+      db.execute(sql`SELECT 1/0`),
+    ])).rejects.toThrow('division by zero');
+    const [t] = await q<{ priority: number }>(sql`SELECT priority FROM tasks WHERE id = ${id}::uuid`);
+    expect(t.priority).not.toBe(9);
+    expect((await outboxFor(id)).flatMap(r => r.causes)).not.toContain('dependency.satisfied');
+  });
+
+  test('a successful batch commits the mutation and the intent together', async () => {
+    const id = await seedTask(workspaceId);
+    const results = await db.batch([
+      db.execute(sql`UPDATE tasks SET priority = 7 WHERE id = ${id}::uuid`),
+      db.execute(enqueueDispatchSql({ taskId: id, cause: 'dependency.satisfied' })),
+    ]);
+    expect(results).toHaveLength(2);
+    expect((await outboxFor(id))[0].causes).toEqual(['task.created', 'dependency.satisfied']);
+  });
+
   test('enqueue for a missing task inserts nothing and does not throw', async () => {
     await db.execute(enqueueDispatchSql({ taskId: '00000000-0000-0000-0000-000000000000', cause: 'task.unblocked' }));
   });

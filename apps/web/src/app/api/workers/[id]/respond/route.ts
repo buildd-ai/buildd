@@ -8,7 +8,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
-import { dispatchNewTask, dispatchResumedTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { dispatchResumedTask } from '@/lib/task-dispatch-delivery';
 import {
   appendInstructionHistory,
   enqueuePendingInstruction,
@@ -453,17 +454,16 @@ async function respondByContinuation(args: {
 
   // Wake runners for the continuation, the way every new task is woken.
   // Polling runners would find it eventually; a webhook-only workspace never
-  // would. Held and local-executor missions are not filtered here, matching
-  // the other dispatchNewTask callers: the claim route's gate refuses them.
-  // Best-effort: the answer is already recorded, so a failed wake-up must not
-  // turn it into an error.
+  // would. Held and local-executor missions are not filtered here: the claim
+  // route's gate refuses them. Delivery reads the continuation's inherited
+  // runnerPreference off the row, so a webhook restricted to other runners
+  // does not take it. wakeTask never throws; the dashboard event is
+  // best-effort, since the answer is already recorded.
+  await wakeTask(newTask.id, 'task.created');
   try {
-    // With the continuation's runner preference (inherited from the parent),
-    // so a webhook restricted to other runners does not take it.
-    const runnerPreference = newTask.runnerPreference ?? task?.runnerPreference ?? undefined;
-    await dispatchNewTask(newTask, worker.workspace ?? { id: worker.workspaceId }, runnerPreference ? { runnerPreference } : undefined);
+    await announceTaskCreated(newTask, worker.workspace ?? { id: worker.workspaceId });
   } catch (err) {
-    console.error(`[Worker ${workerId}] Continuation task dispatch failed:`, err);
+    console.error(`[Worker ${workerId}] Continuation task announce failed:`, err);
   }
 
   await postAnswerNote({
