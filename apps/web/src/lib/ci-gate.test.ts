@@ -28,6 +28,8 @@ describe('resolveCiGate', () => {
       kind: 'fixing',
       label: 'Fixing CI · attempt 2 of 3',
       taskId: 'fix-1',
+      taskTitle: null,
+      fixKind: 'ci',
     });
   });
 
@@ -36,12 +38,43 @@ describe('resolveCiGate', () => {
       kind: 'fixing',
       label: 'Fixing CI',
       taskId: 'fix-1',
+      taskTitle: null,
+      fixKind: 'ci',
     });
   });
 
   it('treats a live fix on a still-running suite as fixing, not running', () => {
     const gate = resolveCiGate({ prLifecycleStatus: 'ci_running', liveFixTaskId: 'fix-1' });
     expect(gate?.kind).toBe('fixing');
+  });
+
+  it('reports a live reviewer-retry fix even while CI is green', () => {
+    expect(resolveCiGate({
+      prLifecycleStatus: 'ci_green',
+      liveFixTaskId: 'fix-2',
+      liveFixIteration: 1,
+      maxCiRetries: 3,
+      liveFixKind: 'review',
+      liveFixClaimed: false,
+      liveFixTaskTitle: '[reviewer retry #1] Fix flaky date parsing',
+    })).toEqual({
+      kind: 'fixing',
+      label: 'Fix 1 of 3 queued',
+      taskId: 'fix-2',
+      taskTitle: '[reviewer retry #1] Fix flaky date parsing',
+      fixKind: 'review',
+    });
+  });
+
+  it('says "in progress" once a worker claims the reviewer-retry fix', () => {
+    const gate = resolveCiGate({
+      prLifecycleStatus: 'pr_open',
+      liveFixTaskId: 'fix-2',
+      liveFixIteration: 1,
+      liveFixKind: 'review',
+      liveFixClaimed: true,
+    });
+    expect(gate).toMatchObject({ kind: 'fixing', label: 'Fix 1 in progress', fixKind: 'review' });
   });
 
   it('blocks with the exhausted count when retries ran out', () => {

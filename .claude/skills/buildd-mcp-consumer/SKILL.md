@@ -182,3 +182,18 @@ task's `baseBranch` / mission context to know which applies — don't assume:
 
 Do not call either of these a "feature branch" — every task PR is already a
 feature branch under both strategies, so the term doesn't distinguish them.
+
+That's the PR's *base*. The task's own *head* — the branch `claim_task`
+assigns its worker — is a separate question, and it is always the generated
+`buildd/<id8>-<slug>` name unless the task carries `context.headBranch`
+(mission machinery sets this for a shared integration branch; `create_task`'s
+`headBranch` param sets it directly for a one-off task). If a task's brief
+only *describes* a branch to continue on in prose ("work on
+`ci/some-feature`"), that is invisible to both `claim_task` and `create_pr`:
+the worker still gets assigned the generated name, and a PR opened from the
+described branch instead gets refused as `head_not_owned` — the ownership
+check only accepts the worker's own branch, a retry/dependency of it, or
+`context.headBranch`. If you are filing a task (or an organizer dispatching
+one) whose work must land on an existing or shared branch, set
+`headBranch` at `create_task` time rather than describing it in the
+title/description.

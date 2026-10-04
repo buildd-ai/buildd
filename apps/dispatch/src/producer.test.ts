@@ -38,6 +38,14 @@ describe('producer client', () => {
     await expect(bad.resolve({ id: 'i', attempt: 1, target: 't' })).rejects.toThrow('resolve_bad_response');
   });
 
+  test('a 429 (Buildd rate-limiting a callback key) is retryable like any non-2xx: resolve/relay throw, receipts stay queued', async () => {
+    const limited = () => new Response('{"error":"rate_limited"}', { status: 429, headers: { 'Retry-After': '3' } });
+    const c = createProducerClient({ server: 'https://p.example', ring: RING, fetch: recordingFetch(limited).fn });
+    await expect(c.resolve({ id: 'i', attempt: 1, target: 't' })).rejects.toThrow('resolve_http_429');
+    await expect(c.relay({ id: 'i', attempt: 1, target: 't' })).rejects.toThrow('relay_http_429');
+    expect(await c.sendReceipts([{ id: 'i', attempt: 1, event: 'delivered', at: 'x' }])).toBe(false);
+  });
+
   test('parseResolveResponse', () => {
     expect(parseResolveResponse({ decision: 'deliver', payload: {}, grant: { url: 'u', headers: { a: 1 } } })).toBeNull();
     expect(parseResolveResponse({ decision: 'reschedule', notBefore: 'soon' })).toBeNull();

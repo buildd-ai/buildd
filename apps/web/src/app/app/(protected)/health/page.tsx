@@ -41,6 +41,7 @@ import {
 } from '@/lib/error-pattern-cost-query';
 import { countWorkersInWindow } from '@/lib/action-events';
 import { loadHealthExperiments } from '@/lib/health-experiments';
+import { getDispatchHealth } from '@/lib/dispatch-health';
 import { HealthClient } from './HealthClient';
 import Link from 'next/link';
 
@@ -226,7 +227,7 @@ export default async function HealthPage({
     return (
       <div className="max-w-2xl mx-auto p-6">
         <h1 className="hidden md:block text-2xl font-bold mb-2">Health</h1>
-        <p className="text-sm text-text-tertiary">No workspaces yet.</p>
+        <p className="text-sm text-text-tertiary">No workspaces.</p>
       </div>
     );
   }
@@ -254,6 +255,7 @@ export default async function HealthPage({
     cbmSummary,
     subagentDelegation,
     errorPatterns,
+    dispatchHealth,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
@@ -488,6 +490,11 @@ export default async function HealthPage({
         gatedSince: ERROR_TRACE_GATED_SINCE,
       });
     })().catch(() => null as ErrorPatternPanel | null),
+
+    // Dispatch transport STATE for the scoped workspaces: the same report the
+    // dispatch_health MCP action prints. Postgres counts plus one short Worker
+    // /health probe; a failure hides the section, never the page.
+    getDispatchHealth(scopedWsIds).catch(() => null),
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
@@ -581,6 +588,7 @@ export default async function HealthPage({
       subagentDelegation={subagentDelegation ?? null}
       errorPatterns={errorPatterns ?? null}
       experiments={experiments}
+      dispatchHealth={dispatchHealth ?? null}
       now={now}
     />
   );

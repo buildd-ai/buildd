@@ -443,7 +443,7 @@ function ProviderRoutingToggle({
       setMsg({
         type: 'success',
         text: off.length
-          ? `${off.map(backendLabel).join(' & ')} disabled. Those jobs now run on ${next.map(backendLabel).join(' & ')}. Re-enable any time; per-workspace settings are unchanged.`
+          ? `${off.map(backendLabel).join(' & ')} disabled. Jobs run on ${next.map(backendLabel).join(' & ')}.`
           : 'Both providers enabled (default routing).',
       });
     } catch (e) {
@@ -627,9 +627,9 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       if (data.revoked) {
         // Reads OK but a worker run reported the OAuth session revoked. GET /v1/models
         // can't detect that, so don't show a green pass — direct the user to re-auth.
-        setMsg({ type: 'error', text: 'The token reads OK, but a worker run reported it revoked (logged out or signed in elsewhere). Run `claude setup-token` again and paste the new token.' });
+        setMsg({ type: 'error', text: 'Revoked: a worker run was logged out. Run `claude setup-token` and paste the new token.' });
       } else if (data.verified) {
-        setMsg({ type: 'success', text: 'Credential verified against the Anthropic API.' });
+        setMsg({ type: 'success', text: 'Verified.' });
       } else {
         setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });
       }
@@ -688,7 +688,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       <div>
         <h3 className="text-sm font-medium text-text-primary">Setup token / API key</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Instead of one-tap connect, paste an OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
+          An OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
           or an Anthropic API key (pay-per-token).
         </p>
       </div>
@@ -899,16 +899,12 @@ function OpenAiApiKeyCard({
       testId="openai-key-row"
       title="OpenAI API key"
       chip={matching.length > 0 ? <StatusChip tone="ok">Connected</StatusChip> : <StatusChip tone="idle">Not connected</StatusChip>}
-      meta="Simpler alternative to connecting ChatGPT, for Codex agent tasks."
+      meta="For Codex tasks, instead of a ChatGPT sign-in."
       open={open}
       onToggle={onToggle}
     >
       {scopeControl}
       <StrandedWorkNotice stat={strand} />
-      <p className="text-xs text-text-secondary">
-        A plain OpenAI API key (pay-per-token), stored like the Anthropic key above instead of
-        through a ChatGPT sign-in. Either one lets Codex-backend tasks run.
-      </p>
       {loading ? (
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : matching.length > 0 ? (
@@ -1024,7 +1020,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         setMsg({ type: 'success', text: `Claude connected via OAuth for ${data.teams} of ${data.totalTeams} teams.` });
       } else {
         setStatus(data);
-        setMsg({ type: 'success', text: 'Claude connected via OAuth (managed refresh enabled).' });
+        setMsg({ type: 'success', text: 'Claude connected.' });
       }
     } catch {
       setMsg({ type: 'error', text: 'Failed to exchange code' });
@@ -1102,7 +1098,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       setStatus(data);
       setPasteValue('');
       setPasteOpen(false);
-      setMsg({ type: 'success', text: 'Claude account connected (managed refresh enabled).' });
+      setMsg({ type: 'success', text: 'Claude account connected.' });
     } catch (e) {
       setPasteError(e instanceof Error ? e.message : 'Failed to connect');
     } finally {
@@ -1244,8 +1240,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
                 {allTeams
                   ? `Approve once → applied to all ${teamTargets.length} teams`
                   : fallbackConnected
-                    ? 'Replaces the setup token with a one-tap login. Approve in the browser, then paste a short code.'
-                    : 'Approve in the browser, then paste a short code. No file needed.'}
+                    ? 'Replaces the setup token. Approve in the browser, then paste the code.'
+                    : 'Approve in the browser, then paste the code.'}
               </p>
             </div>
           )}
@@ -1393,7 +1389,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
           if (token.cancelled) return;
           setDevice(null);
           setStatus(data);
-          setMsg({ type: 'success', text: 'Codex connected via device login. buildd now owns this session.' });
+          setMsg({ type: 'success', text: 'Codex connected.' });
           onCredentialChange?.();
           return;
         }
@@ -1638,7 +1634,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
                 className="btn btn-primary">
                 Sign in with device code
               </button>
-              <p className="text-xs text-text-muted">Recommended. Nothing to paste, nothing to go stale.</p>
+              <p className="text-xs text-text-muted">Recommended.</p>
             </div>
           ))}
           <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
@@ -1696,10 +1692,10 @@ function DeviceLoginPanel({ userCode, verificationUri, onCancel }: { userCode: s
       </div>
       <div className="flex items-center gap-2 text-xs text-text-muted">
         <span className="w-2 h-2 bg-accent animate-pulse" />
-        Waiting for approval… buildd connects once you approve.
+        Waiting for approval…
       </div>
       <p className="text-[11px] text-text-muted">
-        Turn on device-code login in ChatGPT → Settings → Security first. Signing in here logs this account out of Codex on other devices.
+        Requires device-code login (ChatGPT → Settings → Security). Signs this account out of Codex elsewhere.
       </p>
     </div>
   );

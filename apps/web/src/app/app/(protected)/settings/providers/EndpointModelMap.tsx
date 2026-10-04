@@ -138,7 +138,6 @@ export function EndpointModelMap({ teamId, workspaceId, request, disabled, onMap
   return (
     <div className="space-y-1" data-testid="endpoint-model-map">
       <p className="field-label">Models</p>
-      <p className="text-text-muted">Which of this endpoint&apos;s models each buildd model goes to.</p>
       <ul className="border-t border-border-default">
         {rows.map((r) => {
           const c = choices[r.model] ?? { value: null, by: 'auto' as const };

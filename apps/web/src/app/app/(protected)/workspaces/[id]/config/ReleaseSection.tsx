@@ -331,7 +331,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                       value: 'scheduled' as ReleaseTrigger,
                       label: 'Scheduled',
                       disabled: true,
-                      help: 'Not available yet. Releases on a cron schedule, such as nightly.',
+                      help: 'Coming soon. Releases on a cron schedule, such as nightly.',
                     },
                   ] as Array<{
                     value: ReleaseTrigger;
@@ -427,7 +427,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
               {loadingReleases ? (
                 <div className="text-xs text-text-muted">Loading…</div>
               ) : !lastRelease ? (
-                <div className="text-xs text-text-muted">No releases yet.</div>
+                <div className="text-xs text-text-muted">No releases.</div>
               ) : (
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                   <DeployStateBadge state={lastRelease.releaseResult?.deployState} />

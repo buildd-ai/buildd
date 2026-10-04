@@ -148,11 +148,20 @@ function lastReplyText(root: Element): Element | null {
   return texts && texts.length > 0 ? texts[texts.length - 1] : null;
 }
 
-/** The first new text block after an approval's card or row: the reply to Confirm or Discard. */
-function replyAfterApproval(root: Element, approvalId: string, before: ReadonlySet<Element>): Element | null {
+/** The text blocks after an approval's card or row. */
+function textsAfterApproval(root: Element, approvalId: string): Element[] {
   const card = [...root.querySelectorAll<HTMLElement>('[data-approval-id]')].find(c => c.dataset.approvalId === approvalId);
-  if (!card) return null;
-  return [...root.querySelectorAll(REPLY_TEXT)].find(t => !before.has(t) && !!(card.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING)) ?? null;
+  if (!card) return [];
+  return [...root.querySelectorAll(REPLY_TEXT)].filter(t => !!(card.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING));
+}
+
+/**
+ * The first text block after an approval's card or row that wasn't there at
+ * Confirm or Discard: the reply. A turn has one answer region, so the reply
+ * can be the turn's earlier answer node, moved below the card with new prose.
+ */
+function replyAfterApproval(root: Element, approvalId: string, before: ReadonlySet<Element>): Element | null {
+  return textsAfterApproval(root, approvalId).find(t => !before.has(t)) ?? null;
 }
 
 /** Desktop is 1024px and up: the docked panel. Below it, phone and tablet share the phone layout. */
@@ -335,7 +344,7 @@ export default function ChatWorkspace(props: ChatWorkspaceProps) {
   const respondToApproval = useCallback((approvalId: string, approved: boolean, reason?: string) => {
     const inner = content.current;
     if (inner) {
-      const before = new Set(inner.querySelectorAll(REPLY_TEXT));
+      const before = new Set(textsAfterApproval(inner, approvalId));
       follow.current = { mode: 'anchor', find: () => replyAfterApproval(inner, approvalId, before) };
     }
     onApproval(approvalId, approved, reason);

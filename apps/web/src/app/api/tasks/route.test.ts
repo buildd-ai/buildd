@@ -344,6 +344,22 @@ describe('GET /api/tasks', () => {
     expect(data.tasks[0].id).toBe('task-1');
   });
 
+  it('lists only its own workspace for a per-task token', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    // Reachable by the minting account: ws-1 (linked) and ws-2 (open); the token's task is in ws-3.
+    mockAccountsFindFirst.mockResolvedValue({
+      id: 'account-123', apiKey: 'bld_xxx', taskScope: { taskId: 't-1', workspaceId: 'ws-3', expiresAt: Date.now() + 60_000 },
+    });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-2' }]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1', workspace: { id: 'ws-1' } }]);
+
+    const response = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).tasks).toEqual([]);
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
+  });
+
   it('returns tasks for session auth (owned workspaces)', async () => {
     const mockTasks = [
       { id: 'task-1', title: 'Task 1', workspaceId: 'ws-1', workspace: { id: 'ws-1' } },
@@ -520,6 +536,32 @@ describe('POST /api/tasks', () => {
     }));
     expect(response.status).toBe(200);
     expect((await response.json()).id).toBe('task-ci');
+  });
+
+  describe('per-task token', () => {
+    const scoped = { id: 'account-run', level: 'worker', teamId: 'team-1', taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+    const created = { id: 'task-follow-up', workspaceId: 'ws-1', title: 'Follow-up', status: 'pending' };
+
+    it('files a follow-up in its own workspace when none is named', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Follow-up' },
+      }));
+      expect(response.status).toBe(200);
+      expect(mockAutoResolveAccountWorkspace).not.toHaveBeenCalled();
+    });
+
+    it('refuses another workspace, before inserting', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Elsewhere' },
+      }));
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace');
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects analytics readers before inserting a task', async () => {
@@ -1580,6 +1622,33 @@ describe('POST /api/tasks', () => {
     });
     await POST(request);
     expect(captured().backend).toBe('claude');
+  });
+
+  // tasks.backend defaults to 'claude', so only this marker tells budget
+  // failover that the creator asked for the backend (provider-failover spec).
+  it('pins an explicitly requested backend so failover never overrides it', async () => {
+    const captured = backendCase();
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', backend: 'claude' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('claude');
+    expect(captured().context?.backendPinned).toBe(true);
+  });
+
+  it('does not pin a backend inherited from a role, mission or workspace default', async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+    expect(captured().context?.backendPinned).toBeUndefined();
   });
 
   it('omits backend (schema default applies) when neither task nor role specify one', async () => {
@@ -3077,22 +3146,21 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(200);
       expect(captured().pathManifest).toEqual(['**']);
       expect(mockScheduleCreationManifestShadow).toHaveBeenCalledTimes(1);
-      const [input, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
-      expect(input).toMatchObject({
-        taskId: captured().id,
-        teamId: 'team-1',
+      // The inserted row goes to the one post-insert hook, which decides eligibility.
+      const [row, ctx, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row).toMatchObject({
+        id: captured().id,
         workspaceId: 'ws-1',
         missionId: 'mission-1',
-        accountId: 'account-123',
         title: 'Build feature X',
         description: 'Do it',
-        callerManifest: ['**'],
+        pathManifest: ['**'],
       });
-      expect(input.createdAt instanceof Date).toBe(true);
+      expect(ctx).toEqual({ teamId: 'team-1', accountId: 'account-123' });
       expect(typeof schedule).toBe('function');
     });
 
-    it('explicit caller manifests win: no prediction is scheduled', async () => {
+    it('an explicit caller manifest reaches the hook as stored (the hook declines it: caller manifests win)', async () => {
       missionPathManifestSetup();
       mockTasksFindMany.mockResolvedValue([]);
       const response = await POST(createMockRequest({
@@ -3101,7 +3169,8 @@ describe('POST /api/tasks', () => {
         body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/feature.ts'] },
       }));
       expect(response.status).toBe(200);
-      expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
+      const [row] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row.pathManifest).toEqual(['apps/web/src/lib/feature.ts']);
     });
 
     it('shadow leaves the manifest_required rejection byte-for-byte unchanged and schedules nothing', async () => {

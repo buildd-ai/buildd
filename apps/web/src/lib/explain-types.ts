@@ -11,6 +11,7 @@
  * caller that wants prose writes it; `explain` never does, and never calls a
  * model to get it.
  */
+import type { BackendRoutingDescription } from '@buildd/core/backend-policy';
 import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource, MissionSituation, MissionStateView } from './mission-state-view';
 import { OUTSTANDING_RANK } from './mission-state-view';
 import type { InlineEvidenceObject } from './evidence-inline';
@@ -37,6 +38,8 @@ export interface ExplainRefs {
   paths?: string[];
   /** How `paths` was determined, when a link names a touch set. */
   touchSource?: TouchSource;
+  /** A `task_dispatch_outbox` row: the wake a pending task is waiting on. */
+  outboxId?: string;
 }
 
 /**
@@ -72,7 +75,8 @@ export type CausalLinkSource =
   | 'gate_events.detail.consecutiveDeferrals'
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
-  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan';
+  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
+  | 'task_dispatch_outbox.status';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
@@ -149,6 +153,8 @@ export interface ExplainProvenance {
   history: ExplainSource | null;
   nextAction: ExplainSource | null;
   gateHistory: ExplainSource | null;
+  /** Present exactly when `backendRouting` is. */
+  backendRouting?: ExplainSource;
 }
 
 export interface ExplainAnswer {
@@ -186,6 +192,13 @@ export interface ExplainAnswer {
    * absent when the task has none. Read the text with `read_evidence`.
    */
   evidenceObjects?: InlineEvidenceObject[];
+  /**
+   * Why the task runs (or last ran) on a backend other than the one it was
+   * filed with: a claim-time flip (budget failover, provider toggle) or a
+   * worker-report failover. Absent when nothing moved it. `describeBackendRouting`
+   * in @buildd/core/backend-policy is the one reader.
+   */
+  backendRouting?: BackendRoutingDescription;
   derivedFrom: ExplainProvenance;
 }
 

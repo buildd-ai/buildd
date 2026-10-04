@@ -10,7 +10,8 @@
  *   check): low cost, no toggle. They run whenever a key resolves.
  * - **opt_in** decisions (task role routing, mission goal-criteria quality, the
  *   conflict-aware orchestration decisions): off unless the team row lists the
- *   capability in `teams.enabledDecisionShadows`. Since the 2026-10-03 owner
+ *   capability in `teams.enabledDecisionShadows`. A new team starts with every
+ *   one listed (`DEFAULT_ENABLED_DECISION_SHADOWS`). Since the 2026-10-03 owner
  *   decision, a new one ships applying (gated by its own rails and confidence
  *   threshold) as soon as it is turned on — "shadow" in some of these names is
  *   a holdover, not a separate logged-only phase a team must graduate out of.
@@ -40,6 +41,7 @@ export type InferenceCapability =
   | 'task_role_apply'
   | 'orchestration_manifest'
   | 'orchestration_claim'
+  | 'orchestration_ordering'
   | 'mission_strand_choice'
   | 'mission_goal_quality'
   | 'scout_probe_selection'
@@ -148,6 +150,19 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Hold/start shadow',
     description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
     costHint: '~$0.00003 per check',
+  },
+  // Jev ordering inputs (knowledge-base: buildd/design/jev-scheduling.md §5:
+  // packages/core/orchestration-overlap-decision.ts and
+  // task-size-bucket-decision.ts). Unlike orchestration_manifest/_claim, these
+  // apply from the first PR (gated, logged) once a team opts in: by
+  // construction they only ever move a claim-planner soft weight or a size
+  // bucket, never a hard edge, a manifest or a dependsOn.
+  orchestration_ordering: {
+    id: 'orchestration_ordering',
+    kind: 'opt_in',
+    label: 'Ordering inputs',
+    description: 'A decision model checks whether a predicted file overlap between two tasks is real, and sizes a task with too few similar completed tasks to size by precedent. Feeds the claim planner\'s ordering only; never a manifest or a dependency.',
+    costHint: '~$0.00003 per look',
   },
   // Stranded local missions (apps/web/src/lib/strand-choice-decision.ts).
   // Shadow first: logged only; it can at most reorder the two buttons, and
@@ -265,6 +280,15 @@ function storedMode(modes: unknown, feature: ServerFeature): FeatureMode | null 
 
 /** The opt-in capabilities. Only these may be listed in `teams.enabledDecisionShadows`. */
 export const OPT_IN_CAPABILITIES = ALL_INFERENCE_CAPABILITIES.filter(c => INFERENCE_CAPABILITIES[c].kind === 'opt_in');
+
+/**
+ * What a new team row starts with in `enabledDecisionShadows`: every opt-in
+ * decision (2026-10-04 owner decision, default on). Applied by the column's
+ * insert default in `db/schema.ts`, so every path that creates a team gets it.
+ * Existing teams keep what they stored, and an opt-in capability added later
+ * is not switched on for them.
+ */
+export const DEFAULT_ENABLED_DECISION_SHADOWS: readonly InferenceCapability[] = Object.freeze([...OPT_IN_CAPABILITIES]);
 
 /** The team columns the gate reads. */
 export interface InferenceGate {

@@ -15,7 +15,7 @@ describe('TaskGrid — empty Activity', () => {
   // from the page that lists tasks.
   it('offers a "New task" action next to "New Mission"', () => {
     const html = renderToStaticMarkup(<TaskGrid tasks={[]} missionFilter={null} missionTitle={null} />);
-    expect(html).toContain('No activity yet');
+    expect(html).toContain('No activity');
     expect(html).toContain('href="/app/missions/new"');
     expect(html).toMatch(/data-testid="activity-empty-new-task"[^>]*>New task</);
     expect(html).toContain('href="/app/tasks/new"');

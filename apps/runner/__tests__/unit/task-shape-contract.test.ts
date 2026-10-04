@@ -37,6 +37,7 @@ import {
   init, say, success, errorResult, completeTask, createPr, createArtifact,
   structuredOutputTool, translateScriptedMessage, isCompleteTaskCall, scriptEnding,
 } from '../fixtures/task-shape-stream';
+import { GENUINELY_BLOCKED_RETRY_OPTION, GENUINELY_BLOCKED_FAIL_OPTION } from '../../src/session-end-classification';
 
 // Read before `fs` is mocked below.
 const SHARED_TYPES_SRC = readFileSync(join(import.meta.dir, '../../../../packages/shared/src/types.ts'), 'utf8');
@@ -82,6 +83,7 @@ const mockUpdateWorker = mock(async (id: string, payload: any) => {
 });
 const mockGetWorkerRemote = mock(async () => (server.status ? { status: server.status } : null));
 const mockClaimTask = mock(async () => ({ workers: [] as any[] }));
+const mockCheckQuestion = mock(async () => { throw new Error('question-check unreachable'); });
 
 // ─── Fake backend ────────────────────────────────────────────────────────────
 
@@ -160,6 +162,7 @@ mock.module('../../src/buildd', () => ({
     searchFeedbackMemories = async () => [];
     getWorkerRemote = mockGetWorkerRemote;
     writeBackCodexAuth = async () => ({});
+    checkQuestion = mockCheckQuestion;
   },
 }));
 
@@ -243,7 +246,25 @@ type Shape = {
   expect: Terminal;
   /** Runs with OPENAI_API_KEY set so a Codex task gets past credential checks. */
   codex?: boolean;
+  /**
+   * The Jev decide/hold/ask gate's reply for a `genuinely_blocked` session
+   * end (session-end-classification.ts). Called once per gate check — a
+   * shape whose script needs more than one (e.g. a push that still doesn't
+   * deliver) returns a fresh reply each call via its own closure. Absent
+   * means the gate is unreachable (the default mock throws), which fails
+   * open to a human-facing park — not a terminal outcome this harness can
+   * assert on, so any shape reaching `genuinely_blocked` must set this.
+   */
+  questionGateReply?: () => Record<string, unknown>;
 };
+
+function decideReply(optionLabel: string, reason: string) {
+  return {
+    verdict: 'decide', outcome: 'decided', disposition: 'decide',
+    decision: { optionIndex: optionLabel === GENUINELY_BLOCKED_RETRY_OPTION ? 0 : 1, label: optionLabel, confidence: 0.9 },
+    reason, version: 'qd1', latencyMs: 5,
+  };
+}
 
 const REVIEW_SCHEMA = {
   type: 'object',
@@ -373,24 +394,40 @@ const SHAPES: Shape[] = [
 
   // ── Failure shapes ────────────────────────────────────────────────────────
   {
-    name: 'pr_required with no PR and no commits: one last nudge turn, declined, then fails with the agent report',
+    // genuinely_blocked (no commits, no PR, no background job, no runner
+    // denial): the Jev gate decides retry once, then — the pushed turn still
+    // not delivering, so classification reaches the gate a second time —
+    // fail. closingTurnOutcome 'declined' because that second gate call's
+    // 'fail' falls through to the session's own standard failure path,
+    // exactly as a declined push does.
+    name: 'pr_required with no PR and no commits: genuinely_blocked, Jev retries then fails, declined with the agent report',
     task: { outputRequirement: 'pr_required' },
     scripts: [
       [init(), say('Could not run the shell in this sandbox.'), success()],
       [say('Still cannot run the shell.'), success()],
     ],
+    questionGateReply: (() => {
+      let calls = 0;
+      return () => {
+        calls++;
+        return calls === 1
+          ? decideReply(GENUINELY_BLOCKED_RETRY_OPTION, 'Take one more shot at it.')
+          : decideReply(GENUINELY_BLOCKED_FAIL_OPTION, 'Still blocked — fail it.');
+      };
+    })(),
     expect: {
       status: 'failed', writer: 'runner', sessions: 2, closingTurnOutcome: 'declined',
       errorMatches: /Still cannot run the shell/,
     },
   },
   {
-    name: 'pr_required with no PR and no commits: the nudge turn opens the PR, task completes',
+    name: 'pr_required with no PR and no commits: genuinely_blocked, Jev decides retry, the pushed turn opens the PR and completes',
     task: { outputRequirement: 'pr_required' },
     scripts: [
       [init(), say('I will pause here and wait.'), success()],
       [...createPr(), ...completeTask('Opened the PR.'), success()],
     ],
+    questionGateReply: () => decideReply(GENUINELY_BLOCKED_RETRY_OPTION, 'Take one more shot at it.'),
     expect: { status: 'completed', writer: 'agent', sessions: 2 },
   },
   {
@@ -459,6 +496,8 @@ function reset() {
   mockGetWorkerRemote.mockClear();
   mockClaimTask.mockReset();
   mockClaimTask.mockImplementation(async () => ({ workers: [] }));
+  mockCheckQuestion.mockClear();
+  mockCheckQuestion.mockImplementation(async () => { throw new Error('question-check unreachable'); });
 }
 
 async function waitFor(pred: () => boolean, timeoutMs = 3000) {
@@ -479,6 +518,9 @@ async function runShape(manager: InstanceType<typeof WorkerManager>, shape: Shap
     ...shape.task,
   };
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/fixture', task }] }));
+  if (shape.questionGateReply) {
+    mockCheckQuestion.mockImplementation(async () => shape.questionGateReply!());
+  }
   const priorKey = process.env.OPENAI_API_KEY;
   if (shape.codex) process.env.OPENAI_API_KEY = 'test-openai-key';
   try {

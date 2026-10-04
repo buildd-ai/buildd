@@ -1,3 +1,4 @@
+import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -9,7 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
@@ -98,7 +99,8 @@ export async function GET(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token lists tasks only in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   // Fall back to session auth
   const user = await getCurrentUser();
@@ -114,6 +116,7 @@ export async function GET(req: NextRequest) {
     let workspaceIds: string[] = await listReachableWorkspaceIds(
       apiAccount ? { account: apiAccount } : { userId: user!.id },
     );
+    if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
 
     // Optional query filters to scope the list and shrink the payload.
     //   ?workspaceId=<id>  — restrict to a single accessible workspace
@@ -359,7 +362,9 @@ export async function POST(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token may file tasks (follow-ups, friction) only in its own
+  // task's workspace, which is also where an unspecified workspace resolves.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   // Fall back to session auth
   const user = await getCurrentUser();
@@ -535,6 +540,8 @@ export async function POST(req: NextRequest) {
         );
       }
       workspaceId = access.workspace.id;
+    } else if (apiAccount?.taskScope) {
+      workspaceId = apiAccount.taskScope.workspaceId;
     } else if (apiAccount) {
       // Auto-resolve: if account linked to exactly one workspace, use it
       const result = await autoResolveAccountWorkspace(apiAccount.id, apiAccount.name);
@@ -546,6 +553,9 @@ export async function POST(req: NextRequest) {
 
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
+    }
+    if (apiAccount && !taskScopeAllowsWorkspace(apiAccount, workspaceId)) {
+      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace' }, { status: 403 });
     }
     gateWorkspaceId = workspaceId;
 
@@ -1091,6 +1101,9 @@ export async function POST(req: NextRequest) {
     //   workspace gitConfig.defaultBackend → schema default ('claude').
     let resolvedBackend: 'claude' | 'codex' | undefined =
       ['claude', 'codex'].includes(rawBackend) ? (rawBackend as 'claude' | 'codex') : undefined;
+    // The caller named the backend itself (not inherited): budget failover must
+    // not override it. tasks.backend alone can't say so — it defaults to 'claude'.
+    const backendPinnedCtx = resolvedBackend ? { [BACKEND_PINNED_KEY]: true } : {};
 
     // Fields a mission task can inherit from its mission. Fetch once and reuse
     // for both outputRequirement and backend resolution.
@@ -1386,6 +1399,7 @@ export async function POST(req: NextRequest) {
           // see task-routing-preview.ts. Lets analytics and the model cell tell
           // "the filer said this" apart from "we guessed this".
           ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+          ...backendPinnedCtx,
         },
         ...(project ? { project } : {}),
         ...(category ? { category } : {}),
@@ -1436,6 +1450,7 @@ export async function POST(req: NextRequest) {
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
             ...(emitsPlan ? { requiresPlanApproval: true } : {}),
             ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+            ...backendPinnedCtx,
             startResolution: deferredStart.resolution,
           },
         } : {}),
@@ -1590,27 +1605,14 @@ export async function POST(req: NextRequest) {
     // The creation-manifest shadow (lib/task-manifest-prediction.ts, design
     // §5a): which files the decision model would declare for a missing-scope
     // task. Opt-in per team, after the response, record only — the manifest,
-    // dependsOn and every rejection above are already final. Explicit (or
-    // deterministically inferred) concrete manifests win, so none is scheduled.
-    if (
-      intake.outcome.action !== 'attached'
-      && (task.taskClass ?? 'work') === 'work'
-      && targetWorkspace.teamId
-      && !hasConcretePathManifest(task.pathManifest ?? null)
-    ) {
+    // dependsOn and every rejection above are already final. The hook decides
+    // eligibility: explicit (or deterministically inferred) concrete manifests
+    // win, and only work rows of a file-shaped kind are predicted.
+    if (intake.outcome.action !== 'attached') {
       try {
-        const taskContext = (task.context ?? null) as Record<string, unknown> | null;
-        scheduleCreationManifestShadow({
-          taskId: task.id,
+        scheduleCreationManifestShadow(task, {
           teamId: targetWorkspace.teamId,
-          workspaceId,
-          missionId: task.missionId ?? null,
           accountId: creatorContext.createdByAccountId ?? null,
-          title: task.title,
-          description: task.description ?? null,
-          createdAt: task.createdAt instanceof Date ? task.createdAt : new Date(),
-          callerManifest: task.pathManifest ?? null,
-          baseRef: typeof taskContext?.baseBranch === 'string' ? taskContext.baseBranch : null,
         }, after);
       } catch (err) {
         console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);

@@ -16,9 +16,19 @@ export type ConfidenceLevel = 'low' | 'medium' | 'high';
 
 export interface OauthSessionForecast {
   kind: 'oauth';
+  source: 'learned_exhaustion_floor';
+  pressureLabel: 'forecast floor pressure';
+  /** No authoritative provider usage percentage is collected here. */
+  providerUsagePct: null;
+  sampleBasis: {
+    quantile: number;
+    metric: string | null;
+    units: 'sonnet_equivalents' | 'raw';
+    windowSource: 'inferred_worker_starts';
+  };
   accountId: string;
   accountName: string;
-  /** 0-100 */
+  /** 0-100 against a learned conservative floor, never provider percent used. */
   pressurePct: number;
   windowEndsAt: string;
   /** null = still learning (< 3 episodes) */
@@ -194,7 +204,7 @@ export const ACTIVE_MISSION_STATUSES = ['active', 'paused', 'budget_exhausted'] 
 /** How far back we look for the burn rate trailing window (24 hours). */
 const BURN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-/** Max OAuth accounts to probe per team (avoids fan-out on large teams). */
+/** Max seats to probe; never truncate registrations within a shared seat. */
 const MAX_OAUTH_ACCOUNTS = 8;
 
 type MissionQueryRow = {
@@ -255,7 +265,6 @@ export async function getBudgetForecast(
         eq(accounts.authType, 'oauth'),
       ),
       columns: { id: true, name: true, seatId: true, budgetResetsAt: true },
-      limit: MAX_OAUTH_ACCOUNTS,
     }).catch(() => [] as OauthAccountRow[]),
 
     // Active missions in scope with a cost budget. Includes:
@@ -347,7 +356,7 @@ export async function getBudgetForecast(
   // Group accounts by seatId so shared-subscription rows are measured together.
   const accountGroups = groupOauthAccountsBySeatId(oauthAccounts as OauthAccountRow[]);
 
-  for (const group of accountGroups.values()) {
+  for (const group of [...accountGroups.values()].slice(0, MAX_OAUTH_ACCOUNTS)) {
     try {
       const accountIds = group.map(a => a.id);
       // Label with most-recently-active account name; fall back to comma-list if all unnamed.
@@ -362,9 +371,9 @@ export async function getBudgetForecast(
         now,
         lastResetsAt: episodes[0]?.resetsAt ?? null,
       });
-      const pressure = oauthBudgetPressure({ usage, capacity });
+      const pressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
       const windowEnd = windowEndsAt(windowStartedAt);
-      const confidence = oauthEpisodeConfidence(capacity.confidence);
+      const confidence = oauthEpisodeConfidence(pressure.confidence);
 
       // Calculate observation age: how old is the newest episode?
       const observationAgeMs = episodes.length > 0
@@ -373,6 +382,16 @@ export async function getBudgetForecast(
 
       oauthSessions.push({
         kind: 'oauth',
+        source: 'learned_exhaustion_floor',
+        pressureLabel: 'forecast floor pressure',
+        providerUsagePct: null,
+        sampleBasis: {
+          quantile: config.quantile,
+          metric: pressure.limiter,
+          units: (pressure.limiter === 'turns' && capacity.weightedTurns) ||
+            (pressure.limiter === 'tokens' && capacity.weightedTokens) ? 'sonnet_equivalents' : 'raw',
+          windowSource: 'inferred_worker_starts',
+        },
         accountId: representativeId,
         accountName: label,
         pressurePct: Math.round(pressure.pct * 100),
@@ -380,7 +399,7 @@ export async function getBudgetForecast(
         confidence,
         limiter: pressure.limiter,
         episodes: capacity.samples,
-        state: capacity.confidence === 'none' ? 'learning' : 'active',
+        state: pressure.confidence === 'none' ? 'learning' : 'active',
         observationAgeMs,
       });
     } catch {

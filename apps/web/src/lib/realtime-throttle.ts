@@ -148,16 +148,22 @@ export interface EscalationRefresher {
 export function createEscalationRefresher(deps: {
   fetch: () => void;
   isHidden: () => boolean;
+  /** Told whenever a relevant event is skipped because the tab is hidden. */
+  onMissed?: () => void;
   clock?: Clock;
 }): EscalationRefresher {
   const clock = deps.clock ?? realClock;
   const lastStatusByWorker = new Map<string, string>();
   let missedWhileHidden = false;
+  const markMissed = () => {
+    missedWhileHidden = true;
+    deps.onMissed?.();
+  };
 
   const throttled = createThrottle(() => {
     // A trailing call can come due after the tab was hidden.
     if (deps.isHidden()) {
-      missedWhileHidden = true;
+      markMissed();
       return;
     }
     deps.fetch();
@@ -183,7 +189,7 @@ export function createEscalationRefresher(deps: {
       if (!relevant) return;
 
       if (deps.isHidden()) {
-        missedWhileHidden = true;
+        markMissed();
         return;
       }
       if (event === 'worker:completed') completedDebounce.call();

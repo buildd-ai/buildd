@@ -134,7 +134,7 @@ describe('Account chat row', () => {
   it('with no team key, a member is told to ask an admin', async () => {
     body = { ...body, canManageTeamKeys: false };
     await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
-    expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('Not set up yet · ask an admin');
+    expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('Not set up · ask an admin');
     expect(host.textContent).not.toContain('not connected');
   });
 

@@ -16,7 +16,7 @@
  * The forecast is NOT trusted to hold work back. Where the 5h wall really sits
  * is too uncertain to delay, deny, pause or downshift a claim on. Its only
  * permitted effect is `oauthParallelismCap`: a lower per-seat concurrency as the
- * window fills, never below one session, and back to the full limit once the
+ * window fills, retaining at least half the configured slots, and back to the full limit once the
  * window resets (pressure is measured per window, so it falls with the reset).
  * Low confidence fails open. It deliberately does not feed the router's
  * `dailyBudgetPct`, whose 95% rule pauses priority-0 work outright.
@@ -220,7 +220,7 @@ export function learnOauthCapacity(
     .slice(0, maxSamples);
 
   const samples = usable.length;
-  const confidence: BudgetConfidence =
+  let confidence: BudgetConfidence =
     samples >= GOOD_SAMPLES ? 'good' : samples >= MIN_SAMPLES ? 'low' : 'none';
 
   if (confidence === 'none') {
@@ -234,19 +234,24 @@ export function learnOauthCapacity(
   const learn = (pick: (e: OauthEpisode) => number): number | null => {
     const positive = usable.map(pick).filter(v => v > 0);
     if (positive.length < MIN_SAMPLES) return null;
+    // Count alone is not estimate quality. Sparse metrics or a wide observed
+    // range cannot justify throttling, even with many worker-only episodes.
+    const floor = quantileFloor(positive, DEFAULT_QUANTILE);
+    if (positive.length < GOOD_SAMPLES || quantileFloor(positive, 0.75) > floor * 2) {
+      confidence = 'low';
+    }
     const capacity = quantileFloor(positive, quantile);
     return capacity > 0 ? capacity : null;
   };
 
-  return {
-    samples,
-    confidence,
+  const metrics = {
     workerCount: learn(e => e.workerCount),
     turns: learn(e => e.turns),
     tokens: learn(e => e.inputTokens + e.outputTokens),
     weightedTurns: learn(e => e.weightedTurns ?? 0),
     weightedTokens: learn(e => e.weightedTokens ?? 0),
   };
+  return { samples, confidence, ...metrics };
 }
 
 /**
@@ -256,6 +261,10 @@ export function learnOauthCapacity(
 export function oauthBudgetPressure(input: {
   usage: OauthWindowUsage;
   capacity: LearnedOauthCapacity;
+  now?: Date;
+  windowStartedAt?: Date;
+  /** Newest exhaustion observation; historical capacity alone is not a live signal. */
+  observedAt?: Date | null;
 }): OauthBudgetPressure {
   const { usage, capacity } = input;
   const base = {
@@ -265,6 +274,14 @@ export function oauthBudgetPressure(input: {
     capacity,
   };
 
+  const age = input.now && input.windowStartedAt
+    ? input.now.getTime() - input.windowStartedAt.getTime() : 0;
+  const observationAge = input.now && input.observedAt
+    ? input.now.getTime() - input.observedAt.getTime() : 0;
+  if (!Number.isFinite(age) || age < 0 || age >= OAUTH_WINDOW_MS ||
+    !Number.isFinite(observationAge) || observationAge < 0 || observationAge >= OAUTH_WINDOW_MS) {
+    return { ...base, confidence: 'none', pct: 0, limiter: null };
+  }
   if (capacity.confidence === 'none') {
     return { ...base, pct: 0, limiter: null };
   }
@@ -333,7 +350,7 @@ export function inferWindowStart(input: {
     // Past this window's expiry ⇒ this start opens a fresh window.
     if (start >= windowStart + OAUTH_WINDOW_MS) windowStart = start;
   }
-  return new Date(windowStart);
+  return windowStart + OAUTH_WINDOW_MS <= now.getTime() ? now : new Date(windowStart);
 }
 
 /** Below this pressure the seat keeps its full concurrency. */
@@ -342,10 +359,11 @@ export const PARALLELISM_PRESSURE_FLOOR = 0.5;
 /**
  * The per-seat session limit learned pressure allows, or null for "no change".
  *
- * Linear from `baseMax` at PARALLELISM_PRESSURE_FLOOR down to 1 at a full window.
- * The floor of 1 is the invariant that keeps this from ever blocking: a seat
- * with nothing running always gets its next claim, so the worst case of a bad
- * forecast is running one session at a time, not running none.
+ * Linear from full concurrency at half pressure to a 50% reduction at saturation.
+ * A p25 floor and turn/price proxies are not provider usage: even good samples
+ * retain systematic uncertainty. Keep at least two slots on a multi-slot seat,
+ * and ceil(baseMax / 2) on larger seats (10 -> 5). Provider exhaustion is a
+ * separate hard gate; this forecast never supplies evidence for that wall.
  *
  * Returns null (fail open) unless the estimate is 'good' — with only a few
  * episodes the learned wall is too noisy to act on at all.
@@ -359,7 +377,8 @@ export function oauthParallelismCap(input: {
   if (!(pressure.pct >= PARALLELISM_PRESSURE_FLOOR)) return null;
   const base = Math.max(1, Math.floor(input.baseMax));
   const headroom = (1 - Math.min(1, pressure.pct)) / (1 - PARALLELISM_PRESSURE_FLOOR);
-  const cap = Math.max(1, Math.min(base, Math.round(1 + (base - 1) * headroom)));
+  const floor = base > 1 ? Math.max(2, Math.ceil(base / 2)) : 1;
+  const cap = Math.min(base, Math.round(floor + (base - floor) * headroom));
   return cap >= base ? null : cap;
 }
 
@@ -375,7 +394,7 @@ export function describeOauthPressure(p: OauthBudgetPressure): string {
   }
   const fmt = (used: number, cap: number | null) => `${used}/${cap ?? '?'}`;
   return (
-    `oauth budget ${Math.round(p.pct * 100)}% [${p.limiter}] ` +
+    `oauth forecast floor pressure ${Math.round(p.pct * 100)}% [${p.limiter}] ` +
     `(workers ${fmt(p.usage.workerCount, p.capacity.workerCount)}, ` +
     `turns ${fmt(p.usage.turns, p.capacity.turns)}, ` +
     `tokens ${fmt(p.usage.tokens, p.capacity.tokens)}; ` +

@@ -41,9 +41,9 @@ export default async function InitiativesListPage() {
     return (
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-[1180px]">
         <div className="card p-8 text-center max-w-md mx-auto mt-10">
-          <p className="text-sm text-text-secondary mb-1">No initiatives yet.</p>
+          <p className="text-sm text-text-secondary mb-1">No initiatives.</p>
           <p className="text-xs text-text-muted mb-4">
-            An initiative groups the missions behind one goal, with an owner and a target date.
+            Groups missions behind one goal, with an owner and a target date.
           </p>
           <Link
             href="/app/initiatives/new"

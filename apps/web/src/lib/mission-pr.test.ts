@@ -313,6 +313,32 @@ describe('evaluateMissionWorkState', () => {
     expect(s.complete).toBe(true);
     expect(s.landedOnIntegrationCount).toBe(0);
   });
+
+  // ── the surface-audit task is `taskClass: 'work'` too (mission-surface-audit.ts),
+  // so it is a deliverable like any other — these two pin how its two reachable
+  // terminal-ish states read here, since nothing else in this file exercises it.
+
+  it('is complete once the surface-audit task is cancelled — autoSurfaceAudit off is a decision, not an absence', async () => {
+    // A person disabling autoSurfaceAudit (or waiving an existing audit) cancels
+    // the `[surface audit]` task. It never opens a PR, so it must read exactly
+    // like any other cancelled deliverable — see the `reports how much landed`
+    // test above for the all-cancelled case this mirrors.
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-audit', 'cancelled')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u', mergedAt: T0, prBaseRef: BRANCH })];
+    const s = await evaluateMissionWorkState(MISSION_ID);
+    expect(s.complete).toBe(true);
+    expect(s.reason).toBe('complete');
+  });
+
+  it('is not complete while the surface-audit task is still pending', async () => {
+    // The audit was requested (or auto-appended) and has not run yet — the
+    // opener must wait for it like any other open deliverable.
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-audit', 'pending')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u', mergedAt: T0, prBaseRef: BRANCH })];
+    const s = await evaluateMissionWorkState(MISSION_ID);
+    expect(s.complete).toBe(false);
+    expect(s.reason).toBe('tasks_unfinished');
+  });
 });
 
 // ── P3: own the branch lifecycle ─────────────────────────────────────────────
@@ -684,6 +710,32 @@ describe('openMissionIntegrationPr — owner state', () => {
 
     expect(r.ok).toBe(false);
     expect((r as { reason: string }).reason).toBe('mission_pr_closed');
+    expect(githubCalls).toEqual([]);
+  });
+
+  it('opens the mission PR once a cancelled surface audit stops blocking it', async () => {
+    // End-to-end version of the `evaluateMissionWorkState` pin above: every
+    // builder task merged, the `[surface audit]` task was cancelled (audit
+    // waived / autoSurfaceAudit turned off), and the mission PR opens exactly
+    // as it would if that task had never existed.
+    landedWork();
+    taskRowsForMission.push(workTask('t-audit', 'cancelled'));
+    githubResponses['/compare/'] = { ahead_by: 3 };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls'] = { number: 43, html_url: 'pr-43', base: { ref: 'dev' } };
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 43, prUrl: 'pr-43', created: true });
+  });
+
+  it('does not open the mission PR while the surface audit is still pending', async () => {
+    landedWork();
+    taskRowsForMission.push(workTask('t-audit', 'pending'));
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: false, reason: 'work_incomplete', detail: 'tasks_unfinished' });
     expect(githubCalls).toEqual([]);
   });
 

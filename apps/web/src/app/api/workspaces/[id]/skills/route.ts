@@ -8,6 +8,7 @@ import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { eq, and, or, isNull, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { bodyReadRefused, noteBodyReads } from '@/lib/body-read-monitor';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
@@ -111,6 +112,12 @@ export async function GET(
             }
         }
         const results = [...seenSlugs.values()];
+
+        // Bulk-read guard (lib/body-read-monitor.ts): token callers only.
+        if (auth.type === 'api') {
+            const verdict = await noteBodyReads(auth.account.id, results.map(r => r.id), 'skills_list');
+            if (!verdict.allowed) return bodyReadRefused();
+        }
 
         return NextResponse.json({ skills: results });
     } catch (error) {

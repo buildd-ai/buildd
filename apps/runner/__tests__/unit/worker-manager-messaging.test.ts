@@ -54,6 +54,8 @@ const mockSendHeartbeat = mock(async () => ({}));
 const mockRunCleanup = mock(async () => ({}));
 const mockSearchFeedbackMemories = mock(async () => []);
 const mockGetWorkerRemote = mock(async () => null);
+let promptBundlesReply: any = null;
+const mockGetWorkerPromptBundles = mock(async (_id: string) => promptBundlesReply);
 
 mock.module('../../src/buildd', () => ({
   BuilddClient: class {
@@ -69,6 +71,7 @@ mock.module('../../src/buildd', () => ({
     runCleanup = mockRunCleanup;
     searchFeedbackMemories = mockSearchFeedbackMemories;
     getWorkerRemote = mockGetWorkerRemote;
+    getWorkerPromptBundles = mockGetWorkerPromptBundles;
   },
 }));
 
@@ -115,8 +118,9 @@ mock.module('../../src/worker-store', () => ({
   deleteWorker: () => {},
 }));
 
+const mockSyncSkillToLocal = mock(async (_bundle: any, _target: any) => ({ path: '' }));
 mock.module('../../src/skills.js', () => ({
-  syncSkillToLocal: async () => {},
+  syncSkillToLocal: mockSyncSkillToLocal,
 }));
 
 // Mock env-scan — without this, the WorkerManager constructor's real
@@ -359,6 +363,53 @@ describe('WorkerManager — sendMessage', () => {
       const result = await manager.sendMessage('w-msg-1', 'Continue from here');
       expect(result).toBe(true);
       expect(worker.status).toBe('working');
+    });
+  });
+
+  describe('Follow-up on a worker restored after a runner restart', () => {
+    // The persisted record never carries skillBundles / role payload (#3536),
+    // so the resumed session must fetch them again before it starts.
+    beforeEach(() => {
+      mockGetWorkerPromptBundles.mockClear();
+      mockSyncSkillToLocal.mockClear();
+      promptBundlesReply = {
+        skillBundles: [{ slug: 'ship-it', name: 'Ship It', content: 'ship body' }],
+        roleInstructions: { slug: 'builder', name: 'Builder', content: 'You build.' },
+      };
+    });
+
+    test('re-fetches the skill bundles and writes them into the session cwd before the session runs', async () => {
+      manager = new WorkerManager(makeConfig());
+      const worker = makeWorker({ status: 'done', sessionId: 'sess-restored', completedAt: Date.now() });
+      injectWorker(manager, worker); // as restored from disk: no skillBundles, no promptBundlesLoaded
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-restored' },
+        { type: 'result', subtype: 'success', session_id: 'sess-restored' },
+      ];
+
+      expect(await manager.sendMessage('w-msg-1', 'Carry on')).toBe(true);
+      await new Promise(r => setTimeout(r, 200));
+
+      expect(mockGetWorkerPromptBundles).toHaveBeenCalledWith('w-msg-1');
+      expect(worker.skillBundles?.map(b => b.slug)).toEqual(['ship-it']);
+      expect(worker.roleInstructions?.slug).toBe('builder');
+      // Once per session start (a Layer-1 resume that falls back runs two).
+      expect([...new Set(mockSyncSkillToLocal.mock.calls.map(c => c[0].slug))]).toEqual(['ship-it']);
+      expect(mockGetWorkerPromptBundles).toHaveBeenCalledTimes(1);
+      expect(mockSyncSkillToLocal.mock.calls[0][1]).toMatchObject({ workerId: 'w-msg-1' });
+      // The session reads <cwd>/.claude/skills through the project source.
+      expect(lastQueryOpts?.options?.settingSources).toContain('project');
+    });
+
+    test('a worker this process claimed is not re-fetched', async () => {
+      manager = new WorkerManager(makeConfig());
+      const worker = makeWorker({ status: 'done', sessionId: 'sess-live', completedAt: Date.now(), promptBundlesLoaded: true });
+      injectWorker(manager, worker);
+      mockMessages = [{ type: 'result', subtype: 'success', session_id: 'sess-live' }];
+
+      expect(await manager.sendMessage('w-msg-1', 'Carry on')).toBe(true);
+      await new Promise(r => setTimeout(r, 200));
+      expect(mockGetWorkerPromptBundles).not.toHaveBeenCalled();
     });
   });
 

@@ -176,6 +176,52 @@ export function isTextPart(part: ChatPart): part is ChatTextPart {
   return part.type === 'text' && typeof (part as ChatTextPart).text === 'string';
 }
 
+/**
+ * How long a new text part must grow, while it still streams, before it
+ * replaces the turn's earlier prose as the answer (0.18.0), unless it has
+ * already finished a sentence. Below it the earlier prose stays, so the
+ * answer never drops to a word or two.
+ */
+export const ANSWER_SWAP_MIN_CHARS = 48;
+
+const SENTENCE_END = /[.!?…](\s|$)/;
+
+/** Prose still streaming that is too little to replace what was there: a word or two, no sentence yet. */
+function isStub(p: ChatTextPart): boolean {
+  const t = p.text.trim();
+  return p.state === 'streaming' && t.length < ANSWER_SWAP_MIN_CHARS && !SENTENCE_END.test(t);
+}
+
+/**
+ * Which text part is a turn's answer (0.18.0): its latest prose, or -1 with
+ * none. Earlier prose in the same assistant message (written before tools
+ * ran) is superseded by it. Empty parts are skipped, and a part still
+ * streaming that is shorter than `ANSWER_SWAP_MIN_CHARS` with no finished
+ * sentence yields to the prose before it, so an answer never goes blank and a turn cut off mid-word keeps
+ * the most useful text it had. The parts are not changed: what was superseded
+ * stays for history and audit.
+ */
+export function answerPartIndex(parts: readonly ChatPart[]): number {
+  let latest = -1;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i];
+    if (!isTextPart(p) || !p.text.trim()) continue;
+    if (latest === -1) {
+      latest = i;
+      if (!isStub(p)) return i;
+      continue;
+    }
+    return i;
+  }
+  return latest;
+}
+
+/** The turn's answer as plain text (0.18.0): the canonical text of an assistant message. '' with none. */
+export function answerText(parts: readonly ChatPart[]): string {
+  const i = answerPartIndex(parts);
+  return i === -1 ? '' : (parts[i] as ChatTextPart).text.trim();
+}
+
 export function toolNameOf(part: ChatToolPart): string {
   if (part.type === 'dynamic-tool') return part.toolName ?? 'tool';
   return part.type.slice('tool-'.length);

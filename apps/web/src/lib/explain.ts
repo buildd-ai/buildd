@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
@@ -42,10 +43,13 @@ import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
   buildStateBecause,
   buildConflictBecause,
+  dispatchWakeLink,
+  withDispatchLink,
   type BaseSideMerge,
   type StateBecauseExtras,
   type ConflictSubject,
@@ -198,6 +202,59 @@ const OPEN_TASK_STATUSES = new Set<string>(SHARED_OPEN_TASK_STATUSES);
 /** True when a worker in a live status is on this row — the per-task half of `activeAgents`. */
 function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boolean {
   return (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status));
+}
+
+/** The canonical "is a fix attempt open on this task" descriptor — see mission-state-view.ts rule 6½. */
+export interface OpenAttemptInfo {
+  taskId: string;
+  title: string;
+  status: string;
+  iteration: number | null;
+  maxIterations: number | null;
+  claimed: boolean;
+}
+
+/**
+ * The newest OPEN fix attempt (builder-after-review, CI retry) among a task's
+ * children. While one is open the PR is about to change, so it — not a merge —
+ * is what the task is waiting on. The single definition every surface that
+ * needs this fact reads: `viewForTask` (this module), and any caller outside
+ * explain.ts via {@link loadOpenAttempt}. Do not re-derive this predicate
+ * elsewhere — see the task-detail PR card and the Home action queue for two
+ * callers that used to each have their own partial version of it.
+ */
+function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
+  const openAttemptRow = attempts
+    .filter(a => a.taskClass === 'attempt' && OPEN_TASK_STATUSES.has(a.status))
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0];
+  if (!openAttemptRow) return null;
+  const attemptCtx = (openAttemptRow.context ?? {}) as { iteration?: unknown; maxIterations?: unknown };
+  return {
+    taskId: openAttemptRow.id,
+    title: openAttemptRow.title,
+    status: openAttemptRow.status,
+    iteration: typeof attemptCtx.iteration === 'number' ? attemptCtx.iteration : null,
+    maxIterations: typeof attemptCtx.maxIterations === 'number' ? attemptCtx.maxIterations : null,
+    claimed:
+      openAttemptRow.status !== 'pending' ||
+      (openAttemptRow.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),
+  };
+}
+
+/**
+ * Convenience wrapper for a caller that only wants the open-attempt fact, not
+ * a full `explainTask` answer (history, gate history, evidence objects, …).
+ * One extra query — children of `taskId` with their latest worker — reading
+ * the exact same columns and the exact same predicate `viewForTask` uses.
+ */
+export async function loadOpenAttempt(taskId: string): Promise<OpenAttemptInfo | null> {
+  const attempts = (await db.query.tasks.findMany({
+    where: eq(tasks.parentTaskId, taskId),
+    columns: TASK_COLUMNS,
+    with: { workers: WORKER_WITH },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  })) as any as LoadedTask[];
+  return deriveOpenAttempt(attempts);
 }
 
 function iso(d: Date | string | null | undefined): string | null {
@@ -562,6 +619,22 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
  * "mission" is deliberate — a second accessor for tasks is exactly the
  * divergence this whole line of work exists to prevent.
  */
+/** Attach "why is it on this backend" when something moved the task (see ExplainAnswer.backendRouting). */
+function withBackendRouting(answer: ExplainAnswer, task: { context: Record<string, unknown> | null; backend?: string | null }): ExplainAnswer {
+  const routing = describeBackendRouting(task.context, task.backend);
+  if (!routing) return answer;
+  return {
+    ...answer,
+    backendRouting: routing,
+    derivedFrom: {
+      ...answer.derivedFrom,
+      backendRouting: routing.source === 'claim'
+        ? `tasks.context.${BACKEND_ROUTING_KEY}`
+        : 'tasks.context.failedOverFrom + tasks.backend',
+    },
+  };
+}
+
 async function viewForTask(taskId: string): Promise<{
   view: MissionStateView;
   task: LoadedTask;
@@ -574,10 +647,10 @@ async function viewForTask(taskId: string): Promise<{
 } | null> {
   const task = (await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true },
+    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true },
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null }) | undefined;
+  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null }) | undefined;
   if (!task) return null;
 
   const attempts = (await db.query.tasks.findMany({
@@ -649,22 +722,7 @@ async function viewForTask(taskId: string): Promise<{
   // open the PR is about to change, so it — not the merge — is what this task
   // is waiting on. Without this the task read "waiting on you to merge" while a
   // request-changes fix sat queued for a worker.
-  const openAttemptRow = attempts
-    .filter(a => a.taskClass === 'attempt' && OPEN_TASK_STATUSES.has(a.status))
-    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0];
-  const attemptCtx = (openAttemptRow?.context ?? {}) as { iteration?: unknown; maxIterations?: unknown };
-  const openAttempt = openAttemptRow
-    ? {
-        taskId: openAttemptRow.id,
-        title: openAttemptRow.title,
-        status: openAttemptRow.status,
-        iteration: typeof attemptCtx.iteration === 'number' ? attemptCtx.iteration : null,
-        maxIterations: typeof attemptCtx.maxIterations === 'number' ? attemptCtx.maxIterations : null,
-        claimed:
-          openAttemptRow.status !== 'pending' ||
-          (openAttemptRow.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),
-      }
-    : null;
+  const openAttempt = deriveOpenAttempt(attempts);
 
   const terminal = ['completed', 'failed', 'cancelled'].includes(task.status);
   const openTasks = OPEN_TASK_STATUSES.has(task.status)
@@ -745,12 +803,18 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
     prNumber: task.workers?.[0]?.prNumber ?? null,
   };
 
-  const because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
+  // A pending task may be waiting on its wake rather than on a claim gate:
+  // the latest outbox row is undelivered, handed off past due, or failed.
+  // Read only for pending tasks; a read failure leaves the chain as it was.
+  const wake = task.status === 'pending'
+    ? dispatchWakeLink(await latestDispatchForTask(taskId).catch(() => null), { taskId, workspaceId }, Date.now())
+    : null;
+  const because = withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), wake);
   const gateHistory = await loadGateHistory(taskId);
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];
-  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
+  return { scope: 'task', subjects: [withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task)] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────
@@ -894,7 +958,7 @@ export async function explainPr(worker: {
   // rejections, review_verdict deferrals) is the task's.
   const gateHistory = await loadGateHistory(worker.taskId);
   const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId, { surface: 'explain', actor });
-  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
+  return { scope: 'pr', subjects: [withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

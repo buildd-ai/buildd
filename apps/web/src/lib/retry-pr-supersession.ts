@@ -159,6 +159,40 @@ export async function collectRetryLineage(startTaskId: string): Promise<string[]
   return lineage;
 }
 
+/** Bounds on the family walk: retry trees are a handful of tasks deep. */
+export const RETRY_FAMILY_MAX_DEPTH = 8;
+export const RETRY_FAMILY_MAX_SIZE = 200;
+
+/**
+ * The whole retry tree a task belongs to: its lineage root (the top of
+ * `collectRetryLineage`) and every attempt descended from it — siblings and
+ * cousins included, which the upward walk alone never sees. Two "after review
+ * #1" attempts of one root are two branches of this tree; that they each
+ * opened a PR is the fork the dispatch and claim guards exist to prevent.
+ *
+ * Descends only through `taskClass: 'attempt'` children, the same rule the
+ * upward walk uses, so creation provenance never joins two families.
+ */
+export async function collectRetryFamily(startTaskId: string): Promise<{ rootId: string; taskIds: string[] }> {
+  const lineage = await collectRetryLineage(startTaskId);
+  const rootId = lineage[lineage.length - 1] ?? startTaskId;
+  const ids = new Set<string>([rootId]);
+  let frontier = [rootId];
+  for (let depth = 0; depth < RETRY_FAMILY_MAX_DEPTH && frontier.length > 0 && ids.size < RETRY_FAMILY_MAX_SIZE; depth++) {
+    const children = await db.query.tasks.findMany({
+      where: and(inArray(tasks.parentTaskId, frontier), eq(tasks.taskClass, 'attempt')),
+      columns: { id: true },
+    });
+    frontier = [];
+    for (const c of children) {
+      if (ids.has(c.id) || ids.size >= RETRY_FAMILY_MAX_SIZE) continue;
+      ids.add(c.id);
+      frontier.push(c.id);
+    }
+  }
+  return { rootId, taskIds: [...ids] };
+}
+
 /**
  * The cause the runner reported for the successor worker, from its newest
  * resume trace. `resume_branch_held` is the checked-out case; the fallback

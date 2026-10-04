@@ -30,7 +30,6 @@
  */
 import {
   choice,
-  defineDecision,
   noul,
   type ChoiceAnswer,
   type DecideParams,
@@ -40,6 +39,7 @@ import {
   type Decision,
   type NoulAnswer,
 } from '@builddai/ai-kit/decide';
+import { definePromptedDecision } from './prompted-decision';
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -114,7 +114,7 @@ export function clip(text: string | null | undefined, max: number): string {
 
 const PROMPT_VERSION = 'md1';
 
-export const MEMORY_LEARN_DECISION = defineDecision({
+export const MEMORY_LEARN_DECISION = definePromptedDecision({
   id: 'buildd.memory_learn',
   promptVersion: PROMPT_VERSION,
   questions: {
@@ -147,7 +147,7 @@ export const MEMORY_LEARN_DECISION = defineDecision({
   timeoutMs: MEMORY_DECISION_TIMEOUT_MS,
 });
 
-export const MEMORY_UPDATE_DECISION = defineDecision({
+export const MEMORY_UPDATE_DECISION = definePromptedDecision({
   id: 'buildd.memory_update',
   promptVersion: PROMPT_VERSION,
   questions: {
@@ -169,7 +169,7 @@ export const MEMORY_UPDATE_DECISION = defineDecision({
   timeoutMs: MEMORY_DECISION_TIMEOUT_MS,
 });
 
-export const MEMORY_USE_DECISION = defineDecision({
+export const MEMORY_USE_DECISION = definePromptedDecision({
   id: 'buildd.memory_use',
   promptVersion: PROMPT_VERSION,
   questions: {
@@ -189,7 +189,7 @@ export const MEMORY_USE_DECISION = defineDecision({
   timeoutMs: MEMORY_DECISION_TIMEOUT_MS,
 });
 
-export const MEMORY_RELEVANCE_DECISION = defineDecision({
+export const MEMORY_RELEVANCE_DECISION = definePromptedDecision({
   id: 'buildd.memory_relevance',
   promptVersion: PROMPT_VERSION,
   questions: {
@@ -208,7 +208,7 @@ export const MEMORY_RELEVANCE_DECISION = defineDecision({
   timeoutMs: MEMORY_DECISION_TIMEOUT_MS,
 });
 
-export const MEMORY_PROMOTE_DECISION = defineDecision({
+export const MEMORY_PROMOTE_DECISION = definePromptedDecision({
   id: 'buildd.memory_promote',
   promptVersion: PROMPT_VERSION,
   questions: {
@@ -230,7 +230,7 @@ export const MEMORY_PROMOTE_DECISION = defineDecision({
 export const CHAT_MEMORY_TIERS = ['directive', 'knowledge', 'neither'] as const;
 export type ChatMemoryTier = typeof CHAT_MEMORY_TIERS[number];
 
-export const CHAT_MEMORY_TIER_DECISION = defineDecision({
+export const CHAT_MEMORY_TIER_DECISION = definePromptedDecision({
   id: 'buildd.chat_memory_tier',
   promptVersion: PROMPT_VERSION,
   questions: {
@@ -254,7 +254,7 @@ export const CHAT_MEMORY_TIER_DECISION = defineDecision({
 export const DIRECTIVE_SCOPES = ['everywhere', 'workspace'] as const;
 export type DirectiveScope = typeof DIRECTIVE_SCOPES[number];
 
-export const DIRECTIVE_SCOPE_DECISION = defineDecision({
+export const DIRECTIVE_SCOPE_DECISION = definePromptedDecision({
   id: 'buildd.directive_scope',
   promptVersion: PROMPT_VERSION,
   questions: {

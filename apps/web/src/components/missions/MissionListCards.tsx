@@ -256,7 +256,7 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
   const r = model.recurring;
   const h = model.held;
   const meta = r
-    ? [r.lastTickAt ? `last tick ${timeAgo(r.lastTickAt)}` : 'no tick yet', r.lastSummary].filter(Boolean).join(' · ')
+    ? [r.lastTickAt ? `last tick ${timeAgo(r.lastTickAt)}` : 'no ticks', r.lastSummary].filter(Boolean).join(' · ')
     : h
       ? `${h.ready} ${h.roles.length === 1 ? `${h.roles[0]} ` : ''}task${h.ready === 1 ? '' : 's'} ready · arm to start`
       : model.sentence ?? view.situation.headline;

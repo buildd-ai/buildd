@@ -463,13 +463,20 @@ mock.module('@/lib/merge-policy', () => ({
 
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }));
 const mockPreflightEscalationCheck = mock(() => ({ shouldEscalate: false as const }));
-const mockSupersedeReviewerTaskOnMerge = mock(() =>
-  Promise.resolve({ superseded: false, reviewerTaskId: null as string | null }),
-);
 mock.module('@/lib/reviewer', () => ({
   createReviewerTask: mockCreateReviewerTask,
   preflightEscalationCheck: mockPreflightEscalationCheck,
-  supersedeReviewerTaskOnMerge: mockSupersedeReviewerTaskOnMerge,
+}));
+
+// The rules and the cancellation are unit-tested in lib/supersession*.test.ts;
+// here the mock pins which subject event the close handler fires.
+const mockReconcileSubjectEvent = mock((..._args: any[]) =>
+  Promise.resolve({ cancelled: [], lostRace: [], decisions: [] }),
+);
+const mockCheckDispatch = mock((..._args: any[]) => Promise.resolve({ verdict: 'keep', rule: null } as any));
+mock.module('@/lib/supersession', () => ({
+  reconcileSubjectEvent: mockReconcileSubjectEvent,
+  checkDispatch: mockCheckDispatch,
 }));
 
 // Gate ledger — captured so the merge telemetry can be asserted. The slug
@@ -709,10 +716,7 @@ function resetAll() {
   mockCreateReviewerTask.mockReset();
   mockListWorkspaceRoles.mockReset();
   mockListWorkspaceRoles.mockImplementation(() => Promise.resolve(DEFAULT_ROLES as any[]));
-  mockSupersedeReviewerTaskOnMerge.mockReset();
-  mockSupersedeReviewerTaskOnMerge.mockImplementation(() =>
-    Promise.resolve({ superseded: false, reviewerTaskId: null }),
-  );
+  mockReconcileSubjectEvent.mockClear();
   mockFireGateEvent.mockClear();
   mockScheduleCiRedLook.mockClear();
   mockPreflightEscalationCheck.mockReset();
@@ -1753,6 +1757,18 @@ describe('POST /api/github/webhook', () => {
         expect(e.detail.inFlightTaskId).toBe('rf1');
         expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
         expect(mockScheduleCiRedLook.mock.calls[0][0]).toEqual({ workspaceId: 'ws1', prNumber: 42 });
+      });
+
+      it('a fix in flight elsewhere in the retry family (a sibling on a sibling PR) → fix_in_flight, names it, files nothing', async () => {
+        withFailedWorkerPr({ status: 'completed', fixAttempts: [] });
+        mockCheckDispatch.mockResolvedValueOnce({
+          verdict: 'skip_dispatch', rule: 'open_retry_supersedes_duplicate', blockers: ['sibling-fix'],
+        });
+        await fail();
+        expect(insertCalls.length).toBe(0);
+        const [e] = skipEvents();
+        expect(e.detail.skipReason).toBe('fix_in_flight');
+        expect(e.detail.inFlightTaskId).toBe('sibling-fix');
       });
 
       it('a CI retry already filed for this exact head → head_already_retried, before fetching logs', async () => {
@@ -5736,28 +5752,30 @@ describe('pull_request merged — effects that belong to the merge, not the tran
       .map(c => c[0])
       .filter((e: any) => e?.detail?.event === 'merged_over_verdict' || e?.detail?.event === 'merged_unreviewed');
 
-  it('supersedes a still-live reviewer when the PR merges on GitHub', async () => {
+  it('fires a merged supersession event when the PR merges on GitHub', async () => {
     mockWorkersFindFirst.mockReturnValue(taskPrWorker());
 
     await POST(createWebhookRequest('pull_request', taskPrPayload()));
 
-    expect(mockSupersedeReviewerTaskOnMerge).toHaveBeenCalledTimes(1);
-    expect(mockSupersedeReviewerTaskOnMerge.mock.calls[0][0]).toMatchObject({
+    expect(mockReconcileSubjectEvent).toHaveBeenCalledTimes(1);
+    expect(mockReconcileSubjectEvent.mock.calls[0][0]).toMatchObject({
+      kind: 'merged',
+      workspaceId: 'ws1',
       originalTaskId: 't-task',
-      installationId: 5000,
-      repoFullName: 'test-org/test-repo',
       prNumber: 77,
+      pr: { installationId: 5000, repoFullName: 'test-org/test-repo' },
     });
   });
 
-  it('does not supersede on a PR closed without merging', async () => {
+  it('fires a closed event — not a merged one — on a PR closed without merging', async () => {
     mockWorkersFindFirst.mockReturnValue(taskPrWorker());
 
     await POST(createWebhookRequest('pull_request', mergedPrPayload({
       pull_request: { merged: false, head: { ref: 'buildd/abc12345-fix', sha: 'sha-77' } },
     })));
 
-    expect(mockSupersedeReviewerTaskOnMerge).not.toHaveBeenCalled();
+    expect(mockReconcileSubjectEvent).toHaveBeenCalledTimes(1);
+    expect(mockReconcileSubjectEvent.mock.calls[0][0]).toMatchObject({ kind: 'closed', prNumber: 77 });
   });
 
   it('records merged_over_verdict when the PR merges over a request-changes verdict', async () => {
@@ -5790,7 +5808,7 @@ describe('pull_request merged — effects that belong to the merge, not the tran
     // The verdict is read before the reviewer is superseded — cancelling it
     // first would erase the state being measured.
     expect(mockReadPrReviewStatus.mock.invocationCallOrder[0])
-      .toBeLessThan(mockSupersedeReviewerTaskOnMerge.mock.invocationCallOrder[0]);
+      .toBeLessThan(mockReconcileSubjectEvent.mock.invocationCallOrder[0]);
   });
 
   it('records nothing for a PR no review was requested for', async () => {

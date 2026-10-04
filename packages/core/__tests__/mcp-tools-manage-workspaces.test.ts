@@ -179,6 +179,41 @@ describe('manage_workspaces update — team changes go through the checked move'
   });
 });
 
+describe('manage_workspaces update — defaultBranch is persisted to gitConfig', () => {
+  it('writes defaultBranch to gitConfig.defaultBranch', async () => {
+    const api = mock(async () => ({}));
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'update', workspaceId: WORKSPACE_ID, defaultBranch: 'canary' }, createContext());
+    expect(api).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((api.mock.calls[0] as any)[1].body);
+    // defaultBranch should be in gitConfig, not at the top level
+    expect(body.gitConfig?.defaultBranch).toBe('canary');
+    expect(body.defaultBranch).toBeUndefined();
+  });
+
+  it('merges defaultBranch with existing gitConfig', async () => {
+    const api = mock(async () => ({}));
+    await handleBuilddAction(
+      api as unknown as ApiFn,
+      'manage_workspaces',
+      { action: 'update', workspaceId: WORKSPACE_ID, defaultBranch: 'staging', gitConfig: { autoMergePR: true } },
+      createContext(),
+    );
+    expect(api).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((api.mock.calls[0] as any)[1].body);
+    expect(body.gitConfig).toEqual({ autoMergePR: true, defaultBranch: 'staging' });
+  });
+
+  it('handles defaultBranch at create time too', async () => {
+    const api = mock(async () => ({ id: 'ws-123', name: 'Test', repo: 'owner/repo' }));
+    await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces', { action: 'create', repoUrl: 'owner/repo', defaultBranch: 'main' }, createContext());
+    expect(api).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((api.mock.calls[0] as any)[1].body);
+    // At create time, defaultBranch should also go to gitConfig
+    expect(body.gitConfig?.defaultBranch).toBe('main');
+    expect(body.defaultBranch).toBeUndefined();
+  });
+});
+
 describe('manage_workspaces readiness', () => {
   const report = {
     items: [
@@ -271,5 +306,30 @@ describe('manage_workspaces author_spec', () => {
 
   it('is named in the action docs', () => {
     expect(buildParamsDescription(['manage_workspaces'])).toContain('action=author_spec');
+  });
+});
+
+// Where a workspace's work runs (packages/shared/src/executor.ts).
+describe('manage_workspaces update — gitConfig.executor', () => {
+  it('passes a known value (or null to clear) through to the PATCH', async () => {
+    for (const executor of ['cloud', 'host', 'any', null]) {
+      const api = mock(async () => ({}));
+      await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces',
+        { action: 'update', workspaceId: WORKSPACE_ID, gitConfig: { executor } }, createContext());
+      expect(JSON.parse((api.mock.calls[0] as any)[1].body)).toEqual({ gitConfig: { executor } });
+    }
+  });
+
+  it('refuses an unknown value without calling the API', async () => {
+    const api = mock();
+    await expect(
+      handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces',
+        { action: 'update', workspaceId: WORKSPACE_ID, gitConfig: { executor: 'local' } }, createContext()),
+    ).rejects.toThrow("gitConfig.executor must be 'cloud', 'host', 'any' or null");
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it('is named in the action docs', () => {
+    expect(buildParamsDescription(adminActions)).toContain('gitConfig.executor');
   });
 });
