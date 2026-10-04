@@ -173,11 +173,11 @@ describe('receipts projection', () => {
 
   test('delivered / failed / merged / expired close the row; attempted moves the counters only', async () => {
     const ids: Record<string, string> = {};
-    for (const k of ['delivered', 'failed', 'merged', 'expired', 'attempted']) {
+    await Promise.all(['delivered', 'failed', 'merged', 'expired', 'attempted'].map(async k => {
       const t = await seedTask(dispatch);
       ids[k] = (await handOff(t))[0].id;
       ids[`${k}:task`] = t;
-    }
+    }));
     const n = await applyReceipts([
       { id: ids.delivered, attempt: 1, event: 'delivered', via: 'relay:pusher', at: at() },
       { id: ids.failed, attempt: 8, event: 'failed', why: 'webhook 500', at: at() },
