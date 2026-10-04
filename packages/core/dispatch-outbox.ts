@@ -263,6 +263,18 @@ export const DELIVERY_LEASE_MS = 120_000;
 export const PUBLISH_GRACE_MS = 120_000;
 
 /**
+ * Metadata key the repair floor stamps (an ISO time) when it takes a row back
+ * from Dispatch (dispatch-handoff.ts fallBackToInAppSql): the Worker lost it,
+ * was unreachable, or held it past the ceiling. A marked row belongs to the
+ * in-app drain for the rest of its life: it is never published again, the
+ * publish grace never holds it back, and it is not counted `unacked`.
+ */
+export const DISPATCH_FALLBACK_KEY = 'dispatchFallbackAt';
+
+/** SQL predicate: row `o` carries the fallback mark. Null-safe on any metadata shape. */
+export const FALLEN_BACK_SQL = `COALESCE(jsonb_typeof(o.metadata) = 'object' AND o.metadata ? '${DISPATCH_FALLBACK_KEY}', false)`;
+
+/**
  * Atomically take up to `limit` due rows for delivery. SKIP LOCKED plus the
  * status guard on the outer UPDATE mean two concurrent drains never take the
  * same row; a re-delivery only happens after a lease expires.
@@ -285,7 +297,7 @@ clock AS (SELECT COALESCE((a->>'now')::timestamptz, now()) AS now FROM args),
 due AS (
   SELECT o.id FROM task_dispatch_outbox o, clock c
   WHERE (o.status = 'pending' AND o.not_before <= c.now
-         AND NOT (o.handed_off_at IS NULL AND o.intent = 'work_execution'
+         AND NOT (o.handed_off_at IS NULL AND o.intent = 'work_execution' AND NOT ${sql.raw(FALLEN_BACK_SQL)}
            AND o.created_at > c.now - ((SELECT a->>'graceMs' FROM args)::int * interval '1 millisecond')
            AND EXISTS (SELECT 1 FROM workspaces w WHERE w.id = o.workspace_id AND w.dispatch_transport = 'dispatch')))
      OR (o.status = 'delivering' AND o.last_attempt_at < c.now - ((SELECT a->>'leaseMs' FROM args)::int * interval '1 millisecond'))
@@ -429,7 +441,8 @@ SELECT
   count(*) FILTER (WHERE o.status = 'delivering' AND o.last_attempt_at < now() - interval '5 minutes') AS stuck,
   count(*) FILTER (WHERE o.status = 'failed' AND o.updated_at > now() - interval '1 day') AS failed,
   count(*) FILTER (WHERE o.status = 'pending' AND o.handed_off_at IS NULL AND o.intent = 'work_execution'
-    AND o.created_at < now() - interval '1 minute' AND w.dispatch_transport = 'dispatch') AS unacked,
+    AND o.created_at < now() - interval '1 minute' AND w.dispatch_transport = 'dispatch'
+    AND NOT ${sql.raw(FALLEN_BACK_SQL)}) AS unacked,
   count(*) FILTER (WHERE o.status = 'handed_off' AND o.not_before < now() - interval '1 hour') AS orphaned
 FROM task_dispatch_outbox o LEFT JOIN workspaces w ON w.id = o.workspace_id`;
 }

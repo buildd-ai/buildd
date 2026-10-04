@@ -218,6 +218,18 @@ export async function tryLock(key: string, ttlSec: number): Promise<boolean | nu
   return safe<boolean | null>('lock', async r => (await r.set(key, 1, { nx: true, ex: ttlSec })) === 'OK', null);
 }
 
+/**
+ * Fixed-window counter: INCR the key and (re)set its TTL in one pipeline;
+ * returns the count after this hit, or null when Redis is unavailable (the
+ * caller decides whether null means allow). The key names the window.
+ */
+export async function incrWindow(key: string, ttlSec: number): Promise<number | null> {
+  return safe<number | null>('incr window', async r => {
+    const [n] = await r.pipeline().incr(key).expire(key, ttlSec).exec<[number, number]>();
+    return typeof n === 'number' ? n : null;
+  }, null);
+}
+
 // Presence: one sorted set per person, one member per open tab, scored by the
 // tab's expiry. A member lives until its score passes; the key itself expires
 // with the last beat, so an abandoned set cleans itself up.
