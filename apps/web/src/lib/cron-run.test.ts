@@ -175,6 +175,28 @@ describe('withCronRun', () => {
     expect(inserted[0]).toMatchObject({ job: 'example', ok: true, processed: null, changed: null, errors: null });
   });
 
+  // A minute-scale Redis-gated tick that found nothing due must not write a
+  // row: the write would wake the database the gate exists to keep asleep.
+  it('writes nothing for a run the handler marks unrecorded', async () => {
+    const res = await withCronRun('example:due', reqWith(SECRET), async (report) => {
+      report({ unrecorded: true, result: { gated: true } });
+      return NextResponse.json({ gated: true });
+    });
+    expect(res.status).toBe(200);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockFindMany).not.toHaveBeenCalled();
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+
+  it('still records an unrecorded run that threw', async () => {
+    await withCronRun('example:due', reqWith(SECRET), async (report) => {
+      report({ unrecorded: true });
+      throw new Error('boom');
+    });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({ ok: false, error: 'boom' });
+  });
+
   it('records ok=false and the message when the handler throws, and still fails the request', async () => {
     const res = await withCronRun('example', reqWith(SECRET), async () => {
       throw new Error('boom');

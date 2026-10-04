@@ -4,13 +4,13 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (47)
+## Active (49)
 
 ### auth (4)
 
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
-- [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-07-21
+- [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-04
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 - [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-09-30
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
@@ -26,7 +26,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-08-28
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
-- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-09-03
+- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-10-03
   The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18
   A workspace MUST route tracker updates through one provider-dispatched WorkTrackerProvider interface, closing the linked Linear or GitHub issue on PR merge and creating tasks from labeled issues idempotently.
@@ -65,12 +65,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
-### runners (7)
+### runners (8)
 
 - [Answered-Question Resume](./answered-question-resume.md) · @max — verified 2026-09-29
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 - [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-01
   Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
+- [Cloud Egress Merge Guard](./cloud-egress-merge-guard.md) · @max — verified 2026-10-04
+  The cloud runner's egress handler MUST refuse a direct GitHub PR merge or a push to a protected branch before attaching its installation token, independent of buildd's own merge-policy code paths.
 - [Codebase Memory Graph](./codebase-memory-graph.md) · @max — verified 2026-09-12
   Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through five named reasons, and MUST never fail a task.
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-09-11
@@ -107,7 +109,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Workspace Onboarding](./workspace-onboarding.md) · @max — verified 2026-10-03
   Onboarding MUST derive a workspace's readiness from observable repo facts without writing, and every change it proposes to the repo MUST arrive as an owner-merged PR from a non-default branch.
 
-### tasks (10)
+### tasks (11)
 
 - [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-08-30
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
@@ -129,6 +131,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
+- [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-03
+  Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
 ## Draft (3)
 

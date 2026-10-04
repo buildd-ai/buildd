@@ -89,8 +89,22 @@ const db = {
 mock.module('@buildd/core/db', () => ({ db }));
 
 const dispatchedTasks: Row[] = [];
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: (task: Row) => { dispatchedTasks.push(task); return Promise.resolve(); },
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: (task: Row) => { dispatchedTasks.push(task); return Promise.resolve(); },
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 const githubCalls: string[] = [];
 mock.module('@/lib/github', () => ({

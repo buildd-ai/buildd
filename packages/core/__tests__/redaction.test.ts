@@ -323,6 +323,14 @@ describe('createSecretRedactor', () => {
     expect(redact(`hex=${'a1'.repeat(24)}`)).toBe('hex=[REDACTED:credential]');
   });
 
+  it('redacts every GitHub token prefix, including the installation tokens agents hold', () => {
+    // Illustrative values, not real tokens.
+    const redact = createSecretRedactor([]);
+    for (const prefix of ['ghp', 'gho', 'ghs', 'ghu', 'ghr']) {
+      expect(redact(`x ${prefix}_abcdefghijklmnop0123456789 y`)).toBe('x [REDACTED:token] y');
+    }
+  });
+
   it('redacts a base64url-shaped credential using -/_ (full alphabet, no field scoping here)', () => {
     // createSecretRedactor operates on raw text with no notion of "structural
     // field" — callers use it only on text they already know is free-form

@@ -66,6 +66,8 @@ describe('POST /api/secrets', () => {
     mockGetUserAdminTeamIds.mockReset();
     mockGetUserAdminTeamIds.mockResolvedValue(['team-1']);
     mockSecretsReplaceScoped.mockResolvedValue('secret-1');
+    mockRequeue.mockReset();
+    mockRequeue.mockResolvedValue({ requeued: [], skippedOverCap: 0 });
   });
 
   it('returns 401 when not authenticated', async () => {
@@ -136,6 +138,43 @@ describe('POST /api/secrets', () => {
     expect(res.status).toBe(200);
   });
 
+  // openai_api_key: a plain team/workspace OpenAI key for Codex agent tasks,
+  // stored exactly like anthropic_api_key (see docs/credentials-architecture.md).
+  it('accepts openai_api_key purpose without label', async () => {
+    const res = await POST(createPostRequest({
+      value: 'sk-proj-xxx',
+      purpose: 'openai_api_key',
+      accountId: 'account-1',
+    }));
+    expect(res.status).toBe(200);
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-proj-xxx', expect.objectContaining({
+      purpose: 'openai_api_key',
+    }));
+  });
+
+  it('self-heals auth-failed tasks when an openai_api_key is (re)stored, like the Claude purposes', async () => {
+    mockRequeue.mockResolvedValue({ requeued: ['task-1'], skippedOverCap: 0 });
+    const res = await POST(createPostRequest({ value: 'sk-proj-xxx', purpose: 'openai_api_key' }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.requeued).toBe(1);
+    expect(mockRequeue).toHaveBeenCalledWith('team-1');
+  });
+
+  it('strips wrapping quotes from a pasted openai_api_key', async () => {
+    const res = await POST(createPostRequest({ value: '"sk-proj-xxx"', purpose: 'openai_api_key' }));
+    expect(res.status).toBe(200);
+    expect(mockSecretsReplaceScoped).toHaveBeenCalledWith('sk-proj-xxx', expect.anything());
+  });
+
+  it('rejects an openai_api_key without the sk- prefix (400)', async () => {
+    const res = await POST(createPostRequest({ value: 'not-a-real-key', purpose: 'openai_api_key' }));
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toContain('sk-');
+    expect(mockSecretsReplaceScoped).not.toHaveBeenCalled();
+  });
+
   it('stores a decision_key (OpenRouter) team-wide, quote-stripped, with no prefix rule', async () => {
     const res = await POST(createPostRequest({ value: '"sk-or-v1-abc"', purpose: 'decision_key' }));
     expect(res.status).toBe(200);
@@ -180,10 +219,11 @@ describe('POST /api/secrets', () => {
     const valueFor: Record<string, string> = {
       anthropic_api_key: 'sk-ant-api03-xxx',
       oauth_token: 'sk-ant-oat01-xxx',
+      openai_api_key: 'sk-proj-xxx',
       webhook_token: 'val',
       custom: 'val',
     };
-    for (const purpose of ['anthropic_api_key', 'oauth_token', 'webhook_token', 'custom']) {
+    for (const purpose of ['anthropic_api_key', 'oauth_token', 'openai_api_key', 'webhook_token', 'custom']) {
       mockSecretsReplaceScoped.mockResolvedValue('secret-1');
       const res = await POST(createPostRequest({ value: valueFor[purpose], purpose }));
       expect(res.status).toBe(200);

@@ -12,7 +12,7 @@ import { withoutForceClaim } from '@/lib/force-claim';
 import { escalateReviewContractFailure } from '@/lib/auto-merge';
 import { notHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 import { PARK_MAX_MS, PARK_MISSION_MAX_MS, notParkedScope } from '@/lib/worker-park';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import {
   ANSWER_PATH_REASONS,
   buildContinuationTaskValues,
@@ -184,6 +184,8 @@ async function resolveStaleTask(
             updatedAt: new Date(),
           })
           .where(eq(tasks.id, taskId));
+        // Keyed onto the trigger's start_at row, so it fires when the backoff ends.
+        await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
       }
     } else {
       // Genuine timeout/stale: worker ran but then went offline without completing.
@@ -338,6 +340,8 @@ async function resolveStaleTask(
             updatedAt: new Date(),
           })
           .where(eq(tasks.id, taskId));
+        // Keyed onto the trigger's start_at row, so it fires when the backoff ends.
+        await wakeTask(taskId, 'task.requeued', { notBefore: startAt });
       }
     }
   }
@@ -1073,7 +1077,7 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       iteration: ((existingCtx.iteration as number) || 0) + 1,
     };
 
-    await db
+    const [retryTask] = await db
       .insert(tasks)
       .values({
         workspaceId: originalTask.workspaceId,
@@ -1104,6 +1108,8 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       })
       .returning({ id: tasks.id });
 
+    // A replacement for the stalled attempt, so a requeue in all but row identity.
+    if (retryTask) await wakeTask(retryTask.id, 'task.requeued');
     retriedTasks++;
 
     // Resolve dependencies for the failed task
@@ -1291,18 +1297,18 @@ export async function cleanupUnresumedAnswers(
 
       // Wake runners for the continuation, as for any new task: a webhook-only
       // workspace never polls, so without this it never runs. Held and
-      // local-executor missions are not filtered, matching the other
-      // dispatchNewTask callers (the claim gate refuses them). Once per
-      // continuation: a later pass skips this worker (path is no longer
-      // `resume`). Best-effort, so one failure does not stop the sweep.
+      // local-executor missions are not filtered (the claim gate refuses
+      // them), and delivery reads the inherited runnerPreference off the row.
+      // Once per continuation: a later pass skips this worker (path is no
+      // longer `resume`). wakeTask never throws; the dashboard announce is
+      // best-effort, so one failure does not stop the sweep.
       if (continuation) {
+        await wakeTask(continuation.id, 'task.created');
         try {
           const workspace = (worker as any).workspace ?? { id: worker.workspaceId };
-          // The continuation's runner preference (inherited from the parent).
-          const runnerPreference = continuation.runnerPreference ?? (task.runnerPreference as string | undefined) ?? undefined;
-          await dispatchNewTask(continuation, workspace, runnerPreference ? { runnerPreference } : undefined);
+          await announceTaskCreated(continuation, workspace);
         } catch (err) {
-          console.error(`[Worker ${worker.id}] Continuation task dispatch failed:`, err);
+          console.error(`[Worker ${worker.id}] Continuation task announce failed:`, err);
         }
       }
     }

@@ -298,6 +298,13 @@ export interface WorkspaceGitConfig {
 
   // Agent instructions (prepended to prompt)
   agentInstructions?: string;         // Free-form, admin-defined
+
+  // GitHub credentials for agents on self-hosted runners
+  // (@buildd/core/agent-github-credentials). Absent ⇒ a task-scoped GitHub App
+  // token once the rollout reaches this workspace. 'runner' is the explicit
+  // opt-out for a workspace without the GitHub App: its agents keep the runner
+  // operator's own GitHub credentials. JSON field, no migration.
+  agentGitHubCredentials?: 'runner';
   useClaudeMd: boolean;               // Whether to load CLAUDE.md (default: true if exists)
 
   // Permission mode
@@ -906,6 +913,12 @@ export const workspaces = pgTable('workspaces', {
   // Data sensitivity class — controls knowledge ingestion, transcript retention, and redaction.
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
+  // Which transport delivers this workspace's dispatch outbox rows.
+  // 'in_app': the Vercel drain (default). 'shadow': also published to the
+  // Dispatch Worker, which records decisions but the in-app drain still
+  // delivers. 'dispatch': handed off; the in-app drain only takes rows the
+  // Worker never acked. knowledge-base buildd/design/cloudflare-dispatch-transport.md.
+  dispatchTransport: text('dispatch_transport').default('in_app').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
 
   // Max tasks from this workspace that may have an active worker at once. Repo-backed
   // workspaces isolate each task in its own git worktree, so parallel work is safe;
@@ -2416,7 +2429,7 @@ export const missionNotes = pgTable('mission_notes', {
   collapseKeyIdx: index('mission_notes_collapse_key_idx').on(t.missionId, t.collapseKey, t.createdAt),
 }));
 
-// observations table removed — memory is now stored in external memory service
+// observations table removed — memory lives in the memories table below
 
 // Worker heartbeats - tracks runner instance availability independent of worker records
 export const workerHeartbeats = pgTable('worker_heartbeats', {
@@ -2868,7 +2881,7 @@ export const secrets = pgTable('secrets', {
   // can't hold this: accounts are API-key identities, not people. A personal row
   // serves only its owner — see packages/core/inference-keys.ts.
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
+  purpose: text('purpose').notNull().$type<'anthropic_api_key' | 'oauth_token' | 'codex_credential' | 'claude_credential' | 'openai_api_key' | 'webhook_token' | 'custom' | 'mcp_credential' | 'vercel_token' | 'pushover' | 'notify_webhook' | 'mcp_connector_credential' | 'signing_key' | 'inference_key' | 'decision_key' | 'role_env_secret' | 'pushover_personal' | 'cloudflare_token' | 'agent_endpoint' | 'evidence_storage_credential'>(),
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
@@ -4434,6 +4447,61 @@ export const pathClaimWaitersRelations = relations(pathClaimWaiters, ({ one }) =
 
 export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
 export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
+
+// Durable dispatch intent: "something changed that may make this task
+// runnable — re-evaluate it". Not a scheduler: the claim route stays the only
+// authority on whether the task runs, and the task row stays the truth. A row
+// is written atomically with the mutation that caused it (the tasks trigger
+// for transitions into `pending`, a CTE/batch for the rest — see
+// packages/core/dispatch-outbox.ts), then delivered at-least-once by the
+// dispatch consumer (apps/web/src/lib/dispatch-authority.ts).
+export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // DispatchIntent: what kind of delivery this is (work_execution,
+  // human_action, notification, incident, external_work). Selects the adapter
+  // chain; durable dispatch does not imply autonomous execution. The trigger
+  // writes the default.
+  intent: text('intent').default('work_execution').notNull(),
+  // DispatchCause (packages/core/dispatch-outbox.ts). A coalesced row keeps
+  // the first cause; later ones are appended to `causes`.
+  cause: text('cause').notNull(),
+  causes: jsonb('causes').$type<string[]>().default([]).notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).defaultNow().notNull(),
+  // Pending rows coalesce on (task_id, dedupe_key). 'now' for an immediate
+  // wake; a scheduled wake keys on its due time so it is not folded into an
+  // earlier immediate one.
+  dedupeKey: text('dedupe_key').default('now').notNull(),
+  // 'handed_off': acked by the Dispatch transport, which now owns the delivery
+  // lifecycle; receipts project back onto this row.
+  status: text('status').default('pending').notNull().$type<'pending' | 'delivering' | 'delivered' | 'failed' | 'handed_off'>(),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  // How it was delivered ('webhook' | 'pusher' | 'skipped:<why>'), or the error.
+  deliveredVia: text('delivered_via'),
+  lastError: text('last_error'),
+  // Delivery hints that are not task state, e.g. { targetLocalUiUrl }.
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  // Dispatch transport. `publishedAt`: last publish attempt (unacked rows are
+  // retried oldest-first). `handedOffAt`: the Worker acked it. `mergedInto`:
+  // the Worker folded it into another queued intent with the same dedupe key.
+  transport: text('transport').default('in_app').notNull().$type<'in_app' | 'dispatch'>(),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  handedOffAt: timestamp('handed_off_at', { withTimezone: true }),
+  mergedInto: uuid('merged_into'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  unackedIdx: index('task_dispatch_outbox_unacked_idx').on(t.createdAt).where(sql`${t.status} = 'pending' AND ${t.handedOffAt} IS NULL`),
+  handedOffIdx: index('task_dispatch_outbox_handed_off_idx').on(t.notBefore).where(sql`${t.status} = 'handed_off'`),
+  pendingDedupeIdx: uniqueIndex('task_dispatch_outbox_pending_dedupe_idx').on(t.taskId, t.dedupeKey).where(sql`${t.status} = 'pending'`),
+  dueIdx: index('task_dispatch_outbox_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
+  taskIdx: index('task_dispatch_outbox_task_idx').on(t.taskId, t.createdAt),
+}));
+
+export type TaskDispatchOutboxRow = typeof taskDispatchOutbox.$inferSelect;
 
 // Releases — one row per deployment/release event for a workspace.
 export const releases = pgTable('releases', {

@@ -30,7 +30,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
 import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
@@ -471,7 +471,8 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       recordSkip(skipCtx, 'duplicate', { diagnoseOnly: true });
       return { kind: 'skipped', reason: 'duplicate' };
     }
-    await dispatchNewTask(newDiagnoseTask, workspace);
+    await announceTaskCreated(newDiagnoseTask, workspace);
+    await wakeTask(newDiagnoseTask.id, 'ci.retry');
     console.log(`Created drift-diagnose task ${newDiagnoseTask.id} for PR #${prNumber} on ${repoFullName} (iteration skipped — diagnose only)`);
     await appendPrActivity({
       installationId,
@@ -629,7 +630,8 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       match: subjectObservation.match,
     });
   }
-  await dispatchNewTask(newTask, workspace);
+  await announceTaskCreated(newTask, workspace);
+  await wakeTask(newTask.id, 'ci.retry');
   console.log(`Created CI retry task ${newTask.id} for failed PR #${prNumber} on ${repoFullName} (iteration ${retryTask.context.iteration})`);
   // ci_job_log evidence (byo-evidence-storage AC-3). After dispatch, and
   // never throws: evidence is diagnostics, the retry is the product.

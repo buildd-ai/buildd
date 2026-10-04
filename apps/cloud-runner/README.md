@@ -79,12 +79,12 @@ The report is `PATCH /api/workers/<id>` with `status: failed` and
 for a session its process lost. buildd treats it as an infrastructure failure:
 the task goes back to `pending` on the infra-retry budget (backoff 5, 15, 30
 minutes, counted in `context.infraRetryCount`), and after the last attempt the
-task fails as `infra_stalled`. With `task.scheduled` in the webhook's events
-(the deploy script sets it), buildd sends the requeue at once with the backoff's
-end as `notBefore` and the agent starts the retry then. Without it, the
-deferred-dispatch sweep sends `task.retry` on its first run after the backoff
-passes; it rides the hourly `pr-reconcile` cron, so a retry can wait up to an
-hour beyond its backoff. The sweep runs either way, as the backstop. Only a `crashed` outcome is reported;
+task fails as `infra_stalled`. The requeue's durable wake is scheduled for the
+end of the backoff. With `task.scheduled` in the webhook's events (the deploy
+script sets it), buildd also sends an advance notice at once with that time as
+`notBefore`, and the agent starts the retry then. Either way the `dispatch-drain`
+tick delivers the wake when due, as `task.retry` to a webhook that lists that
+event: the backstop. Only a `crashed` outcome is reported;
 the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
 
 **Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
@@ -140,7 +140,7 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
 | `instanceType` | `CONTAINER_INSTANCE_TYPE` |
 | `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
-| `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
+| `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `merge_blocked`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
 | `egressDetail.github.unauthenticatedErrorStatuses` | Upstream 4xx/5xx on the unauthenticated forwards only, by code. A 429 here is an anonymous rate limit; a 429 only in `errorStatuses` was sent with the token |
 | `egressDetail.github.grantFetchFailures` | The github-token endpoint's refusals by status (`error`: nothing answered). The Worker log has the same line with the task ID |
@@ -376,6 +376,25 @@ only then adds the Worker's credential. Plain HTTP and non-443 ports to these
 hosts are refused (`403`). Upstream redirects are returned to the container
 (`redirect: 'manual'`), so an injected credential never follows a redirect.
 
+### Merge guard
+
+The installation token above carries `pull_requests:write` + `contents:write`
+— enough on its own to merge a PR or overwrite a branch directly, bypassing
+buildd's own merge policy (`resolvePolicy`/`evaluateAutoMergeSafety`, `docs/
+SPEC.md` §4a). Before any credential is attached, `rewriteOutbound` refuses:
+
+- `PUT /repos/<owner>/<repo>/pulls/<n>/merge` (the REST merge endpoint)
+- a `POST api.github.com/graphql` whose body names the `mergePullRequest` or
+  `enablePullRequestAutoMerge` mutation
+- a `POST .../git-receive-pack` push whose ref-update lines name a branch in
+  the grant's `protectedBranches` (the workspace trunk, release branch, and
+  the repo's own GitHub default branch — set by `/api/runner/github-token`)
+
+All three come back `403` with a message pointing at buildd's `merge_pr` MCP
+action. See `docs/specs/cloud-egress-merge-guard.md` for the full contract,
+including what is deliberately NOT covered (gzip-encoded push bodies,
+non-`refs/heads/*` refs, GitHub's own branch-protection rules API).
+
 ### Warm repos
 
 Design Phase 2, "Warm repos". Off unless `WARM_REPOS=1` and the `SNAPSHOTS`
@@ -475,11 +494,19 @@ Design Phase 2, "Resumable runs". Off unless `RESUMABLE_RUNS=1` and the
 | Route | Selected when | Forwarded to | Credential added |
 |---|---|---|---|
 | `direct` | `ALLOW_DIRECT_ANTHROPIC=1` and `ANTHROPIC_DIRECT_API_KEY` (**local development only**) | `https://api.anthropic.com/...` unchanged | `x-api-key: <ANTHROPIC_DIRECT_API_KEY>` |
+| team's own Anthropic key (`proxy` shape) | buildd returns the task's own `anthropic_api_key` for this task — it won the same ranking a self-hosted runner applies (docs/credentials-architecture.md) | `https://api.anthropic.com/...` unchanged | `x-api-key: <the team's key>` |
 | `proxy` | `MODEL_PROXY_URL` is set | `<MODEL_PROXY_URL><original path and query>`, e.g. `https://litellm.example.com/v1/messages` | `Authorization: Bearer <MODEL_PROXY_KEY>` (default), or `x-api-key: <MODEL_PROXY_KEY>` with `MODEL_PROXY_AUTH_HEADER=x-api-key` |
-| team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's agent model endpoint for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
+| team endpoint (`proxy` shape) | Neither of the above, and buildd returns the team's `agent_endpoint` for this task (Settings → Model providers) | `<endpoint baseUrl><original path and query>` | The endpoint's key, as `Authorization: Bearer` or `x-api-key` per its setting |
 | `gateway` | `AI_GATEWAY_ACCOUNT_ID`, `AI_GATEWAY_ID` and `AI_GATEWAY_TOKEN` are set | `https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/anthropic/...` | `cf-aig-authorization: Bearer <AI_GATEWAY_TOKEN>`; the Anthropic key lives in AI Gateway (BYOK) or Unified Billing |
 
 If none applies, model requests get `503`.
+
+**The team's own Anthropic key jumps ahead of `MODEL_PROXY_URL`** — the one
+precedence flip here. Storing a plain API key is not an opt-in to route agents
+through anything (unlike an `agent_endpoint`, which is exactly that opt-in), so
+an operator's Worker-level proxy pin must not silently spend the team's own
+credential on a different route instead. `agent_endpoint` vs `MODEL_PROXY_URL`
+is unchanged: the operator override still wins there, same as always.
 
 **Proxy** is any service that speaks the Anthropic Messages API, such as a
 LiteLLM proxy. The handler appends the container's path, so point
@@ -502,17 +529,24 @@ route. LiteLLM accepts its virtual or master key in either header. Rules:
 
 **Team endpoint.** The Worker asks buildd (`POST /api/runner/model-endpoint`,
 runner API key plus `DISPATCH_TOKEN`, like the GitHub token) on the task's
-first model request, only when neither `direct` nor `MODEL_PROXY_URL`
-applies. It is held in the `WorkerAgent`'s memory for the run: never in agent
-storage and never in the container env. A `404` means the team has none (or
-the task's own Anthropic credential outranks it) and egress falls through to
-AI Gateway. Any other failure, or a `401`/`403` from the endpoint, refuses
-model requests (`503`) for a short backoff and then asks again, so a rotated
-key takes effect mid-run and a buildd outage never silently moves spend to the
-gateway. `MODEL_PROXY_URL` stays the operator override: it pins the Worker to
-one proxy whatever team claims through it. Model aliases are not applied on
-this route: the container sends the claim's native model ids (design open
-question 2).
+first model request, whenever `direct` does not apply — including when
+`MODEL_PROXY_URL` is set, so the team's own Anthropic key (if that's what
+actually wins for this task) can still outrank it. It is held in the
+`WorkerAgent`'s memory for the run: never in agent storage and never in the
+container env. A `404` means the team has neither an `agent_endpoint` nor its
+own plain Anthropic key for this task (an OAuth seat or Claude credential
+winning instead also reads as `404` here — cloud egress does not carry a seat
+token), and egress falls through to `MODEL_PROXY_URL` or AI Gateway. Any other
+failure, or a `401`/`403` from the endpoint, refuses model requests (`503`)
+for a short backoff and then asks again, so a rotated key takes effect mid-run
+and a buildd outage never silently moves spend to a different route —
+including, now, `MODEL_PROXY_URL`: a transient lookup failure defers to it
+exactly as before, but is never treated as the confirmed "team has nothing"
+that a real `404` is. `MODEL_PROXY_URL` stays the operator override for
+everything *except* the team's own key (see "Model routes" above): it still
+pins the Worker to one proxy whatever team claims through an `agent_endpoint`.
+Model aliases are not applied on this route: the container sends the claim's
+native model ids (design open question 2).
 
 **GitHub token.** Minted by buildd, not the Worker: the App key stays in one
 place. On the container's first GitHub request (after the claim; the clone

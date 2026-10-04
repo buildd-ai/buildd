@@ -18,6 +18,14 @@ describe('agent env allowlist', () => {
     expect(env.BUILDD_API_KEY).toBeUndefined();
     expect(env.BUILDD_SERVER).toBeUndefined();
   });
+
+  // The Codex machine-level override (agent-model-env.ts's codexMachineOverride)
+  // only works if OPENAI_BASE_URL actually reaches the agent subprocess env.
+  it('passes OPENAI_BASE_URL through, the Codex equivalent of ANTHROPIC_BASE_URL', () => {
+    expect(RUNNER_ENV_PASSTHROUGH.has('OPENAI_BASE_URL')).toBe(true);
+    const env = buildAgentBaseEnv({ HOME: '/home/bun', OPENAI_BASE_URL: 'https://my-proxy.example/v1' }, NO_BROWSER);
+    expect(env.OPENAI_BASE_URL).toBe('https://my-proxy.example/v1');
+  });
 });
 
 describe('agent env: OpenTelemetry (cloud-runner sets these on the container)', () => {

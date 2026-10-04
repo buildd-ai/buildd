@@ -144,8 +144,12 @@ export function egressClassForKind(kind: 'anthropic' | 'github' | 'passthrough')
   return kind === 'anthropic' ? 'model' : kind;
 }
 
-/** Why the handler refused a request. Mirrors outbound.ts RejectReason. */
-export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'other'] as const;
+/**
+ * Why the handler refused a request. Mirrors outbound.ts RejectReason.
+ * `merge_blocked`: a direct PR merge (REST or GraphQL) or a push to a
+ * protected branch — see outbound.ts "Merge guard".
+ */
+export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'merge_blocked', 'other'] as const;
 export type RejectReason = typeof REJECT_REASONS[number];
 /** Mirrors outbound.ts RejectedPathLabel: where a `path` refusal was going, as a fixed label. */
 export const REJECTED_PATH_LABELS = ['api_hello', 'event_logging', 'oauth', 'claude_code_api', 'other_api', 'files', 'batches', 'other_v1', 'other'] as const;

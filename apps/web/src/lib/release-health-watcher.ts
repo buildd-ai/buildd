@@ -2,7 +2,7 @@ import { db as _db } from '@buildd/core/db';
 import { releases, tasks, watchedProjects, workspaces } from '@buildd/core/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 
 type DB = typeof _db;
@@ -128,10 +128,11 @@ Investigate the failure and restore the service to a healthy state.`;
 
   if (!newTask) return;
 
-  await dispatchNewTask(
+  await announceTaskCreated(
     { id: newTask.id, title, description, workspaceId: release.workspaceId },
     workspace ?? { id: release.workspaceId },
   );
+  await wakeTask(newTask.id, 'task.created');
 }
 
 // Fetches the deploy identity endpoint at the same origin as the workspace's

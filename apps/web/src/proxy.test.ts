@@ -79,11 +79,11 @@ describe('proxy: apex root', () => {
 describe('proxy: marketing paths', () => {
   it('lists exactly the pages the marketing site owns', () => {
     expect([...MARKETING_PATHS].sort()).toEqual(
-      ['/integrations', '/memory', '/pricing', '/privacy', '/terms'],
+      ['/ai-kit', '/integrations', '/memory', '/pricing', '/privacy', '/terms'],
     );
   });
 
-  for (const path of ['/pricing', '/integrations', '/memory', '/privacy', '/terms']) {
+  for (const path of ['/pricing', '/integrations', '/memory', '/ai-kit', '/privacy', '/terms']) {
     it(`redirects apex ${path} to www, preserving the query`, () => {
       const res = proxy(req(`https://buildd.dev${path}?plan=team`));
       expect(res.status).toBe(308);

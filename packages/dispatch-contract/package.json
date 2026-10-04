@@ -1,0 +1,19 @@
+{
+  "name": "@buildd/dispatch-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Wire contract between a producer (Buildd) and the Dispatch transport Worker. No runtime dependencies, no Buildd tables.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "type-check": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  },
+  "license": "Apache-2.0"
+}
