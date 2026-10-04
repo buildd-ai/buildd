@@ -140,7 +140,7 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
 | `instanceType` | `CONTAINER_INSTANCE_TYPE` |
 | `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
-| `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
+| `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `merge_blocked`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
 | `egressDetail.github.unauthenticatedErrorStatuses` | Upstream 4xx/5xx on the unauthenticated forwards only, by code. A 429 here is an anonymous rate limit; a 429 only in `errorStatuses` was sent with the token |
 | `egressDetail.github.grantFetchFailures` | The github-token endpoint's refusals by status (`error`: nothing answered). The Worker log has the same line with the task ID |
@@ -375,6 +375,25 @@ container sent in `authorization`, `proxy-authorization`, `x-api-key`,
 only then adds the Worker's credential. Plain HTTP and non-443 ports to these
 hosts are refused (`403`). Upstream redirects are returned to the container
 (`redirect: 'manual'`), so an injected credential never follows a redirect.
+
+### Merge guard
+
+The installation token above carries `pull_requests:write` + `contents:write`
+— enough on its own to merge a PR or overwrite a branch directly, bypassing
+buildd's own merge policy (`resolvePolicy`/`evaluateAutoMergeSafety`, `docs/
+SPEC.md` §4a). Before any credential is attached, `rewriteOutbound` refuses:
+
+- `PUT /repos/<owner>/<repo>/pulls/<n>/merge` (the REST merge endpoint)
+- a `POST api.github.com/graphql` whose body names the `mergePullRequest` or
+  `enablePullRequestAutoMerge` mutation
+- a `POST .../git-receive-pack` push whose ref-update lines name a branch in
+  the grant's `protectedBranches` (the workspace trunk, release branch, and
+  the repo's own GitHub default branch — set by `/api/runner/github-token`)
+
+All three come back `403` with a message pointing at buildd's `merge_pr` MCP
+action. See `docs/specs/cloud-egress-merge-guard.md` for the full contract,
+including what is deliberately NOT covered (gzip-encoded push bodies,
+non-`refs/heads/*` refs, GitHub's own branch-protection rules API).
 
 ### Warm repos
 
