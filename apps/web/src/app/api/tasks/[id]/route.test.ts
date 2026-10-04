@@ -21,6 +21,9 @@ const mockResolveCompletedTask = mock(() => Promise.resolve());
 const mockWakeTask = mock(async (_id: string, _cause: string) => {});
 const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
 
+const mockDispatchHistory = mock(async (_taskId: string) => [] as any[]);
+mock.module('@buildd/core/dispatch-outbox', () => ({ dispatchHistoryForTask: mockDispatchHistory }));
+
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
@@ -412,6 +415,28 @@ describe('GET /api/tasks/[id]', () => {
     // through when present by accident.
     const callArgs = mockWorkersFindMany.mock.calls[0]?.[0] as any;
     expect(callArgs?.columns?.rejectedCompletionPayload).toBe(true);
+  });
+
+  it('include=dispatch returns the task\'s outbox trail; not read otherwise', async () => {
+    const mockTask = { id: TASK_ID, title: 'Test Task', workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockDispatchHistory.mockClear();
+    const entry = { id: 'o-1', cause: 'task.created', status: 'handed_off', transport: 'dispatch', handedOffAt: '2026-10-04T12:00:00.000Z', deliveredVia: null, attemptCount: 1, lastError: null };
+    mockDispatchHistory.mockResolvedValueOnce([entry]);
+
+    const res = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' }, search: '?include=dispatch' }), TASK_ID);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.dispatch).toEqual([entry]);
+    expect(mockDispatchHistory).toHaveBeenCalledWith(TASK_ID);
+    expect(data.workers).toBeUndefined();
+
+    mockDispatchHistory.mockClear();
+    const plain = await (await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID)).json();
+    expect(plain.dispatch).toBeUndefined();
+    expect(mockDispatchHistory).not.toHaveBeenCalled();
   });
 
   it('omits workers/artifacts when include is not requested', async () => {

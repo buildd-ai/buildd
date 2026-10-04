@@ -31,6 +31,7 @@ import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/mod
 import { TIERS } from '@buildd/core/model-tier-defaults';
 import { appBaseUrl } from '@/lib/app-url';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
+import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -62,7 +63,9 @@ async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Pro
 //   include=workers,artifacts — opt-in expansion. `workers` returns all worker
 //     attempts (latest first) with PR refs, summary, error, status, branch,
 //     completedAt. `artifacts` returns artifacts attached to those workers,
-//     each with a shareUrl.
+//     each with a shareUrl. `dispatch` returns the task's dispatch outbox
+//     trail (cause, status, transport, handedOffAt, deliveredVia, attempts,
+//     lastError), oldest first.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -188,6 +191,7 @@ export async function GET(
     const response: Record<string, unknown> = { ...task, workspace: withoutDispatchToken(task.workspace) };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
+    if (include.has('dispatch')) response.dispatch = await dispatchHistoryForTask(id);
     const evidenceObjects = await loadInlineEvidence(task.workspaceId, id, {
       surface: 'get_task',
       // The account decides access above when both are present, so it is the actor.

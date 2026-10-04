@@ -181,6 +181,7 @@
     "./task-pr-diffs": "./task-pr-diffs.ts",
     "./path-claim": "./path-claim.ts",
     "./dispatch-outbox": "./dispatch-outbox.ts",
+    "./dispatch-health-report": "./dispatch-health-report.ts",
     "./dispatch-dependents": "./dispatch-dependents.ts",
     "./dispatch-envelope": "./dispatch-envelope.ts",
     "./dispatch-handoff": "./dispatch-handoff.ts",
