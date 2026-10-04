@@ -93,9 +93,20 @@ export function highConfidenceEvidence(): SQL {
 }
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
-export async function listOptedInTeams(): Promise<Array<{ teamId: string; settings: ChatRetroSettings }>> {
+/**
+ * Teams that run buildd's dogfood policy: a high-confidence visible-answer
+ * failure files on first occurrence (./proposals.ts filesOnFirstOccurrence).
+ * Comma-separated team ids in CHAT_RETRO_DOGFOOD_TEAM_IDS; unset = none, so
+ * every other opted-in team keeps the recurrence rules.
+ */
+export function dogfoodTeamIds(env: Record<string, string | undefined> = process.env): Set<string> {
+  return new Set((env.CHAT_RETRO_DOGFOOD_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
+}
+
+export async function listOptedInTeams(): Promise<Array<{ teamId: string; settings: ChatRetroSettings; dogfood: boolean }>> {
   const rows = await db.select({ id: teams.id, chatRetro: teams.chatRetro }).from(teams).where(optedInTeamsWhere());
-  return rows.map(r => ({ teamId: r.id, settings: readChatRetroSettings(r.chatRetro) }));
+  const dogfood = dogfoodTeamIds();
+  return rows.map(r => ({ teamId: r.id, settings: readChatRetroSettings(r.chatRetro), dogfood: dogfood.has(r.id) }));
 }
 
 export async function readTeamSettings(teamId: string): Promise<ChatRetroSettings> {
