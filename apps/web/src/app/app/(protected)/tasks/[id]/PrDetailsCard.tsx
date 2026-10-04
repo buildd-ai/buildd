@@ -3,6 +3,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import PrCard, { type CiCheckRun, type PrOutcome } from '@/components/task/PrCard';
+import type { OpenAttemptInfo } from '@/lib/explain';
 
 export type StoredPrFacts = {
   prUrl: string;
@@ -13,6 +14,8 @@ export type StoredPrFacts = {
   filesChanged?: number | null;
   /** Task page outcome view (stored-state lineage); enriched here with check runs per commit. */
   outcome?: PrOutcome | null;
+  /** The canonical open-fix-attempt fact (lib/explain.ts's loadOpenAttempt) — already live, never re-derived here. */
+  openAttempt?: OpenAttemptInfo | null;
 };
 
 const toRun = (c: any): CiCheckRun => ({

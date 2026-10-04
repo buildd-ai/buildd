@@ -1,5 +1,5 @@
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
@@ -8,6 +8,7 @@ import { describeError } from '@buildd/core/describe-error';
 import { eq, and, lte, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
@@ -957,6 +958,16 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         if (workspace) {
           await announceTaskCreated(task, workspace);
           await wakeTask(task.id, 'task.created');
+        }
+
+        // The creation-manifest shadow (lib/task-manifest-prediction.ts): which
+        // files a missing-scope schedule-filed task would declare. After the
+        // response, record only; the hook decides eligibility (a planning
+        // cycle is bookkeeping and is skipped). Never fails the tick.
+        try {
+          scheduleCreationManifestShadow(task, { teamId: workspace?.teamId ?? null }, after);
+        } catch (err) {
+          console.error(`[cron-schedules] manifest shadow scheduling failed for ${task.id} (non-fatal):`, err);
         }
 
         // Fire schedule triggered event — thin payload only (Pusher 10KB cap).

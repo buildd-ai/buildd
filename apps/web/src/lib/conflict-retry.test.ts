@@ -804,6 +804,26 @@ describe('dispatchConflictRetry', () => {
     expect(capturedInsertValues.dependsOn).toEqual(['overlapping-sibling']);
   });
 
+  it('does not depend on a task that is already downstream of the original task, directly or transitively, but still depends on an unrelated overlapping task', async () => {
+    const pathManifest = ['apps/web/src/lib'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'task-id', pathManifest, dependsOn: [] },
+      // S: overlaps and already depends directly on the original task.
+      { id: 'downstream-direct', pathManifest: ['apps/web/src/lib/foo.ts'], dependsOn: ['task-id'] },
+      // S2: overlaps and depends on the original task transitively, through X.
+      { id: 'downstream-transitive', pathManifest: ['apps/web/src/lib/bar.ts'], dependsOn: ['intermediate'] },
+      { id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
+      // U: overlaps but has no relationship to the original task.
+      { id: 'unrelated-overlap', pathManifest: ['apps/web/src/lib/baz.ts'], dependsOn: [] },
+    ]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['unrelated-overlap']);
+  });
+
   it('returns dispatched=false when workspace is not found', async () => {
     mockWorkspaceFindFirst.mockResolvedValue(null);
     const result = await dispatchConflictRetry(BASE_PARAMS);

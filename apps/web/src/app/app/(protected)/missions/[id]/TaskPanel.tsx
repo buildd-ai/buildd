@@ -33,7 +33,8 @@ export interface TaskPanelData {
   /** The mission's executor (`local`: runners never claim it); absent from older responses. */
   missionExecutor?: 'runner' | 'local' | null;
   backend: 'claude' | 'codex' | null;
-  failover: { from: string; reason: string | null } | null;
+  /** `summary` is describeBackendRouting's sentence (@buildd/core/backend-policy). */
+  failover: { from: string; reason: string | null; summary?: string } | null;
   worker: {
     id: string;
     status: string;
@@ -284,12 +285,18 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         </div>
       </div>
 
-      {/* Failover note — a Claude task that got flipped to Codex mid-life */}
+      {/* Failover note — the task runs (or last ran) on another backend than it was filed with */}
       {data.failover && (
         <p className="font-mono text-[11px] text-text-muted">
-          Switched to <span className="capitalize text-text-secondary">{data.backend}</span> after{' '}
-          <span className="capitalize">{data.failover.from}</span>
-          {data.failover.reason === 'budget_exhausted' ? ' hit its budget' : ' failed'}.
+          {data.failover.summary ? (
+            <>{data.failover.summary.charAt(0).toUpperCase()}{data.failover.summary.slice(1)}.</>
+          ) : (
+            <>
+              Switched to <span className="capitalize text-text-secondary">{data.backend}</span> after{' '}
+              <span className="capitalize">{data.failover.from}</span>
+              {data.failover.reason === 'budget_exhausted' ? ' hit its budget' : ' failed'}.
+            </>
+          )}
         </p>
       )}
 

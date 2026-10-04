@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { reconcileSubjectEvent } from '@/lib/supersession';
 import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
@@ -15,7 +16,8 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -50,7 +52,8 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { closeAncestorRetryPrs, type SupersededPr } from '@/lib/retry-pr-supersession';
+import { closeAncestorRetryPrs, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
+import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAttemptFooter } from '@/lib/retry-fresh-pr-gate';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
@@ -223,13 +226,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    // Team membership OR being the account that runs the worker — see
-    // canActOnWorkerPr for why neither check alone is enough.
-    if (!(await canActOnWorkerPr(account, worker))) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
-    }
-    if (account.taskScope && (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker))) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    // Team membership OR being the account that runs the worker (see
+    // canActOnWorkerPr), and a per-task token only for its own worker. Runs
+    // before anything below reads GitHub, creates a ref or records a PR.
+    const prAccess = await authorizeWorkerPrCapability(account, worker, existingPrUrl ? 'pr.adopt' : 'pr.create');
+    if (!prAccess.allowed) {
+      return NextResponse.json({ error: prAccess.error }, { status: prAccess.status });
     }
 
     // Option A′ derivation — read once, used everywhere below that a PR's head
@@ -302,7 +304,25 @@ export async function POST(req: NextRequest) {
       // request would be wasted work on the common (non-mission) path too.
       let adoptRepo: { fullName: string; installation: { installationId: number } | null } | undefined;
       let realPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
-      if (missionBaseGuard.enforced) {
+      // Same escape hatch as the fresh-create path below (PART 2): a
+      // multi-repo mission's integration branch may be real in the mission's
+      // home repo and absent from THIS task's own repo, in which case
+      // refusing an adopted PR for disagreeing with it would refuse the only
+      // base that can actually exist here.
+      let adoptionIntegrationBaseMissing = false;
+      if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
+        const ready = await ensureIntegrationBaseForTaskPr({
+          missionId: worker.task.missionId,
+          integrationBase,
+          taskTitle: worker.task.title,
+          fallbackBase: worker.workspace?.gitConfig?.targetBranch || worker.workspace?.gitConfig?.defaultBranch || null,
+          workspaceId: worker.workspaceId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+        });
+        adoptionIntegrationBaseMissing = !ready.usable;
+      }
+      if (missionBaseGuard.enforced && !adoptionIntegrationBaseMissing) {
         // Prefer GitHub's answer over the caller's. The caller-supplied `base`
         // is a *claim* about a PR buildd never opened, and a claim is exactly
         // what this gate exists to stop being load-bearing: an agent can pass
@@ -626,11 +646,12 @@ export async function POST(req: NextRequest) {
         if (retryIteration > 0) {
           try {
             const currentBody: string = prDetail.body ?? existing.body ?? '';
-            const attemptLine = `_Attempt ${retryIteration + 1}/${maxIterations} — resume failed; new branch._`;
+            // This PR was adopted, i.e. updated in place — say so, not that a
+            // resume failed.
+            const attemptLine = retryAttemptFooter({ attempt: retryIteration + 1, maxIterations, decision: 'updated' });
             // Replace an existing attempt line or append a new one.
-            const attemptPattern = /_Attempt \d+\/\d+ — resume failed; new branch\._/;
-            const updatedBody = attemptPattern.test(currentBody)
-              ? currentBody.replace(attemptPattern, attemptLine)
+            const updatedBody = ATTEMPT_FOOTER_PATTERN.test(currentBody)
+              ? currentBody.replace(ATTEMPT_FOOTER_PATTERN, attemptLine)
               : `${currentBody}\n\n---\n${attemptLine}`;
             await githubApi(
               repo.installation.installationId,
@@ -657,12 +678,55 @@ export async function POST(req: NextRequest) {
       // If the check fails, proceed with creation (GitHub will reject duplicates anyway)
     }
 
-    // Stamp retry lineage into the PR body when this is a fresh fallback PR
-    // (resume branch was gone/diverged and a new branch was opened instead of
-    // updating the existing one).  Lets humans disambiguate duplicate-looking
-    // PRs in the list without reading the diff.
+    // A retry bound to a still-open PR updates that PR. A fresh PR from it is
+    // the exceptional fallback — only when the two heads have diverged — and
+    // every one let through records why (lib/retry-fresh-pr-gate.ts). The
+    // ancestor close further down stays as the backstop.
+    const freshPr = await checkFreshRetryPr({
+      installationId: repo.installation.installationId,
+      repoFullName: repo.fullName,
+      task: worker.task,
+      head,
+      // The runner's own record of why it did not resume: a diverged head is
+      // let through only with one (missing/diverged).
+      resolveResumeCause: () => resolveSupersessionCause(worker.id),
+    });
+    if (freshPr.action === 'refuse') {
+      const { error, hint } = freshRetryPrRefusal(freshPr, head);
+      fireGateEvent({
+        gate: GATE_SLUGS.RETRY_PR_SUPERSESSION,
+        surface: 'POST /api/github/pr',
+        outcome: 'rejected',
+        reason: 'fresh retry PR refused: its subject PR is open and can carry the work',
+        workspaceId: worker.workspaceId,
+        missionId: worker.task?.missionId ?? null,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        detail: { subjectPrNumber: freshPr.subjectPrNumber, compareStatus: freshPr.compareStatus, resumeCause: freshPr.resumeCause ?? null, head },
+        callerOrigin: 'worker',
+      });
+      return NextResponse.json({ error, hint, subjectPr: { number: freshPr.subjectPrNumber, url: freshPr.subjectUrl } }, { status: 409 });
+    }
+    if (freshPr.action === 'allow_fresh') {
+      fireGateEvent({
+        gate: GATE_SLUGS.RETRY_PR_SUPERSESSION,
+        surface: 'POST /api/github/pr',
+        outcome: 'warned',
+        reason: `retry opened a fresh PR while its subject PR was open: ${freshPr.reason}`,
+        workspaceId: worker.workspaceId,
+        missionId: worker.task?.missionId ?? null,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        detail: { subjectPrNumber: freshPr.subjectPrNumber, compareStatus: freshPr.compareStatus, freshPrReason: freshPr.reason, resumeCause: freshPr.resumeCause ?? null, head },
+        callerOrigin: 'worker',
+      });
+    }
+
+    // Stamp retry lineage into the PR body when a retry opens a fresh PR, with
+    // the reason the gate above let it through — never a cause nobody observed.
+    // Lets humans disambiguate duplicate-looking PRs without reading the diff.
     const lineageSuffix = retryIteration > 0
-      ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — resume failed; new branch._`
+      ? `\n\n---\n${retryAttemptFooter({ attempt: retryIteration, maxIterations, decision: freshPr })}`
       : '';
 
     // ── The lede leads ───────────────────────────────────────────────────────
@@ -1692,6 +1756,17 @@ export async function PUT(req: NextRequest) {
         .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
       await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName);
+      // The merge made a live reviewer and any open fix obsolete. The
+      // pull_request.closed webhook fires the same event; the CAS keeps it to
+      // one cancellation per task whichever door gets there first.
+      await reconcileSubjectEvent({
+        kind: 'merged',
+        workspaceId: worker.workspaceId,
+        prNumber,
+        originalTaskId: worker.taskId,
+        door: 'PUT /api/github/pr',
+        pr: { installationId: repo.installation.installationId, repoFullName: repo.fullName },
+      });
     } else if (/resource not accessible by integration/i.test(result.message)) {
       // The GitHub App installation lacks the required permissions.
       // Merging requires pull_requests:write AND contents:write.

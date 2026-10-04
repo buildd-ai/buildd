@@ -558,6 +558,25 @@ describe('explainTask', () => {
     expect(answer.nextAction).toBeNull();
     expect(answer.derivedFrom.waitingOn).toBeNull();
   });
+
+  // The claim flips a Claude task to Codex in memory; without this the only
+  // trace was a log line, and explain could not say why the backend changed.
+  it('says why the claim ran the task on another backend', async () => {
+    taskRows = [task({
+      id: 'task-1', status: 'in_progress', backend: 'claude',
+      context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+    })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.backendRouting?.summary).toBe('routed to Codex by budget failover (Claude seat exhausted)');
+    expect(answer.backendRouting?.backend).toBe('codex');
+    expect(answer.derivedFrom.backendRouting).toBe('tasks.context.backendRouting');
+  });
+
+  it('leaves backendRouting off when nothing moved the task', async () => {
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.backendRouting).toBeUndefined();
+  });
 });
 
 // ─── PR scope: the dirty mission PR ───────────────────────────────────────────

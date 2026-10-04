@@ -7,7 +7,7 @@ import { hasTokenScope, requiredScopeForAction } from './token-scopes';
  */
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
-import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
+import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendPinned } from './backend-policy';
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
@@ -338,6 +338,7 @@ export const workerActions = [
   'get_failure_analytics',
   'get_manifest_coverage',
   'get_path_claim_stats',
+  'get_decision_stats',
   // Read-only heartbeat snapshot for the caller's runners — the same data
   // GET /api/workers/active serves, exposed as an MCP action so a task doing
   // update/version recon doesn't need SSH or a dashboard session to see it.
@@ -610,9 +611,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
     explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field; a task or PR subject also carries `evidenceObjects[]` (id, kind, bytes, state; read with read_evidence). Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
     get_error_traces: '{ workerId?, taskId? (full UUID or 8+ char prefix), workspaceId?, since? (ISO date; workspace default 7d), limit? (traces: default 50, max 500; workspace patterns: default 20, max 100) } — returns errors caught from agent tool output: every non-zero Bash exit (redacted command, exit code, output tail) plus known patterns (cd: No such file, git fatal, OOM, etc.). taskId also returns the evidence record written when the task ended (error class, key lines, last failing command, CI checks) and any mismatch flags — the answer to "why did it fail". workerId/taskId list individual traces; workspaceId returns a per-pattern rollup (count, tasks hit, first/last seen, latest excerpt, example taskIds) to tell a new failure from a recurring one. Defaults to the caller worker\'s task, or to the session workspace rollup when there is no worker context.',
-    get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
+    get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude learned floor pressure (forecast, not provider usage; source, observation age, sample basis) and Codex exhaustion, monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — learned pressure is advisory and must not be treated as a hard budget wall; use provider exhaustion or monthly depletion for startAfter: "budget_reset".',
     get_manifest_coverage: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — aggregate share of tasks created in the window with concrete, wildcard-only, or missing path manifests. Includes workspace, mission and kind breakdowns; concreteShare is a fraction in [0,1], null for no tasks.',
     get_path_claim_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — check_path_claim call counts and claimed, blocked, deadlock and rejected outcomes from the decision ledger, with transport breakdown and explicit instrumentation coverage. Historical unrecorded successful calls cannot be reconstructed.',
+    get_decision_stats: '{ workspaceId?, missionId?, window? (24h|7d|30d, default 7d) } — orchestration decision-shadow ledger counts (orchestration_decisions, orchestration_manifest_predictions): totals, applied/suggested/fallback, labelled vs unlabelled, by decision group (capability, decisionId, fingerprint, policy, arm), by UTC day and by fallback reason, plus each workspace\'s opt-in state so zero rows can be told apart from a disabled capability. The DB-free substitute for querying the ledger directly.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="role" reports a routed role (one the decision model filled in) as its own "<Role> · inferred" group beside the stated one, and every role group carries median/p90 time-to-claim. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor. Also returns every tool, Bash intent buckets and code-search shapes (exact-histogram tasks only), per-action buildd calls (recorded since capture began) and per-tool codebase-graph calls (session-keyed), each with its own coverage line.',
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
@@ -1819,6 +1821,14 @@ export async function handleBuilddAction(
         lines.push(`**Phase:** ${task.missionPhaseIndex} · ${task.missionPhaseLabel}`);
       }
       if (task.kind) lines.push(`**Kind:** ${task.kind}${task.roleSlug ? ` (role: ${task.roleSlug})` : ''}`);
+      // Only when it says something: a claim/failover moved the task, or the
+      // backend is pinned so failover will leave it alone.
+      const backendRouting = describeBackendRouting(task.context, task.backend);
+      if (backendRouting) {
+        lines.push(`**Backend:** ${backendLabel(backendRouting.backend)} (${backendRouting.summary})`);
+      } else if (isBackendPinned(task.context)) {
+        lines.push(`**Backend:** ${backendLabel(task.backend)} (pinned: failover will not move it)`);
+      }
       if (task.startAt) lines.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
       if (task.loopConfig) {
         const maxLoops = task.loopConfig.maxLoops ?? 5;
@@ -4396,11 +4406,15 @@ export async function handleBuilddAction(
 
       // OAuth session rows
       for (const s of (f.oauthSessions ?? [])) {
-        if (s.state === 'learning') {
+        if (s.state === 'learning' && s.episodes >= 3) {
+          lines.push(`Claude session (${s.accountName}): unknown — stale or invalid observation, forecast inert · ${s.episodes} historical episodes · provider usage: unknown`);
+        } else if (s.state === 'learning') {
           lines.push(`Claude session (${s.accountName}): learning — ${s.episodes} episode(s) recorded, need 3+ for estimates`);
         } else {
           const resetsIn = timeUntilFromIso(s.windowEndsAt);
-          lines.push(`Claude session (${s.accountName}): ${s.pressurePct}% used · resets in ${resetsIn} · confidence: ${s.confidence ?? 'low'}${s.limiter ? ` · binding: ${s.limiter}` : ''}`);
+          const observationAge = typeof s.observationAgeMs === 'number'
+            ? `${Math.round(s.observationAgeMs / 60_000)}m` : 'unknown';
+          lines.push(`Claude session (${s.accountName}): ${s.pressurePct}% forecast floor pressure · inferred reset in ${resetsIn} · estimate confidence: ${s.confidence ?? 'low'}${s.limiter ? ` · binding: ${s.limiter}` : ''} · source: ${s.source ?? 'learned_exhaustion_floor'} · ${s.episodes} episodes, quantile ${s.sampleBasis?.quantile ?? 'unknown'} · observation age: ${observationAge} · provider usage: unknown`);
         }
       }
 
@@ -4461,6 +4475,21 @@ export async function handleBuilddAction(
       const data = await api(`/api/stats/coordination${query.size ? `?${query}` : ''}`);
       const metric = action === 'get_manifest_coverage' ? data?.manifestCoverage : data?.pathClaims;
       return text(JSON.stringify(metric ?? {}, null, 2));
+    }
+
+    case 'get_decision_stats': {
+      const rawWindow = typeof params.window === 'string' ? params.window : null;
+      if (rawWindow !== null && !(USAGE_WINDOW_VALUES as readonly string[]).includes(rawWindow)) {
+        return errorResult(`Invalid window "${rawWindow}". Expected one of ${USAGE_WINDOW_VALUES.join(', ')}.`);
+      }
+      const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
+      const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
+      const query = new URLSearchParams({ metric: 'orchestrationDecisions' });
+      if (wsId) query.set('workspace', wsId);
+      if (typeof params.missionId === 'string') query.set('mission', params.missionId);
+      if (rawWindow) query.set('window', rawWindow);
+      const data = await api(`/api/stats/coordination?${query}`);
+      return text(JSON.stringify(data ?? {}, null, 2));
     }
 
     case 'get_usage_stats': {
@@ -5291,8 +5320,11 @@ export async function handleBuilddAction(
           const body: Record<string, unknown> = {};
           if (params.name) body.name = params.name;
           if (params.repoUrl) body.repoUrl = params.repoUrl;
-          if (params.defaultBranch) body.defaultBranch = params.defaultBranch;
           if (params.accessMode) body.accessMode = params.accessMode;
+          // Put defaultBranch in gitConfig so the runner can read it
+          const gitConfig: Record<string, unknown> = {};
+          if (params.defaultBranch) gitConfig.defaultBranch = params.defaultBranch;
+          if (Object.keys(gitConfig).length > 0) body.gitConfig = gitConfig;
           const wsData = await api('/api/workspaces', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -5341,7 +5373,6 @@ export async function handleBuilddAction(
           const body: Record<string, unknown> = {};
           if (params.name !== undefined) body.name = params.name;
           if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
-          if (params.defaultBranch !== undefined) body.defaultBranch = params.defaultBranch;
           if (params.accessMode !== undefined) body.accessMode = params.accessMode;
           if (params.releaseConfig !== undefined) body.releaseConfig = params.releaseConfig;
           if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
@@ -5350,6 +5381,8 @@ export async function handleBuilddAction(
           const gitConfig: Record<string, unknown> = {
             ...(params.gitConfig && typeof params.gitConfig === 'object' ? params.gitConfig as Record<string, unknown> : {}),
           };
+          // Put defaultBranch in gitConfig so the runner can read it
+          if (params.defaultBranch !== undefined) gitConfig.defaultBranch = params.defaultBranch;
           // Hand-written merge-policy paths are refused (the API 400s too); say why
           // before the round-trip. Paths come from action=init's repo scan.
           const removedPathField = findRemovedPathFieldInGitConfig(params, '')

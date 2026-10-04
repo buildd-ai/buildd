@@ -34,6 +34,7 @@ import {
   FAILURE_BACKOFF_MS,
 } from './browser-capability';
 import { buildAgentBaseEnv, RUNNER_ENV_PASSTHROUGH } from './agent-env';
+import { setPlaywrightPinForTests } from './playwright-pin';
 
 const HTML = '<html><head></head><body></body></html>\n';
 const SHELL = `${SYSTEM_PLAYWRIGHT_DIR}/chromium_headless_shell-1200/chrome-linux/headless_shell`;
@@ -95,6 +96,8 @@ function fakeChild(file: string) {
 
 beforeEach(() => {
   resetBrowserCapabilityCache();
+  // No pin unless a test sets one, so discovery order is the pin-agnostic one.
+  setPlaywrightPinForTests(null);
   probes = [];
   host = {};
   delete process.env.PLAYWRIGHT_BROWSERS_PATH;
@@ -127,6 +130,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+  setPlaywrightPinForTests();
 });
 
 describe('detectBrowser', () => {
@@ -552,5 +556,60 @@ describe('agent env carries the Playwright path the runner verified', () => {
       { available: true, path: SHELL, browsersRoot: SYSTEM_PLAYWRIGHT_DIR, searched: [], attempts: [] }).PLAYWRIGHT_BROWSERS_PATH).toBe('/srv/pw');
     expect(applyAgentPlaywrightEnv({}, { available: true, path: '/usr/bin/chromium', searched: [], attempts: [] }).PLAYWRIGHT_BROWSERS_PATH).toBeUndefined();
     expect(applyAgentPlaywrightEnv({}, { available: false, searched: [SYSTEM_PLAYWRIGHT_DIR], attempts: [] }).PLAYWRIGHT_BROWSERS_PATH).toBeUndefined();
+  });
+});
+
+describe('pinned Playwright build', () => {
+  const PIN = { version: '1.61.1', chromiumRevision: '1228', headlessShellRevision: '1228' };
+  const PINNED_CHROME = `${SYSTEM_PLAYWRIGHT_DIR}/chromium-1228/chrome-linux64/chrome`;
+  const OTHER_SHELL = `${SYSTEM_PLAYWRIGHT_DIR}/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell`;
+
+  it('probes the pinned build before another version\'s headless shell', () => {
+    setPlaywrightPinForTests(PIN);
+    install({
+      dirs: [SYSTEM_PLAYWRIGHT_DIR],
+      found: [OTHER_SHELL, PINNED_CHROME],
+      launch: { [OTHER_SHELL]: () => Buffer.from(HTML), [PINNED_CHROME]: () => Buffer.from(HTML) },
+    });
+    const d = detectBrowser();
+    expect(d.available).toBe(true);
+    expect(d.path).toBe(PINNED_CHROME);
+    expect(probes[0]).toBe(PINNED_CHROME);
+    expect(d.pin).toEqual(PIN);
+  });
+
+  it('names the expected build, what is installed and the repair when no browser launches', () => {
+    setPlaywrightPinForTests(PIN);
+    install({ dirs: [SYSTEM_PLAYWRIGHT_DIR], found: [OTHER_SHELL], launch: {} });
+    const line = formatBrowserDetection(detectBrowser());
+    expect(line).toContain('browser: no');
+    expect(line).toContain(OTHER_SHELL);
+    expect(line).toContain('pinned Playwright 1.61.1 expects chromium_headless_shell-1228 / chromium-1228');
+    expect(line).toContain('installed: none');
+    expect(line).toContain('bun run browser:install');
+    expect(line.split('\n')).toHaveLength(1);
+  });
+
+  it('lists the pinned build directory when it is present but fails to launch', () => {
+    setPlaywrightPinForTests(PIN);
+    const dir = `${SYSTEM_PLAYWRIGHT_DIR}/chromium-1228`;
+    install({ dirs: [SYSTEM_PLAYWRIGHT_DIR, dir], found: [PINNED_CHROME], launch: { [PINNED_CHROME]: () => { throw execError(127, 'libnss3.so missing'); } } });
+    const line = formatBrowserDetection(detectBrowser());
+    expect(line).toContain(`installed: ${dir}`);
+    expect(line).toContain('libnss3.so missing');
+  });
+
+  it('flags a working Playwright build that is not the pinned one', () => {
+    setPlaywrightPinForTests(PIN);
+    const line = formatBrowserDetection({
+      available: true, path: OTHER_SHELL, browsersRoot: SYSTEM_PLAYWRIGHT_DIR, searched: [SYSTEM_PLAYWRIGHT_DIR], attempts: [], pin: PIN,
+    });
+    expect(line).toContain('browser: yes');
+    expect(line).toContain('not the pinned build');
+  });
+
+  it('says nothing about the pin for a system Chromium on PATH', () => {
+    const line = formatBrowserDetection({ available: true, path: '/usr/bin/chromium', searched: [], attempts: [], pin: PIN });
+    expect(line).not.toContain('pinned');
   });
 });

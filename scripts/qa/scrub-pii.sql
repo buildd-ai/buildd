@@ -240,6 +240,7 @@ DELETE FROM task_area_prediction_events;
 DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;
 DELETE FROM orchestration_decisions;
+DELETE FROM orchestration_overlap_answers;
 -- Model decision ledger: reasons can be prose and human overrides free-form.
 DELETE FROM decision_outcomes;
 DELETE FROM decision_challenger_runs;

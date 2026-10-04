@@ -1582,6 +1582,33 @@ describe('POST /api/tasks', () => {
     expect(captured().backend).toBe('claude');
   });
 
+  // tasks.backend defaults to 'claude', so only this marker tells budget
+  // failover that the creator asked for the backend (provider-failover spec).
+  it('pins an explicitly requested backend so failover never overrides it', async () => {
+    const captured = backendCase();
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', backend: 'claude' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('claude');
+    expect(captured().context?.backendPinned).toBe(true);
+  });
+
+  it('does not pin a backend inherited from a role, mission or workspace default', async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+    expect(captured().context?.backendPinned).toBeUndefined();
+  });
+
   it('omits backend (schema default applies) when neither task nor role specify one', async () => {
     const captured = backendCase();
     mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: null });
@@ -3077,22 +3104,21 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(200);
       expect(captured().pathManifest).toEqual(['**']);
       expect(mockScheduleCreationManifestShadow).toHaveBeenCalledTimes(1);
-      const [input, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
-      expect(input).toMatchObject({
-        taskId: captured().id,
-        teamId: 'team-1',
+      // The inserted row goes to the one post-insert hook, which decides eligibility.
+      const [row, ctx, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row).toMatchObject({
+        id: captured().id,
         workspaceId: 'ws-1',
         missionId: 'mission-1',
-        accountId: 'account-123',
         title: 'Build feature X',
         description: 'Do it',
-        callerManifest: ['**'],
+        pathManifest: ['**'],
       });
-      expect(input.createdAt instanceof Date).toBe(true);
+      expect(ctx).toEqual({ teamId: 'team-1', accountId: 'account-123' });
       expect(typeof schedule).toBe('function');
     });
 
-    it('explicit caller manifests win: no prediction is scheduled', async () => {
+    it('an explicit caller manifest reaches the hook as stored (the hook declines it: caller manifests win)', async () => {
       missionPathManifestSetup();
       mockTasksFindMany.mockResolvedValue([]);
       const response = await POST(createMockRequest({
@@ -3101,7 +3127,8 @@ describe('POST /api/tasks', () => {
         body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/feature.ts'] },
       }));
       expect(response.status).toBe(200);
-      expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
+      const [row] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row.pathManifest).toEqual(['apps/web/src/lib/feature.ts']);
     });
 
     it('shadow leaves the manifest_required rejection byte-for-byte unchanged and schedules nothing', async () => {

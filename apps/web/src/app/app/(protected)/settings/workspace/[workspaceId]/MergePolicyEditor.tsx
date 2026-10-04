@@ -310,7 +310,7 @@ export default function MergePolicyEditor({
           <span className="text-sm text-text-muted">minutes</span>
         </div>
         <p className="text-xs text-text-muted">
-          buildd sends a Pushover notification when a PR waits longer than this. Default: 30 min for human and agent review, 5 min for auto.
+          Pushover alert after this long. Default 30 min for review, 5 min for auto.
         </p>
       </section>
 
@@ -418,7 +418,7 @@ export function DetectedPathsSection({
           <p className="mt-1 text-xs text-text-muted">
             Detected from the repo per risk class
             {policyConfig ? <> (preset <span className="text-text-secondary">{policyConfig.preset}</span>)</> : null}.
-            buildd escalates PRs that touch them, per the preset.
+            PRs that touch them escalate.
           </p>
         </div>
         <button
@@ -450,7 +450,7 @@ export function DetectedPathsSection({
         <p className="text-xs text-text-muted">
           {policyConfig
             ? 'No risk-class paths detected in this repo.'
-            : 'No risk-class policy applied yet. Re-scan the repo to detect protected paths.'}
+            : 'No risk-class policy. Re-scan to detect protected paths.'}
         </p>
       )}
     </section>

@@ -6,7 +6,7 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { cloneThrottledRecently } from './git-clone';
+import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch } from './git-clone';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -1625,6 +1625,8 @@ export class WorkerManager {
         id: task.workspaceId,
         name: task.workspace?.name || 'unknown',
         repo: task.workspace?.repo,
+        // The one branch a cloud clone takes (git-clone.ts).
+        defaultBranch: task.workspace?.gitConfig?.defaultBranch ?? null,
       },
       (task.context as Record<string, unknown> | null) ?? null
     );
@@ -2223,6 +2225,14 @@ export class WorkerManager {
           fallbacks: [gitConfig?.targetBranch, defaultBranch],
           worktreeFallback: setupResult.fallback ?? null,
         });
+        // A narrow (cloud) clone holds the default branch and whatever setup
+        // fetched; a PR base beyond those (a target branch, a stacked
+        // predecessor) is fetched now, by name, so the path-claim sweep and the
+        // PR diff measure against a real ref. A full clone: a no-op.
+        const prBaseBranch = branchOfRemoteRef(worker.prBaseRef);
+        if (prBaseBranch && worker.prBaseRef !== setupResult.base) {
+          ensureRemoteBranch(workspacePath, prBaseBranch, { log: (m) => console.log(`[Worker ${worker.id}] ${m}`) });
+        }
         // Resume and shared-branch collision recovery can both change the ref.
         // The server must acknowledge this actual branch before the agent starts
         // (see startWithPersistedBranch below), since create_pr derives its head

@@ -147,6 +147,10 @@ export async function PATCH(
     return NextResponse.json({ error: `Invalid team id: expected a UUID, got "${id}".` }, { status: 404 });
   }
 
+  // Team settings require an identified owner's/admin's browser session.
+  // An admin-scoped MCP API key authorizes account operations, but carries no
+  // team-member user role; it cannot opt a team into decisions or spending.
+  // Owners/admins use Settings → AI features to change enabledDecisionShadows.
   const session = await requireSessionUser(req);
   if (session.response) return session.response;
   const user = session.user;

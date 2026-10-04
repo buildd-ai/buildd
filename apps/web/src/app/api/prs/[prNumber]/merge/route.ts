@@ -22,7 +22,7 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
-import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
+import { reconcileSubjectEvent } from '@/lib/supersession';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -314,17 +314,17 @@ export async function POST(
         console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
       );
 
-      // A human just merged this PR directly — if a reviewer task was still
-      // pending or running for it, cancel it so it doesn't run against an
-      // already-merged PR (fire-and-forget: never blocks the merge response).
-      supersedeReviewerTaskOnMerge({
-        originalTaskId: worker.taskId,
-        installationId,
-        repoFullName,
+      // A human just merged this PR directly: a live reviewer or an open fix
+      // for it is obsolete. Fire-and-forget (never throws), so it never blocks
+      // the merge response.
+      void reconcileSubjectEvent({
+        kind: 'merged',
+        workspaceId: worker.workspaceId,
         prNumber,
-      }).catch((e: unknown) =>
-        console.error(`[pr-merge] supersedeReviewerTaskOnMerge failed for task ${worker.taskId}:`, e)
-      );
+        originalTaskId: worker.taskId,
+        door: 'POST /api/prs/[prNumber]/merge',
+        pr: { installationId, repoFullName },
+      });
     }
 
     // Unblock dependent missions if this task belonged to one

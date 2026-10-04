@@ -26,6 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
+import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -81,10 +82,10 @@ export const teams = pgTable('teams', {
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
   // The `opt_in` decision capabilities this team turned on (e.g.
-  // 'task_role_shadow'). NULL or absent = off; there is no default, so adding
-  // an opt_in capability never switches it on for anyone. See
-  // packages/core/inference-policy.ts.
-  enabledDecisionShadows: text('enabled_decision_shadows').array(),
+  // 'task_role_shadow'). NULL = off. A new team starts with every one
+  // (insert-time default, no DDL); an opt_in capability added later is not
+  // switched on for existing teams. See packages/core/inference-policy.ts.
+  enabledDecisionShadows: text('enabled_decision_shadows').array().$defaultFn(() => [...DEFAULT_ENABLED_DECISION_SHADOWS]),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -340,6 +341,16 @@ export interface WorkspaceGitConfig {
   // own credential, e.g. an OAuth seat), or 'auto' (api when a key resolves,
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
+
+  // Claim-time batch planner (packages/core/claim-planner.ts) in the claim
+  // route: 'off' = the legacy first-eligible walk, untouched; 'record' (the
+  // default when absent) = plan beside the legacy picks and write both to the gate ledger;
+  // 'apply' = claim in plan order. Read only through resolveClaimPlannerConfig()
+  // (apps/web/src/app/api/workers/claim/claim-plan-input.ts).
+  claimPlanner?: 'off' | 'record' | 'apply';
+  // Planner thresholds. Absent = declared/observed scope only: predictions
+  // are ignored and the no-scope mission mutex stays.
+  claimPlannerThresholds?: { thetaOrder: number; thetaSoft: number; thetaIdle: number } | null;
 
   // Where the visual auditor's pages come from: 'sandbox' (absent = today's
   // in-worker boot), 'vercel-preview', or 'auto'. Read only through
@@ -5025,6 +5036,30 @@ export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferI
 // pick's dynamic-definition fingerprint and offered-index map, the selection,
 // truncation/unknown-scope markers, candidate coverage and the same-task
 // baselines. It never feeds tasks.path_manifest or dependsOn.
+/**
+ * A task's expected size (packages/core/task-size-estimate.ts): the median
+ * files/minutes of its completed neighbours, or — with fewer than `k` of
+ * those (jev-scheduling §3's "coarser bucket fallback") — a Jev S/M/L bucket
+ * mapped to representative figures (packages/core/task-size-bucket-decision.ts).
+ */
+export type ExpectedTaskSize =
+  | {
+      files: number;
+      minutes: number;
+      source: 'neighbours';
+      /** Neighbours required. */
+      k: number;
+      /** Neighbours with a size that were used. */
+      n: number;
+    }
+  | {
+      files: number;
+      minutes: number;
+      source: 'jev';
+      bucket: 'S' | 'M' | 'L';
+      confidence: number;
+    };
+
 export const orchestrationManifestPredictions = pgTable('orchestration_manifest_predictions', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
@@ -5054,6 +5089,13 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
   pickCap: integer('pick_cap').notNull(),
   regexPaths: jsonb('regex_paths').$type<string[]>().notNull(),
   neighbourUnionPaths: jsonb('neighbour_union_paths').$type<string[]>().notNull(),
+  // Confidence the selected set is right (jev-scheduling §3): the product of
+  // the pick confidences, recalibrated later by the readout. Null when there
+  // were no picks or any pick carried no confidence.
+  setConfidence: real('set_confidence'),
+  // { files, minutes, source, k, n } from completed neighbours
+  // (task-size-estimate.ts). Null when fewer than k neighbours had a size.
+  expectedSize: jsonb('expected_size').$type<ExpectedTaskSize>(),
   latencyMs: integer('latency_ms').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -5063,6 +5105,37 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
+
+// Stored Jev "is this overlap real" answers (jev-scheduling.md §5,
+// packages/core/orchestration-overlap-decision.ts): one row per task pair per
+// decision, asked once from the creation-manifest prediction hook for a new
+// task's soft pairs (predicted scope overlapping a sibling's declared or
+// predicted scope). Read by the claim-time planner (`planClaimBatch`'s
+// `overlapAnswers`) keyed by `overlapPairKey(a, b)`; it only ever replaces a
+// SOFT weight there and never creates or removes a hard edge — it is not
+// consulted by, and never writes, `tasks.path_manifest` or `dependsOn`.
+export const orchestrationOverlapAnswers = pgTable('orchestration_overlap_answers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id'),
+  // Order-independent pair identity: `overlapPairKey(taskAId, taskBId)` (packages/core/claim-planner.ts).
+  pairKey: text('pair_key').notNull(),
+  taskAId: uuid('task_a_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  taskBId: uuid('task_b_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  decisionId: text('decision_id').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  answer: text('answer').notNull().$type<'REAL' | 'NOT_REAL'>(),
+  confidence: real('confidence').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // One stored answer per pair per decision; a later ask for the same pair replaces it.
+  pairDecisionIdx: uniqueIndex('orchestration_overlap_answers_pair_decision_idx').on(t.workspaceId, t.pairKey, t.decisionId),
+  workspaceCreatedIdx: index('orchestration_overlap_answers_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type OrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferSelect;
+export type NewOrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferInsert;
 
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;

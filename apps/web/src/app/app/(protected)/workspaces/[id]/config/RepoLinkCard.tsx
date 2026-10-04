@@ -124,7 +124,7 @@ export function RepoLinkCard({ workspaceId, onLinked }: { workspaceId: string; o
         <section className="card p-4 mb-8" data-testid="repo-link-card">
             <h2 className="section-label mb-1">Link a repository</h2>
             <p className="text-xs text-text-muted mb-3">
-                This workspace has no repository yet, so workers have nothing to work in.
+                No repository linked. Workers need one to run.
             </p>
 
             {!configured || installations.length === 0 ? (

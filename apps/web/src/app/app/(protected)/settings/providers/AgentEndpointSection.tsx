@@ -126,8 +126,7 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces }: 
           <div className="space-y-1">
             <p className="text-sm text-text-primary" data-testid="agent-endpoint-status">Anthropic (default)</p>
             <p className="text-text-muted">
-              Runner agents use the team&apos;s Anthropic key or Claude seat. Set an endpoint to send every agent run
-              through one proxy instead, for host and cloud runners alike.
+              Agent runs use the team&apos;s Anthropic key or Claude seat. An endpoint routes them through a proxy.
             </p>
           </div>
         )}
@@ -140,12 +139,11 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces }: 
         )}
         {routes.length > 0 && (
           <p className="text-text-muted" data-testid="agent-endpoint-metered">
-            Runs through an endpoint are metered: they spend its key&apos;s budget, not a Claude seat, and the per-run
-            dollar cap applies.
+            Endpoint runs are metered on its key, not a Claude seat. The per-run dollar cap applies.
           </p>
         )}
         <p className="text-text-muted">
-          A workspace&apos;s own Anthropic key or seat beats a team-wide endpoint. A runner with its own
+          A workspace&apos;s own Anthropic key or seat overrides a team endpoint. So does a runner&apos;s own
           <span className="font-mono"> LLM_PROVIDER</span> keeps using it.
         </p>
         {error && <p role="alert" className="text-status-error">{error}</p>}
@@ -382,7 +380,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClo
         <div className="space-y-1">
           <label className="field-label" htmlFor="agent-endpoint-key">Key</label>
           <input id="agent-endpoint-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={current && current.kind === choice && current.last4 ? `Saved key …${current.last4}, leave blank to keep` : 'sk-…'} className={INPUT} />
-          <p className="text-text-muted">buildd sends one short test request before saving. Stored encrypted. Nobody can read it back.</p>
+          <p className="text-text-muted">Tested on save. Encrypted, write-only.</p>
         </div>
       )}
       {(choice === 'gateway' || choice === 'anthropic-compatible') && (
@@ -393,7 +391,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClo
           <label className="field-label" htmlFor="agent-endpoint-aliases">Model names (optional)</label>
           <textarea id="agent-endpoint-aliases" rows={3} value={aliases} onChange={(e) => setAliases(e.target.value)}
             placeholder="native-model-id = proxy-alias" className="w-full px-3 py-2 bg-surface-1 border border-border-default focus:border-primary outline-none font-mono text-xs" spellCheck={false} />
-          <p className="text-text-muted">This endpoint did not list its models. One per line; models without a name are sent by their own id.</p>
+          <p className="text-text-muted">One per line. Unlisted models are sent by their own id.</p>
         </div>
       ) : (
         <div>

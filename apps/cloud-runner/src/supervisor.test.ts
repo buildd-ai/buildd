@@ -538,8 +538,27 @@ describe('run report', () => {
     h.fc.exits[0]!.resolve(0);
     await h.settle();
     const r = h.state.report!;
-    expect(r.repo).toEqual({ source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, bytes: { clone: null, restore: 5000, fetch: 64, cache: null, upload: null } });
+    expect(r.repo).toEqual({
+      source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, warmUploadSkipReason: null,
+      bytes: { clone: null, restore: 5000, fetch: 64, cache: null, upload: null, warmRepo: null },
+    });
     expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null });
+  });
+
+  test('a warm upload skipped over the cap is reported with the measured size', async () => {
+    const h = harness();
+    h.fc.setStdout([
+      'BUILDD_WORKER_ID=worker-9',
+      'BUILDD_REPO_SOURCE=clone no_snapshot',
+      'BUILDD_METRIC=warm_repo_bytes 2600000000',
+      'BUILDD_WARM_UPLOAD=skipped too_large',
+    ]);
+    h.sup.dispatch();
+    await h.until(() => h.state.timings?.warmUpload !== undefined);
+    h.fc.exits[0]!.resolve(1);
+    await h.settle();
+    expect(h.state.report!.repo).toMatchObject({ source: 'clone', fallbackReason: 'no_snapshot', warmUploadSkipReason: 'too_large', bytes: { warmRepo: 2_600_000_000 } });
+    expect(h.state.report!.durationsMs.warmUpload).toBeNull();
   });
 
   test('a clone fallback is reported with its reason', async () => {

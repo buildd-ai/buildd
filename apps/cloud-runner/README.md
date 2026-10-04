@@ -106,6 +106,7 @@ it as above).
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or cache tarball, in bytes. Default 1 GiB. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
 | `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
@@ -139,7 +140,7 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `containerInstanceId` | The Durable Object ID (`ctx.id`). `ctx.container` exposes no instance ID; Cloudflare documents the Durable Object ID (the container's `CLOUDFLARE_DURABLE_OBJECT_ID`) as what identifies the instance on the dashboard. One agent reuses it across attempts |
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
 | `instanceType` | `CONTAINER_INSTANCE_TYPE` |
-| `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (decoded body bytes the container read to the end; a lower bound). Only intercepted hosts are seen; other egress is not counted |
+| `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (model: decoded body bytes the container read to the end; GitHub and passthrough: `content-length` when present, so chunked git packs are not counted — those bodies stream natively, never through JavaScript; a lower bound). Only intercepted hosts are seen; other egress is not counted |
 | `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `merge_blocked`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |
 | `egressDetail.github.unauthenticatedErrorStatuses` | Upstream 4xx/5xx on the unauthenticated forwards only, by code. A 429 here is an anonymous rate limit; a 429 only in `errorStatuses` was sent with the token |
@@ -155,11 +156,15 @@ the agent is evicted mid-run (the orphan report has what was persisted).
 
 The `repo` section (report version 2) says how the repo got onto the disk:
 `source` `warm` or `clone`, `fallbackReason` for a clone (`disabled`,
-`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`, and
-`bytes.{clone,restore,fetch,cache,upload}`. `durationsMs.restoreWarm`,
+`no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`,
+`warmUploadSkipReason` (`too_large` when a warm upload was due but the repo was
+over `WARM_MAX_BUNDLE_BYTES`, else null), and
+`bytes.{clone,restore,fetch,cache,upload,warmRepo}` (`warmRepo`: the clone's
+size as measured against the cap). `durationsMs.restoreWarm`,
 `durationsMs.fetch` and `durationsMs.warmUpload` time the warm path the way
 `durationsMs.clone` times a clone. All come from the runner's `BUILDD_PHASE=`,
-`BUILDD_METRIC=` and `BUILDD_REPO_SOURCE=` lines (`docs/runner-container.md`).
+`BUILDD_METRIC=`, `BUILDD_REPO_SOURCE=` and `BUILDD_WARM_UPLOAD=` lines
+(`docs/runner-container.md`).
 
 ### Eval report
 
@@ -422,9 +427,25 @@ binding, streaming bodies both ways.
 - **Retention.** The lifecycle rule `warm/` at 14 days is the backstop
   (`deploy.ts` adds it; by hand: `wrangler r2 bucket lifecycle add
   buildd-cloud-runner-snapshots warm-expiry warm/ --expire-days 14`).
-- **Limits.** `content-length` is required on uploads, at most 5 GB (single
-  part). The runner skips the warm path when the snapshot is over a quarter of
-  free disk.
+- **Streamed uploads.** The runner streams `git bundle create -` and
+  `tar -cf -` straight up, with no file staged and at most one 32 MiB part in
+  memory, as an R2 multipart upload: `POST /warm/<gen>/repo|cache/multipart`
+  (201 `{uploadId}`), `PUT .../multipart/<n>` per part, `POST
+  .../multipart/complete` with `{parts}`, `DELETE .../multipart` to abort; the
+  upload id travels in `x-buildd-upload-id`, the key is still the Worker's.
+  Every body, single or part, is piped into R2 through a `FixedLengthStream`,
+  never read into Worker memory.
+- **Limits.** `content-length` is required on every PUT (a single PUT at most
+  5 GB, a part at most 512 MiB). `WARM_MAX_BUNDLE_BYTES` (default 1 GiB) caps
+  a warm part: a single PUT past it is refused, a completed multipart object
+  past it is deleted (413). The runner measures the clone before bundling and
+  skips the upload past the same cap (`warmUploadSkipReason: too_large` in
+  the run report), so a repo too big to snapshot clones every time instead of
+  spending minutes and memory on a bundle. It also skips the warm restore when
+  the snapshot is over a quarter of free disk.
+- **Narrow restore.** A restored clone fetches the default branch only, like
+  the cloud clone itself (depth 1, one branch); other branches come in on
+  demand (`docs/runner-container.md`, "Clone shape").
 
 What goes in a snapshot and what the runner refuses to upload:
 `docs/runner-container.md`, "Warm repos".

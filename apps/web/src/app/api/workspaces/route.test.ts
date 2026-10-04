@@ -459,6 +459,21 @@ describe('POST /api/workspaces', () => {
     expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ repo: null }));
   });
 
+  it('persists defaultBranch to gitConfig.defaultBranch', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'test-ws' }]) }));
+    mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+
+    const req = createMockPostRequest({ name: 'test-ws', repoUrl: 'owner/repo', defaultBranch: 'canary' });
+    await POST(req);
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gitConfig: expect.objectContaining({ defaultBranch: 'canary' }),
+      }),
+    );
+  });
+
   it('creates workspace with API key auth using API key team', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-api' });

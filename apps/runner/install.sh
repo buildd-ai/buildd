@@ -7,6 +7,15 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# --service: register the background service non-interactively (for scripted/CI
+# installs, e.g. `curl -fsSL buildd.dev/install.sh | bash -s -- --service`).
+# Without it, an interactive terminal is asked at the end; a non-interactive one
+# (no TTY — piped install with no flag) skips the service and says how to add it later.
+WANT_SERVICE=0
+for arg in "$@"; do
+  [ "$arg" = "--service" ] && WANT_SERVICE=1
+done
+
 echo -e "${GREEN}Installing buildd runner...${NC}"
 
 # Check for bun
@@ -107,18 +116,21 @@ bun install
 # Bake headless Chromium into the runner at install time.
 # This lets agents do visual self-verification without per-task downloads.
 # The runner advertises a 'browser' capability once the binary is confirmed present.
-echo -e "${GREEN}Installing headless Chromium (Playwright)...${NC}"
-if bunx playwright install --with-deps chromium 2>&1; then
+# Always through the repo's pinned Playwright (`bun run browser:install`), never a
+# bare `bunx playwright`: that resolves whatever version is cached globally, and
+# `playwright install` from another version deletes the pinned version's Chromium.
+echo -e "${GREEN}Installing headless Chromium (pinned Playwright)...${NC}"
+if bun run browser:install --with-deps 2>&1; then
   echo -e "${GREEN}Headless Chromium installed successfully${NC}"
 else
   echo -e "${YELLOW}--with-deps failed (may need root for system libs). Trying without...${NC}"
-  if bunx playwright install chromium 2>&1; then
+  if bun run browser:install 2>&1; then
     echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
     echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
   else
     echo -e "${YELLOW}Warning: Headless Chromium could not be installed.${NC}"
     echo -e "${YELLOW}  Browser capability will not be advertised. To fix:${NC}"
-    echo -e "${YELLOW}  bunx playwright install --with-deps chromium${NC}"
+    echo -e "${YELLOW}  cd $INSTALL_DIR/apps/runner && bun run browser:install --with-deps${NC}"
   fi
 fi
 
@@ -346,6 +358,11 @@ GLOBALEOF
     fi
     exit 0
     ;;
+
+  service)
+    shift
+    exec bun run "$HOME/.buildd/apps/runner/src/service.ts" "$@"
+    ;;
 esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
@@ -506,8 +523,34 @@ fi
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
-echo "Run buildd to start:"
-echo "  buildd"
+
+# Offer to register the launcher loop as a background service (launchd on
+# macOS, systemd --user on Linux) so it survives closing the terminal and
+# reboots — see apps/runner/README.md "Running as a service". --service
+# registers non-interactively (for scripted installs); otherwise, ask when
+# there's a real terminal to ask on. `curl | bash` makes fd 0 the script
+# itself, so the prompt reads from /dev/tty directly rather than stdin.
+INSTALL_SERVICE=0
+if [ "$WANT_SERVICE" = "1" ]; then
+  INSTALL_SERVICE=1
+elif [ -t 1 ] && [ -r /dev/tty ]; then
+  printf "%s" "Run buildd in the background so it survives closing this terminal and reboots? [Y/n] "
+  read -r SERVICE_ANSWER < /dev/tty || SERVICE_ANSWER=""
+  case "$SERVICE_ANSWER" in
+    [nN]*) INSTALL_SERVICE=0 ;;
+    *) INSTALL_SERVICE=1 ;;
+  esac
+fi
+
+if [ "$INSTALL_SERVICE" = "1" ]; then
+  "$BIN_DIR/buildd" service install || echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"
+else
+  echo "Run buildd to start:"
+  echo "  buildd"
+  echo ""
+  echo -e "${YELLOW}Tip: run 'buildd service install' any time to keep it running in the background.${NC}"
+fi
+
 echo ""
 echo "Then open http://localhost:8766 to connect your account."
 echo ""

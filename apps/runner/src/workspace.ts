@@ -18,7 +18,7 @@ const CLONE_URL_RE = /^(https?:\/\/|git@|file:\/\/\/|\/[\w./-]+)[\w.@:/-]*$/;
  * on failure. Idempotent when the clone already exists.
  */
 export function ensureIsolatedClone(
-  workspace: { id: string; repo: string },
+  workspace: { id: string; repo: string; defaultBranch?: string | null },
   isolationRoot: string,
   /** Warm-repo restore before the clone (warm-repo.ts). Any failure there falls back to the clone. */
   hooks?: CloneHooks,
@@ -53,16 +53,29 @@ export function ensureIsolatedClone(
 
   console.log(`[isolation] cloning "${cloneUrl}" → "${clonePath}" for workspace ${workspace.id}…`);
   // BUILDD_PHASE=clone_start/clone_end in a cloud container (phase-lines.ts).
-  // Shallow in a cloud container, retried while GitHub throttles (git-clone.ts).
-  timedPhase('clone', () => cloneRepo(cloneUrl, clonePath));
+  // Depth 1 and the default branch only in a cloud container, retried while
+  // GitHub throttles (git-clone.ts).
+  timedPhase('clone', () => cloneRepo(cloneUrl, clonePath, { branch: workspace.defaultBranch }));
   console.log(`[isolation] clone ready: ${clonePath}`);
   hooks?.afterClone(clonePath);
   return clonePath;
 }
 
+/** What the resolver is told about a workspace. */
+export interface ResolveWorkspace {
+  id: string;
+  name: string;
+  repo?: string | null;
+  /**
+   * gitConfig.defaultBranch, when the caller has it. A cloud clone takes this
+   * one branch only (git-clone.ts); absent, it takes the remote HEAD.
+   */
+  defaultBranch?: string | null;
+}
+
 export interface WorkspaceResolver {
-  resolve(workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): string | null;
-  debugResolve(workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): ResolveDebugInfo;
+  resolve(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): string | null;
+  debugResolve(workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): ResolveDebugInfo;
   listLocalDirectories(): string[];
   getPathOverrides(): Record<string, string>;
   setPathOverride(workspaceName: string, localPath: string): void;
@@ -215,7 +228,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     return gitRemoteCache;
   };
 
-  const attemptResolve = (workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
+  const attemptResolve = (workspace: ResolveWorkspace, taskContext?: Record<string, unknown> | null): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
     const attempts: ResolveDebugInfo['attemptedPaths'] = [];
 
     // Cross-repo override from task context (e.g., conflict-retry on cross-repo PR).
@@ -232,7 +245,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
       attempts.push({ path: isolatedPath, exists: alreadyCloned, method: 'isolated' });
       if (alreadyCloned) return { path: isolatedPath, attempts };
       try {
-        ensureIsolatedClone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
+        ensureIsolatedClone({ id: workspace.id, repo: workspace.repo, defaultBranch: workspace.defaultBranch }, isolationRoot);
         attempts[attempts.length - 1].exists = true;
         return { path: isolatedPath, attempts };
       } catch (err) {
@@ -382,7 +395,7 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
           // Same clone as the isolated path: retried while GitHub throttles,
           // and refused at once (no second request) when this repo's clone
           // was just throttled there (git-clone.ts).
-          timedPhase('clone', () => cloneRepo(cloneUrl, clonePath));
+          timedPhase('clone', () => cloneRepo(cloneUrl, clonePath, { branch: workspace.defaultBranch }));
 
           // Invalidate git cache so the new repo is discoverable
           gitRemoteCache = null;

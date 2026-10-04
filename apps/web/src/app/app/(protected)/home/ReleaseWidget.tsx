@@ -72,7 +72,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                       </span>
                     )}
                     {item.baselineSource !== 'healthy' && (
-                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
+                      <span className="text-[11px] md:text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases</span>
                     )}
                     <span className="text-[13px] text-text-secondary">
                       <DerivedMetricDisplay
@@ -110,7 +110,7 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                     </span>
                   )}
                   {item.baselineSource !== 'healthy' && (
-                    <span className="text-[11px] md:text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
+                    <span className="text-[11px] md:text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases</span>
                   )}
                   <span className="text-[13px] font-medium text-text-primary">
                     <DerivedMetricDisplay
