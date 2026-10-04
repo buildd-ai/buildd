@@ -8,11 +8,6 @@
  * `bun run test:db` (scripts/run-db-tests.ts) checks that before any file
  * runs, and CI's `db-architecture` job provides one. It never skips: a suite
  * that silently passes with no database is the failure this exists to stop.
- *
- * Fidelity limit: the local neon-http proxy runs a `db.batch` as separate
- * statements, not one transaction as Neon does. So these tests assert
- * single-statement atomicity (trigger, CTE) only; nothing here can prove a
- * batch is all-or-nothing, and no test should claim to.
  */
 import { db } from '@buildd/core/db';
 import { sql } from 'drizzle-orm';
