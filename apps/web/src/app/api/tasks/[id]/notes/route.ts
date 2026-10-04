@@ -100,12 +100,17 @@ export async function POST(
     return NextResponse.json({ error: 'A task token may attribute a note only to its own worker' }, { status: 403 });
   }
 
-  const effectiveAuthorType: MissionNoteAuthorType =
-    authorType && VALID_AUTHOR_TYPES.includes(authorType)
+  // A task token speaks only as an agent: its authorType and status are
+  // forced, silently, whatever the body says. A user-authored note or an
+  // answered question reads as a person's word to everything downstream.
+  const taskToken = !!apiAccount?.taskScope;
+  const effectiveAuthorType: MissionNoteAuthorType = taskToken
+    ? 'agent'
+    : authorType && VALID_AUTHOR_TYPES.includes(authorType)
       ? authorType
       : (apiAccount ? 'agent' : 'user');
   const effectiveStatus: MissionNoteStatus =
-    status && VALID_STATUSES.includes(status)
+    !taskToken && status && VALID_STATUSES.includes(status)
       ? status
       : (type === 'question' ? 'open' : 'answered');
 

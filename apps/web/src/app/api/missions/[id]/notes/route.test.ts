@@ -514,6 +514,41 @@ describe('POST /api/missions/[id]/notes — per-task token', () => {
     expect(insertedNoteValues).toBeNull();
   });
 
+  it("stores a task token's note as agent-authored, with the default status, whatever the body claims", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await post({ type: 'question', title: 'Which?', authorType: 'user', status: 'answered' });
+    expect(res.status).toBe(201);
+    expect(insertedNoteValues.authorType).toBe('agent');
+    expect(insertedNoteValues.status).toBe('open');
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
+  for (const type of ['guidance', 'reply'] as const) {
+    it(`refuses a task token a ${type} note, before writing`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+      const res = await post({ type, title: 'Do it this way' });
+      expect(res.status).toBe(403);
+      expect(insertedNoteValues).toBeNull();
+    });
+  }
+
+  it('refuses a task token answering a question via replyTo, before marking anything answered', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockUpdate.mockClear();
+    const res = await post({ type: 'update', title: 'Answered', replyTo: '55555555-5555-4555-8555-555555555555' });
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(insertedNoteValues).toBeNull();
+  });
+
+  it("an admin account key's authorType, status, guidance and replies are honoured as before", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null });
+    const res = await post({ type: 'guidance', title: 'Steer', authorType: 'user', status: 'dismissed' });
+    expect(res.status).toBe(201);
+    expect(insertedNoteValues.authorType).toBe('user');
+    expect(insertedNoteValues.status).toBe('dismissed');
+  });
+
   it('a worker-level account key is still refused by the admin gate', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', scopes: null });
     const res = await post({ type: 'update', title: 'Progress' });

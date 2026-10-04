@@ -161,12 +161,25 @@ export async function POST(
     if (apiAccount && !(await taskScopeAllowsWorkerId(apiAccount, workerId))) {
       return NextResponse.json({ error: 'A task token may attribute a note only to its own worker' }, { status: 403 });
     }
+    // A task token speaks only as an agent. `guidance` is read by type alone as
+    // the person's steer (mission-context's "User Guidance", delivered to every
+    // worker on the mission), and `reply` / `replyTo` is how a person answers a
+    // question: marking it answered. Neither is an agent's to post.
+    const taskToken = !!apiAccount?.taskScope;
+    if (taskToken && (type === 'guidance' || type === 'reply' || replyTo)) {
+      return NextResponse.json({ error: "A task token may not post guidance or replies: those are a person's" }, { status: 403 });
+    }
 
-    const effectiveAuthorType: MissionNoteAuthorType = authorType && VALID_AUTHOR_TYPES.includes(authorType)
-      ? authorType
-      : (access.apiAccount ? 'agent' : 'user');
+    // A task token's authorType and status are forced, silently, whatever the
+    // body says: notes feed the organizer's planning context, where a
+    // user-authored note or an answered question reads as a person's word.
+    const effectiveAuthorType: MissionNoteAuthorType = taskToken
+      ? 'agent'
+      : authorType && VALID_AUTHOR_TYPES.includes(authorType)
+        ? authorType
+        : (access.apiAccount ? 'agent' : 'user');
 
-    const effectiveStatus: MissionNoteStatus = status && VALID_STATUSES.includes(status)
+    const effectiveStatus: MissionNoteStatus = !taskToken && status && VALID_STATUSES.includes(status)
       ? status
       : (type === 'question' ? 'open' : 'answered');
 

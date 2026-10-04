@@ -159,6 +159,22 @@ describe('POST /api/tasks/[id]/notes', () => {
     expect(mockNotesInsertValues).not.toHaveBeenCalled();
   });
 
+  it("stores a task token's note as agent-authored, with the default status, whatever the body claims", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await post(TASK, { type: 'question', title: 'Which?', authorType: 'user', status: 'answered' });
+    expect(res.status).toBe(201);
+    expect(mockNotesInsertValues.mock.calls[0][0].authorType).toBe('agent');
+    expect(mockNotesInsertValues.mock.calls[0][0].status).toBe('open');
+  });
+
+  it("an account key's authorType and status are honoured as before", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'worker' });
+    const res = await post(TASK, { type: 'question', title: 'Which?', authorType: 'user', status: 'answered' });
+    expect(res.status).toBe(201);
+    expect(mockNotesInsertValues.mock.calls[0][0].authorType).toBe('user');
+    expect(mockNotesInsertValues.mock.calls[0][0].status).toBe('answered');
+  });
+
   it('an account key posts on any task its workspace access covers, any worker named', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', level: 'worker' });
     mockTasksFindFirst.mockImplementation(async () => ({ id: OTHER, workspaceId: 'ws-2', missionId: null }));
