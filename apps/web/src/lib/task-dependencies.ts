@@ -3,6 +3,7 @@ import { tasks, missions, missionNotes, workspaces, workers } from '@buildd/core
 import { eq, and, sql, inArray, like, lt, isNotNull, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
+import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
@@ -290,6 +291,23 @@ export async function resolveCompletedTask(
     maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
       console.error(`[mission-loop] execution task completion retrigger failed:`, err)
     );
+
+    // The mission-PR opener otherwise only fires on a task PR merging into the
+    // integration branch (the GitHub webhook) — a task that reaches terminal
+    // state WITHOUT a PR merge (cancelled, or completed with
+    // outputRequirement: 'none') produces no such event. Until now the only
+    // thing that could still open the PR for that mission was the weekly
+    // reconciliation sweep (pr-reconcile.ts sweepMissionIntegrationPrs), and
+    // its own staleness clock advances on every check regardless of outcome —
+    // so a mission already marked "not ready" right before its last blocker
+    // was cancelled could sit unopened for up to MISSION_PR_SWEEP_WINDOW_MS.
+    // `maybeOpenMissionIntegrationPr` is a cheap no-op for a mission that
+    // isn't opted into an integration branch or isn't actually done yet, so
+    // firing it on every terminal event here is safe.
+    const missionId = completedTaskFull.missionId;
+    maybeOpenMissionIntegrationPr(missionId, { assumeCompletedTaskIds: [completedTaskId] })
+      .then((opened) => noteMissionPrOpenFailure(missionId, opened))
+      .catch((err) => console.error(`[mission-pr] open attempt after task terminal failed:`, err));
   }
 
   // Check if any tasks have this task in their dependsOn list

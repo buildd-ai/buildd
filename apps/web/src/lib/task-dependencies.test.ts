@@ -113,6 +113,13 @@ mock.module('@buildd/core/db', () => ({
 const mockTriggerEvent = mock(() => Promise.resolve());
 mock.module('@/lib/supersession', () => ({ reconcileSubjectEvent: mockReconcileSubjectEvent }));
 
+const mockMaybeOpenMissionIntegrationPr = mock((..._args: any[]) => Promise.resolve(null as any));
+const mockNoteMissionPrOpenFailure = mock((..._args: any[]) => Promise.resolve());
+mock.module('@/lib/mission-pr', () => ({
+  maybeOpenMissionIntegrationPr: mockMaybeOpenMissionIntegrationPr,
+  noteMissionPrOpenFailure: mockNoteMissionPrOpenFailure,
+}));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
@@ -191,6 +198,10 @@ function resetMocks() {
   missionsFindFirstResults = [];
   effectiveRoles = new Set();
   pickRoleCalls.length = 0;
+  mockMaybeOpenMissionIntegrationPr.mockReset();
+  mockMaybeOpenMissionIntegrationPr.mockResolvedValue(null);
+  mockNoteMissionPrOpenFailure.mockReset();
+  mockNoteMissionPrOpenFailure.mockResolvedValue(undefined);
 }
 
 describe('task-dependencies', () => {
@@ -1149,5 +1160,60 @@ describe('resolveCompletedTask — parent_done supersession', () => {
     await resolveCompletedTask('task-1', 'ws-1');
 
     expect(mockReconcileSubjectEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveCompletedTask — mission-PR opener wiring', () => {
+  beforeEach(resetMocks);
+
+  // The merge webhook is the only other trigger for `maybeOpenMissionIntegrationPr`,
+  // and it fires on a task PR merging — never on a task that reaches terminal
+  // state WITHOUT one (cancelled, or completed with outputRequirement: 'none').
+  // A mission whose surface-audit task gets cancelled after every real builder
+  // task already merged used to have nothing left to open its mission PR until
+  // the weekly reconciliation sweep got around to it. This is the fix: every
+  // non-planning task reaching terminal state also retries the opener.
+
+  it('attempts to open the mission PR when a non-planning task is cancelled', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: 'mission-1', status: 'cancelled', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith(
+      'mission-1',
+      { assumeCompletedTaskIds: ['task-1'] },
+    );
+  });
+
+  it('attempts to open the mission PR when a non-planning task completes', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: 'mission-1', status: 'completed', context: {} };
+    selectWhereResults = [[]]; // checkDependsOnResolved: nothing depends on this task
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith(
+      'mission-1',
+      { assumeCompletedTaskIds: ['task-1'] },
+    );
+  });
+
+  it('does not attempt it for a planning task', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'planning', missionId: 'mission-1', status: 'completed', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt it for a task with no mission', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'cancelled', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
   });
 });
