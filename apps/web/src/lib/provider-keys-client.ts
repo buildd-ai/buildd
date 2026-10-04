@@ -11,13 +11,14 @@
  */
 import {
   type ChatProvider,
+  type ChatUses,
   type MaskedProviderKey,
   type ProviderKeyCapability,
 } from '@buildd/shared';
 
 import { PERSONAL_KEY_PROVIDERS, providerKeyCapability, isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 
-export type { ChatProvider };
+export type { ChatProvider, ChatUses };
 
 export interface ChatProviderInfo extends Omit<ProviderKeyCapability, 'id'> {
   id: ChatProvider;
@@ -69,6 +70,21 @@ export interface ProviderKeysView {
   providers: ProviderCard[];
   /** Whose key a person's chat turn spends. */
   keyPolicy: KeyPolicy;
+  /**
+   * What chat actually resolves to for this person, from the server's
+   * resolver. Null: nothing resolves. Undefined: the server did not say, and
+   * `chatKeySummary` falls back to reading the key list.
+   */
+  chatUses?: ChatUses | null;
+}
+
+const CHAT_USES_SCOPES: readonly ChatUses['scope'][] = ['user', 'account', 'workspace', 'team', 'env'];
+
+function toChatUses(v: unknown): ChatUses | null | undefined {
+  if (v === undefined) return undefined;
+  const c = (v ?? {}) as Record<string, unknown>;
+  if (!isPersonalKeyProvider(c.provider) || !CHAT_USES_SCOPES.includes(c.scope as ChatUses['scope'])) return null;
+  return { provider: c.provider, scope: c.scope as ChatUses['scope'], ...(c.via === 'litellm' ? { via: 'litellm' as const } : {}) };
 }
 
 const SOURCE_NOTE: Record<string, string> = {
@@ -101,7 +117,7 @@ export function toKeyStatus(k: MaskedProviderKey | null | undefined): ProviderKe
  * malformed body reads as "nothing configured" rather than throwing.
  */
 export function normalizeProviderKeys(body: unknown): ProviderKeysView {
-  const b = (body ?? {}) as { canManageTeamKeys?: unknown; providers?: unknown; keyPolicy?: unknown };
+  const b = (body ?? {}) as { canManageTeamKeys?: unknown; providers?: unknown; keyPolicy?: unknown; chatUses?: unknown };
   const list = Array.isArray(b.providers) ? (b.providers as Record<string, unknown>[]) : [];
   const byProvider = new Map<ChatProvider, ProviderCard>();
   for (const p of list) {
@@ -113,17 +129,20 @@ export function normalizeProviderKeys(body: unknown): ProviderKeysView {
       membersWithOwnKey: typeof p.membersWithOwnKey === 'number' ? p.membersWithOwnKey : null,
     });
   }
+  const chatUses = toChatUses(b.chatUses);
   return {
     canManageTeamKeys: b.canManageTeamKeys === true,
     providers: CHAT_PROVIDER_INFO.map(({ id: provider }) => byProvider.get(provider) ?? { provider, team: null, mine: null, membersWithOwnKey: null }),
     keyPolicy: isKeyPolicy(b.keyPolicy) ? b.keyPolicy : 'team',
+    ...(chatUses !== undefined ? { chatUses } : {}),
   };
 }
 
 /** What a person's chat runs on, as the Account row says it. */
 export type ChatKeySummary =
-  | { kind: 'own'; provider: ChatProvider }
-  | { kind: 'team'; provider: ChatProvider }
+  | { kind: 'own'; provider: ChatProvider; via?: 'litellm' }
+  /** `scope` is absent for the team key; `server` is the deployment's own key. */
+  | { kind: 'team'; provider: ChatProvider; scope?: 'workspace' | 'server'; via?: 'litellm' }
   /** Everyone brings their own key, and this person has none yet. */
   | { kind: 'needs_own' }
   /** No team key yet. */
@@ -132,11 +151,21 @@ export type ChatKeySummary =
 const usable = (k: ProviderKeyStatus | null) => !!k && k.health !== 'failing';
 
 /**
- * Which key a person's chat uses under the team's policy, first provider in
- * display order. Mirrors `resolveInferenceKey`: `team` ignores own keys, `own`
- * never falls back to the team key.
+ * Which key a person's chat uses under the team's policy. When the server sent
+ * `chatUses` (the resolver's own answer: the tier's vendor first, then
+ * OpenRouter, then the gateway) that is the answer. Otherwise, first provider
+ * in display order: `team` ignores own keys, `own` never falls back to the
+ * team key.
  */
-export function chatKeySummary(view: Pick<ProviderKeysView, 'providers' | 'keyPolicy'>): ChatKeySummary {
+export function chatKeySummary(view: Pick<ProviderKeysView, 'providers' | 'keyPolicy' | 'chatUses'>): ChatKeySummary {
+  if (view.chatUses !== undefined) {
+    const u = view.chatUses;
+    if (!u) return view.keyPolicy === 'own' ? { kind: 'needs_own' } : { kind: 'none' };
+    const via = u.via ? { via: u.via } : {};
+    if (u.scope === 'user') return { kind: 'own', provider: u.provider, ...via };
+    const scope = u.scope === 'workspace' ? { scope: 'workspace' as const } : u.scope === 'env' ? { scope: 'server' as const } : {};
+    return { kind: 'team', provider: u.provider, ...scope, ...via };
+  }
   if (view.keyPolicy !== 'team') {
     const mine = view.providers.find((p) => usable(p.mine));
     if (mine) return { kind: 'own', provider: mine.provider };
