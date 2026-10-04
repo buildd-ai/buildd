@@ -47,6 +47,12 @@ export interface RecordPrSupersessionParams {
   reason: string;
   /** Actor label (user email, or `agent:<taskId>`) — free text, not a FK. */
   recordedBy: string;
+  /**
+   * Confine a cross-repo target to the workspace's own repo, dropping the
+   * mission's other repos. Set for a per-task token, which reads only its
+   * own task's workspace.
+   */
+  targetRepoWithinWorkspace?: boolean;
 }
 
 export interface RecordPrSupersessionOk {
@@ -176,6 +182,13 @@ export async function recordPrSupersession(
 
   if (!crossRepo && worker.prNumber === supersedingPrNumber) {
     return { ok: false, error: 'supersedingPrNumber must differ from the PR being superseded', status: 400 };
+  }
+  if (crossRepo && params.targetRepoWithinWorkspace && !sameRepo(targetRepo, workspaceRepo)) {
+    return {
+      ok: false,
+      error: `${targetRepo} is not this workspace's repo — a task token may supersede only with a PR in its own workspace`,
+      status: 403,
+    };
   }
   if (crossRepo) {
     // A PR number is only meaningful within one repo, so the repo itself must

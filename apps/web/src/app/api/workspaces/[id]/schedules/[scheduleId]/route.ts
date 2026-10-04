@@ -5,6 +5,7 @@ import { taskSchedules, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace, type TaskScopedAccount } from '@/lib/task-token-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
@@ -29,10 +30,12 @@ async function resolveAuth(
   }
 
   const apiKey = req.headers.get('authorization')?.replace('Bearer ', '') || null;
-  const account = await authenticateApiKey(apiKey, req);
+  // Reads also accept a per-task token, confined to its own task's workspace;
+  // writes never do.
+  const account: TaskScopedAccount | null = requireAdmin ? await authenticateApiKey(apiKey, req) : await authenticateTaskScopedCaller(apiKey, req);
   if (account) {
     if (requireAdmin && !hasTokenRouteAdminAccess(account, req)) return null;
-    const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
+    const hasAccess = taskScopeAllowsWorkspace(account, workspaceId) && await verifyAccountWorkspaceAccess(account.id, workspaceId);
     if (hasAccess) return { accountId: account.id };
   }
 
