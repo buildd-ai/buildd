@@ -1628,6 +1628,15 @@ export interface ClaimTasksResponse {
      * bypassed.
      */
     modelEndpointIgnored?: boolean;
+    /**
+     * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
+     * `scoped`: the runner strips inherited GitHub tokens and host git/gh
+     * credentials and fetches a task-scoped token from
+     * POST /api/runner/agent-github-token. `runner`: the workspace opted out.
+     * Absent: unchanged behaviour. A marker, not a credential; sent only to a
+     * runner that declares the `scoped_github_token` feature, never on a cloud claim.
+     */
+    githubCredentials?: { mode: 'scoped' | 'runner' };
     /** Credentials expiring within 2 hours, scoped to THIS task's workspace team.
      *  Kept per-worker because the runner also reads the claude_credential secretId
      *  off it to wire the worker to the broker at spawn time, and because a claim
