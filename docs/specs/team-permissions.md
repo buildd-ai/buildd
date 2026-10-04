@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-04
 summary: Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 domain: auth
-surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
+surfaces: [apps/web/src/lib/permissions.ts, apps/web/src/lib/permission-registry.ts, apps/web/src/lib/team-access.ts, apps/web/src/lib/key-level-policy.ts]
 related: [team-namespace-scoping, auth-oauth-boundaries]
 keywords: [owner, admin, member, team role, api key level, ADMIN_ROLES, canCallerAdminTeam, permission registry, rbac]
 verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/team-access-team-scope.test.ts]
@@ -14,7 +14,7 @@ assertions:
   - id: "permission-registry"
     type: "symbol"
     name: "PERMISSIONS"
-    path: "apps/web/src/lib/permissions.ts"
+    path: "apps/web/src/lib/permission-registry.ts"
   - id: "permission-can"
     type: "symbol"
     name: "can"
@@ -22,7 +22,7 @@ assertions:
   - id: "permission-role-has"
     type: "symbol"
     name: "roleHas"
-    path: "apps/web/src/lib/permissions.ts"
+    path: "apps/web/src/lib/permission-registry.ts"
   - id: "admin-team-wrapper"
     type: "symbol"
     name: "canCallerAdminTeam"
@@ -41,7 +41,7 @@ or `member`. An API key belongs to one team and carries a level — `trigger`,
 
 **Capability statement**: Each team-scoped permission decision MUST be
 answerable as "does this caller hold permission P in team T", where P is an
-entry in `PERMISSIONS` (`apps/web/src/lib/permissions.ts`) carrying a
+entry in `PERMISSIONS` (`apps/web/src/lib/permission-registry.ts`) carrying a
 description, its default team roles, and the minimum API-key level that holds
 it (or none).
 
@@ -77,8 +77,11 @@ it (or none).
   is asked for any permission THEN it returns false.
 
 **Code surface**:
-- `apps/web/src/lib/permissions.ts` — `PERMISSIONS`, `roleHas`, `keyLevelHas`,
-  `can`, `teamIdsWhere`, `effectiveRoles`, `getUserTeamRoles`.
+- `apps/web/src/lib/permission-registry.ts` — `PERMISSIONS`, `roleHas`,
+  `keyLevelHas`, `effectiveRoles`. No runtime imports, so pure modules and
+  client code can check a role without loading the db.
+- `apps/web/src/lib/permissions.ts` — `can`, `teamIdsWhere`,
+  `getUserTeamRoles`; re-exports the registry.
 - `apps/web/src/lib/team-access.ts` — `canCallerAdminTeam`,
   `getCallerAdminTeamIds`, `getUserAdminTeamIds`: thin wrappers over the
   registry's admin tier (owner/admin, or an admin-level key), kept until their
