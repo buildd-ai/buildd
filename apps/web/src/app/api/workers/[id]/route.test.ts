@@ -8610,9 +8610,12 @@ describe('PATCH /api/workers/[id]', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       // Queued, not "applying": the fix task has no worker yet.
-      expect(body).toContain('Fix 1 of 3 queued');
+      expect(body).toContain('fix 1 of 3 queued');
       expect(body).toContain('waiting for a worker');
       expect(body).toContain('/app/tasks/');
+      // The header names the actual follow-up task, not a generic anchor.
+      expect(body).toContain('Waiting for fix task:');
+      expect(body).toContain('[Open in Buildd](');
       expect(body).not.toContain('Applying review feedback');
       // The feedback is collapsed under its row, not pasted into it.
       expect(body).toContain('<details><summary>Reviewer feedback</summary>');
