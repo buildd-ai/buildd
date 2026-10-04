@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 import { NextRequest } from 'next/server';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
@@ -7298,6 +7304,8 @@ describe('claim insert — atomic duplicate-worker guard', () => {
 
     expect(data.workers).toHaveLength(0);
     expect(taskUpdates.some(u => u.status === 'pending' && u.claimedBy === null)).toBe(true);
+    // Undoing our own claim is not new runnable state: no wake, or runners loop.
+    expect(mockWithDispatchHint).toHaveBeenCalledWith({ suppress: 'claim_rollback' }, expect.anything());
   });
 });
 

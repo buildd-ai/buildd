@@ -329,6 +329,7 @@ describe('assertion coverage over the real migration corpus', () => {
     // column comes from the generated migration before it.
     // 12: *_task_dispatch_outbox_trigger is a function + trigger (durable
     // dispatch intent on every transition into pending); same reason as 10.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(12);
+    // 13: *_task_dispatch_trigger_hints replaces that trigger's function.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(13);
   });
 });

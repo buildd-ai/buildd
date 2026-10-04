@@ -8,6 +8,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   claimDueDispatchesSql,
   defaultDedupeKey,
+  dispatchHintSql,
   enqueueDispatchSql,
   outboxInsertSelectSql,
 } from '../dispatch-outbox';
@@ -53,5 +54,17 @@ describe('claimDueDispatchesSql', () => {
     expect(JSON.parse(String(params[0]))).toMatchObject({ limit: 25, now: null });
     expect(sql).toContain('FOR UPDATE OF o SKIP LOCKED');
     expect(sql).toContain("o.status IN ('pending', 'delivering')");
+  });
+});
+
+describe('dispatchHintSql', () => {
+  test('sets a transaction-local hint with the payload bound, never inlined', () => {
+    const { sql, params } = render(dispatchHintSql({ metadata: { targetLocalUiUrl: "x'); DROP TABLE tasks; --" } }));
+    expect(sql).toBe("SELECT set_config('buildd.dispatch_hint', $1, true)");
+    expect(JSON.parse(String(params[0]))).toEqual({ metadata: { targetLocalUiUrl: "x'); DROP TABLE tasks; --" } });
+  });
+
+  test('refuses a cause outside the vocabulary', () => {
+    expect(() => dispatchHintSql({ cause: 'start_agent' as never })).toThrow('unknown cause');
   });
 });

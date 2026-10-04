@@ -4,6 +4,12 @@
  * the existing route.test.ts that mocks db.query only.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 // The gate ledger shares the `db` handle with the route, so an unstubbed
 // `recordGateEvent` shows up as an extra `db.insert` in the table-agnostic
 // mocks below. Stubbed here because this file asserts route BEHAVIOUR; the

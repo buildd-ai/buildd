@@ -11,6 +11,7 @@ import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
@@ -1341,7 +1342,7 @@ export async function POST(req: NextRequest) {
     }) => {
       let created: typeof tasks.$inferSelect | undefined;
       try {
-        [created] = await db
+        const insert = db
           .insert(tasks)
           .values({
         id: subjectOverrides.id,
@@ -1440,6 +1441,12 @@ export async function POST(req: NextRequest) {
         } : {}),
           })
           .returning();
+        // A task created for one local runner carries that target from birth,
+        // in the insert's own transaction: otherwise a drain running in another
+        // request could broadcast the bare creation wake to every runner first.
+        [created] = assignToLocalUiUrl
+          ? await withDispatchHint({ metadata: { targetLocalUiUrl: assignToLocalUiUrl } }, insert)
+          : await insert;
       } catch (error) {
         // The partial unique index tasks_active_planning_per_mission (one
         // active mode:'planning' task per mission) only ever collides on

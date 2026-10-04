@@ -8,6 +8,7 @@ import { pickEffectiveRole } from '@/lib/effective-roles';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { kickDispatch, wakeTask } from '@/lib/dispatch-authority';
 import { enqueueReadyDependents } from '@buildd/core/dispatch-dependents';
+import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 
@@ -609,7 +610,7 @@ export async function checkDependsOnResolved(
   }
 
   try {
-    const woken = await enqueueReadyDependents(completedTaskId);
+    const woken = await enqueueReadyDependents(completedTaskId, depsGate());
     if (woken.length > 0) kickDispatch();
   } catch (err) {
     // findPendingTasksWithResolvedDepsAndNoWake (reconciliation) re-finds these.

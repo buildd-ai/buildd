@@ -54,6 +54,8 @@ import {
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
+import { withDispatchHint } from '@buildd/core/dispatch-outbox';
+import { kickDispatch } from '@/lib/dispatch-authority';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { depsGate } from './deps-gate';
 import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-rate-limit';
@@ -2344,10 +2346,13 @@ export async function POST(req: NextRequest) {
       }
 
       // Roll back only our still-assigned claim; never resurrect a cancelled task.
-      await db
+      // Suppressed for the dispatch trigger: this undoes our own claim, it is
+      // not new runnable state, and a wake here would loop claim → refuse →
+      // rollback → wake across every runner.
+      await withDispatchHint({ suppress: 'claim_rollback' }, db
         .update(tasks)
         .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id)));
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',
@@ -2716,10 +2721,15 @@ export async function POST(req: NextRequest) {
 function scheduleClaimDeferralWaiters(byWorkspace: Map<string, ClaimDeferralWaiter[]>): void {
   if (byWorkspace.size === 0) return;
   const run = () => Promise.all([...byWorkspace].map(([workspaceId, entries]) =>
-    registerClaimDeferralWaiters(workspaceId, entries).catch(err =>
-      console.error(`[claim] registering claim-deferral waiters failed for workspace ${workspaceId}:`, err),
-    ),
-  )).then(() => undefined);
+    registerClaimDeferralWaiters(workspaceId, entries).catch(err => {
+      console.error(`[claim] registering claim-deferral waiters failed for workspace ${workspaceId}:`, err);
+      return { registered: 0, woken: [] as string[] };
+    }),
+  )).then(results => {
+    // A blocker that let go since this request read it was woken in the same
+    // statement; deliver that wake now rather than at the next unrelated kick.
+    if (results.some(r => r.woken.length > 0)) kickDispatch();
+  });
   try {
     after(run);
   } catch {

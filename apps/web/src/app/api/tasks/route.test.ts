@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 // The gate ledger shares the `db` handle with the route, so an unstubbed
 // `recordGateEvent` shows up as an extra `db.insert` in the table-agnostic
 // mocks below. Stubbed here because this file asserts route BEHAVIOUR; the
@@ -1042,6 +1048,8 @@ describe('POST /api/tasks', () => {
     expect(mockWakeTask).toHaveBeenCalledWith(createdTask.id, 'task.created', {
       targetLocalUiUrl: 'http://localhost:3456',
     });
+    // The target rides the insert's own transaction (no untargeted broadcast window).
+    expect(mockWithDispatchHint).toHaveBeenCalledWith({ metadata: { targetLocalUiUrl: 'http://localhost:3456' } }, expect.anything());
   });
 
   it('dispatches task on successful creation', async () => {

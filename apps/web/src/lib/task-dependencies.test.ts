@@ -153,7 +153,8 @@ mock.module('@/lib/dispatch-authority', () => ({
 /** The wake decision belongs to SQL: one enqueue for the resolved parent, no per-task wake from JS. */
 function expectWakeDelegatedToSql(parentId: string) {
   expect(mockEnqueueReadyDependents).toHaveBeenCalledTimes(1);
-  expect(mockEnqueueReadyDependents).toHaveBeenCalledWith(parentId);
+  // With the claim route's own dependency gate, so readiness is never a copy.
+  expect(mockEnqueueReadyDependents).toHaveBeenCalledWith(parentId, expect.anything());
   expect(mockWakeTask).not.toHaveBeenCalled();
 }
 

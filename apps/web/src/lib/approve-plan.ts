@@ -11,6 +11,7 @@ import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/c
 import { computePlanPhases } from './mission-phase';
 import { resolveEffectiveRoleSlugs } from './effective-roles';
 import { wakeTasks } from '@/lib/dispatch-authority';
+import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { recordPathDeclaration, manifestShape } from '@/lib/path-declaration-ledger';
 
 /**
@@ -319,7 +320,11 @@ export async function approvePlan(
     const phase = stepPhases[stepIndex] ?? { missionPhaseIndex: null, missionPhaseLabel: null };
     const stepRole = step.roleSlug && knownRoles.has(step.roleSlug) ? step.roleSlug : null;
     const rejectedRole = step.roleSlug && !stepRole ? step.roleSlug : null;
-    const [created] = await db
+    // The cause rides the insert's own transaction, so the trigger's row is a
+    // plan child from birth: never delivered as a plain new task (legacy
+    // webhooks, GitHub Actions) in the moment before a label could land.
+    const planCause = step.dependsOn?.length ? 'plan_child.created' : 'plan_child.ready';
+    const [created] = await withDispatchHint({ cause: planCause }, db
       .insert(tasks)
       .values({
         workspaceId: task.workspaceId,
@@ -385,7 +390,7 @@ export async function approvePlan(
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
         },
       })
-      .returning();
+      .returning());
 
     // Manifest provenance denominator (conflict-aware-orchestration.md §3).
     {

@@ -12,6 +12,7 @@ import {
   enqueueReadyDependents,
   findPendingTasksWithResolvedDepsAndNoWake,
 } from '@buildd/core/dispatch-dependents';
+import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { assertDbConfigured, outboxFor, q, seedTask, seedWorkspace } from './harness';
 
 let workspaceId: string;
@@ -40,7 +41,7 @@ describe('enqueueReadyDependents: the dependency.satisfied wake', () => {
     const c2 = await seedTask(workspaceId, { dependsOn: [p, qDep] });
 
     await complete(p);
-    const woken = await enqueueReadyDependents(p);
+    const woken = await enqueueReadyDependents(p, depsGate());
 
     expect(woken).toEqual([c1]);
     expect(await depWakes(c1)).toHaveLength(1);
@@ -48,7 +49,7 @@ describe('enqueueReadyDependents: the dependency.satisfied wake', () => {
 
     // Q resolving is C2's moment, through the same path.
     await complete(qDep);
-    expect(await enqueueReadyDependents(qDep)).toEqual([c2]);
+    expect(await enqueueReadyDependents(qDep, depsGate())).toEqual([c2]);
     expect(await depWakes(c2)).toHaveLength(1);
   });
 
@@ -56,7 +57,7 @@ describe('enqueueReadyDependents: the dependency.satisfied wake', () => {
     const p = await seedTask(workspaceId, { status: 'in_progress' });
     const c = await seedTask(workspaceId, { dependsOn: [p] });
     await complete(p);
-    await enqueueReadyDependents(p);
+    await enqueueReadyDependents(p, depsGate());
     const rows = (await outboxFor(c)).filter(r => r.status === 'pending');
     expect(rows).toHaveLength(1);
     expect(rows[0].causes).toEqual(['task.created', 'dependency.satisfied']);
@@ -67,29 +68,45 @@ describe('enqueueReadyDependents: the dependency.satisfied wake', () => {
     const c = await seedTask(workspaceId, { dependsOn: [p] });
     await seedPrWorker(p, null);
     await complete(p);
-    expect(await enqueueReadyDependents(p)).toEqual([]);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([]);
 
     await db.execute(sql`UPDATE workers SET merged_at = now() WHERE task_id = ${p}::uuid`);
-    expect(await enqueueReadyDependents(p)).toEqual([c]);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([c]);
   });
 
-  test('only the latest PR worker counts: an older merged PR does not hide a newer open one', async () => {
+  test('an open PR on the dependency keeps blocking even behind an older merged one', async () => {
     const p = await seedTask(workspaceId, { status: 'in_progress' });
     await seedTask(workspaceId, { dependsOn: [p] });
     await seedPrWorker(p, new Date(Date.now() - 60_000));
     await db.execute(sql`UPDATE workers SET created_at = now() - interval '1 hour' WHERE task_id = ${p}::uuid`);
     await seedPrWorker(p, null);
     await complete(p);
-    expect(await enqueueReadyDependents(p)).toEqual([]);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([]);
   });
 
-  test('a looping dependency must reach satisfied', async () => {
+  test('readiness is the claim gate itself: a cancelled dependency unblocks', async () => {
     const p = await seedTask(workspaceId, { status: 'in_progress' });
     const c = await seedTask(workspaceId, { dependsOn: [p] });
-    await db.execute(sql`UPDATE tasks SET status = 'completed', loop_state = 'running' WHERE id = ${p}::uuid`);
-    expect(await enqueueReadyDependents(p)).toEqual([]);
-    await db.execute(sql`UPDATE tasks SET loop_state = 'satisfied' WHERE id = ${p}::uuid`);
-    expect(await enqueueReadyDependents(p)).toEqual([c]);
+    await db.execute(sql`UPDATE tasks SET status = 'cancelled' WHERE id = ${p}::uuid`);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([c]);
+  });
+
+  test('readiness is the claim gate itself: a closed, unmerged PR unblocks', async () => {
+    const p = await seedTask(workspaceId, { status: 'in_progress' });
+    const c = await seedTask(workspaceId, { dependsOn: [p] });
+    await seedPrWorker(p, null);
+    await complete(p);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([]);
+    await db.execute(sql`UPDATE workers SET pr_lifecycle_status = 'closed' WHERE task_id = ${p}::uuid`);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([c]);
+  });
+
+  test('a force-started dependent (bypassDepsGate) is woken like the claim would let it through', async () => {
+    const p = await seedTask(workspaceId, { status: 'in_progress' });
+    const q2 = await seedTask(workspaceId, { status: 'in_progress' });
+    const c = await seedTask(workspaceId, { dependsOn: [p, q2] });
+    await db.execute(sql`UPDATE tasks SET context = jsonb_build_object('bypassDepsGate', 'true') WHERE id = ${c}::uuid`);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([c]);
   });
 
   test('a missing or malformed dependency id blocks rather than erroring', async () => {
@@ -97,7 +114,7 @@ describe('enqueueReadyDependents: the dependency.satisfied wake', () => {
     const gone = await seedTask(workspaceId, { dependsOn: [p, '00000000-0000-4000-8000-000000000000'] });
     const junk = await seedTask(workspaceId, { dependsOn: [p, 'not-a-uuid'] });
     await complete(p);
-    expect(await enqueueReadyDependents(p)).toEqual([]);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([]);
     expect(await depWakes(gone)).toHaveLength(0);
     expect(await depWakes(junk)).toHaveLength(0);
   });
@@ -106,14 +123,14 @@ describe('enqueueReadyDependents: the dependency.satisfied wake', () => {
     const p = await seedTask(workspaceId, { status: 'in_progress' });
     const c = await seedTask(workspaceId, { dependsOn: [p], status: 'cancelled' });
     await complete(p);
-    expect(await enqueueReadyDependents(p)).toEqual([]);
+    expect(await enqueueReadyDependents(p, depsGate())).toEqual([]);
     expect(await outboxFor(c)).toHaveLength(0);
   });
 });
 
 describe('findPendingTasksWithResolvedDepsAndNoWake: the reconciliation backstop', () => {
   const found = async (ids: string[]) => {
-    const all = await findPendingTasksWithResolvedDepsAndNoWake({ limit: 500 });
+    const all = await findPendingTasksWithResolvedDepsAndNoWake(depsGate(), { limit: 500 });
     return ids.filter(id => all.includes(id));
   };
 
@@ -124,7 +141,7 @@ describe('findPendingTasksWithResolvedDepsAndNoWake: the reconciliation backstop
     await complete(p); // ...and the enqueue after it never ran
 
     expect(await found([c])).toEqual([c]);
-    await enqueueReadyDependents(p);
+    await enqueueReadyDependents(p, depsGate());
     expect(await found([c])).toEqual([]);
     // A wake delivered after the deps resolved still counts.
     await markDelivered(c);

@@ -1065,6 +1065,8 @@ up AS (
     CASE WHEN h.waiting_task_id IN (SELECT f.waiting_task_id FROM freed f) THEN now() END
   FROM held h, args
   ON CONFLICT (blocking_task_id, waiting_task_id, blocked_path) DO UPDATE SET notified_at = EXCLUDED.notified_at
+    -- A claim poll re-registers the same deferral every pass; skip the no-op rewrite.
+    WHERE path_claim_waiters.notified_at IS DISTINCT FROM EXCLUDED.notified_at
   RETURNING waiting_task_id
 ),
 ${outboxInsertSelectSql('freed', 'path_claim.released')}

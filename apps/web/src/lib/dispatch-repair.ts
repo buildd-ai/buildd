@@ -8,6 +8,7 @@ import { db } from '@buildd/core/db';
 import { sql, type SQL } from 'drizzle-orm';
 import { dispatchOutboxHealth, listFutureDispatches } from '@buildd/core/dispatch-outbox';
 import { findPendingTasksWithResolvedDepsAndNoWake } from '@buildd/core/dispatch-dependents';
+import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { DISPATCH_DUE_QUEUE, wakeTasks } from '@/lib/dispatch-authority';
 import { clearDueThrough, markDue } from '@/lib/redis';
 
@@ -66,7 +67,7 @@ export async function backfillStartAtWakes(limit?: number): Promise<number> {
  * them; the finder (packages/core/dispatch-dependents.ts) bounds how often.
  */
 export async function repairDependencyWakes(): Promise<number> {
-  const ids = await findPendingTasksWithResolvedDepsAndNoWake();
+  const ids = await findPendingTasksWithResolvedDepsAndNoWake(depsGate());
   await wakeTasks(ids, 'dependency.satisfied');
   return ids.length;
 }

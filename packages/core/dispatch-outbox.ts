@@ -23,6 +23,7 @@
  */
 
 import { sql, type SQL } from 'drizzle-orm';
+import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { db } from './db';
 
 /**
@@ -63,6 +64,8 @@ export const DISPATCH_CAUSES = [
   'task.reassigned',
   'manual.start',
   'plan_child.ready',
+  // A plan child filed with dependencies: written at insert, not yet runnable.
+  'plan_child.created',
   'task.unblocked',
   'credential.restored',
   'mission.released',
@@ -107,7 +110,8 @@ const ON_CONFLICT_COALESCE = sql.raw(`ON CONFLICT (task_id, dedupe_key) WHERE st
 DO UPDATE SET
   causes = task_dispatch_outbox.causes || jsonb_build_array(EXCLUDED.cause),
   not_before = LEAST(task_dispatch_outbox.not_before, EXCLUDED.not_before),
-  metadata = COALESCE(task_dispatch_outbox.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
+  metadata = CASE WHEN jsonb_typeof(task_dispatch_outbox.metadata) = 'object' THEN task_dispatch_outbox.metadata ELSE '{}'::jsonb END
+    || COALESCE(EXCLUDED.metadata, '{}'::jsonb),
   updated_at = now()`);
 
 /**
@@ -131,7 +135,7 @@ export function enqueueDispatchSql(input: EnqueueDispatchInput): SQL {
 WITH args AS (SELECT ${JSON.stringify(args)}::jsonb AS a)
 INSERT INTO task_dispatch_outbox (workspace_id, task_id, intent, cause, causes, not_before, dedupe_key, metadata)
 SELECT t.workspace_id, t.id, a->>'intent', a->>'cause', jsonb_build_array(a->>'cause'),
-  COALESCE((a->>'notBefore')::timestamptz, now()), a->>'dedupeKey', a->'metadata'
+  COALESCE((a->>'notBefore')::timestamptz, now()), a->>'dedupeKey', NULLIF(a->'metadata', 'null'::jsonb)
 FROM args JOIN tasks t ON t.id = (a->>'taskId')::uuid
 ${ON_CONFLICT_COALESCE}`;
 }
@@ -157,9 +161,43 @@ export function outboxInsertSelectSql(source: string, cause: DispatchCause, cteN
   FROM ${source} s JOIN tasks t ON t.id = s.waiting_task_id
   WHERE t.status = 'pending'
   ON CONFLICT (task_id, dedupe_key) WHERE status = 'pending'
-  DO UPDATE SET causes = task_dispatch_outbox.causes || jsonb_build_array(EXCLUDED.cause), updated_at = now()
+  DO UPDATE SET causes = task_dispatch_outbox.causes || jsonb_build_array(EXCLUDED.cause),
+    not_before = LEAST(task_dispatch_outbox.not_before, EXCLUDED.not_before), updated_at = now()
   RETURNING task_id
 )`);
+}
+
+/**
+ * What the statement making a task pending tells the tasks trigger
+ * (migration 0233): the specific cause, delivery hints, or that the
+ * transition is not new runnable state at all (`suppress`).
+ */
+export type DispatchHint =
+  | { cause?: DispatchCause; metadata?: Record<string, unknown> }
+  | { suppress: 'claim_rollback' };
+
+/** Transaction-local hint for the trigger; only meaningful in the same db.batch as the write. */
+export function dispatchHintSql(hint: DispatchHint): SQL {
+  if ('cause' in hint && hint.cause !== undefined && !isDispatchCause(hint.cause)) {
+    throw new Error(`dispatchHintSql: unknown cause ${hint.cause}`);
+  }
+  return sql`SELECT set_config('buildd.dispatch_hint', ${JSON.stringify(hint)}, true)`;
+}
+
+/**
+ * Run `write` with `hint` visible to the tasks trigger, as one transaction.
+ * Errors are re-wrapped to the shape a single drizzle query throws
+ * (`DrizzleQueryError` with the Postgres error as `.cause`): a batch throws
+ * the raw NeonDbError, and callers match on `error.cause.code`.
+ */
+export async function withDispatchHint<T>(hint: DispatchHint, write: { toSQL?: unknown } & PromiseLike<T>): Promise<T> {
+  try {
+    const [, result] = await db.batch([db.execute(dispatchHintSql(hint)), write as never]);
+    return result as T;
+  } catch (err) {
+    if (err instanceof DrizzleQueryError) throw err;
+    throw new DrizzleQueryError('withDispatchHint batch', [], err as Error);
+  }
 }
 
 /** Standalone enqueue. Prefer batching with the mutation; this is for state that is already committed. */
@@ -263,7 +301,8 @@ WHERE id = ${id}::uuid AND status = 'delivering'`);
 WITH me AS (SELECT * FROM task_dispatch_outbox WHERE id = ${id}::uuid AND status = 'delivering'),
 merged AS (
   UPDATE task_dispatch_outbox o
-  SET causes = o.causes || me.causes, not_before = LEAST(o.not_before, ${notBefore}::timestamptz), updated_at = now()
+  SET causes = o.causes || me.causes, not_before = LEAST(o.not_before, ${notBefore}::timestamptz),
+    attempt_count = GREATEST(o.attempt_count, me.attempt_count), updated_at = now()
   FROM me
   WHERE o.task_id = me.task_id AND o.dedupe_key = me.dedupe_key AND o.status = 'pending'
   RETURNING o.id

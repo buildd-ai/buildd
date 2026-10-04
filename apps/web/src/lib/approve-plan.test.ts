@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
+
 /**
  * `approvePlan` resolves a plan step's `baseBranch` ref into the branch name of
  * the dependency task. That name must be the branch that will ACTUALLY exist —
@@ -211,6 +217,14 @@ describe('approvePlan — baseBranch resolution', () => {
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
     const call = updateCalls.find(c => c.id === NEXT_IDS[1]);
     expect(call?.set?.dependsOn).toEqual([NEXT_IDS[0]]);
+  });
+
+  it('labels each child at insert: ready → plan_child.ready, dependent → plan_child.created', async () => {
+    mockWithDispatchHint.mockClear();
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    const causes = mockWithDispatchHint.mock.calls.map(c => (c[0] as { cause?: string }).cause);
+    expect(causes).toEqual(PLAN.map((step: { dependsOn?: string[] }) => (step.dependsOn?.length ? 'plan_child.created' : 'plan_child.ready')));
+    expect(causes).toContain('plan_child.created');
   });
 
   // ── Defect P8 ──────────────────────────────────────────────────────────────

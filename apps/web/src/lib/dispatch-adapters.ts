@@ -29,6 +29,8 @@ import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 export interface DispatchContext {
   dispatchId: string;
   intent: DispatchIntent;
+  /** 1 on the first delivery attempt of this intent; higher on a retry. */
+  attemptCount: number;
   /** The most specific cause in the trail (primaryCause). */
   cause: DispatchCause;
   causes: readonly DispatchCause[];
@@ -83,6 +85,7 @@ export function routeForCause(cause: DispatchCause): CauseRoute {
     case 'conflict.retry':
       return { event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false };
     case 'plan_child.ready':
+    case 'plan_child.created':
       return { event: 'task.created', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
     case 'dependency.satisfied':
     case 'manual.start':
@@ -177,11 +180,15 @@ export const workspaceWebhook: DispatchAdapter = {
   },
 };
 
-/** GitHub Actions repository_dispatch. Supplementary: fires and always passes the wake on. */
+/**
+ * GitHub Actions repository_dispatch. Supplementary: fires and always passes
+ * the wake on. First attempt only — a retry (say the broadcast after it
+ * failed) must not start another workflow run for the same intent.
+ */
 export const githubActions: DispatchAdapter = {
   name: 'github-actions',
   async offer(ctx) {
-    if (routeForCause(ctx.cause).githubActions) {
+    if (ctx.attemptCount <= 1 && routeForCause(ctx.cause).githubActions) {
       tryGitHubActionsDispatch(ctx.workspace, ctx.task).catch(() => {});
     }
     return DECLINED;

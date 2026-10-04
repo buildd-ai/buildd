@@ -24,27 +24,26 @@ import { outboxInsertSelectSql } from './dispatch-outbox';
 const UUID_TEXT = `'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'`;
 
 /**
- * True when no dependency of `child` is outstanding. The cast is guarded so a
- * malformed id blocks the dependent (no matching row) instead of failing the
- * whole statement, and stays a uuid comparison so the lookup uses the pk.
+ * Readiness is the claim route's dependency gate itself, passed in by the
+ * caller (apps/web/src/app/api/workers/claim/deps-gate.ts `depsGate()`), not a
+ * copy of it. The wake must fire whenever the claim would let the task through
+ * — a cancelled dependency, a closed-unmerged PR, a force-started task — or a
+ * claimable dependent waits for a runner poll. `gate` is a predicate over the
+ * unaliased outer `tasks` row; the statements below select FROM tasks
+ * unaliased so it binds there.
  */
-function allDepsResolved(child: string): string {
-  return `NOT EXISTS (
-    SELECT 1 FROM jsonb_array_elements_text(${child}.depends_on) d(dep_id)
-    LEFT JOIN tasks p ON p.id = CASE WHEN d.dep_id ~ ${UUID_TEXT} THEN d.dep_id::uuid END
-    WHERE p.id IS NULL
-       OR p.status <> 'completed'
-       OR (p.loop_state IS NOT NULL AND p.loop_state <> 'satisfied')
-       OR EXISTS (
-         SELECT 1 FROM (
-           SELECT w.merged_at FROM workers w
-           WHERE w.task_id = p.id AND w.pr_url IS NOT NULL
-           ORDER BY w.created_at DESC LIMIT 1
-         ) latest_pr
-         WHERE latest_pr.merged_at IS NULL
-       )
-  )`;
-}
+export type DependencyGate = SQL;
+
+/**
+ * The gate casts each dependency id to uuid, so one malformed id fails the
+ * whole statement — and in a scan, for every task. CASE (unlike AND) fixes the
+ * evaluation order: the gate only runs for rows whose ids all parse, and a
+ * row with a bad id stays blocked, never woken.
+ */
+const guardedGate = (gate: DependencyGate): SQL => sql`CASE WHEN NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements_text(COALESCE(tasks.depends_on, '[]'::jsonb)) d(dep_id)
+    WHERE d.dep_id !~ ${sql.raw(UUID_TEXT)}
+  ) THEN ${gate} ELSE false END`;
 
 /**
  * Wake every pending dependent of `parentTaskId` whose dependencies are now
@@ -52,14 +51,14 @@ function allDepsResolved(child: string): string {
  * after the parent's resolving write has committed; it coalesces into any
  * undelivered wake the task already has.
  */
-export function enqueueReadyDependentsSql(parentTaskId: string): SQL {
+export function enqueueReadyDependentsSql(parentTaskId: string, gate: DependencyGate): SQL {
   return sql`-- dispatch_dependents:enqueue_ready
 WITH ready AS (
-  SELECT c.id AS waiting_task_id
-  FROM tasks c
-  WHERE c.status = 'pending'
-    AND c.depends_on @> jsonb_build_array(${parentTaskId}::text)
-    AND ${sql.raw(allDepsResolved('c'))}
+  SELECT tasks.id AS waiting_task_id
+  FROM tasks
+  WHERE tasks.status = 'pending'
+    AND tasks.depends_on @> jsonb_build_array(${parentTaskId}::text)
+    AND ${guardedGate(gate)}
 ),
 ${outboxInsertSelectSql('ready', 'dependency.satisfied')}
 SELECT task_id FROM wake`;
@@ -68,8 +67,8 @@ SELECT task_id FROM wake`;
 type RawRow = Record<string, unknown>;
 const rowsOf = (r: unknown): RawRow[] => ((r as { rows?: RawRow[] })?.rows ?? []);
 
-export async function enqueueReadyDependents(parentTaskId: string): Promise<string[]> {
-  const result = await db.execute(enqueueReadyDependentsSql(parentTaskId));
+export async function enqueueReadyDependents(parentTaskId: string, gate: DependencyGate): Promise<string[]> {
+  const result = await db.execute(enqueueReadyDependentsSql(parentTaskId, gate));
   return rowsOf(result).map(r => String(r.task_id));
 }
 
@@ -87,6 +86,7 @@ export async function enqueueReadyDependents(parentTaskId: string): Promise<stri
  * wake per resolution.
  */
 export async function findPendingTasksWithResolvedDepsAndNoWake(
+  gate: DependencyGate,
   opts: { limit?: number; lookbackHours?: number } = {},
 ): Promise<string[]> {
   const limit = opts.limit ?? 100;
@@ -100,7 +100,7 @@ WITH cand AS MATERIALIZED (
     AND (c.start_at IS NULL OR c.start_at <= now())
 ),
 ready AS MATERIALIZED (
-  SELECT cand.id FROM cand WHERE ${sql.raw(allDepsResolved('cand'))}
+  SELECT tasks.id FROM tasks WHERE tasks.id IN (SELECT id FROM cand) AND ${guardedGate(gate)}
 ),
 resolved AS (
   SELECT r.id, max(GREATEST(p.updated_at, COALESCE(m.merged_at, p.updated_at))) AS resolved_at
@@ -116,6 +116,7 @@ WHERE r.resolved_at > now() - make_interval(hours => ${Math.max(1, Math.floor(lo
   AND NOT EXISTS (
     SELECT 1 FROM task_dispatch_outbox o
     WHERE o.task_id = r.id
+      AND o.intent = 'work_execution'
       AND (o.status IN ('pending', 'delivering') OR o.updated_at >= r.resolved_at)
   )
 ORDER BY r.resolved_at

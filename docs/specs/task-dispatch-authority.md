@@ -29,7 +29,13 @@ normal execution.
 1. **Trigger for pending.** Every transition into `pending` (insert, a status
    change into `pending`, a `start_at` change while `pending`) writes an outbox
    row in the same transaction, via the `task_dispatch_outbox_on_pending`
-   trigger. No code path can make a task pending without one.
+   trigger. No code path can make a task pending without one, save the one
+   explicit suppression below.
+   The statement making the change can pass a transaction-local hint in the
+   same `db.batch` (`withDispatchHint`, migration 0233): a `cause` or
+   `metadata` that is on the row from birth (plan children; a task created for
+   one local runner), or `suppress` for the claim route's rollback of its own
+   claim, which is not new runnable state and would otherwise loop.
 2. **Explicit enqueue for unblocks.** A transition that keeps a task `pending`
    but makes it runnable (a dependency resolving, a path claim releasing, a
    mission released, a budget or credential restored) MUST enqueue in the same
@@ -212,6 +218,11 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
   `human_action` and a runner wake for the same task stay separate rows
   (`apps/web/src/lib/dispatch-authority.test.ts`,
   `apps/web/tests/db/dispatch-outbox.test.ts`).
+- AC-24: GIVEN a plan child, or a task created for one local runner, WHEN it
+  is inserted THEN its intent carries the plan cause or the target from the
+  insert's own transaction, so no drain can deliver it unlabelled; GIVEN the
+  claim route rolls back its own claim THEN no intent is written
+  (`apps/web/tests/db/dispatch-outbox.test.ts`).
 - AC-22: WITH every reconciliation path disabled (no cron, no sweep, no
   backstop, no poll) WHEN a task is created, requeued, released from a path
   claim or has its last dependency resolve THEN the kick alone delivers its
@@ -238,7 +249,10 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 - Path release and claim-time waiters: `packages/core/path-claim.ts` —
   `registerClaimDeferralWaiters`, `releaseClaims`, `narrowPathClaims`.
 - Dependents: `packages/core/dispatch-dependents.ts` —
-  `enqueueReadyDependentsSql`, `findPendingTasksWithResolvedDepsAndNoWake`.
+  `enqueueReadyDependentsSql`, `findPendingTasksWithResolvedDepsAndNoWake`,
+  both evaluating the claim route's own `depsGate()` (passed in), never a copy.
+- Trigger hints: `packages/core/drizzle/0233_task_dispatch_trigger_hints.sql`,
+  `withDispatchHint` / `dispatchHintSql` in dispatch-outbox.ts.
 - Delivery primitives: `apps/web/src/lib/task-dispatch-delivery.ts` —
   `buildWebhookPayload`, `dispatchToWebhook`, `buildTaskPayload`,
   `dispatchResumedTask` (a worker resume, not a task wake).

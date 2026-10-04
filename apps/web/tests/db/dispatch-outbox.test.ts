@@ -12,9 +12,13 @@ import {
   enqueueDispatchSql,
   markDispatchDelivered,
   markDispatchFailed,
+  outboxInsertSelectSql,
   retryDelayMs,
+  withDispatchHint,
   MAX_DELIVERY_ATTEMPTS,
 } from '@buildd/core/dispatch-outbox';
+import { tasks } from '@buildd/core/db/schema';
+import { eq } from 'drizzle-orm';
 import { assertDbConfigured, outboxFor, q, seedTask, seedWorkspace, settleOutbox } from './harness';
 
 let workspaceId: string;
@@ -154,6 +158,60 @@ describe('typed intents', () => {
 
   test('an unknown intent is refused before it reaches SQL', () => {
     expect(() => enqueueDispatchSql({ taskId: 'x', intent: 'start_agent' as never, cause: 'task.created' })).toThrow('unknown intent');
+  });
+});
+
+describe('trigger hints (same transaction as the write)', () => {
+  test('a cause hint labels the trigger row from birth', async () => {
+    const [t] = await withDispatchHint({ cause: 'plan_child.ready' },
+      db.insert(tasks).values({ workspaceId, title: 'child' }).returning({ id: tasks.id }));
+    expect((await outboxFor(t.id))[0].causes).toEqual(['task.created', 'plan_child.ready']);
+  });
+
+  test('a metadata hint is on the row from birth', async () => {
+    const [t] = await withDispatchHint({ metadata: { targetLocalUiUrl: 'http://runner.test' } },
+      db.insert(tasks).values({ workspaceId, title: 'targeted' }).returning({ id: tasks.id }));
+    const [row] = await q<{ metadata: Record<string, unknown> }>(sql`SELECT metadata FROM task_dispatch_outbox WHERE task_id = ${t.id}::uuid`);
+    expect(row.metadata).toEqual({ targetLocalUiUrl: 'http://runner.test' });
+  });
+
+  test('a claim rollback (assigned → pending) writes no intent', async () => {
+    const id = await seedTask(workspaceId, { status: 'assigned' });
+    await withDispatchHint({ suppress: 'claim_rollback' },
+      db.update(tasks).set({ status: 'pending' }).where(eq(tasks.id, id)));
+    expect(await outboxFor(id)).toHaveLength(0);
+  });
+
+  test('the hint does not leak to a later statement', async () => {
+    const id = await seedTask(workspaceId, { status: 'assigned' });
+    await withDispatchHint({ suppress: 'claim_rollback' }, db.update(tasks).set({ priority: 1 }).where(eq(tasks.id, id)));
+    await db.update(tasks).set({ status: 'pending' }).where(eq(tasks.id, id));
+    expect((await outboxFor(id)).map(r => r.cause)).toEqual(['task.requeued']);
+  });
+
+  test('errors keep the shape callers match on (cause.code)', async () => {
+    const id = await seedTask(workspaceId);
+    const err = await withDispatchHint({ cause: 'task.created' },
+      db.insert(tasks).values({ id, workspaceId, title: 'dup' }).returning()).catch(e => e as { cause?: { code?: string } });
+    expect(err?.cause?.code).toBe('23505');
+  });
+});
+
+describe('merge details', () => {
+  test('a wake without metadata does not poison a later targeted one', async () => {
+    const id = await seedTask(workspaceId);
+    await db.execute(enqueueDispatchSql({ taskId: id, cause: 'mission.released' }));
+    await db.execute(enqueueDispatchSql({ taskId: id, cause: 'manual.start', metadata: { targetLocalUiUrl: 'http://r.test' } }));
+    const [row] = await q<{ metadata: unknown }>(sql`SELECT metadata FROM task_dispatch_outbox WHERE task_id = ${id}::uuid AND status = 'pending'`);
+    expect(row.metadata).toEqual({ targetLocalUiUrl: 'http://r.test' });
+  });
+
+  test('an unblock folding into a backed-off retry row is due now, not after the backoff', async () => {
+    const id = await seedTask(workspaceId);
+    await db.execute(sql`UPDATE task_dispatch_outbox SET not_before = now() + interval '20 minutes' WHERE task_id = ${id}::uuid`);
+    await db.execute(sql`WITH src AS (SELECT ${id}::uuid AS waiting_task_id), ${outboxInsertSelectSql('src', 'path_claim.released')} SELECT 1`);
+    const [row] = await q<{ due: boolean }>(sql`SELECT not_before <= now() AS due FROM task_dispatch_outbox WHERE task_id = ${id}::uuid AND status = 'pending'`);
+    expect(row.due).toBe(true);
   });
 });
 

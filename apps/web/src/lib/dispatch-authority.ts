@@ -70,6 +70,9 @@ const CAUSE_PRECEDENCE: DispatchCause[] = [
   'task.unblocked',
   'start_at.reached',
   'task.requeued',
+  // Below the unblock causes: a dependent plan child that later becomes ready
+  // is delivered as dependency.satisfied, as it always was.
+  'plan_child.created',
   'task.created',
 ];
 
@@ -283,6 +286,7 @@ export async function deliverTaskDispatch(
   const ctx: DispatchContext = {
     dispatchId: row.id,
     intent,
+    attemptCount: row.attemptCount ?? 1,
     cause: primaryCause(row.causes, row.cause),
     causes: row.causes,
     metadata: row.metadata,

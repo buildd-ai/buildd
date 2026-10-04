@@ -43,6 +43,7 @@ const { db } = await import('@buildd/core/db');
 const { releaseClaims, registerClaimDeferralWaiters } = await import('@buildd/core/path-claim');
 const { enqueueReadyDependents } = await import('@buildd/core/dispatch-dependents');
 const { drainDispatchOutbox } = await import('@/lib/dispatch-authority');
+const { depsGate } = await import('@/app/api/workers/claim/deps-gate');
 const { assertDbConfigured, seedTask, seedWorkspace } = await import('./harness');
 
 let workspaceId: string;
@@ -103,11 +104,11 @@ describe('with every reconciliation path disabled', () => {
     await kick(child);
 
     await setStatus(a, 'completed');
-    await enqueueReadyDependents(a);
+    await enqueueReadyDependents(a, depsGate());
     expect(await kick(child)).toEqual({ [child]: [] });
 
     await setStatus(b, 'completed');
-    await enqueueReadyDependents(b);
+    await enqueueReadyDependents(b, depsGate());
     expect(await kick(child)).toEqual({ [child]: ['dependency.satisfied'] });
   });
 

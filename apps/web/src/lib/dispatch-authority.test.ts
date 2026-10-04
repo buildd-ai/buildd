@@ -478,6 +478,20 @@ describe('deliverTaskDispatch: GitHub Actions', () => {
   });
 });
 
+describe('deliverTaskDispatch: GitHub Actions fires once per intent', () => {
+  it('a retried delivery does not start another workflow run', async () => {
+    githubConfigured = true;
+    seed({ githubInstallationId: 'gi', githubRepoId: 'gr' });
+    await deliverTaskDispatch(row('task.created', { attemptCount: 1 }));
+    await flush();
+    const first = mockGitHubDispatch.mock.calls.length;
+    expect(first).toBe(1);
+    await deliverTaskDispatch(row('task.created', { attemptCount: 2 }));
+    await flush();
+    expect(mockGitHubDispatch.mock.calls.length).toBe(first);
+  });
+});
+
 describe('deliverTaskDispatch: targeted local runner', () => {
   it('sends only a targeted TASK_ASSIGNED: no webhook, no GitHub Actions, no broadcast', async () => {
     githubConfigured = true;
