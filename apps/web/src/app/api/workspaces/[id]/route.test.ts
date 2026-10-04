@@ -670,6 +670,29 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // Where the workspace's work runs (packages/shared/src/executor.ts).
+  it('accepts gitConfig.executor cloud/host/any and null to clear', async () => {
+    for (const value of ['cloud', 'host', 'any', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { executor: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, executor: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.executor value (returns 400)', async () => {
+    for (const value of ['Cloud', 'local', 'runner', true, 1, '']) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { executor: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("gitConfig.executor must be 'cloud', 'host', 'any' or null");
+    }
+  });
+
   it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

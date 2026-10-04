@@ -57,3 +57,52 @@ export function stripClaimCredentials(worker: Record<string, unknown>): string[]
   }
   return removed;
 }
+
+/**
+ * Where a WORKSPACE's work runs: `gitConfig.executor` (jsonb, no column).
+ *
+ * - `cloud`: only cloud claims (`executor: 'cloud'` or a per-task token) take
+ *   its tasks. A host runner's poll skips them, so it cannot win the race
+ *   against a cloud container that is still cold-starting.
+ * - `host`: only host runners take its tasks; cloud claims skip them.
+ * - `any`: either.
+ *
+ * Unset (or an unknown stored value) is derived, never assumed: `cloud` when
+ * the workspace webhook is enabled and lists every cloud dispatch event (the
+ * set the cloud runner Worker registers), otherwise `any`. The claim route
+ * applies the same rule in SQL (apps/web/src/app/api/workers/claim/
+ * workspace-executor-gate.ts); keep the two in step.
+ */
+export const WORKSPACE_EXECUTORS = ['cloud', 'host', 'any'] as const;
+export type WorkspaceExecutor = typeof WORKSPACE_EXECUTORS[number];
+/** Where the effective value came from, for the settings page. */
+export type WorkspaceExecutorSource = 'explicit' | 'dispatch_webhook' | 'default';
+
+/**
+ * The dispatch events the cloud runner Worker registers on a workspace webhook
+ * (apps/cloud-runner/src/deploy-plan.ts DISPATCH_EVENTS; a test keeps them equal).
+ */
+export const CLOUD_DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] as const;
+
+export function isWorkspaceExecutor(value: unknown): value is WorkspaceExecutor {
+  return typeof value === 'string' && (WORKSPACE_EXECUTORS as readonly string[]).includes(value);
+}
+
+/** True when the webhook is enabled and lists every cloud dispatch event. */
+export function isCloudDispatchWebhook(
+  webhookConfig: { enabled?: unknown; events?: unknown } | null | undefined,
+): boolean {
+  if (!webhookConfig || webhookConfig.enabled !== true) return false;
+  const events = webhookConfig.events;
+  return Array.isArray(events) && CLOUD_DISPATCH_EVENTS.every((e) => events.includes(e));
+}
+
+export function resolveWorkspaceExecutor(
+  gitConfig: { executor?: unknown } | null | undefined,
+  webhookConfig: { enabled?: unknown; events?: unknown } | null | undefined,
+): { executor: WorkspaceExecutor; source: WorkspaceExecutorSource } {
+  const explicit = gitConfig?.executor;
+  if (isWorkspaceExecutor(explicit)) return { executor: explicit, source: 'explicit' };
+  if (isCloudDispatchWebhook(webhookConfig)) return { executor: 'cloud', source: 'dispatch_webhook' };
+  return { executor: 'any', source: 'default' };
+}

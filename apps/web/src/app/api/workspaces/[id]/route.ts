@@ -9,7 +9,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
-import { findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
+import { findRemovedPathFieldInGitConfig, isWorkspaceExecutor, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
 import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
@@ -336,6 +336,17 @@ export async function PATCH(
         if (mode !== null && mode !== 'advisory' && mode !== 'enforce') {
           return NextResponse.json(
             { error: "gitConfig.pathClaimEnforcement must be 'advisory', 'enforce' or null" },
+            { status: 400 },
+          );
+        }
+      }
+      // Where the workspace's work runs: exact values only, so a typo can never
+      // quietly reserve (or un-reserve) its tasks for a runner kind.
+      if ('executor' in gitConfig) {
+        const value = (gitConfig as Record<string, unknown>).executor;
+        if (value !== null && !isWorkspaceExecutor(value)) {
+          return NextResponse.json(
+            { error: "gitConfig.executor must be 'cloud', 'host', 'any' or null" },
             { status: 400 },
           );
         }

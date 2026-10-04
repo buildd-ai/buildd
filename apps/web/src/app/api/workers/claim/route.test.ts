@@ -8149,6 +8149,43 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(probedGates()).not.toContain('missionLocal');
   });
 
+  // ── workspace executor (task e871a94d) ─────────────────────────────────────
+  // Rows are evaluated against real Postgres in tests/db/workspace-executor-gate.test.ts;
+  // here only which side the route asks the gate to exclude, and when.
+  function claimWhereExecutorExcludes(): string | null {
+    const call = (mockTasksFindMany.mock.calls as any[]).find(c => c[0]?.orderBy && c[0]?.limit >= 25);
+    const args: any[] = call?.[0]?.where?.args ?? [];
+    const gate = args.find(a => a?.type === 'sql' && Array.isArray(a.strings) && a.strings.join('').includes('ws_ex'));
+    return gate ? gate.values.find((v: unknown) => v === 'cloud' || v === 'host') ?? null : null;
+  }
+
+  it('workspace executor: a host runner poll excludes cloud workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7' } }));
+    expect(claimWhereExecutorExcludes()).toBe('cloud');
+  });
+
+  it('workspace executor: a cloud claim excludes host-only workspaces', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'runner-7', executor: 'cloud' } }));
+    expect(claimWhereExecutorExcludes()).toBe('host');
+  });
+
+  it('workspace executor: a verified interactive explicit claim is still gated, and the probe can name it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    await claim({ runner: 'mcp' }, interactiveHeaders());
+    expect(probedGates()).toContain('workspaceExecutor');
+    expect(claimWhereExecutorExcludes()).toBe('cloud');
+  });
+
+  it('workspace executor: an admin force claim lifts it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockTasksFindMany.mockResolvedValueOnce(forceTarget());
+    await claim({ runner: 'runner-7', forceOverride: true });
+    expect(probedGates()).not.toContain('workspaceExecutor');
+    expect(claimWhereExecutorExcludes()).toBeNull();
+  });
+
   // ── friction 22b389df: a local mission's own audit task was unclaimable ────
   // The `[surface audit]` task ensureMissionSurfaceAudit appends carries
   // roleSlug='visual-auditor' (EXPLICIT_ROLE_SLUGS), which an interactive
