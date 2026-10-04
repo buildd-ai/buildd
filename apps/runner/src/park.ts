@@ -21,9 +21,10 @@
  * Synchronous, like warm-repo.ts: git and tar via spawnSync.
  */
 import { spawnSync } from 'child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve, sep } from 'path';
 import { WARM_BASE_REF, gitFailureText } from './warm-repo';
+import { gitRetryDelayMs, parseRetryAfter, probeRetryAfter, sleepSync } from './git-clone';
 
 export const PARK_ENV_FLAG = 'BUILDD_ONCE_PARK';
 /** At most this many parks per worker; the next wait holds the container as before. */
@@ -367,50 +368,19 @@ export function restoreParkFiles(opened: OpenedPark, paths: ParkPaths): void {
 
 /** Total time a resume may wait for origin to answer before giving up on missing prerequisites. */
 export const PARK_FETCH_RETRY_BUDGET_MS = 30_000;
-const PARK_FETCH_BACKOFF_BASE_MS = 2_000;
 
-/** A Retry-After value (seconds, or an HTTP date) as whole seconds from now, or null. */
-export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | null {
-  const v = (value ?? '').trim();
-  if (/^\d+$/.test(v)) return Number(v);
-  if (!/[a-z]/i.test(v)) return null;
-  const at = Date.parse(v);
-  return Number.isFinite(at) ? Math.max(0, Math.ceil((at - now) / 1000)) : null;
-}
+export { parseRetryAfter, probeRetryAfter };
 
 /**
- * How long to wait before fetching origin again, or null to stop. A 429
- * waits for Retry-After when the server sent one; anything else that may be
- * transient backs off exponentially; an answer that will not change (403,
- * repository not found, bad credentials) is not retried. Never past
- * PARK_FETCH_RETRY_BUDGET_MS in total.
+ * How long to wait before fetching origin again, or null to stop: the policy
+ * the clone shares (git-clone.ts gitRetryDelayMs). A 429 waits for
+ * Retry-After; other transient failures back off exponentially; an answer that
+ * will not change (a 403 that is not a rate limit, repository not found, bad
+ * credentials) is not retried. Never past PARK_FETCH_RETRY_BUDGET_MS in total;
+ * a Retry-After longer than what is left waits out the budget, then one try.
  */
 export function fetchRetryDelayMs(o: { attempt: number; stderr: string; retryAfterS: number | null; waitedMs: number }): number | null {
-  const remaining = PARK_FETCH_RETRY_BUDGET_MS - o.waitedMs;
-  if (remaining <= 0) return null;
-  const code = /returned error: (\d{3})/.exec(o.stderr)?.[1];
-  if (code && code.startsWith('4') && code !== '408' && code !== '429') return null;
-  if (/repository not found|authentication failed|could not read username/i.test(o.stderr)) return null;
-  if (o.retryAfterS !== null && /\b429\b/.test(o.stderr)) return Math.min(o.retryAfterS * 1000, remaining);
-  return Math.min(PARK_FETCH_BACKOFF_BASE_MS * 2 ** o.attempt, remaining);
-}
-
-/** Block this thread for `ms` (restore is synchronous, like the git calls around it). */
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * Retry-After from origin's smart-HTTP endpoint, for an https remote: one
- * header read through the same egress as git (so it carries the same
- * credential). Null on anything unexpected.
- */
-export function probeRetryAfter(remoteUrl: string): number | null {
-  if (!/^https:\/\//i.test(remoteUrl)) return null;
-  const url = `${remoteUrl.replace(/\/+$/, '')}/info/refs?service=git-upload-pack`;
-  const r = spawnSync('curl', ['-s', '-o', '/dev/null', '-D', '-', '--max-time', '10', url], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
-  const header = /^retry-after:\s*(.+)$/im.exec(r.stdout ?? '')?.[1];
-  return header ? parseRetryAfter(header) : null;
+  return gitRetryDelayMs({ ...o, budgetMs: PARK_FETCH_RETRY_BUDGET_MS, beyondBudget: 'remaining' });
 }
 
 export interface ApplyParkRepoOptions {
@@ -422,6 +392,43 @@ export interface ApplyParkRepoOptions {
 /** `git fetch origin`: git's reason on failure, null on success. */
 function fetchOrigin(clonePath: string): string | null {
   const r = spawnSync('git', ['fetch', '-q', 'origin'], { cwd: clonePath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: GIT_TIMEOUT_MS });
+  return r.status === 0 ? null : gitFailureText(r);
+}
+
+/**
+ * The prerequisite commits named in a bundle's header (`-<oid> <subject>`
+ * lines, before the blank line that ends it). Only the head of the file is
+ * read: the header is text, the pack after it is not.
+ */
+export function bundlePrerequisites(bundle: string): string[] {
+  let head = '';
+  try {
+    const fd = openSync(bundle, 'r');
+    try {
+      const buf = Buffer.alloc(256 * 1024);
+      head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0)).toString('latin1');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return [];
+  }
+  const end = head.indexOf('\n\n');
+  const lines = (end >= 0 ? head.slice(0, end) : head).split('\n');
+  if (!/^# v[23] git bundle$/.test(lines[0] ?? '')) return [];
+  return lines.map(l => /^-([0-9a-f]{40}|[0-9a-f]{64})(?: |$)/.exec(l)?.[1]).filter((id): id is string => !!id);
+}
+
+/**
+ * Fetch the commits in `ids` this clone lacks, each by id at depth 1 (GitHub
+ * serves any commit reachable from its refs by id). Other refs and their
+ * history are untouched. git's reason on failure, null on success or when
+ * nothing was missing.
+ */
+function fetchMissingCommits(clonePath: string, ids: string[]): string | null {
+  const missing = ids.filter(id => tryGit(clonePath, ['cat-file', '-e', `${id}^{commit}`]) === null);
+  if (missing.length === 0) return null;
+  const r = spawnSync('git', ['fetch', '-q', '--no-tags', '--depth=1', 'origin', ...missing], { cwd: clonePath, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: GIT_TIMEOUT_MS });
   return r.status === 0 ? null : gitFailureText(r);
 }
 
@@ -451,6 +458,12 @@ export function applyParkRepo(opened: OpenedPark, clonePath: string, opts: Apply
   const fetchNote = () => (fetchError ? ` (fetching origin failed: ${fetchError})` : '');
   if (m.hasBundle) {
     const bundle = join(opened.stageDir, 'repo.bundle');
+    // A shallow clone (a cloud container, git-clone.ts) may not reach the
+    // commit the bundle was built on: a plain fetch never deepens it. Fetch
+    // just those commits, by id.
+    const shallow = tryGit(clonePath, ['rev-parse', '--is-shallow-repository']) === 'true';
+    const fetchBase = () => (shallow ? fetchMissingCommits(clonePath, bundlePrerequisites(bundle)) : null);
+    if (!fetchError) fetchError = fetchBase();
     let invalid = verifyBundle(clonePath, bundle);
     let waited = 0;
     for (let attempt = 0; invalid && fetchError && /prerequisite/i.test(invalid); attempt++) {
@@ -459,7 +472,7 @@ export function applyParkRepo(opened: OpenedPark, clonePath: string, opts: Apply
       if (delay === null) break;
       sleep(delay);
       waited += delay;
-      fetchError = fetchOrigin(clonePath);
+      fetchError = fetchOrigin(clonePath) ?? fetchBase();
       invalid = verifyBundle(clonePath, bundle);
     }
     if (invalid) throw new ParkRestoreError(`park bundle does not apply: ${invalid}${fetchNote()}`);
