@@ -123,6 +123,17 @@ without polling.
 - `webhookConfig.runnerPreference` optionally filters: only tasks whose
   `runnerPreference` matches are dispatched.
 - `webhookConfig` is stored as JSONB on `workspaces.webhookConfig`.
+- `webhookConfig.events` is an opt-in list (`task.created`, `task.unblocked`,
+  `task.retry`, `task.resume`, `task.scheduled`). Without it a webhook gets
+  only new and unblocked tasks; retries, plan children and deferred-start
+  re-dispatches reach it only when it lists the event.
+- `task.scheduled`: a task deferred to a future `startAt` no more than 24 h
+  ahead is sent to a webhook that lists `task.scheduled` at once, as
+  `event: 'task.scheduled'` with `notBefore` (ISO, the task's `startAt`), in
+  place of the event it would otherwise wait for. The consumer starts it at
+  `notBefore`. A webhook without the opt-in is unchanged. The deferred-dispatch
+  sweep still dispatches the task (`task.retry`) once `startAt` passes, as the
+  backstop; the consumer treats that as a no-op when the run is live.
 
 **Acceptance criteria**:
 - AC-5: GIVEN a workspace with `webhookConfig.enabled = true` WHEN a task is
@@ -133,9 +144,18 @@ without polling.
 - AC-7: GIVEN `webhookConfig.runnerPreference = 'service'` and a task with
   `runnerPreference = 'user'` WHEN the task is created THEN NO webhook dispatch
   occurs for that task.
+- AC-7a: GIVEN a webhook whose `events` lists `task.scheduled` WHEN a retry
+  defers a task to a `startAt` 5 minutes ahead THEN the webhook receives
+  `event: 'task.scheduled'` with `notBefore` = that `startAt` immediately, and
+  no `task:assigned` broadcast is sent. GIVEN the same retry on a webhook
+  without `task.scheduled` THEN nothing is sent to the webhook until the sweep
+  finds the task due.
 
 **Code surface**:
 - Webhook dispatch: `apps/web/src/app/api/tasks/route.ts` (POST handler)
+- Dispatch chain and event opt-in (`task.scheduled` included):
+  `apps/web/src/lib/task-dispatch.ts`; deferred-start backstop:
+  `apps/web/src/lib/deferred-dispatch-sweep.ts`
 - Schema: `packages/core/db/schema.ts` — `WorkspaceWebhookConfig`,
   `workspaces.webhookConfig`
 
