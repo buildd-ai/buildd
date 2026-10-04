@@ -153,10 +153,13 @@ export function typingPrefixes(text: string, frames: number): number[] {
  * visible occurrence (one per line it wraps onto) and the box of the element
  * that holds it. Missing phrases come back with no rects. Self-contained.
  */
-export function textBoxes(phrases: string[]) {
+export function textBoxes(phrases: Array<string | { text: string; within: string }>) {
   const box = (r: { x: number; y: number; width: number; height: number }) => ({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) });
-  return phrases.map((text) => {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  return phrases.map((p) => {
+    // A phrase can be scoped to an element: the same words often appear earlier in the page (a chat message quoting them).
+    const text = typeof p === 'string' ? p : p.text;
+    const root = typeof p === 'string' ? document.body : document.querySelector(`[data-testid="${p.within}"]`) ?? document.body;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const i = (n.textContent ?? '').indexOf(text);
       const el = n.parentElement;

@@ -30,6 +30,7 @@
  *       reducedMotion: true           # optional: shoot with prefers-reduced-motion: reduce (board-level default too)
  *       record: { ms: 8000, advanceTo: "14:30", ticks: 6 }   # optional webm: live replay via Pusher
  *       highlightText: ["Keep the public API"]   # optional: boxes of these phrases (each line's rect, plus the
+ *                                     # (an entry may be { text, within: <testid> } to search only inside that element)
  *                                     # enclosing block's) → manifest texts[<vp-theme>]
  *       reseedPerTheme: true          # optional: re-seed + replay to this step's t before each theme, for steps
  *                                     # whose click writes (a saved rule, an answer) so every theme sees it fresh
@@ -75,7 +76,7 @@ type Step = {
   reducedMotion?: boolean;
   record?: { ms?: number; advanceTo?: string | number; ticks?: number; theme?: 'dark' | 'light'; viewport?: string };
   type?: { into: string; text: string; frames?: number; append?: boolean };
-  highlightText?: string[];
+  highlightText?: Array<string | { text: string; within: string }>;
   reseedPerTheme?: boolean;
 };
 type Storyboard = {

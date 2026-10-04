@@ -126,13 +126,41 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
   // from the first frame: framing the list alone puts Edit and Confirm under
   // the caption band.
   const specCrop = union([crit, edit, confirm]);
+  // The spec beat (and the film's spec shot): the change is the criteria
+  // arriving. The ask line lights, then each "Done when" row (its label and its
+  // check line) is revealed and lit in turn, and the full list holds. Nothing
+  // is pressed here: Confirm belongs to the plan beat, so the button row stays
+  // dim. s02b-spec is the same card shot with each line boxed.
+  const SPEC = 's02b-spec';
+  const specList = s.box(SPEC, 'approval-draft-criteria');
+  const line = (phrase: string) => s.text(SPEC, phrase).rects[0];
+  const askLine = line('Let customers see, pay, and get receipts for invoices in their own currency.');
+  const ROWS: Array<[label: string, check: string]> = [
+    ["invoices in the customer's currency", 'pnpm test --filter web -- invoice-currency'],
+    ['public API backward compatible', 'pnpm test --filter api -- contract-v2'],
+    ['a EUR invoice pays end to end', 'e2e-eur-invoice'],
+    ['rounding rule written down', 'fx-rounding-decision'],
+  ];
+  const rowRects = ROWS.map(([label, check]) => {
+    const a = line(label), b = line(check);
+    // Both lines must sit in the list: the same words can appear earlier on the page (the storyboard scopes them to the card).
+    for (const r of [a, b]) if (!r || r.y < specList.y - 0.005 || r.y + r.h > specList.y + specList.h + 0.005) throw new Error(`[cuts-v6] spec row "${label}" is not inside the Done-when list (re-shoot s02b-spec)`);
+    const y0 = Math.min(a.y, b.y) - 0.004, y1 = Math.max(a.y + a.h, b.y + b.h) + 0.004;
+    return { x: specList.x, y: y0, w: specList.w, h: y1 - y0 };
+  });
+  const REVEAL = [1.0, 1.55, 2.1, 2.65];
+  // Five slots per key (the ask line, then the rows). An unlit row is a zero-height band on its top edge, so
+  // its light wipes down the row as the row is revealed (a hole grown from the centre left it half lit mid-way).
+  const topEdge = (r: Rect): Rect => ({ x: r.x, y: r.y, w: r.w, h: 0 });
+  const specSlots = (askOn: boolean, rowsOn: number) => [askOn ? askLine : ghost(askLine), ...rowRects.map((r, i) => (i < rowsOn ? r : topEdge(r)))];
+  const specFrame = union([askLine, specList]);
   const criteria: Shot = {
-    id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img('s02-thread')],
+    id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img(SPEC)],
     caption: 'It drafts the mission, and what done means.',
-    spot: [key(0.2, [crit]), { ...key(3.0, [edit]), cross: true }],
-    camera: [at(f('s02-thread', specCrop, 1.1), 0), at(f('s02-thread', specCrop, 1.06), 1)],
-    taps: [press(3.9, edit)],
-    controls: [edit, confirm],
+    // Masks run a hair past the list's left edge, or each hidden row leaves its checkbox's 1px border behind.
+    masks: rowRects.map((r, i): Mask => ({ rect: { x: r.x - 0.004, y: r.y, w: r.w + 0.008, h: r.h }, until: REVEAL[i] })),
+    spot: [key(0.2, specSlots(true, 0)), ...REVEAL.map((t, i) => key(t, specSlots(false, i + 1)))],
+    camera: [at(f(SPEC, specFrame, 1.12), 0), at(f(SPEC, specFrame, 1.08), 1)],
   };
 
   const composerEdit = s.box('s03b-spec-edit', 'chat-composer');
@@ -509,8 +537,8 @@ export function v6aBeats(s: Stills, opts: { mobile?: boolean; theme?: 'dark' | '
   return BEATS.map((beat) => ({
     name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme, dip: true,
     shots: BEAT_SHOTS[beat].map((id) => quiet(all.find((x) => x.id === id)!)),
-    // The spec poster is the criteria list fully lit (render.ts otherwise takes 60% in, mid-typing).
-    ...(beat === 'spec' ? { poster: 2.0 } : {}),
+    // The spec poster is the full criteria list lit (in its hold, after the last row lands).
+    ...(beat === 'spec' ? { poster: 3.9 } : {}),
   }));
 }
 
