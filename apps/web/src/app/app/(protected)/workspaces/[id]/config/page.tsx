@@ -142,19 +142,22 @@ export default async function WorkspaceConfigPage({
                     initialPolicy={(workspace.gitConfig as any)?.subjectPolicy ?? null}
                 />
 
-                {/* Destructive action lives here, away from the workspace header's primary actions. */}
-                <section
-                    data-testid="workspace-danger-zone"
-                    className="mt-10 border border-status-error/30 rounded-lg p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
-                >
-                    <div className="min-w-0">
-                        <h2 className="text-sm font-semibold text-status-error">Delete workspace</h2>
-                        <p className="text-xs text-text-muted mt-1">
-                            Deletes the workspace and its tasks and workers. You can&apos;t undo this.
-                        </p>
-                    </div>
-                    <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
-                </section>
+                {/* Destructive action lives here, away from the workspace header's primary actions.
+                    DELETE is owner-only, so other roles would get a button that always fails. */}
+                {roleHas(access.role, 'delete_workspace') && (
+                    <section
+                        data-testid="workspace-danger-zone"
+                        className="mt-10 border border-status-error/30 rounded-lg p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                        <div className="min-w-0">
+                            <h2 className="text-sm font-semibold text-status-error">Delete workspace</h2>
+                            <p className="text-xs text-text-muted mt-1">
+                                Deletes the workspace and its tasks and workers. You can&apos;t undo this.
+                            </p>
+                        </div>
+                        <DeleteWorkspaceButton workspaceId={workspace.id} workspaceName={workspace.name} />
+                    </section>
+                )}
             </div>
         </main>
     );
