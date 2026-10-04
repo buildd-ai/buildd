@@ -2176,6 +2176,12 @@ export interface VisualReviewFixTask {
   prUrl: string | null;
   prNumber: number | null;
   mergedAt: string | null;
+  /**
+   * Where a merged PR landed. `null` unless `mergedAt` is set: `'trunk'` for an
+   * ordinary merge, `'mission_branch'` when the mission uses an integration
+   * branch and this PR based on it — merged there, but not yet shipped to trunk.
+   */
+  mergedInto: 'trunk' | 'mission_branch' | null;
   /** Who filed it: the auditor (`qa.fixTaskId`) or a human decision (the review row). */
   origin: 'auditor' | 'human';
 }
