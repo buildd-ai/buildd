@@ -80,6 +80,7 @@ validation (which would change which error a doubly-invalid request gets).
 | 19 | `route.ts:1249` | `output_requirement` | bypassed | `discardEdits` acknowledged the edits as scratch |
 | 19a | `route.ts` terminal block | `worker_patch_refused` | rejected | the runner reporting that a prior mutation of ours was refused with a non-gate 4xx (or an unqueueable 5xx). Those reports are exempt from the task's retry budget, so this row is what keeps the exemption countable: a rise here means we are rejecting the runner's requests, not that agents are failing. An output-gate refusal is deliberately excluded — it already has its `output_requirement` row from sites 16-18 |
 | 19b | `route.ts` terminal block | `handoff_required` | rejected | completing task has an unfinished dependent and no `structuredOutput.handoff.delivered` |
+| 19c | `route.ts` self-reported PR / `pr_required` fallback | `pr_ownership` | rejected | the PR an agent run reports (or the `#N` fallback adopts) is not one its task owns, is outside the linked repo, or targets the wrong mission base. The PR fields are dropped; the rest of the PATCH still applies |
 
 Site 19 is the direct read on how often the `auto` gate is being talked out of
 a refusal, which is the number that would have shown the reviewer-task
@@ -91,6 +92,7 @@ regression without a human noticing nine dead runs.
 |---|---|---|---|---|
 | 20 | `pr/route.ts:687` | `pr_head_mismatch` | rejected | PR head is not the worker's own branch |
 | 21 | `pr/route.ts:705` | `pr_base_mismatch` | rejected | PR base disagrees with the mission integration branch |
+| 21a | `pr/route.ts:refusePrOwnership` | `pr_ownership` | rejected | an agent run recording a PR its task does not own: `head_not_owned`, `protected_head`, or `pr_outside_linked_repo` (adoption). Runs on fresh create, dedup-by-head and `prUrl` adoption; people and teammates are exempt. See `lib/agent-capabilities/pr-ownership.ts` |
 
 ### merge_pr — `apps/web/src/app/api/github/pr/route.ts` (PUT)
 

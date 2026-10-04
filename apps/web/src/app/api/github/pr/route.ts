@@ -18,6 +18,8 @@ import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
+import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict } from '@/lib/agent-capabilities/pr-ownership';
+import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -52,7 +54,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { closeAncestorRetryPrs, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
+import { closeAncestorRetryPrs, collectRetryLineage, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
 import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAttemptFooter } from '@/lib/retry-fresh-pr-gate';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
@@ -183,6 +185,32 @@ function isStoredPrStale(pr: { mergedAt?: Date | string | null; prLifecycleStatu
   return !!pr.mergedAt || isTerminalPrLifecycle(pr.prLifecycleStatus);
 }
 
+/**
+ * An agent run tried to record a PR its task does not own
+ * (lib/agent-capabilities/pr-ownership.ts). One ledger row per refusal, so
+ * "why was this refused" and "how often" both have an answer.
+ */
+function refusePrOwnership(
+  worker: { id: string; workspaceId: string | null; taskId: string | null; branch: string | null; task?: { missionId?: string | null } | null },
+  verdict: Extract<PrOwnershipVerdict, { owned: false }> | { owned: false; reasonCode: 'pr_outside_linked_repo'; error: string },
+) {
+  fireGateEvent({
+    gate: GATE_SLUGS.PR_OWNERSHIP,
+    surface: 'POST /api/github/pr',
+    outcome: 'rejected',
+    reason: verdict.reasonCode,
+    workspaceId: worker.workspaceId,
+    missionId: worker.task?.missionId ?? null,
+    taskId: worker.taskId,
+    workerId: worker.id,
+    callerOrigin: 'worker',
+  });
+  return NextResponse.json(
+    { error: verdict.error, code: verdict.reasonCode, ...(worker.branch ? { hint: `Open the PR with head='${worker.branch}'.` } : {}) },
+    { status: 403 },
+  );
+}
+
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -310,6 +338,45 @@ export async function POST(req: NextRequest) {
       // refusing an adopted PR for disagreeing with it would refuse the only
       // base that can actually exist here.
       let adoptionIntegrationBaseMissing = false;
+      // An agent run may adopt only a PR its task owns, in the workspace's own
+      // repo. With an App installation the head comes from GitHub, not the
+      // caller; without one the caller's `head` is all there is.
+      if (ownershipApplies(prAccess.actor, account)) {
+        const ownRepo = worker.workspace?.githubRepoId
+          ? await db.query.githubRepos.findFirst({
+              where: eq(githubRepos.id, worker.workspace.githubRepoId),
+              with: { installation: true },
+            })
+          : undefined;
+        let observedHead: string = head;
+        if (ownRepo?.installation) {
+          if (!prNumber || !existingPrUrl.toLowerCase().includes(`/${ownRepo.fullName.toLowerCase()}/pull/`)) {
+            return refusePrOwnership(worker, {
+              owned: false,
+              reasonCode: 'pr_outside_linked_repo',
+              error: `Refusing to record ${existingPrUrl}: it is not a pull request in this workspace's repository (${ownRepo.fullName}).`,
+            });
+          }
+          if (!realPr) {
+            try {
+              realPr = await githubApi(ownRepo.installation.installationId, `/repos/${ownRepo.fullName}/pulls/${prNumber}`);
+            } catch {
+              // Unreadable — the caller's head stands in, as it does without an App.
+              realPr = null;
+            }
+          }
+          const ref = (realPr as { head?: { ref?: unknown } } | null)?.head?.ref;
+          if (typeof ref === 'string' && ref) observedHead = ref;
+        }
+        const ownership = await verifyPrOwnership({
+          head: observedHead,
+          prNumber,
+          workerBranch: worker.branch,
+          task: worker.task,
+          protectedBranches: repoProtectedBranches(worker.workspace ?? {}, ownRepo?.defaultBranch),
+        }, collectRetryLineage);
+        if (!ownership.owned) return refusePrOwnership(worker, ownership);
+      }
       if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
         const ready = await ensureIntegrationBaseForTaskPr({
           missionId: worker.task.missionId,
@@ -340,7 +407,8 @@ export async function POST(req: NextRequest) {
           });
           if (adoptRepo?.installation && existingPrUrl.includes(`/${adoptRepo.fullName}/pull/`)) {
             try {
-              realPr = await githubApi(
+              // Already read by the ownership check above when an agent run adopts.
+              realPr = realPr ?? await githubApi(
                 adoptRepo.installation.installationId,
                 `/repos/${adoptRepo.fullName}/pulls/${prNumber}`,
               );
@@ -520,6 +588,20 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // An agent run opens or adopts a PR only from a head its task owns. The
+    // PR number is not known yet; dedup below re-asks with it, in case the
+    // task names the PR it found.
+    const ownershipInput = ownershipApplies(prAccess.actor, account)
+      ? {
+          workerBranch: worker.branch,
+          task: worker.task,
+          protectedBranches: repoProtectedBranches(workspace, repo.defaultBranch),
+        }
+      : null;
+    const headOwnership = ownershipInput
+      ? await verifyPrOwnership({ ...ownershipInput, head, prNumber: null }, collectRetryLineage)
+      : null;
+
     const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
     const maxIterations = typeof taskContext?.maxIterations === 'number' ? taskContext.maxIterations : 3;
 
@@ -556,6 +638,10 @@ export async function POST(req: NextRequest) {
         });
         if (dedupRefusal) {
           return NextResponse.json(dedupRefusal, { status: 400 });
+        }
+        if (ownershipInput && headOwnership && !headOwnership.owned) {
+          const named = await verifyPrOwnership({ ...ownershipInput, head, prNumber: existing.number }, collectRetryLineage);
+          if (!named.owned) return refusePrOwnership(worker, named);
         }
 
         // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a
@@ -677,6 +763,8 @@ export async function POST(req: NextRequest) {
     } catch {
       // If the check fails, proceed with creation (GitHub will reject duplicates anyway)
     }
+
+    if (headOwnership && !headOwnership.owned) return refusePrOwnership(worker, headOwnership);
 
     // A retry bound to a still-open PR updates that PR. A fresh PR from it is
     // the exceptional fallback — only when the two heads have diverged — and
