@@ -201,6 +201,40 @@ export function inDispatchCustody(row: Pick<CustodyRow, 'status' | 'handedOffAt'
   return row.status === 'handed_off' || (row.status === 'pending' && row.handedOffAt != null);
 }
 
+/**
+ * A callback that outran its own ack. Publish POSTs, Dispatch stores the
+ * intent and may fire its alarm at once, and its resolve/relay can reach us
+ * before the ack UPDATE below commits. The row is then `pending` with
+ * `published_at` set and no `handed_off_at`: Dispatch has it, we just have
+ * not written that down. Write it down here, the same way the ack does
+ * (`dispatch` workspace: handed off; `shadow`: only marked), so the callback
+ * proceeds instead of answering not_in_custody and losing the wake. The ack
+ * that lands later then matches no row and changes nothing.
+ *
+ * Never for a row the repair floor took back (fallback mark), a row never
+ * published, a workspace on `in_app`, or a row the in-app drain already took
+ * (status is no longer `pending`).
+ */
+export function claimCustodySql(id: string): SQL {
+  return sql`-- dispatch_handoff:claim_custody
+UPDATE task_dispatch_outbox o
+SET status = CASE WHEN w.dispatch_transport = 'dispatch' THEN 'handed_off' ELSE o.status END,
+    transport = CASE WHEN w.dispatch_transport = 'dispatch' THEN 'dispatch' ELSE o.transport END,
+    handed_off_at = now(), updated_at = now()
+FROM workspaces w
+WHERE o.id = ${id}::uuid AND w.id = o.workspace_id
+  AND o.status = 'pending' AND o.handed_off_at IS NULL AND o.published_at IS NOT NULL
+  AND w.dispatch_transport IN ('dispatch', 'shadow')
+  AND NOT ${sql.raw(FALLEN_BACK_SQL)}
+RETURNING o.id`;
+}
+
+/** True when this call took custody (see claimCustodySql). */
+export async function claimCustody(id: string): Promise<boolean> {
+  if (!isUuid(id)) return false;
+  return rowsOf(await db.execute(claimCustodySql(id))).length > 0;
+}
+
 export async function loadCustodyRow(id: string): Promise<CustodyRow | null> {
   if (!isUuid(id)) return null;
   const result = await db.execute(sql`-- dispatch_handoff:custody
