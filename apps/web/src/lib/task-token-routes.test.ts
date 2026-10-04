@@ -4,7 +4,8 @@
  * `authenticateTaskScopedCaller` hands back the minting account with a
  * `taskScope`; nothing stops a route from then treating it like the account
  * key. So each route file that calls it must also apply a scope check
- * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace`,
+ * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
+ * `taskScopeAllowsWorkerPr`,
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
  * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it
@@ -17,9 +18,10 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
+  'apps/web/src/app/api/github/pr/review/route.ts',
   'apps/web/src/app/api/github/pr/route.ts',
   'apps/web/src/app/api/mcp/route.ts',
   'apps/web/src/app/api/tasks/[id]/route.ts',
