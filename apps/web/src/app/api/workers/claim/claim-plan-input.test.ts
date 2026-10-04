@@ -43,9 +43,14 @@ function signals(over: Partial<PlannerSignals>): PlannerSignals {
 const picks = (src: ClaimPlanSource) => planClaimBatch(buildClaimPlanInput(src).input).picks.map(p => p.id);
 
 describe('resolveClaimPlannerConfig', () => {
-  it('defaults to off with no thresholds', () => {
-    expect(resolveClaimPlannerConfig(null)).toEqual({ mode: 'off', thresholds: null });
-    expect(resolveClaimPlannerConfig({})).toEqual({ mode: 'off', thresholds: null });
+  it('defaults to record when the workspace sets no mode', () => {
+    expect(resolveClaimPlannerConfig(null)).toEqual({ mode: 'record', thresholds: null });
+    expect(resolveClaimPlannerConfig({})).toEqual({ mode: 'record', thresholds: null });
+    expect(resolveClaimPlannerConfig({ claimPlanner: null })).toEqual({ mode: 'record', thresholds: null });
+  });
+
+  it('an explicit off, or an unrecognised mode, is off', () => {
+    expect(resolveClaimPlannerConfig({ claimPlanner: 'off' })).toEqual({ mode: 'off', thresholds: null });
     expect(resolveClaimPlannerConfig({ claimPlanner: 'yes' })).toEqual({ mode: 'off', thresholds: null });
   });
 

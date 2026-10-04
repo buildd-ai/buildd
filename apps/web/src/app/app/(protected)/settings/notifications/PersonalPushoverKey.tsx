@@ -58,7 +58,7 @@ export default function PersonalPushoverKey({ teamId }: { teamId: string }) {
         addLabel="Add your key"
         checkShape={checkPushoverKeyShape}
         hint={<>Your user key is on your <a href={INFO.consoleUrl} target="_blank" rel="noreferrer" className="underline hover:text-text-primary">Pushover dashboard</a>.</>}
-        removeNote="Alerts for things you watch stop reaching your phone. They still show in chat."
+        removeNote="Phone alerts stop. They still show in chat."
         onSave={async (value) => {
           const res = await fetch('/api/me/pushover', {
             method: 'PUT',

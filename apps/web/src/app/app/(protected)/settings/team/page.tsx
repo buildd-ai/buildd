@@ -20,7 +20,7 @@ export default async function TeamSettingsPage() {
     return (
       <SettingsPage title="Members">
         <div className="card p-6 text-center">
-          <p className="text-sm text-text-secondary mb-3">You are not on a team yet.</p>
+          <p className="text-sm text-text-secondary mb-3">Not on a team.</p>
           <Link href="/app/teams/new" className="btn btn-primary">Create a team</Link>
         </div>
       </SettingsPage>
@@ -43,7 +43,7 @@ export default async function TeamSettingsPage() {
   return (
     <SettingsPage
       title="Members"
-      description={<>People on this team and what each can change. <Link href="/app/team" className="underline hover:text-text-primary">Agent roles</Link> live on the Team page.</>}
+      description={<><Link href="/app/team" className="underline hover:text-text-primary">Agent roles</Link> are on the Team page.</>}
     >
       {team ? (
         <TeamDetailClient

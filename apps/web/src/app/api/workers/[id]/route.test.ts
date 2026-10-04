@@ -6689,6 +6689,40 @@ describe('PATCH /api/workers/[id]', () => {
       expect((mockWakeTask.mock.calls[0] as any[])[2]?.notBefore).toBeUndefined();
     });
 
+    // The creator asked for Codex: failover must not override that choice.
+    it('defers a task pinned to the walled backend instead of failing it over', async () => {
+      mockBackendPausesFindMany.mockResolvedValue([]);   // Claude pool open
+      mockAccountsFindFirst.mockResolvedValue(null);
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((vals: any) => { taskSetCalls.push(vals); return { where: mock(() => Promise.resolve()) }; }),
+      }));
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'oauth' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1',
+        accountId: 'account-1', status: 'running', milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', context: { backendPinned: true }, workspaceId: 'ws-1', backend: 'codex',
+        workspace: { teamId: 'team-1', name: 'sibling-app' },
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: "You've hit your usage limit - resets 11:20am (UTC)", budgetExhausted: true },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue).toBeDefined();
+      expect(requeue?.backend).toBeUndefined();
+      expect(requeue?.context?.failedOverFrom).toBeUndefined();
+      expect(requeue?.context?.backendPinned).toBe(true);
+      // Waits out its own provider's reset.
+      expect(requeue?.startAt).toBeInstanceOf(Date);
+    });
+
     it('defers instead of failing over when the alternative backend is walled too', async () => {
       // Claude is itself rate-limited until 15:20 — the exact case that made
       // "just switch to Claude" impossible on 2026-08-25.
@@ -12540,6 +12574,31 @@ describe('PATCH /api/workers/[id]', () => {
       // A different provider can take it now: an immediate wake.
       expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
       expect((mockWakeTask.mock.calls[0] as any[])[2]?.notBefore).toBeUndefined();
+    });
+
+    it('does not move a task pinned to the rejected backend', async () => {
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskSetCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api_key', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(makeAuthFailWorker());
+      mockTasksFindFirst.mockResolvedValue(makeClaudeTask({ backendPinned: true }));
+      mockHasCodexCredential.mockResolvedValue(true);
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error: 'Invalid authentication credentials. Please ensure that your API key is correct.',
+        },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(taskSetCalls.some((u: any) => u.backend === 'codex')).toBe(false);
     });
 
     it('fails normally when auth error occurs but no Codex credential is present', async () => {

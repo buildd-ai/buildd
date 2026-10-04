@@ -119,7 +119,7 @@ export default function BackendForm({
 
       {managed ? (
         <p className="text-xs text-text-secondary">
-          Evidence goes to buildd&apos;s own bucket and is kept 30 days. Nothing to configure but the key prefix.
+          Kept 30 days.
         </p>
       ) : (
         <>
@@ -142,7 +142,7 @@ export default function BackendForm({
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <Field label="Key prefix" htmlFor={fid('prefix')} error={errors.prefix} hint="One path segment. Objects go under it.">
+        <Field label="Key prefix" htmlFor={fid('prefix')} error={errors.prefix} hint="One path segment.">
           <input id={fid('prefix')} value={form.prefix} onChange={(e) => set('prefix', e.target.value)}
             autoComplete="off" spellCheck={false} className={inputCls} />
         </Field>
@@ -175,7 +175,7 @@ export default function BackendForm({
           </div>
           <label className="flex items-center gap-2 text-sm text-text-secondary">
             <input type="checkbox" checked={form.forcePathStyle} onChange={(e) => set('forcePathStyle', e.target.checked)} />
-            Path-style addressing (bucket in the path, not the hostname)
+            Path-style URLs
           </label>
 
           <fieldset className="space-y-3 border-t border-border-default pt-4">
@@ -206,8 +206,7 @@ export default function BackendForm({
                 data-credential-input className={inputCls} />
             </Field>
             <p className="text-xs text-text-muted">
-              Stored encrypted for the team and never sent to a runner. It needs put and get on the prefix, and delete
-              if you want the check object cleaned up. It never needs list.
+              Needs put, get and delete on the prefix. Encrypted, never sent to runners.
             </p>
           </fieldset>
         </>

@@ -13,6 +13,7 @@ import {
   applyEgressEvent,
   assembleRunReport,
   countResponseBytes,
+  measureResponse,
   deliverRunReport,
   egressClassForKind,
   emptyEgressDetail,
@@ -474,5 +475,32 @@ describe('instance type config', () => {
     const text = readFileSync(join(import.meta.dir, '..', 'wrangler.jsonc'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
     const cfg = JSON.parse(text) as { containers: Array<{ instance_type: string }>; vars: Record<string, string> };
     expect(cfg.vars.CONTAINER_INSTANCE_TYPE).toBe(cfg.containers[0]!.instance_type);
+  });
+});
+
+describe('measureResponse: GitHub and passthrough bodies are never piped through JavaScript', () => {
+  // A JS pass-through costs Worker CPU per chunk: a ~1.5 GB git pack through
+  // it exceeded the invocation's CPU limit and the clone was cut near the end.
+  test('github and passthrough: the upstream Response itself is returned, bytes taken from content-length', () => {
+    for (const cls of ['github', 'passthrough'] as const) {
+      const seen: number[] = [];
+      const res = new Response('x'.repeat(10), { headers: { 'content-length': '10' } });
+      expect(measureResponse(res, cls, n => seen.push(n))).toBe(res);
+      expect(seen).toEqual([10]);
+    }
+  });
+
+  test('github without content-length (chunked): returned untouched, nothing counted', () => {
+    const seen: number[] = [];
+    const res = new Response(new ReadableStream({ start(c) { c.enqueue(new Uint8Array(5)); c.close(); } }));
+    expect(measureResponse(res, 'github', n => seen.push(n))).toBe(res);
+    expect(seen).toEqual([]);
+  });
+
+  test('model responses are small and keep exact counting', async () => {
+    const seen: number[] = [];
+    const out = measureResponse(new Response('hello world'), 'model', n => seen.push(n));
+    expect(await out.text()).toBe('hello world');
+    expect(seen).toEqual([11]);
   });
 });

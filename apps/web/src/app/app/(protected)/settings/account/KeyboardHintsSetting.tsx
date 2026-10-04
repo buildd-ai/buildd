@@ -46,7 +46,7 @@ export default function KeyboardHintsSetting({ initial }: { initial: boolean }) 
         <div className="min-w-0 flex-1">
           <p id="keyboard-hints-label" className="text-[14px] font-medium text-text-primary">Show keyboard hints</p>
           <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-            Show the keys next to buttons, like 1 and 2 on a question or Esc to close.
+            For example 1 and 2 on a question, Esc to close.
           </p>
           {error && <p role="alert" className="mt-2 text-xs text-status-error">{error}</p>}
         </div>

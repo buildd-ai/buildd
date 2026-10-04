@@ -27,7 +27,7 @@ import {
   type ServerModelEndpointState,
 } from './outbound';
 import { rewriteOtlp } from './otel';
-import { countResponseBytes, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
+import { measureResponse, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
 import { resumableRunsEnabled, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
 
@@ -156,7 +156,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const res = await response;
     if (res.status >= 400) this.record({ type: 'status', cls, status: res.status, ...(auth ? { auth } : {}) });
     if (auth && host && (res.status === 429 || res.status === 403)) this.recordThrottle(res.clone(), host);
-    return countResponseBytes(res, (bytes) => this.record({ type: 'bytes', cls, bytes }));
+    return measureResponse(res, cls, (bytes) => this.record({ type: 'bytes', cls, bytes }));
   }
 
   /**

@@ -14,6 +14,7 @@ import { workspaceSkills } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { config } from '../config';
 import { createHash } from 'crypto';
+import { CUE_CONNECTOR_URL } from './seed-cue-connector';
 
 const client = neon(config.databaseUrl);
 const db = drizzle(client);
@@ -53,10 +54,14 @@ const MCPS: Record<string, McpServerTemplate> = {
     url: 'https://buildd.dev/api/mcp',
     headers: { Authorization: 'Bearer ${BUILDD_API_KEY}' },
   },
+  // The planner MCP. Its old host was retired and now answers 404 on /api/mcp;
+  // the successor is the Cue endpoint, which accepts the same shared key only
+  // together with a tenant header. The server key stays `dispatch` so existing
+  // role rows keep their tool names.
   dispatch: {
     type: 'http',
-    url: 'https://dispatch.buildd.dev/api/mcp',
-    headers: { 'x-api-key': '${DISPATCH_API_KEY}' },
+    url: CUE_CONNECTOR_URL,
+    headers: { 'x-api-key': '${DISPATCH_API_KEY}', 'x-tenant-id': '${TENANT_ID}' },
   },
   [SIBLING_MCP_NAME]: {
     type: 'http',
@@ -264,7 +269,8 @@ async function main() {
   console.log('\nDone! Roles now have MCP servers, tool restrictions, and delegation rules.');
   console.log('\nReminder: Ensure these secrets exist in the secrets table with purpose=\'mcp_credential\':');
   console.log('  - label: buildd-api-key');
-  console.log('  - label: dispatch-api-key');
+  console.log('  - label: DISPATCH_API_KEY');
+  console.log('  - label: TENANT_ID');
   console.log(`  - label: ${SIBLING_SECRET_LABEL}`);
   process.exit(0);
 }

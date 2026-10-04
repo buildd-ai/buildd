@@ -1006,11 +1006,22 @@ describe('POST /api/workers/claim', () => {
   });
 
   describe('budget failover to Codex', () => {
+    // A flip needs a worker that will actually hold Codex auth: a runner that
+    // advertises backend:codex (every buildd runner does) and, for a server
+    // credential, ENCRYPTION_KEY so it can be delivered.
+    const codexRunner = { runner: 'test-runner', capabilities: ['backend:codex'] };
+    let origEncryptionKey: string | undefined;
     // Several tests below install team pauses and reset them on their last
     // line; a failing one would leak its pauses into the next test.
     beforeEach(() => {
       mockBackendPausesFindMany.mockResolvedValue([]);
       mockAccountsFindFirst.mockResolvedValue(null);
+      origEncryptionKey = process.env.ENCRYPTION_KEY;
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    });
+    afterEach(() => {
+      if (origEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origEncryptionKey;
     });
 
     const exhaustedOauthAccount = () => ({
@@ -1054,7 +1065,7 @@ describe('POST /api/workers/claim', () => {
       });
       setupClaim();
 
-      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
       const res = await POST(req);
 
       const data = await res.json();
@@ -1081,7 +1092,7 @@ describe('POST /api/workers/claim', () => {
       mockGetCodexCredential.mockResolvedValue(null);
       setupClaim();
 
-      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
       const res = await POST(req);
 
       const data = await res.json();
@@ -1097,7 +1108,7 @@ describe('POST /api/workers/claim', () => {
       mockHasCodexCredential.mockResolvedValue(false); // no Codex → fall back to skip-until-reset
       setupClaim();
 
-      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
       const res = await POST(req);
 
       const data = await res.json();
@@ -1234,7 +1245,7 @@ describe('POST /api/workers/claim', () => {
       mockHasCodexCredential.mockResolvedValue(false);
       setupClaim();
 
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
       const data = await res.json();
       expect(data.diagnostics.reason).toBe('budget_exhausted');
       expect(data.budgetResetsAt).toBeTruthy();
@@ -1255,7 +1266,7 @@ describe('POST /api/workers/claim', () => {
       });
       setupClaim();
 
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner }));
       const data = await res.json();
       expect(data.workers.length).toBe(1);
       expect(data.diagnostics.reason).toBe('budget_exhausted_partial');
@@ -1297,7 +1308,7 @@ describe('POST /api/workers/claim', () => {
       mockHasCodexCredential.mockResolvedValue(true);
       setupClaim();
 
-      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: codexRunner });
       const res = await POST(req);
 
       const data = await res.json();
@@ -1342,6 +1353,232 @@ describe('POST /api/workers/claim', () => {
     });
   });
 
+  // The Claude seat wall used to flip (or defer) EVERY Claude task, whatever
+  // credential it would actually spend. Three wrong answers seen together on a
+  // cloud runner workspace: a task routed through the team agent endpoint was
+  // budget-blocked anyway; a task created with backend:'claude' was moved to
+  // Codex; and a flip went through to a runner that then had no Codex auth.
+  describe('Claude seat wall: only seat-bound, unpinned tasks fail over, and only where Codex can run', () => {
+    let origKey: string | undefined;
+    let taskSets: any[] = [];
+    const claimSet = () => taskSets.find(p => p && p.status === 'assigned') ?? null;
+    const endpoint = { kind: 'gateway', baseUrl: 'https://gw.example.test', apiKey: 'k', authHeader: 'authorization', scope: 'team', secretId: 's-1' };
+
+    beforeEach(() => {
+      origKey = process.env.ENCRYPTION_KEY;
+      process.env.ENCRYPTION_KEY = 'test-encryption-key';
+      taskSets = [];
+      mockBackendPausesFindMany.mockResolvedValue([]);
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockResolveAgentModelRoute.mockReset();
+      mockResolveAgentModelRoute.mockImplementation(async () => null);
+      mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksUpdate.mockImplementation(() => ({
+        set: mock((payload: any) => {
+          taskSets.push(payload);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) };
+        }),
+      }));
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+      // A Codex credential exists server-side, so a flip is always POSSIBLE —
+      // every "not flipped" assertion below is a decision, not a missing cred.
+      mockHasCodexCredential.mockResolvedValue(true);
+    });
+    afterEach(() => {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+      mockResolveAgentModelRoute.mockReset();
+      mockResolveAgentModelRoute.mockImplementation(async () => null);
+      mockBackendPausesFindMany.mockResolvedValue([]);
+    });
+
+    const exhaustedSeat = () => ({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+      maxConcurrentSessions: 10, activeSessions: 0,
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString(),
+    });
+    const claudeTask = (context: Record<string, unknown> = {}) => ({
+      id: 'task-1', workspaceId: 'ws-1', title: 'T', backend: 'claude', dependsOn: [], context,
+      workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+    });
+    const claim = (body: Record<string, unknown> = {}) => POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', capabilities: ['backend:codex'], ...body },
+    }));
+
+    it('claims on Claude, not Codex, when the team agent endpoint wins the route', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }) as any);
+
+      const data = await (await claim({ runnerFeatures: ['agent_endpoint'] })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+      expect(data.diagnostics?.deferrals?.budget_paused).toBeUndefined();
+      // Nothing moved it, so nothing is stamped.
+      expect(claimSet()?.context?.backendRouting).toBeUndefined();
+    });
+
+    it('also exempts a Claude-pool pause recorded in the pause log when the endpoint wins', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), budgetExhaustedAt: null, budgetResetsAt: null });
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'claude', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }) as any);
+
+      const data = await (await claim({ runnerFeatures: ['agent_endpoint'] })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('still treats the task as seat-bound when the runner will not apply the endpoint', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }) as any);
+
+      // No runnerFeatures: the endpoint is never attached, the seat is spent.
+      const data = await (await claim()).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
+    it('claims on Claude when a live Anthropic API key is the route', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+      mockSecretsFindMany.mockResolvedValue([
+        { id: 'sec-1', purpose: 'anthropic_api_key', accountId: null, workspaceId: null, healthStatus: 'healthy' },
+      ]);
+
+      const data = await (await claim()).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+      expect(data.diagnostics?.deferrals?.budget_paused).toBeUndefined();
+    });
+
+    it('defers, never flips, a task whose creator pinned backend claude', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask({ backendPinned: true })]);
+
+      const data = await (await claim()).json();
+      expect(data.workers).toHaveLength(0);
+      // Deferred on the wall (the runner is told when to come back), not claimed.
+      expect(data.diagnostics?.reason).toBe('budget_exhausted');
+      expect(data.budgetResetsAt).toBeTruthy();
+      expect(claimSet()).toBeNull();
+    });
+
+    it('still claims a pinned Claude task whose route is not the seat', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask({ backendPinned: true })]);
+      mockResolveAgentModelRoute.mockImplementation(async () => ({ winner: 'endpoint', endpoint }) as any);
+
+      const data = await (await claim({ runnerFeatures: ['agent_endpoint'] })).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+    });
+
+    it('defers, never escapes to Claude, a task pinned to a rate-limited Codex', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), budgetExhaustedAt: null, budgetResetsAt: null });
+      mockBackendPausesFindMany.mockResolvedValue([
+        { backend: 'codex', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+      ]);
+      mockTasksFindMany.mockResolvedValueOnce([{ ...claudeTask({ backendPinned: true }), backend: 'codex' }]);
+
+      const data = await (await claim({ capabilities: ['backend:codex', 'CODEX_HOME'] })).json();
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.reason).toBe('budget_exhausted');
+      expect(claimSet()).toBeNull();
+    });
+
+    it('stamps why the claim ran the task on Codex', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+      const data = await (await claim()).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+      expect(claimSet()?.context?.backendRouting).toEqual(expect.objectContaining({
+        backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted',
+      }));
+    });
+
+    it("clears a previous claim's routing stamp when this claim runs the stored backend", async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), budgetExhaustedAt: null, budgetResetsAt: null });
+      mockTasksFindMany.mockResolvedValueOnce([claudeTask({
+        backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' },
+      })]);
+
+      const data = await (await claim()).json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.workers[0].task.backend).toBe('claude');
+      expect(claimSet()).not.toBeNull();
+      expect('backendRouting' in (claimSet().context ?? {})).toBe(false);
+    });
+
+    describe('a flip only happens where the runner will have Codex auth', () => {
+      it('does not flip for a caller that cannot run Codex (no backend:codex)', async () => {
+        mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+        const data = await (await claim({ capabilities: [] })).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.reason).toBe('budget_exhausted');
+        expect(claimSet()).toBeNull();
+      });
+
+      it('does not flip when the server credential cannot be delivered (no ENCRYPTION_KEY)', async () => {
+        delete process.env.ENCRYPTION_KEY;
+        mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+        const data = await (await claim()).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.reason).toBe('budget_exhausted');
+        expect(claimSet()).toBeNull();
+      });
+
+      it("flips on the runner's own Codex auth with no server credential", async () => {
+        mockHasCodexCredential.mockResolvedValue(false);
+        mockAuthenticateApiKey.mockResolvedValue(exhaustedSeat());
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+        const data = await (await claim({ capabilities: ['backend:codex', 'OPENAI_API_KEY'] })).json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].task.backend).toBe('codex');
+      });
+
+      it('never flips a cloud executor claim to Codex: egress carries no Codex auth', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), authType: 'api' as const, budgetExhaustedAt: null, budgetResetsAt: null });
+        // Claude disabled team-wide: the only way to run is a flip to Codex.
+        mockTeamsFindFirst.mockResolvedValue({ enabledBackends: ['codex'] });
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+        const data = await (await claim({ executor: 'cloud', capabilities: ['backend:codex', 'OPENAI_API_KEY'] })).json();
+        expect(data.workers).toHaveLength(0);
+        expect(data.diagnostics?.deferrals?.provider_unavailable).toBe(1);
+      });
+
+      it('claims a cloud executor Claude task through a Claude seat wall: cloud egress never spends the seat', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ ...exhaustedSeat(), authType: 'api' as const, budgetExhaustedAt: null, budgetResetsAt: null });
+        mockBackendPausesFindMany.mockResolvedValue([
+          { backend: 'claude', resetsAt: new Date(Date.now() + 60 * 60 * 1000), reason: 'budget' },
+        ]);
+        mockTasksFindMany.mockResolvedValueOnce([claudeTask()]);
+
+        const data = await (await claim({ executor: 'cloud' })).json();
+        expect(data.workers).toHaveLength(1);
+        expect(data.workers[0].task.backend).toBe('claude');
+        expect(data.workers[0].codexCredential).toBeUndefined();
+      });
+    });
+  });
+
   describe('team provider toggle (reversible mask)', () => {
     function apiAccount() {
       return { id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'api' as const, teamId: 'team-1' };
@@ -1361,10 +1598,10 @@ describe('POST /api/workers/claim', () => {
       mockAuthenticateApiKey.mockResolvedValue(apiAccount());
       mockTasksFindMany.mockResolvedValueOnce([task('claude')]);
       mockTeamsFindFirst.mockResolvedValue({ enabledBackends: ['codex'] }); // Claude disabled
-      mockHasCodexCredential.mockResolvedValue(true);
+      // The runner's own Codex auth: no server credential delivery needed.
       setupClaim();
 
-      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', capabilities: ['backend:codex', 'CODEX_HOME'] } }));
       const data = await res.json();
       expect(res.status).toBe(200);
       expect(data.workers.length).toBe(1);
@@ -6415,7 +6652,7 @@ describe('entity catalog injection at claim time', () => {
 
         const res = await POST(createMockRequest({
           headers: { Authorization: 'Bearer bld_test' },
-          body: { runner: 'test-runner' },
+          body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
         }));
 
         const data = await res.json();
@@ -8645,14 +8882,21 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   /** The response echoes each task's workspace.gitConfig; drop it so only behaviour is compared. */
   const withoutGitConfig = (r: { status: number; data: any }) => JSON.parse(JSON.stringify(r), (k, v) => (k === 'gitConfig' ? undefined : v));
 
-  it('off: absent and explicit \'off\' give deep-equal responses and touch no planner I/O', async () => {
-    const absent = await claim(overlappingTrio(null));
+  it('off: an explicit \'off\' touches no planner I/O', async () => {
     const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
-    expect(withoutGitConfig(off)).toEqual(withoutGitConfig(absent));
     // The legacy walk does not see in-batch overlap: all three are claimed.
-    expect(pickedIds(absent.data)).toEqual(['a', 'b', 'c']);
+    expect(pickedIds(off.data)).toEqual(['a', 'b', 'c']);
     expect(mockLoadPlannerSignals).not.toHaveBeenCalled();
     expect(mockFireClaimPlanRecord).not.toHaveBeenCalled();
+    expect(mockFireOrderedBehind).not.toHaveBeenCalled();
+  });
+
+  it('absent: no mode set records, with the same response as an explicit \'off\'', async () => {
+    const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
+    const absent = await claim(overlappingTrio(null));
+    expect(withoutGitConfig(absent)).toEqual(withoutGitConfig(off));
+    expect(mockFireClaimPlanRecord).toHaveBeenCalledTimes(1);
+    expect(mockFireClaimPlanRecord.mock.calls[0][0].mode).toBe('record');
     expect(mockFireOrderedBehind).not.toHaveBeenCalled();
   });
 
@@ -8667,7 +8911,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   });
 
   it('record: same picks as off, and the plan is recorded beside them', async () => {
-    const off = await claim(overlappingTrio(null));
+    const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
     const record = await claim(overlappingTrio({ claimPlanner: 'record' }));
     expect(pickedIds(record.data)).toEqual(pickedIds(off.data));
     expect(mockLoadPlannerSignals).toHaveBeenCalledTimes(1);

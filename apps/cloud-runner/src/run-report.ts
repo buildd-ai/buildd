@@ -510,6 +510,23 @@ export function applyEgressEvent(counters: EgressCounters, e: EgressEvent): void
  * end (or failed). A body the container abandons is not reported, so
  * responseBytes is a lower bound. Status and headers are kept.
  */
+/**
+ * Count a response's bytes without putting large bodies through JavaScript.
+ * Model responses (small, and their byte count matters) go through
+ * countResponseBytes. GitHub and passthrough bodies are returned untouched so
+ * they stream natively: a JS pass-through costs Worker CPU per chunk, and a
+ * ~1.5 GB git pack exceeded the invocation's CPU limit, cutting the clone a
+ * few KB before its end. Their bytes come from `content-length` when the
+ * upstream sends one (a chunked git pack sends none, so it is not counted;
+ * `responseBytes` stays a lower bound).
+ */
+export function measureResponse(res: Response, cls: EgressClass, onBytes: (bytes: number) => void): Response {
+  if (cls === 'model') return countResponseBytes(res, onBytes);
+  const len = Number(res.headers.get('content-length'));
+  if (res.headers.has('content-length') && Number.isSafeInteger(len) && len >= 0) onBytes(len);
+  return res;
+}
+
 export function countResponseBytes(res: Response, onDone: (bytes: number) => void): Response {
   if (!res.body) {
     onDone(0);

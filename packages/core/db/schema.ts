@@ -26,6 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
+import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -81,10 +82,10 @@ export const teams = pgTable('teams', {
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
   // The `opt_in` decision capabilities this team turned on (e.g.
-  // 'task_role_shadow'). NULL or absent = off; there is no default, so adding
-  // an opt_in capability never switches it on for anyone. See
-  // packages/core/inference-policy.ts.
-  enabledDecisionShadows: text('enabled_decision_shadows').array(),
+  // 'task_role_shadow'). NULL = off. A new team starts with every one
+  // (insert-time default, no DDL); an opt_in capability added later is not
+  // switched on for existing teams. See packages/core/inference-policy.ts.
+  enabledDecisionShadows: text('enabled_decision_shadows').array().$defaultFn(() => [...DEFAULT_ENABLED_DECISION_SHADOWS]),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -342,8 +343,8 @@ export interface WorkspaceGitConfig {
   criteriaGrader?: 'auto' | 'api' | 'runner';
 
   // Claim-time batch planner (packages/core/claim-planner.ts) in the claim
-  // route: 'off' (absent) = the legacy first-eligible walk, untouched;
-  // 'record' = plan beside the legacy picks and write both to the gate ledger;
+  // route: 'off' = the legacy first-eligible walk, untouched; 'record' (the
+  // default when absent) = plan beside the legacy picks and write both to the gate ledger;
   // 'apply' = claim in plan order. Read only through resolveClaimPlannerConfig()
   // (apps/web/src/app/api/workers/claim/claim-plan-input.ts).
   claimPlanner?: 'off' | 'record' | 'apply';

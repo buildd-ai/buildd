@@ -10,7 +10,8 @@
  *   check): low cost, no toggle. They run whenever a key resolves.
  * - **opt_in** decisions (task role routing, mission goal-criteria quality, the
  *   conflict-aware orchestration decisions): off unless the team row lists the
- *   capability in `teams.enabledDecisionShadows`. Since the 2026-10-03 owner
+ *   capability in `teams.enabledDecisionShadows`. A new team starts with every
+ *   one listed (`DEFAULT_ENABLED_DECISION_SHADOWS`). Since the 2026-10-03 owner
  *   decision, a new one ships applying (gated by its own rails and confidence
  *   threshold) as soon as it is turned on — "shadow" in some of these names is
  *   a holdover, not a separate logged-only phase a team must graduate out of.
@@ -279,6 +280,15 @@ function storedMode(modes: unknown, feature: ServerFeature): FeatureMode | null 
 
 /** The opt-in capabilities. Only these may be listed in `teams.enabledDecisionShadows`. */
 export const OPT_IN_CAPABILITIES = ALL_INFERENCE_CAPABILITIES.filter(c => INFERENCE_CAPABILITIES[c].kind === 'opt_in');
+
+/**
+ * What a new team row starts with in `enabledDecisionShadows`: every opt-in
+ * decision (2026-10-04 owner decision, default on). Applied by the column's
+ * insert default in `db/schema.ts`, so every path that creates a team gets it.
+ * Existing teams keep what they stored, and an opt-in capability added later
+ * is not switched on for them.
+ */
+export const DEFAULT_ENABLED_DECISION_SHADOWS: readonly InferenceCapability[] = Object.freeze([...OPT_IN_CAPABILITIES]);
 
 /** The team columns the gate reads. */
 export interface InferenceGate {

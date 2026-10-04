@@ -15,8 +15,8 @@ export function chatKeyLine(
   if (key.kind === 'own') return { text: `${label(key.provider)} · your key`, action: null };
   if (key.kind === 'needs_own') return { text: 'Add your OpenRouter key', action: null };
   return ctx.isAdmin
-    ? { text: 'Not set up yet', action: { href: '/app/settings/providers', label: 'Set it up' } }
-    : { text: 'Not set up yet · ask an admin', action: null };
+    ? { text: 'Not set up', action: { href: '/app/settings/providers', label: 'Set it up' } }
+    : { text: 'Not set up · ask an admin', action: null };
 }
 
 /**

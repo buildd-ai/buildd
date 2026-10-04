@@ -47,6 +47,6 @@ describe('MergePolicyEditor — paths are detected, not typed', () => {
   });
 
   it('prompts a first scan when no policy is applied', () => {
-    expect(render({ tier: 'auto-threshold' }, null)).toContain('No risk-class policy applied yet');
+    expect(render({ tier: 'auto-threshold' }, null)).toContain('No risk-class policy');
   });
 });
