@@ -228,6 +228,8 @@ DELETE FROM oauth_clients;
 DELETE FROM system_cache;
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
+DELETE FROM task_dispatch_outbox;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.
 DELETE FROM notification_deliveries;
