@@ -32,7 +32,7 @@ import {
   type DecisionQuestion,
   type DecisionQuestions,
 } from '@builddai/ai-kit/decide';
-import { activePrompt, notePromptRejected, registerPrompt, resolvedPromptVersion, type ActivePrompt } from './prompts';
+import { activePrompt, notePromptRejected, promptShapeMismatch, registerPrompt, resolvedPromptVersion, type ActivePrompt } from './prompts';
 
 /** Why an override's questions do not fit the default's shape, or null when they do. */
 export function promptQuestionsMismatch(publicQuestions: DecisionQuestions, candidate: unknown): string | null {
@@ -175,4 +175,69 @@ export function promptedDecisionKind<K extends string, F, D extends string, Q ex
     promptFingerprint: { get: () => current().promptFingerprint, enumerable: true },
   });
   return Object.freeze(out);
+}
+
+/**
+ * For a call site that passes its questions straight to `decisionCall` (no
+ * `defineDecision`): the questions in effect for `id`, plus a prompt version
+ * naming them. An active row's body is a JSON `DecisionQuestions` object that
+ * must keep the default's question names, types and labels
+ * (`promptQuestionsMismatch`) and its full field shape (`promptShapeMismatch`);
+ * anything else is rejected, counted, and the public questions run.
+ */
+export function promptedQuestions<const Q extends DecisionQuestions>(
+  id: string,
+  publicQuestions: Q,
+  publicVersion: string,
+): { questions: Q; promptVersion: string } {
+  const row = activePrompt(id);
+  if (!row) return { questions: publicQuestions, promptVersion: publicVersion };
+  const cache = questionsCache.get(id);
+  const key = `${row.version}:${row.contentHash}`;
+  let value: DecisionQuestions | null;
+  if (cache && cache.key === key) {
+    value = cache.value;
+    if (!value) notePromptRejected(row, 'cached rejection');
+  } else {
+    value = null;
+    try {
+      const parsed: unknown = JSON.parse(row.body);
+      const mismatch = promptQuestionsMismatch(publicQuestions, parsed) ?? promptShapeMismatch(publicQuestions, parsed);
+      if (mismatch) notePromptRejected(row, mismatch);
+      else value = parsed as DecisionQuestions;
+    } catch {
+      notePromptRejected(row, 'body is not JSON');
+    }
+    questionsCache.set(id, { key, value });
+  }
+  if (!value) return { questions: publicQuestions, promptVersion: publicVersion };
+  return {
+    questions: value as Q,
+    promptVersion: resolvedPromptVersion(publicVersion, { source: 'active', version: row.version }),
+  };
+}
+
+const questionsCache = new Map<string, { key: string; value: DecisionQuestions | null }>();
+
+/** Forget parsed question overrides. For tests (`resetPrompts` clears the rows). */
+export function resetPromptedQuestionsCache(): void {
+  questionsCache.clear();
+}
+
+/** Register an id read with `promptedQuestions`; the seed applies the same two checks. */
+export function registerPromptedQuestions(id: string, publicQuestions: DecisionQuestions): void {
+  registerPrompt({
+    id,
+    format: 'json',
+    publicDefault: `${JSON.stringify(publicQuestions, null, 2)}\n`,
+    validate: body => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        return 'body is not JSON';
+      }
+      return promptQuestionsMismatch(publicQuestions, parsed) ?? promptShapeMismatch(publicQuestions, parsed);
+    },
+  });
 }

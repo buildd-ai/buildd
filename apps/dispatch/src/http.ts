@@ -17,6 +17,7 @@
  */
 
 import {
+  MAX_LOOKUP_IDS,
   MAX_PUBLISH_BATCH,
   envelopeProblem,
   parseKeyRing,
@@ -41,8 +42,9 @@ export interface QueueHandle {
 
 export type GetQueue = (scopeKey: string) => QueueHandle;
 
+export { MAX_LOOKUP_IDS };
+
 export const MAX_BODY_BYTES = 1024 * 1024;
-export const MAX_LOOKUP_IDS = 100;
 export const MAX_TARGET_OPTIONS_BYTES = 4096;
 const MAX_KEY_CHARS = 256;
 /** Target options are non-secret. Refuse keys that look like credentials. */

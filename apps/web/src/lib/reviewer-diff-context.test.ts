@@ -57,7 +57,16 @@ mock.module('@/lib/github', () => ({
   },
 }));
 
-import { buildReviewerContext } from './reviewer';
+import {
+  buildReviewerContext,
+  buildDeltaReviewerContext,
+  REVIEWER_CONTEXT_PROMPT_ID,
+  REVIEWER_CONTEXT_TEMPLATE,
+  DELTA_REVIEWER_CONTEXT_PROMPT_ID,
+  DELTA_REVIEWER_CONTEXT_TEMPLATE,
+} from './reviewer';
+import { installPrompts, resetPrompts, promptFallbackCounts, templatePlaceholders } from '@buildd/core/prompts';
+import { promptContentHash } from '@buildd/core/prompts-source';
 
 const HEAD = 'a'.repeat(40);
 const BASE = {
@@ -180,5 +189,59 @@ describe('buildReviewerContext — task artifacts (V6)', () => {
 
     expect(artifactsFindManyArgs).toHaveLength(0);
     expect(out).not.toContain('## Task Artifacts');
+  });
+});
+
+describe('buildReviewerContext — text from the prompts table', () => {
+  const row = (id: string, body: string, version = 1) => ({ id, version, body, contentHash: promptContentHash(body) });
+  const allPlaceholders = (template: string) => templatePlaceholders(template).map(p => `{{${p}}}`).join('\n');
+
+  it('an active row replaces the instructional text; the per-PR values still fill it', async () => {
+    resetPrompts();
+    installPrompts([row(REVIEWER_CONTEXT_PROMPT_ID, `# Private reviewer text\n${allPlaceholders(REVIEWER_CONTEXT_TEMPLATE)}`)]);
+    try {
+      const out = await buildReviewerContext({ ...BASE, baseRef: 'dev' });
+      expect(out.startsWith('# Private reviewer text')).toBe(true);
+      expect(out).not.toContain('# Reviewer Task');
+      expect(out).toContain('42');
+      expect(out).toContain('org/repo');
+      expect(out).toContain('Base branch: `dev`');
+    } finally {
+      resetPrompts();
+    }
+  });
+
+  it('a row that drops a placeholder is rejected, counted, and the public text runs', async () => {
+    resetPrompts();
+    const dropped = templatePlaceholders(REVIEWER_CONTEXT_TEMPLATE).filter(p => p !== 'diffRecipe').map(p => `{{${p}}}`).join('\n');
+    installPrompts([row(REVIEWER_CONTEXT_PROMPT_ID, `# Private reviewer text\n${dropped}`)]);
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      const out = await buildReviewerContext({ ...BASE, baseRef: 'dev' });
+      expect(out.startsWith('# Reviewer Task')).toBe(true);
+      expect(out).not.toContain('Private reviewer text');
+      expect(promptFallbackCounts()[REVIEWER_CONTEXT_PROMPT_ID].invalid).toBe(1);
+    } finally {
+      console.warn = warn;
+      resetPrompts();
+    }
+  });
+
+  it('the delta re-review resolves through its own id', async () => {
+    resetPrompts();
+    installPrompts([row(DELTA_REVIEWER_CONTEXT_PROMPT_ID, `# Private delta text\n${allPlaceholders(DELTA_REVIEWER_CONTEXT_TEMPLATE)}`)]);
+    try {
+      const out = await buildDeltaReviewerContext({
+        ...BASE,
+        deltaFiles: BASE.prFiles,
+        priorVerdict: { headSha: 'b'.repeat(40), verdict: 'approve', confidence: 0.9, summary: 'looked fine' } as any,
+      });
+      expect(out.startsWith('# Private delta text')).toBe(true);
+      expect(out).toContain('b'.repeat(40));
+      expect(out).toContain('looked fine');
+    } finally {
+      resetPrompts();
+    }
   });
 });

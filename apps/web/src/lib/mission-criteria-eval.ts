@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { resolvePrompt, resolvePromptTemplate } from '@buildd/core/prompts';
 import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { evaluateGoalCriteria, recalculateOverall, isDeliverableTask } from '@buildd/core/mission-helpers';
@@ -17,6 +18,7 @@ import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './miss
 import { applyReviewerFindings } from './criteria-reviewer-findings';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { openMissionIntegrationPr } from './mission-pr';
+import { registerTemplatePrompt, registerTextPrompt } from '@buildd/core/prompts';
 
 /**
  * Producer of goal-criteria verdicts.
@@ -110,6 +112,55 @@ function relativeAge(at: Date | null): string {
   return `${days}d ago`;
 }
 
+// ── Prompt text (versioned prompts table, public defaults) ───────────────────
+// An active prompts row (`@buildd/core/prompts`) may replace either text. The
+// user prompt is a template: the evidence is computed here and fills its
+// placeholders, which an active row must keep exactly.
+
+export const CRITERIA_EVAL_SYSTEM_PROMPT_ID = 'buildd.mission_criteria.system';
+export const CRITERIA_EVAL_USER_PROMPT_ID = 'buildd.mission_criteria.user';
+
+export const CRITERIA_EVAL_SYSTEM_PROMPT = `You are evaluating whether a mission's completion criteria are met based on available evidence.
+Be evidence-grounded: only return "pass" if evidence directly supports the criterion being satisfied.
+Return "UNVERIFIED" when evidence is ambiguous or absent — not "fail".
+Return "fail" only when evidence clearly contradicts the criterion.
+Evidence is listed newest-first with its age. Nothing marks an older item as superseded, so when two
+items address the same claim and disagree, trust the more recent one — an audit or gap report written
+before a later item resolved it is not still true just because it exists.
+Respond ONLY with a JSON object — no prose, no markdown fences.`;
+
+export const CRITERIA_EVAL_USER_TEMPLATE = `## Mission: {{missionTitle}}
+{{missionDescriptionLine}}
+
+## Criteria to evaluate ({{criteriaCount}}):
+{{criteriaList}}
+
+## Evidence (newest first)
+
+### Completed tasks ({{taskCount}}):
+{{taskEvidence}}
+
+### Artifacts ({{artifactCount}}):
+{{artifactEvidence}}
+
+{{noEvidenceLine}}
+## Instructions
+For each criterion above, determine whether the evidence shows it is met, not met, or unverifiable.
+Cite the specific evidence item (use the [task:XXXXXXXX] or [artifact:XXXXXXXX] ref from above).
+When evidence conflicts, prefer the more recent item — check the age shown next to each one.
+
+Respond with exactly this JSON shape:
+{
+  "verdicts": [
+    {
+      "index": <criterion index number>,
+      "verdict": "pass" | "fail" | "UNVERIFIED",
+      "evidence": "<one sentence citing specific evidence, or 'No relevant evidence found'>",
+      "evidenceRef": { "type": "artifact" | "task", "id": "<full UUID>", "title": "<title>" } | null
+    }
+  ]
+}`;
+
 async function judgeWithLLM(
   inputs: LLMCriterionInput[],
   missionTitle: string,
@@ -131,46 +182,19 @@ async function judgeWithLLM(
   const criteriaList = inputs.map((c, i) => `${i + 1}. index=${c.index}: ${c.text}`).join('\n');
   const hasEvidence = completedTasks.length > 0 || evidenceArtifacts.length > 0;
 
-  const systemPrompt = `You are evaluating whether a mission's completion criteria are met based on available evidence.
-Be evidence-grounded: only return "pass" if evidence directly supports the criterion being satisfied.
-Return "UNVERIFIED" when evidence is ambiguous or absent — not "fail".
-Return "fail" only when evidence clearly contradicts the criterion.
-Evidence is listed newest-first with its age. Nothing marks an older item as superseded, so when two
-items address the same claim and disagree, trust the more recent one — an audit or gap report written
-before a later item resolved it is not still true just because it exists.
-Respond ONLY with a JSON object — no prose, no markdown fences.`;
+  const systemPrompt = resolvePrompt(CRITERIA_EVAL_SYSTEM_PROMPT_ID, CRITERIA_EVAL_SYSTEM_PROMPT);
 
-  const userPrompt = `## Mission: ${missionTitle}
-${missionDescription ? `Description: ${missionDescription}\n` : ''}
-
-## Criteria to evaluate (${inputs.length}):
-${criteriaList}
-
-## Evidence (newest first)
-
-### Completed tasks (${completedTasks.length}):
-${taskEvidence || '(none)'}
-
-### Artifacts (${evidenceArtifacts.length}):
-${artifactEvidence || '(none)'}
-
-${!hasEvidence ? '⚠️  No evidence available. Return UNVERIFIED for all criteria.\n' : ''}
-## Instructions
-For each criterion above, determine whether the evidence shows it is met, not met, or unverifiable.
-Cite the specific evidence item (use the [task:XXXXXXXX] or [artifact:XXXXXXXX] ref from above).
-When evidence conflicts, prefer the more recent item — check the age shown next to each one.
-
-Respond with exactly this JSON shape:
-{
-  "verdicts": [
-    {
-      "index": <criterion index number>,
-      "verdict": "pass" | "fail" | "UNVERIFIED",
-      "evidence": "<one sentence citing specific evidence, or 'No relevant evidence found'>",
-      "evidenceRef": { "type": "artifact" | "task", "id": "<full UUID>", "title": "<title>" } | null
-    }
-  ]
-}`;
+  const userPrompt = resolvePromptTemplate(CRITERIA_EVAL_USER_PROMPT_ID, CRITERIA_EVAL_USER_TEMPLATE, {
+    missionTitle,
+    missionDescriptionLine: missionDescription ? `Description: ${missionDescription}\n` : '',
+    criteriaCount: inputs.length,
+    criteriaList,
+    taskCount: completedTasks.length,
+    taskEvidence: taskEvidence || '(none)',
+    artifactCount: evidenceArtifacts.length,
+    artifactEvidence: artifactEvidence || '(none)',
+    noEvidenceLine: !hasEvidence ? '⚠️  No evidence available. Return UNVERIFIED for all criteria.\n' : '',
+  });
 
   const result = await inferenceCall<LLMCriterionVerdict[]>({
     capability: 'criteria_grading',
@@ -734,3 +758,7 @@ export async function ensureCriteriaVerdict(
     allowWorkerDispatch: true,
   });
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTextPrompt(CRITERIA_EVAL_SYSTEM_PROMPT_ID, CRITERIA_EVAL_SYSTEM_PROMPT);
+registerTemplatePrompt(CRITERIA_EVAL_USER_PROMPT_ID, CRITERIA_EVAL_USER_TEMPLATE);

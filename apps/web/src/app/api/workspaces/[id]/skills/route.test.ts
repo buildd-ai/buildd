@@ -33,6 +33,14 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+// Bulk-read limiter (lib/body-read-monitor.ts): allow unless a test says otherwise.
+let bodyReadAllowed = true;
+const mockNoteBodyReads = mock(async (_caller: string, _ids: string[], _surface: string) => ({ allowed: bodyReadAllowed, distinct: 1 }));
+mock.module('@/lib/body-read-monitor', () => ({
+  noteBodyReads: mockNoteBodyReads,
+  bodyReadRefused: () => Response.json({ error: 'Too many distinct role or skill bodies read in a short window. Try again later.' }, { status: 429 }),
+}));
+
 // Mock team-access
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
@@ -201,6 +209,28 @@ describe('GET /api/workspaces/[id]/skills', () => {
     const data = await response.json();
     expect(data.skills).toHaveLength(2);
     expect(data.skills[0].id).toBe('skill-1');
+  });
+
+  it('counts an API key\'s body reads and answers 429 once the bulk-read limiter refuses', async () => {
+    const mockSkills = [
+      { id: 'skill-1', workspaceId: 'ws-1', name: 'Skill 1', slug: 'skill-1', enabled: true },
+      { id: 'skill-2', workspaceId: 'ws-1', name: 'Skill 2', slug: 'skill-2', enabled: true },
+    ];
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockNoteBodyReads.mockClear();
+    setupSkillsSelect(mockSkills);
+    bodyReadAllowed = false;
+    try {
+      const response = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_admin_xxx' } }), { params: Promise.resolve({ id: 'ws-1' }) });
+      expect(response.status).toBe(429);
+      expect(mockNoteBodyReads).toHaveBeenCalledTimes(1);
+      expect(mockNoteBodyReads.mock.calls[0][0]).toBe(adminAccount.id);
+      expect(mockNoteBodyReads.mock.calls[0][1]).toEqual(['skill-1', 'skill-2']);
+    } finally {
+      bodyReadAllowed = true;
+    }
   });
 
   it('returns skills list for OAuth JWT (admin-level token)', async () => {

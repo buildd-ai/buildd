@@ -14,11 +14,15 @@ public default, and a self-hosted deployment works exactly as the code reads.
 - Rows are read into an in-process snapshot at boot and refreshed in the
   background. No call reads the database, and a missing table, row or database
   never fails a call.
-- A decision override must keep the default's shape (same question names and
-  types, same choice labels, same score level count). One that does not is
-  rejected at resolve time and the default runs.
-- Every prompt id the code reads is registered (`registerPrompt`); the list is
-  `apps/web/src/lib/prompt-catalog.ts`.
+- An override must keep the default's shape. For a decision that means the same
+  question names and types, the same choice labels and the same score level
+  count. A template must use the same `{{placeholders}}`, and a structured
+  (JSON) prompt must keep the same keys and leaf types. An override that does
+  not fit is rejected at resolve time and the default runs.
+- Every prompt id the code reads is registered next to its default
+  (`registerTextPrompt`, `registerTemplatePrompt`, `registerValuePrompt`,
+  `registerPromptedQuestions`, or implicitly by `definePromptedDecision`). The
+  list is `apps/web/src/lib/prompt-catalog.ts`.
 
 ## Bringing your own prompts
 
@@ -28,8 +32,8 @@ public default, and a self-hosted deployment works exactly as the code reads.
    bun run apps/web/scripts/export-prompt-defaults.ts --out ../my-prompts
    ```
 
-   This writes `prompts/<id>.json` (decision questions) or `prompts/<id>.md`
-   (text) and a `manifest.json`: `{ "prompts": [{ "id", "version", "file", "sha256" }] }`.
+   This writes `prompts/<id>.json` (decision questions, structured prompts) or
+   `prompts/<id>.md` (text and templates) and a `manifest.json`: `{ "prompts": [{ "id", "version", "file", "sha256" }] }`.
    `sha256` is the hash of the file's exact bytes; `version` is the row version
    and is immutable, so a changed file needs a new version.
 

@@ -8,12 +8,14 @@
  */
 import { createHash } from 'node:crypto';
 import type { ChoiceAnswer, ChoiceQuestion } from '@buildd/core/decision-client';
+import { renderTemplate, resolvePromptValue } from '@buildd/core/prompts';
 import type { Candidate, WindowTotals } from './skeleton';
 import {
   CANDIDATE_KINDS, CAUSE_LABELS, CHAT_RETRO_VERSION, EVIDENCE_KEYS, LESSON_TEXT_COLUMNS,
   type CauseLabel, type FixClassLabel, type IntentLabel, type RetroStatus,
   type SatisfiedLabel, type SkipReason, type TurnLabel,
 } from './vocab';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const GATES = { satisfied: 0.8, intent: 0.7, turn: 0.8, fixClass: 0.7 } as const;
 
@@ -72,18 +74,35 @@ const FIX_CLASS_Q: ChoiceQuestion<FixClassLabel> = {
 
 export type RetroQuestions = Record<string, ChoiceQuestion<string>>;
 
+/**
+ * The retro's question text, resolved through the versioned prompts table
+ * (`@buildd/core/prompts`): an active row's body is JSON of exactly this shape
+ * (same labels, the turn question keeping its placeholders), else this public
+ * default runs.
+ */
+export const CHAT_RETRO_PROMPT_ID = 'buildd.chat_retro.questions';
+
+export const CHAT_RETRO_PROMPT_DEFAULT = {
+  satisfied: SATISFIED_Q,
+  intent: INTENT_Q,
+  turnQuestion: 'Was flagged candidate turn_{{id}} ({{kind}} at turn #{{turn}}) needed, or wasted, and why?',
+  turnCriteria: TURN_CRITERIA,
+  fixClass: FIX_CLASS_Q,
+};
+
 /** The questions for one window. `stopped` candidates are labelled by code and not asked. */
 export function buildQuestions(candidates: Candidate[]): RetroQuestions {
-  const q: RetroQuestions = { satisfied: SATISFIED_Q, intent: INTENT_Q };
+  const text = resolvePromptValue(CHAT_RETRO_PROMPT_ID, CHAT_RETRO_PROMPT_DEFAULT);
+  const q: RetroQuestions = { satisfied: text.satisfied, intent: text.intent };
   for (const c of candidates) {
     if (c.kind === 'stopped') continue;
     q[`turn_${c.id}`] = {
       type: 'choice',
-      instructions: { question: `Was flagged candidate turn_${c.id} (${c.kind} at turn #${c.turn}) needed, or wasted, and why?` },
-      criteria: TURN_CRITERIA,
+      instructions: { question: renderTemplate(text.turnQuestion, { id: c.id, kind: c.kind, turn: c.turn }) },
+      criteria: text.turnCriteria,
     };
   }
-  if (candidates.length > 0) q.fix_class = FIX_CLASS_Q;
+  if (candidates.length > 0) q.fix_class = text.fixClass;
   return q;
 }
 
@@ -276,3 +295,6 @@ export function assertContentFree(row: LessonRow): void {
     if (e.conf !== null && typeof e.conf !== 'number') throw new Error('chat_retros.evidence: non-numeric confidence');
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(CHAT_RETRO_PROMPT_ID, CHAT_RETRO_PROMPT_DEFAULT);

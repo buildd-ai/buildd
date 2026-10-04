@@ -7,6 +7,22 @@
  */
 import '@buildd/core/prompt-catalog';
 import './chat/instructions';
+import './chat/routing';
+import './chat-retro/lesson';
+import './default-roles';
+import './endpoint-model-suggest';
+import './goal-criteria-quality-decision';
+import './goal-criteria-rubric';
+import './heartbeat-helpers';
+import './heartbeat-triage';
+import './mission-criteria-eval';
+import './mission-criteria-worker-eval';
+import './mission-prompts';
+import './reviewer';
+import './strand-choice-decision';
+import './surface-audit-advice';
+import './task-category-decision';
+import './task-role-decision';
 import { listRegisteredPrompts, type RegisteredPrompt } from '@buildd/core/prompts';
 
 export function listPromptCatalog(): RegisteredPrompt[] {

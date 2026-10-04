@@ -223,3 +223,28 @@ describe('production fallback log', () => {
     expect(lines).toEqual([]);
   });
 });
+
+describe('registration helpers mirror their read path', () => {
+  it('a template must keep its placeholders; a value must keep its shape', async () => {
+    const { registerTemplatePrompt, registerValuePrompt, registerTextPrompt, listRegisteredPrompts } = await import('../prompts');
+    registerTemplatePrompt('test.tpl', 'Hello {{name}}');
+    registerValuePrompt('test.val', { a: 'x', b: ['y'] });
+    registerTextPrompt('test.txt', 'plain');
+    const get = (id: string) => listRegisteredPrompts().find(p => p.id === id)!;
+    expect(get('test.tpl').validate('Hi {{name}}!')).toBeNull();
+    expect(get('test.tpl').validate('Hi there')).toContain('missing placeholder');
+    expect(get('test.val').validate('{"a":"z","b":["q","r"]}')).toBeNull();
+    expect(get('test.val').validate('{"a":"z"}')).toContain('keys differ');
+    expect(get('test.val').publicDefault).toBe('{\n  "a": "x",\n  "b": [\n    "y"\n  ]\n}\n');
+    expect(get('test.txt').validate('  ')).toBe('empty body');
+  });
+
+  it('promptedQuestions registration applies both question checks', async () => {
+    const { registerPromptedQuestions } = await import('../prompted-decision');
+    const { listRegisteredPrompts } = await import('../prompts');
+    registerPromptedQuestions('test.q', { pick: choice('Pick one', { a: 'A', b: 'B' }) });
+    const reg = listRegisteredPrompts().find(p => p.id === 'test.q')!;
+    expect(reg.validate(reg.publicDefault)).toBeNull();
+    expect(reg.validate(JSON.stringify({ pick: choice('Pick', { a: 'A', c: 'C' }) }))).toContain('labels');
+  });
+});

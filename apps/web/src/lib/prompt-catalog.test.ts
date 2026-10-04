@@ -10,7 +10,14 @@ const ROOT = join(import.meta.dir, '../../../..');
 // The modules that define the registering helpers themselves; they register no id of their own.
 const HELPERS = new Set(['packages/core/prompts.ts', 'packages/core/prompted-decision.ts', 'packages/core/decision-kinds.ts']);
 
-const CALL = /(^|[^.\w])(definePromptedDecision|defineBuilddDecisionKind|promptedDecisionKind|resolvePrompt|resolvePromptEntry|activePrompt|registerPrompt)\(/m;
+const RESOLVE = /(^|[^.\w])(resolvePrompt|resolvePromptEntry|resolvePromptTemplate|resolvePromptTemplateEntry|resolvePromptValue|resolvePromptValueEntry|promptedQuestions|activePrompt)\(/m;
+const REGISTER = /(^|[^.\w])(definePromptedDecision|defineBuilddDecisionKind|promptedDecisionKind|registerPrompt|registerTextPrompt|registerTemplatePrompt|registerValuePrompt|registerPromptedQuestions)\(/m;
+const CALL = new RegExp(`${RESOLVE.source}|${REGISTER.source}`, 'm');
+
+/** A module that resolves ids another module registers (it imports the ids and defaults from there). */
+const REGISTERED_ELSEWHERE: Record<string, string> = {
+  'apps/web/src/lib/mission-context.ts': 'apps/web/src/lib/mission-prompts.ts',
+};
 const IMPORTS_PROMPTS = /from ['"](@buildd\/core\/(prompts|prompted-decision|decision-kinds)|\.\/(prompts|prompted-decision|decision-kinds))['"]/;
 
 /** Every source file that resolves or registers a prompt id. */
@@ -26,6 +33,23 @@ function promptBearingFiles(): string[] {
 }
 
 describe('prompt catalog', () => {
+  it('every module that resolves a prompt registers it (or names the module that does)', () => {
+    const unregistered = promptBearingFiles().filter(f => {
+      const src = readFileSync(join(ROOT, f), 'utf8');
+      if (!RESOLVE.test(src) || REGISTER.test(src)) return false;
+      const owner = REGISTERED_ELSEWHERE[f];
+      return !(owner && REGISTER.test(readFileSync(join(ROOT, owner), 'utf8')));
+    });
+    expect(unregistered).toEqual([]);
+  });
+
+  it('every registered public default passes its own check', () => {
+    const bad = listPromptCatalog()
+      .map(p => [p.id, p.validate(p.publicDefault)] as const)
+      .filter(([, why]) => why !== null);
+    expect(bad).toEqual([]);
+  });
+
   it('names the chat prompt and the core decisions', () => {
     const ids = listPromptCatalog().map(p => p.id);
     expect(ids).toContain('buildd.chat_instructions');
