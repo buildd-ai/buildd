@@ -141,30 +141,26 @@ ${ON_CONFLICT_COALESCE}`;
 }
 
 /**
- * Raw SQL text for a data-modifying CTE that wakes every *pending* task in a
- * sibling CTE. `source` must expose `waiting_task_id`. Text, not a fragment,
- * because the path-claim release statements are already one `sql` template
- * and this is spliced inside them; the cause is from the closed vocabulary, so
- * nothing caller-controlled reaches the text.
+ * A data-modifying CTE that wakes every *pending* task in a sibling CTE,
+ * spliced into the statement that makes them runnable (the path-claim release
+ * statements). `source` must expose `waiting_task_id`; both names are quoted
+ * identifiers and the cause is a bound parameter.
  *
  *   rel AS (...), woken AS (... RETURNING w.waiting_task_id),
  *   ${outboxInsertSelectSql('woken', 'path_claim.released')}
  */
 export function outboxInsertSelectSql(source: string, cause: DispatchCause, cteName = 'wake'): SQL {
-  if (!/^[a-z_][a-z0-9_]*$/.test(source) || !/^[a-z_][a-z0-9_]*$/.test(cteName)) {
-    throw new Error(`outboxInsertSelectSql: bad identifier ${source}/${cteName}`);
-  }
   if (!isDispatchCause(cause)) throw new Error(`outboxInsertSelectSql: unknown cause ${cause}`);
-  return sql.raw(`${cteName} AS (
+  return sql`${sql.identifier(cteName)} AS (
   INSERT INTO task_dispatch_outbox (workspace_id, task_id, cause, causes, dedupe_key)
-  SELECT DISTINCT t.workspace_id, t.id, '${cause}', jsonb_build_array('${cause}'), 'now'
-  FROM ${source} s JOIN tasks t ON t.id = s.waiting_task_id
+  SELECT DISTINCT t.workspace_id, t.id, ${cause}::text, jsonb_build_array(${cause}::text), 'now'
+  FROM ${sql.identifier(source)} s JOIN tasks t ON t.id = s.waiting_task_id
   WHERE t.status = 'pending'
   ON CONFLICT (task_id, dedupe_key) WHERE status = 'pending'
   DO UPDATE SET causes = task_dispatch_outbox.causes || jsonb_build_array(EXCLUDED.cause),
     not_before = LEAST(task_dispatch_outbox.not_before, EXCLUDED.not_before), updated_at = now()
   RETURNING task_id
-)`);
+)`;
 }
 
 /**

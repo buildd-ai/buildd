@@ -10,6 +10,44 @@ related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner
 keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask]
 verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts]
 supersedes: []
+assertions:
+  - id: wake-task-symbol
+    type: symbol
+    name: wakeTask
+    path: apps/web/src/lib/dispatch-authority.ts
+  - id: deliver-task-dispatch-symbol
+    type: symbol
+    name: deliverTaskDispatch
+    path: apps/web/src/lib/dispatch-authority.ts
+  - id: adapter-chains-symbol
+    type: symbol
+    name: ADAPTER_CHAINS
+    path: apps/web/src/lib/dispatch-adapters.ts
+  - id: enqueue-dispatch-sql-symbol
+    type: symbol
+    name: enqueueDispatchSql
+    path: packages/core/dispatch-outbox.ts
+  - id: with-dispatch-hint-symbol
+    type: symbol
+    name: withDispatchHint
+    path: packages/core/dispatch-outbox.ts
+  - id: claim-deferral-waiters-symbol
+    type: symbol
+    name: registerClaimDeferralWaiters
+    path: packages/core/path-claim.ts
+  - id: ready-dependents-symbol
+    type: symbol
+    name: enqueueReadyDependentsSql
+    path: packages/core/dispatch-dependents.ts
+  - id: reconciliation-disabled-tests
+    type: test_file
+    path: apps/web/tests/db/reconciliation-disabled.test.ts
+  - id: dispatch-outbox-db-tests
+    type: test_file
+    path: apps/web/tests/db/dispatch-outbox.test.ts
+  - id: dispatch-guard-tests
+    type: test_file
+    path: scripts/dispatch-authority-guard.test.ts
 ---
 # Task Dispatch Authority
 

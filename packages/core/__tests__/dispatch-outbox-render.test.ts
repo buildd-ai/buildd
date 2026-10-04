@@ -35,14 +35,15 @@ describe('enqueueDispatchSql', () => {
 describe('outboxInsertSelectSql', () => {
   test('renders a CTE that only wakes pending tasks from the source', () => {
     const { sql, params } = render(outboxInsertSelectSql('woken', 'path_claim.released'));
-    expect(params).toHaveLength(0);
-    expect(sql).toMatch(/^wake AS \(/);
-    expect(sql).toContain('FROM woken s JOIN tasks t ON t.id = s.waiting_task_id');
+    expect(params).toEqual(['path_claim.released', 'path_claim.released']);
+    expect(sql).toMatch(/^"wake" AS \(/);
+    expect(sql).toContain('FROM "woken" s JOIN tasks t ON t.id = s.waiting_task_id');
     expect(sql).toContain("WHERE t.status = 'pending'");
   });
 
-  test('refuses anything that is not a plain identifier or a known cause', () => {
-    expect(() => outboxInsertSelectSql('woken; DROP TABLE tasks', 'path_claim.released')).toThrow();
+  test('quotes the CTE names and refuses an unknown cause', () => {
+    const { sql } = render(outboxInsertSelectSql('woken; DROP TABLE tasks', 'path_claim.released'));
+    expect(sql).toContain('FROM "woken; DROP TABLE tasks" s');
     expect(() => outboxInsertSelectSql('woken', "x'); --" as never)).toThrow();
   });
 });
