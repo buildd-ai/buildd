@@ -18,10 +18,12 @@ import { db } from '@buildd/core/db';
 import { tasks, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import { inArray } from 'drizzle-orm';
 import {
+  MAX_LOOKUP_IDS,
   MAX_PUBLISH_BATCH,
   parseKeyRing,
   signingKey,
   signRequest,
+  type IntentsLookupResponse,
   type PublishRequest,
   type PublishResponse,
   type PublishResult,
@@ -33,10 +35,12 @@ import {
   ackHandoff,
   ackMerged,
   selectForPublish,
+  selectForRepublish,
   PUBLISH_SWEEP_LIMIT,
   type Ack,
   type MergedAck,
   type PublishableRow,
+  type RepublishRow,
 } from '@buildd/core/dispatch-handoff';
 import { routeForCause, targetLocalUiUrlOf, webhookWants, type DispatchContext } from '@/lib/dispatch-adapters';
 import { isGitHubAppConfigured } from '@/lib/github';
@@ -44,6 +48,8 @@ import type { DispatchWorkspace } from '@/lib/task-dispatch-delivery';
 
 /** The publish is awaited this long; a slower Worker costs one sweep, not the request. */
 export const PUBLISH_TIMEOUT_MS = 2_000;
+/** The floor's lookups and re-publishes: no request is waiting, but the drain after them is. */
+export const FLOOR_CALL_TIMEOUT_MS = 5_000;
 
 export interface DispatchTransportConfig {
   url: string;
@@ -147,12 +153,55 @@ async function loadRouteContext(taskIds: string[]): Promise<Map<string, RouteCon
 export interface PublishDeps {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   selectForPublish: typeof selectForPublish;
+  selectForRepublish: typeof selectForRepublish;
   ackHandoff: typeof ackHandoff;
   ackMerged: typeof ackMerged;
   loadRouteContext: (taskIds: string[]) => Promise<Map<string, RouteContext>>;
 }
 
-const DEFAULT_DEPS: PublishDeps = { fetch: (url, init) => fetch(url, init), selectForPublish, ackHandoff, ackMerged, loadRouteContext };
+const DEFAULT_DEPS: PublishDeps = {
+  fetch: (url, init) => fetch(url, init), selectForPublish, selectForRepublish, ackHandoff, ackMerged, loadRouteContext,
+};
+
+type Sendable = { row: Pick<PublishableRow, 'id' | 'taskId'>; envelope: ReturnType<typeof toEnvelope> };
+
+/** Envelopes for the rows that have a route; a row with none (non-work, or its task is gone) is left out. */
+async function envelopesFor<R extends PublishableRow | RepublishRow>(rows: readonly R[], d: PublishDeps): Promise<Array<{ row: R; envelope: ReturnType<typeof toEnvelope> }>> {
+  const ctx = await d.loadRouteContext([...new Set(rows.map(r => r.taskId))]);
+  const now = Date.now();
+  const out: Array<{ row: R; envelope: ReturnType<typeof toEnvelope> }> = [];
+  for (const row of rows) {
+    const c = ctx.get(row.taskId);
+    const route = c && routeFor(row as PublishableRow, c.task, c.workspace);
+    if (route) out.push({ row, envelope: toEnvelope(row, route, { now }) });
+  }
+  return out;
+}
+
+/** One signed `POST /v1/envelopes`. Throws on a transport error or a non-2xx (`http_<status>`). */
+async function postEnvelopes(config: DispatchTransportConfig, sendable: readonly Sendable[], d: PublishDeps, timeoutMs: number): Promise<PublishResult[]> {
+  const url = `${config.url}/v1/envelopes`;
+  const u = new URL(url);
+  const body = JSON.stringify({ envelopes: sendable.map(s => s.envelope) } satisfies PublishRequest);
+  const signed = await signRequest({ ...config.key, method: 'POST', path: u.pathname + u.search, body });
+  const res = await d.fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...signed },
+    body,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 200);
+    console.error(`[dispatch-transport] publish refused: HTTP ${res.status} ${detail}`);
+    throw new HttpStatusError(res.status);
+  }
+  const parsed = await res.json() as PublishResponse;
+  return Array.isArray(parsed?.results) ? parsed.results : [];
+}
+
+class HttpStatusError extends Error {
+  constructor(readonly status: number) { super(`http_${status}`); }
+}
 
 /**
  * Publish unacked rows to Dispatch and ack what it accepted. This task's rows
@@ -177,34 +226,17 @@ export async function publishPendingDispatches(
     const rows = await d.selectForPublish({ taskId: opts.taskId, limit });
     if (rows.length === 0) return { status: 'idle' };
 
-    const ctx = await d.loadRouteContext([...new Set(rows.map(r => r.taskId))]);
-    const now = Date.now();
-    const sendable: Array<{ row: PublishableRow; envelope: ReturnType<typeof toEnvelope> }> = [];
-    for (const row of rows) {
-      const c = ctx.get(row.taskId);
-      const route = c && routeFor(row, c.task, c.workspace);
-      if (route) sendable.push({ row, envelope: toEnvelope(row, route, { now }) });
-    }
+    const sendable = await envelopesFor(rows, d);
     if (sendable.length === 0) return { status: 'idle' };
     published = sendable.length;
 
-    const url = `${config.url}/v1/envelopes`;
-    const u = new URL(url);
-    const body = JSON.stringify({ envelopes: sendable.map(s => s.envelope) } satisfies PublishRequest);
-    const signed = await signRequest({ ...config.key, method: 'POST', path: u.pathname + u.search, body });
-    const res = await d.fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...signed },
-      body,
-      signal: AbortSignal.timeout(opts.timeoutMs ?? PUBLISH_TIMEOUT_MS),
-    });
-    if (!res.ok) {
-      const detail = (await res.text().catch(() => '')).slice(0, 200);
-      console.error(`[dispatch-transport] publish refused: HTTP ${res.status} ${detail}`);
-      return { status: 'failed', published, error: `http_${res.status}` };
+    let results: PublishResult[];
+    try {
+      results = await postEnvelopes(config, sendable, d, opts.timeoutMs ?? PUBLISH_TIMEOUT_MS);
+    } catch (err) {
+      if (err instanceof HttpStatusError) return { status: 'failed', published, error: err.message };
+      throw err;
     }
-    const parsed = await res.json() as PublishResponse;
-    const results: PublishResult[] = Array.isArray(parsed?.results) ? parsed.results : [];
 
     const modeById = new Map(sendable.map(s => [s.row.id, s.row.mode]));
     const acks: Ack[] = [];
@@ -230,4 +262,77 @@ export async function publishPendingDispatches(
     console.error(`[dispatch-transport] publish failed: ${msg}`);
     return { status: 'failed', published, error: msg.slice(0, 200) };
   }
+}
+
+// ── Repair floor: lookup and re-publish ──────────────────────────────────
+
+export interface RepublishOutcome {
+  /** Accepted or duplicate: the Worker holds the intent again. The row stays `handed_off`. */
+  republished: string[];
+  /** Folded into another queued intent: the floor projects it as a `merged` receipt. */
+  merged: Array<{ id: string; into: string }>;
+  /** The Worker refused the envelope, or the row has no route any more: the in-app drain takes it. */
+  rejected: string[];
+  /** The workspace is no longer on `dispatch` (rolled back): the in-app drain takes it. */
+  notDispatch?: string[];
+}
+
+/**
+ * Re-publish handed-off rows the Worker says it does not know. Same envelope
+ * as the first publish (a pure function of the row), same idempotent
+ * endpoint. Throws when the Worker is unreachable or answers non-2xx, so the
+ * floor can take the rows back instead; per-envelope outcomes are returned.
+ */
+export async function republishDispatches(ids: readonly string[], deps: Partial<PublishDeps> = {}): Promise<RepublishOutcome> {
+  const out: RepublishOutcome = { republished: [], merged: [], rejected: [], notDispatch: [] };
+  const config = dispatchTransportConfig();
+  if (!config) throw new Error('dispatch transport is not configured');
+  const d = { ...DEFAULT_DEPS, ...deps };
+  for (let i = 0; i < ids.length; i += MAX_PUBLISH_BATCH) {
+    const rows = await d.selectForRepublish(ids.slice(i, i + MAX_PUBLISH_BATCH));
+    const live = rows.filter(r => r.mode === 'dispatch');
+    out.notDispatch!.push(...rows.filter(r => r.mode !== 'dispatch').map(r => r.id));
+    if (live.length === 0) continue;
+    const sendable = await envelopesFor(live, d);
+    const routed = new Set(sendable.map(s => s.row.id));
+    out.rejected.push(...live.filter(r => !routed.has(r.id)).map(r => r.id));
+    if (sendable.length === 0) continue;
+    const results = await postEnvelopes(config, sendable, d, FLOOR_CALL_TIMEOUT_MS);
+    const answered = new Set<string>();
+    for (const r of results) {
+      if (!routed.has(r?.id)) continue;
+      answered.add(r.id);
+      if (r.status === 'accepted' || r.status === 'duplicate') out.republished.push(r.id);
+      else if (r.status === 'merged') out.merged.push({ id: r.id, into: r.into });
+      else {
+        out.rejected.push(r.id);
+        console.warn(`[dispatch-transport] re-published envelope ${r.id} rejected: ${r.why}`);
+      }
+    }
+    // An id the Worker did not answer stays handed off; the next floor asks again.
+  }
+  return out;
+}
+
+/**
+ * `GET /v1/intents?scope=&ids=` — which of these ids the Worker's queue for
+ * `scope` (`buildd:workspace:<uuid>`) knows, and in what state. Signed with
+ * the publish key over `pathname + search` exactly as sent. Throws on a
+ * transport error, a non-2xx or a malformed body: the floor treats all of
+ * them as "the Worker is unreachable".
+ */
+export async function lookupIntents(scope: string, ids: readonly string[], deps: Partial<Pick<PublishDeps, 'fetch'>> = {}): Promise<IntentsLookupResponse> {
+  const config = dispatchTransportConfig();
+  if (!config) throw new Error('dispatch transport is not configured');
+  if (ids.length === 0 || ids.length > MAX_LOOKUP_IDS) throw new Error(`lookup takes 1..${MAX_LOOKUP_IDS} ids`);
+  const fetchFn = deps.fetch ?? DEFAULT_DEPS.fetch;
+  const u = new URL(`${config.url}/v1/intents`);
+  u.search = new URLSearchParams({ scope, ids: ids.join(',') }).toString();
+  // Sign what is sent: the URL object is not re-encoded after this.
+  const signed = await signRequest({ ...config.key, method: 'GET', path: u.pathname + u.search, body: '' });
+  const res = await fetchFn(u.toString(), { method: 'GET', headers: signed, signal: AbortSignal.timeout(FLOOR_CALL_TIMEOUT_MS) });
+  if (!res.ok) throw new Error(`lookup_http_${res.status}`);
+  const body = await res.json().catch(() => null) as IntentsLookupResponse | null;
+  if (!body || !Array.isArray(body.known) || !Array.isArray(body.unknown)) throw new Error('lookup_bad_response');
+  return body;
 }

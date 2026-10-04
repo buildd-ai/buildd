@@ -2,13 +2,13 @@
 title: Task Dispatch Authority
 status: active
 owner: max
-last_verified: 2026-10-03
+last_verified: 2026-10-04
 summary: Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 domain: tasks
 surfaces: [apps/web/src/lib/dispatch-authority.ts, apps/web/src/lib/dispatch-adapters.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql]
 related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner-liveness, external-cron-triggers]
-keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask, dispatch transport, handed_off, dispatch_transport]
-verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts, apps/web/tests/db/dispatch-handoff.test.ts, apps/web/src/lib/dispatch-resolve.test.ts, apps/web/src/lib/dispatch-transport.test.ts, apps/web/src/app/api/dispatch/v1/resolve/route.test.ts, apps/web/src/app/api/dispatch/v1/receipts/route.test.ts, packages/core/__tests__/dispatch-envelope.test.ts, packages/core/__tests__/dispatch-handoff-render.test.ts]
+keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask, dispatch transport, handed_off, dispatch_transport, orphan reconcile, dispatchFallbackAt, callback rate limit]
+verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts, apps/web/tests/db/dispatch-handoff.test.ts, apps/web/src/lib/dispatch-resolve.test.ts, apps/web/src/lib/dispatch-transport.test.ts, apps/web/src/app/api/dispatch/v1/resolve/route.test.ts, apps/web/src/app/api/dispatch/v1/receipts/route.test.ts, packages/core/__tests__/dispatch-envelope.test.ts, packages/core/__tests__/dispatch-handoff-render.test.ts, apps/web/tests/db/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-callback-auth.test.ts]
 supersedes: []
 assertions:
   - id: wake-task-symbol
@@ -343,6 +343,41 @@ signed callbacks. Wire contract: `@buildd/dispatch-contract`.
   rows of `dispatch` workspaces with no ack for over a minute) and `orphaned`
   (`handed_off` rows an hour past due). `dispatchHistoryForTask` returns
   `transport` and `handed_off_at`.
+- **Orphan reconcile** (`reconcileOrphans`, the hourly floor, after the
+  publish sweep and before the drain). Candidates are `handed_off` dispatch
+  rows due over `ORPHAN_MIN_AGE_MS` (10 min) ago. The floor asks the Worker
+  `GET /v1/intents?scope=buildd:workspace:<id>&ids=…`, one call per workspace
+  and at most 100 ids, signed with the publish key over pathname plus search
+  as sent. Then, per row:
+  - **unknown** to the Worker: re-published with the same envelope. Publish
+    is idempotent on id, and the row stays `handed_off`. A `merged` answer
+    is projected as a `merged` receipt. A `rejected` one is taken back.
+  - **terminal** on the Worker (delivered, skipped, failed, merged,
+    expired): the receipt that was lost is rebuilt from the lookup's
+    `via`/`why`/`closedAt` (`terminalReceiptFor`) and applied through
+    `applyReceiptsSql`, so it stays idempotent.
+  - **queued/attempting:** left alone.
+  - **taken back** for the in-app drain (`fallBackToInAppSql`): when the
+    Worker is unreachable or answers non-2xx (that batch and every later one
+    in the run), when the transport is unconfigured, when the workspace is
+    no longer on `dispatch`, or when the row is past `ORPHAN_CEILING_MS`
+    (1 h) and the Worker has not closed it. The flip sets `status='pending'`,
+    `transport='in_app'`, `handed_off_at=NULL` and stamps
+    `metadata.dispatchFallbackAt`. A marked row is never published again,
+    the publish grace never holds it back, and it is not counted `unacked`.
+    So the floor's drain delivers it in the same tick.
+  - The run logs one `dispatch_reconcile` line (`checked`, `republished`,
+    `projected`, `fellBack`, `left`, `workerErrors`), and the same counts
+    appear in the floor result as `repair.reconciled`. The run has a 15 s
+    budget; whatever it does not reach waits for the next hour.
+- **Callback rate limit.** A verified callback is counted per key id across
+  all three routes: `CALLBACK_RATE_LIMIT`, 100 per 10 s fixed window (about
+  10 rps) in Redis. Over the limit the route answers 429 with `Retry-After`
+  before any database read. The Worker treats a non-2xx as retryable. A
+  resolve or relay attempt backs off and counts as an attempt. Receipts stay
+  queued in the Worker. The count runs after the signature check, so a
+  forger cannot spend a real key's budget. With Redis unconfigured or
+  erroring it fails open, with a warning at most once a minute.
 
 Invariants:
 
@@ -364,6 +399,15 @@ Invariants:
     minutes (Redis `SET NX`, failing open with a log when Redis is
     unavailable) and never writes one to the database or a log.
 19. **Receipts are idempotent.** Re-applying a batch changes nothing.
+20. **A handed-off row always reaches a terminal state.** The floor projects
+    the Worker's terminal state, re-publishes what it lost, or takes the row
+    back for the in-app drain. A row taken back is the drain's for good.
+    Taking a row back can duplicate a wake only for a Worker attempt already
+    past its resolve/relay callback. Later callbacks find the row out of
+    custody and skip, and late receipts change nothing. The claim route
+    keeps a duplicate wake to one run.
+21. **A callback key cannot keep Neon awake.** Over `CALLBACK_RATE_LIMIT`
+    per key id, a callback answers 429 without touching the database.
 
 Acceptance criteria (real SQL in `apps/web/tests/db/dispatch-handoff.test.ts`,
 policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
@@ -386,6 +430,24 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   are untouched.
 - AC-30: `dispatchOutboxHealth` counts `unacked` and `orphaned`, and
   `dispatchHistoryForTask` returns `transport` and `handed_off_at`.
+- AC-31: Orphan candidates are `handed_off` dispatch rows due over 10 min
+  ago, flagged past 1 h. Shadow, pending and closed rows are never
+  candidates (`apps/web/tests/db/dispatch-reconcile.test.ts`).
+- AC-32: GIVEN the Worker does not know a candidate THEN it is re-published,
+  or taken back past the ceiling. GIVEN it is terminal THEN its receipt is
+  projected, and re-applying it is a no-op. GIVEN it is queued or attempting
+  THEN it is left, or taken back past the ceiling. GIVEN the Worker is
+  unreachable THEN that batch and every later one are taken back with no
+  further calls (`apps/web/src/lib/dispatch-reconcile.test.ts`).
+- AC-33: A row taken back is claimed by the next drain even inside the
+  publish grace. It is never re-published, never counted `unacked`, out of
+  custody, and untouched by a late receipt. A row a receipt closed first is
+  not taken back.
+- AC-34: A verified callback over the per-key limit answers 429 with
+  `Retry-After` and projects nothing. A forged one is refused before the
+  counter. Redis unavailable fails open
+  (`apps/web/src/lib/dispatch-callback-auth.test.ts`). The Worker keeps
+  receipts queued on a 429 (`apps/dispatch/src/engine.test.ts`).
 
 ---
 
@@ -403,7 +465,9 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
 - Dispatch transport: `packages/core/dispatch-envelope.ts` (`toEnvelope`,
   target ids), `packages/core/dispatch-handoff.ts` (publish selection, acks,
   custody, `applyReceiptsSql`), `apps/web/src/lib/dispatch-transport.ts`
-  (`routeFor`, `publishPendingDispatches`),
+  (`routeFor`, `publishPendingDispatches`, `republishDispatches`,
+  `lookupIntents`), `apps/web/src/lib/dispatch-reconcile.ts`
+  (`reconcileOrphans`, `planReconcile`),
   `apps/web/src/lib/dispatch-resolve.ts` (`resolveDispatch`,
   `relayDispatch`), `apps/web/src/lib/dispatch-callback-auth.ts`, routes
   under `apps/web/src/app/api/dispatch/v1/`, wire contract

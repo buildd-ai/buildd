@@ -12,6 +12,12 @@
       "check": "legibility",
       "match": "^lit text set under 9px at \\d+px wide: \"lling\" [\\d.]+px$",
       "reason": "OCR fragment of \"billing-web\", which the spotlight's dimmed edge cuts; the full word is not small."
+    },
+    {
+      "clip": "^(full|captioned)$",
+      "check": "legibility",
+      "match": "^the lit target is set under 9px at \\d+px wide: (\"\\d\\d:\\d+\" [\\d.]+px(, )?)+$",
+      "reason": "The fleet lane's timeline axis labels (times like 08:47), which the shot lights with the whole fleet panel; they are axis ticks, not text the shot asks you to read."
     }
   ]
 }

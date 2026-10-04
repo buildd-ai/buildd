@@ -11,6 +11,7 @@ import { workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { resolveClaudeAiArtifactAccess, type ClaimTasksResponse, type SkillBundle } from '@buildd/shared';
 import { generateDownloadUrl, isStorageConfigured } from '@/lib/storage';
+import { noteBodyReads } from '@/lib/body-read-monitor';
 
 /** The claim-candidate rows these blocks look tasks up in. */
 type ClaimedTask = { id: string; workspaceId: string };
@@ -71,8 +72,10 @@ export async function attachSkillBundles(
     });
 
     const foundSlugs = new Set<string>();
+    const bodyIds: string[] = [];
     for (const ws of wsSkills) {
       foundSlugs.add(ws.slug);
+      bodyIds.push(ws.id);
       bundles.push(toSkillBundle(ws));
     }
 
@@ -87,12 +90,15 @@ export async function attachSkillBundles(
         ),
       });
       for (const ws of acctSkills) {
+        bodyIds.push(ws.id);
         bundles.push(toSkillBundle(ws));
       }
     }
 
     if (bundles.length > 0) {
       (cw as any).skillBundles = bundles;
+      // Counted for the bulk-read alert; a claim is never refused for it.
+      await noteBodyReads(accountId, bodyIds, 'claim_skills', { enforce: false });
     }
   }
 }
@@ -202,18 +208,26 @@ export async function attachRoleConfig(
     attachClaudeAiArtifacts(cw, (role?.metadata ?? null) as Record<string, unknown> | null, taskContext);
 
     // Persona first — independent of packaging. A blank body attaches nothing
-    // rather than an empty "## Role: X" section.
-    const personaContent = role?.content?.trim();
-    if (role && personaContent) {
+    // rather than an empty "## Role: X" section. An unedited seeded default
+    // role is delivered as the deployment currently resolves it (prompts
+    // table, then overrides, then public text), not as last written.
+    const delivered = (!role
+      ? ''
+      : role.source === 'system' && role.content
+        ? await (await import('@/lib/default-roles')).deliverSeededRoleContent(role)
+        : role.content) ?? '';
+    if (role && delivered.trim()) {
       (cw as any).roleInstructions = {
         slug: role.slug,
         name: role.name?.trim() || role.slug,
-        content: role.content,
+        content: delivered,
       };
+      await noteBodyReads(accountId, [role.id], 'claim_role', { enforce: false });
     }
 
     if (storageConfigured && role?.configStorageKey && role?.configHash) {
       const configUrl = await generateDownloadUrl(role.configStorageKey);
+      await noteBodyReads(accountId, [role.id], 'claim_role_bundle', { enforce: false });
       (cw as any).roleConfig = {
         slug: role.slug,
         configHash: role.configHash,

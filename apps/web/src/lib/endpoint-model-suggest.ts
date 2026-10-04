@@ -15,6 +15,7 @@
  * capability, a timeout, a low-confidence pick or a throw all mean "no
  * suggestion" for that row.
  */
+import { resolvedPromptVersion, resolvePromptValue, resolvePromptValueEntry } from '@buildd/core/prompts';
 import { suggestionCandidates, MAX_LISTED_MODELS } from '@buildd/core/agent-endpoint-models';
 import type {
   ChoiceQuestion,
@@ -23,6 +24,7 @@ import type {
   DecisionResult,
   decisionCall,
 } from '@buildd/core/decision-client';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const ENDPOINT_MODEL_SUGGEST_CAPABILITY = 'endpoint_model_match' as const;
 export const ENDPOINT_MODEL_SUGGEST_DECISION_ID = 'endpoint_model_match';
@@ -66,13 +68,18 @@ export interface SuggestDeps {
 export function suggestQuestion(model: string, candidates: readonly string[]): ChoiceQuestion<string> {
   return {
     type: 'choice',
-    instructions: {
-      question: `An agent will ask a model proxy for \`asks_for\`, which the proxy does not serve under that name. Which model the proxy does serve is the closest replacement?`,
-      rule: 'Prefer the same vendor and model family, then the nearest capability and price. Judge from the model ids only.',
-    },
+    instructions: { ...resolvePromptValue(ENDPOINT_MODEL_SUGGEST_PROMPT_ID, ENDPOINT_MODEL_SUGGEST_INSTRUCTIONS) },
     criteria: Object.fromEntries(candidates.map((c) => [c, null])),
   };
 }
+
+/** The prompts-table id whose active row (JSON `{ question, rule }`) may replace the instructions below. */
+export const ENDPOINT_MODEL_SUGGEST_PROMPT_ID = 'buildd.endpoint_model_suggest';
+
+export const ENDPOINT_MODEL_SUGGEST_INSTRUCTIONS = {
+  question: `An agent will ask a model proxy for \`asks_for\`, which the proxy does not serve under that name. Which model the proxy does serve is the closest replacement?`,
+  rule: 'Prefer the same vendor and model family, then the nearest capability and price. Judge from the model ids only.',
+};
 
 /**
  * One suggestion per model where the decision model is confident. Never
@@ -135,7 +142,7 @@ export async function suggestEndpointModels(
         const { choice, confidence } = res.answers.pick;
         const shown = confidence >= SUGGEST_MIN_CONFIDENCE && candidates.includes(choice);
         log(`${ENDPOINT_MODEL_SUGGEST_LOG_PREFIX} ${JSON.stringify({
-          v: `${ENDPOINT_MODEL_SUGGEST_PROMPT_VERSION}|${res.model}`,
+          v: `${resolvedPromptVersion(ENDPOINT_MODEL_SUGGEST_PROMPT_VERSION, resolvePromptValueEntry(ENDPOINT_MODEL_SUGGEST_PROMPT_ID, ENDPOINT_MODEL_SUGGEST_INSTRUCTIONS))}|${res.model}`,
           model, pick: choice, confidence, candidates: candidates.length, shown, latencyMs: res.latencyMs,
         })}`);
         return shown ? { model, suggested: choice, confidence } : null;
@@ -150,3 +157,6 @@ export async function suggestEndpointModels(
     return [];
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(ENDPOINT_MODEL_SUGGEST_PROMPT_ID, ENDPOINT_MODEL_SUGGEST_INSTRUCTIONS);

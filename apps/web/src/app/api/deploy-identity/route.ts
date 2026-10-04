@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { activePromptFingerprints, promptFallbackCounts } from '@buildd/core/prompts';
 import { getDeployIdentity } from '@/lib/deploy-identity';
 
 /**
@@ -14,7 +15,15 @@ import { getDeployIdentity } from '@/lib/deploy-identity';
  * shared `getDeployIdentity` helper) so the two endpoints can never disagree;
  * this route stays as the minimal, dependency-free form for callers that only
  * need deploy identity, such as release-health verification.
+ *
+ * `prompts` is which prompt text this instance runs, as fingerprints only (id,
+ * row version, content hash; never text), read from the in-process snapshot,
+ * not the database. An id absent from `active` runs its public default.
+ * `fallbacks` counts this instance's resolves that used a public default.
  */
 export async function GET() {
-  return NextResponse.json(getDeployIdentity());
+  return NextResponse.json({
+    ...getDeployIdentity(),
+    prompts: { active: activePromptFingerprints(), fallbacks: promptFallbackCounts() },
+  });
 }
