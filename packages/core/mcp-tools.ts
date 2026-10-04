@@ -5320,8 +5320,11 @@ export async function handleBuilddAction(
           const body: Record<string, unknown> = {};
           if (params.name) body.name = params.name;
           if (params.repoUrl) body.repoUrl = params.repoUrl;
-          if (params.defaultBranch) body.defaultBranch = params.defaultBranch;
           if (params.accessMode) body.accessMode = params.accessMode;
+          // Put defaultBranch in gitConfig so the runner can read it
+          const gitConfig: Record<string, unknown> = {};
+          if (params.defaultBranch) gitConfig.defaultBranch = params.defaultBranch;
+          if (Object.keys(gitConfig).length > 0) body.gitConfig = gitConfig;
           const wsData = await api('/api/workspaces', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -5370,7 +5373,6 @@ export async function handleBuilddAction(
           const body: Record<string, unknown> = {};
           if (params.name !== undefined) body.name = params.name;
           if (params.repoUrl !== undefined) body.repoUrl = params.repoUrl;
-          if (params.defaultBranch !== undefined) body.defaultBranch = params.defaultBranch;
           if (params.accessMode !== undefined) body.accessMode = params.accessMode;
           if (params.releaseConfig !== undefined) body.releaseConfig = params.releaseConfig;
           if (params.maxConcurrentTasks !== undefined) body.maxConcurrentTasks = params.maxConcurrentTasks;
@@ -5379,6 +5381,8 @@ export async function handleBuilddAction(
           const gitConfig: Record<string, unknown> = {
             ...(params.gitConfig && typeof params.gitConfig === 'object' ? params.gitConfig as Record<string, unknown> : {}),
           };
+          // Put defaultBranch in gitConfig so the runner can read it
+          if (params.defaultBranch !== undefined) gitConfig.defaultBranch = params.defaultBranch;
           // Hand-written merge-policy paths are refused (the API 400s too); say why
           // before the round-trip. Paths come from action=init's repo scan.
           const removedPathField = findRemovedPathFieldInGitConfig(params, '')
