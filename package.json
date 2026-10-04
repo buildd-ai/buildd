@@ -51,6 +51,7 @@
     "screenshot": "bun run scripts/qa/capture.ts",
     "screenshot:app": "bash scripts/qa/shoot.sh",
     "design:check": "bun run scripts/design-check.ts",
+    "copy:check": "bun run scripts/copy-check.ts",
     "specs:check": "bun run scripts/check-specs.ts",
     "specs:lint": "bun run scripts/check-specs.ts --check",
     "public-docs:check": "bun run scripts/check-public-docs.ts",

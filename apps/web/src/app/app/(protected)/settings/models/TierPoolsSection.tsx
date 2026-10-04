@@ -362,7 +362,7 @@ function Details({ row, teamId, isAdmin, onChanged }: { row: TierPoolRowView; te
               <span className="shrink-0 text-text-muted">{new Date(c.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}{c.actor ? ` · ${c.actor}` : ''}</span>
             </li>
           ))}
-          {changes.length === 0 && <li className="text-text-muted">No changes yet.</li>}
+          {changes.length === 0 && <li className="text-text-muted">No changes.</li>}
         </ul>
       </div>
     </div>
@@ -384,7 +384,7 @@ function Legend() {
     <p className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11.5px] text-text-muted" data-testid="pool-legend">
       {item(SEV_CLASS.none, 'none')}{item(SEV_CLASS.minor, 'minor')}{item(SEV_CLASS.major, 'major')}{item(SEV_CLASS.critical, 'critical')}
       <span>Win = graded with no mistake</span>
-      <span>19/30 = learning: 19 of the 30 runs it needs are graded</span>
+      <span>19/30 = 19 of 30 required runs graded</span>
     </p>
   );
 }
