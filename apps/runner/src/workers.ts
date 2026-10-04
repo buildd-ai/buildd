@@ -13,9 +13,9 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
-import { syncSkillToLocal } from './skills.js';
-import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, writeSessionRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
+import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
 import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
+import { rehydratePromptBundles, writeSessionPromptFiles } from './session-prompt-bundles.js';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
@@ -822,7 +822,13 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
-      startSession: (worker, cwd, task, resumeSessionId?) => this.startSession(worker, cwd, task, resumeSessionId),
+      // Every resume, retry and recovery restart goes through here. A worker
+      // restored from disk (runner restart, park → reattach) lost its role and
+      // skill payload; get it back before the session continues.
+      startSession: async (worker, cwd, task, resumeSessionId?) => {
+        await this.ensurePromptBundles(worker);
+        return this.startSession(worker, cwd, task, resumeSessionId);
+      },
     });
     this.workerSync = new WorkerSync({
       config,
@@ -2084,6 +2090,8 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received Codex credential for accountId=${claimedWorker.codexCredential.accountId}`);
     }
     if (role) worker.roleBundle = role.bundle;
+    // The claim IS the payload; a resume in this process needs no re-fetch.
+    worker.promptBundlesLoaded = true;
     if (claimedWorker.roleConfig) {
       worker.roleConfig = claimedWorker.roleConfig;
       console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
@@ -3018,6 +3026,30 @@ export class WorkerManager {
    * the server). The claim-delivered source is independent of `roleConfig` so
    * an MCP-registered role with no R2 bundle still gets its declared vars.
    */
+  /**
+   * Re-fetch a restored worker's role and skill payload (see
+   * session-prompt-bundles.ts). Fail-open: a session that cannot get it back
+   * resumes without, with a visible milestone, and the next resume retries.
+   */
+  private async ensurePromptBundles(worker: LocalWorker): Promise<void> {
+    const outcome = await rehydratePromptBundles(worker, {
+      fetchPromptBundles: (id) => this.buildd.getWorkerPromptBundles(id),
+    });
+    if (outcome.kind === 'restored') {
+      const parts = [
+        outcome.skills.length ? `${outcome.skills.length} skill(s)` : '',
+        outcome.role ? `role ${outcome.role}` : '',
+      ].filter(Boolean);
+      if (parts.length) {
+        console.log(`[Worker ${worker.id}] Restored prompt bundles for resume: ${parts.join(', ')}`);
+        this.addMilestone(worker, { type: 'status', label: `Resume: restored ${parts.join(', ')}`, ts: Date.now() });
+      }
+    } else if (outcome.kind === 'failed') {
+      console.warn(`[Worker ${worker.id}] Could not restore role/skills for resume: ${outcome.reason}`);
+      this.addMilestone(worker, { type: 'status', label: 'Resume: role/skills unavailable, continuing without', ts: Date.now() });
+    }
+  }
+
   private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleBundle' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
     const fileBased = worker.roleBundle
       ? resolveRoleEnvMapping(worker.roleBundle.envMapping, process.env as Record<string, string>)
@@ -3256,31 +3288,12 @@ export class WorkerManager {
       const skillBundles = worker.skillBundles;
       const skillSlugs: string[] = (task.context as any)?.skillSlugs || [];
 
-      if (worker.roleBundle) {
-        try {
-          await writeSessionRoleFiles(worker.roleBundle, cwd, worker.id);
-          if (worker.roleBundle.skills.length > 0) wroteSessionSkills = true;
-        } catch (err) {
-          const label = `Role file write failed: ${err instanceof Error ? err.message : String(err)}`;
-          console.warn(`[Worker ${worker.id}] ${label}`);
-          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
-        }
-      }
-
-      if (skillBundles && skillBundles.length > 0) {
-        for (const bundle of skillBundles) {
-          try {
-            await syncSkillToLocal(bundle, { sessionCwd: cwd, workerId: worker.id });
-            wroteSessionSkills = true;
-            this.addMilestone(worker, { type: 'status', label: `Skill synced: ${bundle.name}`, ts: Date.now() });
-            if (!skillSlugs.includes(bundle.slug)) {
-              skillSlugs.push(bundle.slug);
-            }
-          } catch (err) {
-            console.error(`[Worker ${worker.id}] Failed to sync skill ${bundle.slug}:`, err);
-            this.addMilestone(worker, { type: 'status', label: `Skill sync failed: ${bundle.slug}`, ts: Date.now() });
-          }
-        }
+      // Same writer for a fresh and a resumed session (session-prompt-bundles.ts).
+      const promptFiles = await writeSessionPromptFiles(worker, cwd, (label) =>
+        this.addMilestone(worker, { type: 'status', label, ts: Date.now() }));
+      if (promptFiles.wroteSkills) wroteSessionSkills = true;
+      for (const slug of promptFiles.syncedSkills) {
+        if (!skillSlugs.includes(slug)) skillSlugs.push(slug);
       }
 
       // Build prompt with workspace context

@@ -52,6 +52,7 @@ export const WORKER_FIELD_VISIBILITY: Record<Exclude<keyof LocalWorker, Withheld
   parentTaskId: true,
   taskMode: true,
   taskBackend: true,
+  promptBundlesLoaded: true, // a boolean, no prompt text
   workspaceId: true,
   workspaceName: true,
   workspaceDataClass: true,
