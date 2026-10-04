@@ -6,6 +6,7 @@ import SettingsPage from '../_components/SettingsPage';
 import TimezoneSection from '../TimezoneSection';
 import TeamDetailClient from '../../teams/[id]/TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
+import { roleHas } from '@/lib/permission-registry';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,7 +60,7 @@ export default async function TeamSettingsPage() {
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={role === 'owner' || role === 'admin'}
+          canManage={roleHas(role, 'manage_team_members')}
         />
       ) : (
         <p className="text-sm text-text-secondary">Could not load the team.</p>

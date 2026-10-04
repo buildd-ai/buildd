@@ -20,6 +20,7 @@ import ExecutorSection from './ExecutorSection';
 import { isWorkspaceExecutor, resolveWorkspaceExecutor } from '@buildd/shared';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import DeleteWorkspaceButton from '../DeleteWorkspaceButton';
+import { roleHas } from '@/lib/permission-registry';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -77,7 +78,7 @@ export default async function WorkspaceConfigPage({
                 </div>
 
                 {/* Every health action is an admin write, so members do not see the card. */}
-                {(access.role === 'owner' || access.role === 'admin') && (
+                {roleHas(access.role, 'manage_workspace_settings') && (
                     <WorkspaceHealthCard
                         workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
                         teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
@@ -93,7 +94,7 @@ export default async function WorkspaceConfigPage({
                 )}
 
                 {/* Scaffold and spec routes are admin writes too. */}
-                {(access.role === 'owner' || access.role === 'admin') && (
+                {roleHas(access.role, 'manage_workspace_settings') && (
                     <ReadinessCard workspaceId={workspace.id} />
                 )}
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import SettingsSection from './SettingsSection';
 import { TIMEZONE_OPTIONS } from '@/lib/timezone-options';
 import { Select } from '@/components/ui/Select';
+import { roleHas } from '@/lib/permission-registry';
 
 interface Team {
   id: string;
@@ -59,7 +60,7 @@ export default function TimezoneSection({ teams, currentTeamId }: { teams: Team[
       const data = await res.json();
       setStored(data.team?.timezone ?? null);
       setDraft(data.team?.timezone ?? detected);
-      setCanEdit(data.currentUserRole === 'owner' || data.currentUserRole === 'admin');
+      setCanEdit(roleHas(data.currentUserRole, 'manage_team_settings'));
     } catch {
       setMsg({ type: 'error', text: 'Failed to load the team timezone' });
     } finally {
