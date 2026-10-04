@@ -281,12 +281,21 @@ export function buildMissionListCard(
       phase = { key, label: key === 'none' ? null : r.task.missionPhaseLabel ?? null, done: 0, total: 0, cells: [] };
       phases.push(phase);
     }
-    phase.cells.push(cell);
+    // A cancelled task is never drawn as a progress unit: the meter's cells
+    // are exactly the countable set, so a renderer that iterates `cells`
+    // (PhaseBar, the mini strip) can never draw more boxes than `total`.
     if (state !== 'skipped') {
+      phase.cells.push(cell);
       phase.total++;
       if (state === 'done') phase.done++;
     }
   }
+
+  // A phase whose every task was cancelled has nothing countable to show —
+  // drop it rather than render an empty, caption-only group.
+  const nonEmptyPhases = phases.filter(p => p.cells.length > 0);
+  phases.length = 0;
+  phases.push(...nonEmptyPhases);
 
   // The orchestrator's own row carries no phase: name its group "Plan".
   for (const p of phases) {
