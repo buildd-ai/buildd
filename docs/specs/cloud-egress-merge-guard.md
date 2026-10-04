@@ -10,6 +10,27 @@ related: [worker-sandbox-isolation]
 keywords: [merge guard, pushedProtectedBranch, graphqlMutationBlocked, git-receive-pack, mergePullRequest, enablePullRequestAutoMerge, protectedBranches, installation token]
 verified_by: [apps/cloud-runner/src/outbound.test.ts, apps/web/src/app/api/runner/github-token/route.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "pr-merge-rest-block"
+    type: "symbol_reachable"
+    symbol: "isPrMergeRestRequest"
+    entry: "apps/cloud-runner/src/outbound.ts"
+  - id: "graphql-mutation-block"
+    type: "symbol"
+    name: "graphqlMutationBlocked"
+    path: "apps/cloud-runner/src/outbound.ts"
+  - id: "protected-branch-block"
+    type: "symbol"
+    name: "pushedProtectedBranch"
+    path: "apps/cloud-runner/src/outbound.ts"
+  - id: "github-token-protected-branches"
+    type: "symbol_reachable"
+    symbol: "protectedBranches"
+    entry: "apps/web/src/app/api/runner/github-token/route.ts"
+  - id: "merge-guard-tests"
+    type: "test_file"
+    path: "apps/cloud-runner/src/outbound.test.ts"
 ---
 
 # Cloud Egress Merge Guard
