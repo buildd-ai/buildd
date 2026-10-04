@@ -2,10 +2,11 @@
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { config } from '@buildd/core/config';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { eq } from 'drizzle-orm';
 import { isTerminalWorkerStatus } from '@buildd/shared';
 import { getDefaultStorageClient, isStorageConfigured } from './storage';
-import { EvidenceReadError, openStoredEvidenceBody } from './evidence-read';
+import { EvidenceReadError, decodeEvidenceBody } from './evidence-read';
 import { MAX_SESSION_ARTIFACT_BYTES, sessionArtifactKey } from './session-artifact-keys';
 
 export interface CompletedTranscriptWorker {
@@ -33,14 +34,44 @@ const defaults: CompletedTranscriptDeps = {
   loadWorker: id => db.query.workers.findFirst({ where: eq(workers.id, id),
     columns: { id: true, workspaceId: true, status: true },
     with: { workspace: { columns: { teamId: true, dataClass: true } } } }),
-  open: key => {
+  open: async key => {
     if (!isStorageConfigured()) throw new Error('storage_unconfigured');
-    return openStoredEvidenceBody(key, { client: getDefaultStorageClient(), bucket: config.storageBucket });
+    const { Body } = await getDefaultStorageClient().send(new GetObjectCommand({ Bucket: config.storageBucket, Key: key }));
+    if (!Body || typeof (Body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] !== 'function') throw new Error('body_missing');
+    return decodeEvidenceBody(Body as AsyncIterable<Uint8Array>);
   },
 };
 
+
+const object = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const finite = (value: unknown) => typeof value === 'number' && Number.isFinite(value);
+const tool = (value: unknown) => object(value) &&
+  typeof value.name === 'string' && value.name.trim().length > 0 && object(value.input);
+
+/** Validate the existing runner payload shapes; discard unusable records, never the usable remainder. */
+function validPayload(record: Record<string, unknown>): boolean {
+  if (record.type === 'session') return true; // Header identity/counts are checked below.
+  if (record.type === 'truncated') return record.reason === 'transcript_size_cap';
+  if (!Number.isSafeInteger(record.seq) || (record.seq as number) < 0) return false;
+  if (record.type === 'tool_call') return tool(record.toolCall);
+  if (record.type === 'output') return typeof record.line === 'string';
+  if (record.type === 'message') {
+    const m = record.message;
+    return object(m) && finite(m.timestamp) &&
+      ((['text', 'user'].includes(m.type as string) && typeof m.content === 'string') ||
+        (m.type === 'tool_use' && tool(m)));
+  }
+  const m = record.milestone;
+  return object(m) && typeof m.label === 'string' && finite(m.ts) &&
+    (m.type === 'status' || m.type === 'action' ||
+      (m.type === 'phase' && finite(m.toolCount)) ||
+      (m.type === 'checkpoint' && ['session_started', 'first_read', 'first_edit', 'first_commit', 'task_completed', 'task_error'].includes(m.event as string)));
+}
+
 /** Never throws or writes. Call only from trusted server code; this is not an access API. */
-export async function readCompletedSessionTranscript(workerId: string, deps: CompletedTranscriptDeps = defaults): Promise<CompletedSessionTranscript> {
+export async function readCompletedSessionTranscript(workerId: string, overrides: Partial<CompletedTranscriptDeps> = {}): Promise<CompletedSessionTranscript> {
+  const deps = { ...defaults, ...overrides };
   const result: CompletedSessionTranscript = { traceAvailability: 'absent', source: null, missingPortions: [], reason: null, records: [] };
   try {
     const worker = await deps.loadWorker(workerId);
@@ -68,7 +99,7 @@ export async function readCompletedSessionTranscript(workerId: string, deps: Com
         if (!record || typeof record !== 'object' || Array.isArray(record) || !['session', 'message', 'tool_call', 'milestone', 'output', 'truncated'].includes(record.type)) {
           missing.add('malformed_records'); continue;
         }
-        if (record.type === 'tool_call' && (!record.toolCall || typeof record.toolCall !== 'object')) missing.add('malformed_records');
+        if (!validPayload(record)) { missing.add('malformed_records'); continue; }
         if (record.type === 'session' && result.records.length > 0) missing.add('unknown_coverage');
         result.records.push(record);
         if (record.type === 'truncated') missing.add('tail');

@@ -461,15 +461,9 @@ export async function openEvidenceObject(row: EvidenceObjectRow, deps: OpenDeps 
     ({ client, bucket } = await evidenceObjectLocation(row));
   }
 
-  return openStoredEvidenceBody(row.objectKey, { client, bucket });
-}
-
-/** Shared decoded object stream for internal readers of legacy, unindexed evidence. */
-export async function openStoredEvidenceBody(objectKey: string, deps: Required<OpenDeps>): Promise<AsyncGenerator<Uint8Array>> {
-  const { client, bucket } = deps;
   let body: unknown;
   try {
-    const got = await client.send(new GetObjectCommand({ Bucket: bucket, Key: objectKey }));
+    const got = await client.send(new GetObjectCommand({ Bucket: bucket, Key: row.objectKey }));
     body = (got as { Body?: unknown }).Body;
   } catch (err) {
     const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };

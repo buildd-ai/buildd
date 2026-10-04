@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { readCompletedSessionTranscript } from './completed-session-transcript';
+import { readCompletedSessionTranscript } from './session-transcript';
 const worker = { id: 'worker-test', workspaceId: 'workspace-test', status: 'completed', workspace: { teamId: 'team-test', dataClass: 'standard' } };
 const header = { type: 'session', schemaVersion: 1, workerId: worker.id, workspaceId: worker.workspaceId, messageCount: 0, toolCallCount: 1 };
 const call = { type: 'tool_call', seq: 0, toolCall: { name: 'Read', input: { path: 'example.ts' } } };
@@ -67,7 +67,7 @@ test('all shared terminal statuses are eligible', async () => {
 });
 test('both message and output trailing windows are disclosed', async () => {
   const r = await read(jsonl({ ...header, messageCount: 200 }, call,
-    ...Array.from({ length: 200 }, (_, seq) => ({ type: 'message', seq, message: {} })),
+    ...Array.from({ length: 200 }, (_, seq) => ({ type: 'message', seq, message: { type: 'text', content: 'text', timestamp: seq } })),
     ...Array.from({ length: 100 }, (_, seq) => ({ type: 'output', seq, line: 'text' }))));
   expect(r.missingPortions).toContain('early_messages');
   expect(r.missingPortions).toContain('early_output');
@@ -88,4 +88,35 @@ test('worker lookup failure also fails open without reading storage', async () =
 test('duplicate headers and tool calls without arguments cannot establish full evidence', async () => {
   expect((await read(jsonl(header, header, call))).traceAvailability).toBe('truncated');
   expect((await read(jsonl(header, { type: 'tool_call', seq: 0 }))).traceAvailability).toBe('truncated');
+});
+
+test('malformed payloads never establish full coverage and retain usable records', async () => {
+  for (const toolCall of [{}, [], { input: {} }, { name: 'Read' }, { name: '', input: {} }, { name: 'Read', input: [] }]) {
+    const r = await read(jsonl({ ...header, toolCallCount: 2 }, call, { type: 'tool_call', seq: 1, toolCall }));
+    expect(r.traceAvailability).toBe('truncated');
+    expect(r.missingPortions).toContain('malformed_records');
+    expect(r.records).toContainEqual(call);
+    expect(r.records.filter(r => r.type === 'tool_call')).toHaveLength(1);
+  }
+  for (const row of [
+    { type: 'message', seq: 0, message: {} },
+    { type: 'message', seq: 0, message: [] },
+    { type: 'message', seq: 0, message: { type: 'text', content: 42, timestamp: 1 } },
+    { type: 'message', seq: 0, message: { type: 'tool_use', name: 'Read', timestamp: 1 } },
+    { type: 'output', seq: 0, line: {} },
+    { type: 'milestone', seq: 0, milestone: {} },
+  ]) {
+    const r = await read(jsonl(header, call, row));
+    expect(r.traceAvailability).toBe('truncated');
+    expect(r.missingPortions).toContain('malformed_records');
+    expect(r.records).toHaveLength(2);
+  }
+});
+test('valid message, tool message, milestone and output shapes preserve full coverage', async () => {
+  const r = await read(jsonl({ ...header, messageCount: 2 }, call,
+    { type: 'message', seq: 0, message: { type: 'text', content: 'hello', timestamp: 1 } },
+    { type: 'message', seq: 1, message: { type: 'tool_use', name: 'Read', input: {}, timestamp: 2 } },
+    { type: 'milestone', seq: 0, milestone: { type: 'status', label: 'Done', ts: 3 } },
+    { type: 'output', seq: 0, line: 'done' }));
+  expect(r.traceAvailability).toBe('full');
 });
