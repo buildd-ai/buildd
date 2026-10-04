@@ -146,6 +146,27 @@ export function chatKeySummary(view: Pick<ProviderKeysView, 'providers' | 'keyPo
   return team ? { kind: 'team', provider: team.provider } : { kind: 'none' };
 }
 
+/** Every key a person's chat can spend, one per provider. */
+export type ChatKeysInUse =
+  | { kind: 'keys'; keys: { provider: ChatProvider; whose: 'own' | 'team' }[] }
+  | { kind: 'needs_own' }
+  | { kind: 'none' };
+
+/**
+ * Like `chatKeySummary`, but every provider rather than the first: which key
+ * serves a turn depends on the tier's vendor, so the team screen names them
+ * all instead of guessing. Per provider, mirrors `resolveInferenceKey`.
+ */
+export function chatKeysInUse(view: Pick<ProviderKeysView, 'providers' | 'keyPolicy'>): ChatKeysInUse {
+  const keys: { provider: ChatProvider; whose: 'own' | 'team' }[] = [];
+  for (const p of view.providers) {
+    if (view.keyPolicy !== 'team' && usable(p.mine)) keys.push({ provider: p.provider, whose: 'own' });
+    else if (view.keyPolicy !== 'own' && usable(p.team)) keys.push({ provider: p.provider, whose: 'team' });
+  }
+  if (keys.length) return { kind: 'keys', keys };
+  return view.keyPolicy === 'own' ? { kind: 'needs_own' } : { kind: 'none' };
+}
+
 /** Status square / chip tone for a key's health (lib/status-tone.ts). */
 export function keyHealthTone(k: Pick<ProviderKeyStatus, 'health'> | null): 'success' | 'warning' | 'error' | 'muted' {
   if (!k) return 'muted';
