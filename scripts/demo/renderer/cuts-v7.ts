@@ -61,14 +61,14 @@ export function v7Chapters(s: Stills): Shot[][] {
   const key = (t: number, rects: Rect[], dim = DIM) => ({ at: t, rects, dim, padPx: PAD });
 
   // Opening, quiet and abstract: an agent says it's done, and a question mark appears.
-  const open = motion('open', 4.6, { kind: 'doubt', label: '', agent: 'agent', task: 'invoices · rows as cards', from: 0.1, doneAt: 0.9, doubtAt: 2.4 });
+  const open = motion('open', 4.6, { kind: 'doubt', label: '', agent: 'agent', task: 'invoices · rows as cards', from: -0.6, doneAt: 0.9, doubtAt: 2.4 });
 
   // 1. What done means: the checks set large, each appearing once, held; then the real draft card, held still.
   const T = 's02-thread';
   const list = s.box(T, 'approval-draft-criteria');
   const askLine = s.text(T, 'The invoice table overflows on phones.').rects[0];
   const confirm = s.box(T, 'kit-approval-confirm');
-  const checks = motion('checks', 5.0, { kind: 'checks', label: '', title: 'Done when', items: ['Fits a 390px screen', 'No sideways scroll on /invoices', 'Phone screenshot approved'], from: 0.2, stagger: 0.7 });
+  const checks = motion('checks', 5.0, { kind: 'checks', label: '', title: 'Done when', items: ['Fits a 390px screen', 'No sideways scroll on /invoices', 'Phone screenshot approved'], from: -0.3, stagger: 0.7 });
   const card = union([askLine, list, confirm]);
   const draft: Shot = {
     id: 'draft', layout: 'screen', dur: 2.6, images: [s.img(T)],
@@ -99,7 +99,8 @@ export function v7Chapters(s: Stills): Shot[][] {
   const question: Shot = {
     id: 'question', layout: 'screen', dur: 4.6,
     images: [phone, { ...s.img('s05b-answered', 'phone', 3.0), fade: 0 }],
-    spot: [key(0.3, [qRect]), key(1.3, [opts[0]]), { ...key(3.0, [qRect], 0), cross: true }],
+    // One light on the whole question, held (dimming it to the option then back read as flicker); the tap outlines Yes.
+    spot: [key(0.3, [qRect])],
     camera: [aim(beatLook, phone, qRect, 1.12, 0), aim(beatLook, phone, qRect, 1.08, 1)],
     taps: [press(2.1, opts[0])], controls: [opts[0]],
   };
@@ -181,10 +182,25 @@ export function v7Film(s: Stills, spoken: Spoken): Cut {
     poster: posterAt(shots, 'green', 1.5), keyStills: keyStills(shots), shots };
 }
 
-/** The silent cut: each chapter's line as a caption on its first shot (the end card already shows its words). */
+/** A line's sentences. */
+export const sentences = (line: string) => line.match(/[^.!?]+[.!?]+/g)!.map((x) => x.trim());
+
+/**
+ * The silent cut: each chapter's line as captions, one sentence per shot in
+ * order (a long line on one caption ran off the frame); a chapter with more
+ * sentences than shots puts the rest on its last shot, one after another.
+ * The end card already shows its words.
+ */
 export function v7Captioned(s: Stills, spoken: Spoken): Cut {
   const chapters = v7Chapters(s);
-  chapters.slice(0, -1).forEach((ch, i) => { ch[0].caption = V7_LINES[i]; });
+  chapters.slice(0, -1).forEach((ch, i) => {
+    const ss = sentences(V7_LINES[i]);
+    ch.forEach((shot, k) => {
+      if (k >= ss.length) return;
+      const mine = k === ch.length - 1 ? ss.slice(k) : [ss[k]];
+      shot.caption = mine.length === 1 ? mine[0] : mine.map((text, j) => ({ at: (j * shot.dur) / mine.length, text }));
+    });
+  });
   const { shots } = timeToVoice(chapters, spoken);
   return { name: 'captioned', ...FRAME, fade: V7_FADE, captions: true, theme: 'dark', dip: true, loop: false, shots, poster: posterAt(shots, 'green', 1.5) };
 }

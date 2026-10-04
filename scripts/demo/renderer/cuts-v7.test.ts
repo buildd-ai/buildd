@@ -100,7 +100,9 @@ describe('v7 cuts', () => {
   test('the captioned cut is silent and carries each chapter\'s line once, clear of lit elements', () => {
     const cap = v7Captioned(fake, spoken);
     expect(cap.voice).toBeUndefined();
-    expect(cap.shots.filter((s) => s.caption).map((s) => s.caption)).toEqual(V7_LINES.slice(0, 4));
+    // Every sentence of lines 1-4 is shown once, in order.
+    const shown = cap.shots.flatMap((s) => (s.caption === undefined ? [] : typeof s.caption === 'string' ? [s.caption] : s.caption.map((c) => c.text)));
+    expect(shown).toEqual(V7_LINES.slice(0, 4).flatMap((l) => l.match(/[^.!?]+[.!?]+/g)!.map((x) => x.trim())));
     expect(captionCollisions(cap)).toEqual([]);
   });
 });
