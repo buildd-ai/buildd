@@ -33,6 +33,7 @@ type Built = {
   motion?: (local: number) => void;
   place: 'top' | 'bottom';
   chips: HTMLDivElement[];
+  scrim?: HTMLDivElement;
   tap: HTMLDivElement;
 };
 
@@ -180,7 +181,13 @@ function build(cut: Cut, root: HTMLElement): Built[] {
     }, layer);
     const dot = el('div', { position: 'absolute', left: '50%', top: '50%', width: '14px', height: '14px', marginLeft: '-7px', marginTop: '-7px', background: ACCENT }, tap);
     dot.dataset.dot = '1';
-    return { shot, layer, body, imgs, fx, fleet, motion, chips, tap, place: captionPlace(cut, shot) };
+    const place = captionPlace(cut, shot);
+    // Under the caption chips: the ground fading in from the caption's edge (cut.captionScrim).
+    const scrim = cut.captionScrim && chips.length
+      ? el('div', { position: 'absolute', left: '0', right: '0', [place === 'top' ? 'top' : 'bottom']: '0', height: `${Math.round(cut.height * 0.36)}px`, zIndex: '4', opacity: '0',
+          background: `linear-gradient(to ${place === 'top' ? 'bottom' : 'top'}, color-mix(in srgb, ${P.bg} 96%, transparent) 62%, transparent)` }, layer)
+      : undefined;
+    return { shot, layer, body, imgs, fx, fleet, motion, chips, scrim, tap, place };
   });
 }
 
@@ -335,6 +342,8 @@ function pose(cut: Cut, b: Built, local: number, opacity: number): Regions {
   const regions: Regions = { target: lit.dim > 0 ? lit.rects.map(px) : [], artifacts: (shot.artifacts ?? []).map(px) };
   const last = !cut.loop && b === built[built.length - 1];
   const caps = captionsAt(shot, local, last ? cut.fade + 60 : cut.fade);
+  // On for the whole captioned shot (fading with its layer): a scrim that faded in with the caption let dimmed UI show through mid-fade.
+  if (b.scrim) b.scrim.style.opacity = '1';
   b.chips.forEach((c, i) => {
     const cap = caps[i];
     (c.lastChild as HTMLElement).textContent = cap?.text ?? '';
