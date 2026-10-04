@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { overlapPairKey, planClaimBatch } from '@buildd/core/claim-planner';
+import { CLAIM_PLANNER_CALIBRATION, overlapPairKey, planClaimBatch } from '@buildd/core/claim-planner';
 import {
   buildClaimPlanInput,
   EMPTY_PLANNER_SIGNALS,
@@ -57,6 +57,16 @@ describe('resolveClaimPlannerConfig', () => {
   it('drops malformed thresholds rather than half-applying them', () => {
     expect(resolveClaimPlannerConfig({ claimPlanner: 'apply', claimPlannerThresholds: { thetaOrder: 0.3, thetaSoft: 2, thetaIdle: 0.8 } }).thresholds).toBeNull();
     expect(resolveClaimPlannerConfig({ claimPlanner: 'apply', claimPlannerThresholds: { thetaOrder: 0.3 } }).thresholds).toBeNull();
+  });
+
+  it('falls back to the pinned calibration when the workspace sets no thresholds', () => {
+    expect(resolveClaimPlannerConfig({ claimPlanner: 'record' }).thresholds).toEqual(CLAIM_PLANNER_CALIBRATION.thresholds);
+    expect(resolveClaimPlannerConfig({ claimPlanner: 'apply', claimPlannerThresholds: { thetaOrder: 2 } }).thresholds)
+      .toEqual(CLAIM_PLANNER_CALIBRATION.thresholds);
+  });
+
+  it('a workspace override wins over the pinned calibration', () => {
+    expect(resolveClaimPlannerConfig({ claimPlanner: 'apply', claimPlannerThresholds: THRESHOLDS }).thresholds).toEqual(THRESHOLDS);
   });
 });
 
