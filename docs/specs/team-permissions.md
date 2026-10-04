@@ -10,6 +10,26 @@ related: [team-namespace-scoping, auth-oauth-boundaries]
 keywords: [owner, admin, member, team role, api key level, ADMIN_ROLES, canCallerAdminTeam, permission registry, rbac]
 verified_by: [apps/web/src/lib/permissions.test.ts, apps/web/src/lib/team-access-team-scope.test.ts]
 supersedes: []
+assertions:
+  - id: "permission-registry"
+    type: "symbol"
+    name: "PERMISSIONS"
+    path: "apps/web/src/lib/permissions.ts"
+  - id: "permission-can"
+    type: "symbol"
+    name: "can"
+    path: "apps/web/src/lib/permissions.ts"
+  - id: "permission-role-has"
+    type: "symbol"
+    name: "roleHas"
+    path: "apps/web/src/lib/permissions.ts"
+  - id: "admin-team-wrapper"
+    type: "symbol"
+    name: "canCallerAdminTeam"
+    path: "apps/web/src/lib/team-access.ts"
+  - id: "permissions-test"
+    type: "test_file"
+    path: "apps/web/src/lib/permissions.test.ts"
 ---
 # Team Permissions
 
