@@ -30,8 +30,11 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   // LLM credentials, not runner coordination secrets. Server-managed keys (below)
   // override them when present.
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-  // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs
-  'OPENAI_API_KEY',
+  // OpenAI key — needed for Codex tasks and any agent that calls OpenAI APIs.
+  // OPENAI_BASE_URL: the Codex equivalent of ANTHROPIC_BASE_URL above — a
+  // machine-level override that beats the team's agent model endpoint
+  // (agent-model-env.ts's `codexMachineOverride`).
+  'OPENAI_API_KEY', 'OPENAI_BASE_URL',
   // The operator's GitHub token, for gh and git. Passed through only until the
   // claim says `githubCredentials.mode = 'scoped'`: the runner then strips it
   // and gives the agent a task-scoped installation token instead

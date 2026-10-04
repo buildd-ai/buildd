@@ -187,6 +187,9 @@ export class BuilddClient {
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
       llmProviderOverride: !!this.config.llmProvider,
+      // Same idea for Codex: a machine that already points OPENAI_BASE_URL
+      // somewhere specific keeps that over the team's agent model endpoint.
+      codexBaseUrlOverride: !!process.env.OPENAI_BASE_URL,
     };
     if (availableSkills && availableSkills.length > 0) {
       body.availableSkills = availableSkills;

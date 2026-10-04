@@ -20,6 +20,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential } from '@/lib/codex-credential';
 import { hasOpenAiApiKey } from '@/lib/openai-credential';
+import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
 import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
 import {
@@ -838,6 +839,10 @@ export async function POST(req: NextRequest) {
 
   const runnerHasCodexBackend = capabilities.includes('backend:codex');
   const runnerHasLocalCodexAuth = capabilities.includes('OPENAI_API_KEY') || capabilities.includes('CODEX_HOME');
+  // A team's agent model endpoint can power Codex too (OpenAI-compatible
+  // kinds only), but only for a runner that will actually apply it — one that
+  // declares AGENT_ENDPOINT_RUNNER_FEATURE, same as the Claude path.
+  const runnerSupportsEndpointForCapabilityCheck = runnerSupportsAgentEndpoint(body.runnerFeatures);
   const serverCredentialTaskIds = new Set<string>();
   if (runnerHasCodexBackend && !runnerHasLocalCodexAuth && process.env.ENCRYPTION_KEY) {
     await Promise.all(claimableTasks.map(async (task) => {
@@ -846,7 +851,8 @@ export async function POST(req: NextRequest) {
       if (!teamId) return;
       try {
         const credScope = { teamId, accountId: account.id, workspaceId: task.workspaceId };
-        if ((await hasCodexCredential(credScope)) || (await hasOpenAiApiKey(credScope))) {
+        const hasEndpoint = runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(credScope);
+        if ((await hasCodexCredential(credScope)) || (await hasOpenAiApiKey(credScope)) || hasEndpoint) {
           serverCredentialTaskIds.add(task.id);
         }
       } catch (err) {
@@ -1192,7 +1198,8 @@ export async function POST(req: NextRequest) {
     if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
     let available = false;
     try {
-      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope));
+      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope)) ||
+        (runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(scope));
     } catch (err) {
       console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
     }
@@ -2646,13 +2653,15 @@ export async function POST(req: NextRequest) {
   // makes the omission hold even if a new attach forgets the check.
   //
   // The team's agent model endpoint is ranked against the Anthropic key, the
-  // seat and the Claude credential first (./agent-endpoint-injection): where
-  // it wins, it is the only model credential attached, so the blocks below
-  // skip the Anthropic ones for those workers.
+  // seat and the Claude credential (Codex: the OpenAI key and codex_credential
+  // instead) first (./agent-endpoint-injection): where it wins, it is the only
+  // model credential attached, so the blocks below skip the backend-matching
+  // ones for those workers.
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
     : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, {
         llmProviderOverride: body.llmProviderOverride === true,
+        codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
       });
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
@@ -2680,7 +2689,7 @@ export async function POST(req: NextRequest) {
   // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
   // read-only (refresh is runner-side). See ./credential-injection.
   if (!cloudExecutor) {
-    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
+    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, endpointWorkers);
     await attachClaudeCredentials(claimedWorkers, filteredTasks, endpointWorkers);
     await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, endpointWorkers);
   } else {

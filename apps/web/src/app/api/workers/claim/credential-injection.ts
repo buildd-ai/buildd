@@ -134,9 +134,12 @@ export async function attachCodexCredentials(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   accountId: string,
+  /** Workers whose agent model endpoint won: no Codex credential for them. */
+  endpointWorkers: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   if (!process.env.ENCRYPTION_KEY) return;
   for (const cw of claimedWorkers) {
+    if (endpointWorkers.has(cw.id)) continue;
     const task = claimedTasks.find(t => t.id === cw.taskId);
     if ((task as any)?.backend !== 'codex') continue;
 

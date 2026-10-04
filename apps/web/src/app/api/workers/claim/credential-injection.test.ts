@@ -786,4 +786,12 @@ describe('endpointWorkers: the endpoint is the only model credential', () => {
     expect(workers[0].pendingCredentialRefreshes).toBeUndefined();
     expect(workers[1].pendingCredentialRefreshes).toHaveLength(1);
   });
+
+  it('attachCodexCredentials: no Codex credential — a team OpenAI-compatible agent endpoint won instead', async () => {
+    mockResolveCodex.mockResolvedValue({ credentialType: 'api_key', apiKey: 'sk-codex', tokenExpiresAt: null });
+    const workers = [worker('t1'), worker('t2')];
+    await attachCodexCredentials(workers, [task('t1', 'codex'), task('t2', 'codex')], 'acct-1', new Set(['w-t1']));
+    expect(workers[0].codexCredential).toBeUndefined();
+    expect(workers[1].codexCredential).toBeDefined();
+  });
 });

@@ -1384,6 +1384,12 @@ export interface ClaimTasksInput {
    * only, never the provider's values.
    */
   llmProviderOverride?: boolean;
+  /**
+   * True when this runner's machine already has `OPENAI_BASE_URL` set, which
+   * beats the team's agent model endpoint for a Codex task the same way
+   * `llmProviderOverride` beats it for Claude. A boolean only, never the URL.
+   */
+  codexBaseUrlOverride?: boolean;
 }
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
@@ -1396,6 +1402,14 @@ export interface ClaimModelEndpoint {
   authHeader: 'authorization' | 'x-api-key';
   /** Native model id → proxy alias (gateway / anthropic-compatible only). */
   models: Record<string, string>;
+  /**
+   * The OpenAI-compatible root (e.g. `…/v1`), present only for `gateway` and
+   * `openrouter`. A Codex task's `OPENAI_BASE_URL` + `authToken` as
+   * `OPENAI_API_KEY`. Absent (including for `anthropic-compatible`, which has
+   * no OpenAI-format route) means a Codex task given this endpoint must fail
+   * clearly rather than guess a wire format.
+   */
+  openAiBaseUrl?: string;
 }
 
 export type ClaimDiagnosticReason =
