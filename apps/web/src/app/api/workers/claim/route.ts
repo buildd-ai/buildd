@@ -2512,30 +2512,45 @@ export async function POST(req: NextRequest) {
     // Lock the claimed task in this statement. Cancellation either wins first
     // (the status check refuses insertion), or waits for this insert to commit
     // and then sees the live worker in its post-cancellation read.
-    const insertResult = await db.execute(sql`
-      INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
-      SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
-      WHERE EXISTS (
-        SELECT 1 FROM ${tasks} t_claim
-        WHERE t_claim.id = ${task.id}
-        AND t_claim.status = 'assigned'
-        AND t_claim.claimed_by = ${account.id}
-        FOR UPDATE
-      )
-      AND (
-        SELECT count(*) FROM ${workers}
-        WHERE account_id = ${account.id}
-        AND status IN ('idle', 'running', 'starting', 'waiting_input')
-      ) < ${account.maxConcurrentWorkers}
-      AND NOT EXISTS (
-        SELECT 1 FROM ${workers} w_dup
-        WHERE w_dup.task_id = ${task.id}
-        AND w_dup.status IN ('idle', 'running', 'starting', 'waiting_input')
-      )
-      RETURNING *
-    `);
+    //
+    // Race 1's single-statement guard above is real for the per-task dup check
+    // (FOR UPDATE + NOT EXISTS), but the account-wide `count(*) < max` predicate
+    // is a plain snapshot read under READ COMMITTED: two concurrent claims can
+    // each evaluate it before the other's insert is visible and both pass,
+    // pushing the live total over maxConcurrentWorkers (observed live — see
+    // apps/web/tests/integration/concurrency.test.ts). Serialize per-account
+    // with a transaction-scoped advisory lock taken in a batch alongside the
+    // insert, same protocol as packages/core/path-claim.ts's workspaceLock: on
+    // neon-http, db.batch runs as one non-interactive transaction, so the lock
+    // is held exactly for this insert's duration and is safe without
+    // db.transaction()'s interactive-session requirement.
+    const [, insertResult] = await db.batch([
+      db.execute(sql`SELECT pg_advisory_xact_lock(hashtext('workers_claim_concurrency'), hashtext(${account.id}::text))`),
+      db.execute(sql`
+        INSERT INTO ${workers} (task_id, workspace_id, account_id, name, runner, branch, status)
+        SELECT ${task.id}, ${task.workspaceId}, ${account.id}, ${`${account.name}-${task.id.substring(0, 8)}`}, ${runner}, ${branch}, 'idle'
+        WHERE EXISTS (
+          SELECT 1 FROM ${tasks} t_claim
+          WHERE t_claim.id = ${task.id}
+          AND t_claim.status = 'assigned'
+          AND t_claim.claimed_by = ${account.id}
+          FOR UPDATE
+        )
+        AND (
+          SELECT count(*) FROM ${workers}
+          WHERE account_id = ${account.id}
+          AND status IN ('idle', 'running', 'starting', 'waiting_input')
+        ) < ${account.maxConcurrentWorkers}
+        AND NOT EXISTS (
+          SELECT 1 FROM ${workers} w_dup
+          WHERE w_dup.task_id = ${task.id}
+          AND w_dup.status IN ('idle', 'running', 'starting', 'waiting_input')
+        )
+        RETURNING *
+      `),
+    ]);
 
-    const worker = insertResult.rows?.[0] as any;
+    const worker = (insertResult as { rows?: any[] })?.rows?.[0] as any;
 
     if (!worker) {
       // The conditional insert can no-op for two reasons. Only one of them
