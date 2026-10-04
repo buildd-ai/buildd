@@ -13,6 +13,7 @@
 import { useMemo, type ReactNode } from 'react';
 import {
   EVENT_PART_TYPE,
+  answerPartIndex,
   isHandoffPart,
   isSteerPart,
   isTextPart,
@@ -118,6 +119,17 @@ export interface ChatThreadProps {
    * which turns are open, so a re-render never springs one shut.
    */
   turnFold?: TurnFold;
+  /**
+   * How an assistant turn's prose lives (0.18.0). `append` (default): every
+   * text part is drawn where it arrived, as before. `replace`: the turn draws
+   * one answer region, its latest prose (`answerPartIndex`), so text written
+   * early in a long turn shows at once and the final answer replaces it in
+   * place, the same node, rather than following it. Earlier prose stays in
+   * the parts (history, audit), off screen. The region carries
+   * `data-testid="kit-answer"` and `data-answer="live" | "settled"`, and is
+   * `aria-busy` while live so a screen reader reads the settled answer once.
+   */
+  answer?: 'append' | 'replace';
   /** The person's name, for "Approved by …". */
   viewerName?: string | null;
   /** Shown instead of the list while there are no messages (`<ChatEmpty>`). */
@@ -160,7 +172,7 @@ function eventOf(m: ChatMessage, type: string): EventData | null {
 export function ChatThread({
   messages, status = 'ready', onApprovalResponse, onEditApproval, renderText = defaultText, renderObject,
   renderTool, renderToolGroup: appToolGroup, toolRows = 'line', toolCallOptions, renderEvent, eventPartType = EVENT_PART_TYPE, renderHandoff,
-  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingName, renderPinnedStep, turnFold,
+  renderMessageHeader, renderMessageFooter, steps: stepsOf, thinkingName, renderPinnedStep, turnFold, answer = 'append',
   viewerName = null, empty, error, label = 'Conversation', className,
 }: ChatThreadProps) {
   const handoffs = useMemo(() => latestHandoffs(messages), [messages]);
@@ -209,8 +221,28 @@ export function ChatThread({
       if (node != null && node !== false) out.push(<div key={`${m.id}:g${groupAt}`}>{node}</div>);
       group = [];
     };
+    // `replace`: one answer region per assistant turn, keyed by the message so
+    // the final prose updates the early prose's node instead of a new one.
+    const answerAt = answer === 'replace' && m.role === 'assistant' ? answerPartIndex(m.parts) : null;
     m.parts.forEach((p, i) => {
       const key = `${m.id}:${i}`;
+      if (isTextPart(p) && answerAt !== null) {
+        // Superseded prose draws nothing, so it doesn't split a run of calls either.
+        if (i !== answerAt) return;
+        flush();
+        out.push(
+          <div
+            key={`${m.id}:answer`}
+            className="kit-answer"
+            data-testid="kit-answer"
+            data-answer={ctx.streaming ? 'live' : 'settled'}
+            aria-busy={ctx.streaming || undefined}
+          >
+            {renderText(p.text, m, p)}
+          </div>,
+        );
+        return;
+      }
       if (isTextPart(p)) {
         if (p.text.trim()) flush();
         if (p.text) out.push(<div key={key}>{renderText(p.text, m, p)}</div>);

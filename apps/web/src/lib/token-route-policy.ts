@@ -61,7 +61,7 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     if (/^\/api\/(stats|health|cbm|decisions)(\/|$)/.test(url.pathname)) {
       const filters: Record<string, string[]> = {
         '/api/stats/actions': ['workspace'], '/api/stats/usage': ['workspace'],
-        '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'],
+        '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'], '/api/health/dispatch': ['workspaceId'],
         '/api/decisions': ['workspaceId', 'workspace'], '/api/decisions/readout': ['workspaceId', 'workspace'],
       };
       if (!filters[url.pathname]?.some(name => url.searchParams.get(name))) return false;

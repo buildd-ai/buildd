@@ -16,12 +16,16 @@ export const EXIT_FAILED = 1;
 export const EXIT_CLAIM_REFUSED = 3;
 /** The runner parked its waiting worker (Phase 2, resumable runs); not a crash. */
 export const EXIT_PARKED = 4;
+/** The server named a temporary, self-resolving refusal reason; retry later (see run-once.ts). */
+export const EXIT_CLAIM_DEFERRED = 5;
 export const EXIT_USAGE = 64;
 
 /** Same prefix run-once prints once the worker exists (`WORKER_ID_LINE_PREFIX`). */
 export const WORKER_ID_LINE_PREFIX = 'BUILDD_WORKER_ID=';
 /** Printed by run-once just before EXIT_PARKED (`PARKED_LINE_PREFIX`). */
 export const PARKED_LINE_PREFIX = 'BUILDD_PARKED=';
+/** Printed by run-once just before EXIT_CLAIM_DEFERRED, with the deferral reason. */
+export const CLAIM_DEFERRED_LINE_PREFIX = 'BUILDD_CLAIM_DEFERRED=';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -35,10 +39,17 @@ export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
  *   so it already reported whatever there was to report.
  * - parked: the runner uploaded a park bundle and marked the worker parked;
  *   a `task.resume` dispatch continues it in a new container.
+ * - deferred: the runner ran, but the claim itself was refused for a
+ *   temporary reason (EXIT_CLAIM_DEFERRED) — capacity, pacing, a provider
+ *   wall. No worker exists. The supervisor self-schedules a retry.
+ * - start_deferred: the container itself could not start — the platform is at
+ *   its own container-instance ceiling (isContainerStartCapacityError). Never
+ *   got as far as exec'ing the runner, so there is no exit code either. The
+ *   supervisor self-schedules a retry, same as `deferred`.
  * - crashed: anything else (killed, OOM, container gone, agent restarted
  *   mid-run). The runner probably could not report.
  */
-export type RunOutcome = 'done' | 'failed' | 'refused' | 'usage' | 'parked' | 'crashed';
+export type RunOutcome = 'done' | 'failed' | 'refused' | 'usage' | 'parked' | 'deferred' | 'start_deferred' | 'crashed';
 
 /** What happened to the best-effort "mark the worker failed" call after a crash. */
 export type CrashReport = 'sent' | 'rejected' | 'error' | 'no_worker_id';
@@ -76,6 +87,16 @@ export interface RunState {
   scheduledFor?: number;
   /** The Agents SDK schedule id of that wake; a fire with any other id is stale. */
   scheduleId?: string;
+  /** From a `BUILDD_CLAIM_DEFERRED=` line: why the claim was deferred (outcome `deferred` only). */
+  claimDeferredReason?: string;
+  /**
+   * Consecutive `deferred`/`start_deferred` attempts this agent has
+   * self-scheduled in a row, carried forward only across ITS OWN backoff
+   * retries (`dispatch({ deferredRetry: true })`) — any other dispatch
+   * (a real retry webhook, a resume, the very first attempt) resets it to 0.
+   * Read by `deferredRetryBackoffMs` to decide the next delay, or to stop.
+   */
+  deferredRetryCount?: number;
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };
@@ -91,6 +112,13 @@ export interface DispatchRequest {
   resumeWorkerId?: string;
   /** A `task.scheduled` wake: the time it was scheduled for (epoch ms), for the run report. */
   scheduledFor?: number;
+  /**
+   * This dispatch is the agent's OWN backoff retry of a `deferred` /
+   * `start_deferred` attempt (not a server-driven `task.scheduled`, resume, or
+   * a fresh retry webhook) — the only case that carries `deferredRetryCount`
+   * forward instead of resetting it to 0.
+   */
+  deferredRetry?: boolean;
 }
 
 /**
@@ -123,10 +151,39 @@ export function outcomeForExitCode(code: number | null | undefined): RunOutcome 
     case EXIT_COMPLETED: return 'done';
     case EXIT_FAILED: return 'failed';
     case EXIT_CLAIM_REFUSED: return 'refused';
+    case EXIT_CLAIM_DEFERRED: return 'deferred';
     case EXIT_PARKED: return 'parked';
     case EXIT_USAGE: return 'usage';
     default: return 'crashed';
   }
+}
+
+/**
+ * Cloudflare's container-capacity refusal (Worker `max_instances` or account
+ * container ceiling — often containers from a previous burst still draining):
+ * thrown by `container.start()` before the runner process ever execs, so
+ * there is no worker and no exit code; the run never got that far. Matched on
+ * the distinctive fragments of Cloudflare's own message, not the whole
+ * string, so minor wording drift does not silently stop matching.
+ */
+export function isContainerStartCapacityError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return /no container instance/i.test(message) && /try again later/i.test(message);
+}
+
+/**
+ * Backoff (ms) before the supervisor's own retry of a `deferred` /
+ * `start_deferred` attempt, for the Nth such attempt in a row (1-indexed:
+ * the retry about to be scheduled) — null past the cap, meaning give up and
+ * leave the task to buildd's own sweep or a freed-capacity wake instead of
+ * retrying forever on a container that may simply be wrong for this task.
+ */
+export const DEFERRED_RETRY_BACKOFF_S = [30, 60, 120, 300, 600, 900] as const;
+export const MAX_DEFERRED_RETRIES = DEFERRED_RETRY_BACKOFF_S.length;
+
+export function deferredRetryBackoffMs(retryNumber: number): number | null {
+  if (!Number.isInteger(retryNumber) || retryNumber < 1 || retryNumber > DEFERRED_RETRY_BACKOFF_S.length) return null;
+  return DEFERRED_RETRY_BACKOFF_S[retryNumber - 1]! * 1000;
 }
 
 /**
@@ -167,6 +224,17 @@ export function parseWorkerIdLine(line: string): string | null {
   if (!trimmed.startsWith(WORKER_ID_LINE_PREFIX)) return null;
   const id = trimmed.slice(WORKER_ID_LINE_PREFIX.length);
   return WORKER_ID_RE.test(id) ? id : null;
+}
+
+/** Deferral reasons are short identifiers: a ClaimDiagnosticReason, a taskExclusion code, or 'unknown'. */
+const CLAIM_DEFERRED_REASON_RE = /^[A-Za-z0-9_]{1,64}$/;
+
+/** The reason from a `BUILDD_CLAIM_DEFERRED=<reason>` line, or null. */
+export function parseClaimDeferredLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith(CLAIM_DEFERRED_LINE_PREFIX)) return null;
+  const reason = trimmed.slice(CLAIM_DEFERRED_LINE_PREFIX.length);
+  return CLAIM_DEFERRED_REASON_RE.test(reason) ? reason : null;
 }
 
 // Task IDs are UUIDs in practice. Allow any short token of safe characters so

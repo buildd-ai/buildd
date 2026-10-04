@@ -79,8 +79,10 @@ every supported action.
 
 **Analytics contract**:
 - `buildd_analytics` groups explain, errors, failure/gate analytics, budget,
-  usage, runners, manifest coverage and path-claim statistics. The existing
-  Analyst role declares it; aggregate reads remain available at worker level.
+  usage, runners, Dispatch transport health (`dispatch_health {workspaceId?}`,
+  see task-dispatch-authority.md "Observability"), manifest coverage and
+  path-claim statistics. The existing Analyst role declares it; aggregate
+  reads remain available at worker level.
 - `get_manifest_coverage {workspaceId?, missionId?, window?}` reports tasks
   created in the window as concrete, advisory wildcard or missing manifests,
   with a fractional concrete share and workspace/mission/kind breakdowns.

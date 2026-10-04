@@ -11,7 +11,7 @@
  * Scope: the wake reaching runners. Whether the claim then runs or defers the
  * task is the claim route's job and is covered by its own tests.
  */
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeAll, beforeEach, describe, expect, mock, setDefaultTimeout, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 
 type Sent = { channel: string; event: string; data: { task?: { id: string; dispatch?: { cause: string } } } };
@@ -45,6 +45,9 @@ const { enqueueReadyDependents } = await import('@buildd/core/dispatch-dependent
 const { drainDispatchOutbox } = await import('@/lib/dispatch-authority');
 const { depsGate } = await import('@/app/api/workers/claim/deps-gate');
 const { assertDbConfigured, seedTask, seedWorkspace } = await import('./harness');
+
+// Each test drains the outbox against a real Postgres; the first pays cold-start cost.
+setDefaultTimeout(30_000);
 
 let workspaceId: string;
 beforeAll(async () => {

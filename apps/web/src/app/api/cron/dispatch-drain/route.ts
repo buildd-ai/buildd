@@ -21,7 +21,9 @@
 //     Dispatch transport never acked, reconciles handed-off rows with no
 //     terminal receipt against the Worker (lib/dispatch-reconcile.ts), and
 //     reports outbox health: overdue, stuck, failed, unacked and orphaned
-//     intents. Repair, not the path.
+//     intents. Repair, not the path. Any repair it does is a bug signal, so
+//     it pages the operator (lib/dispatch-alerts.ts), deduped; a terminal
+//     delivery failure pages from the receipts route when it happens.
 //
 // This replaces lib/deferred-dispatch-sweep.ts, the hourly "nudge tasks whose
 // startAt has passed" pass on pr-reconcile: the tasks trigger now writes a
@@ -49,6 +51,7 @@ import {
 import { publishPendingDispatches } from '@/lib/dispatch-transport';
 import { reconcileOrphans, type ReconcileCounts } from '@/lib/dispatch-reconcile';
 import type { DispatchOutboxHealth } from '@buildd/core/dispatch-outbox';
+import { alertFloorRepair, floorRepairConditions } from '@/lib/dispatch-alerts';
 
 export const maxDuration = 60;
 
@@ -153,6 +156,14 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
     }
   }
 
+  // The floor should find nothing: anything it repaired is a missed
+  // transition. Called with no conditions too, so a clear is reported.
+  const conditions = floorRepairConditions({
+    reconcile: reconciled as Isolated<ReconcileCounts>,
+    health: health as Isolated<DispatchOutboxHealth>,
+  });
+  const alert = await isolate(alertFloorRepair(conditions));
+
   const backfilledCount = failed(startAtBackfilled) ? 0 : (startAtBackfilled as number);
   const dependencyCount = failed(dependencyWakes) ? 0 : (dependencyWakes as number);
   const rc = failed(reconciled) ? null : (reconciled as ReconcileCounts);
@@ -163,7 +174,7 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
     gate: gate.reason,
     drain: totals,
     timer: failed(timer) ? timer : 'reseeded',
-    repair: { startAtBackfilled, dependencyWakes, published, reconciled, health },
+    repair: { startAtBackfilled, dependencyWakes, published, reconciled, health, alert },
   };
   console.log(
     `[dispatch-drain] floor claimed=${totals.claimed} delivered=${totals.delivered} skipped=${totals.skipped}` +

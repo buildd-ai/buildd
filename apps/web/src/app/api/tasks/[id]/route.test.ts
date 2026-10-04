@@ -21,6 +21,9 @@ const mockResolveCompletedTask = mock(() => Promise.resolve());
 const mockWakeTask = mock(async (_id: string, _cause: string) => {});
 const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
 
+const mockDispatchHistory = mock(async (_taskId: string) => [] as any[]);
+mock.module('@buildd/core/dispatch-outbox', () => ({ dispatchHistoryForTask: mockDispatchHistory }));
+
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
@@ -412,6 +415,28 @@ describe('GET /api/tasks/[id]', () => {
     // through when present by accident.
     const callArgs = mockWorkersFindMany.mock.calls[0]?.[0] as any;
     expect(callArgs?.columns?.rejectedCompletionPayload).toBe(true);
+  });
+
+  it('include=dispatch returns the task\'s outbox trail; not read otherwise', async () => {
+    const mockTask = { id: TASK_ID, title: 'Test Task', workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' } };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockDispatchHistory.mockClear();
+    const entry = { id: 'o-1', cause: 'task.created', status: 'handed_off', transport: 'dispatch', handedOffAt: '2026-10-04T12:00:00.000Z', deliveredVia: null, attemptCount: 1, lastError: null };
+    mockDispatchHistory.mockResolvedValueOnce([entry]);
+
+    const res = await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' }, search: '?include=dispatch' }), TASK_ID);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.dispatch).toEqual([entry]);
+    expect(mockDispatchHistory).toHaveBeenCalledWith(TASK_ID);
+    expect(data.workers).toBeUndefined();
+
+    mockDispatchHistory.mockClear();
+    const plain = await (await callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID)).json();
+    expect(plain.dispatch).toBeUndefined();
+    expect(mockDispatchHistory).not.toHaveBeenCalled();
   });
 
   it('omits workers/artifacts when include is not requested', async () => {
@@ -1961,5 +1986,66 @@ describe('DELETE /api/tasks/[id]', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.success).toBe(true);
+  });
+});
+
+// A per-task token may edit only its own task's descriptive fields; how the
+// task runs or ends goes through complete_task and its gates.
+describe('PATCH /api/tasks/[id] — per-task token', () => {
+  const own = {
+    id: TASK_ID, title: 'T', status: 'in_progress', mode: 'execution', missionId: null,
+    dependsOn: [], workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+  };
+  const scoped = (taskId = TASK_ID) => ({
+    id: 'acct-1', teamId: 'team-1', level: 'worker',
+    taskScope: { taskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+  });
+  const patch = (body: Record<string, unknown>) =>
+    callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }), TASK_ID);
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(scoped());
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(own);
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue(null);
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockTasksUpdate.mockReset();
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [own]) })) })) });
+  });
+
+  it('edits its own task’s description', async () => {
+    const res = await patch({ description: 'clarified scope' });
+    expect(res.status).toBe(200);
+    expect(mockTasksUpdate).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['status', { status: 'completed' }],
+    ['missionId', { missionId: '22222222-2222-2222-2222-222222222222' }],
+    ['held', { held: false }],
+    ['tier', { tier: 'premium' }],
+  ])('refuses %s, naming it, and writes nothing', async (field, body) => {
+    const res = await patch(body);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain(field);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('cannot edit another task', async () => {
+    mockAccountsFindFirst.mockResolvedValue(scoped('33333333-3333-3333-3333-333333333333'));
+    const res = await patch({ description: 'x' });
+    expect(res.status).toBe(404);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('leaves an account key’s fields unrestricted', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
+    const res = await patch({ priority: 3, held: false });
+    expect(res.status).not.toBe(403);
   });
 });

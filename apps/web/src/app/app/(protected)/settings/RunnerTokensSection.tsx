@@ -13,6 +13,7 @@ import { StatusChip } from './_components/ConnectionRow';
 import { groupRunnerTokens } from './_lib/runner-token-groups';
 import { shortAgo } from '@/lib/mission-list-card';
 import HostRunnerToggle from './HostRunnerToggle';
+import MaxConcurrentWorkersEditor from './MaxConcurrentWorkersEditor';
 
 interface Account {
   id: string;
@@ -60,6 +61,9 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Teams start folded: the header row already says how many tokens and when one was last seen.
   const [openTeams, setOpenTeams] = useState<Set<string>>(() => new Set());
+  const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState<Record<string, number>>(
+    accounts.reduce((acc, a) => ({ ...acc, [a.id]: a.maxConcurrentWorkers }), {}),
+  );
   const groups = groupRunnerTokens(accounts);
   const toggleTeam = (team: string) => setOpenTeams((cur) => {
     const next = new Set(cur);
@@ -184,7 +188,12 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
                                   <span>·</span>
                                   <span>Type: {account.type}</span>
                                   <span>·</span>
-                                  <span>Workers: {account.maxConcurrentWorkers}</span>
+                                  <MaxConcurrentWorkersEditor
+                                    accountId={account.id}
+                                    value={maxConcurrentWorkers[account.id] ?? account.maxConcurrentWorkers}
+                                    onUpdate={(newValue) => setMaxConcurrentWorkers((cur) => ({ ...cur, [account.id]: newValue }))}
+                                    canEdit={account.canManageHostRunner === true}
+                                  />
                                   {account.authType === 'api' && (
                                     <><span>·</span><span>Cost: ${account.totalCost}</span></>
                                   )}
