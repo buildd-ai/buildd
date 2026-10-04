@@ -681,7 +681,7 @@ async function handlePullRequestEvent(event: {
       const retargetCandidate = await db.query.workers.findFirst({
         where: workerOwnsPr(repository.full_name, pr.number),
         columns: { id: true, workspaceId: true, taskId: true, prBaseRef: true },
-        with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true } } },
+        with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true, dependsOn: true } } },
       });
 
       const rebased = await db

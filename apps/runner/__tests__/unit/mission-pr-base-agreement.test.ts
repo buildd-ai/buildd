@@ -107,6 +107,7 @@ describe('prompt/guard agreement on a task PR base', () => {
       mission: { workingBranch: INTEGRATION_BRANCH, integrationBranchEnabled: true },
       missionId: 'mission-1',
       context: { baseBranch: 'buildd/99999999-phase-1' },
+      dependsOn: ['99999999-0000-0000-0000-000000000000'],
     };
     expect(serverSideBase(task)).toBe('buildd/99999999-phase-1');
     expect(promptPrTarget(task)).toBe('buildd/99999999-phase-1');
