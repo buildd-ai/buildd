@@ -17,7 +17,7 @@
 import { LIVE_WORKER_STATUSES, OPEN_TASK_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
 import { db } from './db/client';
 import { pathClaims, pathClaimWaiters, missionNotes, workers, tasks } from './db/schema';
-import { and, eq, isNull, lt, inArray, sql } from 'drizzle-orm';
+import { and, eq, isNull, isNotNull, lt, inArray, sql } from 'drizzle-orm';
 import {
   pathsOverlap,
   stripTrailingSep,
@@ -25,6 +25,7 @@ import {
   REPO_WIDE_SENTINEL,
 } from './path-overlap';
 import { expiredParkedTaskIds } from './path-claim-ttl';
+import { outboxInsertSelectSql } from './dispatch-outbox';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -187,13 +188,34 @@ export async function findStaleClaimHolderTaskIds(): Promise<string[]> {
       columns: { blockingTaskId: true },
     }),
   ]);
+  const holderIds = new Set(activeClaims.map(c => c.taskId));
   const taskIds = [...new Set([
-    ...activeClaims.map(c => c.taskId),
+    ...holderIds,
     ...(pendingWaiters ?? []).map(w => w.blockingTaskId),
   ])];
   if (taskIds.length === 0) return [];
 
   const terminal = await findTerminalHolders(taskIds);
+  // A claim-time waiter (registerClaimDeferralWaiters) can sit behind a
+  // completed task whose PR is still open: terminal by status, but still
+  // blocking at the claim route's layer 1. Waking it every sweep would only be
+  // re-deferred, so a blocker known only through waiters is left until its PR
+  // merges or closes. A leaked lease is still cleared either way.
+  const waiterOnly = [...terminal].filter(id => !holderIds.has(id));
+  if (waiterOnly.length > 0) {
+    const prWorkers = await db.query.workers.findMany({
+      where: and(
+        inArray(workers.taskId, waiterOnly),
+        isNotNull(workers.prUrl),
+        isNull(workers.mergedAt),
+        inArray(workers.status, [...OPEN_PR_WORKER_STATUSES]),
+      ),
+      columns: { taskId: true, prLifecycleStatus: true },
+    });
+    for (const w of prWorkers ?? []) {
+      if (w.taskId && w.prLifecycleStatus !== 'closed') terminal.delete(w.taskId);
+    }
+  }
   return [...terminal];
 }
 
@@ -313,6 +335,15 @@ SELECT pg_advisory_xact_lock(hashtext('path_claims'), hashtext(COALESCE(
 )))
 FROM args`);
 }
+
+/**
+ * Spliced after each release/narrow statement's `woken` CTE: every stamped
+ * waiter that is a *pending* task gets a `path_claim.released` dispatch intent
+ * in the same statement, so the wake commits with the stamp or not at all. A
+ * running waiter is skipped here (it hears about the release through its
+ * `path_released` message); the caller kicks delivery.
+ */
+const WAKE_RELEASED_WAITERS = outboxInsertSelectSql('woken', 'path_claim.released');
 
 type RawRow = Record<string, unknown>;
 
@@ -702,7 +733,8 @@ woken AS (
     AND w.notified_at IS NULL
     AND EXISTS (SELECT 1 FROM rel r WHERE rtrim(r.path, '/') = rtrim(w.blocked_path, '/'))
   RETURNING w.waiting_task_id, w.blocked_path
-)
+),
+${WAKE_RELEASED_WAITERS}
 SELECT
   EXISTS (SELECT 1 FROM owner) AS found,
   EXISTS (SELECT 1 FROM ok) AS revision_ok,
@@ -792,7 +824,8 @@ woken AS (
     AND w.notified_at IS NULL
     AND EXISTS (SELECT 1 FROM rel r WHERE rtrim(r.path, '/') = rtrim(w.blocked_path, '/'))
   RETURNING w.waiting_task_id, w.blocked_path
-)
+),
+${WAKE_RELEASED_WAITERS}
 SELECT
   EXISTS (SELECT 1 FROM owner) AS found,
   EXISTS (SELECT 1 FROM keep) AS kept,
@@ -849,7 +882,8 @@ woken AS (
   FROM args
   WHERE w.blocking_task_id = (a->>'taskId')::uuid AND w.notified_at IS NULL
   RETURNING w.workspace_id, w.waiting_task_id, w.blocked_path
-)
+),
+${WAKE_RELEASED_WAITERS}
 SELECT
   COALESCE((SELECT r.workspace_id FROM rel r LIMIT 1), (SELECT k.workspace_id FROM woken k LIMIT 1)) AS workspace_id,
   COALESCE((SELECT jsonb_agg(r.path) FROM rel r), '[]'::jsonb) AS released_paths,
@@ -933,6 +967,108 @@ export async function registerWaiter(
   }
 
   return { registered: true };
+}
+
+export interface ClaimDeferralWaiter {
+  waitingTaskId: string;
+  blockingTaskId: string;
+  /** The blocker's path the waiting task overlaps (its lease path, or its PR manifest entry). */
+  blockedPath: string;
+}
+
+/**
+ * Worker statuses whose open PR the claim route's layer-1 backstop counts as
+ * blocking (route.ts open-PR prefetch). Mirrored in SQL below; keep in step.
+ */
+const OPEN_PR_WORKER_STATUSES = ['running', 'idle', 'starting', 'waiting_input', 'completed'] as const;
+
+/**
+ * SQL predicate text: task `<taskCol>` has a worker with an unmerged, unclosed
+ * PR — the minimal form of the claim route's layer-1 condition (it also drops
+ * holders parked past the TTL; here such a holder still counts as blocking,
+ * which errs toward no wake rather than a spurious one).
+ */
+function openPrBlocks(taskCol: string): string {
+  return `EXISTS (SELECT 1 FROM workers pw
+    WHERE pw.task_id = ${taskCol} AND pw.pr_url IS NOT NULL AND pw.merged_at IS NULL
+      AND pw.status IN (${OPEN_PR_WORKER_STATUSES.map(s => `'${s}'`).join(', ')})
+      AND pw.pr_lifecycle_status IS DISTINCT FROM 'closed')`;
+}
+
+/**
+ * Register the waiters for path_overlap deferrals the claim route made in one
+ * request, so the blocker's release wakes each deferred task instead of the
+ * task sitting out a runner's fallback poll. One locked statement per
+ * workspace: upsert (re-arm) every waiter, and for each waiting task none of
+ * whose blockers still blocks, stamp its rows notified and write a
+ * `path_claim.released` intent at once.
+ *
+ * The immediate wake closes the registration race. The claim route reads
+ * leases and open PRs without the lock; a blocker that let go between that
+ * read and this write has already stamped its waiters — before this row
+ * existed — so a plain insert would leave a waiter no release will ever find.
+ * Under the workspace lock this write and any release serialize: the release
+ * either runs after and stamps this row, or ran before and this sees nothing
+ * left. A blocker "still blocks" when it holds an active lease overlapping the
+ * path, or has an open PR (merge/close stamps `merged_at`/`closed` before the
+ * webhook releases, so that case serializes the same way).
+ *
+ * No deadlock BFS, unlike `registerWaiter`. That check exists so a *running*
+ * agent is not told to wait on a cycle; this row never makes anything wait —
+ * the claim gate already deferred the task and keeps doing so whether or not
+ * the row exists. The row is only a wake hint, so a cycle here (two pending
+ * tasks each behind the other's open PR) is a real stalemate the gate imposed,
+ * not one this created, and refusing to record it would only lose the wake.
+ *
+ * Entries whose tasks are not both in `workspaceId` are dropped. Throws on a
+ * DB error: the caller logs it, and the maintenance sweep is the backstop.
+ */
+export async function registerClaimDeferralWaiters(
+  workspaceId: string,
+  entries: ClaimDeferralWaiter[],
+): Promise<{ registered: number; woken: string[] }> {
+  const clean = entries
+    .map(e => ({ ...e, blockedPath: normalizeTrailingSlash((e.blockedPath ?? '').trim()) }))
+    .filter(e => e.waitingTaskId && e.blockingTaskId && e.waitingTaskId !== e.blockingTaskId && isNonEmptyPath(e.blockedPath));
+  if (clean.length === 0) return { registered: 0, woken: [] };
+
+  const row = await runLocked({ workspaceId }, db.execute(sql`-- path_claims:register_claim_waiters
+WITH args AS (SELECT ${JSON.stringify({ workspaceId, entries: clean })}::jsonb AS a),
+req AS (
+  SELECT DISTINCT wt.id AS waiting_task_id, bt.id AS blocking_task_id, e->>'blockedPath' AS blocked_path
+  FROM args
+  CROSS JOIN LATERAL jsonb_array_elements(a->'entries') AS e
+  JOIN tasks wt ON wt.id = (e->>'waitingTaskId')::uuid AND wt.workspace_id = (a->>'workspaceId')::uuid
+  JOIN tasks bt ON bt.id = (e->>'blockingTaskId')::uuid AND bt.workspace_id = (a->>'workspaceId')::uuid
+),
+held AS (
+  SELECT r.*, (
+    EXISTS (SELECT 1 FROM path_claims pc
+      WHERE pc.task_id = r.blocking_task_id AND pc.released_at IS NULL
+        AND (rtrim(pc.path, '/') = r.blocked_path
+          OR starts_with(r.blocked_path, rtrim(pc.path, '/') || '/')
+          OR starts_with(rtrim(pc.path, '/'), r.blocked_path || '/')))
+    OR ${sql.raw(openPrBlocks('r.blocking_task_id'))}
+  ) AS still_blocking
+  FROM req r
+),
+freed AS (
+  SELECT h.waiting_task_id FROM held h GROUP BY h.waiting_task_id HAVING NOT bool_or(h.still_blocking)
+),
+up AS (
+  INSERT INTO path_claim_waiters (workspace_id, blocking_task_id, waiting_task_id, blocked_path, notified_at)
+  SELECT (a->>'workspaceId')::uuid, h.blocking_task_id, h.waiting_task_id, h.blocked_path,
+    CASE WHEN h.waiting_task_id IN (SELECT f.waiting_task_id FROM freed f) THEN now() END
+  FROM held h, args
+  ON CONFLICT (blocking_task_id, waiting_task_id, blocked_path) DO UPDATE SET notified_at = EXCLUDED.notified_at
+  RETURNING waiting_task_id
+),
+${outboxInsertSelectSql('freed', 'path_claim.released')}
+SELECT
+  (SELECT count(*) FROM up) AS registered,
+  COALESCE((SELECT jsonb_agg(w.task_id) FROM wake w), '[]'::jsonb) AS woken`));
+
+  return { registered: Number(row?.registered ?? 0), woken: jsonArray<string>(row?.woken) };
 }
 
 /**
