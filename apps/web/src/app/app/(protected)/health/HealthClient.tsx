@@ -725,7 +725,7 @@ export function HealthClient({
                           </span>
                           <span
                             className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
-                            title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · not yet probed'}`}
+                            title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · never probed'}`}
                           >
                             {sandboxLabel}
                           </span>
@@ -1238,7 +1238,7 @@ function ConsumptionSection({
           <span
             data-testid="consumption-scan-caveat"
             className="text-[11px] text-text-muted text-right"
-            title={`The scan reads the newest ${scan.limit} terminal workers, newest first. Rows older than the cap were not read, so every figure in this section, per-model rows included, is a floor for the ${window} window, and a complete count only from ${scan.completeSince} onward.`}
+            title={`Newest ${scan.limit} finished workers only. Figures are floors for ${window}; complete from ${scan.completeSince}.`}
           >
             {caveat}
           </span>
@@ -1265,7 +1265,7 @@ function ConsumptionSection({
                 <span
                   data-testid="tool-coverage"
                   className="text-xs text-text-muted"
-                  title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log, so their counts are a floor. The ≥ marks those. Separate from the scan cap above, which truncates the population rather than the attribution."
+                  title="Older tasks are reconstructed from a capped MCP call log. ≥ marks those counts as floors."
                 >
                   {/* `≥` when any counted row is reconstructed rather than
                       measured: without it, a floor reads as an exact count. */}
@@ -1386,7 +1386,7 @@ function ConsumptionSection({
             <div className="min-w-0">
               <div
                 className="text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted"
-                title="How often the model that ran disagreed with the model the router assigned (tasks.predicted_model). Aliases match any release in their family, so a team-less task assigned a bare family alias that ran a release of that same family counts as agreement."
+                title="How often the model that ran differed from the one assigned. A family alias matches any release in that family."
               >
                 assigned vs actual
               </div>
@@ -2370,7 +2370,7 @@ function FailureAnalyticsSection({
             <div>
               <span
                 className="text-[11px] md:text-[10px] font-mono uppercase tracking-widest text-text-muted"
-                title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator. They have not had the chance to fail yet, and counting them made this number drift downward as work landed."
+                title="Failed / finished workers in the window. In-flight workers are excluded."
               >
                 Failure rate
               </span>

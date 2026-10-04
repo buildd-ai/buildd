@@ -163,12 +163,7 @@ export function canvasMood(pulse: CanvasPulse | null | undefined): CanvasMood | 
 }
 
 const WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine'];
-const MOOD_LABEL: Record<CanvasMood, string> = { calm: 'CALM', needs: 'NEEDS YOU' };
-
-function dayPart(now: Date, timeZone?: string): 'morning' | 'afternoon' | 'evening' {
-  const h = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone }).format(now));
-  return h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
-}
+const MOOD_LABEL: Record<CanvasMood, string> = { calm: 'CALM', needs: 'TO REVIEW' };
 
 function dateLabel(now: Date, timeZone?: string): string {
   const parts = new Intl.DateTimeFormat('en-US', { weekday: 'short', day: 'numeric', month: 'short', timeZone }).formatToParts(now);
@@ -187,19 +182,19 @@ export function canvasHero(input: { pulse: CanvasPulse | null | undefined; name:
     return { overline, mood, hero: canvasGreeting(name), sub: 'Ask about your work in plain words, or describe something to build.' };
   }
   if (mood === 'calm') {
-    const tail = pulse.live > 0 ? `${agents(pulse.live)}.` : `A good ${dayPart(now, timeZone)} to start something.`;
-    return { overline, mood, hero: 'All quiet.', sub: `Nothing is waiting on you. ${tail}` };
+    const tail = `${agents(pulse.live)}.`;
+    return { overline, mood, hero: 'All quiet.', sub: pulse.live > 0 ? `Nothing to review. ${tail}` : 'Nothing to review.' };
   }
   const n = pulse.needsYou.length;
   const first = pulse.needsYou[0].title;
   if (n === 1 && !pulse.needsYouCapped) {
-    return { overline, mood, hero: 'One thing needs you.', sub: `“${first}” is waiting on your answer.` };
+    return { overline, mood, hero: 'One to review.', sub: `“${first}”` };
   }
   return {
     overline,
     mood,
-    hero: pulse.needsYouCapped ? 'Several things need you.' : `${WORDS[n] ?? n} things need you.`,
-    sub: pulse.needsYouCapped ? `“${first}” and more are waiting on you.` : `“${first}” and ${n - 1} more are waiting on you.`,
+    hero: pulse.needsYouCapped ? 'Several to review.' : `${WORDS[n] ?? n} to review.`,
+    sub: pulse.needsYouCapped ? `“${first}” and more` : `“${first}” and ${n - 1} more`,
   };
 }
 
@@ -233,8 +228,8 @@ export function canvasSuggestions(
     const needs: CanvasSuggestion = n === 1 && !pulse.needsYouCapped
       ? { label: pulse.needsYou[0].action ?? needsYouAction({ title: first }), text: `What does "${first}" need from me?`, send: true, tone: 'needs' }
       : {
-          label: pulse.needsYouCapped ? "Walk me through what's waiting on me" : `Walk me through the ${n} things waiting on me`,
-          text: 'What needs me right now?',
+          label: pulse.needsYouCapped ? 'Go through what to review' : `Go through the ${n} to review`,
+          text: 'What do I need to review?',
           send: true,
           tone: 'needs',
         };

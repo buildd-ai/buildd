@@ -791,7 +791,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 )}
                 {!connectorsLoading && teamConnectors.length === 0 && (
                   <p className="text-[12px] text-text-muted">
-                    No team connectors yet. Browse the registry above, or add one in Settings → Connectors.
+                    No team connectors. Browse the registry above, or add one in Settings → Connectors.
                   </p>
                 )}
                 {teamConnectors.map((connector) => {

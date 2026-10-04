@@ -42,7 +42,7 @@ describe('MissionReleaseFooter — gated archetype', () => {
     const html = renderToStaticMarkup(
       <MissionReleaseFooter data={gated({ queueDepth: val(4), baselineSource: 'prod_head' })} />,
     );
-    expect(html).toContain('no releases yet');
+    expect(html).toContain('no releases ·');
     expect(html).toContain('4 unshipped');
   });
 
@@ -50,7 +50,7 @@ describe('MissionReleaseFooter — gated archetype', () => {
     const html = renderToStaticMarkup(
       <MissionReleaseFooter data={gated({ queueDepth: val(4), baselineSource: 'healthy' })} />,
     );
-    expect(html).not.toContain('no releases yet');
+    expect(html).not.toContain('no releases ·');
     expect(html).toContain('4 unshipped');
   });
 });

@@ -34,7 +34,7 @@ export default async function ChatPage({
   const emptyState = data.conversations.length > 0
     ? <ConversationList items={data.conversations} />
     : historyOpen
-      ? <p data-testid="conversation-list-empty" className="px-1 font-voice text-[17px] italic text-[var(--chat-muted)] md:hidden">No chats yet. Start one below.</p>
+      ? <p data-testid="conversation-list-empty" className="px-1 font-voice text-[17px] italic text-[var(--chat-muted)] md:hidden">No chats.</p>
       : null;
   return (
     <>

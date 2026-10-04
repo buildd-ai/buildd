@@ -54,7 +54,7 @@ export function missionInsight(s: MissionSheetState): MissionInsight | null {
     return { text: `Marked complete, but ${unchecked(s)} of ${s.goal.total} goal ${plural(s.goal.total, 'criterion is', 'criteria are')} unchecked.`, disagrees: true };
   }
   if (!s.complete && allLanded(s) && s.live === 0) {
-    return { text: 'Everything landed, but it is not marked complete yet.', disagrees: true };
+    return { text: 'Everything landed. Not marked complete.', disagrees: true };
   }
   if (s.needsYou > 0) {
     return { text: `${s.needsYou} ${plural(s.needsYou, 'task is', 'tasks are')} waiting on you.`, disagrees: true };
@@ -62,7 +62,7 @@ export function missionInsight(s: MissionSheetState): MissionInsight | null {
   if (s.complete) {
     return { text: s.goal.total > 0 ? 'Done, and every goal criterion checks out.' : 'Done.', disagrees: false };
   }
-  if (s.planning && s.landed.total === 0) return { text: 'Still planning. No tasks yet.', disagrees: false };
+  if (s.planning && s.landed.total === 0) return { text: 'Planning. No tasks.', disagrees: false };
   const landed = `${s.landed.done} of ${s.landed.total} landed.`;
   if (s.live > 0) return { text: `${s.live} ${plural(s.live, 'agent', 'agents')} at work, ${landed}`, disagrees: false };
   return { text: `Nothing running right now. ${landed}`, disagrees: false };
@@ -87,7 +87,7 @@ export function missionAskRows(s: MissionSheetState | null): CanvasSuggestion[] 
   }
   if (!s.complete && allLanded(s) && s.live === 0) {
     return [
-      ask("Why isn't it complete yet?", 'Everything on this mission landed. Why is it not complete yet?', 'needs'),
+      ask("Why isn't it complete?", 'Everything on this mission landed. Why isn\'t it complete?', 'needs'),
       ask('What shipped?', 'What did this mission ship?'),
       LEFT,
     ];
