@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { subscribeToChannel, unsubscribeFromChannel, getPusherClient, CHANNEL_PREFIX } from '@/lib/pusher-client';
-import { needsInputEventAction, createReconnectDetector } from '@/lib/realtime-throttle';
+import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import { needsInputEventAction } from '@/lib/realtime-throttle';
+import { subscribeCatchUp } from '@/lib/app-freshness';
 import { missionTaskHref } from '@/lib/mission-task-href';
 import { questionNotificationText } from '@buildd/core/question-brief';
 
@@ -69,25 +70,10 @@ export function NeedsInputProvider({ workspaceIds, children }: Props) {
       .catch(() => {});
   }, []);
 
-  // Backstop for events missed while the tab was hidden or the socket was down.
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') fetchWaitingTasks();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-
-    const connection = getPusherClient()?.connection;
-    const isReconnect = createReconnectDetector();
-    const onStateChange = (states: { previous: string; current: string }) => {
-      if (isReconnect(states)) fetchWaitingTasks();
-    };
-    connection?.bind('state_change', onStateChange);
-
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible);
-      connection?.unbind('state_change', onStateChange);
-    };
-  }, [fetchWaitingTasks]);
+  // Backstop for events missed while the tab was hidden or the socket was
+  // down: the shell's freshness coordinator decides when (lib/app-freshness.ts),
+  // so a resume's visibility + focus + reconnect burst is one fetch, not three.
+  useEffect(() => subscribeCatchUp(() => { fetchWaitingTasks(); }), [fetchWaitingTasks]);
 
   // Subscribe to Pusher for real-time updates
   const workspaceIdsKey = workspaceIds.join(',');

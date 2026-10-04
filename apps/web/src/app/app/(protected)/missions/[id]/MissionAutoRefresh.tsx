@@ -18,6 +18,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { Clock } from '@/lib/realtime-throttle';
+import { demandCatchUp, subscribeCatchUp } from '@/lib/app-freshness';
 import { MISSION_MASTHEAD_FOLDED_PX } from '@/components/missions/MissionMasthead';
 import { missionTaskAnchorId } from '@/lib/mission-task-href';
 import {
@@ -103,6 +104,7 @@ export default function MissionAutoRefresh({
         latest.current.router.refresh();
       },
       isHidden: () => document.visibilityState === 'hidden',
+      onMissed: () => demandCatchUp('missed'),
       clock,
     });
     refresherRef.current = refresher;
@@ -128,16 +130,19 @@ export default function MissionAutoRefresh({
       }
     }
 
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') refresher.onVisible();
-    };
-    document.addEventListener('visibilitychange', onVisible);
+    // The shell's catch-up (resume, reconnect, pull) re-renders this page:
+    // anchor the reader's row around it, and drop our own pending render.
+    const unsubscribeCatchUp = subscribeCatchUp(() => {
+      const s = latest.current.scroller();
+      anchorRef.current = s ? captureScrollAnchor(s) : null;
+      refresher.onCaughtUp();
+    });
 
     return () => {
       for (const [ch, event, fn] of bound) ch?.unbind(event, fn);
       unsubscribeFromChannel(channelName);
       unsubscribeFromChannel(missionChannelName);
-      document.removeEventListener('visibilitychange', onVisible);
+      unsubscribeCatchUp();
       refresher.dispose();
       if (refresherRef.current === refresher) refresherRef.current = null;
     };
