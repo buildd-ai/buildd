@@ -5,13 +5,15 @@
 import { describe, expect, it, mock } from 'bun:test';
 
 const captured: { op: string; where: unknown }[] = [];
+// Rows a bare awaited select resolves to; [] unless a test sets it.
+let selectRows: unknown[] = [];
 const chain = (op: string): any => {
   const c: any = {
     from: () => c, leftJoin: () => c, orderBy: () => c, limit: () => Promise.resolve([]), groupBy: () => Promise.resolve([]),
     set: () => c, values: () => Promise.resolve(),
     where: (w: unknown) => { captured.push({ op, where: w }); return c; },
     returning: () => Promise.resolve([{ id: 'a' }, { id: 'b' }]),
-    then: (r: any) => Promise.resolve([]).then(r),
+    then: (r: any) => Promise.resolve(op === 'select' ? selectRows : []).then(r),
   };
   return c;
 };
@@ -44,7 +46,7 @@ mock.module('@/lib/dispatch-authority', () => ({
 }));
 
 const { PgDialect } = await import('drizzle-orm/pg-core');
-const { clusterWhere, deleteTeamLessons, insertProposalTask, priorFilingWhere, filedTodayWhere, listRecentLessons, optedInTeamsWhere, pendingConversationsWhere, teamLessonsWhere, writeTeamSettings } = await import('./store');
+const { clusterWhere, dogfoodTeamIds, listOptedInTeams, highConfidenceEvidence, deleteTeamLessons, insertProposalTask, priorFilingWhere, filedTodayWhere, listRecentLessons, optedInTeamsWhere, pendingConversationsWhere, teamLessonsWhere, writeTeamSettings } = await import('./store');
 const dialect = new PgDialect();
 const render = (w: unknown) => dialect.sqlToQuery(w as any);
 
@@ -55,6 +57,33 @@ describe('opt-in: only teams whose stored lessons flag is literally true', () =>
   it('renders a predicate on chat_retro ->> lessons = true', () => {
     const q = render(optedInTeamsWhere());
     expect(q.sql).toContain(`"teams"."chat_retro" ->> 'lessons') = 'true'`);
+  });
+});
+
+describe('dogfood: the production team list resolves the first-occurrence policy from CHAT_RETRO_DOGFOOD_TEAM_IDS', () => {
+  const OTHER = '22222222-2222-4222-8222-222222222222';
+  const optedIn = { lessons: true, proposals: true };
+
+  it('parses a comma-separated list, trimming blanks; unset is empty', () => {
+    expect([...dogfoodTeamIds({ CHAT_RETRO_DOGFOOD_TEAM_IDS: ` ${TEAM} ,, ${OTHER}` })]).toEqual([TEAM, OTHER]);
+    expect(dogfoodTeamIds({}).size).toBe(0);
+  });
+
+  it('listOptedInTeams flags the configured team dogfood and no other', async () => {
+    const prev = process.env.CHAT_RETRO_DOGFOOD_TEAM_IDS;
+    selectRows = [{ id: TEAM, chatRetro: optedIn }, { id: OTHER, chatRetro: optedIn }];
+    try {
+      process.env.CHAT_RETRO_DOGFOOD_TEAM_IDS = TEAM;
+      const teams = await listOptedInTeams();
+      expect(teams.map(t => [t.teamId, t.dogfood])).toEqual([[TEAM, true], [OTHER, false]]);
+
+      delete process.env.CHAT_RETRO_DOGFOOD_TEAM_IDS;
+      expect((await listOptedInTeams()).every(t => t.dogfood === false)).toBe(true);
+    } finally {
+      selectRows = [];
+      if (prev === undefined) delete process.env.CHAT_RETRO_DOGFOOD_TEAM_IDS;
+      else process.env.CHAT_RETRO_DOGFOOD_TEAM_IDS = prev;
+    }
   });
 });
 
@@ -74,12 +103,18 @@ describe('every read and delete is scoped to one team', () => {
     expect(q.params[1]).toEqual(new Date(NOW.getTime() - 30 * 60_000).toISOString());
   });
 
-  it('clusters: team, judged, signed, last 14 days', () => {
+  it('clusters: team, signed, last 14 days (a signature only exists on a judged lesson or a code-found visible-answer failure)', () => {
     const q = render(clusterWhere(TEAM, NOW));
     expect(q.sql).toContain('"chat_retros"."team_id" = $1');
-    expect(q.sql).toContain('"chat_retros"."status" = $2');
     expect(q.sql).toContain('"chat_retros"."signature" is not null');
-    expect(q.params.slice(0, 2)).toEqual([TEAM, 'judged']);
+    expect(q.sql).not.toContain('"chat_retros"."status"');
+    expect(q.params[0]).toEqual(TEAM);
+  });
+
+  it('high-confidence evidence: a no_output or render_gap entry at full confidence', () => {
+    const q = render(highConfidenceEvidence());
+    expect(q.sql).toContain('jsonb_array_elements("chat_retros"."evidence")');
+    expect(q.params).toEqual(['no_output', 'render_gap', 1]);
   });
 
   it('filed-today counts only this team\'s workspaces', () => {

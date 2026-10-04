@@ -12,7 +12,8 @@ import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus } from '@buildd/shared';
 import type { LessonRow } from './lesson';
 import { assertContentFree } from './lesson';
 import type { Cluster, PriorFiling } from './proposals';
-import { PROPOSAL_MAX_REFS, PROPOSAL_WINDOW_DAYS } from './proposals';
+import { HIGH_CONFIDENCE_EVIDENCE, PROPOSAL_MAX_REFS, PROPOSAL_WINDOW_DAYS } from './proposals';
+import { FIRST_OCCURRENCE_KINDS } from './visible-answer';
 import type { RetroMessage, RetroWindowInput } from './skeleton';
 import { RETRO_IDLE_MIN, RETRO_MAX_WINDOW_MESSAGES } from './skeleton';
 import type { ChatRetroSettings } from './settings';
@@ -55,11 +56,14 @@ export function pendingConversationsWhere(teamId: string, now: Date): SQL {
   )!;
 }
 
-/** This team's judged lessons in the clustering window that carry a signature. */
+/**
+ * This team's lessons in the clustering window that carry a signature. Only
+ * a judged lesson, or a visible-answer finding code made without the model
+ * (./lesson.ts withVisibleAnswer), ever carries one.
+ */
 export function clusterWhere(teamId: string, now: Date): SQL {
   return and(
     eq(chatRetros.teamId, teamId),
-    eq(chatRetros.status, 'judged'),
     isNotNull(chatRetros.signature),
     gte(chatRetros.createdAt, new Date(now.getTime() - PROPOSAL_WINDOW_DAYS * DAY_MS)),
   )!;
@@ -82,11 +86,27 @@ export function priorFilingWhere(workspaceId: string, signature: string): SQL {
   )!;
 }
 
+/** A lesson whose evidence has a no_output or render_gap entry code is sure of. */
+export function highConfidenceEvidence(): SQL {
+  const kinds = sql.join(FIRST_OCCURRENCE_KINDS.map(k => sql`${k}`), sql`, `);
+  return sql`exists (select 1 from jsonb_array_elements(${chatRetros.evidence}) e where e->>'kind' in (${kinds}) and (e->>'conf')::real >= ${HIGH_CONFIDENCE_EVIDENCE})`;
+}
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
-export async function listOptedInTeams(): Promise<Array<{ teamId: string; settings: ChatRetroSettings }>> {
+/**
+ * Teams that run buildd's dogfood policy: a high-confidence visible-answer
+ * failure files on first occurrence (./proposals.ts filesOnFirstOccurrence).
+ * Comma-separated team ids in CHAT_RETRO_DOGFOOD_TEAM_IDS; unset = none, so
+ * every other opted-in team keeps the recurrence rules.
+ */
+export function dogfoodTeamIds(env: Record<string, string | undefined> = process.env): Set<string> {
+  return new Set((env.CHAT_RETRO_DOGFOOD_TEAM_IDS ?? '').split(',').map(s => s.trim()).filter(Boolean));
+}
+
+export async function listOptedInTeams(): Promise<Array<{ teamId: string; settings: ChatRetroSettings; dogfood: boolean }>> {
   const rows = await db.select({ id: teams.id, chatRetro: teams.chatRetro }).from(teams).where(optedInTeamsWhere());
-  return rows.map(r => ({ teamId: r.id, settings: readChatRetroSettings(r.chatRetro) }));
+  const dogfood = dogfoodTeamIds();
+  return rows.map(r => ({ teamId: r.id, settings: readChatRetroSettings(r.chatRetro), dogfood: dogfood.has(r.id) }));
 }
 
 export async function readTeamSettings(teamId: string): Promise<ChatRetroSettings> {
@@ -164,6 +184,7 @@ export async function loadClusters(teamId: string, now: Date): Promise<Cluster[]
       satisfiedYes: sql<number>`count(*) filter (where ${chatRetros.satisfied} = 'yes')::int`,
       satisfiedPartly: sql<number>`count(*) filter (where ${chatRetros.satisfied} = 'partly')::int`,
       satisfiedNo: sql<number>`count(*) filter (where ${chatRetros.satisfied} = 'no')::int`,
+      highConfidence: sql<number>`count(*) filter (where ${highConfidenceEvidence()})::int`,
       workspaceId: sql<string | null>`mode() within group (order by ${chatRetros.workspaceId})`,
       lessonIds: sql<string[]>`(array_agg(${chatRetros.id} order by ${chatRetros.createdAt} desc))[1:${sql.raw(String(PROPOSAL_MAX_REFS))}]`,
       conversationIds: sql<string[]>`(array_agg(distinct ${chatRetros.conversationId}))[1:${sql.raw(String(PROPOSAL_MAX_REFS))}]`,

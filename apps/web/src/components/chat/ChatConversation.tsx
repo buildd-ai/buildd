@@ -26,6 +26,7 @@ import {
 } from '@buildd/shared';
 import { CHANNEL_PREFIX, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { useWatchDelivery } from './use-watch-delivery';
+import { useTurnSignal } from './use-turn-signal';
 import type { BuilddObjectRef, ChatMessage } from './chat-contract';
 import ChatWorkspace, { type ChatWorkspaceProps } from './ChatWorkspace';
 import type { ChatAgent } from './ChatFeed';
@@ -119,6 +120,8 @@ export default function ChatConversation(props: ChatConversationProps) {
     body: entryBody,
   });
   const { messages, send: sendText, status, error, stop, respond, setMessages, clearError } = chat;
+  // Did each answer reach the screen? Content-free; kept only for chat retro teams.
+  const turnSignal = useTurnSignal({ conversationId, messages, status });
 
   // The first message of a new chat, parked by the list page before it navigated here.
   const sentPending = useRef(false);
@@ -242,7 +245,7 @@ export default function ChatConversation(props: ChatConversationProps) {
         error={errorLine}
         notice={setupReason ? <ChatSetupCard reason={setupReason} canManage={unavailable?.canManageTeamKeys ?? canManageTeamKeys} /> : null}
         onSend={onSend}
-        onStop={() => { void stop(); }}
+        onStop={() => { turnSignal.onStop(); void stop(); }}
         onApproval={onApproval}
         title={title}
         titleSource={titleSource}

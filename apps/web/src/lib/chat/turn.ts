@@ -55,6 +55,7 @@ import { directivePart, proposeDirectiveCard, withDirectiveCard, type ChatDirect
 import { renderStandingRules } from '@buildd/core/chat-directives';
 import { backfillSteps, createStepTracker, knownCalls, mergeStepParts, withThinkingSteps } from './thinking-steps';
 import type { LimitVerdict } from './limits';
+import { withTurnRef } from './turn-signal';
 import {
   DEFAULT_TURN_TIMING, TURN_STOPPED_NOTE, USAGE_SETTLE_MS, settleWithin, withDeadlineWatchdog, withStoppedNote, wrapUpStep,
   type TurnTiming,
@@ -374,8 +375,10 @@ export async function runChatTurn(args: {
       parts: [{ type: 'text', text: text! }],
       // The routing decision call's spend, so the daily budget counts it, and
       // its content-free record (a failed call spent nothing: zero, cost null),
-      // and the routed workspace, so the next turn can carry it over.
-      usage: userTurnUsageRouted(route, routedWs?.id),
+      // and the routed workspace, so the next turn can carry it over. `turn.ref`
+      // is the client's id for this message: its turn signal lands here
+      // (./turn-signal.ts), never any text.
+      usage: withTurnRef(userTurnUsageRouted(route, routedWs?.id), message.id) as ChatUsage | null,
     });
     void pingConversation(conv.id, 'message', saved.id);
     uiMessages = [...history, { id: saved.id, role: 'user', parts: [{ type: 'text', text: text! }] }];
