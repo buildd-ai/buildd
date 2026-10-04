@@ -3494,6 +3494,12 @@ export interface WorkspaceOnboardingConfig {
  * only through `resolveScoutExtension` (packages/core/scout-capabilities.ts).
  */
 export interface WorkspaceQualityScoutConfig {
+  /**
+   * `off` (default when absent): no runs. `shadow`: run and record, never file.
+   * `propose`: apply the deduped follow-up policy. No blocking mode exists.
+   * Read only through `resolveScoutMode` (packages/core/quality-scout/ledger.ts).
+   */
+  mode?: 'off' | 'shadow' | 'propose';
   /** Overrides the detected test command as Scout's verification command. */
   verificationCommand?: string;
   /** Where probes may run. `ephemeral: true` is the only thing that permits writes. */

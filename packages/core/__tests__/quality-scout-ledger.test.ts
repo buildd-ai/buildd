@@ -1,0 +1,436 @@
+import { describe, expect, it } from 'bun:test';
+import { getTableConfig } from 'drizzle-orm/pg-core';
+import {
+  applyScoutFailure,
+  buildScoutProbeCheck,
+  completeScoutRun,
+  executeScoutProbe,
+  failScoutRun,
+  finalizeScoutProbes,
+  recordScoutFailure,
+  resolveScoutFinding,
+  resolveScoutMode,
+  scoutCheckId,
+  scoutProbeRecord,
+  scoutRunStaleness,
+  startScoutRun,
+  type ScoutCandidateLike,
+  type ScoutFindingStore,
+} from '../quality-scout/ledger';
+import { SCOUT_ACTION_STATES, SCOUT_AUTHORITY, SCOUT_MODES, type ScoutFinding, type ScoutProbeRecord, type ScoutRun } from '../quality-scout/types';
+import { verificationSignature, type VerificationExecutor } from '../verification-check';
+import { qualityScoutFindings, qualityScoutProbes, qualityScoutRuns } from '../db/schema';
+
+const SHA = 'a'.repeat(40);
+const SHA2 = 'b'.repeat(40);
+const T0 = new Date('2026-10-04T10:00:00Z');
+const T1 = new Date('2026-10-04T11:00:00Z');
+
+function run(over: Partial<Parameters<typeof startScoutRun>[0]> = {}): ScoutRun {
+  const r = startScoutRun({
+    id: 'run-1',
+    workspaceId: 'ws-1',
+    trigger: 'manual',
+    mode: 'shadow',
+    candidate: { ref: 'main', sha: SHA },
+    now: T0,
+    ...over,
+  });
+  if (!r.ok) throw new Error(r.reason);
+  return r.run;
+}
+
+const CANDIDATE: ScoutCandidateLike = {
+  id: 'cand-1',
+  family: 'contract',
+  probeKind: 'cli-journey',
+  title: 'CLI exits non-zero on bad input',
+  invariant: 'The CLI exits non-zero when given an unknown flag.',
+  sourceSignals: [{ type: 'change', ref: 'src/cli.ts' }],
+  preconditions: ['cli-journey'],
+  executor: 'cli-journey:bad-flag',
+  estimatedCost: 'low',
+  severity: 'high',
+  evidenceRequirements: ['command-output'],
+};
+
+const SELECTED = { status: 'selected', via: 'decision', reasonCode: 'changed_surface', decisionSource: 'model' } as const;
+
+function probe(over: Partial<ScoutCandidateLike> = {}): ScoutProbeRecord {
+  return scoutProbeRecord({ ...CANDIDATE, ...over }, SELECTED);
+}
+
+const failing: VerificationExecutor<{ exit: number }> = {
+  kind: 'command',
+  requires: [],
+  run: (i) => (i.exit === 0
+    ? { verdict: 'fail', observed: 'exit 0 on --nope', evidenceRefs: [{ kind: 'command_output', ref: 'ev-1' }], confidence: 0.9 }
+    : { verdict: 'pass', observed: `exit ${i.exit}` }),
+};
+
+const CAPS = ['cli-journey:bad-flag'];
+const EVIDENCE = { 'command-output': 'complete' } as const;
+
+function executed(r: ScoutRun, input: { exit: number }, p = probe()): ScoutProbeRecord {
+  return executeScoutProbe(r, p, failing, { input, evidence: EVIDENCE, capabilities: CAPS, now: T0 });
+}
+
+describe('mode', () => {
+  it('has exactly off|shadow|propose and no blocking authority', () => {
+    expect([...SCOUT_MODES]).toEqual(['off', 'shadow', 'propose']);
+    expect(SCOUT_AUTHORITY).toBe('advisory');
+    expect(SCOUT_ACTION_STATES.some(s => /\bblock|\bgate\b/.test(s))).toBe(false);
+  });
+
+  it('absent config is off; an unrecognised value is shadow, never propose', () => {
+    expect(resolveScoutMode(undefined)).toBe('off');
+    expect(resolveScoutMode({})).toBe('off');
+    expect(resolveScoutMode({ mode: 'propose' })).toBe('propose');
+    expect(resolveScoutMode({ mode: 'shadow' })).toBe('shadow');
+    expect(resolveScoutMode({ mode: 'off' })).toBe('off');
+    expect(resolveScoutMode({ mode: 'block' })).toBe('shadow');
+    expect(resolveScoutMode('propose')).toBe('off');
+  });
+});
+
+describe('startScoutRun', () => {
+  it('records the exercised ref and SHA, the prior run and a clamped budget', () => {
+    const r = run({ prior: { runId: 'run-0', sha: SHA2 }, budget: { maxProbes: 99 } });
+    expect(r.candidate).toEqual({ ref: 'main', sha: SHA });
+    expect(r.prior).toEqual({ runId: 'run-0', sha: SHA2 });
+    expect(r.budget).toEqual({ maxProbes: 10, maxCostUsd: null });
+    expect(r.status).toBe('running');
+    expect(r.startedAt).toBe(T0.toISOString());
+    expect(r.policyVersion).toBe('scout-v1');
+  });
+
+  it('defaults the budget to 4 probes', () => {
+    expect(run().budget.maxProbes).toBe(4);
+    expect(run({ budget: { maxProbes: 0 } }).budget.maxProbes).toBe(1);
+  });
+
+  it('lower-cases the SHA and refuses anything that is not a full SHA', () => {
+    expect(run({ candidate: { ref: 'main', sha: SHA.toUpperCase() } }).candidate.sha).toBe(SHA);
+    for (const sha of ['abc123', '', 'z'.repeat(40), 'HEAD']) {
+      const r = startScoutRun({ workspaceId: 'ws', trigger: 'manual', mode: 'shadow', candidate: { ref: 'main', sha }, now: T0 });
+      expect(r).toEqual({ ok: false, reason: 'invalid_sha' });
+    }
+  });
+
+  it('refuses an empty ref and an unknown trigger', () => {
+    expect(startScoutRun({ workspaceId: 'ws', trigger: 'manual', mode: 'shadow', candidate: { ref: ' ', sha: SHA }, now: T0 }))
+      .toEqual({ ok: false, reason: 'invalid_ref' });
+    expect(startScoutRun({ workspaceId: 'ws', trigger: 'nightly' as never, mode: 'shadow', candidate: { ref: 'main', sha: SHA }, now: T0 }))
+      .toEqual({ ok: false, reason: 'invalid_trigger' });
+  });
+
+  it('mode off starts nothing', () => {
+    expect(startScoutRun({ workspaceId: 'ws', trigger: 'manual', mode: 'off', candidate: { ref: 'main', sha: SHA }, now: T0 }))
+      .toEqual({ ok: false, reason: 'mode_off' });
+  });
+});
+
+describe('scoutProbeRecord', () => {
+  it('stores the probe contract and normalises evidence requirements to the substrate shape', () => {
+    const p = probe();
+    expect(p.candidateId).toBe('cand-1');
+    expect(p.risk).toBe('high');
+    expect(p.mutates).toBe(false);
+    expect(p.evidenceRequirements).toEqual([{ key: 'command-output', need: 'complete' }]);
+    expect(p.result).toBeNull();
+    expect(p.selection).toEqual(SELECTED);
+    expect(Object.isFrozen(p)).toBe(true);
+  });
+
+  it('keeps substrate-shaped requirements as given', () => {
+    expect(probe({ evidenceRequirements: [{ key: 'screenshot', need: 'partial' }] }).evidenceRequirements)
+      .toEqual([{ key: 'screenshot', need: 'partial' }]);
+  });
+
+  it('refuses a probe with no invariant — it must be declared before execution', () => {
+    expect(() => probe({ invariant: '   ' })).toThrow(/invariant/);
+  });
+
+  it('refuses an unknown family', () => {
+    expect(() => probe({ family: 'vibes' as never })).toThrow(/family/);
+  });
+});
+
+describe('buildScoutProbeCheck', () => {
+  it('is a substrate check on the candidate SHA with a run-independent id', () => {
+    const r = run();
+    const c = buildScoutProbeCheck(r, probe(), failing);
+    expect(c.id).toBe(scoutCheckId('cand-1'));
+    expect(c.invariant).toBe(CANDIDATE.invariant);
+    expect(c.subject).toEqual({ kind: 'candidate-sha', ref: SHA });
+    expect(c.provenance).toEqual({ flavor: 'quality-scout', origin: 'run:run-1' });
+    expect(c.executor.requires).toEqual(['cli-journey:bad-flag']);
+    expect(c.defaultSeverity).toBe('high');
+    expect(buildScoutProbeCheck(run({ id: 'run-2' }), probe(), failing).id).toBe(c.id);
+  });
+});
+
+describe('executeScoutProbe — missing evidence or capability is never pass', () => {
+  it('records a fail with the substrate signature', () => {
+    const p = executed(run(), { exit: 0 });
+    expect(p.result?.verdict).toBe('fail');
+    expect(p.result?.severity).toBe('high');
+    expect(p.result?.signature).toBe(verificationSignature([scoutCheckId('cand-1')]));
+    expect(p.result?.subject.ref).toBe(SHA);
+  });
+
+  it('records a pass only when the executor ran on sufficient evidence', () => {
+    expect(executed(run(), { exit: 2 }).result?.verdict).toBe('pass');
+  });
+
+  it('a missing capability is unsupported and the executor never runs', () => {
+    let ran = false;
+    const p = executeScoutProbe(run(), probe(), { ...failing, run: () => { ran = true; return { verdict: 'pass' }; } },
+      { input: { exit: 2 }, evidence: EVIDENCE, capabilities: [], now: T0 });
+    expect(p.result?.verdict).toBe('unsupported');
+    expect(ran).toBe(false);
+  });
+
+  it('a probe with no matched executor is unsupported even if the executor would pass', () => {
+    const p = executeScoutProbe(run(), probe({ executor: null }), { kind: 'x', requires: [], run: () => ({ verdict: 'pass' }) },
+      { input: {}, evidence: EVIDENCE, capabilities: CAPS, now: T0 });
+    expect(p.result?.verdict).toBe('unsupported');
+  });
+
+  it('absent evidence is inconclusive', () => {
+    const p = executeScoutProbe(run(), probe(), failing, { input: { exit: 2 }, evidence: {}, capabilities: CAPS, now: T0 });
+    expect(p.result?.verdict).toBe('inconclusive');
+  });
+
+  it('refuses to execute a skipped probe', () => {
+    const skipped = scoutProbeRecord(CANDIDATE, { status: 'skipped', reason: 'over_budget', reasonCode: null });
+    expect(() => executed(run(), { exit: 0 }, skipped)).toThrow(/selected/);
+  });
+});
+
+describe('finalizeScoutProbes / completeScoutRun', () => {
+  it('a selected probe that never ran is recorded inconclusive, not dropped and not passed', () => {
+    const r = run();
+    const [p] = finalizeScoutProbes(r, [probe()], T1);
+    expect(p.result?.verdict).toBe('inconclusive');
+    expect(p.result?.reason).toBe('not_executed');
+    expect(p.result?.subject.ref).toBe(SHA);
+  });
+
+  it('leaves skipped probes without a result and executed probes untouched', () => {
+    const r = run();
+    const skipped = scoutProbeRecord(CANDIDATE, { status: 'skipped', reason: 'family_cap', reasonCode: null });
+    const done = executed(r, { exit: 0 });
+    const out = finalizeScoutProbes(r, [skipped, done], T1);
+    expect(out[0].result).toBeNull();
+    expect(out[1]).toBe(done);
+  });
+
+  it('completes with verdict counts and selection counters', () => {
+    const r = run();
+    const skipped = scoutProbeRecord({ ...CANDIDATE, id: 'cand-2' }, { status: 'skipped', reason: 'over_budget', reasonCode: null });
+    const { run: done, totals, probes } = completeScoutRun(r, [executed(r, { exit: 0 }), probe({ id: 'cand-3' }), skipped], {
+      candidatesGenerated: 7, costUsd: 0.12, now: T1,
+    });
+    expect(done.status).toBe('completed');
+    expect(done.completedAt).toBe(T1.toISOString());
+    expect(totals).toEqual({
+      candidatesGenerated: 7,
+      probesSelected: 2,
+      probesSkipped: 1,
+      verdicts: { total: 2, pass: 0, fail: 1, inconclusive: 1, unsupported: 0 },
+      costUsd: 0.12,
+    });
+    expect(probes[1].result?.reason).toBe('not_executed');
+  });
+
+  it('a failed run keeps a bounded error', () => {
+    const f = failScoutRun(run(), 'x'.repeat(1000), T1);
+    expect(f.status).toBe('failed');
+    expect(f.error?.length).toBeLessThanOrEqual(500);
+  });
+});
+
+describe('scoutRunStaleness', () => {
+  it('fresh on the same SHA, stale on a newer one, unknown without a usable current SHA or a finished run', () => {
+    const { run: done } = completeScoutRun(run(), [], { candidatesGenerated: 0, now: T1 });
+    expect(scoutRunStaleness(done, SHA)).toBe('fresh');
+    expect(scoutRunStaleness(done, SHA2)).toBe('stale');
+    expect(scoutRunStaleness(done, null)).toBe('unknown');
+    expect(scoutRunStaleness(done, 'main')).toBe('unknown');
+    expect(scoutRunStaleness(run(), SHA)).toBe('unknown');
+  });
+});
+
+describe('findings — dedupe by signature, recurrence across runs', () => {
+  it('a fail creates one open finding stamped with the exercised SHA', () => {
+    const r = run();
+    const { finding, change } = applyScoutFailure(null, r, executed(r, { exit: 0 }), T0);
+    expect(change).toBe('created');
+    expect(finding).toMatchObject({
+      workspaceId: 'ws-1',
+      signature: verificationSignature([scoutCheckId('cand-1')]),
+      recurrenceKey: scoutCheckId('cand-1'),
+      checkId: scoutCheckId('cand-1'),
+      family: 'contract',
+      severity: 'high',
+      confidence: 0.9,
+      state: 'open',
+      actionState: 'none',
+      occurrenceCount: 1,
+      firstSeenSha: SHA,
+      lastSeenSha: SHA,
+      lastSeenRunId: 'run-1',
+      reproducibility: 'unknown',
+    });
+  });
+
+  it('the same failure in a later run recurs on the same finding instead of a new one', () => {
+    const r1 = run();
+    const first = applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0).finding!;
+    const r2 = run({ id: 'run-2', candidate: { ref: 'main', sha: SHA2 } });
+    const { finding, change } = applyScoutFailure({ ...first, actionState: 'filed', actionTaskId: 'task-9' }, r2, executed(r2, { exit: 0 }), T1);
+    expect(change).toBe('recurred');
+    expect(finding).toMatchObject({
+      occurrenceCount: 2,
+      firstSeenSha: SHA,
+      lastSeenSha: SHA2,
+      lastSeenRunId: 'run-2',
+      actionState: 'filed',
+      actionTaskId: 'task-9',
+    });
+  });
+
+  it('reprocessing the same run is a no-op', () => {
+    const r = run();
+    const p = executed(r, { exit: 0 });
+    const first = applyScoutFailure(null, r, p, T0).finding!;
+    expect(applyScoutFailure(first, r, p, T1)).toEqual({ finding: first, change: 'unchanged' });
+  });
+
+  it('keeps the highest severity and confidence seen', () => {
+    const r1 = run();
+    const first = { ...applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0).finding!, severity: 'critical' as const, confidence: 0.95 };
+    const r2 = run({ id: 'run-2' });
+    const { finding } = applyScoutFailure(first, r2, executed(r2, { exit: 0 }), T1);
+    expect(finding?.severity).toBe('critical');
+    expect(finding?.confidence).toBe(0.95);
+  });
+
+  it('a resolved finding that fails again re-opens as a regression; a dismissed one stays dismissed', () => {
+    const r1 = run();
+    const first = applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0).finding!;
+    const r2 = run({ id: 'run-2' });
+    const resolved = resolveScoutFinding(first, r2, T1).finding!;
+    const r3 = run({ id: 'run-3' });
+    const again = applyScoutFailure(resolved, r3, executed(r3, { exit: 0 }), T1);
+    expect(again.change).toBe('regressed');
+    expect(again.finding).toMatchObject({ state: 'open', regressionCount: 1, resolvedRunId: null });
+
+    const dismissed = applyScoutFailure({ ...first, state: 'dismissed' }, r3, executed(r3, { exit: 0 }), T1);
+    expect(dismissed.finding?.state).toBe('dismissed');
+    expect(dismissed.change).toBe('recurred');
+  });
+
+  it('only a fail touches the finding ledger', () => {
+    const r = run();
+    for (const p of [
+      executed(r, { exit: 2 }),
+      executeScoutProbe(r, probe(), failing, { input: { exit: 0 }, evidence: {}, capabilities: CAPS, now: T0 }),
+      executeScoutProbe(r, probe(), failing, { input: { exit: 0 }, evidence: EVIDENCE, capabilities: [], now: T0 }),
+    ]) {
+      expect(applyScoutFailure(null, r, p, T0)).toEqual({ finding: null, change: 'ignored' });
+    }
+  });
+
+  it('a pass resolves an open finding at the passing SHA; anything else leaves it alone', () => {
+    const r1 = run();
+    const first = applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0).finding!;
+    const r2 = run({ id: 'run-2', candidate: { ref: 'main', sha: SHA2 } });
+    expect(resolveScoutFinding(first, r2, T1)).toMatchObject({
+      change: 'resolved',
+      finding: { state: 'resolved', resolvedRunId: 'run-2', resolvedSha: SHA2, resolvedAt: T1.toISOString() },
+    });
+    expect(resolveScoutFinding({ ...first, state: 'dismissed' }, r2, T1).change).toBe('unchanged');
+  });
+});
+
+describe('recordScoutFailure — compare-and-set on occurrence count', () => {
+  function memoryStore(initial: ScoutFinding | null, opts: { raceOnce?: boolean } = {}) {
+    let row = initial;
+    let raced = false;
+    const store: ScoutFindingStore = {
+      async find() { return row; },
+      async insert(f) {
+        if (row) return false;
+        row = f;
+        return true;
+      },
+      async update(f, expectedCount) {
+        if (opts.raceOnce && !raced) {
+          raced = true;
+          row = { ...row!, occurrenceCount: row!.occurrenceCount + 1, lastSeenRunId: 'run-other' };
+          return false;
+        }
+        if (!row || row.occurrenceCount !== expectedCount) return false;
+        row = f;
+        return true;
+      },
+    };
+    return { store, get: () => row };
+  }
+
+  it('inserts the first occurrence', async () => {
+    const r = run();
+    const m = memoryStore(null);
+    expect(await recordScoutFailure(r, executed(r, { exit: 0 }), { store: m.store, now: () => T0 })).toBe('created');
+    expect(m.get()?.occurrenceCount).toBe(1);
+  });
+
+  it('re-reads and re-merges after losing a race, so no occurrence is lost', async () => {
+    const r1 = run();
+    const first = applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0).finding!;
+    const m = memoryStore(first, { raceOnce: true });
+    const r2 = run({ id: 'run-2' });
+    expect(await recordScoutFailure(r2, executed(r2, { exit: 0 }), { store: m.store, now: () => T1 })).toBe('recurred');
+    expect(m.get()?.occurrenceCount).toBe(3);
+    expect(m.get()?.lastSeenRunId).toBe('run-2');
+  });
+
+  it('never throws; a store error is reported as failed', async () => {
+    const r = run();
+    const store: ScoutFindingStore = {
+      find: async () => { throw new Error('db down'); },
+      insert: async () => true,
+      update: async () => true,
+    };
+    expect(await recordScoutFailure(r, executed(r, { exit: 0 }), { store, now: () => T0 })).toBe('failed');
+  });
+
+  it('a non-fail result writes nothing', async () => {
+    const r = run();
+    const m = memoryStore(null);
+    expect(await recordScoutFailure(r, executed(r, { exit: 2 }), { store: m.store, now: () => T0 })).toBe('ignored');
+    expect(m.get()).toBeNull();
+  });
+});
+
+describe('schema', () => {
+  const uniques = (t: Parameters<typeof getTableConfig>[0]) =>
+    getTableConfig(t).indexes.filter(i => i.config.unique).map(i => i.config.columns.map(c => (c as { name: string }).name));
+
+  it('runs record the exercised ref and SHA', () => {
+    const cols = getTableConfig(qualityScoutRuns).columns.map(c => c.name);
+    for (const c of ['candidate_ref', 'candidate_sha', 'prior_run_id', 'prior_sha', 'mode', 'status', 'budget', 'policy_version']) {
+      expect(cols).toContain(c);
+    }
+  });
+
+  it('one probe row per candidate per run', () => {
+    expect(uniques(qualityScoutProbes)).toContainEqual(['run_id', 'candidate_id']);
+  });
+
+  it('one finding per workspace and signature', () => {
+    expect(uniques(qualityScoutFindings)).toContainEqual(['workspace_id', 'signature']);
+  });
+});
