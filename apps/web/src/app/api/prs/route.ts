@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { listReachableWorkspaceIds } from '@/lib/workspace-access';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/lib/pr-list';
@@ -17,7 +17,8 @@ import { DEFAULT_MERGED_WINDOW_DAYS, listPrsQuery, parsePrListState } from '@/li
  */
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
-  const apiAccount = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null, req);
+  // A per-task token lists PRs only in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(authHeader?.replace('Bearer ', '') || null, req);
   const user = apiAccount ? null : await getCurrentUser();
   if (!apiAccount && !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -29,6 +30,7 @@ export async function GET(req: NextRequest) {
   // its links, or a user's teams' workspaces. A requested workspace outside it
   // lists nothing, without saying whether it exists.
   let workspaceIds = await listReachableWorkspaceIds(apiAccount ? { account: apiAccount } : { userId: user!.id });
+  if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
   const requested = sp.get('workspaceId');
   if (requested) workspaceIds = workspaceIds.filter(id => id === requested);
 

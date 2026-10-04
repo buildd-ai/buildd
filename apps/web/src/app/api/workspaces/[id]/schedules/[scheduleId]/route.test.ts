@@ -125,6 +125,29 @@ describe('GET /schedules/[scheduleId]', () => {
     const data = await res.json();
     expect(data.schedule.id).toBe(SCHEDULE_ID);
   });
+
+  describe('per-task token', () => {
+    const scoped = (workspaceId: string) => ({
+      id: 'account-1', level: 'worker', taskScope: { taskId: 't-1', workspaceId, expiresAt: Date.now() + 60_000 },
+    });
+
+    it('reads a schedule in its own task’s workspace', async () => {
+      (getCurrentUser as any).mockResolvedValue(null);
+      (authenticateApiKey as any).mockResolvedValue(scoped(WORKSPACE_ID));
+      (verifyAccountWorkspaceAccess as any).mockResolvedValue(true);
+      const res = await GET(makeRequest('GET', undefined, 'Bearer bld_x'), { params });
+      expect(res.status).toBe(200);
+    });
+
+    it('refuses a schedule in another workspace the account reaches, without reading it', async () => {
+      (getCurrentUser as any).mockResolvedValue(null);
+      (authenticateApiKey as any).mockResolvedValue(scoped('00000000-0000-0000-0000-000000000009'));
+      (verifyAccountWorkspaceAccess as any).mockResolvedValue(true);
+      const res = await GET(makeRequest('GET', undefined, 'Bearer bld_x'), { params });
+      expect(res.status).toBe(401);
+      expect(db.query.taskSchedules.findFirst).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('PATCH /schedules/[scheduleId]', () => {
