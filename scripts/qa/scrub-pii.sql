@@ -229,6 +229,9 @@ DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Failure incident ledger: titles and evidence refs echo task/PR titles and
+-- error text; derived from gate_events and worker failures, wiped with them.
+DELETE FROM failure_incidents;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
 DELETE FROM task_dispatch_outbox;
 DELETE FROM watcher_events;
