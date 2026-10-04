@@ -195,3 +195,31 @@ describe('server decisions resolve through the prompts table', () => {
     expect(manifestPromptVersion()).toBe(`${MANIFEST_PROMPT_VERSION}+p5`);
   });
 });
+
+describe('production fallback log', () => {
+  it('logs a fallback once per id and reason, only in production with seeded rows, and never text', async () => {
+    const { productionFallbackLogger } = await import('../prompts-source');
+    const { setPromptFallbackListener } = await import('../prompts');
+    const lines: string[] = [];
+    setPromptFallbackListener(productionFallbackLogger({ VERCEL_ENV: 'production' }, m => lines.push(m)));
+
+    resolvePrompt('test.unseeded', 'public words');
+    expect(lines).toEqual([]); // no rows installed: running on defaults by design
+
+    installPrompts([row('test.other', 1, 'x')]);
+    resolvePrompt('test.unseeded', 'public words');
+    resolvePrompt('test.unseeded', 'public words');
+    expect(lines).toEqual(['[prompts] "test.unseeded" resolved to its public default (missing) in production']);
+    expect(lines.join(' ')).not.toContain('public words');
+  });
+
+  it('stays quiet outside production', async () => {
+    const { productionFallbackLogger } = await import('../prompts-source');
+    const { setPromptFallbackListener } = await import('../prompts');
+    const lines: string[] = [];
+    setPromptFallbackListener(productionFallbackLogger({ VERCEL_ENV: 'preview' }, m => lines.push(m)));
+    installPrompts([row('test.other', 1, 'x')]);
+    resolvePrompt('test.unseeded', 'public');
+    expect(lines).toEqual([]);
+  });
+});

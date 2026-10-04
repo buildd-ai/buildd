@@ -13,7 +13,7 @@ import { eq } from 'drizzle-orm';
 import { db } from './db/client';
 import { prompts } from './db/schema';
 import { createSnapshotLoader, type LoadOptions } from './runtime-snapshot';
-import { promptsSnapshot, type ActivePrompt, type PromptSnapshot } from './prompts';
+import { promptsSnapshot, setPromptFallbackListener, type ActivePrompt, type PromptFallbackReason, type PromptSnapshot } from './prompts';
 
 export const PROMPTS_TTL_MS = 60_000;
 
@@ -75,7 +75,29 @@ export function resetPromptsLoader(): void {
   loader.reset();
 }
 
+/**
+ * The production fallback log: once per id and reason per process, and only
+ * when this deployment carries its own rows (the snapshot is non-empty), so a
+ * deployment that runs on public defaults by design stays quiet. Names the id,
+ * never text. The cross-process alert is the release health check's
+ * (`apps/web/src/lib/prompt-fallback-alert.ts`).
+ */
+export function productionFallbackLogger(
+  env: Record<string, string | undefined> = process.env,
+  log: (m: string) => void = m => console.warn(m),
+): (id: string, reason: PromptFallbackReason) => void {
+  const logged = new Set<string>();
+  return (id, reason) => {
+    if (env.VERCEL_ENV !== 'production' || promptsSnapshot.peek().size === 0) return;
+    const key = `${id}:${reason}`;
+    if (logged.has(key)) return;
+    logged.add(key);
+    log(`[prompts] "${id}" resolved to its public default (${reason}) in production`);
+  };
+}
+
 /** Load now and keep resolves fresh from here on. Once per server process, from instrumentation.ts. */
 export function startPrompts(): Promise<void> {
+  setPromptFallbackListener(productionFallbackLogger());
   return loader.start();
 }

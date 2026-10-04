@@ -47,6 +47,7 @@ export function resetPrompts(): void {
   promptsSnapshot.reset();
   fallbacks.clear();
   warned.clear();
+  fallbackListener = null;
 }
 
 // ── Fallback accounting ───────────────────────────────────────────────────────
@@ -57,10 +58,18 @@ export type PromptFallbackReason = 'missing' | 'invalid';
 const fallbacks = new Map<string, { missing: number; invalid: number }>();
 const warned = new Set<string>();
 
+let fallbackListener: ((id: string, reason: PromptFallbackReason) => void) | null = null;
+
+/** Called on every fallback (after counting). The server installs one that logs in production; null removes it. */
+export function setPromptFallbackListener(fn: ((id: string, reason: PromptFallbackReason) => void) | null): void {
+  fallbackListener = fn;
+}
+
 function countFallback(id: string, reason: PromptFallbackReason): void {
   const c = fallbacks.get(id) ?? { missing: 0, invalid: 0 };
   c[reason]++;
   fallbacks.set(id, c);
+  fallbackListener?.(id, reason);
 }
 
 /** Per prompt id, how many resolves in this process fell back to the public default. */
@@ -121,4 +130,53 @@ export function resolvePrompt(id: string, publicDefault: string): string {
  */
 export function resolvedPromptVersion(publicVersion: string, resolved: Pick<ResolvedPrompt, 'source' | 'version'>): string {
   return resolved.source === 'active' && resolved.version !== null ? `${publicVersion}+p${resolved.version}` : publicVersion;
+}
+
+// ── Registry ──────────────────────────────────────────────────────────────────
+
+/**
+ * Every prompt id this codebase resolves, with its public default and the
+ * check an override body must pass. `definePromptedDecision`,
+ * `promptedDecisionKind` and each direct `resolvePrompt` call site register
+ * their id here at module load, so a seed (`prompt-seed.ts`) can refuse an id
+ * nothing reads and a body the reader would reject, before it is written.
+ *
+ * `format` is how the body is stored: `json` for a decision's questions (or
+ * another structured override), `text` for a plain prompt.
+ */
+export interface RegisteredPrompt {
+  id: string;
+  format: 'text' | 'json';
+  /** The public default as an override body: what a seed of the default would write. */
+  publicDefault: string;
+  /** Why `body` would be rejected by the reader, or null when it would be used. */
+  validate(body: string): string | null;
+}
+
+const registry = new Map<string, RegisteredPrompt>();
+
+/** Register a prompt id. Re-registering an id (module reload) replaces it. */
+export function registerPrompt(entry: RegisteredPrompt): void {
+  registry.set(entry.id, Object.freeze({ ...entry }));
+}
+
+/** Every registered prompt, sorted by id. Only ids whose modules have been imported. */
+export function listRegisteredPrompts(): RegisteredPrompt[] {
+  return [...registry.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** The check for a plain-text prompt: any non-blank body. */
+export function validateTextPrompt(body: string): string | null {
+  return body.trim() === '' ? 'empty body' : null;
+}
+
+/**
+ * What text is in effect in this process, as fingerprints only: id, row
+ * version and content hash per active row, sorted by id. An id not listed
+ * resolves to its public default. Never includes a body.
+ */
+export function activePromptFingerprints(): Array<{ id: string; version: number; contentHash: string }> {
+  return [...promptsSnapshot.read().values()]
+    .map(({ id, version, contentHash }) => ({ id, version, contentHash }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }

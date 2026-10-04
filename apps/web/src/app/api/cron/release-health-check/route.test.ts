@@ -41,6 +41,10 @@ mock.module('@/lib/release/gated-merge', () => ({
 }));
 
 const mockVerifyReleaseDeployment = mock((_releaseId: string, _db: any) => Promise.resolve());
+// The prompt fallback check has its own tests (lib/prompt-fallback-alert.test.ts).
+const mockCheckPromptFallbacks = mock(async () => ({ status: 'skipped', reason: 'not production' }));
+mock.module('@/lib/prompt-fallback-alert', () => ({ checkPromptFallbacks: mockCheckPromptFallbacks }));
+
 mock.module('@/lib/release-verification', () => ({
   verifyReleaseDeployment: mockVerifyReleaseDeployment,
 }));
@@ -710,5 +714,15 @@ describe('release-health-check cron — pending_external heal before failing', (
 
     expect(data.pendingExternalHealed).toBe(0);
     expect(updateCalls.find((c) => c.values.state === 'failed')).toBeUndefined();
+  });
+});
+
+describe('release-health-check cron — prompt fallbacks', () => {
+  it('runs the prompt fallback check every tick and reports its verdict', async () => {
+    mockCheckPromptFallbacks.mockClear();
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect(mockCheckPromptFallbacks).toHaveBeenCalledTimes(1);
+    expect((await res.json()).promptCheck).toEqual({ status: 'skipped', reason: 'not production' });
   });
 });
