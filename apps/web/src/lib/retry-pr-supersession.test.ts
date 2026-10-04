@@ -125,6 +125,7 @@ mock.module('@/lib/workspace-installation', () => ({ installationIdForRepo: mock
 
 const {
   closeAncestorRetryPrs,
+  collectRetryFamily,
   sweepDuplicateLineagePrs,
   resolveSupersessionCause,
   SWEEP_WINDOW_MS,
@@ -175,6 +176,27 @@ beforeEach(() => {
 });
 
 const base = { installationId: 123, repoFullName: 'org/repo', successorBaseBranch: 'dev', workspaceId: 'ws' };
+
+describe('collectRetryFamily — the whole retry tree one subject forks into', () => {
+  it('from any member, returns the root and every attempt under it, siblings included', async () => {
+    // Two "after review #1" siblings of one root, one of which was itself retried.
+    TASKS.push(
+      { id: 'sibling-b2', parentTaskId: 'root-a', taskClass: 'attempt', createdAt: recent, workspaceId: 'ws' },
+      { id: 'retry-b2-child', parentTaskId: 'sibling-b2', taskClass: 'attempt', createdAt: recent, workspaceId: 'ws' },
+    );
+    const fam = await collectRetryFamily('retry-c');
+    expect(fam.rootId).toBe('root-a');
+    expect([...fam.taskIds].sort()).toEqual(['retry-b', 'retry-b2-child', 'retry-c', 'root-a', 'sibling-b2']);
+  });
+
+  it('never crosses creation provenance: a non-attempt child is a different family', async () => {
+    const fam = await collectRetryFamily('mission-task');
+    expect(fam.rootId).toBe('mission-task');
+    expect(fam.taskIds).toEqual(['mission-task']);
+    // And climbing from the provenance child stops at itself.
+    expect((await collectRetryFamily('friction-task')).taskIds).toEqual(['friction-task']);
+  });
+});
 
 describe('closeAncestorRetryPrs — lineage scope', () => {
   it('does not close a PR reached only via creation-provenance parentTaskId (regression for PR #2556)', async () => {

@@ -170,6 +170,12 @@ export interface DispatchProposal {
    * count — so of two concurrent inserts the older one stays.
    */
   selfTaskId?: string | null;
+  /**
+   * `claim`: the row exists and a runner is about to start it (`guardClaimedRetry`).
+   * A newer sibling that already has a worker then counts too — it holds the
+   * branch, and starting this one beside it is the fork.
+   */
+  mode?: 'dispatch' | 'claim';
 }
 
 export interface DispatchFacts {
@@ -183,8 +189,10 @@ export interface DispatchFacts {
   parentMerged?: boolean;
   /**
    * Open fix attempts (review, CI or conflict retry) already bound to the
-   * proposal's PR, from ANY parent in the lineage. With `selfTaskId`, only
-   * those ordered before it (createdAt, then id).
+   * proposal's PR, from ANY parent in the lineage, plus every open fix attempt
+   * in the parent's retry family whichever PR it is bound to (a sibling's PR is
+   * the same subject forked). With `selfTaskId`, only those ordered before it
+   * (createdAt, then id) — and, in claim mode, any already started.
    */
   openRetryIds?: string[];
 }
@@ -404,6 +412,26 @@ export const SUPERSESSION_RULES: readonly SupersessionRule[] = [
   },
 ];
 
+/** Pure half of `loadOpenRetryIds`: which loaded rows block `selfTaskId`. */
+export function selectOpenRetryBlockers(
+  rows: ReadonlyArray<{ id: string; createdAt: Date | null; status?: string | null; category?: string | null }>,
+  selfTaskId: string | null,
+  opts: { startedAlwaysCounts?: boolean } = {},
+): string[] {
+  const self = selfTaskId ? rows.find(r => r.id === selfTaskId) : undefined;
+  return rows
+    .filter(r => r.id !== selfTaskId)
+    .filter(r => r.category !== 'review')
+    .filter(r => !self || precedes(r, self) || (!!opts.startedAlwaysCounts && r.status !== 'pending'))
+    .map(r => r.id);
+}
+
+function precedes(a: { id: string; createdAt: Date | null }, b: { id: string; createdAt: Date | null }): boolean {
+  const ta = a.createdAt?.getTime() ?? 0;
+  const tb = b.createdAt?.getTime() ?? 0;
+  return ta !== tb ? ta < tb : a.id < b.id;
+}
+
 export function ruleById(id: SupersessionRuleId): SupersessionRule {
   const rule = SUPERSESSION_RULES.find(r => r.id === id);
   if (!rule) throw new Error(`unknown supersession rule ${id}`);
@@ -438,11 +466,18 @@ export function decideCancellations(
 export interface DispatchDecision {
   verdict: DispatchVerdict;
   rule: SupersessionRuleId | null;
+  /** For `open_retry_supersedes_duplicate`: the open attempts that block this one. */
+  blockers?: string[];
 }
 
 /** Run the table in skip_dispatch mode against a task about to be created. Pure. */
-export function decideDispatch(proposal: DispatchProposal, facts: DispatchFacts): DispatchDecision {
+export function decideDispatch(
+  proposal: DispatchProposal,
+  facts: DispatchFacts,
+  only?: readonly SupersessionRuleId[],
+): DispatchDecision {
   for (const rule of SUPERSESSION_RULES) {
+    if (only && !only.includes(rule.id)) continue;
     if (rule.dispatch(proposal, facts) === SKIP) return { verdict: SKIP, rule: rule.id };
   }
   return { verdict: KEEP, rule: null };
@@ -564,14 +599,17 @@ export async function reconcileSubjectEvent(
  */
 export async function checkDispatch(
   proposal: DispatchProposal,
-  opts: { store?: SupersessionStore } = {},
+  opts: { store?: SupersessionStore; rules?: readonly SupersessionRuleId[] } = {},
 ): Promise<DispatchDecision> {
   try {
     const store = opts.store ?? (await defaultStore());
     const facts = await store.loadDispatchFacts(proposal);
-    const decision = decideDispatch(proposal, facts);
+    const decision = decideDispatch(proposal, facts, opts.rules);
     if (decision.verdict === SKIP) {
       console.log(`[supersession] skip_dispatch ${proposal.kind} via ${proposal.door}: ${decision.rule}`);
+      if (decision.rule === 'open_retry_supersedes_duplicate') {
+        return { ...decision, blockers: [...(facts.openRetryIds ?? [])] };
+      }
     }
     return decision;
   } catch (err) {
@@ -591,7 +629,7 @@ export async function guardDispatchedTask(
   proposal: DispatchProposal,
   taskId: string,
   event: SubjectEvent,
-  opts: { store?: SupersessionStore } = {},
+  opts: { store?: SupersessionStore; rules?: readonly SupersessionRuleId[] } = {},
 ): Promise<boolean> {
   const decision = await checkDispatch({ ...proposal, selfTaskId: taskId }, opts);
   if (decision.verdict !== SKIP || !decision.rule) return false;
@@ -611,4 +649,47 @@ export async function guardDispatchedTask(
     console.error(`[supersession] post-insert guard for task ${taskId} failed:`, err);
     return false;
   }
+}
+
+/** The task fields `guardClaimedRetry` reads — every claim candidate has them. */
+export interface ClaimedRetryFields {
+  id: string;
+  workspaceId: string;
+  parentTaskId: string | null;
+  taskClass: string | null;
+  category: string | null;
+  reviewerRetryPrNumber: number | null;
+  ciRetryPrNumber: number | null;
+}
+
+/**
+ * The claim-time half of one-open-retry-per-subject. The dispatch guard stops a
+ * second sibling being FILED; this stops one that already exists — filed before
+ * the guard, or by a door that raced it — from being STARTED beside its
+ * sibling. Whichever claim comes first runs; the other is cancelled here
+ * through the same CAS and ledger (`open_retry_supersedes_duplicate`), so two
+ * branches of one retry family never both become live workers.
+ *
+ * Only that rule runs: the other rules already cancel on their own events, and
+ * a claim is not the place to re-judge them. Fails open, like every guard here.
+ * Returns true when the task must not be claimed.
+ */
+export async function guardClaimedRetry(
+  task: ClaimedRetryFields,
+  opts: { store?: SupersessionStore } = {},
+): Promise<boolean> {
+  if (task.taskClass !== 'attempt' || task.category === 'review') return false;
+  const prNumber = task.reviewerRetryPrNumber ?? task.ciRetryPrNumber;
+  if (prNumber == null) return false;
+  const door = 'POST /api/workers/claim';
+  const proposal: DispatchProposal = {
+    kind: task.reviewerRetryPrNumber != null ? 'fix' : 'ci_retry',
+    workspaceId: task.workspaceId,
+    prNumber,
+    parentTaskId: task.parentTaskId,
+    door,
+    mode: 'claim',
+  };
+  const event: SubjectEvent = { kind: 'subject_check', workspaceId: task.workspaceId, prNumber, door };
+  return guardDispatchedTask(proposal, task.id, event, { ...opts, rules: ['open_retry_supersedes_duplicate'] });
 }

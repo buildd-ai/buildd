@@ -1497,6 +1497,11 @@ export interface ClaimDiagnostics {
     routing_paused?: number;
     /** Task already had a live worker when the atomic insert ran (dup guard). */
     duplicate_worker?: number;
+    /**
+     * Retry attempt cancelled instead of claimed: another fix attempt in its
+     * retry family is already open (one open retry per subject).
+     */
+    sibling_retry_open?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */

@@ -237,8 +237,8 @@ happen is recorded rather than logged, and the hourly pr-reconcile sweep retries
 |---|---|---|---|---|
 | 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
 | 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
-| 61e | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | rejected | create_pr refused a fresh PR from a retry whose subject PR is still open and whose head is an ancestor of the new branch (or vice versa): the retry must update the subject PR |
-| 61f | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | warned | a retry opened a fresh PR while its subject PR was open: `detail.freshPrReason` is `diverged` (GitHub compare) or `unverified` (unreadable, failed open) |
+| 61e | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | rejected | create_pr refused a fresh PR from a retry whose subject PR is still open and whose head is an ancestor of the new branch (or vice versa), or diverged from it with no runner trace proving the subject branch missing or diverged (`detail.resumeCause`): the retry must update the subject PR |
+| 61f | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | warned | a retry opened a fresh PR while its subject PR was open: `detail.freshPrReason` is `diverged` (GitHub compare, plus the runner's `detail.resumeCause` of `missing` or `diverged`) or `unverified` (unreadable, failed open) |
 
 ### Automatic supersession of closed PRs (`lib/pr-supersession-detect.ts`)
 
@@ -268,7 +268,12 @@ The dispatch guard also runs the table before a fix or CI retry is created
 (`checkDispatch`) and against the inserted row (`guardDispatchedTask`).
 `open_retry_supersedes_duplicate` keeps one subject PR to one open retry: a
 newcomer is not filed, and of two racing inserts the newer cancels itself —
-recorded as row 61c with that rule id.
+recorded as row 61c with that rule id. The open set covers the whole retry
+family (`collectRetryFamily`), so a sibling fixing a sibling's PR blocks too.
+The claim route runs the same rule (`guardClaimedRetry`) before starting an
+attempt: one with an older open sibling, or a newer one already running, is
+cancelled (row 61c, surface `POST /api/workers/claim`) and counted as the
+`sibling_retry_open` claim-loop deferral.
 
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 

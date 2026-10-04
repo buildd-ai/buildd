@@ -51,8 +51,8 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
-import { closeAncestorRetryPrs, type SupersededPr } from '@/lib/retry-pr-supersession';
-import { checkFreshRetryPr, freshRetryPrRefusal } from '@/lib/retry-fresh-pr-gate';
+import { closeAncestorRetryPrs, resolveSupersessionCause, type SupersededPr } from '@/lib/retry-pr-supersession';
+import { ATTEMPT_FOOTER_PATTERN, checkFreshRetryPr, freshRetryPrRefusal, retryAttemptFooter } from '@/lib/retry-fresh-pr-gate';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
@@ -627,11 +627,12 @@ export async function POST(req: NextRequest) {
         if (retryIteration > 0) {
           try {
             const currentBody: string = prDetail.body ?? existing.body ?? '';
-            const attemptLine = `_Attempt ${retryIteration + 1}/${maxIterations} — resume failed; new branch._`;
+            // This PR was adopted, i.e. updated in place — say so, not that a
+            // resume failed.
+            const attemptLine = retryAttemptFooter({ attempt: retryIteration + 1, maxIterations, decision: 'updated' });
             // Replace an existing attempt line or append a new one.
-            const attemptPattern = /_Attempt \d+\/\d+ — resume failed; new branch\._/;
-            const updatedBody = attemptPattern.test(currentBody)
-              ? currentBody.replace(attemptPattern, attemptLine)
+            const updatedBody = ATTEMPT_FOOTER_PATTERN.test(currentBody)
+              ? currentBody.replace(ATTEMPT_FOOTER_PATTERN, attemptLine)
               : `${currentBody}\n\n---\n${attemptLine}`;
             await githubApi(
               repo.installation.installationId,
@@ -667,6 +668,9 @@ export async function POST(req: NextRequest) {
       repoFullName: repo.fullName,
       task: worker.task,
       head,
+      // The runner's own record of why it did not resume: a diverged head is
+      // let through only with one (missing/diverged).
+      resolveResumeCause: () => resolveSupersessionCause(worker.id),
     });
     if (freshPr.action === 'refuse') {
       const { error, hint } = freshRetryPrRefusal(freshPr, head);
@@ -679,7 +683,7 @@ export async function POST(req: NextRequest) {
         missionId: worker.task?.missionId ?? null,
         taskId: worker.taskId,
         workerId: worker.id,
-        detail: { subjectPrNumber: freshPr.subjectPrNumber, compareStatus: freshPr.compareStatus, head },
+        detail: { subjectPrNumber: freshPr.subjectPrNumber, compareStatus: freshPr.compareStatus, resumeCause: freshPr.resumeCause ?? null, head },
         callerOrigin: 'worker',
       });
       return NextResponse.json({ error, hint, subjectPr: { number: freshPr.subjectPrNumber, url: freshPr.subjectUrl } }, { status: 409 });
@@ -694,17 +698,16 @@ export async function POST(req: NextRequest) {
         missionId: worker.task?.missionId ?? null,
         taskId: worker.taskId,
         workerId: worker.id,
-        detail: { subjectPrNumber: freshPr.subjectPrNumber, compareStatus: freshPr.compareStatus, freshPrReason: freshPr.reason, head },
+        detail: { subjectPrNumber: freshPr.subjectPrNumber, compareStatus: freshPr.compareStatus, freshPrReason: freshPr.reason, resumeCause: freshPr.resumeCause ?? null, head },
         callerOrigin: 'worker',
       });
     }
 
-    // Stamp retry lineage into the PR body when this is a fresh fallback PR
-    // (resume branch was gone/diverged and a new branch was opened instead of
-    // updating the existing one).  Lets humans disambiguate duplicate-looking
-    // PRs in the list without reading the diff.
+    // Stamp retry lineage into the PR body when a retry opens a fresh PR, with
+    // the reason the gate above let it through — never a cause nobody observed.
+    // Lets humans disambiguate duplicate-looking PRs without reading the diff.
     const lineageSuffix = retryIteration > 0
-      ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — resume failed; new branch._`
+      ? `\n\n---\n${retryAttemptFooter({ attempt: retryIteration, maxIterations, decision: freshPr })}`
       : '';
 
     // ── The lede leads ───────────────────────────────────────────────────────

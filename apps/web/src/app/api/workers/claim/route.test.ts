@@ -276,6 +276,16 @@ mock.module('@/lib/gate-ledger', () => ({
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
 }));
+// One open retry per retry family (rules and store tested in
+// lib/supersession*.test.ts). Here only the wiring: a claim asks the guard about
+// each attempt, and an attempt it cancels is skipped, never claimed.
+const mockGuardClaimedRetry = mock((_task: any) => Promise.resolve(false));
+mock.module('@/lib/supersession', () => ({
+  guardClaimedRetry: mockGuardClaimedRetry,
+  reconcileSubjectEvent: mock(() => Promise.resolve({ cancelled: [], lostRace: [], decisions: [] })),
+  checkDispatch: mock(() => Promise.resolve({ verdict: 'keep', rule: null })),
+  guardDispatchedTask: mock(() => Promise.resolve(false)),
+}));
 // Terminal-write dependency cascade (item 4: workspace_mismatch must run it).
 const mockResolveCompletedTask = mock(() => Promise.resolve());
 mock.module('@/lib/task-dependencies', () => ({
@@ -7513,6 +7523,27 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics.taskExclusion.code).toBe('mission_concurrent');
     expect(data.diagnostics.taskExclusion.detail).toContain('1/1');
+  });
+
+  it('a fix attempt with another open attempt in its retry family is cancelled at claim, not started beside it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
+    mockGuardClaimedRetry.mockResolvedValueOnce(true);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockGuardClaimedRetry).toHaveBeenCalledTimes(1);
+    expect((mockGuardClaimedRetry.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', reviewerRetryPrNumber: 3431 });
+    expect(data.diagnostics.deferrals.sibling_retry_open).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('sibling_retry_open');
+  });
+
+  it('a task that is not an attempt never consults the retry guard', async () => {
+    mockGuardClaimedRetry.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'work' })]);
+    await claim({ runner: 'mcp' });
+    expect(mockGuardClaimedRetry).not.toHaveBeenCalled();
   });
 
   it('a task whose role env no channel can satisfy is deferred, not claimed, and names the vars', async () => {

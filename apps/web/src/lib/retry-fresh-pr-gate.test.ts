@@ -16,18 +16,24 @@ const {
   checkFreshRetryPr,
   decideFreshRetryPr,
   freshRetryPrRefusal,
+  retryAttemptFooter,
+  ATTEMPT_FOOTER_PATTERN,
   retrySubjectPrNumber,
 } = await import('./retry-fresh-pr-gate');
 
 const reviewFix = { taskClass: 'attempt', reviewerRetryPrNumber: 70 };
 const openSubject = { state: 'open', merged: false, head: { ref: 'buildd/orig-branch', sha: 'subject-sha' }, html_url: 'https://github.com/o/r/pull/70' };
+let resumeCause: string = 'unknown';
+const mockResolveResumeCause = mock(async () => resumeCause as any);
 const check = (task: any = reviewFix, head = 'buildd/fix-branch') =>
-  checkFreshRetryPr({ installationId: 1, repoFullName: 'o/r', task, head });
+  checkFreshRetryPr({ installationId: 1, repoFullName: 'o/r', task, head, resolveResumeCause: mockResolveResumeCause });
 
 beforeEach(() => {
   subjectPr = openSubject;
   compare = { status: 'ahead' };
+  resumeCause = 'unknown';
   mockGithubApi.mockClear();
+  mockResolveResumeCause.mockClear();
 });
 
 describe('retrySubjectPrNumber', () => {
@@ -60,9 +66,33 @@ describe('checkFreshRetryPr', () => {
     }
   });
 
-  it('allows a fresh PR, with a durable reason, only when the heads have diverged', async () => {
+  it('allows a fresh PR only when the heads diverged AND the runner recorded why it could not resume', async () => {
     compare = { status: 'diverged' };
-    expect(await check()).toMatchObject({ action: 'allow_fresh', reason: 'diverged', subjectPrNumber: 70 });
+    for (const cause of ['missing', 'diverged']) {
+      resumeCause = cause;
+      expect(await check()).toMatchObject({ action: 'allow_fresh', reason: 'diverged', subjectPrNumber: 70, resumeCause: cause });
+    }
+  });
+
+  it('REGRESSION (resume failed; new branch): refuses a diverged head the runner never proved it could not resume', async () => {
+    // The worker started from trunk instead of the open PR's head and nothing
+    // recorded why. Divergence alone proves only that it did not resume.
+    compare = { status: 'diverged' };
+    for (const cause of ['unknown', 'checked_out']) {
+      resumeCause = cause;
+      const d = await check();
+      expect(d).toMatchObject({ action: 'refuse', subjectPrNumber: 70, compareStatus: 'diverged' });
+      if (d.action !== 'refuse') throw new Error('expected refuse');
+      const { error, hint } = freshRetryPrRefusal(d, 'buildd/fix-branch');
+      expect(error).toContain('PR #70');
+      expect(hint).toContain('rebase');
+      expect(hint).toContain('buildd/orig-branch');
+    }
+  });
+
+  it('only asks for the runner trace when the heads diverged', async () => {
+    await check();
+    expect(mockResolveResumeCause).not.toHaveBeenCalled();
   });
 
   it('allows normally once the subject PR is closed or merged', async () => {
@@ -102,5 +132,44 @@ describe('freshRetryPrRefusal', () => {
     const { hint } = freshRetryPrRefusal(d, 'buildd/fix-branch');
     expect(hint).toContain('git push origin HEAD:buildd/orig-branch');
     expect(hint).toContain("head='buildd/orig-branch'");
+  });
+});
+
+describe('retryAttemptFooter — the PR says why a retry opened a new PR, or that it did not', () => {
+  it('names the runner cause and the compare when a diverged head was let through', () => {
+    const f = retryAttemptFooter({
+      attempt: 2, maxIterations: 3,
+      decision: { action: 'allow_fresh', reason: 'diverged', subjectPrNumber: 70, compareStatus: 'diverged', resumeCause: 'missing' },
+    });
+    expect(f).toBe("_Attempt 2/3 — new PR: PR #70's branch was missing on the runner and the heads diverged._");
+  });
+
+  it('says unverified when GitHub could not be read, and never claims a failed resume', () => {
+    const f = retryAttemptFooter({
+      attempt: 2, maxIterations: 3,
+      decision: { action: 'allow_fresh', reason: 'unverified', subjectPrNumber: 70, compareStatus: null },
+    });
+    expect(f).toBe("_Attempt 2/3 — new PR: PR #70's head could not be verified._");
+    expect(f).not.toContain('resume failed');
+  });
+
+  it('says the subject was no longer open when that is why', () => {
+    expect(retryAttemptFooter({ attempt: 2, maxIterations: 3, decision: { action: 'allow', reason: 'subject_not_open' } }))
+      .toBe('_Attempt 2/3 — new PR: the PR it was fixing is no longer open._');
+  });
+
+  it('says "updated this PR" when create_pr adopted the existing one', () => {
+    expect(retryAttemptFooter({ attempt: 2, maxIterations: 3, decision: 'updated' }))
+      .toBe('_Attempt 2/3 — updated this PR._');
+  });
+
+  it('the replace pattern matches every footer variant, including the old wording', () => {
+    for (const line of [
+      '_Attempt 2/3 — resume failed; new branch._',
+      '_Attempt 3/3 — updated this PR._',
+      "_Attempt 2/3 — new PR: PR #70's head could not be verified._",
+    ]) {
+      expect(new RegExp(ATTEMPT_FOOTER_PATTERN.source).test(`body\n\n---\n${line}`)).toBe(true);
+    }
   });
 });

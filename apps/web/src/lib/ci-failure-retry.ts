@@ -414,7 +414,15 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
         eq(tasks.conflictRetryPrNumber, prNumber),
       ),
     ));
-  const { inFlight, ciRetriesUsed } = summarizePrFixAttempts(fixAttempts, prNumber);
+  const { inFlight: inFlightOnPr, ciRetriesUsed } = summarizePrFixAttempts(fixAttempts, prNumber);
+  // The supersession guard also sees open attempts elsewhere in the retry
+  // family (a sibling fixing a sibling's PR), which this PR-scoped query does
+  // not: that sibling is in flight for this subject too.
+  const familyBlocker = !inFlightOnPr && supersession.rule === 'open_retry_supersedes_duplicate'
+    ? supersession.blockers?.[0] ?? null
+    : null;
+  const inFlight: { id: string; status: string } | null =
+    inFlightOnPr ?? (familyBlocker ? { id: familyBlocker, status: 'open' } : null);
   if (inFlight) {
     console.log(
       `Skipping CI retry for PR #${prNumber} on ${repoFullName}: fix attempt ${inFlight.id} is still ${inFlight.status}`,

@@ -6,8 +6,10 @@ import {
   checkDispatch,
   decideCancellations,
   decideDispatch,
+  guardClaimedRetry,
   guardDispatchedTask,
   reconcileSubjectEvent,
+  selectOpenRetryBlockers,
   type CancelDecision,
   type DispatchFacts,
   type DispatchProposal,
@@ -485,5 +487,116 @@ describe('open_retry_supersedes_duplicate', () => {
     expect(m.status.get('fix-a')).toBe('pending');
     expect(m.status.get('fix-b')).toBe('cancelled');
     expect(m.ledger).toEqual([{ taskId: 'fix-b', rule: 'open_retry_supersedes_duplicate', event: 'verdict' }]);
+  });
+});
+
+// The live incident, one stage further: two "after review #1" siblings each
+// opened a PR (A and B), so each got its own "after review #2" fix — bound to
+// DIFFERENT PRs. A per-PR rule cannot see that pair; the retry family can.
+describe('one open retry per retry family (siblings bound to sibling PRs)', () => {
+  const PR_A = 3429;
+  const PR_B = 3431;
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 3, 12, 0, s));
+
+  describe('selectOpenRetryBlockers', () => {
+    const rows = [
+      { id: 'older', createdAt: at(1), status: 'pending', category: null },
+      { id: 'self', createdAt: at(2), status: 'pending', category: null },
+      { id: 'newer-running', createdAt: at(3), status: 'in_progress', category: null },
+      { id: 'newer-queued', createdAt: at(4), status: 'pending', category: null },
+      { id: 'reviewer', createdAt: at(0), status: 'in_progress', category: 'review' },
+    ];
+
+    it('dispatch: only attempts ordered before the row count, and a reviewer never does', () => {
+      expect(selectOpenRetryBlockers(rows, 'self')).toEqual(['older']);
+      expect(selectOpenRetryBlockers(rows, null)).toEqual(['older', 'self', 'newer-running', 'newer-queued']);
+    });
+
+    it('claim: a newer sibling that already started counts too — it holds the branch', () => {
+      expect(selectOpenRetryBlockers(rows, 'self', { startedAlwaysCounts: true })).toEqual(['older', 'newer-running']);
+    });
+  });
+
+  // A store whose dispatch facts come from a real family: every row here is in
+  // one retry tree, so `openRetryIds` is the family's open fix attempts.
+  function familyStore(rows: SupersessionCandidate[]) {
+    const m = memoryStore(rows);
+    const store: SupersessionStore = {
+      ...m.store,
+      loadDispatchFacts: async (p) => ({
+        openRetryIds: selectOpenRetryBlockers(
+          rows.filter(r => ['pending', 'assigned', 'in_progress'].includes(m.status.get(r.id)!))
+            .map(r => ({ ...r, status: m.status.get(r.id)! })),
+          p.selfTaskId ?? null,
+          { startedAlwaysCounts: p.mode === 'claim' },
+        ),
+      }),
+    };
+    return { ...m, store };
+  }
+
+  it('dispatch: a review fix for PR B is not filed while the family has an open fix for PR A', async () => {
+    const fixForA = reviewFix({ id: 'fix2-a', reviewerRetryPrNumber: PR_A, parentTaskId: ORIGINAL, status: 'in_progress', createdAt: at(1) });
+    const { store } = familyStore([fixForA]);
+    const d = await checkDispatch({ kind: 'fix', workspaceId: WS, prNumber: PR_B, parentTaskId: ORIGINAL, door: 't' }, { store });
+    expect(d).toEqual({ verdict: 'skip_dispatch', rule: 'open_retry_supersedes_duplicate', blockers: ['fix2-a'] });
+  });
+
+  it('claim: the older queued sibling is cancelled, not started, once the newer one is running', async () => {
+    const queuedOlder = reviewFix({ id: 'fix2-a', reviewerRetryPrNumber: PR_A, createdAt: at(1) });
+    const runningNewer = reviewFix({ id: 'fix2-b', reviewerRetryPrNumber: PR_B, status: 'in_progress', createdAt: at(2) });
+    const m = familyStore([queuedOlder, runningNewer]);
+    expect(await guardClaimedRetry(queuedOlder, { store: m.store })).toBe(true);
+    expect(m.status.get('fix2-a')).toBe('cancelled');
+    expect(m.status.get('fix2-b')).toBe('in_progress');
+    expect(m.ledger).toEqual([{ taskId: 'fix2-a', rule: 'open_retry_supersedes_duplicate', event: 'subject_check' }]);
+  });
+
+  it('claim: the only open fix in its family is claimed normally', async () => {
+    const only = reviewFix({ id: 'fix2-a', reviewerRetryPrNumber: PR_A, createdAt: at(1) });
+    const m = familyStore([only]);
+    expect(await guardClaimedRetry(only, { store: m.store })).toBe(false);
+    expect(m.status.get('fix2-a')).toBe('pending');
+  });
+
+  it('claim: a reviewer, a non-attempt and an unbound attempt are never touched', async () => {
+    const m = familyStore([reviewFix({ id: 'older', createdAt: at(0) })]);
+    for (const t of [
+      reviewer({ taskClass: 'attempt', reviewerRetryPrNumber: PR }),
+      task({ id: 'work', taskClass: 'work', reviewerRetryPrNumber: PR }),
+      task({ id: 'unbound', taskClass: 'attempt' }),
+    ]) {
+      expect(await guardClaimedRetry(t, { store: m.store })).toBe(false);
+    }
+    expect(m.ledger).toEqual([]);
+  });
+
+  it('claim: other rules are not re-judged here — an approve does not cancel at claim', async () => {
+    const only = reviewFix({ id: 'fix-1', createdAt: at(1) });
+    const m = memoryStore([only], { dispatch: { newestReviewVerdict: 'approve', openRetryIds: [] } });
+    expect(await guardClaimedRetry(only, { store: m.store })).toBe(false);
+  });
+
+  it('REGRESSION (exact incident shape): duplicate review signals and two claims => one retry child, one live worker', async () => {
+    // Stage 1: two request-changes signals for the subject PR race — one from
+    // the original's round, one credited to an attempt of it. Both pass the
+    // pre-insert check and insert; the post-insert guard keeps the older.
+    const fixA = reviewFix({ id: 'fix1-a', parentTaskId: ORIGINAL, createdAt: at(1) });
+    const fixB = reviewFix({ id: 'fix1-b', parentTaskId: 'attempt-of-original', createdAt: at(2) });
+    const m = familyStore([fixA, fixB]);
+    const proposal: DispatchProposal = { kind: 'fix', workspaceId: WS, prNumber: PR, parentTaskId: ORIGINAL, door: 't' };
+    const [a, b] = await Promise.all([
+      guardDispatchedTask(proposal, 'fix1-a', requestChanges(), { store: m.store }),
+      guardDispatchedTask({ ...proposal, parentTaskId: 'attempt-of-original' }, 'fix1-b', requestChanges(), { store: m.store }),
+    ]);
+    expect([a, b]).toEqual([false, true]);
+
+    // Stage 2: even if a duplicate had slipped through (filed before the guard
+    // existed), the claim refuses to start it beside the survivor.
+    m.status.set('fix1-b', 'pending');
+    m.status.set('fix1-a', 'in_progress');
+    expect(await guardClaimedRetry(fixB, { store: m.store })).toBe(true);
+    const live = [fixA, fixB].filter(r => m.status.get(r.id) !== 'cancelled');
+    expect(live.map(r => r.id)).toEqual(['fix1-a']);
   });
 });
