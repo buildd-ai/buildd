@@ -20,6 +20,7 @@ import type { ClaimTasksResponse, PendingCredentialRefresh } from '@buildd/share
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveClaudeCredential } from '@/lib/claude-credential';
+import { resolveOpenAiApiKey } from '@/lib/openai-credential';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
 /** The claim-candidate rows the credential blocks look tasks up in. */
@@ -163,6 +164,21 @@ export async function attachCodexCredentials(
           ...(cred.credentialType === 'api_key' ? { apiKey: cred.apiKey } : {}),
           expiresAt: cred.tokenExpiresAt,
         };
+      } else {
+        // No ChatGPT/OAuth connect (or legacy codex_credential api_key blob) —
+        // fall back to a plain team/workspace OpenAI API key (purpose
+        // `openai_api_key`, stored via Settings like `anthropic_api_key`). This
+        // reuses the exact `api_key` wire shape above, so the runner needs no
+        // changes: writeCodexApiKeyToHome already materializes it into auth.json.
+        // See docs/credentials-architecture.md for why these are two purposes.
+        const openAiKey = await resolveOpenAiApiKey({ teamId, accountId, workspaceId: wsId });
+        if (openAiKey) {
+          (cw as any).codexCredential = {
+            credentialType: 'api_key',
+            apiKey: openAiKey.apiKey,
+            expiresAt: null,
+          };
+        }
       }
     } catch (err) {
       console.warn(`[claim] Failed to fetch Codex credential for workspace ${wsId}:`, err);
