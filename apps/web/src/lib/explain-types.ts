@@ -38,6 +38,8 @@ export interface ExplainRefs {
   paths?: string[];
   /** How `paths` was determined, when a link names a touch set. */
   touchSource?: TouchSource;
+  /** A `task_dispatch_outbox` row: the wake a pending task is waiting on. */
+  outboxId?: string;
 }
 
 /**
@@ -73,7 +75,8 @@ export type CausalLinkSource =
   | 'gate_events.detail.consecutiveDeferrals'
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber'
-  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan';
+  | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber + workers.supersessionScan'
+  | 'task_dispatch_outbox.status';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */

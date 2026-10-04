@@ -1396,3 +1396,23 @@ describe('the turn\'s wall clock', () => {
     expect(JSON.stringify(seen[1].prompt)).toContain('Do not call any more tools');
   });
 });
+
+describe("a turn's canonical answer (task b4f273ac)", () => {
+  it('the next turn is routed with the previous turn\'s final answer, not the hypothesis it wrote before its tools ran', async () => {
+    messages = [{
+      id: 'a-prev', conversationId: 'conv-1', role: 'assistant', createdAt: new Date(),
+      parts: [
+        { type: 'step-start' },
+        { type: 'text', text: 'A fix is already queued; checking why it has not been claimed.', state: 'done' },
+        { type: 'tool-list_tasks', toolCallId: 'c1', state: 'output-available', input: {}, output: {} },
+        { type: 'step-start' },
+        { type: 'text', text: 'No fix is queued: the task is held on an open question.', state: 'done' },
+      ],
+    }];
+    const seen: any[] = [];
+    const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+    const { turn } = harness({ model, route: async (a?: any) => { seen.push(a); return { tier: 'standard', allowWrites: true, source: 'fallback' }; } });
+    await turn(userMsg('so who answers it?'));
+    expect(seen[0].previous).toBe('No fix is queued: the task is held on an open question.');
+  });
+});

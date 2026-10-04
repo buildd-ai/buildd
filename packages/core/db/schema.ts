@@ -5025,6 +5025,68 @@ export const decisionChallengerRuns = pgTable('decision_challenger_runs', {
 
 export type DecisionChallengerRun = typeof decisionChallengerRuns.$inferSelect;
 
+// Prompt evals (apps/web/src/lib/prompt-evals/run.ts): the decision benchmark
+// sets scored against the prompt text a deployment runs, or is about to run.
+// One run row per eval, one result row per benchmark set. Content-free like the
+// decision ledger: prompt ids, row versions, content hashes, model ids, counts
+// and rates. Never prompt text, case content or error strings; every result is
+// checked against the loaded prompt bodies before it is written.
+export const promptEvalRuns = pgTable('prompt_eval_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // The team whose key paid for the calls.
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  trigger: text('trigger').notNull().$type<'push' | 'cron' | 'manual'>(),
+  status: text('status').notNull().$type<'running' | 'passed' | 'failed' | 'refused' | 'skipped'>(),
+  // The prompts repo ref scored (a sha for a push; else the configured ref).
+  promptsRef: text('prompts_ref'),
+  // The model that answered the eval, and the model the team's live decisions use.
+  evalModel: text('eval_model'),
+  prodModel: text('prod_model'),
+  // True when they differ: the scores then do not predict production behaviour.
+  modelMismatch: boolean('model_mismatch').notNull().default(false),
+  dryRun: boolean('dry_run').notNull().default(false),
+  loadedPrompts: integer('loaded_prompts'),
+  costUsd: real('cost_usd'),
+  // Why the run failed or was skipped: fixed phrases naming ids and counts, never text.
+  problems: jsonb('problems').$type<string[]>(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+}, (t) => ({
+  startedIdx: index('prompt_eval_runs_started_idx').on(t.startedAt),
+}));
+
+export type PromptEvalRun = typeof promptEvalRuns.$inferSelect;
+
+export const promptEvalResults = pgTable('prompt_eval_results', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').references(() => promptEvalRuns.id, { onDelete: 'cascade' }).notNull(),
+  benchmarkSet: text('benchmark_set').notNull(),
+  promptId: text('prompt_id').notNull(),
+  // 'private' (a prompts-repo row) or 'public default'.
+  promptSource: text('prompt_source').notNull(),
+  // Row version (null for a public default) and the first 12 hex of the text's sha256.
+  promptRowVersion: integer('prompt_row_version'),
+  promptHash: text('prompt_hash').notNull(),
+  // The decision promptVersion naming the text, e.g. `tc1+p3`.
+  promptVersion: text('prompt_version').notNull(),
+  model: text('model'),
+  status: text('status').notNull().$type<'scored' | 'dry_run' | 'no_cases'>(),
+  cases: integer('cases').notNull(),
+  accuracy: real('accuracy'),
+  baselineAccuracy: real('baseline_accuracy'),
+  coverageAt90: real('coverage_at_90'),
+  accuracyAt90: real('accuracy_at_90'),
+  errors: integer('errors').notNull().default(0),
+  notRun: integer('not_run').notNull().default(0),
+  costUsd: real('cost_usd'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  runIdx: index('prompt_eval_results_run_idx').on(t.runId),
+  promptCreatedIdx: index('prompt_eval_results_prompt_created_idx').on(t.promptId, t.createdAt),
+}));
+
+export type PromptEvalResult = typeof promptEvalResults.$inferSelect;
+
 // The final touched-file label for a decided task, one row per worker session,
 // written at terminal worker status BEFORE workers.observed_touches is cleared
 // (apps/web/src/app/api/workers/[id]/route.ts). Only for tasks that have an

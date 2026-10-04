@@ -269,6 +269,6 @@ describe('custody, health and history', () => {
     await handOff(d);
     const [h] = await dispatchHistoryForTask(d);
     expect(h.transport).toBe('dispatch');
-    expect(h.handed_off_at).not.toBeNull();
+    expect(h.handedOffAt).not.toBeNull();
   });
 });

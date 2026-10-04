@@ -74,6 +74,12 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { detectPrSupersession } from '@/lib/pr-supersession-detect';
+import { promptEvalRefForPush } from '@/lib/prompt-evals/push-trigger';
+import { runPromptEval } from '@/lib/prompt-evals/run';
+import { promptEvalDeps } from '@/lib/prompt-evals/store';
+
+// A push to the prompts repo runs the prompt eval in after() (up to ~240s).
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -2479,6 +2485,21 @@ async function handlePushEvent(event: {
   commits?: Array<{ id?: string; message?: string; added?: string[]; modified?: string[]; removed?: string[] }>;
   head_commit?: { message?: string } | null;
 }): Promise<void> {
+  // A push to the private prompts repo scores the pushed text (lib/prompt-evals/run.ts).
+  // Network + model work, so after(); never fails the webhook.
+  const promptEvalRef = promptEvalRefForPush(event);
+  if (promptEvalRef) {
+    try {
+      after(() =>
+        runPromptEval({ trigger: 'push', ref: promptEvalRef }, promptEvalDeps())
+          .then(out => console.log(`[prompt-evals] push ${promptEvalRef.slice(0, 7)}: ${out.status}`))
+          .catch(err => console.error('[prompt-evals] push eval failed:', err instanceof Error ? err.message : String(err))),
+      );
+    } catch (err) {
+      console.warn('[prompt-evals] after() unavailable; the weekly cron will score it:', err);
+    }
+  }
+
   const repo = event.repository?.full_name;
   const branch = event.ref?.startsWith('refs/heads/') ? event.ref.slice('refs/heads/'.length) : null;
   if (!repo || !isDefaultBranch(branch, event.repository?.default_branch)) return;

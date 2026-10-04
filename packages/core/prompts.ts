@@ -42,6 +42,31 @@ export function installPrompts(rows: Iterable<ActivePrompt>): void {
   promptsSnapshot.install(map);
 }
 
+// ── Scoped overlay ────────────────────────────────────────────────────────────
+//
+// An eval scores prompt text that is not (yet) the deployment's: a push to the
+// prompts repo, before it is seeded. Installing that text into the shared
+// snapshot would change what every live call in the process resolves, so an
+// eval runs inside a scope instead (`prompt-overlay.ts`, AsyncLocalStorage).
+// This module stays pure: it only asks an injected provider for the scope's
+// snapshot. Null (no provider, or outside any scope) means the shared one.
+
+let overlayProvider: (() => PromptSnapshot | null) | null = null;
+
+/** Installed by `prompt-overlay.ts`. Null removes it. */
+export function setPromptOverlayProvider(fn: (() => PromptSnapshot | null) | null): void {
+  overlayProvider = fn;
+}
+
+function currentOverlay(): PromptSnapshot | null {
+  return overlayProvider?.() ?? null;
+}
+
+/** The snapshot in effect for this call: the scope's overlay, else the shared one. */
+function effectiveSnapshot(): PromptSnapshot {
+  return currentOverlay() ?? promptsSnapshot.read();
+}
+
 /** Back to public defaults, no refresher, zeroed counters. For tests. */
 export function resetPrompts(): void {
   promptsSnapshot.reset();
@@ -67,6 +92,9 @@ export function setPromptFallbackListener(fn: ((id: string, reason: PromptFallba
 }
 
 function countFallback(id: string, reason: PromptFallbackReason): void {
+  // An eval's fallbacks are its own business: the counters and the listener
+  // feed the deployment's fallback alert, which must see live resolves only.
+  if (currentOverlay()) return;
   const c = fallbacks.get(id) ?? { missing: 0, invalid: 0 };
   c[reason]++;
   fallbacks.set(id, c);
@@ -86,7 +114,7 @@ export function promptFallbackCounts(): Record<string, { missing: number; invali
 export function notePromptRejected(row: Pick<ActivePrompt, 'id' | 'version'>, reason: string): void {
   countFallback(row.id, 'invalid');
   const key = `${row.id}@${row.version}`;
-  if (warned.has(key)) return;
+  if (currentOverlay() || warned.has(key)) return;
   warned.add(key);
   console.warn(`[prompts] active row "${row.id}" v${row.version} rejected (${reason}); using the public default`);
 }
@@ -95,7 +123,7 @@ export function notePromptRejected(row: Pick<ActivePrompt, 'id' | 'version'>, re
 
 /** The active row for `id`, or null. Counts a `missing` fallback when null. */
 export function activePrompt(id: string): ActivePrompt | null {
-  const row = promptsSnapshot.read().get(id) ?? null;
+  const row = effectiveSnapshot().get(id) ?? null;
   if (!row) countFallback(id, 'missing');
   return row;
 }
@@ -177,7 +205,7 @@ export function validateTextPrompt(body: string): string | null {
  * resolves to its public default. Never includes a body.
  */
 export function activePromptFingerprints(): Array<{ id: string; version: number; contentHash: string }> {
-  return [...promptsSnapshot.read().values()]
+  return [...effectiveSnapshot().values()]
     .map(({ id, version, contentHash }) => ({ id, version, contentHash }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }

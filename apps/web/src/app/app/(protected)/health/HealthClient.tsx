@@ -39,6 +39,8 @@ import {
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { ExperimentsSection } from './ExperimentsSection';
+import { DispatchSection } from './DispatchSection';
+import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
 
@@ -202,6 +204,8 @@ interface Props {
   errorPatterns: ErrorPatternPanel | null;
   /** Team experiments visible to the viewer; null hides the section. */
   experiments?: HealthExperiments | null;
+  /** Dispatch transport health for the scoped workspaces; null hides the section. */
+  dispatchHealth?: DispatchHealthReport | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -249,6 +253,7 @@ export function HealthClient({
   subagentDelegation,
   errorPatterns,
   experiments = null,
+  dispatchHealth = null,
   now,
 }: Props) {
   const router = useRouter();
@@ -830,6 +835,8 @@ export function HealthClient({
       {credentialHealth.length > 0 && (
         <CredentialStateSection credentials={credentialHealth} now={now} />
       )}
+
+      <DispatchSection report={dispatchHealth ?? null} now={now} />
 
       {/* Schedules — collapsed by default. Lives under State because what it
           carries is a STATE (enabled, next run) plus two LIFETIME counters

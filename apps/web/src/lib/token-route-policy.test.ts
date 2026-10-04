@@ -11,7 +11,7 @@ describe('REST token scope policy', () => {
   });
   test('analytics readers can reach analytics only', () => {
     const token = { level: 'worker', scopes: ['analytics:read'] };
-    for (const path of ['/api/stats/actions', '/api/stats/usage', '/api/health/failures', '/api/cbm/metrics']) {
+    for (const path of ['/api/stats/actions', '/api/stats/usage', '/api/health/failures', '/api/health/dispatch', '/api/cbm/metrics']) {
       expect(canAccessTokenRoute(token, request(path))).toBe(true);
     }
     expect(canAccessTokenRoute(token, request('/api/tasks', 'POST'))).toBe(false);
@@ -28,6 +28,10 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute(token, request('/api/stats/coordination?workspace=ws-b'))).toBe(false);
     expect(canAccessTokenRoute(token, request('/api/stats/coordination?workspace=ws-a'))).toBe(true);
     expect(canAccessTokenRoute(token, request('/api/health/budget?workspaceId=ws-a'))).toBe(false);
+    // dispatch_health: team-wide is refused for a restricted token; its own workspace is not.
+    expect(canAccessTokenRoute(token, request('/api/health/dispatch'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-b'))).toBe(false);
+    expect(canAccessTokenRoute(token, request('/api/health/dispatch?workspaceId=ws-a'))).toBe(true);
     expect(canAccessTokenRoute(token, request('/api/stats/actions?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['tasks:read'], workspaceIds: ['ws-a'] }, request('/api/tasks?workspace=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);

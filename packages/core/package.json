@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.273.0",
+  "version": "0.274.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -37,6 +37,7 @@
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
+    "./decision-benchmark": "./decision-benchmark.ts",
     "./decision-client": "./decision-client.ts",
     "./decision-model": "./decision-model.ts",
     "./litellm-gateway": "./litellm-gateway.ts",
@@ -181,6 +182,7 @@
     "./task-pr-diffs": "./task-pr-diffs.ts",
     "./path-claim": "./path-claim.ts",
     "./dispatch-outbox": "./dispatch-outbox.ts",
+    "./dispatch-health-report": "./dispatch-health-report.ts",
     "./dispatch-dependents": "./dispatch-dependents.ts",
     "./dispatch-envelope": "./dispatch-envelope.ts",
     "./dispatch-handoff": "./dispatch-handoff.ts",
@@ -227,6 +229,7 @@
     "./release-baseline": "./release-baseline.ts",
     "./signal-registry": "./signal-registry.ts",
     "./runtime-snapshot": "./runtime-snapshot.ts",
+    "./prompt-overlay": "./prompt-overlay.ts",
     "./prompts": "./prompts.ts",
     "./prompts-source": "./prompts-source.ts",
     "./prompted-decision": "./prompted-decision.ts",
