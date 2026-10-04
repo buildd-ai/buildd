@@ -11350,7 +11350,7 @@ describe('PATCH /api/workers/[id]', () => {
         }), { params: mockParams });
 
         it('requeues with the first infra backoff and counts the attempt', async () => {
-          mockDispatchRetriedTask.mockClear();
+          mockWakeTask.mockClear();
           const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
           const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true, events: ['task.retry'] };
           mockTasksFindFirst.mockResolvedValue({
@@ -11370,13 +11370,10 @@ describe('PATCH /api/workers/[id]', () => {
           expect(delayMs).toBeGreaterThanOrEqual(5 * 60_000 - 1_000);
           expect(delayMs).toBeLessThanOrEqual(5 * 60_000 + 5_000);
           expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
-          // The wake-up goes through the retry dispatcher (webhook `task.retry`
-          // first); with a future startAt it defers to the deferred-dispatch
-          // sweep, which sends the same event once the backoff has passed.
-          expect(mockDispatchRetriedTask).toHaveBeenCalledTimes(1);
-          const [task, workspace] = mockDispatchRetriedTask.mock.calls[0] as any[];
-          expect(task).toMatchObject({ id: 'task-1', workspaceId: 'ws-1' });
-          expect(workspace.webhookConfig).toEqual(webhookConfig);
+          // A durable requeue; the trigger schedules it for startAt, so no
+          // runner re-claims into the same crash before the backoff ends
+          // (scheduled-row behaviour: apps/web/tests/db/retry-wake.test.ts).
+          expect(wakeCausesFor('task-1')).toEqual(['task.requeued']);
         });
 
         it('backs off further on the next consecutive crash', async () => {
@@ -11392,14 +11389,14 @@ describe('PATCH /api/workers/[id]', () => {
         });
 
         it('ends infra_stalled at the cap instead of requeueing again', async () => {
-          mockDispatchRetriedTask.mockClear();
+          mockWakeTask.mockClear();
           const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
           await send(cloudCrashBody);
 
           expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
           const failing = taskSetCalls.find((c: any) => c.status === 'failed');
           expect(failing.result.errorType).toBe('infra_stalled');
-          expect(mockDispatchRetriedTask).not.toHaveBeenCalled();
+          expect(wakeCausesFor('task-1')).toEqual([]);
         });
 
         it("the agent's own failure (no flag) still fails the task as before", async () => {
