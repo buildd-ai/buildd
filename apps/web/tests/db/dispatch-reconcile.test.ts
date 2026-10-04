@@ -6,7 +6,7 @@
  * with a fake Worker: apps/web/src/lib/dispatch-reconcile.test.ts. Contract:
  * docs/specs/task-dispatch-authority.md, "Dispatch transport", AC-31..AC-34.
  */
-import { beforeAll, describe, expect, test } from 'bun:test';
+import { beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
 import {
@@ -27,6 +27,10 @@ import {
   terminalReceiptFor,
 } from '@buildd/core/dispatch-handoff';
 import { assertDbConfigured, q, seedTask, seedWorkspace } from './harness';
+
+// Several tests seed, publish and ack a handful of rows each: sequential
+// round trips through the neon-http proxy that outrun bun's 5 s default on CI.
+setDefaultTimeout(30_000);
 
 let dispatch: string;
 let shadow: string;
