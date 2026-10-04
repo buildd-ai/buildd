@@ -7,8 +7,8 @@ summary: Every state change that may make a task runnable MUST leave a durable d
 domain: tasks
 surfaces: [apps/web/src/lib/dispatch-authority.ts, apps/web/src/lib/dispatch-adapters.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql]
 related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner-liveness, external-cron-triggers]
-keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask]
-verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts]
+keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask, dispatch transport, handed_off, dispatch_transport]
+verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts, apps/web/tests/db/dispatch-handoff.test.ts, apps/web/src/lib/dispatch-resolve.test.ts, apps/web/src/lib/dispatch-transport.test.ts, apps/web/src/app/api/dispatch/v1/resolve/route.test.ts, apps/web/src/app/api/dispatch/v1/receipts/route.test.ts, packages/core/__tests__/dispatch-envelope.test.ts, packages/core/__tests__/dispatch-handoff-render.test.ts]
 supersedes: []
 assertions:
   - id: wake-task-symbol
@@ -48,6 +48,28 @@ assertions:
   - id: dispatch-guard-tests
     type: test_file
     path: scripts/dispatch-authority-guard.test.ts
+  - id: to-envelope-symbol
+    type: symbol
+    name: toEnvelope
+    path: packages/core/dispatch-envelope.ts
+  - id: publish-pending-dispatches-symbol
+    type: symbol
+    name: publishPendingDispatches
+    path: apps/web/src/lib/dispatch-transport.ts
+  - id: resolve-dispatch-symbol
+    type: symbol
+    name: resolveDispatch
+    path: apps/web/src/lib/dispatch-resolve.ts
+  - id: apply-receipts-sql-symbol
+    type: symbol
+    name: applyReceiptsSql
+    path: packages/core/dispatch-handoff.ts
+  - id: dispatch-handoff-db-tests
+    type: test_file
+    path: apps/web/tests/db/dispatch-handoff.test.ts
+  - id: dispatch-resolve-parity-tests
+    type: test_file
+    path: apps/web/src/lib/dispatch-resolve.test.ts
 ---
 # Task Dispatch Authority
 
@@ -269,6 +291,102 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 
 ---
 
+## Dispatch transport (P0)
+
+An optional second transport moves delivery to a standalone Dispatch
+service. It is gated per workspace by `workspaces.dispatch_transport`:
+`in_app` (default), `shadow` or `dispatch`. Postgres stays the source of
+truth for intent creation: the outbox row is still written with the state
+change. Once Dispatch acks a row of a `dispatch` workspace, Dispatch owns its
+delivery lifecycle (when to attempt, retry, collapse, give up). Buildd keeps
+the policy: the route at publish time, and the final say at delivery through
+signed callbacks. Wire contract: `@buildd/dispatch-contract`.
+
+- **Publish.** `kickDispatch` and the floor tick call
+  `publishPendingDispatches` before the in-app drain. It is a no-op unless
+  `DISPATCH_URL` and `DISPATCH_PUBLISH_SECRET` are set. It takes pending,
+  unacked work rows of `shadow`/`dispatch` workspaces (this task's first,
+  then the oldest), stamps `published_at` (a row is not re-sent within
+  `PUBLISH_BACKOFF_MS`), and POSTs one signed batch with a 2 s budget. The
+  envelope is a pure function of the row (`toEnvelope`), so re-publishing is
+  always safe.
+- **Route.** `routeFor` uses the in-app chain's own policy: a targeted local
+  runner gets only `runner-wake`; otherwise the webhook (`first`, resolve)
+  when `webhookWants` would take the cause, GitHub Actions (`also`, resolve)
+  for the legacy causes on a first attempt in a linked workspace, and
+  `runner-wake` last. Non-work intents are never published. They have no
+  adapter, and the in-app drain parks them as `no_adapter` as before.
+- **Ack.** One statement per outcome. `accepted`/`duplicate`: a `dispatch`
+  row becomes `handed_off` (only from `pending`). A `shadow` row only gains
+  `handed_off_at`, and the in-app drain still delivers it. `merged{into}`:
+  a `dispatch` row closes as `merged_into_pending` with `merged_into`.
+  `rejected` stays pending and is logged.
+- **Callbacks** (`/api/dispatch/v1/resolve`, `/api/dispatch/v1/relay`,
+  `/api/dispatch/v1/receipts`) are signed with
+  `DISPATCH_CALLBACK_SECRET`. Resolve runs the same decision functions as
+  the in-app adapters (`claimabilitySkip`, `webhookEligible`,
+  `githubActionsWanted`, `webhookPayloadFor`) and returns
+  `deliver{payload, grant}`, `decline`, `skip` or, for a webhook whose task's
+  `start_at` is still ahead, `reschedule{notBefore}`. A webhook grant is the
+  bearer token. A GitHub Actions grant is a repo-scoped installation token
+  for `repository_dispatch`. Relay sends the runner wake through
+  `sendRunnerWake`: `relay:pusher` when sent, `skipped` when Pusher is
+  unconfigured, 502 when Pusher failed so Dispatch retries.
+- **Receipts** project onto `handed_off` rows of `dispatch` workspaces:
+  `delivered` and `merged` close the row as delivered, `failed` as failed,
+  `attempted` moves `attempt_count`/`last_attempt_at` forward. `expired`
+  closes as delivered via `expired`, because a wake nobody took is not a
+  consumer rejecting wakes. Shadow rows are never changed by receipts.
+- **Observability.** `dispatchOutboxHealth` adds `unacked` (pending work
+  rows of `dispatch` workspaces with no ack for over a minute) and `orphaned`
+  (`handed_off` rows an hour past due). `dispatchHistoryForTask` returns
+  `transport` and `handed_off_at`.
+
+Invariants:
+
+15. **Default is a no-op.** With the env unset, or a workspace on `in_app`,
+    nothing is read for publishing, nothing is sent, and the drain claims
+    exactly the rows it claimed before.
+16. **One queue per row.** A `handed_off` row is never claimed by the in-app
+    drain. An unacked work row of a `dispatch` workspace is left to the
+    publish path for `PUBLISH_GRACE_MS` and then taken by the drain as the
+    fallback, so the drain is never a racer.
+17. **Callbacks fail closed.** An empty `DISPATCH_CALLBACK_SECRET` ring
+    answers 503. A missing, stale or wrong signature answers 401. A callback
+    acts only on a row in Dispatch's custody (`handed_off`, or a `shadow` row
+    with `handed_off_at` that is still pending) whose workspace matches the
+    target id.
+18. **Grants are never persisted.** A grant is returned in the resolve
+    response only. Buildd mints at most one per `(id, attempt, target)` per 5
+    minutes (Redis `SET NX`, failing open with a log when Redis is
+    unavailable) and never writes one to the database or a log.
+19. **Receipts are idempotent.** Re-applying a batch changes nothing.
+
+Acceptance criteria (real SQL in `apps/web/tests/db/dispatch-handoff.test.ts`,
+policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
+
+- AC-25: GIVEN a `dispatch` workspace WHEN a publish is accepted THEN the row
+  is `handed_off` with `transport = 'dispatch'`. GIVEN a `shadow` workspace
+  THEN only `handed_off_at` is set and the row stays pending. GIVEN `merged`
+  THEN the row is delivered via `merged_into_pending` with `merged_into`.
+- AC-26: A `handed_off` row is never claimed by the in-app drain. An unacked
+  `dispatch` row younger than the grace is skipped and an older one is
+  claimed. `in_app` and `shadow` rows, and non-work intents, are claimed as
+  before.
+- AC-27: For every AC-10…AC-18 case, the Dispatch route plus resolve and relay
+  reach the same outcome as `deliverTaskDispatch`. The documented
+  differences are a future `start_at` (resolve answers `reschedule`) and
+  GitHub Actions after an eligible webhook's failed POST (in-app fires it,
+  Dispatch does not).
+- AC-28: Callbacks answer 503 with no secret, and 401 on a missing, wrong,
+  stale, path-mismatched or body-tampered signature.
+- AC-29: Re-applying a receipt batch is a no-op. Shadow rows and unknown ids
+  are untouched.
+- AC-30: `dispatchOutboxHealth` counts `unacked` and `orphaned`, and
+  `dispatchHistoryForTask` returns `transport` and `handed_off_at`.
+
+---
+
 ## Code surface
 
 - Outbox storage and SQL: `packages/core/dispatch-outbox.ts` —
@@ -278,7 +396,16 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 - Trigger: `packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql`.
 - Authority: `apps/web/src/lib/dispatch-authority.ts` — `wakeTask`,
   `wakeTasks`, `announceTaskCreated`, `kickDispatch`, `drainDispatchOutbox`,
-  `deliverTaskDispatch`, `primaryCause`.
+  `deliverTaskDispatch`. `primaryCause` lives in
+  `packages/core/dispatch-outbox.ts`, re-exported here.
+- Dispatch transport: `packages/core/dispatch-envelope.ts` (`toEnvelope`,
+  target ids), `packages/core/dispatch-handoff.ts` (publish selection, acks,
+  custody, `applyReceiptsSql`), `apps/web/src/lib/dispatch-transport.ts`
+  (`routeFor`, `publishPendingDispatches`),
+  `apps/web/src/lib/dispatch-resolve.ts` (`resolveDispatch`,
+  `relayDispatch`), `apps/web/src/lib/dispatch-callback-auth.ts`, routes
+  under `apps/web/src/app/api/dispatch/v1/`, wire contract
+  `packages/dispatch-contract/`.
 - Destination adapters: `apps/web/src/lib/dispatch-adapters.ts` —
   `ADAPTER_CHAINS`, `TASK_WAKE_ADAPTERS`, `routeForCause`, `webhookWants`.
   Non-work intents are recorded with `dispatchIntent` (dispatch-authority.ts).

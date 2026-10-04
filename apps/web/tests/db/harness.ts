@@ -33,12 +33,16 @@ export async function q<T extends Row = Row>(query: ReturnType<typeof sql>): Pro
 let seq = 0;
 const uniq = () => `${Date.now().toString(36)}-${(seq++).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
-export async function seedWorkspace(opts: { webhookConfig?: Record<string, unknown> | null } = {}): Promise<{ teamId: string; workspaceId: string }> {
+export async function seedWorkspace(opts: {
+  webhookConfig?: Record<string, unknown> | null;
+  dispatchTransport?: 'in_app' | 'shadow' | 'dispatch';
+} = {}): Promise<{ teamId: string; workspaceId: string }> {
   const slug = `t-${uniq()}`;
   const [team] = await q<{ id: string }>(sql`INSERT INTO teams (name, slug) VALUES (${slug}, ${slug}) RETURNING id`);
   const [ws] = await q<{ id: string }>(sql`
-    INSERT INTO workspaces (name, team_id, webhook_config)
-    VALUES (${`w-${uniq()}`}, ${team.id}::uuid, ${opts.webhookConfig ? JSON.stringify(opts.webhookConfig) : null}::jsonb)
+    INSERT INTO workspaces (name, team_id, webhook_config, dispatch_transport)
+    VALUES (${`w-${uniq()}`}, ${team.id}::uuid, ${opts.webhookConfig ? JSON.stringify(opts.webhookConfig) : null}::jsonb,
+      ${opts.dispatchTransport ?? 'in_app'})
     RETURNING id`);
   return { teamId: team.id, workspaceId: ws.id };
 }

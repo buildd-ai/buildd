@@ -69,7 +69,7 @@ mock.module('@buildd/core/db', () => ({
 
 let claimQueue: unknown[] = [];
 let futureDispatches: Array<{ id: string; notBefore: Date }> = [];
-const mockClaimDue = mock(async (_limit: number) => claimQueue.splice(0));
+const mockClaimDue = mock(async (_limit: number) => { callOrder.push('drain'); return claimQueue.splice(0); });
 const mockMarkDelivered = mock(async (_id: string, _via: string) => {});
 const mockMarkFailed = mock(async (_id: string, _attempt: number, _err: string) => 'retrying' as const);
 const mockEnqueueSql = mock((input: unknown) => ({ enqueue: input }));
@@ -82,6 +82,11 @@ mock.module('@buildd/core/dispatch-outbox', () => ({
   markDispatchDelivered: mockMarkDelivered,
   markDispatchFailed: mockMarkFailed,
 }));
+
+let publishResult: { status: string } = { status: 'unconfigured' };
+const callOrder: string[] = [];
+const mockPublish = mock(async (_opts: unknown) => { callOrder.push('publish'); return publishResult; });
+mock.module('@/lib/dispatch-transport', () => ({ publishPendingDispatches: mockPublish }));
 
 /** `after` that throws outside a request scope, like Next's; queues inside one. */
 let afterQueue: Array<() => unknown> | null = null;
@@ -179,6 +184,9 @@ beforeEach(() => {
   afterQueue = null;
   claimQueue = [];
   futureDispatches = [];
+  publishResult = { status: 'unconfigured' };
+  callOrder.length = 0;
+  mockPublish.mockClear();
   taskRows.clear();
   for (const m of [mockTriggerEvent, mockTriggerEventChecked, mockGitHubDispatch, mockIsTaskNotHeldOrLocal, mockMarkDue,
     mockExecute, mockClaimDue, mockMarkDelivered, mockMarkFailed, mockEnqueueSql]) m.mockClear();
@@ -795,6 +803,41 @@ describe('kickDispatch', () => {
     kickDispatch();
     await flush(); await flush();
     expect(mockMarkDue).toHaveBeenCalledWith('dispatch', 'f1', at.getTime());
+  });
+});
+
+describe('kickDispatch: Dispatch transport publish', () => {
+  it('publishes before the in-app drain, for the woken task first', async () => {
+    seed();
+    await wakeTask(TASK.id, 'ci.retry');
+    await flush();
+    expect(mockPublish).toHaveBeenCalledWith({ taskId: TASK.id });
+    expect(callOrder.slice(0, 2)).toEqual(['publish', 'drain']);
+  });
+
+  it('a failed publish leaves a due marker past the publish grace, and the drain still runs', async () => {
+    publishResult = { status: 'failed' };
+    const { PUBLISH_GRACE_MS } = realOutbox;
+    const before = Date.now();
+    kickDispatch();
+    await flush();
+    const marker = mockMarkDue.mock.calls.find(c => String(c[1]).startsWith('publish:'));
+    expect(marker).toBeDefined();
+    expect(Number(marker![2])).toBeGreaterThanOrEqual(before + PUBLISH_GRACE_MS);
+    expect(callOrder).toContain('drain');
+  });
+
+  it('a publish with rejected envelopes leaves the same marker', async () => {
+    publishResult = { status: 'ok', published: 2, acked: 1, merged: 0, rejected: 1 } as never;
+    kickDispatch();
+    await flush();
+    expect(mockMarkDue.mock.calls.some(c => String(c[1]).startsWith('publish:'))).toBe(true);
+  });
+
+  it('an unconfigured or idle publish leaves no marker', async () => {
+    kickDispatch();
+    await flush();
+    expect(mockMarkDue.mock.calls.some(c => String(c[1]).startsWith('publish:'))).toBe(false);
   });
 });
 

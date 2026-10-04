@@ -41,7 +41,10 @@ mock.module('@/lib/dispatch-authority', () => ({
   primaryCause: mock((_c: string[], f: string) => f),
 }));
 
-let health = { overdue: 0, stuck: 0, failed: 0 };
+const publishPendingDispatches = mock(async (_o: unknown) => ({ status: 'unconfigured' }) as Record<string, unknown>);
+mock.module('@/lib/dispatch-transport', () => ({ publishPendingDispatches }));
+
+let health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0 };
 const backfillStartAtWakes = mock(async () => 0);
 const settleDispatchTimer = mock(async (_ms: number) => {});
 const markDispatchBacklog = mock(async () => {});
@@ -67,8 +70,8 @@ beforeEach(() => {
   reports.length = 0;
   dueCount = 0;
   drainResults = [];
-  health = { overdue: 0, stuck: 0, failed: 0 };
-  for (const m of [drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
+  health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0 };
+  for (const m of [publishPendingDispatches, drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
 });
 
 describe('GET /api/cron/dispatch-drain', () => {
@@ -128,7 +131,7 @@ describe('GET /api/cron/dispatch-drain', () => {
     drainResults = [batch(1)];
     backfillStartAtWakes.mockResolvedValueOnce(2);
     repairDependencyWakes.mockResolvedValueOnce(4);
-    health = { overdue: 1, stuck: 0, failed: 3 };
+    health = { overdue: 1, stuck: 0, failed: 3, unacked: 0, orphaned: 0 };
     const body = await (await call()).json();
     expect(backfillStartAtWakes).toHaveBeenCalledTimes(1);
     expect(drainDispatchOutbox).toHaveBeenCalledTimes(1);
@@ -136,9 +139,22 @@ describe('GET /api/cron/dispatch-drain', () => {
     expect(repairDependencyWakes).toHaveBeenCalledTimes(1);
     // Repaired wakes are queued before the drain, so the same tick sends them.
     expect(repairDependencyWakes.mock.invocationCallOrder[0]).toBeLessThan(drainDispatchOutbox.mock.invocationCallOrder[0]);
-    expect(body.repair).toMatchObject({ startAtBackfilled: 2, dependencyWakes: 4, health: { overdue: 1, stuck: 0, failed: 3 } });
+    expect(body.repair).toMatchObject({ startAtBackfilled: 2, dependencyWakes: 4, health: { overdue: 1, stuck: 0, failed: 3, unacked: 0, orphaned: 0 } });
     expect(reports[0]).toMatchObject({ job: 'dispatch-drain', changed: 7 });
     expect(reports[0].unrecorded).toBeUndefined();
+  });
+
+  it('floor tick re-publishes unacked rows to the Dispatch transport before the drain; the gated tick does not', async () => {
+    drainResults = [batch(1)];
+    publishPendingDispatches.mockResolvedValueOnce({ status: 'ok', published: 3, acked: 3, merged: 0, rejected: 0 });
+    const body = await (await call()).json();
+    expect(publishPendingDispatches).toHaveBeenCalledWith({ limit: 100 });
+    expect(publishPendingDispatches.mock.invocationCallOrder[0]).toBeLessThan(drainDispatchOutbox.mock.invocationCallOrder[0]);
+    expect(body.repair.published).toMatchObject({ status: 'ok', acked: 3 });
+    publishPendingDispatches.mockClear();
+    dueCount = 1;
+    await call('?gate=due');
+    expect(publishPendingDispatches).not.toHaveBeenCalled();
   });
 
   it('a failing repair pass does not lose the drain', async () => {

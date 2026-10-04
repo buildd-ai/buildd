@@ -17,8 +17,9 @@
 //     Drains anything a kick missed, re-seeds the due-queue from the table
 //     (so a lost publish costs an hour, not the wake), backfills startAt
 //     wakes for tasks deferred before the outbox existed, wakes pending tasks
-//     whose dependencies resolved with no wake recorded, and reports outbox
-//     health: overdue, stuck and failed intents. Repair, not the path.
+//     whose dependencies resolved with no wake recorded, re-publishes rows the
+//     Dispatch transport never acked, and reports outbox health: overdue,
+//     stuck, failed, unacked and orphaned intents. Repair, not the path.
 //
 // This replaces lib/deferred-dispatch-sweep.ts, the hourly "nudge tasks whose
 // startAt has passed" pass on pr-reconcile: the tasks trigger now writes a
@@ -43,6 +44,8 @@ import {
   repairDependencyWakes,
   settleDispatchTimer,
 } from '@/lib/dispatch-repair';
+import { publishPendingDispatches } from '@/lib/dispatch-transport';
+import type { DispatchOutboxHealth } from '@buildd/core/dispatch-outbox';
 
 export const maxDuration = 60;
 
@@ -50,6 +53,8 @@ export const maxDuration = 60;
 const DRAIN_BUDGET_MS = 45_000;
 /** 40 × DRAIN_BATCH rows per tick; a larger backlog continues on the next minute. */
 const MAX_DRAIN_ROUNDS = 40;
+/** One publish batch (MAX_PUBLISH_BATCH) of unacked rows per floor tick. */
+const FLOOR_PUBLISH_LIMIT = 100;
 
 export async function GET(req: NextRequest) {
   const job = req.nextUrl.searchParams.get('gate') === 'due' ? 'dispatch-drain:due' : 'dispatch-drain';
@@ -118,6 +123,10 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   // ones, which the reseed below publishes.
   const startAtBackfilled = await isolate(backfillStartAtWakes());
   const dependencyWakes = await isolate(repairDependencyWakes());
+  // Dispatch transport: re-publish rows Dispatch never acked (a no-op unless
+  // configured and some workspace opted in) before the drain, so the drain
+  // only takes what is still unacked past the publish grace.
+  const published = await isolate(publishPendingDispatches({ limit: FLOOR_PUBLISH_LIMIT }));
   const { totals } = await drainDue();
   const timer = await isolate((async () => {
     await reseedDispatchTimer();
@@ -126,22 +135,24 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   const health = await isolate(dispatchOutboxHealth());
 
   if (!failed(health)) {
-    const h = health as { overdue: number; stuck: number; failed: number };
-    if (h.overdue + h.stuck + h.failed > 0) {
+    const h = health as DispatchOutboxHealth;
+    if (h.overdue + h.stuck + h.failed + h.unacked + h.orphaned > 0) {
       // Overdue or stuck means kicks and the gated tick both missed rows the
-      // floor then had to pick up; failed means a consumer is rejecting wakes.
-      console.warn(`[dispatch-drain] outbox needs attention: overdue=${h.overdue} stuck=${h.stuck} failed=${h.failed}`);
+      // floor then had to pick up; failed means a consumer is rejecting wakes;
+      // unacked means Dispatch is not acking publishes; orphaned means
+      // handed-off rows with no terminal receipt an hour past due.
+      console.warn(`[dispatch-drain] outbox needs attention: overdue=${h.overdue} stuck=${h.stuck} failed=${h.failed} unacked=${h.unacked} orphaned=${h.orphaned}`);
     }
   }
 
   const backfilledCount = failed(startAtBackfilled) ? 0 : (startAtBackfilled as number);
   const dependencyCount = failed(dependencyWakes) ? 0 : (dependencyWakes as number);
-  const repairErrors = [startAtBackfilled, dependencyWakes, timer, health].filter(failed).length;
+  const repairErrors = [startAtBackfilled, dependencyWakes, published, timer, health].filter(failed).length;
   const result = {
     gate: gate.reason,
     drain: totals,
     timer: failed(timer) ? timer : 'reseeded',
-    repair: { startAtBackfilled, dependencyWakes, health },
+    repair: { startAtBackfilled, dependencyWakes, published, health },
   };
   console.log(
     `[dispatch-drain] floor claimed=${totals.claimed} delivered=${totals.delivered} skipped=${totals.skipped}` +

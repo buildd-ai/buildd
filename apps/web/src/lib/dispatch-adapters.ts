@@ -18,11 +18,13 @@ import { channels, events, triggerEventChecked } from '@/lib/pusher';
 import {
   SCHEDULED_DISPATCH_MAX_AHEAD_MS,
   buildTaskPayload,
+  buildWebhookPayload,
   dispatchToWebhook,
   tryGitHubActionsDispatch,
   type DispatchTask,
   type DispatchWorkspace,
   type TaskDispatchEvent,
+  type TaskWebhookPayload,
 } from '@/lib/task-dispatch-delivery';
 import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 
@@ -129,12 +131,68 @@ export function webhookWants(
   return notHeldOrLocal;
 }
 
-// ── Runner adapters ────────────────────────────────────────────────────────
+// ── Shared decisions ───────────────────────────────────────────────────────
+//
+// The in-app adapters below and the Dispatch transport's resolve/relay
+// callbacks (lib/dispatch-resolve.ts) both decide through these, so a
+// workspace's delivery policy is the same on either transport. Do not copy a
+// predicate into a caller; add it here.
+
+/**
+ * Why a runner could not claim this task now, or null when it could. A
+ * non-pending task is moot for every runner destination; a future startAt is
+ * refused by the claim until then.
+ */
+export function claimabilitySkip(
+  task: { status: string; startAt: Date | string | null | undefined },
+  nowMs: number = Date.now(),
+): 'start_at_future' | `status_${string}` | null {
+  if (task.status !== 'pending') return `status_${task.status}`;
+  if (task.startAt && new Date(task.startAt).getTime() > nowMs) return 'start_at_future';
+  return null;
+}
+
+/** The "run it on this local runner" delivery hint, if the intent carries one. */
+export function targetLocalUiUrlOf(metadata: Record<string, unknown> | null | undefined): string | null {
+  return typeof metadata?.targetLocalUiUrl === 'string' ? metadata.targetLocalUiUrl : null;
+}
+
+/**
+ * Whether the workspace webhook takes this wake: the pure policy
+ * (`webhookWants`) first, then the held gate — a query, asked only once the
+ * policy says yes; a gate error keeps the task off the webhook.
+ */
+export async function webhookEligible(ctx: DispatchContext): Promise<boolean> {
+  const config = ctx.workspace.webhookConfig as WorkspaceWebhookConfig | null | undefined;
+  if (!config || !webhookWants(config, ctx.task, routeForCause(ctx.cause), true)) return false;
+  return isTaskNotHeldOrLocal(ctx.task.id).catch(() => false);
+}
+
+/** The body the webhook receives for this wake (AC-17: carries cause and dispatchId). */
+export function webhookPayloadFor(ctx: DispatchContext): TaskWebhookPayload {
+  return buildWebhookPayload(ctx.task, routeForCause(ctx.cause).event, { cause: ctx.cause, dispatchId: ctx.dispatchId });
+}
+
+/** GitHub Actions is supplementary, for the legacy causes, and fires on an intent's first attempt only. */
+export function githubActionsWanted(ctx: Pick<DispatchContext, 'attemptCount' | 'cause'>): boolean {
+  return ctx.attemptCount <= 1 && routeForCause(ctx.cause).githubActions;
+}
 
 const runnerPayload = (ctx: DispatchContext) => ({
   ...buildTaskPayload(ctx.task, ctx.workspace),
   dispatch: { id: ctx.dispatchId, cause: ctx.cause },
 });
+
+/**
+ * Send the runner wake: targeted to one local runner, or the broadcast every
+ * Pusher-connected runner hears. The one sender of TASK_ASSIGNED (invariant
+ * 6), whether the in-app chain or the Dispatch relay callback asked for it.
+ */
+export async function sendRunnerWake(ctx: DispatchContext, targetLocalUiUrl: string | null): Promise<'sent' | 'unconfigured' | 'failed'> {
+  return triggerEventChecked(channels.workspace(ctx.task.workspaceId), events.TASK_ASSIGNED, { task: runnerPayload(ctx), targetLocalUiUrl });
+}
+
+// ── Runner adapters ────────────────────────────────────────────────────────
 
 /**
  * A runner can only claim a pending task whose start time has come. A wake
@@ -144,9 +202,8 @@ const runnerPayload = (ctx: DispatchContext) => ({
 export const runnerClaimability: DispatchAdapter = {
   name: 'runner-claimability',
   async offer(ctx) {
-    if (ctx.task.status !== 'pending') return { kind: 'skipped', why: `status_${ctx.task.status}` };
-    if (ctx.task.startAt && new Date(ctx.task.startAt).getTime() > Date.now()) return { kind: 'skipped', why: 'start_at_future' };
-    return DECLINED;
+    const why = claimabilitySkip(ctx.task);
+    return why ? { kind: 'skipped', why } : DECLINED;
   },
 };
 
@@ -154,9 +211,9 @@ export const runnerClaimability: DispatchAdapter = {
 export const targetedLocalRunner: DispatchAdapter = {
   name: 'targeted-local-runner',
   async offer(ctx) {
-    const targetLocalUiUrl = typeof ctx.metadata?.targetLocalUiUrl === 'string' ? ctx.metadata.targetLocalUiUrl : null;
+    const targetLocalUiUrl = targetLocalUiUrlOf(ctx.metadata);
     if (!targetLocalUiUrl) return DECLINED;
-    const sent = await triggerEventChecked(channels.workspace(ctx.task.workspaceId), events.TASK_ASSIGNED, { task: runnerPayload(ctx), targetLocalUiUrl });
+    const sent = await sendRunnerWake(ctx, targetLocalUiUrl);
     if (sent === 'failed') throw new Error('pusher targeted assignment failed');
     return { kind: 'delivered', via: sent === 'sent' ? 'pusher:targeted' : 'pusher:unconfigured' };
   },
@@ -167,13 +224,10 @@ export const workspaceWebhook: DispatchAdapter = {
   name: 'workspace-webhook',
   async offer(ctx) {
     const config = ctx.workspace.webhookConfig as WorkspaceWebhookConfig | null | undefined;
-    const route = routeForCause(ctx.cause);
-    // The held gate is a query; ask it only once the pure policy says yes.
     if (
       config
-      && webhookWants(config, ctx.task, route, true)
-      && await isTaskNotHeldOrLocal(ctx.task.id).catch(() => false)
-      && await dispatchToWebhook(config, ctx.task, route.event, undefined, { cause: ctx.cause, dispatchId: ctx.dispatchId })
+      && await webhookEligible(ctx)
+      && await dispatchToWebhook(config, ctx.task, routeForCause(ctx.cause).event, undefined, { cause: ctx.cause, dispatchId: ctx.dispatchId })
     ) {
       return { kind: 'delivered', via: 'webhook' };
     }
@@ -189,7 +243,7 @@ export const workspaceWebhook: DispatchAdapter = {
 export const githubActions: DispatchAdapter = {
   name: 'github-actions',
   async offer(ctx) {
-    if (ctx.attemptCount <= 1 && routeForCause(ctx.cause).githubActions) {
+    if (githubActionsWanted(ctx)) {
       tryGitHubActionsDispatch(ctx.workspace, ctx.task).catch(() => {});
     }
     return DECLINED;
@@ -200,7 +254,7 @@ export const githubActions: DispatchAdapter = {
 export const runnerBroadcast: DispatchAdapter = {
   name: 'runner-broadcast',
   async offer(ctx) {
-    const sent = await triggerEventChecked(channels.workspace(ctx.task.workspaceId), events.TASK_ASSIGNED, { task: runnerPayload(ctx), targetLocalUiUrl: null });
+    const sent = await sendRunnerWake(ctx, null);
     if (sent === 'failed') throw new Error('pusher broadcast failed');
     return { kind: 'delivered', via: sent === 'sent' ? 'pusher' : 'pusher:unconfigured' };
   },

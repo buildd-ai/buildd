@@ -23,6 +23,7 @@
     "@axiomhq/js": "^2.0.0",
     "@builddai/ai-kit": "workspace:*",
     "@buildd/core": "workspace:*",
+    "@buildd/dispatch-contract": "workspace:*",
     "@buildd/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@neondatabase/serverless": "^1.0.0",

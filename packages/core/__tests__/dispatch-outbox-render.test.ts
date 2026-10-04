@@ -8,6 +8,8 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import {
   claimDueDispatchesSql,
   defaultDedupeKey,
+  dispatchOutboxHealthSql,
+  PUBLISH_GRACE_MS,
   dispatchHintSql,
   enqueueDispatchSql,
   outboxInsertSelectSql,
@@ -55,6 +57,32 @@ describe('claimDueDispatchesSql', () => {
     expect(JSON.parse(String(params[0]))).toMatchObject({ limit: 25, now: null });
     expect(sql).toContain('FOR UPDATE OF o SKIP LOCKED');
     expect(sql).toContain("o.status IN ('pending', 'delivering')");
+  });
+
+  test('never takes a handed_off row: only pending and lease-expired delivering rows qualify', () => {
+    const { sql } = render(claimDueDispatchesSql(25));
+    expect(sql).not.toContain('handed_off\'');
+    expect(sql).toContain("(o.status = 'pending' AND o.not_before <= c.now");
+    expect(sql).toContain("OR (o.status = 'delivering' AND o.last_attempt_at <");
+  });
+
+  test('the publish grace is scoped to unacked work rows of dispatch-transport workspaces only', () => {
+    const { sql, params } = render(claimDueDispatchesSql(25));
+    expect(JSON.parse(String(params[0])).graceMs).toBe(PUBLISH_GRACE_MS);
+    expect(sql).toContain("o.handed_off_at IS NULL AND o.intent = 'work_execution'");
+    expect(sql).toContain("w.dispatch_transport = 'dispatch'");
+    // An in_app or shadow workspace never matches the exclusion.
+    expect(sql).not.toContain("'shadow'");
+    expect(sql).not.toContain("'in_app'");
+  });
+});
+
+describe('dispatchOutboxHealthSql', () => {
+  test('reports unacked dispatch rows and orphaned handoffs alongside the old counters', () => {
+    const { sql, params } = render(dispatchOutboxHealthSql());
+    expect(params).toHaveLength(0);
+    for (const col of ['overdue', 'stuck', 'failed', 'unacked', 'orphaned']) expect(sql).toContain(`AS ${col}`);
+    expect(sql).toContain("o.status = 'handed_off' AND o.not_before < now() - interval '1 hour'");
   });
 });
 
