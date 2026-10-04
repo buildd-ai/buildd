@@ -16,7 +16,7 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
 import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict } from '@/lib/agent-capabilities/pr-ownership';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
@@ -1198,7 +1198,8 @@ export async function PATCH(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token may close only the PR its own run opened.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1225,6 +1226,9 @@ export async function PATCH(req: NextRequest) {
 
     if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    }
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber)) {
+      return NextResponse.json({ error: 'A task token may close only its own PR' }, { status: 403 });
     }
 
     const workspace = worker.workspace;
@@ -1373,7 +1377,9 @@ export async function PUT(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token may merge only the PR its own run opened; the merge
+  // policy below still decides whether it lands.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
@@ -1411,6 +1417,9 @@ export async function PUT(req: NextRequest) {
         );
       }
       worker = resolved;
+    }
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber)) {
+      return NextResponse.json({ error: 'A task token may merge only its own PR' }, { status: 403 });
     }
 
     const workspace = worker.workspace;
@@ -1970,7 +1979,8 @@ export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  // A per-task token reads PRs only in its own task's workspace.
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
@@ -2042,6 +2052,9 @@ export async function GET(req: NextRequest) {
       }
       worker = resolved;
       resolvedPrNumber = prNum;
+    }
+    if (account && !taskScopeAllowsWorkspace(account, worker.workspaceId)) {
+      return NextResponse.json({ error: 'PR not found' }, { status: 404 });
     }
 
     const workspace = worker.workspace;
