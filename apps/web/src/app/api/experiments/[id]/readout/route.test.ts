@@ -12,7 +12,10 @@ const mockResolveViewer = mock(async () => viewer);
 const mockGet = mock(async () => stored);
 const mockRun = mock(async (..._a: any[]) => ({ verdict: 'insufficient_n' }) as any);
 
-mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: mockResolveViewer }));
+mock.module('@/lib/experiment-access', () => ({
+  resolveExperimentViewer: mockResolveViewer,
+  bearerOf: (req: NextRequest) => req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null,
+}));
 mock.module('@/lib/experiments-store', () => ({ getTeamExperimentForReadout: mockGet }));
 mock.module('@buildd/core/experiment-readout-source', () => ({ runExperimentReadout: mockRun }));
 const mockTriageRun = mock(async (..._a: any[]) => ({ status: 'underpowered' }) as any);
@@ -133,5 +136,34 @@ describe('GET /api/experiments/[id]/readout', () => {
     const res = await get();
     expect(res.status).toBe(200);
     expect((await res.json()).health).toBeNull();
+  });
+});
+
+// A readout counts tasks across every workspace on the team, so a per-task
+// token (confined to one workspace) is refused it outright.
+describe('GET /api/experiments/[id]/readout — per-task token', () => {
+  it('403s before resolving a viewer or reading anything', async () => {
+    as('member');
+    stored = row({ visibility: 'team' });
+    mockResolveViewer.mockClear();
+    const res = await GET(
+      new NextRequest(`http://localhost/api/experiments/${ID}/readout`, { headers: { authorization: 'Bearer bldt_x.y' } }),
+      { params: Promise.resolve({ id: ID }) },
+    );
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toMatch(/task token/);
+    expect(mockResolveViewer).not.toHaveBeenCalled();
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('an account key still gets its readout', async () => {
+    as('member');
+    stored = row({ visibility: 'team' });
+    const res = await GET(
+      new NextRequest(`http://localhost/api/experiments/${ID}/readout`, { headers: { authorization: 'Bearer bld_test' } }),
+      { params: Promise.resolve({ id: ID }) },
+    );
+    expect(res.status).toBe(200);
   });
 });

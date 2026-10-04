@@ -10,6 +10,10 @@
  * readout joins on tasks, so any kind whose units are not tasks (a chat
  * tier pool's turns) would read as all zeros through it. A kind with no
  * readout is a 422, never a silent fall-through.
+ *
+ * Refused to a per-task token: a readout and its enrolment health count
+ * tasks across every workspace on the team, and cannot be narrowed to the
+ * token's one workspace without changing what the experiment measures.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
@@ -19,7 +23,8 @@ import { TIER_POOL_EXPERIMENT_KIND } from '@buildd/core/tier-pool';
 import { runTierPoolReadout } from '@buildd/core/tier-pool-admin';
 import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
 import { HEARTBEAT_TRIAGE_EXPERIMENT_KIND, parseHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
-import { resolveExperimentViewer } from '@/lib/experiment-access';
+import { bearerOf, resolveExperimentViewer } from '@/lib/experiment-access';
+import { isTaskToken } from '@/lib/task-token';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
 import { getTeamExperimentForReadout } from '@/lib/experiments-store';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
@@ -28,6 +33,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const notFound = () => NextResponse.json({ error: 'Experiment not found' }, { status: 404 });
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (isTaskToken(bearerOf(req))) {
+    return NextResponse.json({ error: 'A task token cannot read experiment readouts: they aggregate the whole team' }, { status: 403 });
+  }
   const { id } = await params;
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });

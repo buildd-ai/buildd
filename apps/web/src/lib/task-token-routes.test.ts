@@ -21,12 +21,18 @@ const REPO = join(import.meta.dir, '../../../..');
 const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
+  'apps/web/src/app/api/discrepancies/[id]/route.ts',
+  'apps/web/src/app/api/discrepancies/route.ts',
   'apps/web/src/app/api/evidence/route.ts',
+  'apps/web/src/app/api/experiments/[id]/route.ts',
+  'apps/web/src/app/api/experiments/route.ts',
   'apps/web/src/app/api/explain/route.ts',
   'apps/web/src/app/api/github/pr/review/route.ts',
   'apps/web/src/app/api/github/pr/route.ts',
   'apps/web/src/app/api/health/failures/route.ts',
   'apps/web/src/app/api/mcp/route.ts',
+  'apps/web/src/app/api/stats/coordination/route.ts',
+  'apps/web/src/app/api/stats/usage/route.ts',
   'apps/web/src/app/api/tasks/[id]/error-traces/route.ts',
   'apps/web/src/app/api/tasks/[id]/evidence/route.ts',
   'apps/web/src/app/api/tasks/[id]/route.ts',

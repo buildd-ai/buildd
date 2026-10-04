@@ -9,16 +9,34 @@
  *
  * `?workspaceId=` (optional) resolves the team through that workspace; without
  * it the session's active team, or the API key's own team, is used.
+ *
+ * A per-task token may list (its own task's workspace's team, team-visible
+ * rows, no enrolment health: those are team-wide counts) and nothing else.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveExperimentViewer } from '@/lib/experiment-access';
+import { bearerOf, resolveExperimentViewer, taskTokenExperimentViewer, type ViewerResult } from '@/lib/experiment-access';
+import { isTaskToken } from '@/lib/task-token';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { canViewExperiment, isExperimentAdmin, parseCreateExperiment, toExperimentDTO } from '@/lib/experiments';
 import { insertExperiment, listTeamExperiments } from '@/lib/experiments-store';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
 
 export async function GET(req: NextRequest) {
-  const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
+  const workspaceParam = req.nextUrl.searchParams.get('workspaceId');
+  const bearer = bearerOf(req);
+  let who: ViewerResult;
+  const taskToken = isTaskToken(bearer);
+  if (taskToken) {
+    const account = await authenticateTaskScopedCaller(bearer, req);
+    if (!account?.taskScope) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (workspaceParam && !taskScopeAllowsWorkspace(account, workspaceParam)) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+    who = await taskTokenExperimentViewer(account.taskScope.workspaceId, account.id);
+  } else {
+    who = await resolveExperimentViewer(req, workspaceParam);
+  }
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
 
@@ -28,7 +46,7 @@ export async function GET(req: NextRequest) {
   // starved or unbalanced experiment shows up where it is listed. A failed
   // check drops that entry rather than the list.
   const health: Record<string, ExperimentHealthFinding[]> = {};
-  await Promise.all(rows.filter(r => r.status === 'running').map(async r => {
+  if (!taskToken) await Promise.all(rows.filter(r => r.status === 'running').map(async r => {
     const findings = await runExperimentHealth(r).catch(() => null);
     if (findings) health[r.id] = findings;
   }));
@@ -36,6 +54,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (isTaskToken(bearerOf(req))) {
+    return NextResponse.json({ error: 'A task token cannot create experiments' }, { status: 403 });
+  }
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;

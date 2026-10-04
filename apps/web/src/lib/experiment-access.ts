@@ -90,3 +90,20 @@ export async function resolveExperimentViewer(req: NextRequest, workspaceId: str
   if (!role) return notFound('Team');
   return { ok: true, viewer: { teamId, role, userId: user.id, accountId: null } };
 }
+
+/** The raw bearer on a request, or null. */
+export function bearerOf(req: NextRequest): string | null {
+  return req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null;
+}
+
+/**
+ * A per-task token's viewer: the team of its own task's workspace, as a
+ * `member` (the token is worker-level), so it sees team-visible experiments
+ * only and can change none. The caller has already authenticated the token
+ * and confined any requested workspace to its task's.
+ */
+export async function taskTokenExperimentViewer(workspaceId: string, accountId: string): Promise<ViewerResult> {
+  const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId), columns: { teamId: true } });
+  if (!ws?.teamId) return notFound('Team');
+  return { ok: true, viewer: { teamId: ws.teamId, role: 'member', userId: null, accountId } };
+}

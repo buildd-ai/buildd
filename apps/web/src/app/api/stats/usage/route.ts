@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray } from 'drizzle-orm';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import {
@@ -66,7 +66,8 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = apiKey ? await authenticateApiKey(apiKey, req) : null;
+  // A per-task token reads usage only for its own task's workspace.
+  const apiAccount = apiKey ? await authenticateTaskScopedCaller(apiKey, req) : null;
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -92,12 +93,17 @@ export async function GET(req: NextRequest) {
   // Both auth types resolve to the same team scope, so an API key can't read a
   // team it isn't on even when it passes an explicit ?workspace=.
   const teamIds = await resolveAccountTeamIds(user, apiAccount ?? null);
-  const scopedWorkspaces = teamIds.length > 0
+  const teamWorkspaces = teamIds.length > 0
     ? await db.query.workspaces.findMany({
         where: inArray(workspaces.teamId, teamIds),
         columns: { id: true, name: true },
       })
     : [];
+  // A task token's team is narrowed to its task's workspace before anything
+  // reads it: totals, groups and workspace labels never cover the rest.
+  const scopedWorkspaces = apiAccount
+    ? teamWorkspaces.filter(w => taskScopeAllowsWorkspace(apiAccount, w.id))
+    : teamWorkspaces;
   const allowedIds = scopedWorkspaces.map(w => w.id);
 
   if (workspaceParam && !allowedIds.includes(workspaceParam)) {
