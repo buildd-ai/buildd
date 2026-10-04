@@ -40,6 +40,11 @@ export type PostSessionQualityMode = (typeof POST_SESSION_QUALITY_MODES)[number]
 /** `WorkspaceGitConfig.postSessionQuality` — runtime config, not a deploy constant. */
 export interface PostSessionQualityConfig {
   mode?: PostSessionQualityMode;
+  /** §9 action-policy thresholds. Read only through `resolveFindingActionPolicy`. */
+  findingPolicy?: {
+    highConfidenceThreshold?: number;
+    mediumRecurrence?: { count?: number; windowDays?: number };
+  };
 }
 
 /**

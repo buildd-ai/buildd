@@ -191,6 +191,7 @@
     "./role-outcomes-feed": "./role-outcomes-feed.ts",
     "./post-session-quality": "./post-session-quality.ts",
     "./post-session-triage": "./post-session-triage.ts",
+    "./post-session-findings": "./post-session-findings.ts",
     "./verification-check": "./verification-check.ts",
     "./gate-events": "./gate-events.ts",
     "./gate-slugs": "./gate-slugs.ts",
