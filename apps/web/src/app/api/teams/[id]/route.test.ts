@@ -12,6 +12,7 @@ let membership: any = { teamId: '11111111-1111-4111-8111-111111111111', userId: 
 let teamRow: any = { id: '11111111-1111-4111-8111-111111111111', name: 'Team', slug: 'team', timezone: null };
 const capturedUpdates: any[] = [];
 const teamQueries: any[] = [];
+let deletedTeams = 0;
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -22,6 +23,7 @@ mock.module('@buildd/core/db', () => ({
     update: (_t: any) => ({
       set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
     }),
+    delete: (_t: any) => ({ where: (_c: any) => { deletedTeams++; return Promise.resolve(); } }),
   },
 }));
 
@@ -36,7 +38,7 @@ mock.module('@buildd/core/db/schema', () => ({
   users: 'users',
 }));
 
-import { GET, PATCH } from './route';
+import { DELETE, GET, PATCH } from './route';
 
 const ctx = { params: Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' }) };
 
@@ -343,5 +345,43 @@ describe('PATCH /api/teams/[id] — server-side feature overrides', () => {
     await GET(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111'), ctx);
     expect(teamQueries[0].columns).toMatchObject({ inferenceFeatureModes: true });
     principal = null;
+  });
+});
+
+describe('DELETE /api/teams/[id]', () => {
+  const del = () =>
+    DELETE(new NextRequest('http://localhost:3000/api/teams/11111111-1111-4111-8111-111111111111', { method: 'DELETE' }), ctx);
+
+  beforeEach(() => { deletedTeams = 0; });
+
+  it('a member cannot delete the team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'member' };
+    expect((await del()).status).toBe(403);
+    expect(deletedTeams).toBe(0);
+  });
+
+  it('an admin cannot delete the team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'admin' };
+    expect((await del()).status).toBe(403);
+    expect(deletedTeams).toBe(0);
+  });
+
+  it('a non-member cannot delete the team', async () => {
+    membership = undefined;
+    expect((await del()).status).toBe(403);
+    expect(deletedTeams).toBe(0);
+  });
+
+  it('an owner deletes the team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    expect((await del()).status).toBe(200);
+    expect(deletedTeams).toBe(1);
+  });
+
+  it('an owner still cannot delete a personal team', async () => {
+    membership = { teamId: '11111111-1111-4111-8111-111111111111', userId: 'user-1', role: 'owner' };
+    teamRow = { ...teamRow, slug: 'personal-user-1' };
+    expect((await del()).status).toBe(400);
+    expect(deletedTeams).toBe(0);
   });
 });

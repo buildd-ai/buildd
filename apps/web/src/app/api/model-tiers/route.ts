@@ -12,6 +12,7 @@ import {
   verifyWorkspaceAccess,
   verifyAccountWorkspaceAccess,
 } from '@/lib/team-access';
+import { roleHas } from '@/lib/permissions';
 import { resolveAllTiers, invalidateTierCache, TIERS, type Tier, type TierSurface } from '@buildd/core/model-tier-registry';
 import { isTierSurface, type TierEntryWithSurfaces } from '@buildd/core/model-tier-defaults';
 
@@ -23,8 +24,6 @@ async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null
   });
   return ws?.teamId ?? null;
 }
-
-const ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
 
 type TeamResolution = { teamId: string } | { error: NextResponse };
 
@@ -84,7 +83,7 @@ async function resolveTeam(
 
   if (opts.write) {
     if (!role) role = await getUserTeamRole(user.id, teamId);
-    if (!role || !ADMIN_ROLES.has(role)) {
+    if (!roleHas(role, 'manage_model_tiers')) {
       return fail(403, 'Only a team owner or admin can change model tiers');
     }
   }

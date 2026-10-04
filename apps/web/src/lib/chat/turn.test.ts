@@ -736,6 +736,16 @@ describe('tool groups: the model sees only this turn\'s groups', () => {
     expect(names).not.toContain('manage_workspaces');
   });
 
+  it('admin tools follow the use_chat_admin_tools permission: owner and admin get them, member does not', async () => {
+    const route = async () => ({ tier: 'standard' as const, allowWrites: true, source: 'decision' as const, area: 'admin' });
+    for (const [teamRole, expected] of [['owner', true], ['admin', true], ['member', false]] as const) {
+      const model = new MockLanguageModelV4({ doStream: textStream('ok') as any });
+      const { turn } = harness({ model, route, user: { ...user, teamRole } as any });
+      await turn(userMsg('change the workspace config'));
+      expect(sentTools(model).includes('manage_workspaces')).toBe(expected);
+    }
+  });
+
   it('turnGroups: a member never gets admin, even when routing names it', async () => {
     const { turnGroups } = await import('./turn');
     const g = turnGroups({ route: { tier: 'standard', allowWrites: true, source: 'decision', area: 'admin' }, continuing: null, canAdmin: false });

@@ -4,9 +4,9 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (50)
+## Active (51)
 
-### auth (4)
+### auth (5)
 
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
@@ -16,6 +16,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
 - [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-09-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
+- [Team Permissions](./team-permissions.md) · @max — verified 2026-10-04
+  Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
 
 ### billing (1)
 
@@ -133,7 +135,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 - [Serialized Surface Merge Ordering](./surface-merge-ordering.md) · @max — verified 2026-10-01
   When a workspace opts in, a PR touching a serialized surface MUST wait behind an earlier open PR on the same surface and base branch, and MUST merge inside an atomic per-surface reservation.
-- [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-03
+- [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-04
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
 ## Draft (3)

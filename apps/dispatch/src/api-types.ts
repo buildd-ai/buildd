@@ -1,27 +1,17 @@
-// Read shapes of the /v1 inspection routes. Local to the Worker for now; move
-// them into @buildd/dispatch-contract when a producer starts consuming them
-// (the repair floor's `GET /v1/intents`).
+// Read shapes of the /v1 inspection routes. The lookup shapes the repair
+// floor consumes (`GET /v1/intents`) live in @buildd/dispatch-contract and
+// are re-exported here; the rest are local to the Worker.
 
-import type { RouteStep } from '@buildd/dispatch-contract';
+import type { IntentState, IntentSummary, RouteStep } from '@buildd/dispatch-contract';
 import type { TargetOptions, TargetType } from './adapters/types';
 
-export const INTENT_STATES = ['queued', 'attempting', 'delivered', 'failed', 'merged', 'expired', 'skipped'] as const;
-export type IntentState = (typeof INTENT_STATES)[number];
-export const TERMINAL_STATES: readonly IntentState[] = ['delivered', 'failed', 'merged', 'expired', 'skipped'];
-
-export interface IntentSummary {
-  id: string;
-  state: IntentState;
-  /** Attempts made so far. */
-  attempt: number;
-  mergedInto?: string;
-}
-
-/** `GET /v1/intents?scope=&ids=`. */
-export interface IntentsLookupResponse {
-  known: IntentSummary[];
-  unknown: string[];
-}
+export {
+  INTENT_STATES,
+  TERMINAL_STATES,
+  type IntentState,
+  type IntentSummary,
+  type IntentsLookupResponse,
+} from '@buildd/dispatch-contract';
 
 export interface TargetActivity {
   target: string;

@@ -111,10 +111,12 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   // its ghs_ shape is caught by the redactor's generic token pattern.
   githubCredentials: 'not_secret',
   roleConfig: 'not_secret',
-  roleInstructions: 'not_secret',
+  // Prompt text (role persona, skill bodies): never echoed into evidence or
+  // public views. Exact-value redacted like a credential.
+  roleInstructions: 'secret',
   roleEnvSecrets: 'secret',
   roleEnvMissing: 'not_secret',
-  skillBundles: 'not_secret',
+  skillBundles: 'secret',
   cbmExperiment: 'not_secret',
   questionGate: 'not_secret',
 };
@@ -133,6 +135,41 @@ export interface WorkerSecretChannels {
     [k: string]: unknown;
   };
   modelEndpoint?: { authToken?: string; [k: string]: unknown };
+  roleInstructions?: { slug?: string; content?: string } | null;
+  skillBundles?: Array<{ slug?: string; content?: string; files?: Array<{ path?: string; content?: string; encoding?: string }> }>;
+  /** The packaged role bundle held in memory (not a claim field; carries the same kind of text). */
+  roleBundle?: { claudeMd?: string; skills?: Array<{ slug?: string; content?: string }> };
+}
+
+/**
+ * Prompt text the worker holds, as exact values for the redactor. Whole bodies,
+ * plus each skill body without its frontmatter (what lands on disk can differ
+ * in the frontmatter only), so an echoed copy reads `[REDACTED:skill:<slug>]`.
+ */
+function promptTextValues(worker: WorkerSecretChannels): Array<{ label: string; value: string | undefined }> {
+  const out: Array<{ label: string; value: string | undefined }> = [];
+  const body = (text: string | undefined) => {
+    if (!text || !text.startsWith('---')) return undefined;
+    const end = text.indexOf('---', 3);
+    return end === -1 ? undefined : text.slice(end + 3).trim();
+  };
+  if (worker.roleInstructions?.content) {
+    out.push({ label: `role:${worker.roleInstructions.slug ?? 'role'}`, value: worker.roleInstructions.content });
+    out.push({ label: `role:${worker.roleInstructions.slug ?? 'role'}`, value: worker.roleInstructions.content.trim() });
+  }
+  for (const b of worker.skillBundles ?? []) {
+    const label = `skill:${b?.slug ?? 'skill'}`;
+    out.push({ label, value: b?.content }, { label, value: body(b?.content) });
+    for (const f of b?.files ?? []) {
+      if (f?.encoding !== 'base64') out.push({ label, value: f?.content });
+    }
+  }
+  if (worker.roleBundle?.claudeMd) out.push({ label: 'role:claudeMd', value: worker.roleBundle.claudeMd });
+  for (const sk of worker.roleBundle?.skills ?? []) {
+    const label = `skill:${sk?.slug ?? 'skill'}`;
+    out.push({ label, value: sk?.content }, { label, value: body(sk?.content) });
+  }
+  return out;
 }
 
 /**
@@ -156,6 +193,7 @@ export function buildWorkerSecretValues(
     { label: 'codexIdToken', value: cx?.idToken },
     { label: 'codexApiKey', value: cx?.apiKey },
     { label: 'modelEndpointAuthToken', value: worker.modelEndpoint?.authToken },
+    ...promptTextValues(worker),
   ].filter((s): s is { label: string; value: string } => typeof s.value === 'string' && s.value.length > 0);
 }
 

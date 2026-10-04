@@ -67,6 +67,7 @@ import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-ga
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
+import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -684,6 +685,17 @@ export async function POST(req: NextRequest) {
   if (!forceClaim) explicitTaskGates.workspaceCap = workspaceCapGate();
   if (explicitTaskGates.workspaceCap) claimableConditions.push(explicitTaskGates.workspaceCap);
 
+  // Workspace executor (gitConfig.executor, packages/shared/src/executor.ts):
+  // a host claim skips workspaces whose work runs in the cloud, so a runner's
+  // cross-workspace poll cannot beat the cold-starting container to the task;
+  // a cloud claim skips host-only workspaces. Applies to a person's explicit
+  // interactive claim_task {taskId} too (the container is already on its way
+  // for that task); only an admin force claim lifts it.
+  if (!forceClaim) {
+    explicitTaskGates.workspaceExecutor = workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host');
+    claimableConditions.push(explicitTaskGates.workspaceExecutor);
+  }
+
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
@@ -754,6 +766,7 @@ export async function POST(req: NextRequest) {
         missionLocal: missionNotLocal(),
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
+        workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
       },
     });
@@ -1864,8 +1877,18 @@ export async function POST(req: NextRequest) {
         //    Under the planner's 'apply', a task with a confident predicted
         //    scope (plannerReplacesMutex) was already ordered by real edges
         //    against that scope, so the mutex no longer applies to it.
+        //    `localMissionClaim` (verified interactive session, explicit
+        //    taskId, mission.executor='local' — same predicate as the role
+        //    gate exemption above) also skips it: a person running a local
+        //    mission's tasks from their own session is the one choosing what
+        //    to claim next, in an isolated worktree per task, same as the
+        //    LX-2/LX-4 exemptions already granted to the mission-local and
+        //    role gates. This is narrower than an admin force claim — which
+        //    still does NOT lift this gate (see the force-claim comment
+        //    block and its regression test) — because force alone carries no
+        //    guarantee a human is actually supervising concurrent work.
         if ((task as any).category !== 'review' && !producesNoFileEdits((task as any).outputRequirement)
-          && declaresNoScope(taskManifest) && !plannerReplacesMutex.has(task.id)) {
+          && declaresNoScope(taskManifest) && !plannerReplacesMutex.has(task.id) && !localMissionClaim) {
           const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
@@ -2789,9 +2812,9 @@ export async function POST(req: NextRequest) {
     cliVersion: body.environment?.claudeCliVersion,
     features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
   });
-  // Question-gate experiment: marks workers whose questions go through
-  // /api/workers/[id]/question-check. No-op without a running experiment.
-  await attachQuestionGate(claimedWorkers, {
+  // Question gate: marks workers whose questions go through
+  // /api/workers/[id]/question-check. No-op for a runner that never sent the feature.
+  attachQuestionGate(claimedWorkers, {
     features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
   });
 

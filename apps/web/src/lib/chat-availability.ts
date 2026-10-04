@@ -16,6 +16,7 @@ import { resolveChatModel } from '@/lib/chat/models';
 import { FALLBACK_TIER } from '@/lib/chat/routing';
 import type { ChatAvailabilityResponse } from '@buildd/shared';
 import { getUserTeamRole } from '@/lib/team-access';
+import { roleHas } from '@/lib/permissions';
 
 export interface ChatAvailabilityDeps {
   keyPolicy(teamId: string): Promise<InferenceKeyPolicy>;
@@ -44,7 +45,7 @@ export async function computeChatAvailability(
   if (!teamId) return { available: false, reason: 'no_key', canManageTeamKeys: false };
   try {
     const [keyPolicy, role] = await Promise.all([deps.keyPolicy(teamId), deps.role(userId, teamId).catch(() => null)]);
-    const canManageTeamKeys = role === 'owner' || role === 'admin';
+    const canManageTeamKeys = roleHas(role, 'manage_inference_providers');
     if (!(await deps.hasKey(teamId, userId, keyPolicy))) return { available: false, reason: 'no_key', canManageTeamKeys, keyPolicy };
     return { available: true, reason: null, canManageTeamKeys, keyPolicy };
   } catch {

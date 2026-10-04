@@ -24,6 +24,8 @@ const OPERATOR_SENDER_CALLS: Record<string, { calls: number; why: string }> = {
   'app/api/cron/schedules/maintenance/overdue-heartbeats.ts': { calls: 1, why: 'scheduler health: the cron itself stalled; ids only' },
   'app/api/github/webhook/route.ts': { calls: 2, why: 'installation sync health (release failures go to the owning team)' },
   'lib/cron-run.ts': { calls: 1, why: 'cron job health' },
+  'lib/body-read-monitor.ts': { calls: 1, why: 'platform security: one caller bulk-reading role/skill bodies; caller id and counts only' },
+  'lib/prompt-fallback-alert.ts': { calls: 1, why: 'platform prompt seed health: prompt ids only, never text' },
 };
 
 /** Modules whose alerts are about one tenant: they must use the team path. */

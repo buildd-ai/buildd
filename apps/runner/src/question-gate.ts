@@ -6,12 +6,19 @@
  * already has: task title, branch, last edited file. Deterministic; nothing
  * the agent did not write is invented.
  *
- * Gate (only with a claim-time `questionGate` marker, i.e. the team runs a
- * `question_gate` experiment): before the question is parked, the server's
- * decision model checks it can be answered with no other context. A pushback
- * becomes the AskUserQuestion tool result and the agent asks again; at most
- * `maxPushbacks` per worker, then the question is sent as-is. Any failure
- * sends the question unchanged.
+ * Gate (only with a claim-time `questionGate` marker, i.e. the runner sent the
+ * `question_gate` feature): before the question is parked, the server runs
+ * the brief check and, once that passes, decide/hold/ask
+ * (packages/core/question-gate.ts). Three outcomes reach the runner:
+ *  - `pushback` — the brief needs work; the reason becomes the AskUserQuestion
+ *    tool result and the agent asks again, up to `maxPushbacks` per worker.
+ *  - `decide` — Jev picked an option; the answer becomes the AskUserQuestion
+ *    tool result and the agent continues — this does NOT count against the
+ *    pushback cap, it is a final answer, not a request to rewrite.
+ *  - `send` — park as `waiting_input`, same as always; a `hold` disposition
+ *    tags the parked `waitingFor` so a quieter notification path can be built
+ *    on top later (see question-gate.ts `HOLD_RESURFACE_MS`).
+ * Any failure sends the question unchanged.
  */
 import { deriveQuestionBrief } from '@buildd/core/question-brief';
 import { QUESTION_GATE_RUNNER_TIMEOUT_MS, type QuestionGateReply } from '@buildd/core/question-gate';
@@ -79,12 +86,16 @@ export function questionPayload(w: WaitingFor): Record<string, unknown> {
     ...(w.context ? { context: w.context } : {}),
     ...(w.recommended ? { recommended: w.recommended } : {}),
     ...(w.where ? { where: w.where } : {}),
+    ...(w.disposition ? { disposition: w.disposition } : {}),
+    ...(w.holdReason ? { holdReason: w.holdReason } : {}),
+    ...(w.resurfaceAt ? { resurfaceAt: w.resurfaceAt } : {}),
   };
 }
 
 export type GateResult =
   | { action: 'send'; reply: QuestionGateReply | null }
-  | { action: 'pushback'; reason: string; reply: QuestionGateReply };
+  | { action: 'pushback'; reason: string; reply: QuestionGateReply }
+  | { action: 'answer'; reason: string; reply: QuestionGateReply };
 
 export interface QuestionChecker {
   checkQuestion(
@@ -94,10 +105,26 @@ export interface QuestionChecker {
   ): Promise<QuestionGateReply>;
 }
 
+/** The parked question, tagged with the gate's `hold` fields when the reply disposed to hold. */
+export function holdTagged(question: WaitingFor, reply?: QuestionGateReply | null): WaitingFor {
+  if (reply?.disposition !== 'hold') return question;
+  return {
+    ...question,
+    disposition: 'hold',
+    ...(reply.holdReason ? { holdReason: reply.holdReason } : {}),
+    ...(reply.resurfaceAt ? { resurfaceAt: reply.resurfaceAt } : {}),
+  };
+}
+
 /**
- * Ask the server whether this question may reach a person. Sends unless the
- * reply is a pushback AND this worker still has pushbacks left; counts the
- * pushback on the worker. Never throws.
+ * Ask the server what should happen to this question. Three outcomes:
+ *  - `pushback`: this worker still has pushbacks left — the agent rewrites.
+ *  - `answer`: Jev decided — the agent continues with the answer, no park,
+ *    no pushback counted (it is not a rewrite request).
+ *  - `send`: park it (brief-check cap spent, a hold, an ask, a hard rail, or
+ *    any failure) — the server enforces the pushback cap too; this keeps it
+ *    even against a server that does not.
+ * Never throws.
  */
 export async function runQuestionGate(worker: LocalWorker, question: WaitingFor, client: QuestionChecker): Promise<GateResult> {
   const gate = worker.questionGate;
@@ -110,6 +137,9 @@ export async function runQuestionGate(worker: LocalWorker, question: WaitingFor,
     return { action: 'send', reply: null };
   }
   console.log(`[Worker ${worker.id}] Question gate: ${reply.verdict} (${reply.outcome}${reply.error ? `: ${reply.error}` : ''}, pushbacks ${prior}/${gate.maxPushbacks})`);
+  if (reply.verdict === 'decide' && reply.reason) {
+    return { action: 'answer', reason: reply.reason, reply };
+  }
   // The server enforces the cap too; this keeps it even against a server that does not.
   if (reply.verdict === 'pushback' && prior < gate.maxPushbacks && reply.reason) {
     worker.questionPushbacks = prior + 1;

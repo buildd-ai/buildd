@@ -16,6 +16,7 @@
  * what the token alone prevents.
  */
 import { mintRepoScopedInstallationToken, type ScopedInstallationToken } from '@/lib/github-scoped-token';
+import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import type { AgentPrincipal } from './principal';
 
 export type GithubCapability =
@@ -85,4 +86,19 @@ export async function mintGithubRepoGrant(
     repoId: decision.repo.repoId,
     installedPermissions: decision.installation.permissions,
   });
+}
+
+/**
+ * Branches an agent run must not push to or record a PR from: the set
+ * protectedBaseBranches() gives the auto-merge bound, plus the repo's own
+ * GitHub default branch. protectedBaseBranches omits the default branch on
+ * purpose (see its docstring), but a raw push or a recorded PR from it
+ * bypasses buildd's merge policy entirely, so this set is stricter.
+ */
+export function repoProtectedBranches(
+  ws: { gitConfig?: Parameters<typeof protectedBaseBranches>[0]['gitConfig']; releaseConfig?: Parameters<typeof protectedBaseBranches>[0]['releaseConfig'] },
+  defaultBranch: string | null | undefined,
+): string[] {
+  return [...new Set([...protectedBaseBranches({ gitConfig: ws.gitConfig, releaseConfig: ws.releaseConfig }), defaultBranch]
+    .filter((b): b is string => typeof b === 'string' && b.length > 0))];
 }

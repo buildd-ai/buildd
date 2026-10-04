@@ -877,11 +877,8 @@ export interface QuestionWhere {
   file?: string;
 }
 
-/** Claim-time marker for the question-gate experiment (see ClaimTasksResponse). */
+/** Claim-time capability marker for the question gate (see ClaimTasksResponse). */
 export interface QuestionGateMarker {
-  experimentId: string;
-  policyVersion: number;
-  arm: 'control' | 'treatment';
   /** Pushbacks per worker before a question is sent as-is. */
   maxPushbacks: number;
 }
@@ -1451,6 +1448,8 @@ export type ClaimTaskExclusionCode =
   | 'role_mismatch'
   | 'runner_cooldown'
   | 'workspace_cap'
+  /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
+  | 'workspace_executor'
   | 'path_overlap'
   /** Codex task and this caller can run neither Codex nor its credential. */
   | 'capability_mismatch'
@@ -1592,6 +1591,18 @@ export interface PendingCredentialRefresh {
   secretId: string;
   purpose: 'claude_credential' | 'codex_credential';
   expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
+}
+
+/**
+ * GET /api/workers/[id]/prompt-bundles — the claim response's role and skill
+ * payload, resolved again for a session resumed by a runner that no longer
+ * holds it (restart, park → reattach). Each field is absent when the task has
+ * nothing of that kind.
+ */
+export interface WorkerPromptBundlesResponse {
+  skillBundles?: SkillBundle[];
+  roleConfig?: RoleConfig;
+  roleInstructions?: RoleInstructions;
 }
 
 export interface ClaimTasksResponse {

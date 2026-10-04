@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { MAX_PUBLISH_BATCH, signRequest } from '@buildd/dispatch-contract';
+import { MAX_LOOKUP_IDS, MAX_PUBLISH_BATCH, signRequest } from '@buildd/dispatch-contract';
 import type { DispatchConfigEnv } from './config';
 import { handleRequest, type GetQueue, type QueueHandle } from './http';
 import { SCOPE_KEY, T0, envelope, harness } from './test-support';
@@ -142,6 +142,23 @@ describe('inspection and control routes', () => {
     expect((await handleRequest(await signed('GET', `/v1/intents?scope=${SCOPE_KEY}`), ENV, q.get, now)).status).toBe(400);
     const res = await handleRequest(await signed('GET', `/v1/intents?scope=${SCOPE_KEY}&ids=${e.id},missing`), ENV, q.get, now);
     expect(await res.json()).toEqual({ known: [{ id: e.id, state: 'queued', attempt: 0 }], unknown: ['missing'] });
+  });
+
+  test('GET /v1/intents verifies a percent-encoded query signed as sent (the producer floor builds it with URLSearchParams)', async () => {
+    const q = queues();
+    const e = envelope();
+    await handleRequest(await signed('POST', '/v1/envelopes', { envelopes: [e] }), ENV, q.get, now);
+    await q.byKey.get(SCOPE_KEY)!.runToAlarm();
+    const search = new URLSearchParams({ scope: SCOPE_KEY, ids: [e.id, 'missing'].join(',') }).toString();
+    expect(search).toContain('%3A');
+    const res = await handleRequest(await signed('GET', `/v1/intents?${search}`), ENV, q.get, now);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      known: [{ id: e.id, state: 'delivered', attempt: 1, via: 'relay:pusher', closedAt: new Date(T0).toISOString() }],
+      unknown: ['missing'],
+    });
+    const tooMany = Array.from({ length: MAX_LOOKUP_IDS + 1 }, (_, i) => `id-${i}`).join(',');
+    expect((await handleRequest(await signed('GET', `/v1/intents?scope=${SCOPE_KEY}&ids=${tooMany}`), ENV, q.get, now)).status).toBe(400);
   });
 
   test('GET /v1/intents/:id returns detail or 404', async () => {

@@ -10,19 +10,12 @@
  */
 import { db } from '@buildd/core/db';
 import { systemCache } from '@buildd/core/db/schema';
+import { createSnapshotLoader, type LoadOptions } from '@buildd/core/runtime-snapshot';
 import { eq } from 'drizzle-orm';
-import {
-  installPolicyOverrides,
-  currentPolicyOverrides,
-  parsePolicyOverrides,
-  setPolicyRefresher,
-  type PolicyOverrides,
-} from './policy-overrides';
+import { parsePolicyOverrides, policyOverridesSnapshot, type PolicyOverrides } from './policy-overrides';
 
 export const POLICY_OVERRIDES_KEY = 'policy_overrides';
 export const POLICY_OVERRIDES_TTL_MS = 60_000;
-
-type ReadRecord = () => Promise<unknown | undefined>;
 
 async function readRecordFromDb(): Promise<unknown | undefined> {
   const [row] = await db
@@ -33,56 +26,26 @@ async function readRecordFromDb(): Promise<unknown | undefined> {
   return row?.value;
 }
 
-let lastLoadAt = 0;
-let inflight: Promise<PolicyOverrides> | null = null;
-let loggedMissing = false;
+const loader = createSnapshotLoader<PolicyOverrides>({
+  name: 'policy-overrides',
+  ttlMs: POLICY_OVERRIDES_TTL_MS,
+  snapshot: policyOverridesSnapshot,
+  read: readRecordFromDb,
+  parse: raw => parsePolicyOverrides(raw),
+  missingMessage: `no "${POLICY_OVERRIDES_KEY}" record; using public defaults`,
+});
 
 /**
  * Load (or reuse, within the TTL) the override record and install it.
  * Never throws. `read` and `now` are injectable for tests.
  */
-export function loadPolicyOverrides(opts: { force?: boolean; read?: ReadRecord; now?: () => number } = {}): Promise<PolicyOverrides> {
-  const now = opts.now ?? Date.now;
-  if (!opts.force && lastLoadAt > 0 && now() - lastLoadAt < POLICY_OVERRIDES_TTL_MS) {
-    return Promise.resolve(currentPolicyOverrides());
-  }
-  if (inflight && !opts.force) return inflight;
-
-  // Stamp before reading, so a burst of stale reads triggers one query.
-  lastLoadAt = now();
-  const read = opts.read ?? readRecordFromDb;
-  const run = (async () => {
-    try {
-      const raw = await read();
-      if (raw === undefined || raw === null) {
-        if (!loggedMissing) {
-          console.info(`[policy-overrides] no "${POLICY_OVERRIDES_KEY}" record; using public defaults`);
-          loggedMissing = true;
-        }
-        installPolicyOverrides(parsePolicyOverrides(null));
-      } else {
-        loggedMissing = false;
-        installPolicyOverrides(parsePolicyOverrides(raw));
-      }
-    } catch (err) {
-      console.warn(
-        '[policy-overrides] could not read the override record; keeping the values in effect:',
-        err instanceof Error ? err.message : err,
-      );
-    }
-    return currentPolicyOverrides();
-  })();
-  inflight = run;
-  return run.finally(() => {
-    if (inflight === run) inflight = null;
-  });
+export function loadPolicyOverrides(opts: LoadOptions = {}): Promise<PolicyOverrides> {
+  return loader.load(opts);
 }
 
 /** Forget the TTL and the missing-record log state. For tests. */
 export function resetPolicyOverridesLoader(): void {
-  lastLoadAt = 0;
-  inflight = null;
-  loggedMissing = false;
+  loader.reset();
 }
 
 /**
@@ -90,10 +53,6 @@ export function resetPolicyOverridesLoader(): void {
  * the TTL starts a background reload (itself rate-limited above). Called once
  * per server process from instrumentation.ts; never from tests or the client.
  */
-export async function startPolicyOverrides(): Promise<void> {
-  setPolicyRefresher(() => {
-    if (lastLoadAt > 0 && Date.now() - lastLoadAt < POLICY_OVERRIDES_TTL_MS) return;
-    void loadPolicyOverrides();
-  });
-  await loadPolicyOverrides({ force: true });
+export function startPolicyOverrides(): Promise<void> {
+  return loader.start();
 }

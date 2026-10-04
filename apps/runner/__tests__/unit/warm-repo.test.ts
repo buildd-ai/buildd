@@ -19,6 +19,7 @@ import {
   WARM_MAX_AGE_MS,
   WARM_BASE_REF,
   WARM_DEFAULT_MAX_BUNDLE_BYTES,
+  PNPM_STORE_DIRNAME,
   WarmRepoSession,
   streamToMultipart,
   warmMaxBundleBytes,
@@ -26,6 +27,10 @@ import {
   createCacheTarball,
   curlTransport,
   decideWarmRefresh,
+  defaultPnpmStoreDirEnv,
+  dirSizeBytes,
+  pnpmStoreDir,
+  writeCacheFileList,
   warmRepoEnabled,
   type SnapshotTransport,
 } from '../../src/warm-repo';
@@ -478,6 +483,91 @@ describe('big repos: the upload is measured first, capped, and streamed', () => 
     expect(warmMaxBundleBytes({ BUILDD_WARM_MAX_BUNDLE_BYTES: '2000000000' })).toBe(2_000_000_000);
     expect(warmMaxBundleBytes({ BUILDD_WARM_MAX_BUNDLE_BYTES: 'lots' })).toBe(WARM_DEFAULT_MAX_BUNDLE_BYTES);
     expect(warmMaxBundleBytes({ BUILDD_WARM_MAX_BUNDLE_BYTES: '0' })).toBe(WARM_DEFAULT_MAX_BUNDLE_BYTES);
+  });
+});
+
+describe('pnpm store: nested in the dependency cache tarball', () => {
+  test('defaultPnpmStoreDirEnv nests under the bun cache dir unless the operator already set one', () => {
+    expect(defaultPnpmStoreDirEnv({ HOME: '/home/bun' })).toBe('/home/bun/.bun/install/cache/pnpm-store');
+    expect(defaultPnpmStoreDirEnv({ BUN_INSTALL_CACHE_DIR: '/x/cache' })).toBe('/x/cache/pnpm-store');
+    expect(defaultPnpmStoreDirEnv({ npm_config_store_dir: '/custom', HOME: '/home/bun' })).toBe('/custom');
+  });
+
+  test('pnpmStoreDir is a fixed subdirectory of whatever cache dir it is given', () => {
+    expect(pnpmStoreDir('/some/cache')).toBe(join('/some/cache', PNPM_STORE_DIRNAME));
+  });
+
+  test('dirSizeBytes sums regular files recursively; 0 for a missing dir', () => {
+    const d = join(dir, 'sizecheck');
+    mkdirSync(join(d, 'a', 'b'), { recursive: true });
+    writeFileSync(join(d, 'a', 'f1'), 'x'.repeat(10));
+    writeFileSync(join(d, 'a', 'b', 'f2'), 'y'.repeat(5));
+    expect(dirSizeBytes(d)).toBe(15);
+    expect(dirSizeBytes(join(dir, 'missing'))).toBe(0);
+  });
+
+  test('writeCacheFileList can skip a named top-level directory, keeping everything else', () => {
+    const cacheDir = join(dir, 'skip-cache');
+    mkdirSync(join(cacheDir, 'bun-pkg'), { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg', 'index.js'), 'ok');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME, 'files', 'ab'), { recursive: true });
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'files', 'ab', 'blob'), 'blob');
+    const listPath = join(dir, 'list.txt');
+    writeCacheFileList(cacheDir, listPath, new Set([PNPM_STORE_DIRNAME]));
+    const listed = readFileSync(listPath, 'utf-8').split('\n').filter(Boolean);
+    expect(listed).toEqual(['bun-pkg/index.js']);
+  });
+
+  test('the cache upload includes the pnpm store when it fits under the cap, and restoring it lands both back on disk', async () => {
+    const cacheDir = join(dir, 'with-pnpm');
+    mkdirSync(join(cacheDir, 'is-number@7.0.0'), { recursive: true });
+    writeFileSync(join(cacheDir, 'is-number@7.0.0', 'index.js'), 'module.exports = 1;\n');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME, 'files', 'ab'), { recursive: true });
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'files', 'ab', 'cd'), 'pnpm-blob');
+
+    const s = session({ cacheDir });
+    cloneThrough(s, 'ws-pnpm');
+    await s.refresh('failed');
+    expect(store.manifests).toHaveLength(1);
+
+    const restoredCacheDir = join(dir, 'restored-pnpm');
+    cloneThrough(session({ cacheDir: restoredCacheDir }), 'ws-pnpm-restored');
+    expect(readFileSync(join(restoredCacheDir, PNPM_STORE_DIRNAME, 'files', 'ab', 'cd'), 'utf-8')).toBe('pnpm-blob');
+    expect(readFileSync(join(restoredCacheDir, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
+    // The whole tarball (bun cache + pnpm store) is reported under the
+    // existing `cache` metric — no new metric for the store.
+    expect(metric('cache_bytes')).toBeGreaterThan(0);
+  });
+
+  test('a pnpm store that would push the cache over the cap is left out, with a logged reason; the rest of the cache still uploads', async () => {
+    const cacheDir = join(dir, 'over-cap');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg.js'), 'small');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'big.bin'), randomBytes(200 * 1024));
+
+    const loggedLines: string[] = [];
+    const s = new WarmRepoSession({
+      transport: store.transport(),
+      cacheDir,
+      tmpDir: join(dir, 'tmp'),
+      freeBytes: () => 100 * 1024 ** 3,
+      now: () => store.now,
+      log: (m) => loggedLines.push(m),
+      sleep: () => {},
+      retryAfter: () => null,
+      maxBundleBytes: 50 * 1024,
+    });
+    cloneThrough(s, 'ws-overcap');
+    await s.refresh('failed');
+
+    expect(store.manifests).toHaveLength(1);
+    expect(loggedLines.some(l => l.includes('pnpm store') && l.includes('cap'))).toBe(true);
+
+    const restoredCacheDir = join(dir, 'restored-over-cap');
+    cloneThrough(session({ cacheDir: restoredCacheDir }), 'ws-overcap-restored');
+    expect(existsSync(join(restoredCacheDir, PNPM_STORE_DIRNAME))).toBe(false);
+    expect(readFileSync(join(restoredCacheDir, 'bun-pkg.js'), 'utf-8')).toBe('small');
   });
 });
 

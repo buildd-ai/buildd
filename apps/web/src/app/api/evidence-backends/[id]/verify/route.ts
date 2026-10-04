@@ -13,6 +13,7 @@ import { resolveExperimentViewer } from '@/lib/experiment-access';
 import { verifyEvidenceBackend } from '@/lib/evidence-backend';
 import { filterReachableEvidenceBackends } from '@/lib/evidence-backend-access';
 import { isUuid } from '@/lib/uuid';
+import { roleHas } from '@/lib/permissions';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -31,7 +32,7 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
   });
   if (!row || row.teamId !== viewer.teamId) return notFound;
   if ((await filterReachableEvidenceBackends(viewer, [row])).length === 0) return notFound;
-  if (viewer.role !== 'admin' && viewer.role !== 'owner') {
+  if (!roleHas(viewer.role, 'manage_evidence_backends')) {
     return NextResponse.json({ error: 'Verifying evidence storage requires team admin or owner' }, { status: 403 });
   }
 

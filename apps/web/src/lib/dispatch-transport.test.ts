@@ -190,3 +190,80 @@ describe('publishPendingDispatches', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+// ── repair floor: lookup and re-publish ───────────────────────────────────
+
+const { lookupIntents, republishDispatches } = await import('./dispatch-transport');
+
+describe('lookupIntents', () => {
+  it('GETs /v1/intents signed over pathname + search exactly as sent, verifiable by the Worker', async () => {
+    configure();
+    const ids = ['a1111111-1111-4111-8111-111111111111', 'a2222222-2222-4222-8222-222222222222'];
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchFn = mock(async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return Response.json({ known: [{ id: ids[0], state: 'queued', attempt: 0 }], unknown: [ids[1]] });
+    }) as unknown as typeof fetch;
+    const scope = `buildd:workspace:${WS}`;
+    const res = await lookupIntents(scope, ids, { fetch: fetchFn });
+    expect(res).toEqual({ known: [{ id: ids[0], state: 'queued', attempt: 0 }], unknown: [ids[1]] });
+
+    const u = new URL(calls[0].url);
+    expect(u.pathname).toBe('/v1/intents');
+    expect(u.searchParams.get('scope')).toBe(scope);
+    expect(u.searchParams.get('ids')).toBe(ids.join(','));
+    const headers = new Headers(calls[0].init.headers as Record<string, string>);
+    // The Worker verifies `url.pathname + url.search` of the request it received.
+    const v = await verifyRequest({ keys: parseKeyRing('k2:secret-two'), method: 'GET', path: u.pathname + u.search, body: '', headers });
+    expect(v.ok).toBe(true);
+  });
+
+  it('throws on non-2xx, a malformed body, a bad id count, or no config', async () => {
+    configure();
+    const f = (r: Response) => mock(async () => r) as unknown as typeof fetch;
+    await expect(lookupIntents('buildd:workspace:x', ['a'], { fetch: f(new Response('x', { status: 503 })) })).rejects.toThrow('lookup_http_503');
+    await expect(lookupIntents('buildd:workspace:x', ['a'], { fetch: f(Response.json({ nope: 1 })) })).rejects.toThrow('lookup_bad_response');
+    await expect(lookupIntents('buildd:workspace:x', [], { fetch: f(Response.json({})) })).rejects.toThrow();
+    await expect(lookupIntents('buildd:workspace:x', Array.from({ length: 101 }, (_, i) => `i${i}`), { fetch: f(Response.json({})) })).rejects.toThrow();
+    delete process.env.DISPATCH_URL;
+    await expect(lookupIntents('buildd:workspace:x', ['a'], { fetch: f(Response.json({ known: [], unknown: [] })) })).rejects.toThrow('not configured');
+  });
+});
+
+describe('republishDispatches', () => {
+  const ids = ['c1111111-1111-4111-8111-111111111111', 'c2222222-2222-4222-8222-222222222222', 'c3333333-3333-4333-8333-333333333333', 'c4444444-4444-4444-8444-444444444444'];
+
+  it('re-sends the handed-off rows through the publish endpoint and sorts the outcomes, acking nothing', async () => {
+    configure();
+    const rows = [row({ id: ids[0] }), row({ id: ids[1] }), row({ id: ids[2] }), row({ id: ids[3], mode: 'in_app' as never })];
+    const { d, calls } = deps([], () => ok([
+      { id: ids[0], status: 'accepted' },
+      { id: ids[1], status: 'merged', into: ids[0] },
+      { id: ids[2], status: 'rejected', why: 'source.scope' },
+    ]));
+    const selectForRepublish = mock(async (_ids: readonly string[]) => rows);
+    const out = await republishDispatches(ids, { ...d, selectForRepublish } as never);
+    expect(selectForRepublish).toHaveBeenCalledWith(ids);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].init.body as string).envelopes.map((e: { id: string }) => e.id)).toEqual(ids.slice(0, 3));
+    expect(out).toEqual({ republished: [ids[0]], merged: [{ id: ids[1], into: ids[0] }], rejected: [ids[2]], notDispatch: [ids[3]] });
+    expect(d.ackHandoff).not.toHaveBeenCalled();
+    expect(d.ackMerged).not.toHaveBeenCalled();
+  });
+
+  it('throws when the Worker answers non-2xx, so the floor takes the rows back', async () => {
+    configure();
+    const { d } = deps([], () => new Response('down', { status: 502 }));
+    const selectForRepublish = mock(async () => [row({ id: ids[0] })]);
+    await expect(republishDispatches([ids[0]], { ...d, selectForRepublish } as never)).rejects.toThrow('http_502');
+  });
+
+  it('a row with no route any more (task gone) is reported rejected without a request', async () => {
+    configure();
+    const { d, calls } = deps([], () => ok([]));
+    d.loadRouteContext = mock(async () => new Map());
+    const out = await republishDispatches([ids[0]], { ...d, selectForRepublish: mock(async () => [row({ id: ids[0] })]) } as never);
+    expect(out.rejected).toEqual([ids[0]]);
+    expect(calls).toHaveLength(0);
+  });
+});

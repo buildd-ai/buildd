@@ -501,10 +501,15 @@ export async function runOnceFromCli(opts: {
   const { rmSync } = await import('fs');
   const { BuilddClient } = await import('./buildd');
   const { ensureIsolatedClone } = await import('./workspace');
-  const { createWarmRepoSession, warmRepoEnabled, curlTransport } = await import('./warm-repo');
+  const { createWarmRepoSession, warmRepoEnabled, curlTransport, defaultPnpmStoreDirEnv } = await import('./warm-repo');
   const park = await import('./park');
   const { emitMetric, emitPhase } = await import('./phase-lines');
   const { loadWorker } = await import('./worker-store');
+
+  // pnpm (postinstall/husky hooks, or the agent running it directly) lands
+  // its store inside the warm-repo dependency cache, so it rides along in
+  // the same cache tarball whether or not warm repos are on for this run.
+  opts.env.npm_config_store_dir = defaultPnpmStoreDirEnv(opts.env);
 
   const config = buildOnceConfig(opts.config, { taskId: opts.taskId || opts.resumeWorkerId || 'resume', host: opts.host, env: opts.env });
   const client = new BuilddClient(config);
