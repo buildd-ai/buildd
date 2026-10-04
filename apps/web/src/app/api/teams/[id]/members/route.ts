@@ -3,14 +3,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
-
-type TeamRole = 'owner' | 'admin' | 'member';
-
-const ROLE_HIERARCHY: Record<TeamRole, number> = {
-  owner: 3,
-  admin: 2,
-  member: 1,
-};
+import { roleHas, type TeamRole } from '@/lib/permissions';
 
 export async function GET(
   req: NextRequest,
@@ -76,7 +69,6 @@ export async function POST(
   const user = session.user;
 
   try {
-    // Verify current user is owner or admin
     const membership = await db.query.teamMembers.findFirst({
       where: and(
         eq(teamMembers.teamId, teamId),
@@ -89,7 +81,7 @@ export async function POST(
     }
 
     const currentRole = membership.role as TeamRole;
-    if (ROLE_HIERARCHY[currentRole] < ROLE_HIERARCHY['admin']) {
+    if (!roleHas(currentRole, 'manage_team_members')) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -104,8 +96,7 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
-    // Only owners can add other owners
-    if (role === 'owner' && currentRole !== 'owner') {
+    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner')) {
       return NextResponse.json({ error: 'Only owners can add owners' }, { status: 403 });
     }
 
