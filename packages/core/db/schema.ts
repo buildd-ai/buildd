@@ -2416,7 +2416,7 @@ export const missionNotes = pgTable('mission_notes', {
   collapseKeyIdx: index('mission_notes_collapse_key_idx').on(t.missionId, t.collapseKey, t.createdAt),
 }));
 
-// observations table removed — memory is now stored in external memory service
+// observations table removed — memory lives in the memories table below
 
 // Worker heartbeats - tracks runner instance availability independent of worker records
 export const workerHeartbeats = pgTable('worker_heartbeats', {
