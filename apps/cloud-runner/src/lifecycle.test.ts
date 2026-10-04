@@ -4,18 +4,24 @@ import {
   ANTHROPIC_API_KEY_PLACEHOLDER,
   DEFAULT_INACTIVITY_TIMEOUT_MS,
   EXIT_CLAIM_REFUSED,
+  EXIT_CLAIM_DEFERRED,
   EXIT_COMPLETED,
   EXIT_FAILED,
   EXIT_PARKED,
   EXIT_USAGE,
+  CLAIM_DEFERRED_LINE_PREFIX,
   PARKED_LINE_PREFIX,
   resumableRunsEnabled,
+  parseClaimDeferredLine,
   parseParkedLine,
   orphanParkCommand,
   INITIAL_STATE,
   WORKER_ID_LINE_PREFIX,
   appendTail,
   buildContainerEnv,
+  deferredRetryBackoffMs,
+  MAX_DEFERRED_RETRIES,
+  isContainerStartCapacityError,
   warmMaxBundleBytes,
   IMAGE_ENV,
   warmReposEnabled,
@@ -48,11 +54,14 @@ describe('exit code contract with run-once.ts', () => {
     expect(EXIT_COMPLETED).toBe(runOnce.EXIT_COMPLETED);
     expect(EXIT_FAILED).toBe(runOnce.EXIT_FAILED);
     expect(EXIT_CLAIM_REFUSED).toBe(runOnce.EXIT_CLAIM_REFUSED);
+    expect(EXIT_CLAIM_DEFERRED).toBe(runOnce.EXIT_CLAIM_DEFERRED);
     expect(EXIT_USAGE).toBe(runOnce.EXIT_USAGE);
     expect(EXIT_PARKED).toBe(runOnce.EXIT_PARKED);
     expect(EXIT_PARKED).toBe(4);
+    expect(EXIT_CLAIM_DEFERRED).toBe(5);
     expect(WORKER_ID_LINE_PREFIX).toBe(runOnce.WORKER_ID_LINE_PREFIX);
     expect(PARKED_LINE_PREFIX).toBe(runOnce.PARKED_LINE_PREFIX);
+    expect(CLAIM_DEFERRED_LINE_PREFIX).toBe(runOnce.CLAIM_DEFERRED_LINE_PREFIX);
   });
 });
 
@@ -62,6 +71,7 @@ describe('outcomeForExitCode', () => {
     [1, 'failed'],
     [3, 'refused'],
     [4, 'parked'],
+    [5, 'deferred'],
     [64, 'usage'],
     [137, 'crashed'], // SIGKILL / OOM
     [143, 'crashed'], // SIGTERM
@@ -75,6 +85,39 @@ describe('outcomeForExitCode', () => {
   test('no exit code at all is a crash', () => {
     expect(outcomeForExitCode(null)).toBe('crashed');
     expect(outcomeForExitCode(undefined)).toBe('crashed');
+  });
+});
+
+describe('parseClaimDeferredLine', () => {
+  test('parses a well-formed reason, rejects garbage and other prefixes', () => {
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}workspace_cap`)).toBe('workspace_cap');
+    expect(parseClaimDeferredLine(`  ${CLAIM_DEFERRED_LINE_PREFIX}no_slots  `)).toBe('no_slots');
+    expect(parseClaimDeferredLine('BUILDD_WORKER_ID=w-1')).toBeNull();
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}`)).toBeNull();
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}has spaces`)).toBeNull();
+    expect(parseClaimDeferredLine(`${CLAIM_DEFERRED_LINE_PREFIX}${'x'.repeat(65)}`)).toBeNull();
+  });
+});
+
+describe('isContainerStartCapacityError', () => {
+  test('matches Cloudflare\'s container-instance-ceiling message, not an unrelated error', () => {
+    expect(isContainerStartCapacityError('There is no container instance that can be provided to this Durable Object, try again later.')).toBe(true);
+    expect(isContainerStartCapacityError('NO CONTAINER INSTANCE available, try again later')).toBe(true);
+    expect(isContainerStartCapacityError('container did not start within 20s')).toBe(false);
+    expect(isContainerStartCapacityError('network error')).toBe(false);
+    expect(isContainerStartCapacityError(null)).toBe(false);
+    expect(isContainerStartCapacityError(undefined)).toBe(false);
+  });
+});
+
+describe('deferredRetryBackoffMs', () => {
+  test('increasing backoff for each attempt in a row, null past the cap', () => {
+    expect(deferredRetryBackoffMs(1)).toBe(30_000);
+    expect(deferredRetryBackoffMs(2)).toBeGreaterThan(deferredRetryBackoffMs(1)!);
+    expect(deferredRetryBackoffMs(MAX_DEFERRED_RETRIES)).toBeGreaterThan(0);
+    expect(deferredRetryBackoffMs(MAX_DEFERRED_RETRIES + 1)).toBeNull();
+    expect(deferredRetryBackoffMs(0)).toBeNull();
+    expect(deferredRetryBackoffMs(-1)).toBeNull();
   });
 });
 

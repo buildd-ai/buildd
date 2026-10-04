@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { INITIAL_STATE, buildContainerEnv, type RunState } from './lifecycle';
+import { INITIAL_STATE, MAX_DEFERRED_RETRIES, buildContainerEnv, type RunState } from './lifecycle';
 import { TaskSupervisor, type ContainerPort, type ProcessPort, type ScheduledDispatchPayload, type SchedulerPort, type SupervisorDeps } from './supervisor';
 
 const TASK_ID = 'task-abc123';
@@ -403,6 +403,79 @@ describe('crash handling', () => {
     await h.settle();
     expect(h.state).toMatchObject({ status: 'exited', outcome: 'usage' });
     expect(h.fc.starts).toHaveLength(0);
+  });
+});
+
+describe('deferred claims and container-capacity starts self-schedule a retry', () => {
+  const NOW = 2_000_000;
+
+  test('a claim deferred for capacity (exit 5) is `deferred`, not crashed; no crash report; a backoff retry is scheduled', async () => {
+    const h = harness({ now: () => NOW });
+    h.fc.setStdout(['[once] claim deferred: no_pending_tasks', 'BUILDD_CLAIM_DEFERRED=workspace_cap']);
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', exitCode: 5, outcome: 'deferred', claimDeferredReason: 'workspace_cap', deferredRetryCount: 1 });
+    // Pre-claim: no worker was ever created, so there is nothing to crash-report.
+    expect(h.fetches).toHaveLength(0);
+    expect(h.state.report).toMatchObject({ outcome: 'deferred', crashReport: null, deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 30_000, payload: { notBefore: NOW + 30_000, deferredRetry: true } }]);
+  });
+
+  test('a container-capacity start failure is `start_deferred`, not crashed, with no exec attempted; a backoff retry is scheduled', async () => {
+    const h = harness({ now: () => NOW });
+    (h.fc.container as { start: ContainerPort['start'] }).start = () => {
+      throw new Error('There is no container instance that can be provided to this Durable Object, try again later.');
+    };
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', exitCode: null, outcome: 'start_deferred', deferredRetryCount: 1 });
+    expect(h.fc.execs).toHaveLength(0); // never got past starting the container
+    expect(h.fetches).toHaveLength(0); // pre-claim: nothing to crash-report
+    expect(h.state.report).toMatchObject({ outcome: 'start_deferred', crashReport: null, deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'container_capacity' } });
+    expect([...h.sched.scheduled.values()]).toEqual([{ at: NOW + 30_000, payload: { notBefore: NOW + 30_000, deferredRetry: true } }]);
+  });
+
+  test('a container start failure for an unrelated reason stays a crash (not deferred)', async () => {
+    const h = harness({ now: () => NOW });
+    (h.fc.container as { start: ContainerPort['start'] }).start = () => { throw new Error('image pull failed: unauthorized'); };
+    h.sup.dispatch();
+    await h.settle();
+    expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed' });
+    expect(h.state.deferredRetryCount).toBeUndefined();
+    expect(h.sched.scheduled.size).toBe(0);
+  });
+
+  test('backoff increases per consecutive deferred attempt and stops at the cap, leaving the task alone', async () => {
+    const c = { t: NOW };
+    const h = harness({ now: () => c.t });
+    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=no_slots']);
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+
+    const backoffs: number[] = [];
+    for (let retryNumber = 1; retryNumber <= MAX_DEFERRED_RETRIES; retryNumber++) {
+      expect(h.state.deferredRetryCount).toBe(retryNumber);
+      const ids = [...h.sched.scheduled.keys()];
+      const scheduleId = ids[ids.length - 1]!;
+      const entry = h.sched.scheduled.get(scheduleId)!;
+      expect(entry.payload.deferredRetry).toBe(true);
+      backoffs.push(entry.at - c.t);
+      c.t = entry.at;
+      h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=no_slots']);
+      expect(h.sup.fireScheduledDispatch(entry.payload, scheduleId)).toMatchObject({ fired: true, accepted: true });
+      await h.until(() => h.state.status === 'running');
+      h.fc.exits[h.fc.exits.length - 1]!.resolve(5);
+      await h.settle();
+    }
+    // Every retry's backoff is at least as long as the one before it.
+    for (let i = 1; i < backoffs.length; i++) expect(backoffs[i]).toBeGreaterThan(backoffs[i - 1]!);
+    // One more consecutive deferral past the cap: gives up, nothing new scheduled.
+    expect(h.state.deferredRetryCount).toBe(MAX_DEFERRED_RETRIES + 1);
+    expect(h.sched.scheduled.size).toBe(MAX_DEFERRED_RETRIES);
   });
 });
 
