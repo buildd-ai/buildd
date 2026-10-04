@@ -239,6 +239,42 @@ export function findBlockingPr(
 }
 
 /**
+ * True when `candidateId` is already downstream of `subjectId` in the stored
+ * `dependsOn` graph — i.e. walking `candidateId`'s `dependsOn` edges
+ * (transitively) reaches `subjectId`.
+ *
+ * `dependsOnById` maps every in-flight task's id to its own `dependsOn`
+ * array (upstream pointers — "I wait for these"), so the walk follows
+ * candidate → its deps → their deps, looking for `subjectId`.
+ *
+ * Used to veto a newly-inferred path-overlap edge: minting
+ * `subjectRepair.dependsOn = [...,candidateId]` on top of an existing
+ * `candidateId` (transitively) depending on `subjectId` would make the
+ * subject's own repair wait on something that is itself waiting on the
+ * subject — a structural deadlock (the repair can never land the PR it
+ * exists to land), not real serialization. See `shouldSerializeByManifest`
+ * for the companion spatial check; callers combine both.
+ */
+export function isDownstreamOf(
+  candidateId: string,
+  subjectId: string,
+  dependsOnById: ReadonlyMap<string, readonly string[] | null | undefined>,
+): boolean {
+  if (candidateId === subjectId) return true;
+  const seen = new Set<string>([candidateId]);
+  const queue: string[] = [...(dependsOnById.get(candidateId) ?? [])];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (id === subjectId) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const next = dependsOnById.get(id);
+    if (next) queue.push(...next);
+  }
+  return false;
+}
+
+/**
  * Open PRs stacked on top of one of `ownBranches` — directly (their base ref
  * is one of those branches) or transitively (based on a PR that is).
  *
