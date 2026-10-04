@@ -5,6 +5,7 @@ import * as schema from './schema';
 import { config } from '../config';
 import { applyNeonLocalOverride } from './neon-local';
 import { capturePostgresErrorOnSpan } from './error-span';
+import { wrapNeonQuery } from './query-wrapper';
 import { assertTestDatabaseSafe } from './test-guard';
 
 // Lazy initialization to avoid errors during build
@@ -22,17 +23,9 @@ function getSql() {
     // NEON_LOCAL_FETCH_ENDPOINT is set; throws if DATABASE_URL is not loopback.
     applyNeonLocalOverride({ ...process.env, DATABASE_URL: config.databaseUrl });
     const baseSql = neon(config.databaseUrl);
-    // Wrap baseSql.query (the method drizzle calls) to capture DB errors on the active span.
-    // This preserves .unsafe, .transaction, and the callable function form while only
-    // intercepting the path drizzle uses. Without this, wrapping the entire object loses
-    // the .query property and drizzle falls back to calling baseSql() directly, which
-    // Neon rejects (requires tagged template form).
-    const originalQuery = baseSql.query.bind(baseSql);
-    baseSql.query = ((...args: Parameters<typeof originalQuery>) =>
-      originalQuery(...args).catch((error: unknown) => {
-        capturePostgresErrorOnSpan(error);
-        throw error;
-      })) as typeof baseSql.query;
+    // Capture DB errors on the active span without forcing the lazy query to
+    // run early — see query-wrapper.ts for why that broke every db.batch.
+    wrapNeonQuery(baseSql, capturePostgresErrorOnSpan);
     _sql = baseSql;
   }
   return _sql;
