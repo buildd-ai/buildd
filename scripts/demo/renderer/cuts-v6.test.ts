@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { TAP_LIFE, layersAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { TAP_LIFE, layersAt, maskAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars, verifyAt } from './motion-model';
 
@@ -226,20 +226,31 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
           }
         }
       });
-      test(`${look.name}: the ask line first, then the four rows light one at a time, each revealed as it lights`, () => {
+      test(`${look.name}: opens on the full list lit, dims the rows to ghosts, lights the ask line, then the rows one at a time`, () => {
         expect(spec.shots.map((x) => x.id)).toEqual(['criteria']);
         const keys = crit.spot!;
-        expect(lit(keys[0])).toBe(1); // the ask line alone
-        expect(keys.slice(1).map(lit)).toEqual([1, 2, 3, 4]);
+        expect(lit(keys[0])).toBe(4); // the full list
+        expect(lit(keys[1])).toBe(1); // the ask line alone
+        expect(keys.slice(2).map(lit)).toEqual([1, 2, 3, 4]);
         for (let i = 1; i < keys.length; i++) expect(keys[i].at).toBeGreaterThan(keys[i - 1].at);
-        // Each row is hidden until it lights.
-        expect(crit.masks!.map((m) => m.until)).toEqual(keys.slice(1).map((k) => k.at));
+        // Rows are ghosts (never fully hidden) from the dim until each lights.
+        for (const [i, m] of crit.masks!.entries()) {
+          expect(m.max).toBeGreaterThan(0.5);
+          expect(m.max).toBeLessThanOrEqual(0.85);
+          expect(m.from).toBeCloseTo(keys[1].at, 5);
+          expect(m.until).toBeCloseTo(keys[2 + i].at, 5);
+        }
       });
-      test(`${look.name}: the full list holds about 1.5s before the loop, and the poster is inside the hold`, () => {
-        const last = crit.spot![crit.spot!.length - 1];
-        expect(crit.dur - (last.at + 0.4)).toBeGreaterThanOrEqual(1.4);
-        expect(spec.poster!).toBeGreaterThan(last.at + 0.4);
-        expect(spec.poster!).toBeLessThan(crit.dur);
+      test(`${look.name}: the first encoded frame, the poster and the loop seam all show the full list lit`, () => {
+        const allLit = (t: number) => lit(crit.spot!.filter((k) => k.at <= t).pop()!) === 4 && crit.masks!.every((m) => maskAt(m, t, crit.dur).opacity === 0);
+        expect(allLit(spec.fade)).toBe(true); // the folded loop starts at cut t = fade
+        expect(allLit(spec.poster!)).toBe(true);
+        expect(allLit(crit.dur)).toBe(true); // the seam blends the end into the start: both full
+        expect(allLit(0)).toBe(true);
+        // The full list shows ~1.5s per loop or more: after the last row lands, plus the opening hold.
+        const keys = crit.spot!;
+        // (The cut runs one fade past the shot, holding its last frame; render.ts folds that tail onto the start.)
+        expect((cutDuration(spec) - (keys[keys.length - 1].at + 0.4)) + (keys[1].at - spec.fade)).toBeGreaterThanOrEqual(1.4);
       });
     }
   });

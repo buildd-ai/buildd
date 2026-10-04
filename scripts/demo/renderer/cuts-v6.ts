@@ -148,18 +148,22 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     const y0 = Math.min(a.y, b.y) - 0.004, y1 = Math.max(a.y + a.h, b.y + b.h) + 0.004;
     return { x: specList.x, y: y0, w: specList.w, h: y1 - y0 };
   });
-  const REVEAL = [1.0, 1.55, 2.1, 2.65];
+  // The list is never empty: it opens (and the loop seam lands) on all four rows
+  // lit; at DIM the rows fall back to 20% ghosts and the ask line lights, then
+  // each row lights again in turn and the full list holds to the end.
+  const DIM = 1.4;
+  const REVEAL = [2.2, 2.65, 3.1, 3.55];
   // Five slots per key (the ask line, then the rows). An unlit row is a zero-height band on its top edge, so
-  // its light wipes down the row as the row is revealed (a hole grown from the centre left it half lit mid-way).
+  // its light wipes down the row as it lights (a hole grown from the centre left it half lit mid-way).
   const topEdge = (r: Rect): Rect => ({ x: r.x, y: r.y, w: r.w, h: 0 });
   const specSlots = (askOn: boolean, rowsOn: number) => [askOn ? askLine : ghost(askLine), ...rowRects.map((r, i) => (i < rowsOn ? r : topEdge(r)))];
   const specFrame = union([askLine, specList]);
   const criteria: Shot = {
     id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img(SPEC)],
     caption: 'It drafts the mission, and what done means.',
-    // Masks run a hair past the list's left edge, or each hidden row leaves its checkbox's 1px border behind.
-    masks: rowRects.map((r, i): Mask => ({ rect: { x: r.x - 0.004, y: r.y, w: r.w + 0.008, h: r.h }, until: REVEAL[i] })),
-    spot: [key(0.2, specSlots(true, 0)), ...REVEAL.map((t, i) => key(t, specSlots(false, i + 1)))],
+    // Ghosts, not gaps: each row is covered to 80% (a hair past the list's left edge, or its checkbox border shows).
+    masks: rowRects.map((r, i): Mask => ({ rect: { x: r.x - 0.004, y: r.y, w: r.w + 0.008, h: r.h }, from: DIM, until: REVEAL[i], max: 0.8 })),
+    spot: [key(0, specSlots(false, 4)), key(DIM, specSlots(true, 0)), ...REVEAL.map((t, i) => key(t, specSlots(false, i + 1)))],
     camera: [at(f(SPEC, specFrame, 1.12), 0), at(f(SPEC, specFrame, 1.08), 1)],
   };
 
@@ -537,8 +541,8 @@ export function v6aBeats(s: Stills, opts: { mobile?: boolean; theme?: 'dark' | '
   return BEATS.map((beat) => ({
     name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme, dip: true,
     shots: BEAT_SHOTS[beat].map((id) => quiet(all.find((x) => x.id === id)!)),
-    // The spec poster is the full criteria list lit (in its hold, after the last row lands).
-    ...(beat === 'spec' ? { poster: 3.9 } : {}),
+    // The spec poster is the full criteria list lit (the opening hold, which the loop also lands on).
+    ...(beat === 'spec' ? { poster: 1.0 } : {}),
   }));
 }
 
