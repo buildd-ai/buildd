@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, githubRepos, workspaces } from '@buildd/core/db/schema';
+import { accountWorkspaces, githubRepos, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -264,7 +264,7 @@ export async function POST(req: NextRequest) {
         githubRepoId: githubRepoDbId,
         githubInstallationId: githubInstallationId || null,
         accessMode: accessMode || 'open',
-        gitConfig: Object.keys(mergedGitConfig).length > 0 ? mergedGitConfig : null,
+        gitConfig: Object.keys(mergedGitConfig).length > 0 ? (mergedGitConfig as unknown as WorkspaceGitConfig) : null,
         teamId,
       })
       .returning();
