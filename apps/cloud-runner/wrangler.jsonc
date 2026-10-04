@@ -5,6 +5,10 @@
   "compatibility_date": "2026-09-29",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Backstop for the egress handler: large bodies stream natively
+  // (run-report.ts measureResponse), but any JS work on a long request still
+  // counts against one invocation's CPU budget (default 30 s).
+  "limits": { "cpu_ms": 300000 },
 
   // One container application backing the WorkerAgent Durable Object. The
   // image is the runner's --once image (apps/runner/Dockerfile.once), built
@@ -15,8 +19,12 @@
       "class_name": "WorkerAgent",
       "image": "../runner/Dockerfile.once",
       "image_build_context": "../..",
-      // 1/2 vCPU, 4 GiB, 8 GB disk. Enough for Claude Code plus a
-      // depth-limited clone; revisit with canary numbers (design, open question 2).
+      // 1/2 vCPU, 4 GiB, 8 GB disk. Enough for Claude Code plus the
+      // container's shallow clone (`--depth 1 --single-branch`, other
+      // branches on demand; apps/runner/src/git-clone.ts; host runners clone
+      // in full). A repo
+      // whose working tree alone outgrows the disk still will not fit;
+      // revisit with canary numbers (design, open question 2).
       "instance_type": "standard-1",
       "max_instances": 10,
       // A deploy rolls the container application. With the default grace of

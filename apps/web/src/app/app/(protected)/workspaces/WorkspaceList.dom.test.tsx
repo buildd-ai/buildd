@@ -128,7 +128,7 @@ describe('WorkspaceList move-to-team', () => {
     await act(async () => { buttonByText('Move')!.click(); });
     // router.refresh(): the moved workspace left the active team.
     await act(async () => root.render(<WorkspaceList {...only} workspaces={[]} />));
-    expect(container.textContent).toContain('No workspaces yet');
+    expect(container.textContent).toContain('No workspaces');
     expect(document.querySelector('[data-testid="move-toast"]')?.textContent).toContain('Moved Example Workspace to Team B');
   });
 });

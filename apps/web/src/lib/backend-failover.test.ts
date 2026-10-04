@@ -25,6 +25,13 @@ mock.module('@/lib/codex-credential', () => ({
   hasCodexCredential: mockHasCodexCredential,
 }));
 
+// Same reasoning for the plain-API-key sibling: either credential is enough
+// to make Codex configured.
+const mockHasOpenAiApiKey = mock(() => Promise.resolve(false));
+mock.module('@/lib/openai-credential', () => ({
+  hasOpenAiApiKey: mockHasOpenAiApiKey,
+}));
+
 const {
   getActiveBackendPauses,
   isBackendConfigured,
@@ -41,6 +48,7 @@ beforeEach(() => {
   mockAccountsFindFirst.mockResolvedValue(null);
   mockTenantBudgetsFindFirst.mockResolvedValue(null);
   mockHasCodexCredential.mockResolvedValue(false);
+  mockHasOpenAiApiKey.mockResolvedValue(false);
 });
 
 describe('recordBackendPause', () => {
@@ -128,6 +136,17 @@ describe('isBackendConfigured', () => {
   it('requires a stored credential for Codex', async () => {
     expect(await isBackendConfigured('codex', scope)).toBe(false);
     mockHasCodexCredential.mockResolvedValue(true);
+    expect(await isBackendConfigured('codex', scope)).toBe(true);
+  });
+
+  // A plain team/workspace OpenAI API key is the simpler sibling of
+  // `codex_credential` (ChatGPT connect) — either one configures Codex.
+  it('also treats a plain OpenAI API key as a configured Codex credential', async () => {
+    mockHasCodexCredential.mockResolvedValue(false);
+    mockHasOpenAiApiKey.mockResolvedValue(false);
+    expect(await isBackendConfigured('codex', scope)).toBe(false);
+
+    mockHasOpenAiApiKey.mockResolvedValue(true);
     expect(await isBackendConfigured('codex', scope)).toBe(true);
   });
 

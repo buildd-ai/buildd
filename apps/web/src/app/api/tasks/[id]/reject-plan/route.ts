@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isUuid } from '@/lib/uuid';
+import { wakeTask } from '@/lib/dispatch-authority';
 
 // POST /api/tasks/[id]/reject-plan - Reject a planning task's plan and create a revised planning task
 export async function POST(
@@ -144,6 +145,8 @@ export async function POST(
         },
       })
       .returning();
+    // The insert's trigger made the wake durable; this kicks delivery.
+    await wakeTask(newTask.id, 'task.created');
 
     return NextResponse.json({ taskId: newTask.id });
   } catch (error) {

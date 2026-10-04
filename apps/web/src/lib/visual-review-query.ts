@@ -124,6 +124,7 @@ export function visualReviewWorkersQuery(q: Selectable, missionId: string) {
       prUrl: workers.prUrl,
       prNumber: workers.prNumber,
       mergedAt: workers.mergedAt,
+      prBaseRef: workers.prBaseRef,
       error: workers.error,
     })
     .from(workers)

@@ -414,6 +414,20 @@ describe('explainTask', () => {
     expect(answer.situation.headline).not.toContain('local session');
   });
 
+  // A cloud container that died under the runner is requeued on the infra
+  // retry budget (pending, startAt = now + backoff). It must read as an
+  // automatic retry with a time, not as a stall or a failure to retry by hand.
+  it('a task in its infra-retry backoff reads as an automatic retry, not a stall or a failure', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    const retryAt = new Date(Date.now() + 5 * 60_000);
+    taskRows = [task({ id: 'task-1', status: 'pending', context: { infraRetryCount: 1 }, startAt: retryAt })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.situation.headline).toMatch(/infrastructure failure, automatic retry scheduled/);
+    expect(answer.situation.headline).not.toMatch(/stall|failed/i);
+    expect(answer.situation.nextAction ?? '').toContain(retryAt.toISOString());
+    expect(answer.situation.nextAction ?? '').not.toMatch(/retry the task/i);
+  });
+
   it('a held local mission is not read as local (held wins)', async () => {
     missionRow = { id: 'mission-1', executor: 'local', isHeld: true };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
@@ -543,6 +557,25 @@ describe('explainTask', () => {
     expect(answer.waitingOn).toBeNull();
     expect(answer.nextAction).toBeNull();
     expect(answer.derivedFrom.waitingOn).toBeNull();
+  });
+
+  // The claim flips a Claude task to Codex in memory; without this the only
+  // trace was a log line, and explain could not say why the backend changed.
+  it('says why the claim ran the task on another backend', async () => {
+    taskRows = [task({
+      id: 'task-1', status: 'in_progress', backend: 'claude',
+      context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+    })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.backendRouting?.summary).toBe('routed to Codex by budget failover (Claude seat exhausted)');
+    expect(answer.backendRouting?.backend).toBe('codex');
+    expect(answer.derivedFrom.backendRouting).toBe('tasks.context.backendRouting');
+  });
+
+  it('leaves backendRouting off when nothing moved the task', async () => {
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.backendRouting).toBeUndefined();
   });
 });
 

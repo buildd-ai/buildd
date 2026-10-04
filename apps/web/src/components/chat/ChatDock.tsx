@@ -119,7 +119,7 @@ export default function ChatDock({ mode, objRef, onClose, history, onSend, onOpe
       </header>
       <div className={`min-h-0 flex-1 overflow-y-auto ${wide ? '' : 'px-5 py-6'}`}>
         {mode === 'history'
-          ? history ?? <p data-testid="dock-history-empty" className="font-voice text-[17px] italic text-[var(--chat-muted)]">No chats yet.</p>
+          ? history ?? <p data-testid="dock-history-empty" className="font-voice text-[17px] italic text-[var(--chat-muted)]">No chats.</p>
           : objRef && <DockObject objRef={objRef} onSend={onSend} onOpen={onOpen} />}
       </div>
     </aside>

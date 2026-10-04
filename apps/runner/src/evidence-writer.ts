@@ -107,6 +107,9 @@ export const CLAIM_FIELD_SECRET_CLASSIFICATION: Record<string, 'secret' | 'not_s
   // Team agent model endpoint: authToken is a credential the agent env carries.
   modelEndpoint: 'secret',
   modelEndpointIgnored: 'not_secret',
+  // A mode marker. The task-scoped token is fetched later, never on the claim;
+  // its ghs_ shape is caught by the redactor's generic token pattern.
+  githubCredentials: 'not_secret',
   roleConfig: 'not_secret',
   roleInstructions: 'not_secret',
   roleEnvSecrets: 'secret',

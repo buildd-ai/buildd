@@ -1008,22 +1008,25 @@ export const INVARIANTS: Invariant[] = [
     resolves: false,
     query: (s, now) => {
       const openDeliverable = new Set<string>();
-      const anyTask = new Set<string>();
+      const hasWorkTask = new Set<string>();
       const lastActivity = new Map<string, Date>();
       for (const t of s.tasks) {
         if (!t.missionId) continue;
-        anyTask.add(t.missionId);
         const prev = lastActivity.get(t.missionId);
         if (!prev || t.updatedAt > prev) lastActivity.set(t.missionId, t.updatedAt);
-        // Bookkeeping tasks (the mission PR) are not deliverable work: a
-        // mission whose only remaining task ships the branch is still in limbo
-        // with respect to its criteria.
-        if (t.taskClass === 'work' && OPEN_TASK_STATUSES.has(t.status)) openDeliverable.add(t.missionId);
+        // A mission must have crossed the work boundary (at least one work task exists)
+        // to be eligible for verification limbo. Missions with only planning/organizer/
+        // bookkeeping tasks have never started real work and should be in no_deliverables,
+        // not in verification limbo.
+        if (t.taskClass === 'work') {
+          hasWorkTask.add(t.missionId);
+          if (OPEN_TASK_STATUSES.has(t.status)) openDeliverable.add(t.missionId);
+        }
       }
       const out: InvariantViolation[] = [];
       for (const m of s.missions) {
         if (m.status !== 'active') continue;
-        if (!anyTask.has(m.id)) continue;
+        if (!hasWorkTask.has(m.id)) continue;
         if (openDeliverable.has(m.id)) continue;
         if (m.criteriaOverallVerdict && DECIDED_VERDICTS.has(m.criteriaOverallVerdict)) continue;
         const anchor = lastActivity.get(m.id) ?? m.updatedAt;

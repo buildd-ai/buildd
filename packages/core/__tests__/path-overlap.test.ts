@@ -3,6 +3,7 @@ import {
   pathsOverlap,
   findBlockingPr,
   findStackedPrs,
+  isDownstreamOf,
   isAdvisoryManifest,
   declaresNoScope,
   hasConcretePathManifest,
@@ -176,6 +177,46 @@ describe('findStackedPrs', () => {
     const a = { branch: 'a', prBaseRef: 'b' };
     const b = { branch: 'b', prBaseRef: 'a' };
     expect(findStackedPrs(['a'], [a, b])).toEqual(new Set([a, b]));
+  });
+});
+
+describe('isDownstreamOf', () => {
+  it('is true when the candidate directly depends on the subject', () => {
+    const map = new Map([['s', ['p']]]);
+    expect(isDownstreamOf('s', 'p', map)).toBe(true);
+  });
+
+  it('is true when the candidate transitively depends on the subject', () => {
+    // s -> x -> p
+    const map = new Map([
+      ['s', ['x']],
+      ['x', ['p']],
+    ]);
+    expect(isDownstreamOf('s', 'p', map)).toBe(true);
+  });
+
+  it('is false when the candidate has no path to the subject', () => {
+    const map = new Map([
+      ['s', ['u']],
+      ['u', []],
+    ]);
+    expect(isDownstreamOf('s', 'p', map)).toBe(false);
+  });
+
+  it('is false for a task with no recorded dependsOn', () => {
+    expect(isDownstreamOf('s', 'p', new Map())).toBe(false);
+  });
+
+  it('is true when candidate and subject are the same id', () => {
+    expect(isDownstreamOf('p', 'p', new Map())).toBe(true);
+  });
+
+  it('terminates on a dependsOn cycle', () => {
+    const map = new Map([
+      ['s', ['x']],
+      ['x', ['s']],
+    ]);
+    expect(isDownstreamOf('s', 'p', map)).toBe(false);
   });
 });
 

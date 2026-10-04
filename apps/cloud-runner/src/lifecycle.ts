@@ -69,6 +69,13 @@ export interface RunState {
   resumed?: boolean;
   /** When the parked attempt this one resumes ended (agent clock), for the report's gap time. */
   parkedAt?: number;
+  /**
+   * A pending `task.scheduled` wake (epoch ms): the agent starts a run then.
+   * Cleared when it fires or when any dispatch starts a run first.
+   */
+  scheduledFor?: number;
+  /** The Agents SDK schedule id of that wake; a fire with any other id is stale. */
+  scheduleId?: string;
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };
@@ -82,6 +89,8 @@ export type DispatchDecision =
 export interface DispatchRequest {
   /** `task.resume`: continue this parked worker instead of claiming. */
   resumeWorkerId?: string;
+  /** A `task.scheduled` wake: the time it was scheduled for (epoch ms), for the run report. */
+  scheduledFor?: number;
 }
 
 /**
@@ -202,10 +211,27 @@ export interface ContainerEnvSource {
   BUILDD_ONCE_MAX_WAIT_MS?: string;
   /** `1` turns on warm repos in the container (see warmReposEnabled). */
   WARM_REPOS?: string;
+  /** Largest warm snapshot part in bytes (see warmMaxBundleBytes). */
+  WARM_MAX_BUNDLE_BYTES?: string;
   /** `1` turns on parking a waiting worker (see resumableRunsEnabled). */
   RESUMABLE_RUNS?: string;
   /** This deployment's runner group (its Worker name); see RUNNER_GROUP_CONTAINER_ENV. */
   RUNNER_GROUP?: string;
+}
+
+/** Mirrors WARM_DEFAULT_MAX_BUNDLE_BYTES in apps/runner/src/warm-repo.ts. */
+export const DEFAULT_WARM_MAX_BUNDLE_BYTES = 1024 ** 3;
+
+/**
+ * The largest warm bundle (or cache tarball) a container uploads, and the
+ * Worker accepts: WARM_MAX_BUNDLE_BYTES when it is a positive integer, else
+ * 1 GiB. Past it the runner skips the upload (and says so in the run report)
+ * and the workspace clones every time.
+ */
+export function warmMaxBundleBytes(env: { WARM_MAX_BUNDLE_BYTES?: string }): number {
+  const raw = env.WARM_MAX_BUNDLE_BYTES?.trim() ?? '';
+  const n = /^\d{1,16}$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_WARM_MAX_BUNDLE_BYTES;
 }
 
 /**
@@ -308,6 +334,9 @@ export function buildContainerEnv(env: ContainerEnvSource, taskToken: string): R
     // the egress handler serves it (snapshots.ts). No key, no credential.
     out.BUILDD_WARM_REPO = '1';
     out.BUILDD_SNAPSHOT_URL = `https://${SNAPSHOT_HOST}`;
+    if (/^\d{1,16}$/.test(env.WARM_MAX_BUNDLE_BYTES?.trim() ?? '')) {
+      out.BUILDD_WARM_MAX_BUNDLE_BYTES = String(warmMaxBundleBytes(env));
+    }
   }
   if (env.RESUMABLE_RUNS === '1') {
     // Park a worker that waits for input instead of holding the container.

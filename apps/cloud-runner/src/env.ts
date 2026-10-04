@@ -47,6 +47,14 @@ export interface Env extends EgressEnv, OtelEgressEnv {
    */
   WARM_REPOS?: string;
   /**
+   * Largest warm snapshot part (bundle or cache tarball) in bytes; default
+   * 1 GiB (lifecycle.ts warmMaxBundleBytes). Passed to the container, which
+   * skips the upload past it, and enforced by the snapshot route.
+   */
+  WARM_MAX_BUNDLE_BYTES?: string;
+  /** `1` enables the debug POST /tasks/:id/kill (http.ts). Off by default; recovery testing only. */
+  ALLOW_DEBUG_KILL?: string;
+  /**
    * `1` turns on resumable runs (Phase 2): a worker waiting for input is
    * parked (container released) and a `task.resume` dispatch continues it.
    * Default off. Needs the SNAPSHOTS binding too (resumableRunsEnabled).

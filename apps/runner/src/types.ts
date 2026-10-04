@@ -396,6 +396,9 @@ export interface LocalWorker {
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
   // The claim withheld a winning endpoint because this runner has a per-machine provider.
   modelEndpointIgnored?: boolean;
+  // Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
+  // 'scoped': only the task-scoped token (agent-github-credentials.ts). A mode, not a secret.
+  githubCredentials?: { mode: 'scoped' | 'runner' };
   // Managed Claude access token (from claude_credential purpose). When set, the runner
   // creates a per-worker CLAUDE_CONFIG_DIR and writes credentials.json with ONLY this
   // access_token — no refresh_token — preventing in-session token rotation.

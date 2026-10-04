@@ -104,12 +104,12 @@ export default function RunnerTokensSection({ accounts, workspaces = [] }: { acc
       action={<Link href="/app/accounts/new" className="btn btn-primary">+ New token</Link>}
     >
       <p className="text-xs text-text-secondary mb-3">
-        Tokens give runners, CI and analytics clients access to buildd. Choose only the capabilities each client needs. Model credentials go in Connections.
+        For runners, CI and analytics clients. Model credentials are in Connections.
       </p>
 
       {accounts.length === 0 ? (
         <div className="card p-6 text-center">
-          <p className="text-text-muted text-sm mb-3">No runner tokens yet</p>
+          <p className="text-text-muted text-sm mb-3">No runner tokens</p>
           <Link href="/app/accounts/new" className="btn btn-primary">
             Create a runner token
           </Link>

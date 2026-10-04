@@ -413,6 +413,15 @@ notification text) follows the same rules as a PR lede:
    (`scripts/no-em-dash-copy.test.ts`, `docs/design/derived-metric-availability.md`).
 6. **State words come from one vocabulary.** A status reads the same on every
    surface (`StatusBadge`'s labels today; `Chip` callers after §4).
+7. **The UI doesn't explain itself.** Would GitHub, Linear or Claude Code say
+   it? A setting gets a label and at most one fact the label can't carry. No
+   page blurb restating the title ("Where run evidence is kept"), no "yet" on
+   an empty state ("No buckets.", not "No buckets of your own yet."), no
+   reassurance ("Nobody can read it back", "Re-enable any time"), no
+   justifying a setting, no paragraphs. A toast says what happened: "Codex
+   disabled. Jobs run on Claude." The rules are data in
+   `packages/core/copy-rules.ts`; **`bun run copy:check`** (CI, a ratchet like
+   the design drift check below; `--list` prints every hit) fails on new ones.
 
 ---
 

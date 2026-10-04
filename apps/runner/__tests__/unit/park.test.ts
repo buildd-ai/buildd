@@ -25,6 +25,8 @@ import {
   type ParkPaths,
 } from '../../src/park';
 import { WARM_BASE_REF } from '../../src/warm-repo';
+import { cloneRepo, ensureRemoteBranch } from '../../src/git-clone';
+import { makeDeepOrigin } from '../fixtures/deep-origin';
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
@@ -297,6 +299,84 @@ describe('resume when origin cannot be fetched (rate limited, unreachable)', () 
     expect(git(worktree, 'rev-parse', 'HEAD')).toBe(head);
     expect(sleeps.length).toBe(2);
     expect(sleeps[1]!).toBeGreaterThan(sleeps[0]!);
+  });
+
+  test('a shallow resuming clone (cloud) that lacks the prerequisite fetches it by id, without deepening origin/main', () => {
+    // Run 1 built its task on origin/main; then origin moved on, so a fresh
+    // shallow clone of the newer main does not reach the bundle's base.
+    writeFileSync(join(worktree, 'feature.ts'), 'export const x = 1;\n');
+    git(worktree, 'add', 'feature.ts');
+    commit(worktree, 'task work');
+    writeFileSync(join(worktree, 'wip.txt'), 'uncommitted\n');
+    const head = git(worktree, 'rev-parse', 'HEAD');
+    const built = park();
+    const saved = join(dir, 'park.tar');
+    writeFileSync(saved, readFileSync(built.tarPath));
+    landOnOrigin('A.md');
+    landOnOrigin('B.md');
+    // GitHub serves any reachable commit by id; a local bare repo needs telling.
+    git(origin, 'config', 'uploadpack.allowReachableSHA1InWant', 'true');
+
+    rmSync(join(dir, 'run1'), { recursive: true, force: true });
+    const cp = join(dir, 'run1', 'buildd-home', 'once-workspaces', 'ws-1');
+    execFileSync('git', ['clone', '-q', '--depth', '1', '--no-single-branch', `file://${origin}`, cp], { stdio: 'pipe' });
+    expect(git(cp, 'rev-parse', '--is-shallow-repository')).toBe('true');
+
+    const sleeps: number[] = [];
+    applyParkRepo(readParkBundle(saved, join(dir, 'stage')), cp, { sleep: (ms) => sleeps.push(ms), retryAfter: () => null });
+    expect(git(worktree, 'rev-parse', 'HEAD')).toBe(head);
+    expect(status(worktree)).toEqual(['?? wip.txt']);
+    expect(sleeps).toEqual([]);
+    // Still shallow: only the missing base came in, not origin's history.
+    expect(git(cp, 'rev-parse', '--is-shallow-repository')).toBe('true');
+    expect(Number(git(cp, 'rev-list', '--count', 'origin/main'))).toBe(1);
+  });
+
+  test('depth 1, one branch (cloud): a task cut from an on-demand mission branch parks and resumes into a fresh such clone', () => {
+    // The parking clone holds dev at depth 1 and mission/x at the on-demand
+    // depth, whose shallow boundary shares nothing with dev. The bundle must
+    // not carry boundary commits without their parents (the resuming clone
+    // could not connect them): they become prerequisites, fetched by id.
+    const deep = join(dir, 'deep');
+    const { origin: deepOrigin, url } = makeDeepOrigin(deep);
+    const root = join(dir, 'run-cloud');
+    const cp = join(root, 'buildd-home', 'once-workspaces', 'ws-1');
+    const cloudClone = () => cloneRepo(url, cp, { env: { BUILDD_EXECUTOR: 'cloud' }, branch: 'dev', log: () => {} });
+    cloudClone();
+    expect(ensureRemoteBranch(cp, 'mission/x', { log: () => {} })).toBe('fetched');
+    const wt = join(cp, '.buildd-worktrees', 'buildd_task');
+    git(cp, 'worktree', 'add', '-q', '-b', 'buildd/task', wt, 'origin/mission/x');
+    writeFileSync(join(wt, 'feature.ts'), 'export const x = 1;\n');
+    git(wt, 'add', 'feature.ts');
+    commit(wt, 'task work');
+    writeFileSync(join(wt, 'wip.txt'), 'uncommitted\n');
+    const head = git(wt, 'rev-parse', 'HEAD');
+    const p: ParkPaths = { builddHome: join(root, 'buildd-home'), claudeConfigDirs: [join(root, 'home', '.claude')], tmpDir: join(root, 'tmp') };
+    const built = buildParkBundle({
+      worker: { id: WORKER, taskId: TASK, workspaceId: 'ws-1', worktreePath: wt, sessionId: null, baseRefs: ['origin/mission/x'] },
+      paths: p, kind: 'waiting', parks: 0, now: 1_700_000_000_000,
+    });
+    expect(built.manifest.defaultBranch).toBe('dev');
+    expect(built.manifest.baseRefs).toEqual(['origin/mission/x']);
+    const saved = join(dir, 'park-cloud.tar');
+    writeFileSync(saved, readFileSync(built.tarPath));
+
+    // A new container: a fresh depth-1 clone of dev, at the same path.
+    rmSync(root, { recursive: true, force: true });
+    cloudClone();
+    expect(() => git(cp, 'rev-parse', '--verify', '-q', 'refs/remotes/origin/mission/x')).toThrow();
+    const sleeps: number[] = [];
+    applyParkRepo(readParkBundle(saved, join(dir, 'stage-cloud')), cp, { sleep: (ms) => sleeps.push(ms), retryAfter: () => null });
+    expect(git(wt, 'rev-parse', 'HEAD')).toBe(head);
+    expect(status(wt)).toEqual(['?? wip.txt']);
+    expect(sleeps).toEqual([]);
+    expect(git(cp, 'fsck', '--connectivity-only', '--no-progress')).toBe('');
+    // The base the worktree was cut from is back, so PR stats measure against it.
+    expect(git(cp, 'rev-parse', 'origin/mission/x')).toBe(git(deepOrigin, 'rev-parse', 'mission/x'));
+    expect(git(wt, 'rev-list', '--count', 'HEAD', '^origin/mission/x')).toBe('1');
+    // Still shallow; dev not deepened.
+    expect(git(cp, 'rev-parse', '--is-shallow-repository')).toBe('true');
+    expect(Number(git(cp, 'rev-list', '--count', 'origin/dev'))).toBe(1);
   });
 
   test('a 429 honours Retry-After, and the total wait is capped', () => {

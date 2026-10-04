@@ -171,7 +171,7 @@ function Strip({ model }: { model: MissionBoardModel }) {
             <LandedMeter model={model} variant="strip" />
           </>
         ) : (
-          <span data-testid="landed-empty" className="font-mono text-[12px] text-text-muted">No tasks yet</span>
+          <span data-testid="landed-empty" className="font-mono text-[12px] text-text-muted">No tasks</span>
         )}
       </div>
       <a href={`#${MISSION_CRITERIA_ANCHOR}`} data-testid="goal-band" className={`${cell} min-w-0 flex-wrap md:border-r hover:bg-card-hover`}>
@@ -213,7 +213,7 @@ function Detail({ bar, model, now }: { bar: MissionLaneBar; model: MissionBoardM
       <div className="flex flex-wrap items-start gap-7">
         <Kv k="runner" v={`${bar.runner}${slotIndex ? ` ·${slotIndex}` : ''}`} />
         <Kv k={bar.end == null ? 'running' : 'ran'} v={formatAge(span)} />
-        <Kv k="after" v={t && t.deps.length ? t.deps.map(d => `${d.scope ?? d.label}${d.ok ? ' ✓' : ''}`).join('  ') : 'none'} />
+        <Kv k="after" v={t && t.deps.length ? t.deps.map(d => `${d.scope ?? d.label}${d.satisfied ? ' ✓' : ''}`).join('  ') : 'none'} />
         <Kv k="unblocks" v={t && t.unblocks.length ? t.unblocks.map(u => u.scope ?? u.label).join('  ') : 'none'} />
         <div className="flex min-w-[200px] flex-1 flex-col gap-[5px]">
           <SectionLabel>{`${own.length} milestone${own.length === 1 ? '' : 's'}`}</SectionLabel>
@@ -227,7 +227,7 @@ function Detail({ bar, model, now }: { bar: MissionLaneBar; model: MissionBoardM
               />
             ))}
           </div>
-          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : 'no milestones yet'}</div>
+          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : 'no milestones'}</div>
         </div>
       </div>
     </section>
@@ -325,7 +325,7 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
   return (
     <aside className="mt-[22px] flex min-w-0 flex-col gap-[18px]">
       {sec('Needs you', needsN, needsN > 0, 'needs-you-band', ny.length === 0
-        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">{needsN > 0 ? 'Screens below want your call.' : 'Nothing waiting on you.'}</div>
+        ? <div className="py-2 font-mono text-[12px] md:text-[11.5px] text-[var(--fleet-faint)]">{needsN > 0 ? 'Screens awaiting review.' : 'Nothing waiting on you.'}</div>
         : ny.map(t => (
           <div key={t.id} className="flex flex-col gap-2.5 border-2 border-accent bg-card p-3 shadow-[3px_3px_0_0_var(--border-strong)]">
             <div className="flex items-center gap-[7px] font-mono text-[12px] text-text-muted">
@@ -366,7 +366,7 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
             <span className="flex shrink-0 gap-[3px]">
               {t.status === 'ready'
                 ? <span className="text-text-muted">ready</span>
-                : t.deps.map(d => <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} className="!h-4 !px-1" />)}
+                : t.deps.map(d => <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.satisfied ? 'ok' : 'ghost'} className="!h-4 !px-1" />)}
             </span>
           </a>
         )))}

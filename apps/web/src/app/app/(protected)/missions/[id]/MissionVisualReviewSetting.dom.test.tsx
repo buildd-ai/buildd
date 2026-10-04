@@ -106,7 +106,7 @@ describe('MissionVisualReviewSetting', () => {
   it('says so when the mission has no audit yet', () => {
     act(() => root.render(<MissionVisualReviewSetting missionId="m1" initialEnabled visual={null} />));
     expect(container.querySelector('[data-testid="visual-review-line"]')).toBeNull();
-    expect(container.textContent).toContain('No visual audit on this mission yet');
+    expect(container.textContent).toContain('No visual audit.');
   });
 
   // Regression: the Tray's "Turn off for this mission" PATCHes and refreshes;

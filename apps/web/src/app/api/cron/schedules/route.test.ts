@@ -136,8 +136,22 @@ mock.module('@/lib/schedule-helpers', () => ({
   classifyScheduleCadence: () => ({ kind: 'standard', complexity: 'medium', classifiedBy: 'default' }),
 }));
 
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mock(() => Promise.resolve()),
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mock(() => Promise.resolve()),
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -252,6 +266,14 @@ mock.module('@/lib/schedule-skill-preflight', () => ({
 let effectiveRoles = new Set<string>();
 const mockResolveEffectiveRoleSlugs = mock((_ws: string) => Promise.resolve(effectiveRoles));
 mock.module('@/lib/effective-roles', () => ({ resolveEffectiveRoleSlugs: mockResolveEffectiveRoleSlugs }));
+
+// The creation-manifest shadow's post-insert hook (lib/task-manifest-prediction.ts,
+// whose own test covers eligibility): here only that a schedule-filed task
+// reaches it, and that it can neither change nor fail the tick.
+const mockScheduleCreationManifestShadow = mock((..._args: any[]) => true as boolean);
+mock.module('@/lib/task-manifest-prediction', () => ({
+  scheduleCreationManifestShadow: mockScheduleCreationManifestShadow,
+}));
 
 import { GET } from './route';
 
@@ -688,6 +710,33 @@ describe('GET /api/cron/schedules', () => {
       heartbeat: true,
     }));
     expect(tasksInsertValues?.context?.triggerSource).toBe('backstop');
+  });
+
+  describe('creation-manifest shadow', () => {
+    beforeEach(() => { mockScheduleCreationManifestShadow.mockReset(); });
+
+    it('a schedule-filed task goes to the post-insert hook with its row and the workspace team', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace', teamId: 'team-1' });
+      const res = await GET(makeRequest());
+      expect((await res.json()).created).toBe(1);
+      expect(mockScheduleCreationManifestShadow).toHaveBeenCalledTimes(1);
+      const [row, ctx, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row).toMatchObject({ id: 'task-1', workspaceId: 'ws-1', title: 'Test Task', taskClass: 'work' });
+      expect(ctx).toEqual({ teamId: 'team-1' });
+      expect(typeof schedule).toBe('function');
+      // The prediction never writes the manifest.
+      expect(tasksInsertValues.pathManifest).toBeUndefined();
+    });
+
+    it('a throwing hook never fails the tick', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([makeSchedule()]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace', teamId: 'team-1' });
+      mockScheduleCreationManifestShadow.mockImplementationOnce(() => { throw new Error('boom'); });
+      const body = await (await GET(makeRequest())).json();
+      expect(body.created).toBe(1);
+      expect(body.errors).toBe(0);
+    });
   });
 
   describe('heartbeat circuit breaker', () => {

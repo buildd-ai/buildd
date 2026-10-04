@@ -8,9 +8,14 @@
  *   is no switch (`teams.chatDisabled` is deprecated and unread).
  * - **built_in** decision calls (task classification, the task category shadow
  *   check): low cost, no toggle. They run whenever a key resolves.
- * - **opt_in** decision shadows (the task role shadow and its apply step): off unless the team
- *   row lists the capability in `teams.enabledDecisionShadows`. A new shadow
- *   ships dark, and turning one on never turns on another.
+ * - **opt_in** decisions (task role routing, mission goal-criteria quality, the
+ *   conflict-aware orchestration decisions): off unless the team row lists the
+ *   capability in `teams.enabledDecisionShadows`. A new team starts with every
+ *   one listed (`DEFAULT_ENABLED_DECISION_SHADOWS`). Since the 2026-10-03 owner
+ *   decision, a new one ships applying (gated by its own rails and confidence
+ *   threshold) as soon as it is turned on — "shadow" in some of these names is
+ *   a holdover, not a separate logged-only phase a team must graduate out of.
+ *   Turning one capability on never turns on another.
  * - **server_feature** (goal grading, visual QA judgment, mission summaries):
  *   each has a runner path. The default follows the team's billing model: a
  *   pay-per-token team key → server-side; subscription only → runner. An admin
@@ -36,8 +41,10 @@ export type InferenceCapability =
   | 'task_role_apply'
   | 'orchestration_manifest'
   | 'orchestration_claim'
+  | 'orchestration_ordering'
   | 'mission_strand_choice'
   | 'mission_goal_quality'
+  | 'scout_probe_selection'
   | 'cbm_search_injection'
   | 'endpoint_model_match'
   | 'question_gate'
@@ -106,20 +113,24 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'When you open a mission that changed UI with no visual audit, a decision model suggests running the audit or waiving it. Only a suggestion; you always confirm.',
     costHint: '~$0.00003 per mission, cached',
   },
+  // 2026-10-03 owner decision (knowledge-base: buildd/design/decision-calls.md):
+  // applying is the default once either of these is on — there is no longer a
+  // separate "logged only" tier for this decision. Both ids are kept (one
+  // settings toggle is as good as two), and every look writes a row to the
+  // decision ledger (packages/core/decision-ledger.ts) regardless of which name
+  // enabled it.
   task_role_shadow: {
     id: 'task_role_shadow',
     kind: 'opt_in',
-    label: 'Task role shadow',
-    description: 'A decision model says which role it would give a task filed without one. Logged only; never changes the task.',
+    label: 'Task role routing',
+    description: 'When a decision model is confident, a task filed without a role gets one before a runner picks it up. Never replaces a role you chose, and never changes the model. Every look is recorded in the decision ledger.',
     costHint: '~$0.00003 per task',
   },
-  // The apply half of role routing (apps/web/src/lib/task-role-apply.ts). Its own
-  // switch, so turning the shadow on never starts writing roles.
   task_role_apply: {
     id: 'task_role_apply',
     kind: 'opt_in',
-    label: 'Task role routing',
-    description: 'When a decision model is confident, a task filed without a role gets one before a runner picks it up. Never replaces a role you chose, and never changes the model.',
+    label: 'Task role routing (alias)',
+    description: 'Same effect as "Task role routing" above — listing either is enough.',
     costHint: '~$0.00003 per task',
   },
   // Conflict-aware orchestration decisions (knowledge-base: buildd/design/conflict-aware-orchestration.md
@@ -140,6 +151,19 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
     costHint: '~$0.00003 per check',
   },
+  // Jev ordering inputs (knowledge-base: buildd/design/jev-scheduling.md §5:
+  // packages/core/orchestration-overlap-decision.ts and
+  // task-size-bucket-decision.ts). Unlike orchestration_manifest/_claim, these
+  // apply from the first PR (gated, logged) once a team opts in: by
+  // construction they only ever move a claim-planner soft weight or a size
+  // bucket, never a hard edge, a manifest or a dependsOn.
+  orchestration_ordering: {
+    id: 'orchestration_ordering',
+    kind: 'opt_in',
+    label: 'Ordering inputs',
+    description: 'A decision model checks whether a predicted file overlap between two tasks is real, and sizes a task with too few similar completed tasks to size by precedent. Feeds the claim planner\'s ordering only; never a manifest or a dependency.',
+    costHint: '~$0.00003 per look',
+  },
   // Stranded local missions (apps/web/src/lib/strand-choice-decision.ts).
   // Shadow first: logged only; it can at most reorder the two buttons, and
   // only once its gate is raised in code after a readout. Never flips anything.
@@ -151,14 +175,26 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     costHint: '~$0.00003 per stranded mission, cached',
   },
   // Goal-criteria quality (apps/web/src/lib/goal-criteria-quality-decision.ts,
-  // docs/specs/mission-goal-criteria-quality.md). Shadow first: logged and
-  // recorded as an advisory gate row only; it never blocks or rewrites a goal.
+  // docs/specs/mission-goal-criteria-quality.md). Surfaces an `advisory` on the
+  // response when the verdict lands in time and something is weak (2026-10-03:
+  // GOAL_QUALITY_MODE ships `surface`, not shadow-only). Still never blocks or
+  // rewrites the goal — advisory only, always confirmed by a person.
   mission_goal_quality: {
     id: 'mission_goal_quality',
     kind: 'opt_in',
-    label: 'Goal quality shadow',
-    description: 'A decision model says whether each new goal criterion states an outcome a user would notice and can be checked. Logged only; never blocks or changes your goal.',
+    label: 'Goal quality advisory',
+    description: 'A decision model says whether each new goal criterion states an outcome a user would notice and can be checked, and suggests a rewrite when it does not. Never blocks or changes your goal.',
     costHint: '~$0.0001 per goal edit, cached',
+  },
+  // Quality Scout probe selection (packages/core/decision-kind-scout-probe-selection.ts).
+  // Shadow: the model's pick is recorded beside the deterministic must-run
+  // rules and the heuristic fallback; the fallback is what runs until a readout.
+  scout_probe_selection: {
+    id: 'scout_probe_selection',
+    kind: 'opt_in',
+    label: 'Scout probe selection',
+    description: 'When the quality scout checks finished work, a decision model suggests which of its candidate probes are worth running. Logged only; required probes always run.',
+    costHint: '~$0.00003 per candidate probe',
   },
   // CBM search injection (docs/design/cbm-search-injection.md). Live: the
   // decision only picks between two factual lists the runner already
@@ -244,6 +280,15 @@ function storedMode(modes: unknown, feature: ServerFeature): FeatureMode | null 
 
 /** The opt-in capabilities. Only these may be listed in `teams.enabledDecisionShadows`. */
 export const OPT_IN_CAPABILITIES = ALL_INFERENCE_CAPABILITIES.filter(c => INFERENCE_CAPABILITIES[c].kind === 'opt_in');
+
+/**
+ * What a new team row starts with in `enabledDecisionShadows`: every opt-in
+ * decision (2026-10-04 owner decision, default on). Applied by the column's
+ * insert default in `db/schema.ts`, so every path that creates a team gets it.
+ * Existing teams keep what they stored, and an opt-in capability added later
+ * is not switched on for them.
+ */
+export const DEFAULT_ENABLED_DECISION_SHADOWS: readonly InferenceCapability[] = Object.freeze([...OPT_IN_CAPABILITIES]);
 
 /** The team columns the gate reads. */
 export interface InferenceGate {

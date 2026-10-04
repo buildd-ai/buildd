@@ -152,6 +152,16 @@ async function main() {
     check('GitHub App', 'warn', 'not configured - GitHub integration disabled');
   }
 
+  // Dispatch transport (docs/specs/task-dispatch-authority.md, "Dispatch transport (P0)")
+  const dispatchVars = ['DISPATCH_URL', 'DISPATCH_PUBLISH_SECRET', 'DISPATCH_CALLBACK_SECRET'];
+  if (envGroup(...dispatchVars)) {
+    check('Dispatch transport', 'ok', 'publish + callbacks configured');
+  } else if (dispatchVars.some(envExists)) {
+    check('Dispatch transport', 'warn', `partially configured - needs all of ${dispatchVars.join(', ')}`);
+  } else {
+    check('Dispatch transport', 'warn', 'not configured - every workspace delivers in-app');
+  }
+
   // Summary
   const failed = checks.filter(c => c.status === 'fail');
   const warned = checks.filter(c => c.status === 'warn');

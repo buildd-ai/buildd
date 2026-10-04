@@ -194,7 +194,7 @@ function VisualReviewFixtureView({ params }: { params: VisualReviewFixtureParams
     const [initial] = useState(() => transport.model());
     const review = useVisualReviewDecisions(initial, transport);
     const model = review.model;
-    const opensDeck = params.view === 'deck' || params.view === 'compare';
+    const opensDeck = params.view === 'deck' || params.view === 'compare' || params.view === 'fix-check' || params.view === 'fix-merged';
     const [deck, setDeck] = useState<{ startKey: string | null; compare: boolean } | null>(
         opensDeck ? { startKey: params.startKey, compare: params.compare } : null,
     );

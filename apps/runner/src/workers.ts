@@ -6,6 +6,7 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch } from './git-clone';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -31,6 +32,7 @@ import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memor
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
+import { startScopedGitHubSession, type ScopedGitHubSession } from './agent-github-credentials';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -1554,6 +1556,28 @@ export class WorkerManager {
   }
 
   /**
+   * Give one agent session the task-scoped GitHub token instead of the
+   * operator's credentials (agent-github-credentials.ts). Fails closed: on
+   * any failure the agent has no GitHub credential, and a milestone says why.
+   */
+  private async startScopedGitHubCredentials(worker: LocalWorker, env: Record<string, string>, homeDir: string): Promise<ScopedGitHubSession> {
+    const log = (msg: string) => console.log(`[Worker ${worker.id}] ${msg}`);
+    const session = await startScopedGitHubSession({
+      env,
+      homeDir,
+      fetchToken: () => this.buildd.getAgentGitHubToken(worker.id),
+      log,
+    });
+    if (session.ok) {
+      log('GitHub: task-scoped installation token (runner credentials withheld)');
+      this.addMilestone(worker, { type: 'status', label: 'GitHub: task-scoped token', ts: Date.now() });
+    } else {
+      this.addMilestone(worker, { type: 'status', label: `GitHub: no credentials (${session.reason})`.slice(0, 200), ts: Date.now() });
+    }
+    return session;
+  }
+
+  /**
    * Prepare and start a single claimed worker from the poll path.
    * Extracted from the claim loop so a failure here is contained to one worker.
    */
@@ -1581,7 +1605,7 @@ export class WorkerManager {
   ): Promise<
     | { kind: 'ready'; task: BuilddTask; cwd: string; overlayFrom?: string }
     | { kind: 'no_task' }
-    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string }
+    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string; githubThrottled?: boolean }
   > {
     const task: BuilddTask | undefined = claimedWorker.task || fallbackTask;
     if (!task) return { kind: 'no_task' };
@@ -1591,6 +1615,8 @@ export class WorkerManager {
         id: task.workspaceId,
         name: task.workspace?.name || 'unknown',
         repo: task.workspace?.repo,
+        // The one branch a cloud clone takes (git-clone.ts).
+        defaultBranch: task.workspace?.gitConfig?.defaultBranch ?? null,
       },
       (task.context as Record<string, unknown> | null) ?? null
     );
@@ -1598,6 +1624,21 @@ export class WorkerManager {
     if (!workspacePath) {
       const wsName = task.workspace?.name || task.workspaceId;
       const repoHint = task.workspace?.repo ? ` (repo: ${task.workspace.repo})` : '';
+      // The clone failed because GitHub is throttling it (git-clone.ts, after
+      // its own retries). Not this runner's to fix and not the task's fault:
+      // report an infrastructure failure, which buildd requeues on its
+      // infra-retry budget with backoff, and leave the task offerable.
+      // Awaited: a --once container exits right after this.
+      const throttle = task.workspace?.repo ? cloneThrottledRecently(task.workspace.repo) : null;
+      if (throttle) {
+        console.error(`Cannot clone the workspace for claimed task ${task.title} (${task.id}): GitHub is rate limiting this runner; reporting an infrastructure failure for a retry`);
+        await this.buildd.updateWorker(claimedWorker.id, {
+          status: 'failed',
+          error: `Cannot clone workspace "${wsName}"${repoHint}: GitHub is rate limiting clones from this runner (HTTP 429 / rate limit). Infrastructure failure; buildd retries it after a backoff.`,
+          githubThrottled: true,
+        }).catch(() => {});
+        return { kind: 'unresolvable', task, wsName, repoHint, githubThrottled: true };
+      }
       console.error(`Cannot resolve workspace for claimed task: ${task.title} (${task.id}) — will skip on future retries`);
       // Skip this task on future Pusher nudges; a poll re-claim would fail the
       // same way.
@@ -1832,6 +1873,12 @@ export class WorkerManager {
     // above). Same preparation as the poll path — one shared routine.
     const prepared = await this.prepareClaimedWorker(claimedWorker, task);
     if (prepared.kind === 'unresolvable') {
+      if (prepared.githubThrottled) {
+        throw Object.assign(
+          new Error(`Workspace "${prepared.wsName}" could not be cloned${prepared.repoHint}: GitHub is rate limiting this runner (reported as an infrastructure failure)`),
+          { claimError: 'github_throttled' as const },
+        );
+      }
       throw Object.assign(
         new Error(`Workspace "${prepared.wsName}" is not cloned locally${prepared.repoHint} — clone the repo first`),
         { claimError: 'workspace_not_found' as const },
@@ -1842,7 +1889,7 @@ export class WorkerManager {
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
     /** Role directory to overlay into the session cwd once the worktree exists. */
@@ -1977,6 +2024,9 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
     }
     if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
+    if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
+      worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
+    }
     if (claimedWorker.claudeAccessToken) {
       worker.claudeAccessToken = claimedWorker.claudeAccessToken;
       worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
@@ -2165,6 +2215,14 @@ export class WorkerManager {
           fallbacks: [gitConfig?.targetBranch, defaultBranch],
           worktreeFallback: setupResult.fallback ?? null,
         });
+        // A narrow (cloud) clone holds the default branch and whatever setup
+        // fetched; a PR base beyond those (a target branch, a stacked
+        // predecessor) is fetched now, by name, so the path-claim sweep and the
+        // PR diff measure against a real ref. A full clone: a no-op.
+        const prBaseBranch = branchOfRemoteRef(worker.prBaseRef);
+        if (prBaseBranch && worker.prBaseRef !== setupResult.base) {
+          ensureRemoteBranch(workspacePath, prBaseBranch, { log: (m) => console.log(`[Worker ${worker.id}] ${m}`) });
+        }
         // Resume and shared-branch collision recovery can both change the ref.
         // The server must acknowledge this actual branch before the agent starts
         // (see startWithPersistedBranch below), since create_pr derives its head
@@ -2936,6 +2994,8 @@ export class WorkerManager {
     let cbmSharedCache = false;
     // Per-session throwaway BUILDD_HOME for the agent env; removed in finally.
     let agentRunnerHome: string | undefined;
+    // Keeps this session's task-scoped GitHub token fresh; stopped in finally.
+    let githubTokenRefresher: ScopedGitHubSession | undefined;
     // Capture CLI stderr durably. Every chunk is filed into the per-worker session
     // log the instant it arrives (previously stderr only reached console.log, i.e.
     // the runner's screen buffer, and died with it — 0 of 201 per-worker log files
@@ -3140,6 +3200,23 @@ export class WorkerManager {
       // otherwise fall back to ~/.buildd, which is THIS runner's live store.
       agentRunnerHome = isolateAgentRunnerHome(cleanEnv, worker.id);
 
+      // GitHub: when the claim says `scoped`, the agent gets only the
+      // installation token minted for its task's repo — the operator's
+      // GITHUB_TOKEN/GH_TOKEN and host git/gh credentials are withheld. See
+      // agent-github-credentials.ts. Absent or `runner`: unchanged.
+      if (worker.githubCredentials?.mode === 'scoped') {
+        githubTokenRefresher = await this.startScopedGitHubCredentials(worker, cleanEnv, agentRunnerHome);
+        if (!githubTokenRefresher.ok) {
+          promptText += '\n\n' + [
+            '## GitHub access unavailable',
+            '',
+            `This session has no GitHub credentials (${githubTokenRefresher.reason}).`,
+            'Do not look for other credentials on this machine. If the task needs a',
+            'push or a PR, report it as **blocked** with that reason.',
+          ].join('\n');
+        }
+      }
+
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
@@ -3207,12 +3284,19 @@ export class WorkerManager {
         teamEndpointWithheld: worker.modelEndpointIgnored,
         budgetModel: TIER_DEFAULTS.budget.model,
       });
+      // Preflight: a Codex task whose team agent model endpoint has no
+      // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
+      // fail clearly rather than silently falling back to local Codex auth as
+      // if no endpoint had been configured.
+      if (modelEnv.error) {
+        throw new Error(modelEnv.error);
+      }
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
-        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no Anthropic credential given to the agent`);
+        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no ${isCodexTask ? 'Codex' : 'Anthropic'} credential given to the agent`);
       }
       if (modelEnv.teamEndpointIgnored) {
-        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's LLM_PROVIDER (per-machine config) takes priority`);
+        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
       }
       if (this.config.llmProvider?.provider === 'openrouter') {
         console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
@@ -5328,6 +5412,7 @@ export class WorkerManager {
       // This invocation's own throwaway BUILDD_HOME. First and unconditional:
       // it is unique to this call, so neither the closing-turn early return
       // below nor a superseded/deregistered session may skip it.
+      githubTokenRefresher?.stop();
       if (agentRunnerHome) {
         cleanupAgentRunnerHome(agentRunnerHome);
       }

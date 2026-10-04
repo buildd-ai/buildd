@@ -15,8 +15,14 @@ import { releaseAndNotify, resolveReleaseReasonForTask } from '@/lib/path-claim-
  * time — this just also fixes the underlying rows instead of only hiding them
  * from one query.
  *
- * Runs every tick of the `schedules` cron (~1 min) — cheap: a workspace with
- * no leaked claims does two empty-set queries and returns 0.
+ * It also repairs claim-time waiters (a pending task the claim route deferred
+ * for path_overlap) whose blocker went terminal without a release: the
+ * release it triggers writes their `path_claim.released` dispatch intent. A
+ * completed blocker whose PR is still open is left alone — it still blocks.
+ *
+ * Runs on the hourly `schedules` cron tick, so it is a repair loop, never the
+ * normal wake path — cheap: with no leaked claims it does two empty-set
+ * queries and returns 0.
  */
 export async function sweepAbandonedPathClaims(): Promise<number> {
   let released = 0;

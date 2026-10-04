@@ -54,6 +54,13 @@ export interface CronOutcome {
   errors?: number;
   /** The route's own result object, kept verbatim for diagnosis. */
   result?: Record<string, unknown>;
+  /**
+   * Write no run row. Only for a Redis-gated tick that found nothing due
+   * (lib/cron-due-queue.ts): at minute cadence the row itself would keep Neon
+   * awake, which is the cost the gate exists to avoid. The job's floor tick
+   * still records, so health keeps a signal. Ignored when the handler throws.
+   */
+  unrecorded?: boolean;
 }
 
 export type CronReport = (outcome: CronOutcome) => void;
@@ -109,6 +116,7 @@ export async function withCronRun(
   // whatever DATABASE_URL the checkout has loaded. cron-run.test.ts opts back in
   // to exercise the recorder against its mocked db.
   if (!shouldRecordRuns()) return response;
+  if (ok && (outcome as CronOutcome | null)?.unrecorded) return response;
 
   // Everything below is best-effort by design — see invariant (1).
   await recordRun({ job, startedAt, ok, error, outcome }).catch(err =>

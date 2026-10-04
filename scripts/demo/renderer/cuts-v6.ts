@@ -126,14 +126,56 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
   // from the first frame: framing the list alone puts Edit and Confirm under
   // the caption band.
   const specCrop = union([crit, edit, confirm]);
+  // The spec beat (and the film's spec shot): the change is the criteria
+  // arriving. The ask line lights, then each "Done when" row (its label and its
+  // check line) is revealed and lit in turn, and the full list holds. Nothing
+  // is pressed here: Confirm belongs to the plan beat, so the button row stays
+  // dim. s02b-spec is the same card shot with each line boxed.
+  const SPEC = 's02b-spec';
+  const specList = s.box(SPEC, 'approval-draft-criteria');
+  const line = (phrase: string) => s.text(SPEC, phrase).rects[0];
+  const askLine = line('Let customers see, pay, and get receipts for invoices in their own currency.');
+  const ROWS: Array<[label: string, check: string]> = [
+    ["invoices in the customer's currency", 'pnpm test --filter web -- invoice-currency'],
+    ['public API backward compatible', 'pnpm test --filter api -- contract-v2'],
+    ['a EUR invoice pays end to end', 'e2e-eur-invoice'],
+    ['rounding rule written down', 'fx-rounding-decision'],
+  ];
+  const rowRects = ROWS.map(([label, check]) => {
+    const a = line(label), b = line(check);
+    // Both lines must sit in the list: the same words can appear earlier on the page (the storyboard scopes them to the card).
+    for (const r of [a, b]) if (!r || r.y < specList.y - 0.005 || r.y + r.h > specList.y + specList.h + 0.005) throw new Error(`[cuts-v6] spec row "${label}" is not inside the Done-when list (re-shoot s02b-spec)`);
+    const y0 = Math.min(a.y, b.y) - 0.004, y1 = Math.max(a.y + a.h, b.y + b.h) + 0.004;
+    return { x: specList.x, y: y0, w: specList.w, h: y1 - y0 };
+  });
+  // The list is never empty: it opens (and the loop seam lands) on all four rows
+  // lit; at DIM the rows fall back to 20% ghosts and the ask line lights, then
+  // each row lights again in turn and the full list holds to the end.
+  const DIM = 1.4;
+  const REVEAL = [2.2, 2.65, 3.1, 3.55];
+  // Five slots per key (the ask line, then the rows). An unlit row is a zero-height band on its top edge, so
+  // its light wipes down the row as it lights (a hole grown from the centre left it half lit mid-way).
+  const topEdge = (r: Rect): Rect => ({ x: r.x, y: r.y, w: r.w, h: 0 });
+  const specSlots = (askOn: boolean, rowsOn: number) => [askOn ? askLine : ghost(askLine), ...rowRects.map((r, i) => (i < rowsOn ? r : topEdge(r)))];
+  const specFrame = union([askLine, specList]);
   const criteria: Shot = {
-    id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img('s02-thread')],
+    id: 'criteria', layout: 'screen', dur: 4.5, images: [s.img(SPEC)],
     caption: 'It drafts the mission, and what done means.',
-    spot: [key(0.2, [crit]), { ...key(3.0, [edit]), cross: true }],
-    camera: [at(f('s02-thread', specCrop, 1.1), 0), at(f('s02-thread', specCrop, 1.06), 1)],
-    taps: [press(3.9, edit)],
-    controls: [edit, confirm],
+    // Ghosts, not gaps: each row is covered to 80% (a hair past the list's left edge, or its checkbox border shows).
+    masks: rowRects.map((r, i): Mask => ({ rect: { x: r.x - 0.004, y: r.y, w: r.w + 0.008, h: r.h }, from: DIM, until: REVEAL[i], max: 0.8 })),
+    spot: [key(0, specSlots(false, 4)), key(DIM, specSlots(true, 0)), ...REVEAL.map((t, i) => key(t, specSlots(false, i + 1)))],
+    camera: [at(f(SPEC, specFrame, 1.12), 0), at(f(SPEC, specFrame, 1.08), 1)],
   };
+  if (o.beat && o.frame.height > o.frame.width) {
+    // On a phone the list box (with its empty right side) at the floor left the row labels ~7px at 360 wide
+    // (demo:review). Frame the rows' text itself, as large as fits, from the checkboxes in.
+    const text = union(rowRects.map((_, i) => union([line(ROWS[i][0]), line(ROWS[i][1])])));
+    const rowsText = { x: specList.x, y: rowRects[0].y, w: text.x + text.w - specList.x, h: rowRects[3].y + rowRects[3].h - rowRects[0].y };
+    const img = s.img(SPEC);
+    // aim() keeps a 0.012 margin each side when it has to anchor a crop, so fit with that margin in.
+    const fits = o.frame.width / ((rowsText.w + 0.026) * (img.width / 2));
+    criteria.camera = [aim({ ...o, minPx: Math.max(1.8, Math.min(2.2, fits)) }, img, rowsText, 1.04, 0), aim({ ...o, minPx: Math.max(1.8, Math.min(2.2, fits)) }, img, rowsText, 1.03, 1)];
+  }
 
   const composerEdit = s.box('s03b-spec-edit', 'chat-composer');
   const t2 = typed(s.typing('s03b-spec-edit'), 0.6, 3.4);
@@ -509,8 +551,8 @@ export function v6aBeats(s: Stills, opts: { mobile?: boolean; theme?: 'dark' | '
   return BEATS.map((beat) => ({
     name: `beat-${beat}${opts.mobile ? '-mobile' : ''}`, ...o.frame, fps: FRAME.fps, fade: FADE, captions: false, theme: o.theme, dip: true,
     shots: BEAT_SHOTS[beat].map((id) => quiet(all.find((x) => x.id === id)!)),
-    // The spec poster is the criteria list fully lit (render.ts otherwise takes 60% in, mid-typing).
-    ...(beat === 'spec' ? { poster: 2.0 } : {}),
+    // The spec poster is the full criteria list lit (the opening hold, which the loop also lands on).
+    ...(beat === 'spec' ? { poster: 1.0 } : {}),
   }));
 }
 

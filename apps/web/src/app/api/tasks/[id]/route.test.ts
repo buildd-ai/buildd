@@ -18,14 +18,26 @@ const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockReleaseAndNotify = mock(() => Promise.resolve());
 const mockResolveCompletedTask = mock(() => Promise.resolve());
-const mockDispatchUnblockedTask = mock(() => Promise.resolve());
+const mockWakeTask = mock(async (_id: string, _cause: string) => {});
 const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
 
 mock.module('@/lib/task-dependencies', () => ({
   resolveCompletedTask: mockResolveCompletedTask,
 }));
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchUnblockedTask: mockDispatchUnblockedTask,
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: async () => {},
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
 }));
 
 // Mock auth-helpers
@@ -494,8 +506,7 @@ describe('PATCH /api/tasks/[id]', () => {
     mockWorkersFindFirst.mockResolvedValue(null);
     mockResolveCompletedTask.mockReset();
     mockResolveCompletedTask.mockResolvedValue(undefined);
-    mockDispatchUnblockedTask.mockReset();
-    mockDispatchUnblockedTask.mockResolvedValue(undefined);
+    mockWakeTask.mockClear();
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
     mockIsMissionLinkable.mockReset();
@@ -679,10 +690,9 @@ describe('PATCH /api/tasks/[id]', () => {
     it('reset to pending with no dependencies dispatches to runners', async () => {
       setup(baseTask, { ...baseTask, status: 'pending' });
       await patch({ status: 'pending' });
-      expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
-      expect((mockDispatchUnblockedTask.mock.calls[0] as any[])[0]).toMatchObject({ id: TASK_ID });
-      // A manual reset tells the webhook consumer it is a retry, not an unblock.
-      expect((mockDispatchUnblockedTask.mock.calls[0] as any[])[2]).toEqual({ event: 'task.retry' });
+      // A manual reset is labelled as such, not as an unblock.
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledWith(TASK_ID, 'manual.start');
     });
 
     it('reset to pending with satisfied dependencies dispatches', async () => {
@@ -690,7 +700,7 @@ describe('PATCH /api/tasks/[id]', () => {
       setup(t, { ...t, status: 'pending' });
       mockTasksFindMany.mockResolvedValue([{ id: 'dep-1', status: 'completed', loopState: null }]);
       await patch({ status: 'pending' });
-      expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledWith(TASK_ID, 'manual.start');
     });
 
     it('reset to pending with an unfinished dependency does not dispatch', async () => {
@@ -698,7 +708,7 @@ describe('PATCH /api/tasks/[id]', () => {
       setup(t, { ...t, status: 'pending' });
       mockTasksFindMany.mockResolvedValue([{ id: 'dep-1', status: 'in_progress', loopState: null }]);
       await patch({ status: 'pending' });
-      expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('title-only PATCH emits nothing and resolves nothing', async () => {
@@ -706,7 +716,7 @@ describe('PATCH /api/tasks/[id]', () => {
       await patch({ title: 'New' });
       expect(mockTriggerEvent).not.toHaveBeenCalled();
       expect(mockResolveCompletedTask).not.toHaveBeenCalled();
-      expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
       expect(mockReleaseAndNotify).not.toHaveBeenCalled();
     });
   });
@@ -764,6 +774,26 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(res.status).toBe(200);
       expect(sets[0]?.startAt).toBeUndefined();
       expect(sets[0]?.context).toBeUndefined();
+    });
+
+    // An operator's switch is an explicit choice: budget failover must not undo it.
+    it('pins the backend an operator switches to, and unpins on clear', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { note: 'kept' } });
+      let sets = captureUpdate();
+      let res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: 'claude' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.context?.backendPinned).toBe(true);
+      expect(sets[0]?.context?.note).toBe('kept');
+
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { backendPinned: true, note: 'kept' } });
+      sets = captureUpdate();
+      res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: null } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.backend).toBeNull();
+      expect('backendPinned' in (sets[0]?.context ?? {})).toBe(false);
+      expect(sets[0]?.context?.note).toBe('kept');
     });
 
     it('does not touch start_at for a task that is not budget-paused', async () => {

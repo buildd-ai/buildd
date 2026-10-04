@@ -147,7 +147,7 @@ export function buildOnceConfig(
 export function createOnceResolver(
   base: WorkspaceResolver,
   isolationRoot: string,
-  clone: (workspace: { id: string; repo: string }, isolationRoot: string) => string,
+  clone: (workspace: { id: string; repo: string; defaultBranch?: string | null }, isolationRoot: string) => string,
   /**
    * preferIsolated: try the isolated clone first (it is where the warm-repo
    * restore lives, warm-repo.ts) and use the base resolver only if it fails.
@@ -156,11 +156,17 @@ export function createOnceResolver(
    */
   opts: { preferIsolated?: boolean } = {},
 ): WorkspaceResolver {
-  const isolated = (workspace: { id: string; repo?: string | null }): string | null => {
+  // Set when the isolated clone ended throttled by GitHub: the base resolver's
+  // fallback would only auto-clone the same repo again, a second identical
+  // request into the same rate limit. (The other order is covered by the
+  // clone itself: git-clone.ts refuses a repo it was just throttled on.)
+  let throttled = false;
+  const isolated = (workspace: { id: string; repo?: string | null; defaultBranch?: string | null }): string | null => {
     if (!workspace.id || !workspace.repo) return null;
     try {
-      return clone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
+      return clone({ id: workspace.id, repo: workspace.repo, defaultBranch: workspace.defaultBranch }, isolationRoot);
     } catch (err) {
+      throttled = (err as { throttled?: unknown } | null)?.throttled === true;
       console.error(`[once] could not clone ${workspace.repo}: ${err instanceof Error ? err.message : err}`);
       return null;
     }
@@ -168,7 +174,10 @@ export function createOnceResolver(
   return {
     ...base,
     resolve(workspace, taskContext) {
-      if (opts.preferIsolated) return isolated(workspace) ?? base.resolve(workspace, taskContext);
+      if (opts.preferIsolated) {
+        throttled = false;
+        return isolated(workspace) ?? (throttled ? null : base.resolve(workspace, taskContext));
+      }
       return base.resolve(workspace, taskContext) ?? isolated(workspace);
     },
   };
@@ -511,7 +520,7 @@ export async function runOnceFromCli(opts: {
   };
   /** Build, upload and mark. False (never a throw) when any step fails; the caller holds the container. */
   const parkNow = (
-    worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string },
+    worker: { id: string; taskId: string; workspaceId: string; worktreePath?: string; sessionId?: string; baseRefs?: Array<string | null | undefined> },
     kind: 'waiting' | 'orphan',
   ): Promise<boolean> => park.parkWorkerNow(worker, kind, { paths: parkPaths, uploader: snapshots, client, emitPhase, emitMetric, log });
 
@@ -523,7 +532,7 @@ export async function runOnceFromCli(opts: {
       parkFromDisk: async (id) => {
         const rec = loadWorker(id);
         if (!rec) return false;
-        return parkNow({ id, taskId: rec.taskId || opts.taskId, workspaceId: rec.workspaceId, worktreePath: rec.worktreePath, sessionId: rec.sessionId }, 'orphan');
+        return parkNow({ id, taskId: rec.taskId || opts.taskId, workspaceId: rec.workspaceId, worktreePath: rec.worktreePath, sessionId: rec.sessionId, baseRefs: [rec.worktreeBaseRef, rec.prBaseRef] }, 'orphan');
       },
       log,
     });
@@ -580,7 +589,7 @@ export async function runOnceFromCli(opts: {
         await wm.flushToServer();
         await flushOutboxWithRetry(outbox);
         wm.persistWorker(workerId);
-        return parkNow({ id: w.id, taskId: w.taskId, workspaceId: w.workspaceId, worktreePath: w.worktreePath, sessionId: w.sessionId }, 'waiting');
+        return parkNow({ id: w.id, taskId: w.taskId, workspaceId: w.workspaceId, worktreePath: w.worktreePath, sessionId: w.sessionId, baseRefs: [w.worktreeBaseRef, w.prBaseRef] }, 'waiting');
       },
     } : {}),
     maxWaitMs: resolveOnceMaxWaitMs(opts.env),
@@ -610,10 +619,17 @@ export async function runOnceFromCli(opts: {
         const m = opened.manifest;
         if (m.workerId !== workerId) return { ok: false, reason: 'the park bundle belongs to another worker' };
         kind = m.kind;
-        const task = (await client.getTask(m.taskId)) as (OnceTask & { workspace?: { id: string; name: string; repo?: string | null }; context?: Record<string, unknown> | null }) | null;
+        const task = (await client.getTask(m.taskId)) as (OnceTask & { workspace?: { id: string; name: string; repo?: string | null; gitConfig?: { defaultBranch?: string } | null }; context?: Record<string, unknown> | null }) | null;
         const workspace = task?.workspace ?? { id: m.workspaceId, name: '', repo: null };
-        const clonePath = onceResolver.resolve({ ...workspace, id: workspace.id || m.workspaceId }, task?.context ?? null);
+        const clonePath = onceResolver.resolve({
+          id: workspace.id || m.workspaceId,
+          name: workspace.name,
+          repo: workspace.repo,
+          defaultBranch: task?.workspace?.gitConfig?.defaultBranch || m.defaultBranch,
+        }, task?.context ?? null);
         if (!clonePath) return { ok: false, reason: 'the workspace repo could not be restored or cloned', kind };
+        // A narrow (cloud) clone has the default branch only: the bases the
+        // parked worktree was measured against come back on demand.
         park.applyParkRepo(opened, clonePath);
         park.restoreParkFiles(opened, parkPaths);
         pinned = { id: m.workspaceId, path: clonePath };

@@ -33,6 +33,7 @@ import {
   type OnceWorkerManager,
 } from '../../src/run-once';
 import { withFleetIdentity } from '../../src/fleet-identity';
+import { GitCloneError } from '../../src/git-clone';
 
 const TASK_ID = 'task-1234abcd';
 const TASK = { id: TASK_ID, title: 'Example task', workspaceId: 'ws-1', workspace: { name: 'example', repo: 'https://github.com/example/repo' } };
@@ -640,6 +641,14 @@ describe('createOnceResolver', () => {
   test('preferIsolated: a failed isolated clone still falls back to the base resolver', () => {
     const r = createOnceResolver(base, '/iso', () => { throw new Error('clone failed'); }, { preferIsolated: true });
     expect(r.resolve({ id: 'ws-9', name: 'local', repo: 'https://github.com/example/local' })).toBe('/repos/local');
+  });
+
+  test('preferIsolated: a clone GitHub throttled does not fall back to a second clone through the base resolver', () => {
+    let baseCalls = 0;
+    const counting = { ...base, resolve: (ws: any) => { baseCalls++; return base.resolve(ws); } };
+    const r = createOnceResolver(counting, '/iso', () => { throw new GitCloneError('git clone was rate limited by GitHub: 429', true); }, { preferIsolated: true });
+    expect(r.resolve({ id: 'ws-9', name: 'remote', repo: 'https://github.com/example/remote' })).toBeNull();
+    expect(baseCalls).toBe(0);
   });
 });
 

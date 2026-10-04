@@ -142,6 +142,16 @@ export interface ServerModelEndpoint {
   kind?: string;
   /** The team's model aliases (native id → endpoint id). */
   models?: Record<string, string>;
+  /**
+   * Set only when the task's own `anthropic_api_key` resolved ahead of any
+   * `agent_endpoint` (docs/credentials-architecture.md scoping) — never an
+   * OAuth seat or Claude credential; those stay out of cloud egress. Changes
+   * precedence in `resolveModelRoute`: this beats the Worker's
+   * `MODEL_PROXY_URL` override, where an ordinary (`agent_endpoint`) server
+   * route does not. `baseUrl`/`authHeader` are still `api.anthropic.com` /
+   * `x-api-key`, so every other code path treats it as a plain `proxy` route.
+   */
+  source?: 'anthropic_api_key';
 }
 
 /**
@@ -157,29 +167,48 @@ function directAllowed(env: EgressEnv): boolean {
 }
 
 /**
- * Whether the server endpoint can affect the route at all: false when the
- * local direct route or the Worker's MODEL_PROXY_URL override wins, so the
- * handler does not ask the agent (or buildd) for it.
+ * Whether the server must be asked before the route can be decided. True
+ * whenever the local direct escape hatch does not apply — including when
+ * `MODEL_PROXY_URL` is set, unlike before `source: 'anthropic_api_key'`
+ * existed: the handler now has to find out whether the task's own Anthropic
+ * key would win before letting the operator's override claim the request
+ * (see resolveModelRoute). A team with no such key costs one extra lookup
+ * (cached for the run, same as any other outcome) and otherwise routes
+ * exactly as before.
  */
 export function needsServerModelEndpoint(env: EgressEnv): boolean {
-  return !directAllowed(env) && !env.MODEL_PROXY_URL;
+  return !directAllowed(env);
 }
 
 /**
- * Where model traffic goes. Precedence: direct (local only) > proxy (when
- * MODEL_PROXY_URL is set, the operator override) > the server-provided team
- * endpoint > gateway. The direct escape hatch needs both the opt-in var and
- * the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes nothing. A set
- * MODEL_PROXY_URL commits to the proxy: if it is invalid or has no key the
- * request is refused, never quietly sent to the gateway instead. The server
- * endpoint produces the same `proxy` shape, so rewriteOutbound is unchanged;
- * `'unavailable'` refuses. With no route configured the request is refused
- * rather than forwarded with the container's placeholder key. With `server`
- * omitted or null the result is exactly the pre-endpoint one.
+ * Where model traffic goes. Precedence: direct (local only) > the task's own
+ * `anthropic_api_key` (`server.source === 'anthropic_api_key'`) > proxy (when
+ * MODEL_PROXY_URL is set, the operator override) > the server-provided
+ * `agent_endpoint` > gateway. The direct escape hatch needs both the opt-in
+ * var and the key, so a stray `ANTHROPIC_DIRECT_API_KEY` alone changes
+ * nothing.
+ *
+ * The task's own Anthropic key jumps ahead of MODEL_PROXY_URL on purpose: that
+ * key is the team's own metered credential, resolved with exactly the scoping
+ * a self-hosted runner would use (docs/credentials-architecture.md); unlike an
+ * `agent_endpoint`, storing it is not an opt-in to route agents through
+ * anything, so a Worker-level proxy pin must not silently spend it on the
+ * operator's route instead. `MODEL_PROXY_URL` stays the one deliberate
+ * override: once set, it commits (invalid or keyless is refused, never a
+ * silent fall to the gateway) and still beats a team's `agent_endpoint` and
+ * `'unavailable'`, exactly as before this key existed.
+ *
+ * The server endpoint produces the same `proxy` shape either way, so
+ * rewriteOutbound is unchanged. With no route configured the request is
+ * refused rather than forwarded with the container's placeholder key. With
+ * `server` omitted or null the result is exactly the pre-endpoint one.
  */
 export function resolveModelRoute(env: EgressEnv, server?: ServerModelEndpointState): ModelRoute {
   if (directAllowed(env)) {
     return { kind: 'direct', apiKey: env.ANTHROPIC_DIRECT_API_KEY! };
+  }
+  if (server && server !== 'unavailable' && server.source === 'anthropic_api_key') {
+    return { kind: 'proxy', baseUrl: server.baseUrl, key: server.key, authHeader: server.authHeader };
   }
   if (env.MODEL_PROXY_URL) {
     const parsed = parseModelProxyUrl(env.MODEL_PROXY_URL);
@@ -226,6 +255,16 @@ export interface GithubGrant {
   repo: string;
   /** The task's workspace, as buildd knows it. Keys the snapshot store (snapshots.ts). */
   workspaceId?: string;
+  /**
+   * Branch names a direct `git push` must never target (the workspace trunk,
+   * its release branch, and the repo's own GitHub default branch) — computed
+   * server-side (apps/web/src/app/api/runner/github-token/route.ts) from the
+   * same `protectedBaseBranches()` the merge-policy bound uses, plus the
+   * repo's `defaultBranch`. Absent on an older buildd server: push protection
+   * is then a no-op (`pushedProtectedBranch` fails open), but the REST/GraphQL
+   * merge blocks below apply regardless.
+   */
+  protectedBranches?: string[];
 }
 
 // ── Classification ────────────────────────────────────────────────────────────
@@ -247,6 +286,16 @@ export interface OutboundRequestLike {
   /** The request method. Required for api.anthropic.com: without it the request is refused. */
   method?: string;
   headers: Headers | Record<string, string>;
+  /**
+   * A bounded, inspection-only prefix of the request body (egress.ts reads it
+   * from a `request.clone()`, never the forwarded stream itself), decoded
+   * byte-for-byte via `latin1Decode` so arbitrary binary never throws. Set
+   * only for the two shapes that need it: a GraphQL POST to api.github.com
+   * (to look for a blocked mutation name) and a `git-receive-pack` push to
+   * github.com (to read the pushed ref names before the pack data starts).
+   * Never used to build the forwarded request.
+   */
+  bodyPeek?: string;
 }
 
 /**
@@ -296,7 +345,7 @@ export function modelApiPathAllowed(method: string | undefined, rawUrl: string):
 }
 
 /** Why a request was refused (run-report.ts REJECT_REASONS). */
-export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'unparseable' | 'other';
+export type RejectReason = 'path' | 'unconfigured' | 'plain_http' | 'port' | 'unparseable' | 'merge_blocked' | 'other';
 
 /** Where a refused api.anthropic.com request was going, as a fixed label (no raw path leaves the handler). */
 export type RejectedPathLabel = 'api_hello' | 'event_logging' | 'oauth' | 'claude_code_api' | 'other_api' | 'files' | 'batches' | 'other_v1' | 'other';
@@ -373,6 +422,118 @@ function apiRepoPathMatches(pathname: string, grant: GithubGrant): boolean {
   const [, first, owner, repo] = pathname.split('/');
   return first === 'repos' && sameName(owner, grant.owner) && sameName(repo, grant.repo);
 }
+
+// ── Merge guard ───────────────────────────────────────────────────────────────
+//
+// buildd's own merge paths (auto-merge, reviewer approve, the `merge_pr` MCP
+// action) all go through resolvePolicy()/evaluateAutoMergeSafety()/
+// pr-landing.ts (docs/SPEC.md §4a) — CI gates, review verdicts, size caps,
+// deny paths. The installation token this module attaches carries
+// `pull_requests:write` + `contents:write`, which is also everything a
+// request needs to land a PR or overwrite a branch directly, bypassing all
+// of that. The three shapes below are blocked here, before any credential is
+// attached, regardless of whether a usable grant exists: an agent (or
+// anything running in the container) that wants a PR merged must go through
+// buildd's own `merge_pr`, which applies the workspace's merge policy.
+//
+// Normal `git push` of the task's own branch, and PR creation/review/comment
+// calls, are untouched — nothing here inspects those.
+
+/** GitHub's REST merge endpoint: `PUT /repos/{owner}/{repo}/pulls/{number}/merge`. */
+const PR_MERGE_REST_PATH_RE = /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge$/;
+
+function isPrMergeRestRequest(method: string | undefined, pathname: string): boolean {
+  return (method ?? '').toUpperCase() === 'PUT' && PR_MERGE_REST_PATH_RE.test(pathname);
+}
+
+/** GraphQL mutations that merge a PR or arm it to merge unattended. Checked by name, not by a full GraphQL parse — see `graphqlMutationBlocked`. */
+export const BLOCKED_GRAPHQL_MUTATIONS = ['mergePullRequest', 'enablePullRequestAutoMerge'] as const;
+
+/**
+ * Whether a GraphQL request body names one of `BLOCKED_GRAPHQL_MUTATIONS`.
+ * Deliberately a name match, not a parsed-and-typed GraphQL AST walk: a
+ * request that merely mentions the mutation name (e.g. inside an unrelated
+ * string) is blocked too, and that false-positive direction is the safe one
+ * — the escape hatch is always buildd's own `merge_pr`. `bodyPeek` is
+ * undefined for any request egress.ts did not peek (not a POST to
+ * api.github.com/graphql), so this is a no-op for everything else.
+ */
+export function graphqlMutationBlocked(bodyPeek: string | undefined): string | null {
+  if (!bodyPeek) return null;
+  for (const name of BLOCKED_GRAPHQL_MUTATIONS) {
+    if (new RegExp(`\\b${name}\\b`).test(bodyPeek)) return name;
+  }
+  return null;
+}
+
+/**
+ * Each byte becomes its own UTF-16 code unit (`TextDecoder('iso-8859-1')` —
+ * never throws, unlike a UTF-8 decode of a prefix that may cut a multi-byte
+ * sequence in half). Used only to read the ASCII pkt-line header of a
+ * `git-receive-pack` body ahead of its binary pack data; the bytes 0x80-0x9F
+ * decode differently from true Latin-1 (the Encoding Standard maps this
+ * label to windows-1252), which never matters here because every byte this
+ * module matches against is pure ASCII.
+ */
+export function latin1Decode(bytes: Uint8Array): string {
+  return new TextDecoder('iso-8859-1').decode(bytes);
+}
+
+/**
+ * The branch names a `git-receive-pack` request body pushes to, read from the
+ * pkt-line ref-update lines at the front of the body (before the opaque,
+ * binary pack data). Each line is `<4-hex-length><old-oid> <new-oid>
+ * <ref>\0<capabilities>\n`; parsing stops at the flush-pkt (`0000`) that ends
+ * the ref list and never looks at the pack bytes that follow. Returns `[]`
+ * when nothing parses — a non-push body, a gzip-compressed one (git only
+ * does this when explicitly configured; unsupported here), or a prefix cut
+ * off before the flush-pkt — so an inconclusive read fails OPEN rather than
+ * guessing a branch name.
+ */
+export function parseReceivePackPushedBranches(bodyPeek: string): string[] {
+  const branches: string[] = [];
+  let i = 0;
+  while (i + 4 <= bodyPeek.length) {
+    const lenHex = bodyPeek.slice(i, i + 4);
+    if (!/^[0-9a-fA-F]{4}$/.test(lenHex)) break;
+    const len = parseInt(lenHex, 16);
+    if (len === 0) break; // flush-pkt: end of the ref-update list
+    if (len < 4 || i + len > bodyPeek.length) break; // truncated: stop rather than guess
+    const line = bodyPeek.slice(i + 4, i + len);
+    const m = /^[0-9a-f]{4,64} [0-9a-f]{4,64} refs\/heads\/([^\s\0]+)/.exec(line);
+    const branch = m?.[1];
+    if (branch) branches.push(branch);
+    i += len;
+  }
+  return branches;
+}
+
+/** The first branch a `git-receive-pack` body pushes to that is also in `protectedBranches`, or null (including when either input is missing — fails open). */
+export function pushedProtectedBranch(bodyPeek: string | undefined, protectedBranches: readonly string[] | undefined): string | null {
+  if (!bodyPeek || !protectedBranches || protectedBranches.length === 0) return null;
+  return parseReceivePackPushedBranches(bodyPeek).find((b) => protectedBranches.includes(b)) ?? null;
+}
+
+/**
+ * Whether egress.ts should peek this request's body before deciding: a
+ * GraphQL call to api.github.com, or a push to github.com. Both bound how
+ * much is read (GITHUB_BODY_PEEK_MAX_BYTES in egress.ts); everything else is
+ * forwarded untouched with no peek at all.
+ */
+export function needsGithubBodyPeek(hostname: string, method: string | undefined, pathname: string): boolean {
+  if ((method ?? '').toUpperCase() !== 'POST') return false;
+  const host = hostname.toLowerCase();
+  if (host === 'api.github.com') return pathname === '/graphql';
+  if (host === 'github.com') return pathname.endsWith('/git-receive-pack');
+  return false;
+}
+
+/** Points the agent at the one path that still applies buildd's merge policy. */
+const MERGE_VIA_BUILDD_MESSAGE =
+  'direct GitHub merges are blocked for agents on this egress — use buildd\'s merge_pr MCP action so the workspace merge policy is enforced';
+
+const pushBlockedMessage = (branch: string): string =>
+  `direct pushes to '${branch}' are blocked for agents on this egress — push your task branch, open a PR, and land it with buildd's merge_pr MCP action`;
 
 /**
  * Whether the installation token is attached to this GitHub request.
@@ -465,9 +626,21 @@ export function rewriteOutbound(req: OutboundRequestLike, ctx: RewriteContext): 
   }
 
   // GitHub
+  if (isPrMergeRestRequest(req.method, url.pathname)) {
+    return { action: 'reject', status: 403, message: MERGE_VIA_BUILDD_MESSAGE, reason: 'merge_blocked' };
+  }
+  if (url.hostname.toLowerCase() === 'api.github.com' && url.pathname === '/graphql' && (req.method ?? '').toUpperCase() === 'POST') {
+    if (graphqlMutationBlocked(req.bodyPeek)) {
+      return { action: 'reject', status: 403, message: MERGE_VIA_BUILDD_MESSAGE, reason: 'merge_blocked' };
+    }
+  }
   const grant = ctx.github;
   const now = ctx.now ?? Date.now();
   const usable = grant && grant.token && grant.expiresAt > now ? grant : null;
+  if (usable && url.hostname.toLowerCase() === 'github.com' && (req.method ?? '').toUpperCase() === 'POST' && url.pathname.endsWith('/git-receive-pack')) {
+    const branch = pushedProtectedBranch(req.bodyPeek, usable.protectedBranches);
+    if (branch) return { action: 'reject', status: 403, message: pushBlockedMessage(branch), reason: 'merge_blocked' };
+  }
   const auth = usable ? githubAuthFor(url, usable) : 'none';
   if (usable && auth === 'github_basic') {
     headers.set('authorization', `Basic ${base64(`x-access-token:${usable.token}`)}`);
@@ -583,6 +756,11 @@ export function parseGithubGrant(body: unknown): GithubGrant {
   const ws = (b as { workspaceId?: unknown } | null)?.workspaceId;
   const grant: GithubGrant = { token, expiresAt, owner, repo };
   if (typeof ws === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(ws)) grant.workspaceId = ws;
+  const rawProtected = (b as { protectedBranches?: unknown } | null)?.protectedBranches;
+  if (Array.isArray(rawProtected)) {
+    const branches = rawProtected.filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length <= 255).slice(0, 50);
+    if (branches.length > 0) grant.protectedBranches = branches;
+  }
   return grant;
 }
 
@@ -668,8 +846,22 @@ export class ModelEndpointCache {
   }
 }
 
-/** Parse and validate the buildd endpoint's JSON. Throws on anything unexpected. */
+/**
+ * Parse and validate the buildd endpoint's JSON. Throws on anything
+ * unexpected. `{ source: 'anthropic_api_key', key }` is the task's own
+ * Anthropic key (docs/credentials-architecture.md): `baseUrl`/`authHeader`
+ * are not on the wire, only implied (`api.anthropic.com` / `x-api-key`), so
+ * resolveModelRoute can treat it as an ordinary `proxy` route while still
+ * recognising `source` to rank it ahead of MODEL_PROXY_URL.
+ */
 export function parseServerModelEndpoint(body: unknown): ServerModelEndpoint {
+  const withSource = body as { source?: unknown; key?: unknown } | null;
+  if (withSource?.source === 'anthropic_api_key') {
+    if (typeof withSource.key !== 'string' || !withSource.key) {
+      throw new Error('model-endpoint response has no key');
+    }
+    return { source: 'anthropic_api_key', baseUrl: `https://${ANTHROPIC_HOST}`, key: withSource.key, authHeader: 'x-api-key' };
+  }
   const b = body as { baseUrl?: unknown; key?: unknown; authHeader?: unknown } | null;
   if (typeof b?.baseUrl !== 'string') throw new Error('model-endpoint response has no baseUrl');
   const parsed = parseModelProxyUrl(b.baseUrl);

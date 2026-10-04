@@ -39,7 +39,7 @@ describe('no action is lost', () => {
   });
 
   it('observability reads are in the analytics group', () => {
-    for (const a of ['explain', 'list_runners', 'get_error_traces', 'get_failure_analytics', 'get_usage_stats', 'get_budget_forecast', 'get_manifest_coverage', 'get_path_claim_stats']) {
+    for (const a of ['explain', 'list_runners', 'get_error_traces', 'get_failure_analytics', 'get_usage_stats', 'get_budget_forecast', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats']) {
       expect(mcpGroupOf(a)).toBe('analytics');
     }
   });

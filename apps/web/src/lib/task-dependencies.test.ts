@@ -25,6 +25,10 @@ let selectWhereResults: any[][] = [];
 let findFirstCallCount = 0;
 let findFirstResults: any[] = [];
 
+// The merged-worker probe behind the parent_done supersession event.
+const mockWorkersFindFirst = mock((..._args: any[]) => Promise.resolve(null as any));
+const mockReconcileSubjectEvent = mock((..._args: any[]) => Promise.resolve({ cancelled: [], lostRace: [], decisions: [] }));
+
 // Track missions findFirst separately
 let missionsFindFirstResults: any[] = [];
 let missionsFindFirstCallCount = 0;
@@ -39,6 +43,9 @@ mock.module('@buildd/core/db', () => ({
           return Promise.resolve(findFirstResults[callIndex] ?? null);
         },
         findMany: mockFindMany,
+      },
+      workers: {
+        findFirst: (...args: any[]) => mockWorkersFindFirst(...args),
       },
       missions: {
         findFirst: (...args: any[]) => {
@@ -104,6 +111,15 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 const mockTriggerEvent = mock(() => Promise.resolve());
+mock.module('@/lib/supersession', () => ({ reconcileSubjectEvent: mockReconcileSubjectEvent }));
+
+const mockMaybeOpenMissionIntegrationPr = mock((..._args: any[]) => Promise.resolve(null as any));
+const mockNoteMissionPrOpenFailure = mock((..._args: any[]) => Promise.resolve());
+mock.module('@/lib/mission-pr', () => ({
+  maybeOpenMissionIntegrationPr: mockMaybeOpenMissionIntegrationPr,
+  noteMissionPrOpenFailure: mockNoteMissionPrOpenFailure,
+}));
+
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
@@ -115,10 +131,48 @@ mock.module('@/lib/pusher', () => ({
   },
 }));
 
-const mockDispatchUnblockedTask = mock(() => Promise.resolve());
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchUnblockedTask: mockDispatchUnblockedTask,
+// The dependency wake is one SQL statement (enqueueReadyDependents, covered
+// against real Postgres in tests/db/dependency-wake.test.ts); here we only see
+// that it runs, after the live PR refresh, and kicks delivery when it wakes.
+const callOrder: string[] = [];
+let enqueueResult: string[] | Error = [];
+const mockEnqueueReadyDependents = mock(async (_parentId: string) => {
+  callOrder.push('enqueue');
+  if (enqueueResult instanceof Error) throw enqueueResult;
+  return enqueueResult;
+});
+mock.module('@buildd/core/dispatch-dependents', () => ({
+  enqueueReadyDependents: mockEnqueueReadyDependents,
+  enqueueReadyDependentsSql: () => ({}),
+  findPendingTasksWithResolvedDepsAndNoWake: async () => [],
 }));
+
+const mockWakeTask = mock(async (_id: string, _cause: string) => {});
+const mockWakeTasks = mock(async (_ids: readonly string[], _cause: string) => {});
+const mockKickDispatch = mock(() => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mockWakeTasks,
+  announceTaskCreated: async () => {},
+  kickDispatch: mockKickDispatch,
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
+/** The wake decision belongs to SQL: one enqueue for the resolved parent, no per-task wake from JS. */
+function expectWakeDelegatedToSql(parentId: string) {
+  expect(mockEnqueueReadyDependents).toHaveBeenCalledTimes(1);
+  // With the claim route's own dependency gate, so readiness is never a copy.
+  expect(mockEnqueueReadyDependents).toHaveBeenCalledWith(parentId, expect.anything());
+  expect(mockWakeTask).not.toHaveBeenCalled();
+}
 
 const mockRefreshWorkerMergeState = mock(() => Promise.resolve(false));
 mock.module('./pr-reconcile', () => ({
@@ -150,6 +204,9 @@ import {
 } from './task-dependencies';
 
 function resetMocks() {
+  mockWorkersFindFirst.mockReset();
+  mockWorkersFindFirst.mockResolvedValue(null);
+  mockReconcileSubjectEvent.mockClear();
   mockFindFirst.mockReset();
   mockFindMany.mockReset();
   mockSelect.mockReset();
@@ -161,7 +218,12 @@ function resetMocks() {
   mockUpdate.mockReset();
   mockUpdateSet.mockReset();
   mockUpdateWhere.mockReset();
-  mockDispatchUnblockedTask.mockClear(); // mockReset() would kill the Promise impl
+  mockEnqueueReadyDependents.mockClear(); // mockReset() would kill the impl
+  mockWakeTask.mockClear();
+  mockWakeTasks.mockClear();
+  mockKickDispatch.mockClear();
+  enqueueResult = [];
+  callOrder.length = 0;
   mockPostMissionFeedEvent.mockReset();
   mockPostMissionFeedEvent.mockResolvedValue(undefined);
   mockWorkspacesFindMany.mockReset();
@@ -179,6 +241,10 @@ function resetMocks() {
   missionsFindFirstResults = [];
   effectiveRoles = new Set();
   pickRoleCalls.length = 0;
+  mockMaybeOpenMissionIntegrationPr.mockReset();
+  mockMaybeOpenMissionIntegrationPr.mockResolvedValue(null);
+  mockNoteMissionPrOpenFailure.mockReset();
+  mockNoteMissionPrOpenFailure.mockResolvedValue(undefined);
 }
 
 describe('task-dependencies', () => {
@@ -265,11 +331,7 @@ describe('task-dependencies', () => {
       }
     );
 
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'dependent-1', workspaceId: 'ws-1' }),
-      expect.objectContaining({ id: 'ws-1', name: 'my-workspace' })
-    );
+    expectWakeDelegatedToSql('task-1');
   });
 
   it('does not fire TASK_UNBLOCKED or dispatch when dependent has other unresolved deps', async () => {
@@ -288,7 +350,7 @@ describe('task-dependencies', () => {
     await resolveCompletedTask('task-1', 'ws-1');
 
     expect(mockTriggerEvent).not.toHaveBeenCalled();
-    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+    expectWakeDelegatedToSql('task-1');
   });
 
   it('fires TASK_UNBLOCKED and dispatches for multiple dependent tasks', async () => {
@@ -330,7 +392,7 @@ describe('task-dependencies', () => {
         resolvedDependency: 'task-1',
       }
     );
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(2);
+    expectWakeDelegatedToSql('task-1');
   });
 });
 
@@ -370,6 +432,8 @@ describe('task-dependencies aggregation', () => {
         status: 'pending',
       })
     );
+    // The aggregator used to reach a runner only by polling.
+    expect(mockWakeTask).toHaveBeenCalledWith('inserted-task-1', 'task.created');
   });
 
   it('does NOT create aggregation task for non-planning parent', async () => {
@@ -624,7 +688,7 @@ describe('dependency failure cascade', () => {
 
     await resolveCompletedTask('dep-A', 'ws-1');
 
-    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+    expectWakeDelegatedToSql('dep-A');
     expect(mockTriggerEvent).not.toHaveBeenCalledWith(expect.anything(), 'task:unblocked', expect.anything());
 
     // --- Second completion: dep-B completes, dep-A already done ---
@@ -650,11 +714,7 @@ describe('dependency failure cascade', () => {
       'task:unblocked',
       { taskId: 'task-sdk', resolvedDependency: 'dep-B' }
     );
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'task-sdk', workspaceId: 'ws-1' }),
-      expect.objectContaining({ id: 'ws-1', name: 'buildd' })
-    );
+    expectWakeDelegatedToSql('dep-B');
   });
 
   it('does NOT fire TASK_UNBLOCKED when a dep fails (only completed deps unblock)', async () => {
@@ -700,7 +760,7 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
     await checkDependsOnResolved('phase-1');
 
     expect(mockTriggerEvent).not.toHaveBeenCalled();
-    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+    expectWakeDelegatedToSql('phase-1');
   });
 
   it('dispatches when dependency is completed AND PR is merged', async () => {
@@ -724,7 +784,7 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
       'task:unblocked',
       { taskId: 'phase-2', resolvedDependency: 'phase-1' }
     );
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+    expectWakeDelegatedToSql('phase-1');
   });
 
   it('dispatches when dependency has no PR at all (pure task dep, no PR gate)', async () => {
@@ -748,7 +808,7 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
       'task:unblocked',
       { taskId: 'phase-2', resolvedDependency: 'phase-1' }
     );
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+    expectWakeDelegatedToSql('phase-1');
   });
 
   it('does not dispatch when dependent task is already completed or failed', async () => {
@@ -758,7 +818,7 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
     await checkDependsOnResolved('phase-1');
 
     expect(mockTriggerEvent).not.toHaveBeenCalled();
-    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+    expect(mockEnqueueReadyDependents).not.toHaveBeenCalled();
   });
 
   it('dispatches when dep has open PR but live-refresh reveals it is actually merged', async () => {
@@ -792,7 +852,7 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
       'task:unblocked',
       { taskId: 'phase-2', resolvedDependency: 'phase-1' },
     );
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+    expectWakeDelegatedToSql('phase-1');
   });
 
   it('still blocks when live-refresh confirms PR is still open', async () => {
@@ -812,7 +872,7 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
 
     expect(mockRefreshWorkerMergeState).toHaveBeenCalledTimes(1);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
-    expect(mockDispatchUnblockedTask).not.toHaveBeenCalled();
+    expectWakeDelegatedToSql('phase-1');
   });
 
   it('deduplicates workers sharing the same prNumber — calls GitHub once, unblocks all deps', async () => {
@@ -846,7 +906,7 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
     // One GitHub call despite two deps
     expect(mockRefreshWorkerMergeState).toHaveBeenCalledTimes(1);
     // phase-z unblocked — both dep-a and dep-b flipped to open=false
-    expect(mockDispatchUnblockedTask).toHaveBeenCalledTimes(1);
+    expectWakeDelegatedToSql('any-completed');
   });
 
   it('caps live-refresh at 5 unique PRs per invocation', async () => {
@@ -1101,5 +1161,155 @@ describe('task-dependencies aggregation — role', () => {
     effectiveRoles = new Set(['builder']);
     await resolveCompletedTask('child-1', 'ws-1');
     expect(mockInsertValues).toHaveBeenCalledWith(expect.objectContaining({ roleSlug: null }));
+  });
+});
+
+describe('resolveCompletedTask — parent_done supersession', () => {
+  beforeEach(resetMocks);
+
+  it('fires parent_done for a completed task whose PR merged', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'completed', context: {} };
+    mockWorkersFindFirst.mockResolvedValue({ prNumber: 42 });
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockReconcileSubjectEvent).toHaveBeenCalledTimes(1);
+    expect(mockReconcileSubjectEvent.mock.calls[0][0]).toMatchObject({
+      kind: 'parent_done', workspaceId: 'ws-1', parentTaskId: 'task-1', prNumber: 42,
+    });
+  });
+
+  it('does not fire for a completed task whose PR is still open — its fixes are still needed', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'completed', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockReconcileSubjectEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not fire for a failed task', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed', context: {} };
+    mockWorkersFindFirst.mockResolvedValue({ prNumber: 42 });
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockReconcileSubjectEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ── checkDependsOnResolved: the durable wake ────────────────────────────────
+describe('checkDependsOnResolved — dependency.satisfied wake', () => {
+  beforeEach(resetMocks);
+
+  const openPrSetup = () => {
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', githubInstallation: { installationId: 42 } }]);
+    selectWhereResults = [
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1' }],
+      [{ id: 'phase-1', status: 'completed', loopState: null, workspaceId: 'ws-1' }],
+      [{ id: 'w-abc', taskId: 'phase-1', mergedAt: null, prNumber: 55, prUrl: 'https://github.com/o/r/pull/55' }],
+    ];
+  };
+
+  it('enqueues after the live PR refresh, so a merge the refresh writes is seen by the SQL', async () => {
+    openPrSetup();
+    mockRefreshWorkerMergeState.mockImplementation(async () => { callOrder.push('refresh'); return true; });
+    await checkDependsOnResolved('phase-1');
+    expect(callOrder).toEqual(['refresh', 'enqueue']);
+  });
+
+  it('still enqueues when the live refresh throws', async () => {
+    openPrSetup();
+    mockRefreshWorkerMergeState.mockRejectedValue(new Error('github down'));
+    await checkDependsOnResolved('phase-1');
+    expectWakeDelegatedToSql('phase-1');
+  });
+
+  it('kicks delivery only when the statement woke something', async () => {
+    selectWhereResults = [
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1' }],
+      [{ id: 'phase-1', status: 'completed', loopState: null, workspaceId: 'ws-1' }],
+      [],
+    ];
+    await checkDependsOnResolved('phase-1');
+    expect(mockKickDispatch).not.toHaveBeenCalled();
+
+    resetMocks();
+    enqueueResult = ['phase-2'];
+    selectWhereResults = [
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1' }],
+      [{ id: 'phase-1', status: 'completed', loopState: null, workspaceId: 'ws-1' }],
+      [],
+    ];
+    await checkDependsOnResolved('phase-1');
+    expect(mockKickDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed enqueue is logged, not thrown, and the dashboard still hears TASK_UNBLOCKED', async () => {
+    enqueueResult = new Error('db blip');
+    selectWhereResults = [
+      [{ id: 'phase-2', dependsOn: ['phase-1'], workspaceId: 'ws-1' }],
+      [{ id: 'phase-1', status: 'completed', loopState: null, workspaceId: 'ws-1' }],
+      [],
+    ];
+    await checkDependsOnResolved('phase-1');
+    expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-1', 'task:unblocked', { taskId: 'phase-2', resolvedDependency: 'phase-1' });
+  });
+});
+
+describe('resolveCompletedTask — mission-PR opener wiring', () => {
+  beforeEach(resetMocks);
+
+  // The merge webhook is the only other trigger for `maybeOpenMissionIntegrationPr`,
+  // and it fires on a task PR merging — never on a task that reaches terminal
+  // state WITHOUT one (cancelled, or completed with outputRequirement: 'none').
+  // A mission whose surface-audit task gets cancelled after every real builder
+  // task already merged used to have nothing left to open its mission PR until
+  // the weekly reconciliation sweep got around to it. This is the fix: every
+  // non-planning task reaching terminal state also retries the opener.
+
+  it('attempts to open the mission PR when a non-planning task is cancelled', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: 'mission-1', status: 'cancelled', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith(
+      'mission-1',
+      { assumeCompletedTaskIds: ['task-1'] },
+    );
+  });
+
+  it('attempts to open the mission PR when a non-planning task completes', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: 'mission-1', status: 'completed', context: {} };
+    selectWhereResults = [[]]; // checkDependsOnResolved: nothing depends on this task
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith(
+      'mission-1',
+      { assumeCompletedTaskIds: ['task-1'] },
+    );
+  });
+
+  it('does not attempt it for a planning task', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'planning', missionId: 'mission-1', status: 'completed', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt it for a task with no mission', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'cancelled', context: {} };
+
+    await resolveCompletedTask('task-1', 'ws-1');
+
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
   });
 });

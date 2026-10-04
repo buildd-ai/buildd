@@ -125,7 +125,7 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
             <input id="gateway-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://litellm.example.com/v1" className={INPUT} spellCheck={false} />
             <label className="field-label" htmlFor="gateway-key">Gateway key</label>
             <input id="gateway-key" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" className={INPUT} />
-            <p className="text-text-muted">buildd checks the key against the gateway&apos;s /models before saving. Stored encrypted. Nobody can read it back.</p>
+            <p className="text-text-muted">Checked against /models on save. Encrypted, write-only.</p>
             <div className="flex flex-wrap items-center gap-2">
               <button className="btn btn-primary" onClick={save} disabled={busy || !baseUrl.trim() || !apiKey.trim()}>Save</button>
               <button className="btn btn-quiet" onClick={() => { setEditing(false); setApiKey(''); setMsg(null); }} disabled={busy}>Cancel</button>
@@ -192,9 +192,8 @@ function DecisionModelSection({ teamId, canManage, value, hasGateway, onChanged 
       <div className="card p-4 space-y-2 text-xs">
         <p className="text-sm text-text-primary" data-testid="decision-model-current">{value === undefined ? 'Loading…' : current}</p>
         <p className="text-text-muted">
-          Answers buildd&apos;s quick labelled checks (task categories). Any model that returns token
-          logprobs works, including open-weights models. Thresholds were measured on Jev, so another model&apos;s picks are
-          recorded but not applied until it has its own eval.
+          Labels tasks by category. Needs a model that returns token logprobs. Another model&apos;s picks are
+          recorded, not applied, until it has been evaluated.
         </p>
         {canManage && value !== undefined && (
           <div className="pt-1 space-y-2">

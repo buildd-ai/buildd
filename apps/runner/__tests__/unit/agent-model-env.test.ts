@@ -292,11 +292,20 @@ describe('invariant across a matrix of inputs', () => {
 // ── Team agent model endpoint (docs/design/agent-model-endpoint.md §2, §5) ────
 
 const ENDPOINT_KEY = 'endpoint-key-value';
+// anthropic-compatible: Anthropic Messages format only, never an openAiBaseUrl.
 const bearerEndpoint: ClaimModelEndpoint = {
   kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', authToken: ENDPOINT_KEY, authHeader: 'authorization', models: { 'claude-sonnet-5': 'team-sonnet' },
 };
 const apiKeyEndpoint: ClaimModelEndpoint = { ...bearerEndpoint, authHeader: 'x-api-key' };
-const openRouterEndpoint: ClaimModelEndpoint = { kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authToken: ENDPOINT_KEY, authHeader: 'authorization', models: {} };
+// openrouter and gateway are OpenAI-compatible too: openAiBaseUrl set, so Codex can use them.
+const openRouterEndpoint: ClaimModelEndpoint = {
+  kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authToken: ENDPOINT_KEY, authHeader: 'authorization', models: {},
+  openAiBaseUrl: 'https://openrouter.ai/api/v1',
+};
+const gatewayEndpoint: ClaimModelEndpoint = {
+  kind: 'gateway', baseUrl: 'https://litellm.example.com', authToken: ENDPOINT_KEY, authHeader: 'authorization', models: {},
+  openAiBaseUrl: 'https://litellm.example.com/v1',
+};
 
 describe('team endpoint delivered on the claim', () => {
   const noisyEnv = {
@@ -349,16 +358,62 @@ describe('team endpoint delivered on the claim', () => {
     expect(run({}, { llmProvider: { provider: 'openrouter', apiKey: PROVIDER_KEY } }).teamEndpointIgnored).toBe(false);
   });
 
-  test('codex tasks never apply it', () => {
-    const got = applyModelEnv({}, { isCodexTask: true, modelEndpoint: bearerEndpoint });
-    expect(got.endpoint).toBe('anthropic');
-    expect(Object.values(got.env)).not.toContain(ENDPOINT_KEY);
-  });
-
   test('no endpoint: identical to today, including no ANTHROPIC_DEFAULT_HAIKU_MODEL', () => {
     const env = { ANTHROPIC_API_KEY: 'operator-key' };
     const input = { isCodexTask: false, ...allCreds };
     expect(applyModelEnv({ ...env }, { ...input, modelEndpoint: undefined, budgetModel: 'claude-haiku-4-5-20251001' }).env).toEqual(legacy(env, input));
+  });
+});
+
+describe('team endpoint — Codex', () => {
+  const allCreds = { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH };
+
+  test.each(['gateway', 'openrouter'] as const)('%s: OPENAI_BASE_URL + OPENAI_API_KEY only, no Anthropic var touched', (kind) => {
+    const endpoint = kind === 'gateway' ? gatewayEndpoint : openRouterEndpoint;
+    const got = applyModelEnv({ ANTHROPIC_AUTH_TOKEN: 'operator-token' }, { isCodexTask: true, modelEndpoint: endpoint, ...allCreds });
+    expect(got.error).toBeUndefined();
+    expect(got.endpoint).toBe('team');
+    expect(got.env.OPENAI_BASE_URL).toBe(endpoint.openAiBaseUrl);
+    expect(got.env.OPENAI_API_KEY).toBe(ENDPOINT_KEY);
+    expect(got.env.ANTHROPIC_AUTH_TOKEN).toBe('operator-token');
+    expect('ANTHROPIC_API_KEY' in got.env).toBe(false);
+    expect(got.withheld).toEqual(['serverApiKey', 'serverOauthToken', 'tenantOauthToken']);
+    expect(got.baseUrlOrigin).toBe(new URL(endpoint.openAiBaseUrl!).origin);
+  });
+
+  test('an operator OPENAI_API_KEY already set is overwritten by the endpoint key', () => {
+    const got = applyModelEnv({ OPENAI_API_KEY: 'operator-openai-key' }, { isCodexTask: true, modelEndpoint: gatewayEndpoint });
+    expect(got.env.OPENAI_API_KEY).toBe(ENDPOINT_KEY);
+  });
+
+  test('anthropic-compatible-only endpoint: Codex fails clearly, nothing applied, no leak', () => {
+    const got = applyModelEnv({}, { isCodexTask: true, modelEndpoint: bearerEndpoint });
+    expect(got.error).toBeDefined();
+    expect(got.error).toContain('anthropic-compatible');
+    expect(got.error).toMatch(/OpenAI-compatible/);
+    expect('OPENAI_BASE_URL' in got.env).toBe(false);
+    expect(Object.values(got.env)).not.toContain(ENDPOINT_KEY);
+  });
+
+  test('a machine OPENAI_BASE_URL override keeps priority: endpoint ignored, reported, key nowhere', () => {
+    const got = applyModelEnv({ OPENAI_BASE_URL: 'https://my-proxy.example/v1', OPENAI_API_KEY: 'my-own-key' }, { isCodexTask: true, modelEndpoint: gatewayEndpoint });
+    expect(got.endpoint).not.toBe('team');
+    expect(got.teamEndpointIgnored).toBe(true);
+    expect(got.env.OPENAI_BASE_URL).toBe('https://my-proxy.example/v1');
+    expect(got.env.OPENAI_API_KEY).toBe('my-own-key');
+    expect(Object.values(got.env)).not.toContain(ENDPOINT_KEY);
+  });
+
+  test('an override is also reported when the server withheld the key', () => {
+    const got = applyModelEnv({ OPENAI_BASE_URL: 'https://my-proxy.example/v1' }, { isCodexTask: true, teamEndpointWithheld: true });
+    expect(got.teamEndpointIgnored).toBe(true);
+  });
+
+  test('no machine override, no modelEndpoint: unaffected (today\'s Codex behaviour)', () => {
+    const got = applyModelEnv({}, { isCodexTask: true, ...allCreds });
+    expect(got.teamEndpointIgnored).toBe(false);
+    expect(got.error).toBeUndefined();
+    expect('OPENAI_BASE_URL' in got.env).toBe(false);
   });
 });
 
@@ -396,9 +451,14 @@ describe('invariant across a matrix, team endpoint included', () => {
   ];
   const credSets = [{}, { serverApiKey: SERVER_KEY, serverOauthToken: SERVER_OAUTH, tenantOauthToken: TENANT_OAUTH }];
 
+  // isCodexTask: true is covered separately ('team endpoint — Codex' above) —
+  // a Codex task speaks OPENAI_* vars instead of ANTHROPIC_* ones, and an
+  // anthropic-compatible-only endpoint (most of `endpoints` here) now returns
+  // an `error` rather than applying anything, so it doesn't fit this matrix's
+  // ANTHROPIC_* assertions.
   test('base URL set and not Anthropic ⇒ exactly one auth var when any credential exists, never a server/tenant value unless it is the endpoint key', () => {
     let cases = 0;
-    for (const env of envs) for (const llmProvider of providers) for (const modelEndpoint of endpoints) for (const c of credSets) for (const isCodexTask of [false, true]) {
+    for (const env of envs) for (const llmProvider of providers) for (const modelEndpoint of endpoints) for (const c of credSets) for (const isCodexTask of [false]) {
       const got = applyModelEnv({ ...env }, { llmProvider, modelEndpoint, isCodexTask, trustedBaseUrl: undefined, ...c });
       if (got.endpoint === 'anthropic') continue;
       cases++;
@@ -422,7 +482,9 @@ describe('invariant across a matrix, team endpoint included', () => {
       }
       if (llmProvider) expect(Object.values(got.env)).not.toContain(ENDPOINT_KEY);
     }
-    expect(cases).toBeGreaterThan(300);
+    // Halved from the pre-Codex count (isCodexTask: [false] only) — the Codex
+    // half of the matrix moved to the dedicated 'team endpoint — Codex' tests.
+    expect(cases).toBeGreaterThan(150);
   });
 });
 
@@ -448,5 +510,10 @@ describe('shouldUseClaudeCredential: the Claude credential never rides along to 
   test('workers.ts gates the Claude credential block on it', async () => {
     const src = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
     expect(src).toContain('if (shouldUseClaudeCredential(modelEnv, worker)) {');
+  });
+
+  test('workers.ts fails the task when a Codex endpoint has no OpenAI-compatible route', async () => {
+    const src = await Bun.file(new URL('../../src/workers.ts', import.meta.url)).text();
+    expect(src).toContain('if (modelEnv.error) {');
   });
 });

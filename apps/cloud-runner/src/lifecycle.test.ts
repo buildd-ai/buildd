@@ -16,6 +16,7 @@ import {
   WORKER_ID_LINE_PREFIX,
   appendTail,
   buildContainerEnv,
+  warmMaxBundleBytes,
   IMAGE_ENV,
   warmReposEnabled,
   crashReportAction,
@@ -107,6 +108,24 @@ describe('decideDispatch', () => {
     expect(decideDispatch({ ...parked(), status: 'starting', attempt: 2 }, { resumeWorkerId: 'w-1' })).toEqual({ action: 'ignore', reason: 'already_live' });
     // ...and once that resume has exited (done), a late duplicate is not a second resume.
     expect(decideDispatch({ ...parked(), status: 'exited', outcome: 'done', attempt: 2 }, { resumeWorkerId: 'w-1' })).toEqual({ action: 'ignore', reason: 'not_parked' });
+  });
+});
+
+describe('warm snapshot cap', () => {
+  test('WARM_MAX_BUNDLE_BYTES reaches the container only with warm repos on, and only as a positive integer', () => {
+    const on = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '1', WARM_MAX_BUNDLE_BYTES: '2000000000' }, 'bldt_task');
+    expect(on.BUILDD_WARM_MAX_BUNDLE_BYTES).toBe('2000000000');
+    const off = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_MAX_BUNDLE_BYTES: '2000000000' }, 'bldt_task');
+    expect('BUILDD_WARM_MAX_BUNDLE_BYTES' in off).toBe(false);
+    const junk = buildContainerEnv({ BUILDD_SERVER: 's', BUILDD_API_KEY: 'k', WARM_REPOS: '1', WARM_MAX_BUNDLE_BYTES: '1e9; rm -rf /' }, 'bldt_task');
+    expect('BUILDD_WARM_MAX_BUNDLE_BYTES' in junk).toBe(false);
+  });
+
+  test('warmMaxBundleBytes: the Worker enforces the same cap, default 1 GiB', () => {
+    expect(warmMaxBundleBytes({})).toBe(1024 ** 3);
+    expect(warmMaxBundleBytes({ WARM_MAX_BUNDLE_BYTES: '500' })).toBe(500);
+    expect(warmMaxBundleBytes({ WARM_MAX_BUNDLE_BYTES: '0' })).toBe(1024 ** 3);
+    expect(warmMaxBundleBytes({ WARM_MAX_BUNDLE_BYTES: 'big' })).toBe(1024 ** 3);
   });
 });
 

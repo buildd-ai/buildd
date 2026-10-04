@@ -18,6 +18,8 @@ import {
   endpointRejectedKey,
   rewriteModelInBody,
   isClaudeModelId,
+  latin1Decode,
+  needsGithubBodyPeek,
   needsServerModelEndpoint,
   resolveModelRoute,
   rewriteOutbound,
@@ -25,8 +27,8 @@ import {
   type ServerModelEndpointState,
 } from './outbound';
 import { rewriteOtlp } from './otel';
-import { countResponseBytes, egressClassForKind, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
-import { resumableRunsEnabled, warmReposEnabled } from './lifecycle';
+import { measureResponse, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
+import { resumableRunsEnabled, warmMaxBundleBytes, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
 
 export interface EgressProps {
@@ -49,18 +51,29 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     // is its exact origin (otel.ts). Otherwise null and nothing below changes.
     const otlp = rewriteOtlp({ url: request.url, headers: request.headers }, this.env);
     if (otlp) return this.forwardOtlp(request, otlp, at);
-    const kind = classifyEgressHost(new URL(request.url).hostname);
+    const reqUrl = new URL(request.url);
+    const host = reqUrl.hostname;
+    const kind = classifyEgressHost(host);
     if (kind === 'snapshot') return this.snapshot(request);
     const cls = egressClassForKind(kind);
     if (kind === 'passthrough') return this.counted('passthrough', at, fetch(request));
 
     const lookup = kind === 'github' ? await this.githubGrant() : null;
-    // The team's agent model endpoint, only when neither the local direct
-    // route nor the Worker's MODEL_PROXY_URL override would win anyway.
+    // The team's agent model endpoint (or its own Anthropic key), skipped
+    // only when the local direct route already wins: MODEL_PROXY_URL no
+    // longer skips this, since a resolved Anthropic key must outrank it
+    // (resolveModelRoute).
     const server = kind === 'anthropic' && needsServerModelEndpoint(this.env) ? await this.modelEndpoint() : null;
     const viaServer = !!server && server !== 'unavailable';
+    // A bounded, inspection-only read of a `request.clone()` — the merge
+    // guard's two body-dependent checks (a GraphQL mutation name, a pushed
+    // branch name). The original `request.body` stream is untouched, so the
+    // eventual forward below is unaffected whether or not this ran.
+    const bodyPeek = kind === 'github' && needsGithubBodyPeek(host, request.method, reqUrl.pathname)
+      ? await peekRequestBodyPrefix(request, GITHUB_BODY_PEEK_MAX_BYTES)
+      : undefined;
     const decision = rewriteOutbound(
-      { url: request.url, method: request.method, headers: request.headers },
+      { url: request.url, method: request.method, headers: request.headers, ...(bodyPeek !== undefined ? { bodyPeek } : {}) },
       {
         model: resolveModelRoute(this.env, server),
         github: lookup?.grant ?? null,
@@ -110,7 +123,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       }
       return r;
     });
-    return this.counted(cls, at, res, auth);
+    return this.counted(cls, at, res, auth, host);
   }
 
   /** An OTLP export: counted as passthrough in the run report (it is not model or GitHub traffic). */
@@ -138,11 +151,27 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
    * container has read the body. Only the class, a timestamp and a byte count
    * leave this handler; never the URL or a header.
    */
-  private async counted(cls: EgressClass, at: number, response: Promise<Response>, auth?: GithubAuthLabel): Promise<Response> {
+  private async counted(cls: EgressClass, at: number, response: Promise<Response>, auth?: GithubAuthLabel, host?: string): Promise<Response> {
     this.record({ type: 'request', cls, at, ...(auth ? { auth } : {}) });
     const res = await response;
     if (res.status >= 400) this.record({ type: 'status', cls, status: res.status, ...(auth ? { auth } : {}) });
-    return countResponseBytes(res, (bytes) => this.record({ type: 'bytes', cls, bytes }));
+    if (auth && host && (res.status === 429 || res.status === 403)) this.recordThrottle(res.clone(), host);
+    return measureResponse(res, cls, (bytes) => this.record({ type: 'bytes', cls, bytes }));
+  }
+
+  /**
+   * A GitHub 429 or 403: GitHub's rate-limit signals into the run report
+   * (egressDetail.github.rateLimit) and one Worker log line with the task ID.
+   * Reads at most THROTTLE_BODY_PREFIX_BYTES of a clone of the body, in the
+   * background, and keeps nothing of it but a boolean. Best effort.
+   */
+  private recordThrottle(clone: Response, host: string): void {
+    const taskId = this.ctx.props?.taskId ?? 'unknown';
+    this.ctx.waitUntil(inspectGithubThrottle(clone, host).then((ev) => {
+      if (!ev) return;
+      this.record(ev);
+      console.log(throttleLogLine(taskId, ev));
+    }).catch(() => {}));
   }
 
   /** Fire-and-forget: the report is best effort and must never slow a request. */
@@ -199,7 +228,9 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     }
     return handleSnapshotRequest(request, scope, new SnapshotStore(bucket as unknown as BucketPort), {
       enabled,
+      // Streamed straight into R2 with its length: never read into memory.
       fixedLength: (body, length) => body.pipeThrough(new FixedLengthStream(length)),
+      maxPartBytes: warmMaxBundleBytes(this.env),
     });
   }
 
@@ -215,4 +246,41 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
       return { grant: null, unavailable: 'fetch_failed' };
     }
   }
+}
+
+/** How much of a peeked GitHub request body to read, at most. Bounds both checks: a GraphQL mutation name and the pkt-line ref list ahead of a push's pack data. */
+const GITHUB_BODY_PEEK_MAX_BYTES = 16 * 1024;
+
+/**
+ * A bounded prefix of `request`'s body, read from an independent
+ * `request.clone()` so the original stream is never touched — the merge
+ * guard's decision in outbound.ts (`graphqlMutationBlocked`,
+ * `pushedProtectedBranch`) is the only consumer, and it only ever reads this
+ * text; the actual forward below always uses the untouched original request.
+ */
+async function peekRequestBodyPrefix(request: Request, maxBytes: number): Promise<string> {
+  const body = request.clone().body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      size += value.byteLength;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  const buf = new Uint8Array(Math.min(size, maxBytes));
+  let off = 0;
+  for (const c of chunks) {
+    const take = Math.min(c.byteLength, buf.length - off);
+    buf.set(c.subarray(0, take), off);
+    off += take;
+    if (off >= buf.length) break;
+  }
+  return latin1Decode(buf);
 }

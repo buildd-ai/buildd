@@ -45,7 +45,6 @@ export default async function RunnersSettingsPage() {
   return (
     <SettingsPage
       title="Runners"
-      description="What runs your tasks, what it signs in with, and the tokens that connect it to buildd."
     >
       <FleetOverview
         fleet={fleet}

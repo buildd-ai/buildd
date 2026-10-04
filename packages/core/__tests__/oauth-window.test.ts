@@ -142,3 +142,7 @@ describe('model weighting', () => {
     expect(usage.weightedTurns).toBe(0);
   });
 });
+
+test('expired prior-window work cannot produce phantom current pressure (PR #2254)', () => {
+  expect(inferWindowStart({now: at(0), lastResetsAt: null, workerStarts: [at(-400), at(-350)]})).toEqual(at(0));
+});

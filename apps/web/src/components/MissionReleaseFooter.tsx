@@ -78,7 +78,7 @@ export function MissionReleaseFooter({
     return (
       <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
         <span className="text-[11px] font-mono text-text-muted">
-          {!state.seeded && <span className="text-text-muted/70">no releases yet · </span>}
+          {!state.seeded && <span className="text-text-muted/70">no releases · </span>}
           {state.queueDepth} unshipped{ageText}
         </span>
         {state.releaseId && (
