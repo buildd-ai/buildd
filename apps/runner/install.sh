@@ -7,6 +7,15 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# --service: register the background service non-interactively (for scripted/CI
+# installs, e.g. `curl -fsSL buildd.dev/install.sh | bash -s -- --service`).
+# Without it, an interactive terminal is asked at the end; a non-interactive one
+# (no TTY — piped install with no flag) skips the service and says how to add it later.
+WANT_SERVICE=0
+for arg in "$@"; do
+  [ "$arg" = "--service" ] && WANT_SERVICE=1
+done
+
 echo -e "${GREEN}Installing buildd runner...${NC}"
 
 # Check for bun
@@ -349,6 +358,11 @@ GLOBALEOF
     fi
     exit 0
     ;;
+
+  service)
+    shift
+    exec bun run "$HOME/.buildd/apps/runner/src/service.ts" "$@"
+    ;;
 esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
@@ -509,8 +523,34 @@ fi
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
-echo "Run buildd to start:"
-echo "  buildd"
+
+# Offer to register the launcher loop as a background service (launchd on
+# macOS, systemd --user on Linux) so it survives closing the terminal and
+# reboots — see apps/runner/README.md "Running as a service". --service
+# registers non-interactively (for scripted installs); otherwise, ask when
+# there's a real terminal to ask on. `curl | bash` makes fd 0 the script
+# itself, so the prompt reads from /dev/tty directly rather than stdin.
+INSTALL_SERVICE=0
+if [ "$WANT_SERVICE" = "1" ]; then
+  INSTALL_SERVICE=1
+elif [ -t 1 ] && [ -r /dev/tty ]; then
+  printf "%s" "Run buildd in the background so it survives closing this terminal and reboots? [Y/n] "
+  read -r SERVICE_ANSWER < /dev/tty || SERVICE_ANSWER=""
+  case "$SERVICE_ANSWER" in
+    [nN]*) INSTALL_SERVICE=0 ;;
+    *) INSTALL_SERVICE=1 ;;
+  esac
+fi
+
+if [ "$INSTALL_SERVICE" = "1" ]; then
+  "$BIN_DIR/buildd" service install || echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"
+else
+  echo "Run buildd to start:"
+  echo "  buildd"
+  echo ""
+  echo -e "${YELLOW}Tip: run 'buildd service install' any time to keep it running in the background.${NC}"
+fi
+
 echo ""
 echo "Then open http://localhost:8766 to connect your account."
 echo ""

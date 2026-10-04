@@ -53,4 +53,9 @@ describe('launcher script PATH', () => {
     }
     expect(bunAfterPath).toBe(true);
   });
+
+  test('dispatches `service` subcommands to service.ts', () => {
+    expect(launcher).toContain('service)');
+    expect(launcher).toContain("bun run \"$HOME/.buildd/apps/runner/src/service.ts\" \"$@\"");
+  });
 });
