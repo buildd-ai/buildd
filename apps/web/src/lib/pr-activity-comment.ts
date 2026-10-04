@@ -73,6 +73,7 @@ export type PrActivityKind =
   | 'fix_superseded_by_approval'
   | 'changes_pushed'
   | 'review_superseded_by_merge'
+  | 'work_superseded'
   | 'human_applied_recommendation'
   | 'human_override_merge'
   | 'merged'
@@ -98,6 +99,12 @@ export interface PrActivityEntry {
   sha?: string | null;
   /** The buildd task doing the work — the link a reader follows from a queued fix. */
   taskUrl?: string | null;
+  /**
+   * The task's own title — named in the header so "a fix is queued" points at
+   * a specific, readable thing rather than a bare "task" anchor. Optional:
+   * omitted entries keep their existing headline unchanged.
+   */
+  taskTitle?: string | null;
   /** Any other link (CI run, commit). */
   url?: string | null;
   /** ISO timestamp. Defaults to now. */
@@ -160,6 +167,15 @@ function hasIteration(e: PrActivityEntry): boolean {
   return e.iteration != null;
 }
 
+/** The header has more room than a timeline row, but still not unlimited. */
+const MAX_HEADLINE_TITLE_CHARS = 60;
+
+/** `"Waiting for fix task: <title>"`, or null when the entry carries no title. */
+function fixTaskHeadline(e: { taskTitle?: string | null }): string | null {
+  if (!e.taskTitle) return null;
+  return `Waiting for fix task: ${clip(e.taskTitle, MAX_HEADLINE_TITLE_CHARS)}`;
+}
+
 /**
  * The status vocabulary. Every label here is listed in the style guide — add
  * one there first.
@@ -174,7 +190,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return {
         tone: 'waiting',
         label: `Changes requested · ${fixText(e)} queued`,
-        headline: `${capitalize(fixText(e))} queued`,
+        headline: fixTaskHeadline(e) ?? `${capitalize(fixText(e))} queued`,
         status: 'waiting for a worker',
         noteLabel: 'Reviewer feedback',
       };
@@ -182,7 +198,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return {
         tone: 'waiting',
         label: `CI failed · ${fixText(e)} queued`,
-        headline: `CI ${fixText(e)} queued`,
+        headline: fixTaskHeadline(e) ?? `CI ${fixText(e)} queued`,
         status: 'waiting for a worker',
         noteLabel: 'Details',
         urlLabel: 'CI run',
@@ -191,7 +207,7 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return {
         tone: 'waiting',
         label: `Migration slot conflict · ${fixText(e)} queued`,
-        headline: `Migration slot conflict · ${fixText(e)} queued`,
+        headline: fixTaskHeadline(e) ?? `Migration slot conflict · ${fixText(e)} queued`,
         status: 'waiting for a worker',
         noteLabel: 'Details',
       };
@@ -199,12 +215,20 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return {
         tone: 'waiting',
         label: 'Recommendation applied · fix queued',
+        headline: fixTaskHeadline(e) ?? undefined,
         status: 'waiting for a worker',
       };
-    case 'fix_started':
+    case 'fix_started': {
       // Only ever written once a worker has CLAIMED the fix task. This is the
       // one state allowed to say buildd is changing the branch.
-      return { tone: 'working', label: `Fixing · ${fixText(hasIteration(e) ? e : story.fix)}` };
+      const fixEntry = hasIteration(e) ? e : story.fix;
+      const title = e.taskTitle ?? null;
+      return {
+        tone: 'working',
+        label: `Fixing · ${fixText(fixEntry)}`,
+        headline: title ? `Fixing: ${clip(title, MAX_HEADLINE_TITLE_CHARS)}` : undefined,
+      };
+    }
     case 'fix_ended': {
       // Written when the fix task's worker finishes, so `Fixing` never outlives
       // it. A completed fix hands over to CI; a new red result appends
@@ -247,6 +271,9 @@ function present(e: NormalizedEntry, story: Story): Rendered {
       return { tone: 'done', label: 'Merged by a human · review cancelled' };
     case 'fix_superseded_by_approval':
       return { tone: 'done', label: 'Fix cancelled · already approved' };
+    case 'work_superseded':
+      // `detail` names the rule ("fix cancelled · PR closed"); the row appends it.
+      return { tone: 'plain', label: 'Superseded', aside: true };
     case 'human_override_merge':
       return { tone: 'done', label: 'Merged · escalation overridden', noteLabel: 'Reason' };
     case 'merged':
@@ -277,6 +304,7 @@ function normalize(entry: PrActivityEntry): NormalizedEntry {
   if (entry.maxIterations != null) out.maxIterations = entry.maxIterations;
   if (entry.sha != null) out.sha = entry.sha;
   if (entry.taskUrl != null) out.taskUrl = entry.taskUrl;
+  if (entry.taskTitle != null) out.taskTitle = entry.taskTitle;
   if (entry.url != null) out.url = entry.url;
   // Legacy callers put everything in `detail`. Treat anything long as a note.
   if (out.detail && out.detail.length > MAX_DETAIL_CHARS) {
@@ -315,7 +343,7 @@ function links(e: NormalizedEntry, p: Rendered, seenTasks: Set<string>): string 
   // The same fix task threads through queued → fixing; link it once.
   if (e.taskUrl && !seenTasks.has(e.taskUrl)) {
     seenTasks.add(e.taskUrl);
-    parts.push(`[task](${e.taskUrl})`);
+    parts.push(`[Open in Buildd](${e.taskUrl})`);
   }
   if (e.url) parts.push(`[${p.urlLabel ?? 'details'}](${e.url})`);
   return parts.length ? ` · ${parts.join(' · ')}` : '';
@@ -367,7 +395,7 @@ export function renderPrActivityComment(
     ? `<img src="${assetOrigin()}${SPINNER_PATH}" width="12" height="12" alt="working" align="absmiddle" />`
     : currentP.tone === 'plain' ? '' : GLYPH[currentP.tone];
   const status = currentP.status ? ` · ${currentP.status}` : '';
-  const headLink = current.taskUrl ? ` · [task](${current.taskUrl})` : '';
+  const headLink = current.taskUrl ? ` · [Open in Buildd](${current.taskUrl})` : '';
 
   return [
     ACTIVITY_COMMENT_MARKER,
@@ -391,7 +419,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
   'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
   'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',
-  'review_superseded_by_merge',
+  'review_superseded_by_merge', 'work_superseded',
   'human_applied_recommendation', 'human_override_merge', 'merged', 'closed_unmerged',
 ]);
 

@@ -13,6 +13,7 @@ const fake = {
   executed: [] as any[],
   executeRows: [] as any[],
   selectRows: [] as any[],
+  tableRows: {} as Record<string, any[]>,
   selects: [] as { table: string; where: any }[],
   throwOnInsert: false,
 };
@@ -33,9 +34,10 @@ mock.module('../db/client', () => ({
       from: (table: any) => ({
         where: (where: any) => {
           fake.selects.push({ table: nameOf(table), where });
-          const res: any = Promise.resolve(fake.selectRows);
+          const rows = fake.tableRows[nameOf(table)] ?? fake.selectRows;
+          const res: any = Promise.resolve(rows);
           res.groupBy = async () => fake.selectRows;
-          res.limit = async () => fake.selectRows;
+          res.limit = async () => rows;
           return res;
         },
       }),
@@ -67,6 +69,7 @@ beforeEach(() => {
   fake.executed = [];
   fake.executeRows = [];
   fake.selectRows = [];
+  fake.tableRows = {};
   fake.selects = [];
   fake.throwOnInsert = false;
 });
@@ -120,6 +123,80 @@ describe('the CBM candidate adapter', () => {
   it('is unavailable server-side (no revision-pinned index), so coverage is neighbour-diff only', async () => {
     const r = await src.getServerCbmCandidateAdapter().lookup({ workspaceId: WS, revision: null, seedText: 'x', limit: 10 });
     expect(r.status).toBe('unavailable');
+  });
+});
+
+describe('the tree-pinned candidate adapter (§1d)', () => {
+  const REPO = 'acme/widgets';
+  const SHA = 'a'.repeat(40);
+  const treeBody = { truncated: false, tree: [
+    { path: 'src/a.ts', type: 'blob' }, { path: 'src/b.ts', type: 'blob' }, { path: 'src', type: 'tree' }, { path: 'lib/rank.ts', type: 'blob' },
+  ] };
+  const setup = (over: { github?: (path: string) => Promise<any>; queryCode?: (text: string, topK: number) => Promise<any[]> } = {}) => {
+    const paths: string[] = [];
+    const github = mock(async (path: string) => {
+      paths.push(path);
+      if (over.github) return over.github(path);
+      if (path === `/repos/${REPO}`) return { default_branch: 'dev' };
+      if (path.startsWith(`/repos/${REPO}/commits/`)) return { sha: SHA };
+      if (path.startsWith(`/repos/${REPO}/git/trees/`)) return treeBody;
+      throw new Error(`unexpected ${path}`);
+    });
+    const queryCode = mock(over.queryCode ?? (async () => [
+      { sourcePath: 'lib/rank.ts', metadata: {} }, { sourcePath: 'lib/rank.ts', metadata: {} }, { sourcePath: null, metadata: { path: 'src/a.ts' } },
+    ]));
+    const adapter = src.createTreeCandidateAdapter({
+      resolveRepo: async () => ({ repo: REPO, github: (p: string) => github(p) }),
+      queryCode: (_ws: string, text: string, topK: number) => queryCode(text, topK),
+      cache: new Map(),
+    });
+    return { adapter, github, queryCode, paths };
+  };
+
+  it('reads the tree at the base commit and ranks files by the workspace code corpus', async () => {
+    const { adapter, paths } = setup();
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'feature/x', seedText: 'rank things', limit: 64 });
+    expect(r).toEqual({ status: 'ok', revision: SHA, paths: ['lib/rank.ts', 'src/a.ts', 'src/b.ts'], ranked: ['lib/rank.ts', 'src/a.ts'] });
+    expect(paths).toContain(`/repos/${REPO}/commits/feature%2Fx`);
+    expect(paths).toContain(`/repos/${REPO}/git/trees/${SHA}?recursive=1`);
+  });
+
+  it('with no base ref, resolves the default branch first', async () => {
+    const { adapter, paths } = setup();
+    await adapter.lookup({ workspaceId: WS, baseRef: null, seedText: 'x', limit: 64 });
+    expect(paths[0]).toBe(`/repos/${REPO}`);
+    expect(paths).toContain(`/repos/${REPO}/commits/dev`);
+  });
+
+  it('caches the tree per commit: a second lookup at the same commit reads no tree', async () => {
+    const { adapter, paths } = setup();
+    await adapter.lookup({ workspaceId: WS, baseRef: SHA, seedText: 'x', limit: 64 });
+    await adapter.lookup({ workspaceId: WS, baseRef: SHA, seedText: 'y', limit: 64 });
+    expect(paths.filter(p => p.includes('/git/trees/'))).toHaveLength(1);
+    // A full SHA needs no ref resolution.
+    expect(paths.some(p => p.includes('/commits/'))).toBe(false);
+  });
+
+  it('a truncated tree listing is unavailable (absence cannot be verified)', async () => {
+    const { adapter } = setup({ github: async (p) => (p.includes('/git/trees/') ? { truncated: true, tree: [] } : { sha: SHA }) });
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'dev', seedText: 'x', limit: 64 });
+    expect(r.status).toBe('unavailable');
+  });
+
+  it('a corpus failure makes the whole source unavailable (degrades to neighbour-diff only)', async () => {
+    const { adapter } = setup({ queryCode: async () => { throw new Error('vector store down'); } });
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'dev', seedText: 'x', limit: 64 });
+    expect(r.status).toBe('unavailable');
+  });
+
+  it('no installation or repository is unavailable, not an error', async () => {
+    const adapter = src.createTreeCandidateAdapter({ resolveRepo: async () => null, queryCode: async () => [], cache: new Map() });
+    const r = await adapter.lookup({ workspaceId: WS, baseRef: 'dev', seedText: 'x', limit: 64 });
+    expect(r).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('the server adapter is the tree-pinned one', () => {
+    expect(typeof src.getServerTreeCandidateAdapter().lookup).toBe('function');
   });
 });
 
@@ -253,6 +330,48 @@ describe('predictCreationManifest', () => {
     // The access read happens once, not per pick.
   });
 
+  it('records the set confidence (product of pick confidences) and the expected size from the same neighbours', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    const estimateSize = mock(async (_a: any) => ({ files: 4, minutes: 30, source: 'neighbours' as const, k: 5, n: 5 }));
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess,
+      loadNeighbours: neighbours,
+      call: pickFirst(2) as any,
+      recordPrediction,
+      recordDecision: async () => {},
+      estimateSize,
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    // Two file picks at 0.9 each (the set exhausted before a DONE pick).
+    expect(row.setConfidence).toBeCloseTo(0.81, 10);
+    expect(row.expectedSize).toEqual({ files: 4, minutes: 30, source: 'neighbours', k: 5, n: 5 });
+    const args = (estimateSize.mock.calls[0] as any)[0];
+    expect(args).toMatchObject({ workspaceId: WS, taskId: TASK, cutoff: CREATED, neighbourTaskIds: [N1, N2] });
+    // Coverage stays alongside.
+    expect(row.coverage.source).toBe('neighbour_diff_only');
+  });
+
+  it('no picks ⇒ null set confidence; a failing size estimate is null, never a failed prediction', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess,
+      loadNeighbours: async () => [],
+      tree: { lookup: async () => ({ status: 'unavailable', reason: 'test' }) },
+      recordPrediction,
+      estimateSize: async () => { throw new Error('db down'); },
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.stopReason).toBe('no_candidates');
+    expect(row.setConfidence).toBeNull();
+    expect(row.expectedSize).toBeNull();
+  });
+
+  it('a pick without a confidence makes the set confidence unknown', () => {
+    expect(src.setConfidenceOf([{ confidence: 0.5 }, { confidence: null }] as any)).toBeNull();
+    expect(src.setConfidenceOf([{ confidence: 0.5 }, { confidence: 0.5 }] as any)).toBe(0.25);
+    expect(src.setConfidenceOf([])).toBeNull();
+  });
+
   it('a requested applying fraction without readout evidence is granted as zero (promotion guard)', async () => {
     const rows: any[] = [];
     await src.predictCreationManifest(input(), {
@@ -262,6 +381,50 @@ describe('predictCreationManifest', () => {
     });
     expect(rows.length).toBeGreaterThan(0);
     for (const r of rows) expect(r).toMatchObject({ applyingFraction: 0, experimentArm: 'observe', applied: false });
+  });
+
+  it('tree-pinned: candidates come from the tree at the base commit and omissions are no longer unknown by construction', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    const tree = { lookup: mock(async () => ({ status: 'ok' as const, revision: 'sha1', paths: ['a.ts', 'c.ts', 'apps/web/src/app/api/workers/claim/route.ts'], ranked: ['c.ts'] })) };
+    await src.predictCreationManifest(input({ baseRef: 'dev' }), {
+      resolveAccess: async () => okAccess, loadNeighbours: neighbours, tree, call: pickFirst(0) as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    // b.ts is absent at the commit: dropped. c.ts is corpus-ranked; the nested route file is no sibling of a.ts.
+    expect(row.candidates).toEqual(['a.ts', 'c.ts']);
+    expect(row.coverage.droppedAbsent).toBe(1);
+    expect(row.coverage.source).toBe('tree_pinned');
+    expect(row.coverage.revision).toBe('sha1');
+    expect(row.stopReason).toBe('done');
+    expect(row.unknownScope).toBe(false);
+    expect((tree.lookup.mock.calls[0] as any)[0]).toMatchObject({ workspaceId: WS, baseRef: 'dev' });
+  });
+
+  it('tree-pinned: a described file the tree lacks keeps unknown scope', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    const tree = { lookup: async () => ({ status: 'ok' as const, revision: 'sha1', paths: ['a.ts'], ranked: [] }) };
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess, loadNeighbours: neighbours, tree, call: pickFirst(0) as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.coverage.namedMissing).toEqual(['apps/web/src/app/api/workers/claim/route.ts']);
+    expect(row.unknownScope).toBe(true);
+  });
+
+  it('a throwing tree source degrades to neighbour_diff_only', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess, loadNeighbours: neighbours,
+      tree: { lookup: async () => { throw new Error('github down'); } }, call: pickFirst(0) as any,
+      recordPrediction, recordDecision: async () => {},
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.candidates).toEqual(['a.ts', 'b.ts']);
+    expect(row.coverage.source).toBe('neighbour_diff_only');
+    expect(row.coverage.tree).toBe('unavailable');
+    expect(row.unknownScope).toBe(true);
   });
 
   it('access is resolved once for all picks', async () => {
@@ -371,5 +534,55 @@ describe('readout predicates', () => {
     expect(w.sql).toContain('"orchestration_manifest_predictions"."workspace_id" = $1');
     expect(w.sql).toContain('"orchestration_manifest_predictions"."created_at" >= $2');
     expect(w.sql).toContain('"orchestration_manifest_predictions"."created_at" < $3');
+  });
+});
+
+
+describe('manifest outcome PR union', () => {
+  const setup = () => {
+    fake.tableRows.orchestration_manifest_predictions = [{ id: 'prediction', taskId: TASK, candidates: ['session.ts', 'pr.ts'], selected: ['pr.ts'], picks: [], stopReason: 'done', complete: true, unknownScope: false, allApplied: false, regexPaths: [], neighbourUnionPaths: [] }];
+    fake.tableRows.orchestration_touch_labels = [{ taskId: TASK, workerStatus: 'completed', touchedPaths: ['session.ts'] }];
+    fake.tableRows.workers = [{ taskId: TASK, prNumber: 1, mergedAt: AFTER }];
+  };
+  it('unions the pinned PR files into terminal session observations', async () => {
+    setup();
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'complete', files: ['pr.ts'], headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'observed', actual: ['pr.ts', 'session.ts'], landed: true, unknownScope: false });
+    expect(rows[0].prDiffs[0]).toMatchObject({ status: 'complete', headSha: 'head', baseSha: 'base' });
+  });
+  it('grades a complete PR even when no terminal label exists', async () => {
+    setup(); fake.tableRows.orchestration_touch_labels = [];
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'complete', files: ['pr.ts'], headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'observed', actual: ['pr.ts'] });
+  });
+  it('keeps failed session work out of the PR truth', async () => {
+    setup(); fake.tableRows.orchestration_touch_labels[0].workerStatus = 'failed';
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'complete', files: ['pr.ts'], headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'observed', actual: ['pr.ts'], failedWork: ['session.ts'], failed: true });
+  });
+  it('does not grade truncated successful touch observations', async () => {
+    setup(); fake.tableRows.orchestration_touch_labels[0].truncated = true;
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, { loadPrDiffs: async () => new Map() });
+    expect(rows[0].label).toMatchObject({ status: 'missing', reason: 'incomplete_observation', reasons: ['touch_labels_truncated'] });
+  });
+  it('loads the label PR when the worker no longer carries it', async () => {
+    setup(); fake.tableRows.workers = []; fake.tableRows.orchestration_touch_labels[0].prNumber = 1;
+    const loadPrDiffs = mock(async () => new Map());
+    await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, { loadPrDiffs });
+    expect(loadPrDiffs).toHaveBeenCalledWith(WS, [{ taskId: TASK, prNumber: 1 }]);
+  });
+  it('records truncated PR data and withholds complete-scope grading', async () => {
+    setup();
+    const rows = await src.loadManifestPredictionLabels({ workspaceId: WS, since: BEFORE, until: AFTER }, {
+      loadPrDiffs: async () => new Map([[TASK, [{ prNumber: 1, status: 'incomplete', reason: 'truncated', detail: 'partial file list', headSha: 'head', baseSha: 'base' }]]]),
+    });
+    expect(rows[0].label).toMatchObject({ status: 'missing', reason: 'incomplete_observation', observedPaths: ['session.ts'], reasons: ['pr_diff_truncated'] });
+    expect(rows[0].prDiffs[0]).toMatchObject({ status: 'incomplete', reason: 'truncated' });
   });
 });

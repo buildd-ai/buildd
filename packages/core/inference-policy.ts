@@ -40,6 +40,7 @@ export type InferenceCapability =
   | 'task_role_apply'
   | 'orchestration_manifest'
   | 'orchestration_claim'
+  | 'orchestration_ordering'
   | 'mission_strand_choice'
   | 'mission_goal_quality'
   | 'scout_probe_selection'
@@ -148,6 +149,19 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Hold/start shadow',
     description: 'A decision model says whether an uncertain-scope task should wait or start. Logged only; never overrides a lease, migration or dependency gate.',
     costHint: '~$0.00003 per check',
+  },
+  // Jev ordering inputs (knowledge-base: buildd/design/jev-scheduling.md §5:
+  // packages/core/orchestration-overlap-decision.ts and
+  // task-size-bucket-decision.ts). Unlike orchestration_manifest/_claim, these
+  // apply from the first PR (gated, logged) once a team opts in: by
+  // construction they only ever move a claim-planner soft weight or a size
+  // bucket, never a hard edge, a manifest or a dependsOn.
+  orchestration_ordering: {
+    id: 'orchestration_ordering',
+    kind: 'opt_in',
+    label: 'Ordering inputs',
+    description: 'A decision model checks whether a predicted file overlap between two tasks is real, and sizes a task with too few similar completed tasks to size by precedent. Feeds the claim planner\'s ordering only; never a manifest or a dependency.',
+    costHint: '~$0.00003 per look',
   },
   // Stranded local missions (apps/web/src/lib/strand-choice-decision.ts).
   // Shadow first: logged only; it can at most reorder the two buttons, and

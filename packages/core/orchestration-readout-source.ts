@@ -14,9 +14,12 @@
  */
 import { and, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
 import { db } from './db/client';
-import { orchestrationDecisions, orchestrationManifestPredictions, tasks, workers } from './db/schema';
+import { gateEvents, orchestrationDecisions, orchestrationManifestPredictions, orchestrationTouchLabels, tasks, workers } from './db/schema';
 import type { ClaimReadoutRow, ManifestReadoutPrediction, RecordedPick } from './orchestration-readout';
 import type { ClaimHoldReadoutInput } from './orchestration-claim-readout';
+import { GATE_SLUGS } from './gate-events';
+import { pathsOverlap } from './path-overlap';
+import { isoWeekStart, weekKey, type AgentBackend, type ClaimPlanSample, type WeeklySchedulingRawInput } from './scheduling-metrics';
 
 export const READOUT_MAX_ROWS = 5_000;
 /** Retry chains deeper than this are cut (the root found so far still links the chain). */
@@ -228,4 +231,238 @@ export async function loadManifestReadoutInput(opts: ReadoutWindow & { linkMissi
     pickRows: stepsOf.get(p.taskId) ?? [],
   }));
   return { predictions, links };
+}
+
+// ── §6 scheduling metrics (knowledge-base: buildd/design/jev-scheduling.md §6) ─
+//
+// Loads and groups, by ISO week, everything ./scheduling-metrics.ts needs:
+// claim-loop deferrals and the claim planner's own `claim_plan` ledger rows
+// (both written by the claim route, see apps/web/.../claim/route.ts and
+// ./claim-plan-store.ts — mirrored here as plain strings since packages/core
+// cannot import the web app), silent-completion and supersession gate rows,
+// claimed/conflict task counts, PR merge latency, and sampled co-running
+// worker pairs for the unsafe co-schedule guardrail. Grouping and bucketing
+// happen here; ./scheduling-metrics.ts only does rate/percentile math on the
+// result.
+export const SCHEDULING_METRICS_MAX_ROWS = 20_000;
+/** Bounds the O(n²) co-running pairwise scan below. */
+const CO_SCHEDULE_MAX_WORKERS = 500;
+
+/** Mirrors `apps/web/src/app/api/workers/claim/claim-plan-store.ts`'s `CLAIM_PLAN_REASON`. */
+const CLAIM_PLAN_REASON = 'claim_plan';
+/** Mirrors the three primary reason keys in the claim route's own `deferrals` counter object. */
+const PRIMARY_DEFERRAL_REASONS = ['path_overlap', 'advisory_manifest', 'ordered_behind'] as const;
+const CODEX_SINGLE_FLIGHT_REASON = 'codex_single_flight';
+
+function emptySchedulingWeek(
+  workspaceId: string,
+  weekStart: Date,
+  mode: WeeklySchedulingRawInput['mode'],
+): WeeklySchedulingRawInput {
+  return {
+    workspaceId,
+    weekStart,
+    mode,
+    deferrals: { path_overlap: 0, advisory_manifest: 0, ordered_behind: 0, codex_single_flight: 0 },
+    claimedTaskCount: 0,
+    strandedCount: 0,
+    mergeLatenciesMs: [],
+    conflictTaskCount: 0,
+    mergedPrCount: 0,
+    unsafeCoScheduleCount: 0,
+    coScheduleSampleCount: 0,
+    silentCompletionCount: 0,
+    supersessionCancelCount: 0,
+    supersessionRevertedCount: 0,
+    claimPlans: [],
+    plannerWouldBePickLabels: [],
+  };
+}
+
+export async function loadSchedulingMetricsInput(opts: ReadoutWindow): Promise<WeeklySchedulingRawInput[]> {
+  const { workspaceId, since, until } = opts;
+  const byWeek = new Map<string, WeeklySchedulingRawInput>();
+  const bucket = (d: Date): WeeklySchedulingRawInput => {
+    const key = weekKey(d);
+    let w = byWeek.get(key);
+    if (!w) {
+      w = emptySchedulingWeek(workspaceId, isoWeekStart(d), 'off');
+      byWeek.set(key, w);
+    }
+    return w;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const inWindow = (col: any) => and(gte(col, since), lt(col, until));
+
+  // 1. claim_loop_deferral: the three primary reasons + codex_single_flight
+  // (outcome=deferred), and stranding (outcome=stranded, any reason).
+  const deferralRows = await db.select({
+    occurredAt: gateEvents.occurredAt,
+    outcome: gateEvents.outcome,
+    reason: gateEvents.reason,
+  }).from(gateEvents).where(and(
+    eq(gateEvents.workspaceId, workspaceId),
+    eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
+    inArray(gateEvents.outcome, ['deferred', 'stranded']),
+    inWindow(gateEvents.occurredAt),
+  )).limit(SCHEDULING_METRICS_MAX_ROWS);
+
+  for (const r of deferralRows) {
+    const w = bucket(r.occurredAt);
+    if (r.outcome === 'stranded') { w.strandedCount++; continue; }
+    if (r.reason === CODEX_SINGLE_FLIGHT_REASON) { w.deferrals.codex_single_flight++; continue; }
+    if ((PRIMARY_DEFERRAL_REASONS as readonly string[]).includes(r.reason)) {
+      w.deferrals[r.reason as (typeof PRIMARY_DEFERRAL_REASONS)[number]]++;
+    }
+  }
+
+  // 2. claim_plan (record + apply), weighted by its coalesced repeat count —
+  // recordOrCoalesceRepeat collapses identical (plan, picks) pairs within an
+  // hour into one row whose detail.count climbs, so a quiet queue polled every
+  // few seconds does not read as a single sample. `pickedCount` reads the
+  // RULE'S actual picks (detail.actual), not the plan's own picks: record mode
+  // never changes what really happened, so actual is what idle-capacity and
+  // the primary metrics must be judged against in both modes; only the
+  // divergence metric below reads the plan's own picks (via detail.agree).
+  const planRows = await db.select({
+    occurredAt: gateEvents.occurredAt,
+    detail: gateEvents.detail,
+  }).from(gateEvents).where(and(
+    eq(gateEvents.workspaceId, workspaceId),
+    eq(gateEvents.gate, GATE_SLUGS.CLAIM_LOOP_DEFERRAL),
+    eq(gateEvents.reason, CLAIM_PLAN_REASON),
+    eq(gateEvents.outcome, 'accepted'),
+    inWindow(gateEvents.occurredAt),
+  )).limit(SCHEDULING_METRICS_MAX_ROWS);
+
+  for (const r of planRows) {
+    const d = (r.detail ?? {}) as Record<string, unknown>;
+    const mode: 'record' | 'apply' | null = d.mode === 'apply' ? 'apply' : d.mode === 'record' ? 'record' : null;
+    if (!mode) continue;
+    const backend: AgentBackend | 'mixed' = d.backend === 'codex' ? 'codex' : d.backend === 'mixed' ? 'mixed' : 'claude';
+    const candidateCount = typeof d.candidateCount === 'number' ? d.candidateCount : 0;
+    const pickedCount = Array.isArray(d.actual) ? d.actual.length : 0;
+    const capacity = typeof d.capacity === 'number' ? d.capacity : null;
+    const repeat = typeof d.count === 'number' && d.count > 0 ? d.count : 1;
+    const sample: ClaimPlanSample = { mode, backend, agree: d.agree === true, candidateCount, pickedCount, capacity };
+    const w = bucket(r.occurredAt);
+    // A week with no deferral rows yet is still 'off'; the first plan sample
+    // promotes it. A week that sees both modes keeps whichever was seen first
+    // — a mid-week config change splitting one week's mode is out of scope.
+    if (w.mode === 'off') w.mode = mode;
+    for (let i = 0; i < repeat; i++) w.claimPlans.push(sample);
+  }
+
+  // 3. Silent completions (gate_events only; the design's §2 predicate itself
+  // lives in apps/web/src/lib/silent-completion.ts and is not re-implemented here).
+  const silentRows = await db.select({ occurredAt: gateEvents.occurredAt })
+    .from(gateEvents).where(and(
+      eq(gateEvents.workspaceId, workspaceId),
+      eq(gateEvents.gate, GATE_SLUGS.SILENT_COMPLETION),
+      eq(gateEvents.outcome, 'rejected'),
+      inWindow(gateEvents.occurredAt),
+    )).limit(SCHEDULING_METRICS_MAX_ROWS);
+  for (const r of silentRows) bucket(r.occurredAt).silentCompletionCount++;
+
+  // 4. Supersession cancels, and whether a human later un-cancelled the task.
+  // The reconciler (apps/web/src/lib/supersession-store.ts) writes the
+  // cancelled task's own id as the gate event's taskId, and nothing else ever
+  // moves a task off `cancelled` automatically — so a current status other
+  // than `cancelled` can only mean a person reopened it since.
+  const supersessionRows = await db.select({ occurredAt: gateEvents.occurredAt, taskId: gateEvents.taskId })
+    .from(gateEvents).where(and(
+      eq(gateEvents.workspaceId, workspaceId),
+      eq(gateEvents.gate, GATE_SLUGS.SUPERSESSION),
+      eq(gateEvents.outcome, 'accepted'),
+      inWindow(gateEvents.occurredAt),
+    )).limit(SCHEDULING_METRICS_MAX_ROWS);
+  const supersessionTaskIds = [...new Set(supersessionRows.map(r => r.taskId).filter((t): t is string => !!t))];
+  const statusByTask = new Map<string, string>();
+  if (supersessionTaskIds.length > 0) {
+    const rows = await db.select({ id: tasks.id, status: tasks.status }).from(tasks).where(inArray(tasks.id, supersessionTaskIds));
+    for (const r of rows) statusByTask.set(r.id, r.status);
+  }
+  for (const r of supersessionRows) {
+    const w = bucket(r.occurredAt);
+    w.supersessionCancelCount++;
+    const status = r.taskId ? statusByTask.get(r.taskId) : undefined;
+    if (status && status !== 'cancelled') w.supersessionRevertedCount++;
+  }
+
+  // 5. Claimed tasks per week (denominator for deferrals-per-claimed-task).
+  const claimedRows = await db.select({ claimedAt: tasks.claimedAt }).from(tasks).where(and(
+    eq(tasks.workspaceId, workspaceId),
+    isNotNull(tasks.claimedAt),
+    inWindow(tasks.claimedAt),
+  )).limit(SCHEDULING_METRICS_MAX_ROWS);
+  for (const r of claimedRows) if (r.claimedAt) bucket(r.claimedAt).claimedTaskCount++;
+
+  // 6. Conflict tasks (creationSource = 'conflict'), bucketed by their own creation week.
+  const conflictRows = await db.select({ createdAt: tasks.createdAt }).from(tasks).where(and(
+    eq(tasks.workspaceId, workspaceId),
+    eq(tasks.creationSource, 'conflict'),
+    inWindow(tasks.createdAt),
+  )).limit(SCHEDULING_METRICS_MAX_ROWS);
+  for (const r of conflictRows) bucket(r.createdAt).conflictTaskCount++;
+
+  // 7. Merged PRs and time-to-merge (created → merged), bucketed by merge week
+  // — a merge is the moment the data point becomes available, and the moment
+  // "conflict tasks per merged PR" is implicitly denominated against.
+  const mergedRows = await db.select({
+    mergedAt: workers.mergedAt,
+    taskCreatedAt: tasks.createdAt,
+  }).from(workers).innerJoin(tasks, eq(tasks.id, workers.taskId)).where(and(
+    eq(workers.workspaceId, workspaceId),
+    isNotNull(workers.mergedAt),
+    inWindow(workers.mergedAt),
+  )).limit(SCHEDULING_METRICS_MAX_ROWS);
+  for (const r of mergedRows) {
+    if (!r.mergedAt) continue;
+    const w = bucket(r.mergedAt);
+    w.mergedPrCount++;
+    if (r.taskCreatedAt) w.mergeLatenciesMs.push(r.mergedAt.getTime() - r.taskCreatedAt.getTime());
+  }
+
+  // 8. Unsafe co-schedule: sample worker pairs in the same workspace whose
+  // active windows overlapped, each with a terminal touch-label, and count
+  // how many touched overlapping paths (reusing `pathsOverlap`, the same
+  // predicate the claim planner itself uses — never a second overlap model).
+  const coRunWorkers = await db.select({
+    id: workers.id,
+    startedAt: workers.startedAt,
+    completedAt: workers.completedAt,
+  }).from(workers).where(and(
+    eq(workers.workspaceId, workspaceId),
+    isNotNull(workers.startedAt),
+    isNotNull(workers.completedAt),
+    inWindow(workers.completedAt),
+  )).limit(CO_SCHEDULE_MAX_WORKERS) as unknown as Array<{ id: string; startedAt: Date; completedAt: Date }>;
+
+  if (coRunWorkers.length > 0) {
+    const labelRows = await db.select({
+      workerId: orchestrationTouchLabels.workerId,
+      touchedPaths: orchestrationTouchLabels.touchedPaths,
+    }).from(orchestrationTouchLabels).where(inArray(orchestrationTouchLabels.workerId, coRunWorkers.map(w => w.id)));
+    const touchedByWorker = new Map(labelRows.filter((l): l is { workerId: string; touchedPaths: string[] } => !!l.workerId)
+      .map(l => [l.workerId, l.touchedPaths ?? []]));
+
+    const withLabels = coRunWorkers.filter(w => touchedByWorker.has(w.id));
+    for (let i = 0; i < withLabels.length; i++) {
+      for (let j = i + 1; j < withLabels.length; j++) {
+        const a = withLabels[i];
+        const b = withLabels[j];
+        const overlapsInTime = a.startedAt.getTime() < b.completedAt.getTime() && b.startedAt.getTime() < a.completedAt.getTime();
+        if (!overlapsInTime) continue;
+        const pathsA = touchedByWorker.get(a.id) ?? [];
+        const pathsB = touchedByWorker.get(b.id) ?? [];
+        if (pathsA.length === 0 || pathsB.length === 0) continue;
+        const sampledAt = new Date(Math.max(a.completedAt.getTime(), b.completedAt.getTime()));
+        const w = bucket(sampledAt);
+        w.coScheduleSampleCount++;
+        if (pathsOverlap(pathsA, pathsB)) w.unsafeCoScheduleCount++;
+      }
+    }
+  }
+
+  return [...byWeek.values()];
 }

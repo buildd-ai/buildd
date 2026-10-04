@@ -57,7 +57,7 @@ export const ORCHESTRATION_DECISION_DEADLINE_MS = 5_000;
 /** Below this much remaining budget a decision call is not started. */
 export const MIN_DECISION_BUDGET_MS = 25;
 
-export type OrchestrationCapability = Extract<InferenceCapability, 'orchestration_manifest' | 'orchestration_claim'>;
+export type OrchestrationCapability = Extract<InferenceCapability, 'orchestration_manifest' | 'orchestration_claim' | 'orchestration_ordering'>;
 
 /** Why the rule verdict stood: the call did not produce a usable answer. */
 export type OrchestrationFallbackReason =

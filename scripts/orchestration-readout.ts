@@ -115,7 +115,13 @@ async function main(): Promise<void> {
   const json = JSON.stringify({ workspaceId: args.workspaceId, ...readout }, null, 2);
   if (args.out) {
     await Bun.write(args.out, json);
-    for (const c of readout.capabilities) console.error(`${c.capability}: ${c.verdict}`);
+    for (const c of readout.capabilities) {
+      console.error(`${c.capability}: ${c.verdict}`);
+      for (const g of c.groups) {
+        const e = g.verdict.eligibility;
+        if (e) console.error(`  ${g.key.candidatePolicyVersion}: lease ${e.lease.verdict}, ordering ${e.ordering.verdict}`);
+      }
+    }
     console.error(`promotion: ${readout.promotion.status}; readout written (private, do not commit)`);
   } else {
     process.stdout.write(`${json}\n`);

@@ -200,6 +200,59 @@ function hasLiveWorker(t: { workers?: Array<{ status: string }> | null }): boole
   return (t.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status));
 }
 
+/** The canonical "is a fix attempt open on this task" descriptor — see mission-state-view.ts rule 6½. */
+export interface OpenAttemptInfo {
+  taskId: string;
+  title: string;
+  status: string;
+  iteration: number | null;
+  maxIterations: number | null;
+  claimed: boolean;
+}
+
+/**
+ * The newest OPEN fix attempt (builder-after-review, CI retry) among a task's
+ * children. While one is open the PR is about to change, so it — not a merge —
+ * is what the task is waiting on. The single definition every surface that
+ * needs this fact reads: `viewForTask` (this module), and any caller outside
+ * explain.ts via {@link loadOpenAttempt}. Do not re-derive this predicate
+ * elsewhere — see the task-detail PR card and the Home action queue for two
+ * callers that used to each have their own partial version of it.
+ */
+function deriveOpenAttempt(attempts: LoadedTask[]): OpenAttemptInfo | null {
+  const openAttemptRow = attempts
+    .filter(a => a.taskClass === 'attempt' && OPEN_TASK_STATUSES.has(a.status))
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0];
+  if (!openAttemptRow) return null;
+  const attemptCtx = (openAttemptRow.context ?? {}) as { iteration?: unknown; maxIterations?: unknown };
+  return {
+    taskId: openAttemptRow.id,
+    title: openAttemptRow.title,
+    status: openAttemptRow.status,
+    iteration: typeof attemptCtx.iteration === 'number' ? attemptCtx.iteration : null,
+    maxIterations: typeof attemptCtx.maxIterations === 'number' ? attemptCtx.maxIterations : null,
+    claimed:
+      openAttemptRow.status !== 'pending' ||
+      (openAttemptRow.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),
+  };
+}
+
+/**
+ * Convenience wrapper for a caller that only wants the open-attempt fact, not
+ * a full `explainTask` answer (history, gate history, evidence objects, …).
+ * One extra query — children of `taskId` with their latest worker — reading
+ * the exact same columns and the exact same predicate `viewForTask` uses.
+ */
+export async function loadOpenAttempt(taskId: string): Promise<OpenAttemptInfo | null> {
+  const attempts = (await db.query.tasks.findMany({
+    where: eq(tasks.parentTaskId, taskId),
+    columns: TASK_COLUMNS,
+    with: { workers: WORKER_WITH },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  })) as any as LoadedTask[];
+  return deriveOpenAttempt(attempts);
+}
+
 function iso(d: Date | string | null | undefined): string | null {
   if (!d) return null;
   return d instanceof Date ? d.toISOString() : new Date(d).toISOString();
@@ -649,22 +702,7 @@ async function viewForTask(taskId: string): Promise<{
   // open the PR is about to change, so it — not the merge — is what this task
   // is waiting on. Without this the task read "waiting on you to merge" while a
   // request-changes fix sat queued for a worker.
-  const openAttemptRow = attempts
-    .filter(a => a.taskClass === 'attempt' && OPEN_TASK_STATUSES.has(a.status))
-    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())[0];
-  const attemptCtx = (openAttemptRow?.context ?? {}) as { iteration?: unknown; maxIterations?: unknown };
-  const openAttempt = openAttemptRow
-    ? {
-        taskId: openAttemptRow.id,
-        title: openAttemptRow.title,
-        status: openAttemptRow.status,
-        iteration: typeof attemptCtx.iteration === 'number' ? attemptCtx.iteration : null,
-        maxIterations: typeof attemptCtx.maxIterations === 'number' ? attemptCtx.maxIterations : null,
-        claimed:
-          openAttemptRow.status !== 'pending' ||
-          (openAttemptRow.workers ?? []).some(w => LIVE_WORKER_STATUSES.has(w.status)),
-      }
-    : null;
+  const openAttempt = deriveOpenAttempt(attempts);
 
   const terminal = ['completed', 'failed', 'cancelled'].includes(task.status);
   const openTasks = OPEN_TASK_STATUSES.has(task.status)

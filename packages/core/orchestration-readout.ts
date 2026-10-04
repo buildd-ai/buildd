@@ -31,6 +31,11 @@
  * reviewer turns it into a committed `PromotionEvidence` entry
  * (./orchestration-promotion.ts) with a cohort ceiling.
  *
+ * A §5a group's verdict also carries `eligibility` (jev-scheduling §1d): the
+ * same verdict as **lease** eligibility (gated manifest application, refuses
+ * unknown scope), and a separate **ordering** eligibility graded on whole-set
+ * precision/recall with unknown scope as a covariate (`judgeOrdering`).
+ *
  * The output contains workspace data. It is written to a private path and
  * moved to the private knowledge base, never committed.
  */
@@ -233,6 +238,38 @@ export interface Verdict {
   threshold: number | null;
   reasons: string[];
   splits: Record<ReadoutSplit, SplitJudgement>;
+  /** §5a only (jev-scheduling §1d): lease and ordering graded separately. */
+  eligibility?: ManifestEligibility;
+}
+
+export type OrderingVerdict = 'insufficient_n' | 'worse_than_baseline' | 'eligible_for_ordering';
+
+export interface OrderingSplit {
+  model: SetAggregate;
+  regex: SetAggregate;
+  neighbourUnion: SetAggregate;
+  /** The covariate: the model's set scores split by the prediction's unknown-scope marker. */
+  knownScope: SetAggregate;
+  unknownScope: SetAggregate;
+}
+
+export interface OrderingEligibility {
+  verdict: OrderingVerdict;
+  reasons: string[];
+  splits: Record<ReadoutSplit, OrderingSplit>;
+}
+
+/**
+ * Two eligibilities for one manifest group. `lease` is the gated manifest
+ * application verdict, unchanged: it is the group's `verdict` and still
+ * refuses unknown scope. `ordering` asks only whether the predicted set is a
+ * better scheduling hint than the baselines, graded on whole-set
+ * precision/recall against labels, with unknown scope reported as a covariate.
+ * Nothing reads `ordering` to apply anything.
+ */
+export interface ManifestEligibility {
+  lease: { verdict: ReadoutVerdict; threshold: number | null; reasons: string[] };
+  ordering: OrderingEligibility;
 }
 
 export interface ExtraCheckResult { insufficient: string[]; worse: string[] }
@@ -534,6 +571,47 @@ function selectionAt(p: ManifestReadoutPrediction, t: number | null): string[] {
   return out;
 }
 
+const observedActual = (p: ManifestReadoutPrediction) => (p.label as Extract<ManifestPredictionLabel, { status: 'observed' }>).actual;
+
+/**
+ * Ordering eligibility: the recorded selection as a scheduling hint, graded on
+ * whole-set F1 against the regex and neighbour-union baselines. Every split
+ * needs the labelled floor; train must beat the better baseline and held-out
+ * and later must not fall below it. Unknown scope is reported per split, never
+ * a disqualifier.
+ */
+export function judgeOrdering(labelled: Record<ReadoutSplit, readonly ManifestReadoutPrediction[]>, minN: number): OrderingEligibility {
+  const splits = Object.fromEntries(READOUT_SPLITS.map((s) => {
+    const rows = labelled[s].filter(p => p.label.status === 'observed');
+    const score = (subset: readonly ManifestReadoutPrediction[], sel: (p: ManifestReadoutPrediction) => readonly string[]) =>
+      aggregate(subset.map(p => scoreManifestSet({ selected: sel(p), candidates: p.candidates, actual: observedActual(p) })));
+    return [s, {
+      model: score(rows, p => p.selected),
+      regex: score(rows, p => p.regexPaths),
+      neighbourUnion: score(rows, p => p.neighbourUnionPaths),
+      knownScope: score(rows.filter(p => !p.unknownScope), p => p.selected),
+      unknownScope: score(rows.filter(p => p.unknownScope), p => p.selected),
+    } satisfies OrderingSplit];
+  })) as Record<ReadoutSplit, OrderingSplit>;
+
+  const insufficient: string[] = [];
+  const worse: string[] = [];
+  for (const s of READOUT_SPLITS) {
+    if (splits[s].model.n < minN) insufficient.push(`ordering ${s}: ${splits[s].model.n < 1 ? 'no' : 'too few'} labelled predictions (floor ${minN})`);
+  }
+  if (insufficient.length === 0) {
+    for (const s of READOUT_SPLITS) {
+      const m = splits[s].model.f1 ?? 0;
+      const best = Math.max(splits[s].regex.f1 ?? 0, splits[s].neighbourUnion.f1 ?? 0);
+      if (s === 'train' ? m <= best : m < best) {
+        worse.push(`ordering ${s}: whole-set F1 ${s === 'train' ? 'does not beat' : 'is below'} the regex / neighbour-union baseline`);
+      }
+    }
+  }
+  const verdict: OrderingVerdict = insufficient.length ? 'insufficient_n' : worse.length ? 'worse_than_baseline' : 'eligible_for_ordering';
+  return { verdict, reasons: [...insufficient, ...worse], splits };
+}
+
 export async function buildManifestReadout(input: {
   predictions: readonly ManifestReadoutPrediction[];
   links: ReadonlyMap<string, readonly string[]>;
@@ -619,7 +697,7 @@ export async function buildManifestReadout(input: {
         const insufficient: string[] = [];
         const worse: string[] = [];
         if (counts.labelled > 0 && READOUT_SPLITS.every(s => sets[s].knownScope === 0)) {
-          insufficient.push('unknown scope on every labelled prediction: gated application refuses unknown scope (no complete, revision-pinned candidate source)');
+          insufficient.push('unknown scope on every labelled prediction: gated application refuses unknown scope (truncated candidates, a named new file, or no tree-pinned candidate source)');
         }
         if (t !== null) {
           for (const s of ['held_out', 'later'] as const) {
@@ -631,6 +709,11 @@ export async function buildManifestReadout(input: {
         return { insufficient, worse };
       },
     });
+
+    verdict.eligibility = {
+      lease: { verdict: verdict.verdict, threshold: verdict.threshold, reasons: [...verdict.reasons] },
+      ordering: judgeOrdering(labelled, input.minN ?? READOUT_MIN_LABELLED_PER_SPLIT),
+    };
 
     const units = { train: 0, held_out: 0, later: 0 };
     for (const p of preds) { const w = split.splitOf.get(p.predictionId); if (w && w !== 'excluded') units[w]++; }

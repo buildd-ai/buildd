@@ -40,19 +40,23 @@ export async function GET(req: NextRequest) {
         now,
         lastResetsAt: episodes[0]?.resetsAt ?? null,
       });
-      const pressure = oauthBudgetPressure({ usage, capacity });
+      const pressure = oauthBudgetPressure({ usage, capacity, now, windowStartedAt, observedAt: episodes[0]?.exhaustedAt });
 
       budgetPacing = {
         enabled: config.enabled,
+        source: 'learned_exhaustion_floor',
+        pressureLabel: 'forecast floor pressure',
+        providerUsagePct: null,
+        observationAgeMs: episodes[0] ? now.getTime() - episodes[0].exhaustedAt.getTime() : null,
         quantile: config.quantile,
         // 'learning' until there are enough episodes; 'inert' when switched off.
-        state: !config.enabled ? 'inert' : capacity.confidence === 'none' ? 'learning' : 'active',
+        state: !config.enabled ? 'inert' : pressure.confidence === 'none' ? 'learning' : 'active',
         pressurePct: Math.round(pressure.pct * 100),
         limiter: pressure.limiter,
-        confidence: capacity.confidence,
+        confidence: pressure.confidence,
         episodes: capacity.samples,
         // Units are sonnet-equivalents where weighted values were learned
-        // (opus counts ~5x, haiku ~0.27x — see MODEL_WEIGHTS).
+        // (see MODEL_WEIGHTS).
         learnedCapacity: {
           workers: capacity.workerCount,
           turns: capacity.turns,

@@ -57,6 +57,7 @@ import { originLinkCards } from './origin-links';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
+import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
 import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
@@ -296,7 +297,7 @@ export default async function TaskDetailPage({
       console.error('[task-page] evidence list failed:', err instanceof Error ? err.message : err);
       return [];
     });
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles] = await Promise.all([
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -375,6 +376,12 @@ export default async function TaskDetailPage({
           .catch(() => null)
       : Promise.resolve(null),
     evidenceFilesPromise,
+    // The canonical "is a fix attempt open on this task" fact — same
+    // predicate explain.ts and Home's action queue use (mission-state-view.ts
+    // rule 6½). Joined onto this group, not a fifth serial step.
+    prWorker?.prUrl && prWorker.prNumber && prWorker.prLifecycleStatus !== 'closed'
+      ? loadOpenAttempt(task.id)
+      : Promise.resolve(null),
   ]);
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
@@ -973,6 +980,7 @@ export default async function TaskDetailPage({
     pr: prWorker?.prUrl && prWorker.prNumber
       ? { url: prWorker.prUrl, number: prWorker.prNumber, lifecycle: prWorker.prLifecycleStatus ?? null, merged: !!prWorker.mergedAt }
       : null,
+    openAttempt,
     heroShots: pickHeroShots(undefined, buildHeroPool(toVisualShots(taskArtifacts))),
     errorTraceCount: errorTraces.length,
     inRelease: !!shippedRelease,
@@ -1575,6 +1583,7 @@ export default async function TaskDetailPage({
             // The header carries the summary and the one action.
             outcome: prOutcome && shippedView ? { ...prOutcome, summary: null } : prOutcome,
             hideAction: !!shippedView,
+            openAttempt,
           };
           return (
             <div className={`mb-10 ${activeWorker ? '' : 'order-first'}`} data-testid="task-pr-section">

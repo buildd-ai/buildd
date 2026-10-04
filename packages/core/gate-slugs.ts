@@ -51,6 +51,8 @@ export const GATE_SLUGS = {
   GOAL_CRITERIA_QUALITY: 'goal_criteria_quality',
   /** PATCH /api/workers/[id] — the outputRequirement completion gate, and `discardEdits`. */
   OUTPUT_REQUIREMENT: 'output_requirement',
+  /** Empty editing session with a non-outcome summary. */
+  SILENT_COMPLETION: 'silent_completion',
   /** PATCH /api/workers/[id] — the handoff completion gate: tasks with dependents must include handoff.delivered. */
   HANDOFF_REQUIRED: 'handoff_required',
   /** PATCH /api/workers/[id] — refusing to adopt a PR that targets the wrong base. */
@@ -109,7 +111,10 @@ export const GATE_SLUGS = {
    * ancestor PR that should have been closed when a retry opened a fresh PR was
    * left open (state unreadable, close failed). `warned`: the pr-reconcile
    * sweep found two open PRs in one retry lineage and closed the older — the
-   * create_pr door missed it.
+   * create_pr door missed it. From create_pr (`lib/retry-fresh-pr-gate.ts`):
+   * `rejected` — a retry asked for a fresh PR while its subject PR is open and
+   * can carry the work; `warned` — a fresh PR was let through, with
+   * `detail.freshPrReason` (`diverged` | `unverified`).
    */
   RETRY_PR_SUPERSESSION: 'retry_pr_supersession',
   /**
@@ -120,6 +125,14 @@ export const GATE_SLUGS = {
    * candidate was found but not verified, so only a suggestion was stored.
    */
   AUTO_PR_SUPERSESSION: 'auto_pr_supersession',
+  /**
+   * The supersession reconciler (`lib/supersession.ts`). `accepted`: one row per
+   * task a rule cancelled, written by the CAS winner only — `detail.rule` is the
+   * rule id, `detail.event` the subject event. `rejected`: one event matched more
+   * than the per-event cap, so nothing was cancelled and `detail.wouldCancel`
+   * holds the set.
+   */
+  SUPERSESSION: 'supersession',
   /**
    * The chat retro proposal pass (apps/web/src/lib/chat-retro/, experiment).
    * `deferred`: a pattern over the daily per-team cap. `rejected`: a signature
