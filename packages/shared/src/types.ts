@@ -3312,6 +3312,38 @@ export interface WorkspaceOnboardingConfig {
   lastSeenPolicyInitAt?: string;
 }
 
+/**
+ * `gitConfig.qualityScout`: what an owner declares so Quality Scout can probe
+ * the workspace safely. Only what the repo cannot tell us; everything else is
+ * projected from the readiness report. Stored as typed but untrusted: read it
+ * only through `resolveScoutExtension` (packages/core/scout-capabilities.ts).
+ */
+export interface WorkspaceQualityScoutConfig {
+  /** Overrides the detected test command as Scout's verification command. */
+  verificationCommand?: string;
+  /** Where probes may run. `ephemeral: true` is the only thing that permits writes. */
+  testEnvironment?: { baseUrl?: string; ephemeral?: boolean; description?: string };
+  /**
+   * Critical journeys. API `path` is relative to the test environment (or the
+   * app booted in the sandbox); absolute URLs are refused. `mutates` defaults to
+   * true for a CLI journey and to "not GET/HEAD/OPTIONS" for an API journey.
+   */
+  journeys?: Array<
+    | { name: string; kind: 'cli'; command: string; mutates?: boolean; expect?: string }
+    | { name: string; kind: 'api'; method?: string; path: string; mutates?: boolean; expect?: string }
+  >;
+  /** UI route patterns worth looking at, e.g. `/`, `/items/:id`. */
+  uiRoutes?: string[];
+  /** Command that seeds fixtures. Always treated as mutating. */
+  fixtureSetup?: { command: string };
+  constraints?: {
+    /** Default `ephemeral-only`. `never` = read-only probes only. */
+    allowWrites?: 'never' | 'ephemeral-only';
+    /** A probe command containing any of these substrings is never run. */
+    forbiddenPatterns?: string[];
+  };
+}
+
 export interface WorkspaceReadinessItem {
   id: WorkspaceReadinessItemId;
   label: string;
