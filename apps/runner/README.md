@@ -89,3 +89,22 @@ e.g. a real crash.
 | `buildd service install\|uninstall\|status\|logs` | Manage the background service (macOS/Linux) |
 | `buildd init <workspace-id>` | Write a per-repo `.mcp.json` for Claude Code |
 | `buildd install --global` | Register the buildd MCP server in `~/.claude.json` |
+
+## Agent identity on buildd
+
+The runner authenticates its own calls (claim, worker updates, heartbeat) with
+its API key. The agent session it starts calls buildd with its own credential:
+at every session start (fresh, resume, follow-up) the runner mints a per-task
+token (`bldt_…`, `POST /api/runner/task-token`, 12h) and the agent's buildd
+MCP server (Claude `mcpServers.buildd`, Codex `BUILDD_MCP_BEARER_TOKEN`) uses
+that, so each call the agent makes carries its own run's identity. Task tokens
+are worker level: a runner on an admin key no longer gives its agents
+admin-only buildd actions.
+
+If the mint fails (old server, key without the runner scopes, no signing
+secret on the server, network) the session starts anyway on the runner key and
+the runner logs one `[agent-task-token]` warning with the reason.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `BUILDD_AGENT_TASK_TOKEN` | on | `0` keeps the old behaviour: the agent's buildd MCP uses the runner key and no token is minted. |

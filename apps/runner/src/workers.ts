@@ -76,6 +76,7 @@ import {
   uploadSessionDiagnostics,
 } from './session-diagnostics';
 import { EvidenceWriter, buildWorkerSecretValues } from './evidence-writer';
+import { resolveAgentBuilddAuth } from './agent-task-token';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
@@ -3075,27 +3076,6 @@ export class WorkerManager {
     const isSensitive = worker.workspaceDataClass === 'sensitive';
     if (isSensitive) activateRedaction();
 
-    // Build a secret redactor for this worker from the BUILDD_API_KEY and every
-    // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
-    // credentials — see buildWorkerSecretValues). Applies to milestones,
-    // currentAction, error traces, evidence bodies and the history archive.
-    const secretValues = buildWorkerSecretValues(this.config.apiKey, worker);
-    const redactWorkerSecrets = createSecretRedactor(secretValues);
-    this.secretRedactors.set(worker.id, redactWorkerSecrets);
-    // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
-    // on a client that does not have the method.
-    this.evidenceWriters.set(worker.id, new EvidenceWriter({
-      workerId: worker.id,
-      taskId: task.id,
-      redact: redactWorkerSecrets,
-      deps: {
-        requestEvidenceUploadUrl: async (workerId, req) =>
-          (await (this.buildd as any).requestEvidenceUploadUrl?.(workerId, req)) ?? null,
-        confirmEvidenceUpload: async (workerId, evidenceId) =>
-          (await (this.buildd as any).confirmEvidenceUpload?.(workerId, evidenceId)) ?? false,
-      },
-    }));
-
     const inputStream = new MessageStream();
     const abortController = new AbortController();
 
@@ -3113,6 +3093,52 @@ export class WorkerManager {
     // Store session state for sendMessage and abort
     const generation = ++this.sessionGeneration;
     this.sessions.set(worker.id, { inputStream, abortController, cwd, repoPath, generation, sessionId: invocationSessionId });
+
+    // The agent's buildd MCP auth: a per-task token minted for this session
+    // (fresh start, resume and follow-up all pass through here), falling back
+    // to the runner key on any failure. Only the agent's buildd MCP entry uses
+    // it — every runner-side call keeps this.config.apiKey. Never persisted:
+    // it lives in this local and in the per-worker redactor below. Minted
+    // after the session is registered, so a message arriving meanwhile finds it.
+    const agentBuilddAuth = await resolveAgentBuilddAuth({
+      runnerKey: this.config.apiKey,
+      taskId: task.id,
+      mint: typeof (this.buildd as any).mintTaskToken === 'function'
+        ? (taskId, ttlMs, signal) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal)
+        : undefined,
+      warn: line => console.warn(`[Worker ${worker.id}] ${line}`),
+    });
+    const agentBuilddToken = agentBuilddAuth.token;
+    if (agentBuilddAuth.source === 'task-token') {
+      sessionLog(worker.id, 'info', 'agent_buildd_auth', 'source=task-token', task.id);
+    } else if (agentBuilddAuth.reason === 'mint-failed') {
+      sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.detail ?? 'unknown'}`, task.id);
+    }
+
+    // Build a secret redactor for this worker from the BUILDD_API_KEY and every
+    // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
+    // credentials — see buildWorkerSecretValues). Applies to milestones,
+    // currentAction, error traces, evidence bodies and the history archive.
+    const secretValues = buildWorkerSecretValues(
+      this.config.apiKey,
+      worker,
+      agentBuilddAuth.source === 'task-token' ? agentBuilddToken : undefined,
+    );
+    const redactWorkerSecrets = createSecretRedactor(secretValues);
+    this.secretRedactors.set(worker.id, redactWorkerSecrets);
+    // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
+    // on a client that does not have the method.
+    this.evidenceWriters.set(worker.id, new EvidenceWriter({
+      workerId: worker.id,
+      taskId: task.id,
+      redact: redactWorkerSecrets,
+      deps: {
+        requestEvidenceUploadUrl: async (workerId, req) =>
+          (await (this.buildd as any).requestEvidenceUploadUrl?.(workerId, req)) ?? null,
+        confirmEvidenceUpload: async (workerId, evidenceId) =>
+          (await (this.buildd as any).confirmEvidenceUpload?.(workerId, evidenceId)) ?? false,
+      },
+    }));
 
     // bwrap auto-retry flag: set in the catch block when a bwrap_namespace_denied
     // abort fires mid-run. Signals the finally block to skip worktree cleanup and
@@ -3560,7 +3586,8 @@ export class WorkerManager {
         // Codex reads MCP servers from CODEX_HOME/config.toml, not from Claude's
         // queryOptions. Rewrite it each run with the bearer token supplied via env
         // so it never lands in config.toml. Does not touch `sessions/`.
-        cleanEnv.BUILDD_MCP_BEARER_TOKEN = this.config.apiKey;
+        // The agent's own per-task token (or the runner key on fallback).
+        cleanEnv.BUILDD_MCP_BEARER_TOKEN = agentBuilddToken;
         // Phase 3C: map buildd's configuredEffort → config.toml model_reasoning_effort
         // (ThreadOptions has no reasoning-effort field). task.context.effort wins
         // over the workspace gitConfig.effort, mirroring the Claude path below.
@@ -4363,8 +4390,9 @@ export class WorkerManager {
         buildd: {
           type: 'http',
           url: buildWorkerMcpUrl(this.config.builddServer, task.workspaceId, worker.id, task.roleSlug, agents),
+          // The agent's own per-task token (or the runner key on fallback).
           headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
+            Authorization: `Bearer ${agentBuilddToken}`,
           },
         },
       };
