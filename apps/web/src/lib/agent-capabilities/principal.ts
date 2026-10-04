@@ -24,8 +24,11 @@ import { isOpenWithinTeams } from '@/lib/open-workspaces';
 
 export interface AgentPrincipal {
   kind: 'agent_run';
-  /** How the run proved itself: the cloud dispatch token, or a runner key naming its worker. */
-  via: 'dispatch' | 'runner_key';
+  /**
+   * How the run proved itself: the cloud dispatch token, a runner key naming
+   * its worker, a per-task token, or being the account that claimed the worker.
+   */
+  via: 'dispatch' | 'runner_key' | 'task_token' | 'worker_account';
   workerId: string;
   taskId: string;
   workspaceId: string;

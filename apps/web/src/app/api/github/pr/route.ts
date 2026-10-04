@@ -16,7 +16,8 @@ import { ensureIntegrationBaseForTaskPr, reportMissionBranchUnresolved } from '@
 import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorker } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
+import { authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -225,13 +226,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
 
-    // Team membership OR being the account that runs the worker — see
-    // canActOnWorkerPr for why neither check alone is enough.
-    if (!(await canActOnWorkerPr(account, worker))) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
-    }
-    if (account.taskScope && (worker.accountId !== account.id || !taskScopeAllowsWorker(account, worker))) {
-      return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+    // Team membership OR being the account that runs the worker (see
+    // canActOnWorkerPr), and a per-task token only for its own worker. Runs
+    // before anything below reads GitHub, creates a ref or records a PR.
+    const prAccess = await authorizeWorkerPrCapability(account, worker, existingPrUrl ? 'pr.adopt' : 'pr.create');
+    if (!prAccess.allowed) {
+      return NextResponse.json({ error: prAccess.error }, { status: prAccess.status });
     }
 
     // Option A′ derivation — read once, used everywhere below that a PR's head
