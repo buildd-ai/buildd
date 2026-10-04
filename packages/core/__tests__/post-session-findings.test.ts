@@ -119,6 +119,18 @@ describe('aggregateFindingOccurrence', () => {
     expect(agg.affectedRefs[0].runId).toBe('run-5');
   });
 
+  it('stays idempotent for a run reprocessed after it aged out of affectedRefs', () => {
+    const occs = Array.from({ length: MAX_LEDGER_AFFECTED_REFS + 5 }, (_, i) =>
+      occ({}, { runId: `run-${i}`, seenAt: new Date(NOW.getTime() + i * 1000).toISOString() }));
+    const agg = aggregateOf(...occs);
+    // run-0 is long gone from the capped display list...
+    expect(agg.affectedRefs.some(r => r.runId === 'run-0')).toBe(false);
+    // ...but reprocessing it must still be a no-op, not a recount.
+    const again = aggregateFindingOccurrence(agg, occs[0]);
+    expect(again.counted).toBe(false);
+    expect(again.next).toEqual(agg);
+  });
+
   it('dedupes and caps evidence refs', () => {
     const many = Array.from({ length: 40 }, (_, i) => ({ kind: 'k', ref: `r${i}` }));
     const agg = aggregateOf(occ({ evidenceRefs: many }), occ({ evidenceRefs: many }, { runId: 'run-2' }));

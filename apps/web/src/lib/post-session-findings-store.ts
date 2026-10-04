@@ -50,6 +50,7 @@ function toStored(r: FindingRow): StoredFinding {
     lastSeenAt: r.lastSeenAt,
     affectedRefs: r.affectedRefs ?? [],
     evidenceRefs: r.evidenceRefs ?? [],
+    seenRunIds: r.seenRunIds ?? [],
     actionState: r.actionState,
     actionTaskId: r.actionTaskId,
     actionArtifactId: r.actionArtifactId,
@@ -72,6 +73,7 @@ function aggregateColumns(a: FindingLedgerAggregate) {
     lastSeenAt: a.lastSeenAt,
     affectedRefs: a.affectedRefs,
     evidenceRefs: a.evidenceRefs,
+    seenRunIds: a.seenRunIds,
   };
 }
 
@@ -182,8 +184,9 @@ export const postSessionFindingStore: PostSessionFindingStore = {
     if (!task) return;
     const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, task.workspaceId) });
     if (!workspace) return;
-    const { dispatchNewTask } = await import('./task-dispatch');
-    await dispatchNewTask(task, workspace);
+    const { announceTaskCreated, wakeTask } = await import('./dispatch-authority');
+    await announceTaskCreated(task, workspace);
+    await wakeTask(task.id, 'task.created');
   },
 
   async claimAction(findingId, { state, taskId, artifactId, now }) {

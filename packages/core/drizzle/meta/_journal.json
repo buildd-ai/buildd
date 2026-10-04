@@ -1618,6 +1618,13 @@
       "when": 1791133196455,
       "tag": "0236_easy_rockslide",
       "breakpoints": true
+    },
+    {
+      "idx": 237,
+      "version": "7",
+      "when": 1791135265514,
+      "tag": "0237_clumsy_carnage",
+      "breakpoints": true
     }
   ]
 }

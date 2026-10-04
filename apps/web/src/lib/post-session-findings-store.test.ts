@@ -47,7 +47,7 @@ function dbRow(over: Record<string, unknown> = {}) {
   return {
     id: 'f-1', workspaceId: 'ws-1', policyVersion: 'psq-v1', signature: 'sig', recurrenceKey: 'rk',
     class: 'platform', severity: 'high', confidence: '0.850', title: 't', summary: 's', proposedAction: 'file_task',
-    occurrenceCount: 2, firstSeenAt: NOW, lastSeenAt: NOW, affectedRefs: [], evidenceRefs: [],
+    occurrenceCount: 2, firstSeenAt: NOW, lastSeenAt: NOW, affectedRefs: [], evidenceRefs: [], seenRunIds: [],
     actionState: 'observed', actionTaskId: null, actionArtifactId: null, actionAt: null, createdAt: NOW, updatedAt: NOW,
     ...over,
   };
@@ -55,7 +55,7 @@ function dbRow(over: Record<string, unknown> = {}) {
 
 const aggregate = {
   class: 'platform' as const, severity: 'high' as const, confidence: 0.85, title: 't', summary: 's', recurrenceKey: 'rk',
-  proposedAction: 'file_task' as const, occurrenceCount: 1, firstSeenAt: NOW, lastSeenAt: NOW, affectedRefs: [], evidenceRefs: [],
+  proposedAction: 'file_task' as const, occurrenceCount: 1, firstSeenAt: NOW, lastSeenAt: NOW, affectedRefs: [], evidenceRefs: [], seenRunIds: [],
 };
 
 const step = (c: Call, name: string) => c.steps.find(s => s[0] === name);

@@ -5218,6 +5218,9 @@ export const postSessionFindings = pgTable('post_session_findings', {
   // Capped by the writer; occurrenceCount stays exact past the cap.
   affectedRefs: jsonb('affected_refs').notNull().default([]).$type<import('../post-session-quality').FindingAffectedRef[]>(),
   evidenceRefs: jsonb('evidence_refs').notNull().default([]).$type<import('../post-session-quality').FindingEvidenceRef[]>(),
+  // Run ids ever folded into this row, capped far above affectedRefs so the
+  // dedup check in aggregateFindingOccurrence survives affectedRefs aging out.
+  seenRunIds: jsonb('seen_run_ids').notNull().default([]).$type<string[]>(),
   actionState: text('action_state').notNull().default('observed').$type<import('../post-session-quality').FindingActionState>(),
   actionTaskId: uuid('action_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   actionArtifactId: uuid('action_artifact_id').references(() => artifacts.id, { onDelete: 'set null' }),

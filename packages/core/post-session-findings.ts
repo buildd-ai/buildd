@@ -47,6 +47,11 @@ export const DEFAULT_FINDING_ACTION_POLICY: FindingActionPolicy = {
 /** Sessions kept on a finding row. occurrenceCount stays exact past it. */
 export const MAX_LEDGER_AFFECTED_REFS = 20;
 export const MAX_LEDGER_EVIDENCE_REFS = 20;
+/**
+ * Run ids kept for dedup, independent of (and far above) MAX_LEDGER_AFFECTED_REFS:
+ * affectedRefs is a display cap, this is the membership cap reprocessing relies on.
+ */
+export const MAX_LEDGER_SEEN_RUN_IDS = 500;
 const MAX_WINDOW_DAYS = 90;
 
 function inRange(n: unknown, lo: number, hi: number): n is number {
@@ -110,6 +115,8 @@ export interface FindingLedgerAggregate {
   lastSeenAt: Date;
   affectedRefs: FindingAffectedRef[];
   evidenceRefs: FindingEvidenceRef[];
+  /** Run ids ever folded, capped at MAX_LEDGER_SEEN_RUN_IDS — the dedup membership set. */
+  seenRunIds: string[];
 }
 
 function mergeEvidence(newest: FindingEvidenceRef[], older: FindingEvidenceRef[]): FindingEvidenceRef[] {
@@ -155,10 +162,11 @@ export function aggregateFindingOccurrence(
         lastSeenAt: seenAt,
         affectedRefs: [occ.ref],
         evidenceRefs: mergeEvidence(f.evidenceRefs, []),
+        seenRunIds: [occ.ref.runId],
       },
     };
   }
-  if (existing.affectedRefs.some(r => r.runId === occ.ref.runId)) return { next: existing, counted: false };
+  if (existing.seenRunIds.includes(occ.ref.runId)) return { next: existing, counted: false };
 
   const escalates = severityRank(f.severity) < severityRank(existing.severity);
   const headline = escalates
@@ -167,6 +175,7 @@ export function aggregateFindingOccurrence(
   const refs = [...existing.affectedRefs, occ.ref]
     .sort((a, b) => a.seenAt.localeCompare(b.seenAt))
     .slice(-MAX_LEDGER_AFFECTED_REFS);
+  const seenRunIds = [...existing.seenRunIds, occ.ref.runId].slice(-MAX_LEDGER_SEEN_RUN_IDS);
   return {
     counted: true,
     next: {
@@ -179,6 +188,7 @@ export function aggregateFindingOccurrence(
       lastSeenAt: seenAt > existing.lastSeenAt ? seenAt : existing.lastSeenAt,
       affectedRefs: refs,
       evidenceRefs: mergeEvidence(f.evidenceRefs, existing.evidenceRefs),
+      seenRunIds,
     },
   };
 }
