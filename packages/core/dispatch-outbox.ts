@@ -273,9 +273,12 @@ export const PUBLISH_GRACE_MS = 120_000;
  * the fallback for rows Dispatch never acked, not a racer. Every other row —
  * all of an `in_app` or `shadow` workspace, and every non-work intent, which
  * is never published — is taken exactly as before.
+ *
+ * `graceMs` is 0 when publishing is not configured (no Worker): nothing will
+ * ever ack those rows, so waiting for one would only delay every wake.
  */
-export function claimDueDispatchesSql(limit: number, nowIso?: string): SQL {
-  const args = { limit, leaseMs: DELIVERY_LEASE_MS, graceMs: PUBLISH_GRACE_MS, now: nowIso ?? null };
+export function claimDueDispatchesSql(limit: number, nowIso?: string, graceMs: number = PUBLISH_GRACE_MS): SQL {
+  const args = { limit, leaseMs: DELIVERY_LEASE_MS, graceMs, now: nowIso ?? null };
   return sql`-- dispatch_outbox:claim_due
 WITH args AS (SELECT ${JSON.stringify(args)}::jsonb AS a),
 clock AS (SELECT COALESCE((a->>'now')::timestamptz, now()) AS now FROM args),
@@ -300,8 +303,8 @@ RETURNING o.id, o.intent, o.workspace_id, o.task_id, o.cause, o.causes, o.not_be
 type RawRow = Record<string, unknown>;
 const rowsOf = (r: unknown): RawRow[] => ((r as { rows?: RawRow[] })?.rows ?? []);
 
-export async function claimDueDispatches(limit: number): Promise<ClaimedDispatch[]> {
-  const result = await db.execute(claimDueDispatchesSql(limit));
+export async function claimDueDispatches(limit: number, opts: { graceMs?: number } = {}): Promise<ClaimedDispatch[]> {
+  const result = await db.execute(claimDueDispatchesSql(limit, undefined, opts.graceMs));
   return rowsOf(result).map(r => ({
     id: String(r.id),
     intent: (r.intent ?? 'work_execution') as DispatchIntent,

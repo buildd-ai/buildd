@@ -295,7 +295,8 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 
 An optional second transport moves delivery to a standalone Dispatch
 service. It is gated per workspace by `workspaces.dispatch_transport`:
-`in_app` (default), `shadow` or `dispatch`. Postgres stays the source of
+`dispatch` (default), `in_app` (the per-workspace kill switch) or `shadow`.
+Postgres stays the source of
 truth for intent creation: the outbox row is still written with the state
 change. Once Dispatch acks a row of a `dispatch` workspace, Dispatch owns its
 delivery lifecycle (when to attempt, retry, collapse, give up). Buildd keeps
@@ -326,8 +327,9 @@ signed callbacks. Wire contract: `@buildd/dispatch-contract`.
   `DISPATCH_CALLBACK_SECRET`. Resolve runs the same decision functions as
   the in-app adapters (`claimabilitySkip`, `webhookEligible`,
   `githubActionsWanted`, `webhookPayloadFor`) and returns
-  `deliver{payload, grant}`, `decline`, `skip` or, for a webhook whose task's
-  `start_at` is still ahead, `reschedule{notBefore}`. A webhook grant is the
+  `deliver{payload, grant}`, `decline` or `skip`. A future `start_at` skips,
+  as in-app does, because the trigger's `start_at:<ms>` row delivers it at
+  that time. A webhook grant is the
   bearer token. A GitHub Actions grant is a repo-scoped installation token
   for `repository_dispatch`. Relay sends the runner wake through
   `sendRunnerWake`: `relay:pusher` when sent, `skipped` when Pusher is
@@ -344,9 +346,10 @@ signed callbacks. Wire contract: `@buildd/dispatch-contract`.
 
 Invariants:
 
-15. **Default is a no-op.** With the env unset, or a workspace on `in_app`,
-    nothing is read for publishing, nothing is sent, and the drain claims
-    exactly the rows it claimed before.
+15. **No Worker, no change.** With the env unset, nothing is read for
+    publishing, nothing is sent, and the drain claims exactly the rows it
+    claimed before, with no publish grace, whatever a workspace's transport
+    says. A workspace on `in_app` behaves the same with the env set.
 16. **One queue per row.** A `handed_off` row is never claimed by the in-app
     drain. An unacked work row of a `dispatch` workspace is left to the
     publish path for `PUBLISH_GRACE_MS` and then taken by the drain as the
@@ -375,9 +378,8 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   before.
 - AC-27: For every AC-10…AC-18 case, the Dispatch route plus resolve and relay
   reach the same outcome as `deliverTaskDispatch`. The documented
-  differences are a future `start_at` (resolve answers `reschedule`) and
-  GitHub Actions after an eligible webhook's failed POST (in-app fires it,
-  Dispatch does not).
+  difference is GitHub Actions after an eligible webhook's failed POST
+  (in-app fires it, Dispatch does not).
 - AC-28: Callbacks answer 503 with no secret, and 401 on a missing, wrong,
   stale, path-mismatched or body-tampered signature.
 - AC-29: Re-applying a receipt batch is a no-op. Shadow rows and unknown ids
