@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 # Each assertion names a deliverable of one implementation step, so the derived
 # status moves from failing to implemented as the steps land.
@@ -44,6 +44,8 @@ assertions:
     symbol: "planClaimBatch"
     entry: "apps/web/src/app/api/workers/claim/route.ts"
     as: "call"
+    skip_until: "2026-12-15"
+    skip_reason: "Wired and passing, but the claim planner ships behind a per-workspace switch that defaults to off; record and apply are not yet rolled out. Suppressed so the design holds at 'partially' instead of reading as implemented before the planner actually orders claims."
   - id: "claim-planner-tests"
     type: "test_file"
     path: "packages/core/__tests__/claim-planner.test.ts"
