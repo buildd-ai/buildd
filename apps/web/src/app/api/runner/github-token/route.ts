@@ -29,8 +29,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
-import { authorizeGithubRepoGrant, mintGithubRepoGrant } from '@/lib/agent-capabilities/github';
-import { protectedBaseBranches } from '@/lib/auto-merge-bound';
+import { authorizeGithubRepoGrant, mintGithubRepoGrant, repoProtectedBranches } from '@/lib/agent-capabilities/github';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -73,12 +72,8 @@ export async function POST(req: NextRequest) {
   try {
     const minted = await mintGithubRepoGrant(decision);
     // Branches the cloud egress merge guard (apps/cloud-runner/src/outbound.ts
-    // pushedProtectedBranch) must refuse a direct `git push` to: the same set
-    // protectedBaseBranches() gives the auto-merge bound, plus the repo's own
-    // GitHub default branch (protectedBaseBranches omits it on purpose — see
-    // its docstring — but a raw push bypasses buildd's merge policy entirely,
-    // so this check is stricter than that one).
-    const protectedBranches = [...new Set([...protectedBaseBranches({ gitConfig: ws.gitConfig, releaseConfig: ws.releaseConfig }), ws.githubRepo?.defaultBranch].filter((b): b is string => typeof b === 'string' && b.length > 0))];
+    // pushedProtectedBranch) must refuse a direct `git push` to.
+    const protectedBranches = repoProtectedBranches(ws, ws.githubRepo?.defaultBranch);
     return NextResponse.json({
       token: minted.token,
       expiresAt: minted.expiresAt.toISOString(),
