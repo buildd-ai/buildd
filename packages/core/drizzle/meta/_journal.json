@@ -1625,6 +1625,20 @@
       "when": 1791138728926,
       "tag": "0237_real_fallen_one",
       "breakpoints": true
+    },
+    {
+      "idx": 238,
+      "version": "7",
+      "when": 1791147253139,
+      "tag": "0238_easy_rockslide",
+      "breakpoints": true
+    },
+    {
+      "idx": 239,
+      "version": "7",
+      "when": 1791147254139,
+      "tag": "0239_clumsy_carnage",
+      "breakpoints": true
     }
   ]
 }
