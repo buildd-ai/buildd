@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 import { NextRequest } from 'next/server';
 import { TOKEN_PRESETS } from '@buildd/core/token-scopes';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
@@ -92,6 +98,12 @@ const mockHasCodexCredential = mock(() => Promise.resolve(false));
 mock.module('@/lib/codex-credential', () => ({
   getCodexCredential: mockGetCodexCredential,
   hasCodexCredential: mockHasCodexCredential,
+}));
+
+const mockHasOpenAiApiKey = mock(() => Promise.resolve(false));
+mock.module('@/lib/openai-credential', () => ({
+  hasOpenAiApiKey: mockHasOpenAiApiKey,
+  resolveOpenAiApiKey: mock(() => Promise.resolve(null as any)),
 }));
 
 const mockLoadOauthEpisodes = mock(() => Promise.resolve([] as any[]));
@@ -221,7 +233,14 @@ mock.module('@buildd/core/db/schema', () => ({
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
 // Default null: no endpoint, so every other test sees today's claim.
 const mockResolveAgentModelRoute = mock(async (_o: any) => null as any);
-mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveAgentModelRoute, AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint' }));
+// Default false: no OpenAI-compatible endpoint, so every Codex capability-gate
+// test sees today's behaviour (hasCodexCredential / hasOpenAiApiKey only).
+const mockHasOpenAiCompatibleAgentEndpoint = mock(async (_o: any) => false);
+mock.module('@buildd/core/agent-endpoint', () => ({
+  resolveAgentModelRoute: mockResolveAgentModelRoute,
+  hasOpenAiCompatibleAgentEndpoint: mockHasOpenAiCompatibleAgentEndpoint,
+  AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint',
+}));
 
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
@@ -258,11 +277,12 @@ mock.module('@/lib/pushover', () => ({
 }));
 // path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
 const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
-// Waiter registration on a path_overlap deferral — real module hits the DB.
-const mockRegisterWaiter = mock((..._args: any[]) => Promise.resolve({ registered: true } as any));
+// Claim-time waiter registration for path_overlap deferrals (its SQL is in
+// apps/web/tests/db/path-release.test.ts); here only who is registered.
+const mockRegisterClaimDeferralWaiters = mock(async (_ws: string, _entries: any[]) => ({ registered: 0, woken: [] as string[] }));
 mock.module('@buildd/core/path-claim', () => ({
   getActiveClaimsByWorkspace: mockGetActiveClaimsByWorkspace,
-  registerWaiter: mockRegisterWaiter,
+  registerClaimDeferralWaiters: mockRegisterClaimDeferralWaiters,
 }));
 // Gate ledger: capture deferral events so a test can read the `detail` bag a
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
@@ -440,6 +460,10 @@ describe('POST /api/workers/claim', () => {
     mockHasCodexCredential.mockReset();
     mockGetCodexCredential.mockResolvedValue(null);
     mockHasCodexCredential.mockResolvedValue(false);
+    mockHasOpenAiApiKey.mockReset();
+    mockHasOpenAiApiKey.mockResolvedValue(false);
+    mockHasOpenAiCompatibleAgentEndpoint.mockReset();
+    mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(false);
     mockTeamsFindFirst.mockReset();
     mockTeamsFindFirst.mockResolvedValue(null); // default: enabledBackends null => all enabled
 
@@ -1045,6 +1069,27 @@ describe('POST /api/workers/claim', () => {
       expect(mockAnnounceFixClaimed).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1' }));
     });
 
+    // A plain team/workspace OpenAI API key (purpose `openai_api_key`) is the
+    // simpler sibling of `codex_credential` — either one must be enough to
+    // flip a budget-blocked task onto Codex.
+    it('routes a budget-blocked Claude task to Codex when the workspace has only an OpenAI API key', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false); // no ChatGPT/OAuth connect
+      mockHasOpenAiApiKey.mockResolvedValue(true);      // but a stored OpenAI key
+      mockGetCodexCredential.mockResolvedValue(null);
+      setupClaim();
+
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const res = await POST(req);
+
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
     it('skips a budget-blocked Claude task when the workspace has no Codex credential', async () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
       mockWorkersFindMany.mockResolvedValue([]);
@@ -1476,6 +1521,138 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
+  });
+
+  // The capability filter must accept a team's plain OpenAI API key
+  // (`openai_api_key`) the same as a `codex_credential` ChatGPT connect — a
+  // runner with no local Codex auth still gets the task.
+  it('claims a codex task on a runner with no local Codex auth when the team has only an OpenAI API key', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+      });
+
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          title: 'Codex task',
+          backend: 'codex',
+          requiredCapabilities: [],
+          workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+        },
+      ]);
+      mockHasCodexCredential.mockResolvedValue(false); // no ChatGPT/OAuth connect
+      mockHasOpenAiApiKey.mockResolvedValue(true);      // but a stored OpenAI key
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          environment: {
+            tools: [],
+            // backend:codex only — no CODEX_HOME / OPENAI_API_KEY local auth.
+            envKeys: ['backend:codex'],
+            mcp: [],
+            labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' },
+            scannedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
+  // A team agent model endpoint with an OpenAI-compatible route (LiteLLM,
+  // OpenRouter) is also enough to run Codex — but only for a runner that
+  // declares AGENT_ENDPOINT_RUNNER_FEATURE; it is the one actually applying
+  // `modelEndpoint`, so a runner that doesn't would pass the gate here and
+  // then fail at spawn with no credential at all.
+  it('claims a codex task on a runner with no local/Codex-specific auth when the team has an OpenAI-compatible agent endpoint, for a runner that supports it', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(true);
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          runnerFeatures: ['agent_endpoint'],
+          environment: { tools: [], envKeys: ['backend:codex'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
+  it('does NOT claim a codex task via the team\'s agent endpoint for a runner that does not declare AGENT_ENDPOINT_RUNNER_FEATURE', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(true);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          // No runnerFeatures: this build would never apply modelEndpoint.
+          environment: { tools: [], envKeys: ['backend:codex'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.diagnostics.reason).toBe('capability_mismatch');
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
   });
 
   it('never returns the workspace dispatch token in a claimed task', async () => {
@@ -2861,7 +3038,7 @@ describe('POST /api/workers/claim', () => {
         await withEncryptionKey(async () => {
           setupTeamWithEveryCredential();
           const data = await claimWith();
-          expect(mockResolveAgentModelRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1' });
+          expect(mockResolveAgentModelRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1', backend: 'claude' });
           expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
           expect(data.workers[0].serverOauthToken).toBe('decrypted-secret-value');
           expect('modelEndpoint' in data.workers[0]).toBe(false);
@@ -5543,65 +5720,84 @@ describe('path-overlap claim guard', () => {
     });
   });
 
-  // A pending task deferred here has no active worker to ever see a
-  // `path_released` worker message (nothing polls it until claimed), and the
-  // runner fallback poll defaults to a full hour (BUILDD_RUNNER_POLL_MIN).
-  // Registering it as a waiter on the blocker is what lets path-claim-release
-  // dispatch-wake it the moment the blocker's claim actually releases, instead
-  // of leaving it to that hourly poll.
-  it('layer 1: registers the deferred task as a waiter on the blocking PR\'s task', async () => {
-    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-    setupForClaim();
-    mockRegisterWaiter.mockClear();
-
-    mockWorkersFindMany
-      .mockResolvedValueOnce([]) // active workers
-      .mockResolvedValueOnce([
-        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
-      ]);
-
-    mockTasksFindMany
-      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
-      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
-
-    const req = createMockRequest({
-      headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'test-runner', taskId: 'task-1' },
+  // ── Claim-time waiter registration ─────────────────────────────────────────
+  // A pending task deferred for path_overlap must be woken when its blocker
+  // releases. Release only wakes rows in path_claim_waiters, so the deferral
+  // has to register one — before this, neither layer did, and the task sat
+  // out the runner's fallback poll.
+  describe('registers a waiter for each path_overlap deferral', () => {
+    beforeEach(() => {
+      mockRegisterClaimDeferralWaiters.mockReset();
+      mockRegisterClaimDeferralWaiters.mockResolvedValue({ registered: 1, woken: [] });
     });
-    const res = await POST(req);
+    const flush = () => new Promise(r => setTimeout(r, 0));
 
-    expect(res.status).toBe(200);
-    expect((await res.json()).workers).toHaveLength(0);
-    expect(mockRegisterWaiter).toHaveBeenCalledWith(
-      'sibling-task', 'task-1', 'apps/web/src/lib/mcp-oauth.ts', 'ws-1',
-    );
-  });
+    it('layer 1: waits on the open-PR task, on its overlapping manifest path', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'completed', prLifecycleStatus: 'open' },
+        ]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+        .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib', 'docs/x.md'] }]);
 
-  it('layer 2: registers the deferred task as a waiter on the active-claim holder', async () => {
-    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
-    setupForClaim();
-    mockRegisterWaiter.mockClear();
-
-    mockWorkersFindMany
-      .mockResolvedValueOnce([]) // active workers
-      .mockResolvedValueOnce([]); // no open PR tasks — this is the layer-2 backstop
-    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
-      new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]),
-    );
-
-    mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
-
-    const req = createMockRequest({
-      headers: { Authorization: 'Bearer bld_test' },
-      body: { runner: 'test-runner', taskId: 'task-1' },
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect((await res.json()).diagnostics?.deferrals?.path_overlap).toBe(1);
+      await flush();
+      expect(mockRegisterClaimDeferralWaiters).toHaveBeenCalledTimes(1);
+      expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
+        { waitingTaskId: 'task-1', blockingTaskId: 'sibling-task', blockedPath: 'apps/web/src/lib' },
+      ]]);
     });
-    const res = await POST(req);
 
-    expect(res.status).toBe(200);
-    expect((await res.json()).workers).toHaveLength(0);
-    expect(mockRegisterWaiter).toHaveBeenCalledWith(
-      'task-9', 'task-1', 'apps/web/src/lib/mcp-oauth.ts', 'ws-1',
-    );
+    it('layer 2: waits on the lease holder, on its leased path', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]));
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      expect((await res.json()).diagnostics?.deferrals?.path_overlap).toBe(1);
+      await flush();
+      expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
+        { waitingTaskId: 'task-1', blockingTaskId: 'task-9', blockedPath: 'apps/web/src/lib/mcp-oauth.ts' },
+      ]]);
+    });
+
+    it('registers nothing when nothing was deferred for path overlap', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+      await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+      await flush();
+      expect(mockRegisterClaimDeferralWaiters).not.toHaveBeenCalled();
+    });
+
+    it('a failed registration is logged, never fails the claim', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupForClaim();
+      mockWorkersFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]));
+      mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+      mockRegisterClaimDeferralWaiters.mockRejectedValueOnce(new Error('db down'));
+      const errSpy = mock(() => {});
+      const origError = console.error;
+      console.error = errSpy as any;
+      try {
+        const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } }));
+        expect(res.status).toBe(200);
+        await flush();
+        expect(errSpy.mock.calls.some((c: any[]) => String(c[0]).includes('claim-deferral waiters'))).toBe(true);
+      } finally {
+        console.error = origError;
+      }
+    });
   });
 });
 
@@ -7333,6 +7529,8 @@ describe('claim insert — atomic duplicate-worker guard', () => {
 
     expect(data.workers).toHaveLength(0);
     expect(taskUpdates.some(u => u.status === 'pending' && u.claimedBy === null)).toBe(true);
+    // Undoing our own claim is not new runnable state: no wake, or runners loop.
+    expect(mockWithDispatchHint).toHaveBeenCalledWith({ suppress: 'claim_rollback' }, expect.anything());
   });
 });
 
@@ -7837,7 +8035,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
 
   it('force: an admin explicit claim is not deferred by path overlap or the mission cap', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
-    mockRegisterWaiter.mockClear();
+    mockRegisterClaimDeferralWaiters.mockClear();
     mockWorkersFindMany
       .mockResolvedValueOnce([]) // active workers
       .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
@@ -7852,7 +8050,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].taskId).toBe('task-1');
     // Forced past the gate, not deferred — nothing is actually waiting.
-    expect(mockRegisterWaiter).not.toHaveBeenCalled();
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockRegisterClaimDeferralWaiters).not.toHaveBeenCalled();
   });
 
   // H2: the mission budget is a cost limit, not a person-overridable gate.
@@ -8407,7 +8606,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     mockFireOrderedBehind.mockClear();
     mockFireClaimPlanRecord.mockClear();
     mockFireDeferralEvent.mockClear();
-    mockRegisterWaiter.mockClear();
+    mockRegisterClaimDeferralWaiters.mockClear();
   });
 
   function plannedTask(id: string, over: Record<string, unknown> = {}, gitConfig: Record<string, unknown> | null = null) {
@@ -8489,7 +8688,10 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
     expect(mockFireOrderedBehind).toHaveBeenCalledTimes(1);
     expect(mockFireOrderedBehind.mock.calls[0][0]).toMatchObject({ taskId: 'b', blockedBy: 'a', edge: 'path_overlap', orientation: 'in_flight' });
     // The waiter is registered on the blocker so its release wakes b.
-    expect(mockRegisterWaiter).toHaveBeenCalledWith('a', 'b', 'src/x.ts', 'ws-1');
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
+      { waitingTaskId: 'b', blockingTaskId: 'a', blockedPath: 'src/x.ts' },
+    ]]);
     // No per-poll path_overlap deferral for the planned-out node.
     const reasons = mockFireDeferralEvent.mock.calls.map((c: any[]) => `${c[0].taskId}:${c[0].reason}`);
     expect(reasons).not.toContain('b:path_overlap');

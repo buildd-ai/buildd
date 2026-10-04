@@ -23,7 +23,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveOpenWorkerForUser } from '@/lib/pr-resolve';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask } from '@/lib/reviewer';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { listWorkspaceRoles } from '@/lib/pr-review-request';
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -191,7 +191,7 @@ export async function POST(
   }
 
   if (!reviewerTask.deduplicated) {
-    await dispatchNewTask(
+    await announceTaskCreated(
       {
         id: reviewerTask.id,
         title: `Review PR #${prNumber}: ${originalTask.title}`,
@@ -203,6 +203,7 @@ export async function POST(
       },
       workspace as never,
     );
+    await wakeTask(reviewerTask.id, 'task.created');
 
     await appendPrActivity({
       installationId,

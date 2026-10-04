@@ -36,6 +36,7 @@ mock.module('../../src/worker-store', () => ({
 }));
 
 import { HookFactory, PATH_CLAIM_HOOK_DEADLINE_MS } from '../../src/hook-factory';
+import { PATH_CLAIM_TIMEOUT_MS } from '../../src/path-claim-enforcement';
 import type { PathClaimResponse } from '../../src/buildd';
 import type { LocalWorker } from '../../src/types';
 import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
@@ -271,6 +272,40 @@ describe('createPathClaimHook — bounded network deadline', () => {
     expect(worker.pendingPaths).toEqual(['apps/web/src/foo.ts']);
     expect((worker as any).pathClaimDegraded).toBe(1);
     expect(milestones.some(m => String(m.label).toLowerCase().includes('degraded'))).toBe(true);
+  });
+
+  // Production round trips run ~75-425ms even for a cheap 401. A 200ms client
+  // timeout called real successes "unavailable" and dropped real 409s.
+  const SLOW_BUT_HEALTHY_MS = 450;
+  const after = <T,>(ms: number, v: T) => new Promise<T>(r => setTimeout(() => r(v), ms));
+
+  test('a claim answered after 200ms (but within the deadline) is consumed, not reported degraded', async () => {
+    expect(SLOW_BUT_HEALTHY_MS).toBeLessThan(PATH_CLAIM_HOOK_DEADLINE_MS);
+    const { factory, milestones } = makeFactory(() => after(SLOW_BUT_HEALTHY_MS, CLAIMED));
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/web/src/foo.ts' }) as any);
+
+    expect(result).toEqual({});
+    expect(worker.pendingPaths ?? []).toEqual([]);
+    expect((worker as any).pathClaimDegraded ?? 0).toBe(0);
+    expect(milestones.some(m => String(m.label).toLowerCase().includes('degraded'))).toBe(false);
+  });
+
+  test('enforce: a 409 answered after 200ms is still honored — the edit is denied, not failed open', async () => {
+    const { factory } = makeFactory(() => after(SLOW_BUT_HEALTHY_MS, conflict('apps/web/src/foo.ts')));
+    const worker = makeWorker({ pathClaimMode: 'enforce' } as any);
+
+    const result = await factory.createPathClaimHook(worker)(makeInput('Edit', { file_path: 'apps/web/src/foo.ts' }) as any);
+
+    expect(isDeny(result)).toBe(true);
+    expect(reasonOf(result)).toContain('apps/web/src/foo.ts is being edited by');
+    expect(worker.pendingPaths ?? []).toEqual([]);
+    expect((worker as any).pathClaimDegraded ?? 0).toBe(0);
+  });
+
+  test('the hook backstop never fires before the client request timeout', () => {
+    expect(PATH_CLAIM_HOOK_DEADLINE_MS).toBeGreaterThan(PATH_CLAIM_TIMEOUT_MS);
   });
 
   test('unavailable (timeout/network/5xx) queues the path and allows the edit, even when enforcing', async () => {

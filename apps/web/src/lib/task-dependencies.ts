@@ -7,7 +7,9 @@ import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/m
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
-import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { kickDispatch, wakeTask } from '@/lib/dispatch-authority';
+import { enqueueReadyDependents } from '@buildd/core/dispatch-dependents';
+import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 
@@ -486,7 +488,7 @@ async function maybeCreateAggregationTask(
   // Either only when it resolves in this workspace (role-routing §1 row 9, §3.1).
   const roleSlug = await pickEffectiveRole(parent.workspaceId, [parent.roleSlug, 'organizer']);
 
-  await db.insert(tasks).values({
+  const [aggregator] = await db.insert(tasks).values({
     workspaceId: parent.workspaceId,
     title: `Aggregate results: ${parent.title}`,
     description: 'Synthesize the results from all completed sub-tasks into a final deliverable.',
@@ -503,13 +505,21 @@ async function maybeCreateAggregationTask(
       parentTaskId,
       childTasks: childSummaries,
     },
-  });
+  }).returning({ id: tasks.id });
+  // The trigger made the wake durable with the insert; this kicks delivery.
+  if (aggregator) await wakeTask(aggregator.id, 'task.created');
 }
 
 /**
  * Check if completing a task unblocks any tasks that depend on it via `dependsOn`.
  * For each dependent task, verify all its dependencies are in terminal state,
- * then fire a TASK_UNBLOCKED Pusher event and dispatch the task so runners are woken up.
+ * then fire a TASK_UNBLOCKED Pusher event (dashboard) and wake it (dispatch outbox).
+ *
+ * The wake is not decided here: a dependent stays `pending` throughout, so the
+ * outbox trigger never sees it become runnable, and deciding in JS would leave
+ * a read-then-write gap. enqueueReadyDependents selects the ready dependents
+ * and writes their intents in one statement, using the same rule as below. It
+ * runs after the live PR refresh so a merge that refresh discovers counts.
  */
 export async function checkDependsOnResolved(
   completedTaskId: string
@@ -521,14 +531,6 @@ export async function checkDependsOnResolved(
       id: tasks.id,
       dependsOn: tasks.dependsOn,
       workspaceId: tasks.workspaceId,
-      title: tasks.title,
-      description: tasks.description,
-      mode: tasks.mode,
-      priority: tasks.priority,
-      missionId: tasks.missionId,
-      backend: tasks.backend,
-      roleSlug: tasks.roleSlug,
-      runnerPreference: tasks.runnerPreference,
     })
     .from(tasks)
     .where(
@@ -603,55 +605,68 @@ export async function checkDependsOnResolved(
   const MAX_LIVE_CHECKS = 5;
   const openPrTaskIds = Array.from(latestOpenPrWorkerMap.keys());
   if (openPrTaskIds.length > 0) {
-    const uniqueWsIds = [...new Set(
-      openPrTaskIds.map(id => depTaskWorkspaceMap.get(id)).filter((id): id is string => !!id)
-    )];
-    if (uniqueWsIds.length > 0) {
-      const wsRecords = await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, uniqueWsIds),
-        columns: { id: true },
-        with: { githubInstallation: { columns: { installationId: true } } },
-      });
-      const wsInstallMap = new Map(
-        wsRecords.map(ws => [ws.id, ws.githubInstallation?.installationId ?? null])
-      );
-
-      // Group taskIds by prNumber so we can dedup and propagate the result to all.
-      const prNumberToTaskIds = new Map<number, string[]>();
-      for (const taskId of openPrTaskIds) {
-        const worker = latestOpenPrWorkerMap.get(taskId);
-        if (!worker?.prNumber) continue;
-        if (!prNumberToTaskIds.has(worker.prNumber)) {
-          prNumberToTaskIds.set(worker.prNumber, []);
-        }
-        prNumberToTaskIds.get(worker.prNumber)!.push(taskId);
-      }
-
-      const uniquePrEntries = Array.from(prNumberToTaskIds.entries()).slice(0, MAX_LIVE_CHECKS);
-
-      await Promise.all(uniquePrEntries.map(async ([, taskIds]) => {
-        const representativeId = taskIds[0];
-        const worker = latestOpenPrWorkerMap.get(representativeId);
-        if (!worker?.prNumber || !worker?.prUrl) return;
-        const wsId = depTaskWorkspaceMap.get(representativeId);
-        const installationId = wsId ? wsInstallMap.get(wsId) : null;
-        if (!installationId) return;
-
-        const refreshed = await refreshWorkerMergeStateIfStale(
-          { id: worker.id, prNumber: worker.prNumber, prUrl: worker.prUrl },
-          installationId,
+    try {
+      const uniqueWsIds = [...new Set(
+        openPrTaskIds.map(id => depTaskWorkspaceMap.get(id)).filter((id): id is string => !!id)
+      )];
+      if (uniqueWsIds.length > 0) {
+        const wsRecords = await db.query.workspaces.findMany({
+          where: inArray(workspaces.id, uniqueWsIds),
+          columns: { id: true },
+          with: { githubInstallation: { columns: { installationId: true } } },
+        });
+        const wsInstallMap = new Map(
+          wsRecords.map(ws => [ws.id, ws.githubInstallation?.installationId ?? null])
         );
-        if (refreshed) {
-          for (const taskId of taskIds) {
-            openPrMap.set(taskId, false);
+
+        // Group taskIds by prNumber so we can dedup and propagate the result to all.
+        const prNumberToTaskIds = new Map<number, string[]>();
+        for (const taskId of openPrTaskIds) {
+          const worker = latestOpenPrWorkerMap.get(taskId);
+          if (!worker?.prNumber) continue;
+          if (!prNumberToTaskIds.has(worker.prNumber)) {
+            prNumberToTaskIds.set(worker.prNumber, []);
           }
+          prNumberToTaskIds.get(worker.prNumber)!.push(taskId);
         }
-      }));
+
+        const uniquePrEntries = Array.from(prNumberToTaskIds.entries()).slice(0, MAX_LIVE_CHECKS);
+
+        await Promise.all(uniquePrEntries.map(async ([, taskIds]) => {
+          const representativeId = taskIds[0];
+          const worker = latestOpenPrWorkerMap.get(representativeId);
+          if (!worker?.prNumber || !worker?.prUrl) return;
+          const wsId = depTaskWorkspaceMap.get(representativeId);
+          const installationId = wsId ? wsInstallMap.get(wsId) : null;
+          if (!installationId) return;
+
+          const refreshed = await refreshWorkerMergeStateIfStale(
+            { id: worker.id, prNumber: worker.prNumber, prUrl: worker.prUrl },
+            installationId,
+          );
+          if (refreshed) {
+            for (const taskId of taskIds) {
+              openPrMap.set(taskId, false);
+            }
+          }
+        }));
+      }
+    } catch (err) {
+      // A failed refresh only means a missed-webhook merge is not seen yet; the
+      // wake below must still go out for everything already resolved.
+      console.error(`[task-dependencies] live PR refresh failed for ${completedTaskId}:`, err);
     }
   }
 
+  try {
+    const woken = await enqueueReadyDependents(completedTaskId, depsGate());
+    if (woken.length > 0) kickDispatch();
+  } catch (err) {
+    // findPendingTasksWithResolvedDepsAndNoWake (reconciliation) re-finds these.
+    console.error(`[task-dependencies] dependency wake enqueue failed for ${completedTaskId}:`, err);
+  }
+
   // Check each dependent task to see if all its dependencies are resolved
-  const unblockedTasks: typeof dependentTasks = [];
   for (const task of dependentTasks) {
     const deps = task.dependsOn as string[] | null;
     if (!deps || deps.length === 0) continue;
@@ -674,50 +689,7 @@ export async function checkDependsOnResolved(
           resolvedDependency: completedTaskId,
         }
       );
-      unblockedTasks.push(task);
     }
-  }
-
-  if (unblockedTasks.length === 0) return;
-
-  // Wake runners for each newly unblocked task via the full dispatch chain
-  // (Pusher TASK_ASSIGNED + webhook + GitHub Actions).
-  // Batch-fetch workspace info to avoid N+1 queries.
-  const uniqueWorkspaceIds = [...new Set(unblockedTasks.map((t) => t.workspaceId))];
-  const workspaceRecords = await db
-    .select({
-      id: workspaces.id,
-      name: workspaces.name,
-      repo: workspaces.repo,
-      webhookConfig: workspaces.webhookConfig,
-      githubInstallationId: workspaces.githubInstallationId,
-      githubRepoId: workspaces.githubRepoId,
-    })
-    .from(workspaces)
-    .where(inArray(workspaces.id, uniqueWorkspaceIds));
-
-  const workspaceMap = new Map(workspaceRecords.map((w) => [w.id, w]));
-
-  for (const task of unblockedTasks) {
-    const workspace = workspaceMap.get(task.workspaceId);
-    if (!workspace) continue;
-    dispatchUnblockedTask(
-      {
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        workspaceId: task.workspaceId,
-        mode: task.mode ?? undefined,
-        priority: task.priority ?? undefined,
-        missionId: task.missionId,
-        backend: task.backend,
-        roleSlug: task.roleSlug,
-        runnerPreference: task.runnerPreference,
-      },
-      workspace
-    ).catch((err) =>
-      console.error(`[task-dependencies] dispatchUnblockedTask failed for task ${task.id}:`, err)
-    );
   }
 }
 

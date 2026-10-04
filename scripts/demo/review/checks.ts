@@ -103,6 +103,38 @@ export function contrastFloor(s: { mean: number; rms: number }, _theme: 'dark' |
   return null;
 }
 
+/**
+ * A large empty region between content: the frame cut into a 16-column grid of
+ * square-ish blocks; a block is flat when its luma barely varies. A flat block
+ * counts when its own column has content both above and below it (it sits in
+ * the layout, not in a margin the crop left), whatever it connects to at the
+ * sides. More than `share` of the frame counted that way reads as a hole.
+ */
+export const GAP = { share: 0.25, flatRms: 3 };
+export function emptyGap(gray: Uint8Array, width: number, height: number, share = GAP.share): Finding | null {
+  const cols = 16, bw = width / cols, rows = Math.max(1, Math.round(height / bw)), bh = height / rows;
+  const flat: boolean[][] = [];
+  for (let r = 0; r < rows; r++) {
+    flat.push([]);
+    for (let c = 0; c < cols; c++) {
+      let sum = 0, sq = 0, n = 0;
+      for (let y = Math.floor(r * bh); y < Math.floor((r + 1) * bh); y++) for (let x = Math.floor(c * bw); x < Math.floor((c + 1) * bw); x++) {
+        const v = gray[y * width + x]; sum += v; sq += v * v; n++;
+      }
+      const mean = sum / n;
+      flat[r].push(Math.sqrt(Math.max(0, sq / n - mean * mean)) < GAP.flatRms);
+    }
+  }
+  let held = 0;
+  for (let c = 0; c < cols; c++) {
+    const content = flat.map((row, r) => (!row[c] ? r : -1)).filter((r) => r >= 0);
+    if (content.length < 2) continue;
+    for (let r = content[0] + 1; r < content[content.length - 1]; r++) if (flat[r][c]) held++;
+  }
+  const worst = held / (rows * cols);
+  return worst > share ? { severity: 'high', check: 'empty-gap', issue: `an empty region covers ${Math.round(worst * 100)}% of the frame between content` } : null;
+}
+
 /** A clip that does not loop (the film) fades to black over its last second, by design. */
 export function inFadeOut(t: number, duration: number, loop: boolean): boolean {
   return !loop && t > duration - 1;

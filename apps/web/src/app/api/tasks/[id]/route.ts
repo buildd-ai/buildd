@@ -24,7 +24,7 @@ import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { applyTaskCancelSideEffects, emitTaskUpdated } from '@/lib/task-cancel';
-import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { wakeTask } from '@/lib/dispatch-authority';
 import { parseLoopConfig } from '@buildd/core/loop-config';
 import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/model-pin';
 import { TIERS } from '@buildd/core/model-tier-defaults';
@@ -32,15 +32,14 @@ import { appBaseUrl } from '@/lib/app-url';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
 
 /**
- * Nudge runners for a task just reset to pending — but only when nothing it
- * dependsOn is still outstanding. Mirrors checkDependsOnResolved's rule (every
- * dep completed, looping deps satisfied) minus its open-PR check; the claim
- * route still enforces the merged-PR gate, so this is only a wake-up.
+ * Label the wake for a task just reset to pending — but only when nothing it
+ * dependsOn is still outstanding. The status write already made a wake durable
+ * (outbox trigger, `task.requeued`); this records it as a manual start and
+ * kicks delivery. Mirrors checkDependsOnResolved's rule (every dep completed,
+ * looping deps satisfied) minus its open-PR check; the claim route still
+ * enforces the merged-PR gate.
  */
-async function dispatchIfDependenciesSatisfied(
-  task: typeof tasks.$inferSelect,
-  workspace: Parameters<typeof dispatchUnblockedTask>[1] | null | undefined,
-): Promise<void> {
+async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Promise<void> {
   const deps = (task.dependsOn as string[] | null) ?? [];
   if (deps.length > 0) {
     const depRows = await db.query.tasks.findMany({
@@ -54,8 +53,7 @@ async function dispatchIfDependenciesSatisfied(
     });
     if (!satisfied) return;
   }
-  // A PATCH back to pending is a manual retry, not a dependency resolving.
-  await dispatchUnblockedTask(task, workspace ?? {}, { event: 'task.retry' });
+  await wakeTask(task.id, 'manual.start');
 }
 
 // GET /api/tasks/[id] - Get a single task.
@@ -515,8 +513,8 @@ export async function PATCH(
             );
           }
         } else if (status === 'pending') {
-          await dispatchIfDependenciesSatisfied(updated, task.workspace).catch((err) =>
-            console.error('[task-patch] pending dispatch failed:', err)
+          await wakeIfDependenciesSatisfied(updated).catch((err) =>
+            console.error('[task-patch] pending wake failed:', err)
           );
         }
       }

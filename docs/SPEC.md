@@ -359,7 +359,18 @@ per-request form, so server-side calls **structurally cannot** use a seat.
   stripped from cloud claims; any other runner keeps today's credentials); the
   cloud dispatcher, which forwards only the model API paths,
   fetches it from `POST /api/runner/model-endpoint`. A runner's per-machine
-  `LLM_PROVIDER` still wins. Endpoint runs are metered.
+  `LLM_PROVIDER` still wins. Endpoint runs are metered. **Codex**: the same row
+  routes Codex tasks too, when the kind has an OpenAI-compatible wire —
+  `gateway` (LiteLLM) and `openrouter` do, `anthropic-compatible` doesn't. A
+  Codex task ranks the endpoint against `openai_api_key` / `codex_credential`
+  instead (`resolveAgentModelRoute`'s `backend: 'codex'`), and the runner
+  applies it as `OPENAI_BASE_URL` + `OPENAI_API_KEY` (not the Anthropic auth
+  vars), with a per-machine `OPENAI_BASE_URL` still winning the same way
+  `LLM_PROVIDER` does for Claude. An `anthropic-compatible`-only endpoint can't
+  serve Codex at all — the task fails with a clear message rather than
+  silently falling back to local Codex auth. Host-runner only; cloud-runner
+  Codex support is a separate, unimplemented gap (`POST
+  /api/runner/model-endpoint` 404s a Codex task outright).
 - **Decision model** — `teams.decision_model` (`packages/core/decision-model.ts`):
   null = Jev on OpenRouter; otherwise any chat model via OpenRouter or the gateway,
   with confidence from token logprobs (`@builddai/ai-kit/decide` chat endpoint).
@@ -459,6 +470,13 @@ policy-gated — under `agent-review` a self-merge is refused (the reviewer's ve
 the gate and a self-merge routes around it), under `human` it is refused, and under
 `auto-threshold` it is permitted only if the same safety check auto-merge applies
 passes. An `admin`-level token may pass `force: true`.
+
+That is a guarantee about buildd's own code paths, not about the GitHub credential a
+cloud-sandboxed agent holds — that credential carries `pull_requests:write` +
+`contents:write`, enough on its own to call GitHub's merge endpoint or push over a
+protected branch directly. The cloud runner's egress handler refuses those two shapes
+before the credential is ever attached, independent of the gate above — see
+`docs/specs/cloud-egress-merge-guard.md`.
 
 **The escalate triggers are enforced server-side from the PR's file list**, never from
 the model's `escalationReason` — that text is downstream of an untrusted contributor

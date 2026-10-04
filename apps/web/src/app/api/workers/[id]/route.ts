@@ -45,7 +45,7 @@ import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContrac
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
-import { dispatchNewTask, dispatchRetriedTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
 import {
@@ -841,6 +841,9 @@ export async function PATCH(
     // Set by the runner's startup reconciliation (worker-sync.ts
     // restoreWorkersFromDisk) when it finds a local session whose process died
     // without ever reporting a terminal status — never sent by a live session.
+    // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts) sends
+    // it for the same fact: the container or the runner process died before the
+    // runner reported. Either way it rides the infra-retry budget below.
     // Distinguishes a terminal record's outcome ('crashed') from an ordinary
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
@@ -2292,6 +2295,12 @@ export async function PATCH(
   // it is infra, and it rides the infra retry budget below rather than the
   // task's retry count — which is 0 for a non-mission task.
   const isCrashReconciled = status === 'failed' && crashReconciled === true;
+  // The runner's clone of the workspace repo was throttled by GitHub (429 or a
+  // secondary rate limit) after its own bounded retries (apps/runner/src/
+  // git-clone.ts). Nothing ran; rides the infra retry budget below, with its
+  // backoff, so the next attempt lands after GitHub's window instead of the
+  // task failing outright.
+  const isGithubThrottled = status === 'failed' && body.githubThrottled === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -2313,6 +2322,7 @@ export async function PATCH(
     updates.exitCause = classifyReportedFailure({
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
+      githubThrottled: isGithubThrottled,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
@@ -2395,6 +2405,9 @@ export async function PATCH(
           });
         }
       }
+      // Wake now: the claim route's single-flight and path-lease gates decide
+      // whether it may run yet, and re-evaluating is all a wake asks for.
+      await wakeTask(worker.taskId, 'task.requeued');
     }
     isBudgetReset = true; // reuse the "held for retry" machinery (no fail notif, re-broadcast pending)
   }
@@ -2579,6 +2592,13 @@ export async function PATCH(
     // immediately on Codex when a failover backend was resolved.
     // Guard: don't re-queue a cancelled task even when its worker hit a budget wall.
     const existingCtx = (taskForBudget?.context || {}) as Record<string, unknown>;
+    const budgetStartAt = failoverBackend ? null : (() => {
+      const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
+        ? earliestAlternateReset
+        : budgetResetsAt;
+      // An explicit deferral floor already on the task still wins.
+      return taskForBudget?.startAt && taskForBudget.startAt > wakeAt ? taskForBudget.startAt : wakeAt;
+    })();
     if (taskForBudget?.status !== 'cancelled') await db
       .update(tasks)
       .set({
@@ -2588,15 +2608,7 @@ export async function PATCH(
         expiresAt: null,
         updatedAt: new Date(),
         ...(failoverBackend && { backend: failoverBackend }),
-        ...(!failoverBackend && {
-          startAt: (() => {
-            const wakeAt = earliestAlternateReset && earliestAlternateReset < budgetResetsAt
-              ? earliestAlternateReset
-              : budgetResetsAt;
-            // An explicit deferral floor already on the task still wins.
-            return taskForBudget?.startAt && taskForBudget.startAt > wakeAt ? taskForBudget.startAt : wakeAt;
-          })(),
-        }),
+        ...(budgetStartAt && { startAt: budgetStartAt }),
         context: {
           ...existingCtx,
           budgetExhausted: true,
@@ -2608,6 +2620,18 @@ export async function PATCH(
         },
       })
       .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+
+    // A failover is claimable on the other provider now. A deferral wakes at
+    // the reset and not before: an instant wake would re-claim straight into
+    // the same wall (the 2026-06-25 session-limit storm). notBefore keys the
+    // wake onto the trigger's start_at row and publishes its timer.
+    if (taskForBudget?.status !== 'cancelled') {
+      await wakeTask(
+        worker.taskId,
+        budgetStartAt ? 'budget.available' : 'task.requeued',
+        budgetStartAt ? { notBefore: budgetStartAt } : {},
+      );
+    }
 
     if (failoverBackend) {
       console.log(
@@ -2677,6 +2701,7 @@ export async function PATCH(
           .update(tasks)
           .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: new Date() })
           .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
+        await wakeTask(worker.taskId, 'task.requeued');
       }
       isBudgetReset = true; // reuse hold-for-retry UX: skip fail notification, re-broadcast pending
     }
@@ -2762,6 +2787,8 @@ export async function PATCH(
                 })
                 .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
 
+              // Another provider can carry it now; no delay to honour.
+              await wakeTask(worker.taskId, 'task.requeued');
               isAuthFailover = true;
               isBudgetReset = true; // gates normal task-update block + skips fail notifications
               console.log(`[workers PATCH] Task ${worker.taskId} failed over to ${authFailoverBackend} after auth failure (${authSeverity})`);
@@ -2932,8 +2959,9 @@ export async function PATCH(
         // to the ordinary retry budget. A crash-reconciled restart rides it for
         // the same reason: without it, one runner self-update permanently
         // failed every in-flight non-mission task. A model version-gate 400
-        // rides it too: bounded, backed off, and uncharged.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
+        // throttled: the backoff is the point, GitHub needs time.
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
@@ -3848,6 +3876,7 @@ export async function PATCH(
                   ...(!isSensitive && structuredOutput && typeof structuredOutput === 'object' ? { structuredOutput } : {}),
                   ...(isHeartbeat && structuredOutput ? { heartbeatStatus: (structuredOutput as any)?.status } : {}),
                 },
+                taskId,
               });
             }
           }
@@ -3868,7 +3897,7 @@ export async function PATCH(
       await runStep('notify', async () => {
         const taskRecord = await db.query.tasks.findFirst({
           where: eq(tasks.id, taskId),
-          // The dispatch fields feed the auto-retry wake-up below.
+          // startAt feeds the auto-retry wake below.
           columns: {
             id: true, title: true, description: true, workspaceId: true, mode: true, priority: true,
             missionId: true, backend: true, roleSlug: true, runnerPreference: true, startAt: true,
@@ -3882,6 +3911,14 @@ export async function PATCH(
             },
           },
         });
+        if (shouldAutoRetry && taskRecord) {
+          // The requeue is already durable (tasks trigger); this labels it and
+          // kicks delivery. A backoff/loop startAt keys the wake onto the
+          // trigger's scheduled row instead of spending an immediate no-op one.
+          const retryAt = taskRecord.startAt ? new Date(taskRecord.startAt) : null;
+          const deferred = retryAt && retryAt.getTime() > Date.now() ? retryAt : undefined;
+          await wakeTask(worker.taskId!, 'task.requeued', deferred ? { notBefore: deferred } : {});
+        }
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
           // A contract violation (planning/review) reports `status:'completed'`
@@ -3892,20 +3929,6 @@ export async function PATCH(
           // already applies this same correction).
           const isDone = status === 'completed' && !contractViolation;
           if (shouldAutoRetry) {
-            // Wake runners for the requeued task: the workspace webhook when one
-            // is configured (a push runner has no Pusher subscription), else a
-            // TASK_ASSIGNED broadcast to any connected worker, as before.
-            await dispatchRetriedTask(
-              {
-                ...taskRecord,
-                id: worker.taskId!,
-                workspaceId: worker.workspaceId,
-                description: taskRecord.description ?? null,
-                mode: taskRecord.mode ?? undefined,
-                priority: taskRecord.priority ?? undefined,
-              },
-              taskRecord.workspace ?? {},
-            );
             // A retry is a (transient) failure — gate it on the taskFailed toggle.
             void notifyTeam(notifyTeamId, 'taskFailed', {
               title: 'Task retrying',
@@ -4486,11 +4509,9 @@ export async function PATCH(
   }
 
   // Broadcast budget-reset task status change for dashboard visibility.
-  // Intentionally NOT sending TASK_ASSIGNED here: that event tells the runner
-  // to immediately re-claim, which triggers a refire before the runner's
-  // circuit breaker (trip-on-error) can prevent it — reproducing the exact
-  // burst observed in the 2026-06-25 session-limit storm. The task is already
-  // pending and the runner's next poll picks it up when the budget resets.
+  // Not a wake: each requeue above already called wakeTask. A budget deferral
+  // wakes at its reset (notBefore = startAt), never now — an instant re-claim
+  // into the same wall was the 2026-06-25 session-limit storm.
   if (isBudgetReset && worker.taskId) {
     // Auth failover: signal backend change, not a budget pause
     const taskResetPayload = isAuthFailover
@@ -5319,7 +5340,8 @@ async function handleReviewerOutcomeIfNeeded(
       if (liveRetry?.status !== 'pending') return;
 
       if (workspace) {
-        await dispatchNewTask(retryTask, workspace);
+        await announceTaskCreated(retryTask, workspace);
+        await wakeTask(retryTask.id, 'review.fix_requested');
         console.log(`[reviewer] Created retry task ${retryTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${currentIteration + 1}/${maxIterations})`);
         // The retry inherited the original's manifest; shrink it (and the
         // finished reviewer's leases) to the PR's actual diff at this head.

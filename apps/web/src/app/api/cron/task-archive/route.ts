@@ -17,7 +17,9 @@
 // Also prunes worker_action_events past ACTION_EVENTS_RETENTION_DAYS and
 // watcher_events past WATCHER_EVENTS_RETENTION_DAYS — see those constants' doc
 // comments for why these tables (not workers.mcp_calls-style capped arrays) need
-// their own age-based retention job.
+// their own age-based retention job. And prunes delivered/failed rows of
+// task_dispatch_outbox past OUTBOX_RETENTION_DAYS (packages/core/dispatch-outbox.ts):
+// every wake writes one, and only the recent trail is ever read.
 //
 // Auth: Bearer token matching CRON_SECRET env var.
 // Recommended schedule: weekly.
@@ -26,6 +28,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
 import { lt, sql } from 'drizzle-orm';
+import { pruneDispatchOutbox } from '@buildd/core/dispatch-outbox';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
@@ -114,9 +117,18 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     console.warn('[TaskArchive] watcher_events prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
   }
 
-  const summary = { ok: true, archived, prunedActionEvents, prunedWatcherEvents };
+  let prunedDispatchOutbox = 0;
+  try {
+    prunedDispatchOutbox = await pruneDispatchOutbox();
+    console.log(`[TaskArchive] Pruned ${prunedDispatchOutbox} task_dispatch_outbox row(s)`);
+  } catch (pruneErr) {
+    // Non-fatal, same as above. Pending rows are never pruned, so no wake is lost.
+    console.warn('[TaskArchive] task_dispatch_outbox prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
+  }
+
+  const summary = { ok: true, archived, prunedActionEvents, prunedWatcherEvents, prunedDispatchOutbox };
   report({
-    changed: archived + prunedActionEvents + prunedWatcherEvents,
+    changed: archived + prunedActionEvents + prunedWatcherEvents + prunedDispatchOutbox,
     errors: 0,
     result: summary,
   });

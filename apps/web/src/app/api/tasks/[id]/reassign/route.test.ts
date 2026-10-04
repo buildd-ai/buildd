@@ -124,6 +124,26 @@ mock.module('@/app/api/workers/claim/held-gate', () => ({
   isTaskNotHeldOrLocal: async () => true,
 }));
 
+// The reassign wakes through the dispatch authority; which consumer hears it
+// (webhook vs broadcast) is delivery's business, tested in dispatch-authority.
+// Full export surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: any) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  announceTaskCreated: mock(async () => {}),
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.retry', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
@@ -157,6 +177,7 @@ async function callHandler(request: NextRequest, id: string) {
 
 describe('POST /api/tasks/[id]/reassign', () => {
   beforeEach(() => {
+    mockWakeTask.mockClear();
     mockGetCurrentUser.mockReset();
     mockAccountsFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
@@ -207,7 +228,7 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(data.error).toBe('Task not found');
   });
 
-  it('reassigns pending task and broadcasts TASK_ASSIGNED event', async () => {
+  it('reassigns pending task and wakes it as task.reassigned', async () => {
     const mockTask = {
       id: 'task-123',
       title: 'Test Task',
@@ -229,12 +250,9 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(data.taskId).toBe('task-123');
     expect(data.wasAssigned).toBe(false);
 
-    // Should trigger TASK_ASSIGNED event
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'workspace-ws-1',
-      'task:assigned',
-      expect.objectContaining({ targetLocalUiUrl: null })
-    );
+    expect(mockWakeTask.mock.calls).toEqual([['task-123', 'task.reassigned', {}]]);
+    // The route no longer broadcasts the assignment itself.
+    expect(mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'task:assigned')).toHaveLength(0);
   });
 
   it('returns reassigned:false for assigned task without force flag', async () => {
@@ -363,8 +381,9 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(response.status).toBe(200);
 
     // Should update workers and trigger WORKER_FAILED for each
-    // triggerEvent should be called 3 times: 2 for WORKER_FAILED + 1 for TASK_ASSIGNED
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(3);
+    // One WORKER_FAILED per worker; the wake goes through the dispatch authority.
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(2);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   // Path-claims leak regression: these workers are terminated here, outside
@@ -692,27 +711,17 @@ describe('POST /api/tasks/[id]/reassign', () => {
     // but the behavior is verified by the success response
   });
 
-  it('broadcasts TASK_ASSIGNED with null targetLocalUiUrl for any worker to claim', async () => {
-    const mockTask = {
-      id: 'task-123',
-      title: 'Test Task',
-      status: 'pending',
-      workspaceId: 'ws-1',
-      expiresAt: null,
-      workspace: { id: 'ws-1', teamId: 'team-1' },
-    };
-
+  it('a pending task deferred to a future startAt is woken at that time, not now', async () => {
+    const startAt = new Date(Date.now() + 3_600_000);
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123', title: 'Test Task', status: 'pending', workspaceId: 'ws-1',
+      expiresAt: null, startAt, workspace: { id: 'ws-1', teamId: 'team-1' },
+    });
 
-    const request = createMockRequest();
-    await callHandler(request, 'task-123');
+    await callHandler(createMockRequest(), 'task-123');
 
-    const taskAssignedCalls = mockTriggerEvent.mock.calls.filter(
-      (call: any[]) => call[1] === 'task:assigned'
-    );
-    expect(taskAssignedCalls.length).toBe(1);
-    expect(taskAssignedCalls[0][2].targetLocalUiUrl).toBeNull();
+    expect(mockWakeTask.mock.calls).toEqual([['task-123', 'task.reassigned', { notBefore: startAt }]]);
   });
 
   it('identifies stale task correctly when expiresAt is in the past', async () => {
@@ -762,109 +771,28 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(data.canTakeover).toBeFalsy(); // Not owner and not stale
   });
 
-  // A push-dispatched workspace (webhookConfig set) has no Pusher subscriber:
-  // before this, a retry from the dashboard broadcast TASK_ASSIGNED only, so the
-  // webhook consumer never heard the task was claimable again.
-  describe('workspace webhook', () => {
-    // Retries reach only a webhook that opted into them (webhookConfig.events).
-    const webhookConfig = {
-      url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true,
-      events: ['task.created', 'task.unblocked', 'task.retry'],
-    };
-    let fetchCalls: Array<{ url: string; body: any }>;
-    const originalFetch = globalThis.fetch;
-
-    beforeEach(() => {
-      fetchCalls = [];
-      globalThis.fetch = (async (url: string, init: RequestInit) => {
-        fetchCalls.push({ url, body: JSON.parse(init.body as string) });
-        return new Response('ok', { status: 200 });
-      }) as unknown as typeof fetch;
+  it('a failed-task retry is reset to pending and woken as task.reassigned', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123', title: 'Test Task', description: 'desc', status: 'failed', workspaceId: 'ws-1',
+      runnerPreference: 'any', startAt: null, expiresAt: null,
+      workspace: { id: 'ws-1', teamId: 'team-1' },
     });
-    const restore = () => { globalThis.fetch = originalFetch; };
+    const response = await callHandler(createMockRequest(), 'task-123');
+    expect(response.status).toBe(200);
+    expect(mockWakeTask.mock.calls).toEqual([['task-123', 'task.reassigned', {}]]);
+  });
 
-    it('a webhook that did not opt into task.retry is not called; the retry broadcasts as before', async () => {
-      try {
-        mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-        const { events: _e, ...legacy } = webhookConfig;
-        mockTasksFindFirst.mockResolvedValue({
-          id: 'task-123', title: 'Test Task', description: 'desc', status: 'failed', workspaceId: 'ws-1',
-          runnerPreference: 'any', startAt: null, expiresAt: null,
-          workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig: legacy },
-        });
-        const response = await callHandler(createMockRequest(), 'task-123');
-        expect(response.status).toBe(200);
-        expect(fetchCalls).toHaveLength(0);
-        expect(mockTriggerEvent).toHaveBeenCalled();
-      } finally {
-        restore();
-      }
+  it('a backend switch lifts the old provider deferral, so the wake is immediate', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-123', title: 'Test Task', description: null, status: 'failed', workspaceId: 'ws-1',
+      backend: 'claude', startAt: new Date(Date.now() + 3_600_000), context: { budgetExhausted: true },
+      expiresAt: null, workspace: { id: 'ws-1', teamId: 'team-1' },
     });
 
-    it('a failed-task retry reaches the webhook with event task.retry and skips the broadcast', async () => {
-      try {
-        mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-        mockTasksFindFirst.mockResolvedValue({
-          id: 'task-123',
-          title: 'Test Task',
-          description: 'desc',
-          status: 'failed',
-          workspaceId: 'ws-1',
-          missionId: 'mission-1',
-          backend: 'claude',
-          roleSlug: 'builder',
-          runnerPreference: 'any',
-          startAt: null,
-          expiresAt: null,
-          workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig },
-        });
+    await callHandler(createMockRequest({ body: { backend: 'codex' } }), 'task-123');
 
-        const response = await callHandler(createMockRequest(), 'task-123');
-        expect(response.status).toBe(200);
-
-        expect(fetchCalls).toHaveLength(1);
-        expect(fetchCalls[0].url).toBe(webhookConfig.url);
-        expect(fetchCalls[0].body).toMatchObject({
-          event: 'task.retry',
-          taskId: 'task-123',
-          workspaceId: 'ws-1',
-          missionId: 'mission-1',
-          backend: 'claude',
-          roleSlug: 'builder',
-          sessionKey: 'buildd-task-123',
-        });
-        // Webhook dispatch is exclusive, same as at creation.
-        expect(mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'task:assigned')).toHaveLength(0);
-      } finally {
-        restore();
-      }
-    });
-
-    it('a backend switch is what the webhook is told', async () => {
-      try {
-        mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
-        mockTasksFindFirst.mockResolvedValue({
-          id: 'task-123',
-          title: 'Test Task',
-          description: null,
-          status: 'failed',
-          workspaceId: 'ws-1',
-          backend: 'claude',
-          startAt: new Date(Date.now() + 3_600_000),
-          context: { budgetExhausted: true },
-          expiresAt: null,
-          workspace: { id: 'ws-1', teamId: 'team-1', webhookConfig },
-        });
-
-        await callHandler(createMockRequest({ body: { backend: 'codex' } }), 'task-123');
-
-        // The switch lifted the old provider's deferral, so the task is
-        // claimable now and the webhook fires with the new backend.
-        expect(fetchCalls).toHaveLength(1);
-        expect(fetchCalls[0].body.backend).toBe('codex');
-      } finally {
-        restore();
-      }
-    });
+    expect(mockWakeTask.mock.calls).toEqual([['task-123', 'task.reassigned', {}]]);
   });
 });

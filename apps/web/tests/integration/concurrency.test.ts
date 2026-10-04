@@ -162,10 +162,22 @@ describe('Concurrency Control', () => {
       }
     }
 
+    // availableSlots is a pre-flight snapshot. The test account is shared by every
+    // integration run on the test machine, so another run can free a slot during
+    // the claim loop and one extra claim here is legitimate. Assert what the server
+    // actually enforces: the account's total active workers never exceed its limit.
+    const { workers: activeAfter } = await api('/api/workers/mine?status=idle,running,starting,waiting_input');
     assert(
-      claimedWorkerIds.length <= availableSlots,
-      `Claimed workers (${claimedWorkerIds.length}) <= available slots (${availableSlots})`
+      activeAfter.length <= maxConcurrent,
+      `Account active workers (${activeAfter.length}) <= maxConcurrentWorkers (${maxConcurrent})`
     );
+    assert(
+      claimedWorkerIds.length <= maxConcurrent,
+      `Claimed workers (${claimedWorkerIds.length}) <= maxConcurrentWorkers (${maxConcurrent})`
+    );
+    if (claimedWorkerIds.length > availableSlots) {
+      console.log(`  Note: claimed ${claimedWorkerIds.length} > pre-flight ${availableSlots} free; a concurrent run released capacity mid-loop`);
+    }
   }, TIMEOUT);
 
   test('should prevent multiple workers claiming same task', async () => {

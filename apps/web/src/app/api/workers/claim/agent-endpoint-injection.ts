@@ -11,10 +11,14 @@
  * pendingCredentialRefreshes) for that worker. Only the winner is attached.
  *
  * Never called for a cloud claim (the route skips it; `modelEndpoint` is in
- * CLAIM_CREDENTIAL_FIELDS as the backstop). Codex tasks are skipped, like the
- * Anthropic injection. A runner that reported `llmProviderOverride` gets a
- * non-secret `modelEndpointIgnored` marker instead of the key: its per-machine
- * provider wins (§2.1), so the key would only be exposure.
+ * CLAIM_CREDENTIAL_FIELDS as the backstop). A Codex task ranks the endpoint
+ * against the Codex-side credentials instead of the Anthropic ones
+ * (`resolveAgentModelRoute`'s `backend: 'codex'`) — when it wins, the Codex
+ * credential attach step (`attachCodexCredentials`) must skip that worker the
+ * same way the Anthropic one does, via the same `won` set. A runner that
+ * reported `llmProviderOverride` gets a non-secret `modelEndpointIgnored`
+ * marker instead of the key: its per-machine provider wins (§2.1), so the key
+ * would only be exposure.
  *
  * No endpoint row ⇒ no field written and nothing withheld: the claim is
  * exactly what it was before endpoints existed (§7). The same holds for a
@@ -32,14 +36,14 @@ export function runnerSupportsAgentEndpoint(runnerFeatures: unknown): boolean {
 type ClaimedTask = { id: string; workspaceId: string };
 
 export interface AgentEndpointDeps {
-  resolve: (opts: { teamId: string; workspaceId: string; accountId: string }) => Promise<AgentModelDecision | null>;
+  resolve: (opts: { teamId: string; workspaceId: string; accountId: string; backend: 'claude' | 'codex' }) => Promise<AgentModelDecision | null>;
 }
 
 export async function attachAgentEndpoints(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
   accountId: string,
-  opts: { llmProviderOverride: boolean; runnerSupportsEndpoint: boolean },
+  opts: { llmProviderOverride: boolean; codexBaseUrlOverride?: boolean; runnerSupportsEndpoint: boolean },
   deps: AgentEndpointDeps = { resolve: resolveAgentModelRoute },
 ): Promise<Set<string>> {
   const won = new Set<string>();
@@ -47,25 +51,40 @@ export async function attachAgentEndpoints(
   if (claimedWorkers.length === 0 || !process.env.ENCRYPTION_KEY) return won;
   for (const cw of claimedWorkers) {
     const task = (claimedTasks.find(t => t.id === cw.taskId) ?? cw.task) as any;
-    if (!task || task.backend === 'codex') continue;
+    if (!task) continue;
+    const isCodexTask = task.backend === 'codex';
     const teamId = task.workspace?.teamId as string | undefined;
     const workspaceId = task.workspaceId as string | undefined;
     if (!teamId || !workspaceId) continue;
     try {
-      const decision = await deps.resolve({ teamId, workspaceId, accountId });
+      const decision = await deps.resolve({ teamId, workspaceId, accountId, backend: isCodexTask ? 'codex' : 'claude' });
       if (!decision) continue;
       if (decision.winner !== 'endpoint') {
-        console.log(`[claim] agent endpoint not used for worker ${cw.id}: a ${decision.beatenBy}-scoped Anthropic credential is more specific`);
+        console.log(`[claim] agent endpoint not used for worker ${cw.id}: a ${decision.beatenBy}-scoped credential is more specific`);
         continue;
       }
       won.add(cw.id);
       const w = cw as typeof cw & { modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean };
-      if (opts.llmProviderOverride) {
+      const overridden = isCodexTask ? !!opts.codexBaseUrlOverride : opts.llmProviderOverride;
+      if (overridden) {
         w.modelEndpointIgnored = true;
         continue;
       }
       const e = decision.endpoint;
-      w.modelEndpoint = { kind: e.kind, baseUrl: e.baseUrl, authToken: e.apiKey, authHeader: e.authHeader, models: e.models };
+      if (isCodexTask && !e.openAiBaseUrl) {
+        // The endpoint has no OpenAI-compatible route (anthropic-compatible
+        // kind). Attach it anyway so the runner can fail the task with a
+        // clear message (agent-model-env.ts) instead of silently falling
+        // back to whatever local Codex auth exists — the team's endpoint IS
+        // the configured route here, it just can't speak Codex's wire format.
+        w.modelEndpoint = { kind: e.kind, baseUrl: e.baseUrl, authToken: e.apiKey, authHeader: e.authHeader, models: e.models };
+        console.log(`[claim] attached ${e.scope} agent model endpoint (${e.kind}) for Codex worker ${cw.id} — no OpenAI-compatible route, runner will fail it clearly`);
+        continue;
+      }
+      w.modelEndpoint = {
+        kind: e.kind, baseUrl: e.baseUrl, authToken: e.apiKey, authHeader: e.authHeader, models: e.models,
+        ...(e.openAiBaseUrl ? { openAiBaseUrl: e.openAiBaseUrl } : {}),
+      };
       console.log(`[claim] attached ${e.scope} agent model endpoint (${e.kind}) for worker ${cw.id}`);
     } catch (err) {
       // Non-fatal, like every credential block: the claim still succeeds.

@@ -24,7 +24,7 @@ import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
@@ -375,7 +375,7 @@ export async function POST(req: NextRequest) {
   // putting a second agent on the same commit. Dispatch and the PR activity
   // entry both belong to the filing that won.
   if (!reviewerTask.deduplicated) {
-    await dispatchNewTask(
+    await announceTaskCreated(
       {
         id: reviewerTask.id,
         title: `Review PR #${prNumber}: ${originalTask.title}`,
@@ -387,6 +387,7 @@ export async function POST(req: NextRequest) {
       },
       workspace as never,
     );
+    await wakeTask(reviewerTask.id, 'task.created');
 
     // Say so on the PR itself, exactly as the webhook path does.
     await appendPrActivity({

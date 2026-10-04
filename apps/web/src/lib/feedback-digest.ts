@@ -2,7 +2,7 @@
  * Feedback-to-memory processing pipeline.
  *
  * Analyzes recent user feedback (down-votes & dismissals) on AI content,
- * identifies patterns, and persists distilled learnings to the memory service
+ * identifies patterns, and persists distilled learnings to the team memory pool
  * so future agent runs produce more relevant output.
  *
  * Each memory is filed under the project key of the workspace the rated

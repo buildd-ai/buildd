@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { artifacts } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 
 export function generateShareToken(): string {
   return randomBytes(24).toString('base64url');
@@ -66,10 +67,11 @@ interface UpsertAutoArtifactParams {
   title: string;
   content: string | null;
   metadata: Record<string, unknown>;
+  taskId?: string | null; // Optional: for notifying on review artifacts
 }
 
 export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Promise<void> {
-  const { workerId, workspaceId, key, type, title, content, metadata } = params;
+  const { workerId, workspaceId, key, type, title, content, metadata, taskId } = params;
 
   if (!workspaceId) return;
 
@@ -133,6 +135,19 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
       'worker:artifact',
       { artifact: broadcastArtifact }
     );
+
+    // Notify if this artifact is meant for review and the task opted in.
+    // For updates, only notify if content actually changed (not on every upsert).
+    if (taskId && result) {
+      const shouldNotify = await shouldNotifyOnArtifact(result, taskId);
+      if (shouldNotify) {
+        // On update, check if content or title changed; on insert, always notify.
+        const isUpdate = !!existing;
+        if (!isUpdate || (existing.content !== content || existing.title !== title)) {
+          await notifyArtifactReady(result, taskId, workspaceId);
+        }
+      }
+    }
   } catch (err) {
     console.error(`[Auto-artifact] Failed to upsert artifact for worker ${workerId}:`, err);
   }

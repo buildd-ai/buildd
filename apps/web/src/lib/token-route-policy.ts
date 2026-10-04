@@ -24,7 +24,7 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   if (/^\/api\/(missions|initiatives)(\/|$)/.test(path)) return read ? 'tasks:read' : 'missions:admin';
   if (path === '/api/workers/active') return 'analytics:read';
   if (/^\/api\/workers\/[^/]+\/error-traces$/.test(path)) return 'analytics:read';
-  if (path === '/api/explain' || (read && /^\/api\/connectors(\/|$)/.test(path))) return 'analytics:read';
+  if (path === '/api/explain' || path === '/api/decisions' || path === '/api/decisions/readout' || (read && /^\/api\/connectors(\/|$)/.test(path))) return 'analytics:read';
   // The read_evidence action's capability: MCP calls these with the caller's own token.
   if (read && (/^\/api\/tasks\/[^/]+\/evidence$/.test(path) || path === '/api/evidence')) return 'analytics:read';
   if (/^\/api\/workers(\/|$)/.test(path)) return read ? 'tasks:read' : 'workers:write';
@@ -58,10 +58,11 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     if (queryWorkspaces?.some(id => !token.workspaceIds!.includes(id))) return false;
     // Only accept filters the endpoint actually applies. A decorative query
     // parameter must never turn a team-wide response into scoped authorization.
-    if (/^\/api\/(stats|health|cbm)(\/|$)/.test(url.pathname)) {
+    if (/^\/api\/(stats|health|cbm|decisions)(\/|$)/.test(url.pathname)) {
       const filters: Record<string, string[]> = {
         '/api/stats/actions': ['workspace'], '/api/stats/usage': ['workspace'],
         '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'],
+        '/api/decisions': ['workspaceId', 'workspace'], '/api/decisions/readout': ['workspaceId', 'workspace'],
       };
       if (!filters[url.pathname]?.some(name => url.searchParams.get(name))) return false;
     }

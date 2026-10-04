@@ -66,6 +66,7 @@ mock.module('drizzle-orm', () => ({
   desc: (field: any) => ({ field, type: 'desc' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
   isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
   like: (field: any, value: any) => ({ field, value, type: 'like' }),
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
@@ -91,6 +92,26 @@ mock.module('@buildd/core/db/schema', () => ({
     updatedAt: 'updatedAt',
   },
   workers: { id: 'id', workspaceId: 'workspaceId' },
+  secrets: {
+    teamId: 'teamId',
+    accountId: 'accountId',
+    workspaceId: 'workspaceId',
+    userId: 'userId',
+    purpose: 'purpose',
+    encryptedValue: 'encryptedValue',
+  },
+  notificationPreferences: {
+    teamId: 'teamId',
+    taskClaimed: 'taskClaimed',
+    taskCompleted: 'taskCompleted',
+    taskFailed: 'taskFailed',
+    credentialExpired: 'credentialExpired',
+    connectorBlocked: 'connectorBlocked',
+    artifactReady: 'artifactReady',
+  },
+  workspaces: { id: 'id', teamId: 'teamId' },
+  missions: { id: 'id', teamId: 'teamId' },
+  tasks: { id: 'id', workspaceId: 'workspaceId' },
 }));
 
 const { GET, POST } = await import('./route');

@@ -16,12 +16,14 @@
  * sent or warned on. A `command` is graded on the outcome its label says the
  * command asserts, not on the fact that it runs.
  *
- * Shadow first, modelled on `mission_strand_choice`
- * (strand-choice-decision.ts): with the team's `mission_goal_quality`
- * capability on, the verdict is logged as a `[decision-shadow]` line and weak
- * criteria get a `warned` row in the gate ledger. The response is unchanged.
- * `GOAL_QUALITY_MODE` moves to `surface` in code, in its own PR, after the
- * readout; never by configuration.
+ * With the team's `mission_goal_quality` capability on, the verdict is logged
+ * as a `[decision-shadow]` line and weak criteria get a `warned` row in the
+ * gate ledger. 2026-10-03 owner decision (knowledge-base:
+ * buildd/design/decision-calls.md Point 2b): `GOAL_QUALITY_MODE` ships
+ * `surface` from this point on — the response carries an `advisory` when the
+ * verdict lands in time and something is weak — not shadow-then-a-later-PR;
+ * `shadow` stays available as an explicit per-call override for tests. Never
+ * raised by configuration, workspace setting or request flag.
  *
  * Fails open by construction: disabled, no key, a sensitive workspace, a
  * timeout, an error, an unknown label or a throw all return null.
@@ -55,8 +57,10 @@ export const GOAL_QUALITY_PROMPT_VERSION = 'gq2';
 
 /**
  * `shadow`: log and ledger only, response unchanged. `surface`: the response
- * carries an advisory. Raised in code, in its own PR, after
- * the readout — never by configuration, workspace setting or request flag.
+ * carries an advisory when the verdict lands in time and something is weak
+ * (`withGoalQualityAdvisory`). Shipped `surface` since 2026-10-03 (owner
+ * decision retiring shadow-first as the default decision-call rollout) —
+ * never raised by configuration, workspace setting or request flag.
  */
 export const GOAL_QUALITY_MODE: 'shadow' | 'surface' = 'surface';
 

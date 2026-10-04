@@ -150,10 +150,16 @@ export async function handleLinearIssueEvent(
   deps: {
     findLink?: typeof realFindLink;
     linkExternal?: typeof realLinkExternal;
+    wakeTask?: (taskId: string, cause: 'task.created') => Promise<void>;
   } = {},
 ): Promise<HandleResult> {
   const findLink = deps.findLink ?? realFindLink;
   const linkExternal = deps.linkExternal ?? realLinkExternal;
+  // Lazy, like the db: this module is injected its database and loads none itself.
+  const wakeTask = deps.wakeTask ?? (async (taskId: string, cause: 'task.created') => {
+    const { wakeTask: wake } = await import('@/lib/dispatch-authority');
+    await wake(taskId, cause);
+  });
 
   if (event.kind === 'ignore') return { action: 'ignored' };
 
@@ -203,5 +209,7 @@ export async function handleLinearIssueEvent(
     return { action: 'exists', taskId: link.builddEntityId };
   }
 
+  // Only the winner wakes its task: the loser's was deleted above.
+  await wakeTask(task.id, 'task.created');
   return { action: 'created', taskId: task.id };
 }

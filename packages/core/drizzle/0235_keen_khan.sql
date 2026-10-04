@@ -13,6 +13,8 @@ CREATE TABLE "orchestration_overlap_answers" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+ALTER TABLE "orchestration_manifest_predictions" ADD COLUMN "set_confidence" real;--> statement-breakpoint
+ALTER TABLE "orchestration_manifest_predictions" ADD COLUMN "expected_size" jsonb;--> statement-breakpoint
 ALTER TABLE "orchestration_overlap_answers" ADD CONSTRAINT "orchestration_overlap_answers_team_id_teams_id_fk" FOREIGN KEY ("team_id") REFERENCES "public"."teams"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "orchestration_overlap_answers" ADD CONSTRAINT "orchestration_overlap_answers_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "orchestration_overlap_answers" ADD CONSTRAINT "orchestration_overlap_answers_task_a_id_tasks_id_fk" FOREIGN KEY ("task_a_id") REFERENCES "public"."tasks"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

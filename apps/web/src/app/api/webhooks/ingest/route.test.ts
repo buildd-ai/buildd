@@ -8,12 +8,29 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 
 const mockAuthenticateApiKey = mock(async () => null as any);
 const mockResolveWorkspace = mock(async (..._args: unknown[]) => null as any);
-const mockDispatchNewTask = mock(async () => undefined);
+const mockAnnounceTaskCreated = mock(async () => undefined);
 const updateWheres: unknown[] = [];
+let updateReturning: Array<{ id: string }> = [];
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/workspace-resolver', () => ({ resolveWorkspace: mockResolveWorkspace }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     insert: () => ({
@@ -21,8 +38,10 @@ mock.module('@buildd/core/db', () => ({
     }),
     update: () => ({
       set: () => ({
-        where: async (w: unknown) => {
+        // Awaitable bare (issue.closed) or with .returning() (issue.reopened).
+        where: (w: unknown) => {
           updateWheres.push(w);
+          return Object.assign(Promise.resolve(undefined), { returning: async () => updateReturning });
         },
       }),
     }),
@@ -51,8 +70,10 @@ function req(event: string, repo = 'acme/app') {
 beforeEach(() => {
   mockAuthenticateApiKey.mockReset();
   mockResolveWorkspace.mockReset();
-  mockDispatchNewTask.mockReset();
+  mockAnnounceTaskCreated.mockReset();
+  mockWakeTask.mockReset();
   updateWheres.length = 0;
+  updateReturning = [];
   mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
 });
 
@@ -68,7 +89,8 @@ describe('POST /api/webhooks/ingest', () => {
     mockResolveWorkspace.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', webhookConfig: null });
     const res = await POST(req('issue.created'));
     expect(res.status).toBe(200);
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 
   it('limits lifecycle updates to tasks in the resolved workspace', async () => {
@@ -79,5 +101,22 @@ describe('POST /api/webhooks/ingest', () => {
     const q = new PgDialect().sqlToQuery(updateWheres[0] as any);
     expect(q.sql).toContain('"workspace_id"');
     expect(q.params).toContain('ws-1');
+  });
+
+  // Reopening makes the task pending again: the trigger records the intent,
+  // and the route kicks delivery with the reason.
+  it('wakes the reopened task as a requeue', async () => {
+    mockResolveWorkspace.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', webhookConfig: null });
+    updateReturning = [{ id: 'task-9' }];
+    const res = await POST(req('issue.reopened'));
+    expect(res.status).toBe(200);
+    expect(mockWakeTask).toHaveBeenCalledWith('task-9', 'task.requeued');
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+  });
+
+  it('wakes nothing when no task matched the reopened issue', async () => {
+    mockResolveWorkspace.mockResolvedValue({ id: 'ws-1', teamId: 'team-1', webhookConfig: null });
+    await POST(req('issue.reopened'));
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 });

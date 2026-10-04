@@ -58,7 +58,7 @@ export function missionCountsLine(model: MissionBoardModel): string {
 
 function TaskRow({ t }: { t: BoardTask }) {
   const st = STATUS_TEXT[t.status];
-  const meta = t.status === 'blocked' && t.deps.find(d => !d.ok) ? `waits on ${t.deps.find(d => !d.ok)!.label}` : t.runner;
+  const meta = t.status === 'blocked' && t.deps.find(d => !d.satisfied) ? `waits on ${t.deps.find(d => !d.satisfied)!.label}` : t.runner;
   return (
     <li data-testid="mission-card-row" data-status={t.status} className="flex min-h-9 min-w-0 items-center gap-2.5 border-t border-border-default font-mono text-[12.5px]">
       <RoleGlyph task={t} />

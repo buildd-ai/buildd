@@ -7,7 +7,7 @@ import { reportOps } from '@buildd/core/report-ops';
 import { describeError } from '@buildd/core/describe-error';
 import { eq, and, lte, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, classifyScheduleCadence } from '@/lib/schedule-helpers';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
@@ -956,7 +956,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
         });
 
         if (workspace) {
-          await dispatchNewTask(task, workspace);
+          await announceTaskCreated(task, workspace);
+          await wakeTask(task.id, 'task.created');
         }
 
         // The creation-manifest shadow (lib/task-manifest-prediction.ts): which

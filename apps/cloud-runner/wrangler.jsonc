@@ -15,8 +15,11 @@
       "class_name": "WorkerAgent",
       "image": "../runner/Dockerfile.once",
       "image_build_context": "../..",
-      // 1/2 vCPU, 4 GiB, 8 GB disk. Enough for Claude Code plus a
-      // depth-limited clone; revisit with canary numbers (design, open question 2).
+      // 1/2 vCPU, 4 GiB, 8 GB disk. Enough for Claude Code plus the
+      // container's shallow clone (`--depth 50 --no-single-branch`,
+      // apps/runner/src/git-clone.ts; host runners clone in full). A repo
+      // whose working tree alone outgrows the disk still will not fit;
+      // revisit with canary numbers (design, open question 2).
       "instance_type": "standard-1",
       "max_instances": 10,
       // A deploy rolls the container application. With the default grace of

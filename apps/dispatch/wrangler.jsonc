@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "buildd-dispatch",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // No account_id: bind a wrangler profile to this directory instead
+  // (`bunx wrangler auth activate <profile> apps/dispatch`), so a deploy can
+  // never land on whichever account the shell happens to be logged in to.
+  //
+  // No routes yet. A custom domain is an owner setup step (README). The
+  // workers.dev hostname is blocked on the owner's network, so do not rely on
+  // it for anything but a quick check from elsewhere.
+
+  // One SQLite Durable Object per (source.system, source.scope): the durable
+  // queue, its alarm, attempts, pending receipts and the target registry.
+  "durable_objects": {
+    "bindings": [{ "name": "SCOPE_QUEUE", "class_name": "ScopeQueue" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ScopeQueue"] }],
+
+  // Secrets (wrangler secret put), both key rings in the contract's
+  // parseKeyRing format `keyId:secret[,keyId:secret]` (two ids for rotation):
+  //   PUBLISH_SECRET   verifies producer -> Dispatch requests (/v1/*)
+  //   CALLBACK_SECRET  signs Dispatch -> producer callbacks (resolve, relay, receipts)
+  // BUILDD_SERVER has no default on purpose: set it per deployment
+  // (dashboard, `--var`, or an env block). Without it, or with either ring
+  // empty, every /v1 route answers 503 and no alarm delivers anything.
+  "vars": {
+    // P1 shadow: these adapter types call resolve and record the decision
+    // (`dry-run:<type>:<decision>`) but never POST. Set to "" for real delivery.
+    "DRY_RUN_TYPES": "http,github-repository-dispatch"
+  }
+}

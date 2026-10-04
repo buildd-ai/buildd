@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
@@ -112,6 +112,91 @@ LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
 team, a tie to the endpoint, only the winner delivered. The key policy does not
 bind it. Design: `docs/design/agent-model-endpoint.md`.
 
+**The same row also routes Codex tasks**, for a `kind` that has an
+OpenAI-compatible wire in addition to its Anthropic one: `gateway` (LiteLLM
+speaks both off the same base) and `openrouter` (its native wire *is* OpenAI
+chat-completions) both do; `anthropic-compatible` doesn't — it's a
+self-contained proxy that promises only the Anthropic Messages API, so there's
+no OpenAI-format route to guess at. `resolveEndpointFromBlob` computes this as
+`AgentEndpointRoute.openAiBaseUrl` (present only for the two OpenAI-compatible
+kinds).
+
+Ranking for a Codex task calls `resolveAgentModelRoute({ ..., backend: 'codex'
+})`, which competes the endpoint against `openai_api_key` / `codex_credential`
+instead of the Anthropic purposes — the credentials a Codex run would
+otherwise use, same shape (most specific scope wins, tie to the endpoint). The
+claim (`attachAgentEndpoints`) attaches `modelEndpoint` to a Codex worker the
+same way it does for Claude, including when the endpoint has no
+`openAiBaseUrl`: the worker still gets it, specifically so the runner can fail
+the task with a clear message (`agent-model-env.ts`'s `applyModelEnv`, surfaced
+as `ModelEnvResult.error`) instead of silently falling back to local Codex
+auth as if no endpoint had been configured.
+
+The runner applies it as `OPENAI_BASE_URL` = `openAiBaseUrl`, `OPENAI_API_KEY`
+= the endpoint key — Codex's `authHeader` is always effectively Bearer (the
+OpenAI wire has no `x-api-key` concept), so that field is ignored on this path.
+A per-machine override works the same way the Claude path's `LLM_PROVIDER`
+does: a runner whose machine already has `OPENAI_BASE_URL` set reports
+`codexBaseUrlOverride: true` on the claim, the server withholds the endpoint
+key (`modelEndpointIgnored`), and the runner's own `OPENAI_BASE_URL` /
+`OPENAI_API_KEY` are left untouched. `OPENAI_BASE_URL` had to be added to
+`RUNNER_ENV_PASSTHROUGH` (`apps/runner/src/agent-env.ts`) for this override to
+actually reach the agent subprocess at all — it previously wasn't allowlisted.
+
+Capability gating (the claim route's `capability_mismatch` filter,
+`backend-failover.ts`'s `isBackendConfigured`) treats an OpenAI-compatible
+agent endpoint as "Codex is configured" exactly like `hasCodexCredential` /
+`hasOpenAiApiKey` — via `hasOpenAiCompatibleAgentEndpoint`, a cheap existence
+check (endpoint resolves and has `openAiBaseUrl`), not the full ranking. The
+claim-time check additionally requires the runner to have declared
+`AGENT_ENDPOINT_RUNNER_FEATURE`, since a runner that hasn't would never
+actually apply `modelEndpoint` and the task would then fail at spawn with no
+credential at all.
+
+Cloud-runner support for Codex through the endpoint remains out of scope
+(`POST /api/runner/model-endpoint` still 404s a Codex task outright) — this is
+the host-runner path only.
+
+### Cloud egress precedence vs the operator's `MODEL_PROXY_URL`
+
+A host runner has no concept of an operator proxy override: it just sends
+whichever Anthropic credential resolves. The cloud dispatcher does have one
+(`MODEL_PROXY_URL`, a Worker secret — apps/cloud-runner/README.md "Model
+routes"), and for a while that silently won even when a team had its own
+`anthropic_api_key` configured: `POST /api/runner/model-endpoint` only ever
+resolved the `agent_endpoint` side of the ranking, so a task whose winner was
+the plain API key got a 404 and egress fell through past the key straight to
+`MODEL_PROXY_URL` or AI Gateway. A team that paid for its own key never spent
+it on a cloud run.
+
+The route now also calls `resolveAnthropicAuth`
+(`apps/web/src/lib/claude-credential.ts` — the same resolver server-side
+Anthropic calls use, scoped exactly as the self-hosted runner resolves it) when
+the `agent_endpoint` ranking does not win, and returns the key, flagged
+`{ source: 'anthropic_api_key', key }`, when that resolver's winner is a plain
+API key. `resolveModelRoute` in `apps/cloud-runner/src/outbound.ts` checks that
+flag ahead of `MODEL_PROXY_URL`:
+
+- **A team's own `anthropic_api_key` beats `MODEL_PROXY_URL`.** Storing a key
+  is not an opt-in to route agents through anything — unlike `agent_endpoint`,
+  where setting one is exactly that opt-in — so an operator's Worker-level
+  proxy pin must not silently spend the team's own credential on a different
+  route. This is the one precedence flip relative to how `agent_endpoint` and
+  `MODEL_PROXY_URL` have always ranked.
+- **`agent_endpoint` vs `MODEL_PROXY_URL` is unchanged**: the operator override
+  still wins, so a self-hosted deployment that pins a Worker to one proxy keeps
+  doing so "whatever team claims through it" regardless of any `agent_endpoint`
+  a team configured.
+- **An OAuth seat or Claude credential winning the ranking is still 404.**
+  Cloud egress carries only a metered key or an `agent_endpoint`, never a seat
+  token — that stays a documented gap, not a silent one.
+- The lookup itself now runs whenever the local `ALLOW_DIRECT_ANTHROPIC` escape
+  hatch does not apply, even with `MODEL_PROXY_URL` set — previously the Worker
+  skipped it outright in that case, since nothing could have outranked the
+  override. A transient failure of that lookup (`'unavailable'`) still defers
+  to `MODEL_PROXY_URL` or refuses, exactly as it did before the key existed; it
+  never counts as "confirmed, no team key" the way a real 404 does.
+
 ## Multi-field credentials (Codex)
 
 `secrets.encryptedValue` holds a single string, so a credential with several fields is
@@ -171,6 +256,49 @@ one route that returns a stored value: `bld_` admin API keys only, own team
 only, `no-store`, for `apps/cloud-runner/scripts/deploy.ts`. The token is never
 sent to a runner.
 
+## OpenAI API key for Codex agent tasks (`openai_api_key`)
+
+`purpose = 'openai_api_key'`, a plain raw string, scoped team/account/workspace
+exactly like `anthropic_api_key`. This is **not** the same credential as
+`inference_key` (label `openai`), and **not** the same purpose as
+`codex_credential` — both already existed, and this backend reuses neither:
+
+- **Why not reuse `inference_key`/`openai`?** That row serves chat and decision
+  calls only (`resolveInferenceKey` in `packages/core/inference-keys.ts`), with
+  its own precedence (caller → account → workspace → team, plus a personal
+  `userId` dimension — see "API-token model keys" above). Routing it into
+  Codex subprocess auth too would mean either a second, divergent resolver
+  reading the same purpose for a different consumer, or bending its
+  chat-oriented precedence to fit agent-task scoping. A credential that
+  authenticates a CLI subprocess is not the same thing as a key that pays for
+  one inference call, even though both happen to be OpenAI keys.
+- **Why not just extend `codex_credential`?** `codex_credential` already
+  accepts a plain API key as one of its two credential shapes (the other being
+  the ChatGPT OAuth blob) — see "Multi-field credentials (Codex)" above. But
+  storing it means going through the Codex OAuth-connect UI/route family
+  (`/api/workspaces/[id]/codex-credential/*`, a JSON blob with its own
+  normalization), which is overkill for a team that just wants to paste a key
+  the way they already do for Anthropic. `openai_api_key` is that simpler path
+  through the generic `/api/secrets` route, with the same `RAW_STRING_PURPOSES`
+  quote-stripping and `REQUIRED_PREFIXES` sanity check as `anthropic_api_key`.
+
+**Resolution order:** `attachCodexCredentials` (claim route) tries
+`resolveCodexCredential` (`codex_credential`) first — an existing ChatGPT
+connect, OAuth or legacy API-key blob, wins if present — and falls back to
+`resolveOpenAiApiKey` (`openai_api_key`) only when nothing resolves there.
+Either one is synthesized into the exact same `codexCredential: { credentialType:
+'api_key', apiKey }` wire shape the runner already materializes into
+`auth.json` (`writeCodexApiKeyToHome` in `apps/runner/src/codex-auth.ts`) — so
+the runner needed **no changes** to accept it. `hasCodexCredential` (capability
+gating, budget failover, dashboard readiness) is likewise paired with
+`hasOpenAiApiKey` at every call site (`apps/web/src/app/api/workers/claim/route.ts`,
+`apps/web/src/lib/backend-failover.ts`): either credential is enough to make
+Codex configured for a team/workspace. See `apps/web/src/lib/openai-credential.ts`.
+
+**Cloud-runner support is out of scope** — `attachCodexCredentials` only feeds
+the self-hosted-runner claim path; `apps/cloud-runner` has no Codex execution
+today.
+
 ## Adding a new backend (checklist)
 
 1. Add a `purpose` value to `SecretPurpose` in `packages/core/secrets/types.ts` **and** the
@@ -190,6 +318,7 @@ sent to a runner.
 - Schema: `packages/core/db/schema.ts` (`secrets`)
 - Provider: `packages/core/secrets/` (`postgres-provider.ts`, `types.ts`)
 - Codex helper (blob + refresh): `apps/web/src/lib/codex-credential.ts`
-- Claim-time resolution: `apps/web/src/app/api/workers/claim/route.ts`
+- OpenAI API key helper (plain key, no refresh): `apps/web/src/lib/openai-credential.ts`
+- Claim-time resolution: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`
 - Refresh cron: `apps/web/src/app/api/cron/codex-token-refresh/route.ts`
 - Settings UI: `apps/web/src/app/app/(protected)/settings/` (Agent Backends section)

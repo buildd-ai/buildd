@@ -213,7 +213,7 @@ function Detail({ bar, model, now }: { bar: MissionLaneBar; model: MissionBoardM
       <div className="flex flex-wrap items-start gap-7">
         <Kv k="runner" v={`${bar.runner}${slotIndex ? ` ·${slotIndex}` : ''}`} />
         <Kv k={bar.end == null ? 'running' : 'ran'} v={formatAge(span)} />
-        <Kv k="after" v={t && t.deps.length ? t.deps.map(d => `${d.scope ?? d.label}${d.ok ? ' ✓' : ''}`).join('  ') : 'none'} />
+        <Kv k="after" v={t && t.deps.length ? t.deps.map(d => `${d.scope ?? d.label}${d.satisfied ? ' ✓' : ''}`).join('  ') : 'none'} />
         <Kv k="unblocks" v={t && t.unblocks.length ? t.unblocks.map(u => u.scope ?? u.label).join('  ') : 'none'} />
         <div className="flex min-w-[200px] flex-1 flex-col gap-[5px]">
           <SectionLabel>{`${own.length} milestone${own.length === 1 ? '' : 's'}`}</SectionLabel>
@@ -366,7 +366,7 @@ function Side({ model, now, link, completionText, review: visualReview }: { mode
             <span className="flex shrink-0 gap-[3px]">
               {t.status === 'ready'
                 ? <span className="text-text-muted">ready</span>
-                : t.deps.map(d => <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} className="!h-4 !px-1" />)}
+                : t.deps.map(d => <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.satisfied ? 'ok' : 'ghost'} className="!h-4 !px-1" />)}
             </span>
           </a>
         )))}
