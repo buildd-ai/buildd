@@ -78,3 +78,20 @@ export function taskScopeAllowsWorkspace(account: { taskScope?: TaskScope }, wor
   if (!account.taskScope) return true;
   return !!workspaceId && workspaceId === account.taskScope.workspaceId;
 }
+
+/**
+ * True unless the caller is a task token and `prNumber` is not the PR recorded
+ * on its own task's worker. A task token may close, merge or request review
+ * only for the PR its own run opened; reading PRs is confined to the
+ * workspace instead (`taskScopeAllowsWorkspace`).
+ */
+export function taskScopeAllowsWorkerPr(
+  account: { id: string; taskScope?: TaskScope },
+  worker: { taskId: string | null; accountId?: string | null; prNumber?: number | null },
+  prNumber: number,
+): boolean {
+  if (!account.taskScope) return true;
+  if (!taskScopeAllowsTask(account, worker.taskId)) return false;
+  if (worker.accountId !== undefined && worker.accountId !== account.id) return false;
+  return worker.prNumber === prNumber;
+}
