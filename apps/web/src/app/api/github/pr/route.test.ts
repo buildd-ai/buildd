@@ -1016,10 +1016,18 @@ describe('POST /api/github/pr', () => {
     });
 
     it('respects a stacked-phase task’s predecessor base instead of forcing the integration branch', async () => {
-      const predecessorBranch = 'buildd/predecessor00-earlier-thing';
+      const predecessorId = '9f8e7d6c-1111-2222-3333-444444444444';
+      const predecessorBranch = `buildd/${predecessorId.slice(0, 8)}-earlier-thing`;
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
       mockWorkersFindFirst.mockResolvedValue(taskWorker({
-        task: { id: 't-2', missionId: 'obj-1', title: 'Second phase', taskClass: 'work', context: { baseBranch: predecessorBranch } },
+        task: {
+          id: 't-2',
+          missionId: 'obj-1',
+          title: 'Second phase',
+          taskClass: 'work',
+          context: { baseBranch: predecessorBranch },
+          dependsOn: [predecessorId],
+        },
       }));
       mockGithubReposFindFirst.mockResolvedValue(REPO);
       optedInMission();
