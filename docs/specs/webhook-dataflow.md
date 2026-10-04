@@ -134,6 +134,18 @@ directly.
 - Held tasks, tasks in held or local-executor missions, and tasks whose
   `start_at` is in the future are never sent to the webhook.
 - `webhookConfig` is stored as JSONB on `workspaces.webhookConfig`.
+- `webhookConfig.events` is an opt-in list (`task.created`, `task.unblocked`,
+  `task.retry`, `task.resume`, `task.scheduled`). Without it a webhook gets
+  only new and unblocked tasks; retries, plan children and deferred-start
+  re-dispatches reach it only when it lists the event.
+- `task.scheduled`: a future work wake (a deferred `startAt`, a retry backoff)
+  due no more than 24 h ahead gets an advance notice, once per due time, to a
+  webhook that lists `task.scheduled`: `event: 'task.scheduled'` with
+  `notBefore` (ISO, the wake's due time). The consumer starts it at
+  `notBefore`. A webhook without the opt-in is unchanged. The dispatch
+  authority still delivers the wake itself when it is due, as the backstop;
+  the consumer treats that as a no-op when the run is live. Sent by
+  `sendScheduledNotices` whenever future wakes are published to the timer.
 
 **Payload** (`buildWebhookPayload`): the original chat-shaped fields `message`,
 `sessionKey` and `name` come first, unchanged. Then the structured fields
@@ -158,10 +170,17 @@ instead, and do not use the outbox.
 - AC-7: GIVEN `webhookConfig.runnerPreference = 'service'` and a task with
   `runnerPreference = 'user'` WHEN the task is created THEN NO webhook dispatch
   occurs for that task.
+- AC-7a: GIVEN a webhook whose `events` lists `task.scheduled` WHEN a retry
+  defers a task to a `startAt` 5 minutes ahead THEN the webhook receives
+  `event: 'task.scheduled'` with `notBefore` = that `startAt` immediately, and
+  no `task:assigned` broadcast is sent. GIVEN the same retry on a webhook
+  without `task.scheduled` THEN nothing is sent to the webhook until the wake
+  is due.
 
 **Code surface**:
 - Delivery: `apps/web/src/lib/dispatch-authority.ts` (`deliverTaskDispatch`,
-  `webhookWants`)
+  `sendScheduledNotices`) and `apps/web/src/lib/dispatch-adapters.ts`
+  (`webhookWants`, `offerScheduledNotice` for the opt-in `task.scheduled`)
 - Payload and POST: `apps/web/src/lib/task-dispatch-delivery.ts`
   (`buildWebhookPayload`, `dispatchToWebhook`)
 - Schema: `packages/core/db/schema.ts` — `WorkspaceWebhookConfig`,

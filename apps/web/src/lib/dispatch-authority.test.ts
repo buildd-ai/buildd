@@ -109,7 +109,7 @@ const {
   DRAIN_BATCH,
 } = await import('./dispatch-authority');
 const { buildWebhookPayload } = await import('./task-dispatch-delivery');
-const { routeForCause, webhookWants, TASK_WAKE_ADAPTERS } = await import('./dispatch-adapters');
+const { routeForCause, webhookWants, TASK_WAKE_ADAPTERS, offerScheduledNotice } = await import('./dispatch-adapters');
 type DispatchCause = (typeof DISPATCH_CAUSES)[number];
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
@@ -647,6 +647,38 @@ describe('typed intents: Buildd decides what should happen; dispatch delivers it
     const res = await drainDispatchOutbox();
     expect(res.failed).toBe(1);
     expect(mockMarkFailed).toHaveBeenCalledWith(r.id, MAX_DELIVERY_ATTEMPTS, 'no_adapter:notification');
+  });
+});
+
+describe('offerScheduledNotice: task.scheduled advance notice (opt-in)', () => {
+  const ctxFor = (workspace: Record<string, unknown>, task: Partial<typeof TASK> = {}) => ({
+    dispatchId: 'd-1', intent: 'work_execution' as const, attemptCount: 0,
+    cause: 'task.requeued' as DispatchCause, causes: ['task.requeued'] as DispatchCause[], metadata: null,
+    task: { ...TASK, ...task }, workspace: { id: TASK.workspaceId, ...workspace },
+  });
+  const inFive = () => new Date(Date.now() + 5 * 60_000);
+
+  it('a webhook listing task.scheduled gets the notice at once, with notBefore', async () => {
+    const due = inFive();
+    expect(await offerScheduledNotice(ctxFor({ webhookConfig: { ...WEBHOOK, events: ['task.retry', 'task.scheduled'] } }), due)).toBe(true);
+    expect(sentBody()).toMatchObject({ event: 'task.scheduled', notBefore: due.toISOString(), dispatchId: 'd-1', cause: 'task.requeued' });
+    expect(mockTriggerEventChecked).not.toHaveBeenCalled();
+  });
+
+  it('nothing without the opt-in, including a legacy webhook', async () => {
+    expect(await offerScheduledNotice(ctxFor({ webhookConfig: { ...WEBHOOK, events: ['task.retry'] } }), inFive())).toBe(false);
+    expect(await offerScheduledNotice(ctxFor({ webhookConfig: LEGACY_WEBHOOK }), inFive())).toBe(false);
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('not beyond the consumer horizon, not in the past, not for a held task or the wrong runner', async () => {
+    const cfg = { webhookConfig: { ...WEBHOOK, events: ['task.scheduled'] } };
+    expect(await offerScheduledNotice(ctxFor(cfg), new Date(Date.now() + 25 * 3_600_000))).toBe(false);
+    expect(await offerScheduledNotice(ctxFor(cfg), new Date(Date.now() - 1000))).toBe(false);
+    expect(await offerScheduledNotice(ctxFor({ webhookConfig: { ...WEBHOOK, events: ['task.scheduled'], runnerPreference: 'service' } }, { runnerPreference: 'user' }), inFive())).toBe(false);
+    taskNotParked = false;
+    expect(await offerScheduledNotice(ctxFor(cfg), inFive())).toBe(false);
+    expect(fetchCalls).toHaveLength(0);
   });
 });
 

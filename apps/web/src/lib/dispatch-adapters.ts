@@ -16,6 +16,7 @@ import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 import type { DispatchCause, DispatchIntent } from '@buildd/core/dispatch-outbox';
 import { channels, events, triggerEventChecked } from '@/lib/pusher';
 import {
+  SCHEDULED_DISPATCH_MAX_AHEAD_MS,
   buildTaskPayload,
   dispatchToWebhook,
   tryGitHubActionsDispatch,
@@ -204,6 +205,30 @@ export const runnerBroadcast: DispatchAdapter = {
     return { kind: 'delivered', via: sent === 'sent' ? 'pusher' : 'pusher:unconfigured' };
   },
 };
+
+/**
+ * Advance notice of a future work wake (`task.scheduled`, carrying
+ * `notBefore`), for a webhook that lists that event: a push runner sets its
+ * own timer instead of waiting on ours. Opt-in only, runnerPreference and the
+ * held gate apply as for any webhook wake, and only within the consumer's
+ * horizon. Not part of the chain — the chain delivers due intents; this is
+ * offered when a future one is published to the timer. The intent is still
+ * delivered when due, so a lost notice costs nothing but precision.
+ */
+export async function offerScheduledNotice(ctx: DispatchContext, notBefore: Date): Promise<boolean> {
+  const config = ctx.workspace.webhookConfig as WorkspaceWebhookConfig | null | undefined;
+  if (!config?.enabled || !config.url || !Array.isArray(config.events) || !config.events.includes('task.scheduled')) return false;
+  if (ctx.task.status !== 'pending') return false;
+  const ahead = notBefore.getTime() - Date.now();
+  if (ahead <= 0 || ahead > SCHEDULED_DISPATCH_MAX_AHEAD_MS) return false;
+  const prefOk = !config.runnerPreference || config.runnerPreference === 'any'
+    || config.runnerPreference === (ctx.task.runnerPreference || 'any');
+  if (!prefOk) return false;
+  if (!(await isTaskNotHeldOrLocal(ctx.task.id).catch(() => false))) return false;
+  return dispatchToWebhook(config, ctx.task, 'task.scheduled', undefined, {
+    notBefore: notBefore.toISOString(), cause: ctx.cause, dispatchId: ctx.dispatchId,
+  });
+}
 
 /** The `work_execution` chain: autonomous runners, push first, broadcast last. */
 export const TASK_WAKE_ADAPTERS: readonly DispatchAdapter[] = [

@@ -14,7 +14,15 @@ import { dispatchToGitHubActions, isGitHubAppConfigured } from '@/lib/github';
  * dispatcher, docs/design/cloudflare-sandbox-runner.md) keys on `taskId`; the
  * event only says which path made the task claimable.
  */
-export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume';
+export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume' | 'task.scheduled';
+
+/**
+ * How far ahead a `task.scheduled` notice may point. A wake due further out
+ * gets its notice on a later timer publish, once it is within range. Mirrors the
+ * cloud runner's bound (apps/cloud-runner/src/http.ts SCHEDULE_MAX_AHEAD_MS),
+ * which refuses anything later.
+ */
+export const SCHEDULED_DISPATCH_MAX_AHEAD_MS = 24 * 60 * 60 * 1000;
 
 /** How long a webhook POST may take before it counts as not dispatched. */
 export const WEBHOOK_DISPATCH_TIMEOUT_MS = 10_000;
@@ -60,6 +68,11 @@ export interface TaskWebhookPayload {
    */
   cause?: string;
   dispatchId?: string;
+  /**
+   * `task.scheduled` only: ISO time the task becomes claimable (its
+   * `startAt`). The consumer starts the run then, not now.
+   */
+  notBefore?: string;
 }
 
 /** The task fields the dispatch chain reads. Full task rows satisfy it. */
@@ -74,6 +87,8 @@ export interface DispatchTask {
   backend?: string | null;
   roleSlug?: string | null;
   runnerPreference?: string | null;
+  /** Deferred start: the claim refuses the task until then. */
+  startAt?: Date | string | null;
 }
 
 export type DispatchWorkspace = {
@@ -85,7 +100,7 @@ export type DispatchWorkspace = {
   githubRepoId?: string | null;
 };
 
-export type WebhookPayloadExtra = { workerId?: string; cause?: string; dispatchId?: string };
+export type WebhookPayloadExtra = { workerId?: string; cause?: string; dispatchId?: string; notBefore?: string };
 
 export function buildWebhookPayload(task: DispatchTask, event: TaskDispatchEvent, extra: WebhookPayloadExtra = {}): TaskWebhookPayload {
   const message = `Work on Buildd task: ${task.title}
@@ -109,6 +124,7 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
     ...(extra.workerId ? { workerId: extra.workerId } : {}),
     ...(extra.cause ? { cause: extra.cause } : {}),
     ...(extra.dispatchId ? { dispatchId: extra.dispatchId } : {}),
+    ...(extra.notBefore ? { notBefore: extra.notBefore } : {}),
   };
 }
 

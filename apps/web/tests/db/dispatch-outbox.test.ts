@@ -10,6 +10,8 @@ import {
   claimDueDispatches,
   claimDueDispatchesSql,
   enqueueDispatchSql,
+  listScheduledNoticesDue,
+  markScheduledNoticeSent,
   markDispatchDelivered,
   markDispatchFailed,
   outboxInsertSelectSql,
@@ -212,6 +214,31 @@ describe('merge details', () => {
     await db.execute(sql`WITH src AS (SELECT ${id}::uuid AS waiting_task_id), ${outboxInsertSelectSql('src', 'path_claim.released')} SELECT 1`);
     const [row] = await q<{ due: boolean }>(sql`SELECT not_before <= now() AS due FROM task_dispatch_outbox WHERE task_id = ${id}::uuid AND status = 'pending'`);
     expect(row.due).toBe(true);
+  });
+});
+
+describe('task.scheduled notices', () => {
+  test('one notice per due time, only for workspaces that opted in, within the horizon', async () => {
+    const { workspaceId: optedIn } = await seedWorkspace({ webhookConfig: { enabled: true, url: 'https://hook.test', token: 't', events: ['task.scheduled'] } });
+    const { workspaceId: notOpted } = await seedWorkspace({ webhookConfig: { enabled: true, url: 'https://hook.test', token: 't', events: ['task.retry'] } });
+    const soon = new Date(Date.now() + 10 * 60_000);
+    const yes = await seedTask(optedIn, { startAt: soon });
+    const far = await seedTask(optedIn, { startAt: new Date(Date.now() + 48 * 3_600_000) });
+    const no = await seedTask(notOpted, { startAt: soon });
+    const day = 24 * 3_600_000;
+    const ids = async () => (await listScheduledNoticesDue(day, 500)).map(n => n.taskId);
+
+    expect(await ids()).toContain(yes);
+    expect(await ids()).not.toContain(far);
+    expect(await ids()).not.toContain(no);
+
+    const [n] = (await listScheduledNoticesDue(day, 500)).filter(x => x.taskId === yes);
+    await markScheduledNoticeSent(n.id, n.notBefore);
+    expect(await ids()).not.toContain(yes);
+
+    // Moving the due time makes a new scheduled row, which gets its own notice.
+    await db.execute(sql`UPDATE tasks SET start_at = now() + interval '20 minutes' WHERE id = ${yes}::uuid`);
+    expect(await ids()).toContain(yes);
   });
 });
 

@@ -28,6 +28,8 @@ import {
   claimDueDispatches,
   enqueueDispatchSql,
   listFutureDispatches,
+  listScheduledNoticesDue,
+  markScheduledNoticeSent,
   markDispatchDelivered,
   markDispatchFailed,
   MAX_DELIVERY_ATTEMPTS,
@@ -38,8 +40,8 @@ import {
 } from '@buildd/core/dispatch-outbox';
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import { clearDue, markDue, reseedDue } from '@/lib/redis';
-import { buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
-import { ADAPTER_CHAINS, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
+import { SCHEDULED_DISPATCH_MAX_AHEAD_MS, buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
+import { ADAPTER_CHAINS, offerScheduledNotice, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
 export const DISPATCH_DUE_QUEUE = 'dispatch';
@@ -183,7 +185,11 @@ export function kickDispatch(marker?: string): void {
   }
 }
 
-/** Publish future due times to the Redis timer index so the gated tick fires on time. */
+/**
+ * Publish future due times: to the Redis timer index so the gated tick fires
+ * on time, and as a `task.scheduled` notice to any webhook that keeps its own
+ * timer (offerScheduledNotice).
+ */
 async function scheduleTimer(): Promise<void> {
   try {
     const future = await listFutureDispatches(50);
@@ -191,6 +197,27 @@ async function scheduleTimer(): Promise<void> {
   } catch (err) {
     console.error('[dispatch] timer publish failed:', err);
   }
+  await sendScheduledNotices().catch(err => console.error('[dispatch] scheduled notices failed:', err));
+}
+
+/** One `task.scheduled` notice per future wake and due time, to webhooks that opted in. */
+export async function sendScheduledNotices(): Promise<number> {
+  const due = await listScheduledNoticesDue(SCHEDULED_DISPATCH_MAX_AHEAD_MS);
+  let sent = 0;
+  await Promise.all(due.map(async n => {
+    const loaded = await loadForDelivery(n.taskId);
+    if (!loaded) return;
+    const ctx: DispatchContext = {
+      dispatchId: n.id, intent: 'work_execution', attemptCount: 0,
+      cause: primaryCause(n.causes, n.cause), causes: n.causes, metadata: null,
+      task: loaded.task, workspace: loaded.workspace,
+    };
+    if (await offerScheduledNotice(ctx, n.notBefore)) {
+      await markScheduledNoticeSent(n.id, n.notBefore);
+      sent++;
+    }
+  }));
+  return sent;
 }
 
 /** Floor tick: rebuild the Redis timer index from the table. */

@@ -324,6 +324,37 @@ ORDER BY not_before LIMIT ${limit}`);
   return rowsOf(result).map(r => ({ id: String(r.id), notBefore: new Date(r.not_before as string) }));
 }
 
+/**
+ * Future work wakes within `aheadMs` whose workspace webhook opted into
+ * `task.scheduled` and that have not had a notice for their current due time.
+ * The notice lets a push consumer (the cloud runner) set its own timer; the
+ * row is still delivered normally when due, which is the backstop.
+ */
+export async function listScheduledNoticesDue(aheadMs: number, limit = 50): Promise<Array<{ id: string; taskId: string; notBefore: Date; cause: DispatchCause; causes: DispatchCause[] }>> {
+  const result = await db.execute(sql`-- dispatch_outbox:scheduled_notices
+SELECT o.id, o.task_id, o.not_before, o.cause, o.causes FROM task_dispatch_outbox o
+JOIN workspaces w ON w.id = o.workspace_id
+WHERE o.status = 'pending' AND o.intent = 'work_execution'
+  AND o.not_before > now() AND o.not_before <= now() + (${aheadMs}::bigint * interval '1 millisecond')
+  AND jsonb_typeof(w.webhook_config->'events') = 'array' AND w.webhook_config->'events' ? 'task.scheduled'
+  AND (o.metadata->>'scheduledNoticeMs') IS DISTINCT FROM floor(extract(epoch FROM o.not_before) * 1000)::bigint::text
+ORDER BY o.not_before LIMIT ${limit}`);
+  return rowsOf(result).map(r => ({
+    id: String(r.id), taskId: String(r.task_id), notBefore: new Date(r.not_before as string),
+    cause: r.cause as DispatchCause,
+    causes: (Array.isArray(r.causes) ? r.causes : typeof r.causes === 'string' ? JSON.parse(r.causes) : []) as DispatchCause[],
+  }));
+}
+
+/** Record that the notice for this row's current due time went out. */
+export async function markScheduledNoticeSent(id: string, notBefore: Date): Promise<void> {
+  await db.execute(sql`-- dispatch_outbox:scheduled_notice_sent
+UPDATE task_dispatch_outbox
+SET metadata = CASE WHEN jsonb_typeof(metadata) = 'object' THEN metadata ELSE '{}'::jsonb END
+  || jsonb_build_object('scheduledNoticeMs', ${String(notBefore.getTime())}::text), updated_at = now()
+WHERE id = ${id}::uuid AND status = 'pending'`);
+}
+
 /** Everything a reconciler needs to see: due-but-undelivered, stuck, and failed rows. */
 export async function dispatchOutboxHealth(): Promise<{ overdue: number; stuck: number; failed: number }> {
   const result = await db.execute(sql`-- dispatch_outbox:health
