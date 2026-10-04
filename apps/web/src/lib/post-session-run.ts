@@ -5,8 +5,8 @@
  * For one terminal worker: create its run row for the current policy version
  * (exactly once), collect the bounded Stage A facts, and record them — or
  * record why collection failed. {@link sweepPostSessionRuns} does that for
- * every recently terminal worker that has no run yet; it is the intended attach
- * point because a sweep sees success, abort and failure paths alike.
+ * every recently terminal worker that has no run yet; a sweep sees success,
+ * abort and failure paths alike. `post-session-loop.ts` schedules it.
  *
  * Invariants:
  *  - **Idempotent.** The run row is unique on (worker, policy version); a
@@ -40,7 +40,7 @@ import {
   type TranscriptAvailability,
 } from '@buildd/core/post-session-quality';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { triagePostSessionRun, type PostSessionTriageStore, type TriageDeps } from './post-session-triage';
+import { triagePostSessionRun, type PostSessionTriageStore, type TriageCost, type TriageDeps } from './post-session-triage';
 
 /** The eligibility + mode inputs for one worker. */
 export interface PostSessionWorkerRef {
@@ -166,13 +166,20 @@ export interface PostSessionSweepSummary {
   failed: number;
   skipped: number;
   errors: number;
+  /** Candidates not started because the time budget ran out; the next sweep takes them. */
+  deferred: number;
   /** Stage B: runs given a final decision this sweep. */
   triaged: number;
   /** ...of which routed to deeper analysis (model or hard trigger). */
   selected: number;
+  /** ...of which a mechanical hard trigger fired, whatever the model said. */
+  hardTriggered: number;
   /** ...of which the decision itself was unavailable (fail-open). */
   triageUnavailable: number;
   triageErrors: number;
+  triageDeferred: number;
+  /** Summed over every decision call this sweep. */
+  triageCost: TriageCost;
 }
 
 export async function sweepPostSessionRuns(opts: {
@@ -183,11 +190,15 @@ export async function sweepPostSessionRuns(opts: {
   policyVersion?: string;
   /** Stage B seams (decision call, receipt writer). */
   triage?: Pick<TriageDeps, 'decide' | 'recordReceipts'>;
+  /** Checked before each item; false = stop starting work (time budget spent). */
+  shouldContinue?: () => boolean;
 } = {}): Promise<PostSessionSweepSummary> {
   const summary: PostSessionSweepSummary = {
-    candidates: 0, collected: 0, duplicate: 0, failed: 0, skipped: 0, errors: 0,
-    triaged: 0, selected: 0, triageUnavailable: 0, triageErrors: 0,
+    candidates: 0, collected: 0, duplicate: 0, failed: 0, skipped: 0, errors: 0, deferred: 0,
+    triaged: 0, selected: 0, hardTriggered: 0, triageUnavailable: 0, triageErrors: 0, triageDeferred: 0,
+    triageCost: { calls: 0, usd: null, inputTokens: 0, outputTokens: 0 },
   };
+  const shouldContinue = opts.shouldContinue ?? (() => true);
   let store: PostSessionRunStore;
   let ids: string[];
   const now = opts.now ?? new Date();
@@ -207,7 +218,11 @@ export async function sweepPostSessionRuns(opts: {
   summary.candidates = ids.length;
   // Sequential: a sweep is background work, and a burst of parallel reads per
   // worker is exactly the Neon load this loop must not add.
-  for (const id of ids) {
+  for (const [i, id] of ids.entries()) {
+    if (!shouldContinue()) {
+      summary.deferred = ids.length - i;
+      break;
+    }
     const res = await processPostSessionRun(id, { store, now, policyVersion });
     if (res.status === 'collected') summary.collected++;
     else if (res.status === 'duplicate' || res.status === 'fenced') summary.duplicate++;
@@ -225,15 +240,28 @@ export async function sweepPostSessionRuns(opts: {
     summary.triageErrors++;
     return summary;
   }
-  for (const runId of untriaged) {
+  for (const [i, runId] of untriaged.entries()) {
+    if (!shouldContinue()) {
+      summary.triageDeferred = untriaged.length - i;
+      break;
+    }
     const res = await triagePostSessionRun(runId, { ...opts.triage, store, now });
     if (res.status === 'triaged') {
       summary.triaged++;
       if (res.finalDecision === 'analyse') summary.selected++;
+      if (res.hardTriggered) summary.hardTriggered++;
       if (res.triageStatus === 'unavailable') summary.triageUnavailable++;
+      addCost(summary.triageCost, res.cost);
     } else if (res.status === 'error') {
       summary.triageErrors++;
     }
   }
   return summary;
+}
+
+function addCost(into: TriageCost, c: TriageCost): void {
+  into.calls += c.calls;
+  into.inputTokens += c.inputTokens;
+  into.outputTokens += c.outputTokens;
+  if (c.usd !== null) into.usd = Number(((into.usd ?? 0) + c.usd).toFixed(8));
 }

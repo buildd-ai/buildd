@@ -42,6 +42,7 @@ import {
 } from '@buildd/core/post-session-findings';
 import {
   POST_SESSION_POLICY_VERSION,
+  resolvePostSessionQualityMode,
   type FindingActionState,
   type PostSessionQualityConfig,
   type PostSessionQualityMode,
@@ -245,13 +246,16 @@ async function act(
   const { row, counted } = await foldOccurrence(store, run, occ, now);
   const decision = decideFindingAction(row, { policy, now, actionState: row.actionState, counted });
   const base = { findingId: row.id, signature: row.signature, counted, occurrenceCount: row.occurrenceCount, reason: decision.reason, taskId: row.actionTaskId, artifactId: row.actionArtifactId };
+  // Both the run's recorded mode and the workspace's current one must allow
+  // filing: a move to propose is not retroactive, a move out of it is immediate.
+  const mayFile = run.mode === 'propose' && resolvePostSessionQualityMode(run.gitConfig) === 'propose';
 
-  if (decision.appendToTask && row.actionTaskId && run.mode === 'propose') {
+  if (decision.appendToTask && row.actionTaskId && mayFile) {
     await store.appendToTask(row.actionTaskId, occurrenceNote(occ.ref, row.occurrenceCount), now);
     return { ...base, outcome: 'task_updated' };
   }
   if (!decision.act) return { ...base, outcome: 'observed' };
-  if (run.mode !== 'propose') {
+  if (!mayFile) {
     await store.markPromoted(row.id, now);
     return { ...base, outcome: 'would_act' };
   }
@@ -307,18 +311,38 @@ export interface RecordTriagedSummary {
   notReady: number;
   analyseErrors: number;
   recordErrors: number;
+  /** Triaged runs not started because the time budget ran out. */
+  deferred: number;
+  /** Findings the policy wants acted on (filed, would file, or already filed). */
+  actionable: number;
   tasksFiled: number;
   proposalsFiled: number;
   deduped: number;
   wouldAct: number;
+  /** Findings that did not file again because their action already exists. */
+  duplicatesSuppressed: number;
+  /** Analysed runs whose transcript could not be read (coverage degraded, not failed). */
+  transcriptUnread: number;
 }
 
 export const POST_SESSION_RECORD_LIMIT = 20;
 
+/** Transcript outcomes that are a read failure, as opposed to a transcript that does not exist. */
+const TRANSCRIPT_READ_FAILURES = new Set(['not_read', 'read_failed']);
+
+function isActionable(f: RecordedFinding): boolean {
+  return f.outcome !== 'observed' || f.reason === 'already_actioned';
+}
+
+function isSuppressedDuplicate(f: RecordedFinding): boolean {
+  return f.outcome === 'deduped' || f.outcome === 'task_updated'
+    || (f.outcome === 'observed' && f.reason === 'already_actioned');
+}
+
 /**
  * Stage C + D over every `triaged` run: analyse (read-only), then record and
- * act. One run's failure never stops the rest. Not yet scheduled — the sweep
- * route that calls it belongs with the runtime-mode/readout work.
+ * act. One run's failure never stops the rest. Scheduled by
+ * `post-session-loop.ts`.
  */
 export async function recordTriagedRuns(opts: {
   store?: PostSessionFindingStore;
@@ -326,12 +350,15 @@ export async function recordTriagedRuns(opts: {
   now?: Date;
   limit?: number;
   policyVersion?: string;
+  /** Checked before each run; false = stop starting work (time budget spent). */
+  shouldContinue?: () => boolean;
 } = {}): Promise<RecordTriagedSummary> {
   const summary: RecordTriagedSummary = {
-    candidates: 0, recorded: 0, notReady: 0, analyseErrors: 0, recordErrors: 0,
-    tasksFiled: 0, proposalsFiled: 0, deduped: 0, wouldAct: 0,
+    candidates: 0, recorded: 0, notReady: 0, analyseErrors: 0, recordErrors: 0, deferred: 0,
+    actionable: 0, tasksFiled: 0, proposalsFiled: 0, deduped: 0, wouldAct: 0, duplicatesSuppressed: 0, transcriptUnread: 0,
   };
   const now = opts.now ?? new Date();
+  const shouldContinue = opts.shouldContinue ?? (() => true);
   let store: PostSessionFindingStore;
   let ids: string[];
   try {
@@ -346,7 +373,11 @@ export async function recordTriagedRuns(opts: {
     return analysePostSessionRun(runId, { now });
   });
   summary.candidates = ids.length;
-  for (const runId of ids) {
+  for (const [i, runId] of ids.entries()) {
+    if (!shouldContinue()) {
+      summary.deferred = ids.length - i;
+      break;
+    }
     const a = await analyse(runId).catch((err): AnalysePostSessionResult => ({ status: 'error', error: errorText(err) }));
     if (a.status !== 'analysed') {
       if (a.status === 'not_ready') {
@@ -360,7 +391,10 @@ export async function recordTriagedRuns(opts: {
     const r = await recordPostSessionFindings(runId, a.analysis, { store, now });
     if (r.status === 'recorded') {
       summary.recorded++;
+      if (TRANSCRIPT_READ_FAILURES.has(a.analysis.coverage.traceMissing.reason ?? '')) summary.transcriptUnread++;
       for (const f of r.findings) {
+        if (isActionable(f)) summary.actionable++;
+        if (isSuppressedDuplicate(f)) summary.duplicatesSuppressed++;
         if (f.outcome === 'task_filed') summary.tasksFiled++;
         else if (f.outcome === 'proposal_filed') summary.proposalsFiled++;
         else if (f.outcome === 'deduped') summary.deduped++;

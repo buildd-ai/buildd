@@ -28,6 +28,7 @@ import type { FindingLedgerAggregate } from '@buildd/core/post-session-findings'
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { and, asc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import type { PostSessionFindingStore, StoredFinding } from './post-session-findings';
+import { WORKSPACE_NOT_OFF } from './post-session-mode-sql';
 
 type FindingRow = typeof postSessionFindings.$inferSelect;
 
@@ -287,7 +288,13 @@ export const postSessionFindingStore: PostSessionFindingStore = {
     const rows = await db
       .select({ id: postSessionRuns.id })
       .from(postSessionRuns)
-      .where(and(eq(postSessionRuns.policyVersion, policyVersion), eq(postSessionRuns.state, 'triaged')))
+      .innerJoin(workspaces, eq(workspaces.id, postSessionRuns.workspaceId))
+      .where(and(
+        eq(postSessionRuns.policyVersion, policyVersion),
+        eq(postSessionRuns.state, 'triaged'),
+        // A workspace switched off after triage is not analysed.
+        WORKSPACE_NOT_OFF,
+      ))
       .orderBy(asc(postSessionRuns.updatedAt))
       .limit(limit);
     return rows.map(r => r.id);

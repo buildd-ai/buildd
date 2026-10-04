@@ -41,7 +41,8 @@ class FakeStore implements PostSessionFindingStore {
       missionId: 'mission-1',
       policyVersion: 'psq-v1',
       mode: 'propose',
-      gitConfig: null,
+      // A propose run comes from a workspace configured to propose.
+      gitConfig: { postSessionQuality: { mode: over.mode ?? 'propose' } },
       ...over,
     };
     this.runs.set(id, run);
@@ -313,7 +314,7 @@ describe('recordPostSessionFindings — policy', () => {
 
   it('honours a workspace-configured confidence threshold', async () => {
     const store = new FakeStore();
-    store.addRun({ id: 'run-1', gitConfig: { postSessionQuality: { findingPolicy: { highConfidenceThreshold: 0.95 } } } });
+    store.addRun({ id: 'run-1', gitConfig: { postSessionQuality: { mode: 'propose', findingPolicy: { highConfidenceThreshold: 0.95 } } } });
     await recordPostSessionFindings('run-1', analysis([finding({ severity: 'high', confidence: 0.85 })]), { store, now: NOW });
     expect(store.tasks.size).toBe(0);
   });
@@ -360,6 +361,25 @@ describe('recordPostSessionFindings — policy', () => {
     if (res.status === 'recorded') expect(res.findings[0].outcome).toBe('would_act');
   });
 
+  it('a workspace moved out of propose stops filing at once, even for runs recorded under propose', async () => {
+    for (const mode of ['shadow', 'off'] as const) {
+      const store = new FakeStore();
+      store.addRun({ id: 'run-1', mode: 'propose', gitConfig: { postSessionQuality: { mode } } });
+      const res = await recordPostSessionFindings('run-1', analysis([finding({ severity: 'critical', signature: 'sig-crit', class: 'platform' })]), { store, now: NOW });
+      expect(store.tasks.size).toBe(0);
+      expect(store.notes).toHaveLength(0);
+      expect(store.findings[0].actionState).toBe('promoted');
+      if (res.status === 'recorded') expect(res.findings[0].outcome).toBe('would_act');
+    }
+  });
+
+  it('a run recorded under shadow does not start filing when the workspace later moves to propose', async () => {
+    const store = new FakeStore();
+    store.addRun({ id: 'run-1', mode: 'shadow', gitConfig: { postSessionQuality: { mode: 'propose' } } });
+    await recordPostSessionFindings('run-1', analysis([finding({ severity: 'critical', signature: 'sig-crit', class: 'platform' })]), { store, now: NOW });
+    expect(store.tasks.size).toBe(0);
+  });
+
   it('adopts an orphaned follow-up task left by a crash between insert and claim', async () => {
     const store = new FakeStore();
     store.addRun({ id: 'run-1' });
@@ -398,5 +418,49 @@ describe('recordTriagedRuns', () => {
     expect(store.runs.get('run-1')!.state).toBe('analysed');
     expect(store.runs.get('run-2')!.state).toBe('triaged');
     expect(store.runs.get('run-2')!.actError).toBe('analyse: boom');
+  });
+
+  it('reports actionable, filed, suppressed-duplicate and transcript-unread counts', async () => {
+    const store = new FakeStore();
+    store.addRun({ id: 'run-1' });
+    store.addRun({ id: 'run-2' });
+    store.addRun({ id: 'run-3' });
+    const crit = finding({ severity: 'critical', signature: 'sig-crit', class: 'platform' });
+    const unread = analysis([crit]);
+    unread.coverage = { traceAvailability: 'absent', traceSource: null, traceMissing: { portions: [], reason: 'read_failed' } };
+    const summary = await recordTriagedRuns({
+      store,
+      now: NOW,
+      analyse: async runId => ({
+        status: 'analysed',
+        runId,
+        analysis: runId === 'run-3' ? unread : analysis([crit, finding({ severity: 'low', signature: 'sig-low' })]),
+      }),
+    });
+    expect(summary).toMatchObject({
+      candidates: 3,
+      recorded: 3,
+      // run-1 files the task; run-2 and run-3 append to it instead of filing again.
+      actionable: 3,
+      tasksFiled: 1,
+      duplicatesSuppressed: 2,
+      transcriptUnread: 1,
+    });
+    expect(store.tasks.size).toBe(1);
+  });
+
+  it('stops starting new runs once the time budget is spent, leaving the rest triaged', async () => {
+    const store = new FakeStore();
+    store.addRun({ id: 'run-1' });
+    store.addRun({ id: 'run-2' });
+    let started = 0;
+    const summary = await recordTriagedRuns({
+      store,
+      now: NOW,
+      shouldContinue: () => started < 1,
+      analyse: async runId => { started++; return { status: 'analysed', runId, analysis: analysis([finding()]) }; },
+    });
+    expect(summary).toMatchObject({ candidates: 2, recorded: 1, deferred: 1 });
+    expect(store.runs.get('run-2')!.state).toBe('triaged');
   });
 });

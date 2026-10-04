@@ -61,6 +61,7 @@ import {
   tasks,
   workerErrorTraces,
   workers,
+  workspaces,
 } from '@buildd/core/db/schema';
 import { postSessionRunStore } from './post-session-store';
 
@@ -268,5 +269,16 @@ describe('postSessionRunStore Stage B triage', () => {
     expect(await postSessionRunStore.listUntriaged({ policyVersion: 'psq-v1', limit: 10 })).toEqual(['run-1', 'run-2']);
     const sel = calls.find(c => c.op === 'select' && c.table === postSessionRuns)!;
     expect(sel.steps.find(([s]) => s === 'limit')![1][0]).toBe(10);
+    // Joined to the workspace so a workspace switched off is not triaged.
+    expect(sel.steps.find(([s]) => s === 'innerJoin')![1][0]).toBe(workspaces);
+  });
+
+  it('records a triage failure without moving the run out of collected', async () => {
+    await postSessionRunStore.recordTriageFailure('run-1', 'write timeout', NOW);
+    const [w] = writes();
+    expect(w.table).toBe(postSessionRuns);
+    const set = w.steps.find(([s]) => s === 'set')![1][0] as Record<string, unknown>;
+    expect(set).toEqual({ errorStage: 'triage', lastError: 'write timeout', failedAt: NOW, updatedAt: NOW });
+    expect(set).not.toHaveProperty('state');
   });
 });
