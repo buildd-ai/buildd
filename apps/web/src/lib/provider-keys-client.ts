@@ -10,40 +10,26 @@
  * `@buildd/core/inference-keys`. See knowledge-base: buildd/design/agent-chat.md → Credentials.
  */
 import {
-  CHAT_PROVIDERS,
-  isChatProvider,
   type ChatProvider,
   type MaskedProviderKey,
+  type ProviderKeyCapability,
 } from '@buildd/shared';
+
+import { PERSONAL_KEY_PROVIDERS, providerKeyCapability, isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 
 export type { ChatProvider };
 
-export interface ChatProviderInfo {
+export interface ChatProviderInfo extends Omit<ProviderKeyCapability, 'id'> {
   id: ChatProvider;
-  label: string;
-  /** Expected key prefix, used for a soft shape check before saving. */
-  prefix: string;
-  placeholder: string;
-  /** Where to create a key. */
-  consoleUrl: string;
 }
 
-const INFO: Record<ChatProvider, Omit<ChatProviderInfo, 'id'>> = {
-  anthropic: { label: 'Anthropic', prefix: 'sk-ant-api', placeholder: 'sk-ant-api03-…', consoleUrl: 'https://console.anthropic.com/settings/keys' },
-  openai: { label: 'OpenAI', prefix: 'sk-', placeholder: 'sk-proj-…', consoleUrl: 'https://platform.openai.com/api-keys' },
-  openrouter: { label: 'OpenRouter', prefix: 'sk-or-', placeholder: 'sk-or-v1-…', consoleUrl: 'https://openrouter.ai/settings/keys' },
-};
+/** OpenRouter is a display recommendation, never a routing requirement. */
+export const PROVIDER_DISPLAY_ORDER: readonly ChatProvider[] = [...PERSONAL_KEY_PROVIDERS].sort((a, b) =>
+  (a === 'openrouter' ? -1 : 0) - (b === 'openrouter' ? -1 : 0),
+);
 
-/**
- * Display order: OpenRouter first. One OpenRouter key reaches every model the
- * tiers name, so it is the one to recommend.
- */
-export const PROVIDER_DISPLAY_ORDER: readonly ChatProvider[] = ['openrouter', 'anthropic', 'openai'];
-
-/** Display info per provider, in display order. */
-export const CHAT_PROVIDER_INFO: readonly ChatProviderInfo[] = PROVIDER_DISPLAY_ORDER
-  .filter((id) => (CHAT_PROVIDERS as readonly string[]).includes(id))
-  .map((id) => ({ id, ...INFO[id] }));
+export const CHAT_PROVIDER_INFO: readonly ChatProviderInfo[] = PROVIDER_DISPLAY_ORDER.map(id => ({ ...providerKeyCapability(id)!, id }));
+export const PERSONAL_PROVIDER_INFO = CHAT_PROVIDER_INFO.filter(p => p.personalKeys);
 
 export type KeyPolicy = 'team' | 'team_or_own' | 'own';
 
@@ -119,7 +105,7 @@ export function normalizeProviderKeys(body: unknown): ProviderKeysView {
   const list = Array.isArray(b.providers) ? (b.providers as Record<string, unknown>[]) : [];
   const byProvider = new Map<ChatProvider, ProviderCard>();
   for (const p of list) {
-    if (!p || !isChatProvider(p.provider) || byProvider.has(p.provider)) continue;
+    if (!p || !isPersonalKeyProvider(p.provider) || byProvider.has(p.provider)) continue;
     byProvider.set(p.provider, {
       provider: p.provider,
       team: toKeyStatus(p.team as MaskedProviderKey | null),
@@ -206,14 +192,14 @@ export function checkKeyShape(provider: ChatProvider, raw: string): KeyShapeResu
     v = v.slice(1, -1).trim();
   }
   if (!v) return { ok: false, value: v, message: 'Paste a key first.' };
-  if (provider === 'anthropic' && v.startsWith('sk-ant-oat')) {
+  if (providerKeyCapability(provider)?.rejectedPrefixes.some(prefix => v.startsWith(prefix))) {
     return {
       ok: false,
       value: v,
       message: 'That is a Claude subscription token. Chat needs an API key from the Anthropic console.',
     };
   }
-  const info = INFO[provider];
+  const info = providerKeyCapability(provider)!;
   if (!v.startsWith(info.prefix)) {
     return { ok: true, value: v, message: `${info.label} keys usually start with ${info.prefix}.` };
   }

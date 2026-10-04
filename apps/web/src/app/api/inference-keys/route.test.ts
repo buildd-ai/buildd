@@ -135,3 +135,24 @@ describe('DELETE', () => {
     expect(mockDelete).not.toHaveBeenCalled();
   });
 });
+
+describe('provider-symmetric authorization', () => {
+  for (const provider of ['anthropic', 'openai', 'openrouter']) {
+    it(`${provider}: members own their keys, admins manage team keys`, async () => {
+      const body = { teamId: 't-1', provider, value: 'example-api-key-for-tests', scope: 'user' };
+      expect((await PUT(req('PUT', '/api/inference-keys', body))).status).toBe(200);
+      expect(mockSet.mock.calls.at(-1)![0]).toMatchObject({ provider, userId: 'u-1', scope: 'user' });
+      expect((await PUT(req('PUT', '/api/inference-keys', { ...body, scope: 'team' }))).status).toBe(403);
+      expect((await DELETE(req('DELETE', `/api/inference-keys?provider=${provider}&scope=team`))).status).toBe(403);
+      mockGetUserAdminTeamIds.mockResolvedValue(['t-1']);
+      expect((await PUT(req('PUT', '/api/inference-keys', { ...body, scope: 'team' }))).status).toBe(200);
+      expect((await DELETE(req('DELETE', `/api/inference-keys?provider=${provider}&scope=team`))).status).toBe(200);
+    });
+  }
+  it('excludes team gateways from the standalone personal key API', async () => {
+    expect((await PUT(req('PUT', '/api/inference-keys', { provider: 'litellm', scope: 'user', value: 'example-key' }))).status).toBe(400);
+    expect(mockSet).not.toHaveBeenCalled();
+    expect((await DELETE(req('DELETE', '/api/inference-keys?provider=litellm&scope=user'))).status).toBe(400);
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+});

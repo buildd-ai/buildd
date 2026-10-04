@@ -1,3 +1,5 @@
+import { CHAT_PROVIDERS } from '@buildd/shared';
+import { PERSONAL_KEY_PROVIDERS } from '@builddai/ai-kit/models/provider-keys';
 import { describe, expect, it } from 'bun:test';
 import {
   CHAT_PROVIDER_INFO,
@@ -21,6 +23,10 @@ const masked = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('CHAT_PROVIDER_INFO', () => {
+  it('keeps the sparse-runner wire provider type aligned with route eligibility', () => {
+    expect([...PERSONAL_KEY_PROVIDERS].sort()).toEqual([...CHAT_PROVIDERS].sort());
+    expect(CHAT_PROVIDER_INFO.every(p => p.personalKeys)).toBe(true);
+  });
   it('covers exactly the providers chat accepts, in display order', () => {
     expect(CHAT_PROVIDER_INFO.map((p) => p.id)).toEqual(['openrouter', 'anthropic', 'openai']);
   });

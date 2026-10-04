@@ -1,8 +1,9 @@
+import { isPersonalKeyProvider } from '@builddai/ai-kit/models/provider-keys';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { getUserAdminTeamIds, getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deleteProviderKey, listProviderKeys, setProviderKey } from '@/lib/provider-keys';
-import { isChatProvider, type SetProviderKeyRequest } from '@buildd/shared';
+import type { SetProviderKeyRequest } from '@buildd/shared';
 
 /**
  * Provider keys for chat, inference and decision calls.
@@ -64,8 +65,8 @@ export async function PUT(req: NextRequest) {
   if ('response' in r) return r.response;
   const { userId, teamId, isAdmin } = r.caller;
 
-  if (!isChatProvider(body.provider)) {
-    return NextResponse.json({ error: 'provider must be anthropic, openai or openrouter' }, { status: 400 });
+  if (!isPersonalKeyProvider(body.provider)) {
+    return NextResponse.json({ error: 'Unsupported standalone key provider' }, { status: 400 });
   }
   const scope = parseScope(body.scope);
   if (!scope) return NextResponse.json({ error: "scope must be 'user' or 'team'" }, { status: 400 });
@@ -91,8 +92,8 @@ export async function DELETE(req: NextRequest) {
   const { userId, teamId, isAdmin } = r.caller;
 
   const provider = params.get('provider');
-  if (!isChatProvider(provider)) {
-    return NextResponse.json({ error: 'provider must be anthropic, openai or openrouter' }, { status: 400 });
+  if (!isPersonalKeyProvider(provider)) {
+    return NextResponse.json({ error: 'Unsupported standalone key provider' }, { status: 400 });
   }
   const scope = parseScope(params.get('scope'));
   if (!scope) return NextResponse.json({ error: "scope must be 'user' or 'team'" }, { status: 400 });
