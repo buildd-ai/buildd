@@ -77,7 +77,6 @@ describe('TASK_ASSIGNED is sent only by the dispatch authority', () => {
     expect(offenders).toEqual([]);
   });
 });
-});
 
 // ── (b) deprecated wrapper imports: ratchet to zero ───────────────────────
 
