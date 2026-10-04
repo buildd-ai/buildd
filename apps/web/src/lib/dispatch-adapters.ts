@@ -13,7 +13,7 @@
  * in the dispatcher — and keeps its own business semantics to itself.
  */
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
-import type { DispatchCause } from '@buildd/core/dispatch-outbox';
+import type { DispatchCause, DispatchIntent } from '@buildd/core/dispatch-outbox';
 import { channels, events, triggerEventChecked } from '@/lib/pusher';
 import {
   buildTaskPayload,
@@ -28,6 +28,7 @@ import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
 /** What an adapter is offered: the intent and the task it names. */
 export interface DispatchContext {
   dispatchId: string;
+  intent: DispatchIntent;
   /** The most specific cause in the trail (primaryCause). */
   cause: DispatchCause;
   causes: readonly DispatchCause[];
@@ -92,6 +93,8 @@ export function routeForCause(cause: DispatchCause): CauseRoute {
     case 'mission.released':
     case 'task.unblocked':
     case 'start_at.reached':
+      return { event: 'task.unblocked', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
+    case 'policy.requested':
       return { event: 'task.unblocked', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
     case 'task.requeued':
     case 'task.reassigned':
@@ -195,7 +198,7 @@ export const runnerBroadcast: DispatchAdapter = {
   },
 };
 
-/** The chain every task wake goes through today: autonomous runners, push first, broadcast last. */
+/** The `work_execution` chain: autonomous runners, push first, broadcast last. */
 export const TASK_WAKE_ADAPTERS: readonly DispatchAdapter[] = [
   runnerClaimability,
   targetedLocalRunner,
@@ -203,3 +206,15 @@ export const TASK_WAKE_ADAPTERS: readonly DispatchAdapter[] = [
   githubActions,
   runnerBroadcast,
 ];
+
+/**
+ * The chain per intent kind. Only work execution has destinations today;
+ * the others are registered here when their first adapter (an interactive
+ * session, Slack/Teams, PagerDuty, a tracker) exists. Until then an intent of
+ * that kind is parked as failed by the dispatcher — visible, not dropped.
+ * A tracker adapter decides for itself what is worth materializing there; the
+ * dispatcher never maps internal tasks or small human actions onto it.
+ */
+export const ADAPTER_CHAINS: Readonly<Partial<Record<DispatchIntent, readonly DispatchAdapter[]>>> = {
+  work_execution: TASK_WAKE_ADAPTERS,
+};

@@ -89,6 +89,16 @@ normal execution.
     substrate. Today's chain wakes autonomous runners; another destination
     (an interactive session, an external work system) is a new adapter, and
     its business semantics stay inside it.
+14. **Typed intents.** Every row carries an `intent` (`DISPATCH_INTENTS`:
+    `work_execution`, `human_action`, `notification`, `incident`,
+    `external_work`) that selects its adapter chain (`ADAPTER_CHAINS`). Buildd's
+    policy decides what should happen and writes the intent; dispatch only
+    delivers it. Only `work_execution` reaches runners, and only it is written
+    by the trigger. Other kinds are namespaced in `dedupe_key`, so they never
+    coalesce with a runner wake. A kind with no registered adapter is parked
+    as `failed` at once (`no_adapter:<intent>`), never silently closed.
+    Promoting work into an external tracker is that adapter's policy; the
+    dispatcher never mirrors internal tasks or small human actions into one.
 
 ---
 
@@ -196,6 +206,12 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
   runner, webhook or GitHub Actions dispatch fires; "only pending tasks" is
   enforced by the runner chain's `runnerClaimability`, not by the dispatcher
   (`apps/web/src/lib/dispatch-authority.test.ts`).
+- AC-23: GIVEN an intent other than `work_execution` WHEN it is delivered
+  THEN no runner, webhook or GitHub Actions dispatch fires; with no adapter
+  registered for its kind it is parked as failed in one attempt; a
+  `human_action` and a runner wake for the same task stay separate rows
+  (`apps/web/src/lib/dispatch-authority.test.ts`,
+  `apps/web/tests/db/dispatch-outbox.test.ts`).
 - AC-22: WITH every reconciliation path disabled (no cron, no sweep, no
   backstop, no poll) WHEN a task is created, requeued, released from a path
   claim or has its last dependency resolve THEN the kick alone delivers its
@@ -215,7 +231,8 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
   `wakeTasks`, `announceTaskCreated`, `kickDispatch`, `drainDispatchOutbox`,
   `deliverTaskDispatch`, `primaryCause`.
 - Destination adapters: `apps/web/src/lib/dispatch-adapters.ts` —
-  `TASK_WAKE_ADAPTERS`, `routeForCause`, `webhookWants`.
+  `ADAPTER_CHAINS`, `TASK_WAKE_ADAPTERS`, `routeForCause`, `webhookWants`.
+  Non-work intents are recorded with `dispatchIntent` (dispatch-authority.ts).
 - Timer and repair cron: `apps/web/src/app/api/cron/dispatch-drain/route.ts`,
   `apps/web/src/lib/dispatch-repair.ts`.
 - Path release and claim-time waiters: `packages/core/path-claim.ts` —

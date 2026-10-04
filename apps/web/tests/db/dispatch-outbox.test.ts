@@ -131,6 +131,32 @@ describe('explicit enqueue', () => {
   });
 });
 
+describe('typed intents', () => {
+  test('the trigger writes work_execution; a human_action for the same task is its own row', async () => {
+    const id = await seedTask(workspaceId);
+    await db.execute(enqueueDispatchSql({ taskId: id, intent: 'human_action', cause: 'policy.requested' }));
+    await db.execute(enqueueDispatchSql({ taskId: id, cause: 'ci.retry' }));
+    const rows = await q<{ intent: string; dedupe_key: string; causes: string[] }>(
+      sql`SELECT intent, dedupe_key, causes FROM task_dispatch_outbox WHERE task_id = ${id}::uuid ORDER BY intent`);
+    expect(rows).toEqual([
+      { intent: 'human_action', dedupe_key: 'human_action:now', causes: ['policy.requested'] },
+      { intent: 'work_execution', dedupe_key: 'now', causes: ['task.created', 'ci.retry'] },
+    ]);
+  });
+
+  test('a claimed row carries its intent', async () => {
+    await settleOutbox();
+    const id = await seedTask(workspaceId, { status: 'completed' });
+    await db.execute(enqueueDispatchSql({ taskId: id, intent: 'notification', cause: 'policy.requested' }));
+    const [row] = (await claimDueDispatches(100)).filter(r => r.taskId === id);
+    expect(row.intent).toBe('notification');
+  });
+
+  test('an unknown intent is refused before it reaches SQL', () => {
+    expect(() => enqueueDispatchSql({ taskId: 'x', intent: 'start_agent' as never, cause: 'task.created' })).toThrow('unknown intent');
+  });
+});
+
 describe('claim: at-least-once, never twice concurrently', () => {
   test('two concurrent drains take disjoint rows', async () => {
     await settleOutbox();

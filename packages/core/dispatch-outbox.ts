@@ -25,6 +25,28 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from './db';
 
+/**
+ * What kind of delivery an intent is. Buildd's policy decides what should
+ * happen; the dispatcher only delivers it, through the adapter chain for its
+ * kind (apps/web/src/lib/dispatch-adapters.ts). Durable dispatch does not
+ * imply autonomous execution: only `work_execution` wakes a runner.
+ *
+ *  - work_execution  re-evaluate the task for an autonomous runner (the claim decides)
+ *  - human_action    a small blocking human step: approval, choice, credential, visual check
+ *  - notification    an informational nudge
+ *  - incident        an urgent operational signal
+ *  - external_work   materialize durable work in an external tracker
+ *
+ * A kind with no adapter registered is parked as `failed` (visible to the
+ * floor tick's health report), never silently closed.
+ */
+export const DISPATCH_INTENTS = ['work_execution', 'human_action', 'notification', 'incident', 'external_work'] as const;
+export type DispatchIntent = (typeof DISPATCH_INTENTS)[number];
+
+export function isDispatchIntent(v: unknown): v is DispatchIntent {
+  return typeof v === 'string' && (DISPATCH_INTENTS as readonly string[]).includes(v);
+}
+
 /** Why a task may have become runnable. The vocabulary is the contract; add, never rename. */
 export const DISPATCH_CAUSES = [
   // Written by the trigger.
@@ -44,6 +66,8 @@ export const DISPATCH_CAUSES = [
   'task.unblocked',
   'credential.restored',
   'mission.released',
+  // A non-work intent Buildd's policy raised (human_action, notification, …).
+  'policy.requested',
 ] as const;
 export type DispatchCause = (typeof DISPATCH_CAUSES)[number];
 
@@ -53,6 +77,8 @@ export function isDispatchCause(v: unknown): v is DispatchCause {
 
 export interface EnqueueDispatchInput {
   taskId: string;
+  /** Defaults to `work_execution`, the only kind the trigger writes. */
+  intent?: DispatchIntent;
   cause: DispatchCause;
   /** Earliest delivery. Omit for "now". */
   notBefore?: Date;
@@ -66,8 +92,15 @@ export interface EnqueueDispatchInput {
   metadata?: Record<string, unknown>;
 }
 
-export function defaultDedupeKey(notBefore: Date | undefined, nowMs: number = Date.now()): string {
-  return notBefore && notBefore.getTime() > nowMs ? `start_at:${notBefore.getTime()}` : 'now';
+export function defaultDedupeKey(
+  notBefore: Date | undefined,
+  nowMs: number = Date.now(),
+  intent: DispatchIntent = 'work_execution',
+): string {
+  const key = notBefore && notBefore.getTime() > nowMs ? `start_at:${notBefore.getTime()}` : 'now';
+  // Work keys stay bare so app wakes coalesce with the trigger's rows; any
+  // other kind is namespaced so it never folds into (or absorbs) a runner wake.
+  return intent === 'work_execution' ? key : `${intent}:${key}`;
 }
 
 const ON_CONFLICT_COALESCE = sql.raw(`ON CONFLICT (task_id, dedupe_key) WHERE status = 'pending'
@@ -84,17 +117,20 @@ DO UPDATE SET
  * no longer pending is skipped at delivery, which is cheaper than racing it.
  */
 export function enqueueDispatchSql(input: EnqueueDispatchInput): SQL {
+  const intent = input.intent ?? 'work_execution';
+  if (!isDispatchIntent(intent)) throw new Error(`enqueueDispatchSql: unknown intent ${intent}`);
   const args = {
     taskId: input.taskId,
+    intent,
     cause: input.cause,
     notBefore: input.notBefore?.toISOString() ?? null,
-    dedupeKey: input.dedupeKey ?? defaultDedupeKey(input.notBefore),
+    dedupeKey: input.dedupeKey ?? defaultDedupeKey(input.notBefore, Date.now(), intent),
     metadata: input.metadata ?? null,
   };
   return sql`-- dispatch_outbox:enqueue
 WITH args AS (SELECT ${JSON.stringify(args)}::jsonb AS a)
-INSERT INTO task_dispatch_outbox (workspace_id, task_id, cause, causes, not_before, dedupe_key, metadata)
-SELECT t.workspace_id, t.id, a->>'cause', jsonb_build_array(a->>'cause'),
+INSERT INTO task_dispatch_outbox (workspace_id, task_id, intent, cause, causes, not_before, dedupe_key, metadata)
+SELECT t.workspace_id, t.id, a->>'intent', a->>'cause', jsonb_build_array(a->>'cause'),
   COALESCE((a->>'notBefore')::timestamptz, now()), a->>'dedupeKey', a->'metadata'
 FROM args JOIN tasks t ON t.id = (a->>'taskId')::uuid
 ${ON_CONFLICT_COALESCE}`;
@@ -133,6 +169,7 @@ export async function enqueueTaskDispatch(input: EnqueueDispatchInput): Promise<
 
 export interface ClaimedDispatch {
   id: string;
+  intent: DispatchIntent;
   workspaceId: string;
   taskId: string;
   cause: DispatchCause;
@@ -172,7 +209,7 @@ UPDATE task_dispatch_outbox o
 SET status = 'delivering', attempt_count = o.attempt_count + 1, last_attempt_at = now(), updated_at = now()
 FROM due
 WHERE o.id = due.id AND o.status IN ('pending', 'delivering')
-RETURNING o.id, o.workspace_id, o.task_id, o.cause, o.causes, o.not_before, o.attempt_count, o.metadata`;
+RETURNING o.id, o.intent, o.workspace_id, o.task_id, o.cause, o.causes, o.not_before, o.attempt_count, o.metadata`;
 }
 
 type RawRow = Record<string, unknown>;
@@ -182,6 +219,7 @@ export async function claimDueDispatches(limit: number): Promise<ClaimedDispatch
   const result = await db.execute(claimDueDispatchesSql(limit));
   return rowsOf(result).map(r => ({
     id: String(r.id),
+    intent: (r.intent ?? 'work_execution') as DispatchIntent,
     workspaceId: String(r.workspace_id),
     taskId: String(r.task_id),
     cause: r.cause as DispatchCause,
@@ -275,7 +313,7 @@ WITH gone AS (
 /** The intent trail for one task, oldest first — the "why did it (not) start" read. */
 export async function dispatchHistoryForTask(taskId: string, limit = 50) {
   const result = await db.execute(sql`-- dispatch_outbox:history
-SELECT id, cause, causes, status, not_before, attempt_count, delivered_at, delivered_via, last_error, created_at
+SELECT id, intent, cause, causes, status, not_before, attempt_count, delivered_at, delivered_via, last_error, created_at
 FROM task_dispatch_outbox WHERE task_id = ${taskId}::uuid ORDER BY created_at LIMIT ${limit}`);
   return rowsOf(result);
 }

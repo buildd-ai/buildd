@@ -4444,6 +4444,11 @@ export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // DispatchIntent: what kind of delivery this is (work_execution,
+  // human_action, notification, incident, external_work). Selects the adapter
+  // chain; durable dispatch does not imply autonomous execution. The trigger
+  // writes the default.
+  intent: text('intent').default('work_execution').notNull(),
   // DispatchCause (packages/core/dispatch-outbox.ts). A coalesced row keeps
   // the first cause; later ones are appended to `causes`.
   cause: text('cause').notNull(),

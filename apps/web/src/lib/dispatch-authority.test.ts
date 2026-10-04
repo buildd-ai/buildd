@@ -95,6 +95,7 @@ mock.module('next/server', () => ({
 
 const {
   DISPATCH_CAUSES,
+  MAX_DELIVERY_ATTEMPTS,
 } = realOutbox;
 const {
   deliverTaskDispatch,
@@ -149,10 +150,11 @@ function seed(
 }
 
 let rowSeq = 0;
-function row(cause: DispatchCause, opts: { causes?: DispatchCause[]; metadata?: Record<string, unknown>; taskId?: string; attemptCount?: number } = {}) {
+function row(cause: DispatchCause, opts: { causes?: DispatchCause[]; metadata?: Record<string, unknown>; taskId?: string; attemptCount?: number; intent?: string } = {}) {
   rowSeq++;
   return {
     id: `dispatch-${rowSeq}`,
+    intent: (opts.intent ?? 'work_execution') as 'work_execution',
     workspaceId: TASK.workspaceId,
     taskId: opts.taskId ?? TASK.id,
     cause,
@@ -595,6 +597,41 @@ describe('deliverTaskDispatch: the dispatcher routes through adapters and owns n
     seed();
     const boom = { name: 'boom', offer: async () => { throw new Error('down'); } };
     await expect(deliverTaskDispatch(row('task.created'), [boom])).rejects.toThrow('down');
+  });
+});
+
+describe('typed intents: Buildd decides what should happen; dispatch delivers it', () => {
+  it('work_execution uses the runner chain unchanged', async () => {
+    seed();
+    expect(await deliverTaskDispatch(row('task.created'))).toBe('pusher');
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  for (const intent of ['human_action', 'notification', 'incident', 'external_work']) {
+    it(`a ${intent} intent never reaches a runner, and with no adapter registered it is refused`, async () => {
+      seed({ webhookConfig: WEBHOOK });
+      await expect(deliverTaskDispatch(row('policy.requested', { intent }))).rejects.toThrow(`no_adapter:${intent}`);
+      expect(fetchCalls).toHaveLength(0);
+      expect(mockTriggerEventChecked).not.toHaveBeenCalled();
+    });
+  }
+
+  it('an adapter for a non-work intent receives it with its kind (the seam a future destination plugs into)', async () => {
+    seed();
+    const seen: Array<{ intent: string; cause: string }> = [];
+    const approvals = { name: 'approvals', offer: async (ctx: { intent: string; cause: string }) => { seen.push(ctx); return { kind: 'delivered' as const, via: 'approvals' }; } };
+    expect(await deliverTaskDispatch(row('policy.requested', { intent: 'human_action' }), [approvals as never])).toBe('approvals');
+    expect(seen[0]).toMatchObject({ intent: 'human_action', cause: 'policy.requested' });
+    expect(mockTriggerEventChecked).not.toHaveBeenCalled();
+  });
+
+  it('the drain parks an unroutable intent at once instead of retrying it', async () => {
+    seed();
+    const r = row('policy.requested', { intent: 'notification', attemptCount: 1 });
+    claimQueue = [r];
+    const res = await drainDispatchOutbox();
+    expect(res.failed).toBe(1);
+    expect(mockMarkFailed).toHaveBeenCalledWith(r.id, MAX_DELIVERY_ATTEMPTS, 'no_adapter:notification');
   });
 });
 

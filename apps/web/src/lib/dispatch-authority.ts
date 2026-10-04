@@ -30,14 +30,16 @@ import {
   listFutureDispatches,
   markDispatchDelivered,
   markDispatchFailed,
+  MAX_DELIVERY_ATTEMPTS,
   type ClaimedDispatch,
+  type DispatchIntent,
   type DispatchCause,
   type EnqueueDispatchInput,
 } from '@buildd/core/dispatch-outbox';
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import { markDue, reseedDue } from '@/lib/redis';
 import { buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
-import { TASK_WAKE_ADAPTERS, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
+import { ADAPTER_CHAINS, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
 export const DISPATCH_DUE_QUEUE = 'dispatch';
@@ -120,6 +122,23 @@ export async function wakeTask(
   }
 }
 
+/**
+ * Record a non-work intent Buildd's policy has decided on — a human action,
+ * a notification, an incident, external work — and kick delivery. The intent
+ * is durable before this returns; whether anything is delivered depends on
+ * an adapter being registered for its kind (ADAPTER_CHAINS). Work execution
+ * uses `wakeTask`.
+ */
+export async function dispatchIntent(input: {
+  taskId: string;
+  intent: Exclude<DispatchIntent, 'work_execution'>;
+  cause?: DispatchCause;
+  notBefore?: Date;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await enqueueTaskDispatch({ ...input, cause: input.cause ?? 'policy.requested' });
+}
+
 /** `wakeTask` for many tasks with one cause (a mission released, a parent's children). */
 export async function wakeTasks(taskIds: readonly string[], cause: DispatchCause): Promise<void> {
   if (taskIds.length === 0) return;
@@ -193,7 +212,9 @@ export async function drainDispatchOutbox(opts: { limit?: number } = {}): Promis
       result.failed++;
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[dispatch] delivery failed for task ${row.taskId} (attempt ${row.attemptCount}):`, msg);
-      await markDispatchFailed(row.id, row.attemptCount, msg).catch(e =>
+      // An unroutable kind will not become routable by waiting.
+      const attempts = err instanceof NoDispatchAdapterError ? MAX_DELIVERY_ATTEMPTS : row.attemptCount;
+      await markDispatchFailed(row.id, attempts, msg).catch(e =>
         console.error('[dispatch] markDispatchFailed failed:', e));
     }
   }));
@@ -223,32 +244,42 @@ async function loadForDelivery(taskId: string): Promise<{ task: DispatchContext[
   return { task: task as DispatchContext['task'], workspace: workspace ?? {} };
 }
 
+/** No adapter is registered for an intent's kind. Parked at once, not retried: retrying cannot help. */
+export class NoDispatchAdapterError extends Error {
+  constructor(readonly intent: string) {
+    super(`no_adapter:${intent}`);
+  }
+}
+
 /**
- * Offer one due intent to the destination adapters, in order, and report how
- * it went ('webhook' | 'pusher' | 'skipped:<why>' …). The first adapter that
- * delivers or skips ends the chain; a declined offer passes to the next; a
- * throw leaves the row for a retry with backoff.
+ * Offer one due intent to the adapter chain for its kind, in order, and
+ * report how it went ('webhook' | 'pusher' | 'skipped:<why>' …). The first
+ * adapter that delivers or skips ends the chain; a declined offer passes to
+ * the next; a throw leaves the row for a retry with backoff.
  *
- * This loop knows nothing about what a destination does with the intent — a
- * dispatch means "reconsider this task now", not "start an agent". Runners
- * are the first adapters (lib/dispatch-adapters.ts); an interactive session
- * or an external work system would be another adapter, never a branch here.
+ * This loop knows nothing about what a destination does with the intent.
+ * Buildd's policy decided what should happen when it wrote the intent; the
+ * dispatcher only delivers it. `chain` overrides the registry (tests, and a
+ * caller proving a new destination).
  */
 export async function deliverTaskDispatch(
   row: ClaimedDispatch,
-  adapters: readonly DispatchAdapter[] = TASK_WAKE_ADAPTERS,
+  chain: readonly DispatchAdapter[] | undefined = ADAPTER_CHAINS[row.intent ?? 'work_execution'],
 ): Promise<string> {
+  const intent = row.intent ?? 'work_execution';
+  if (!chain || chain.length === 0) throw new NoDispatchAdapterError(intent);
   const loaded = await loadForDelivery(row.taskId);
   if (!loaded) return 'skipped:task_gone';
   const ctx: DispatchContext = {
     dispatchId: row.id,
+    intent,
     cause: primaryCause(row.causes, row.cause),
     causes: row.causes,
     metadata: row.metadata,
     task: loaded.task,
     workspace: loaded.workspace,
   };
-  for (const adapter of adapters) {
+  for (const adapter of chain) {
     const outcome = await adapter.offer(ctx);
     if (outcome.kind === 'delivered') return outcome.via;
     if (outcome.kind === 'skipped') return `skipped:${outcome.why}`;
