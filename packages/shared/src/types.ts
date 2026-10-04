@@ -877,11 +877,8 @@ export interface QuestionWhere {
   file?: string;
 }
 
-/** Claim-time marker for the question-gate experiment (see ClaimTasksResponse). */
+/** Claim-time capability marker for the question gate (see ClaimTasksResponse). */
 export interface QuestionGateMarker {
-  experimentId: string;
-  policyVersion: number;
-  arm: 'control' | 'treatment';
   /** Pushbacks per worker before a question is sent as-is. */
   maxPushbacks: number;
 }

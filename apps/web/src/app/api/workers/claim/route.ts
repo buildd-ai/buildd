@@ -2551,9 +2551,9 @@ export async function POST(req: NextRequest) {
     cliVersion: body.environment?.claudeCliVersion,
     features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
   });
-  // Question-gate experiment: marks workers whose questions go through
-  // /api/workers/[id]/question-check. No-op without a running experiment.
-  await attachQuestionGate(claimedWorkers, {
+  // Question gate: marks workers whose questions go through
+  // /api/workers/[id]/question-check. No-op for a runner that never sent the feature.
+  attachQuestionGate(claimedWorkers, {
     features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
   });
 

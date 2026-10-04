@@ -493,6 +493,14 @@ export interface WorkspaceGitConfig {
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
 
+  // The 'Jev keeps agents moving' question gate (docs/design/human-question-gate.md,
+  // packages/core/question-gate.ts): Jev decides, holds or asks on every agent
+  // question, and the brief-quality pushback runs unconditionally. Absent / true
+  // = ON (default). Set to false — the one emergency kill switch — to revert to
+  // exactly pre-mission behaviour: every question reaches a person unchanged,
+  // with no pushback and no decide/hold.
+  jevQuestionGate?: boolean;
+
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and

@@ -132,7 +132,8 @@ import {
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
-import { questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import { holdTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import type { QuestionGateReply } from '@buildd/core/question-gate';
 import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -800,7 +801,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       pendingPermissionRequests: this.pendingPermissionRequests,
       onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
-      parkQuestion: (worker, toolInput, toolUseId) => this.parkQuestion(worker, toolInput, toolUseId),
+      parkQuestion: (worker, toolInput, toolUseId, gateReply) => this.parkQuestion(worker, toolInput, toolUseId, gateReply),
     });
     this.recoveryManager = new RecoveryManager({
       workers: this.workers,
@@ -2766,12 +2767,12 @@ export class WorkerManager {
    * session abort. Called from handleMessage, or for a gated worker from the
    * PreToolUse hook once the question gate let the question through.
    */
-  async parkQuestion(worker: LocalWorker, input: Record<string, unknown>, toolUseId?: string): Promise<void> {
+  async parkQuestion(worker: LocalWorker, input: Record<string, unknown>, toolUseId?: string, gateReply?: QuestionGateReply): Promise<void> {
     const questions = input.questions as Array<{ question: string; header?: string }> | undefined;
     const firstQuestion = questions?.[0];
     const questionText = firstQuestion?.question || 'Awaiting input';
     console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
-    const question = questionFromToolInput(worker, input, toolUseId);
+    const question = holdTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
     worker.waitingFor = question;
     worker.currentAction = questionHeader(input) || 'Question';
     this.addMilestone(worker, { type: 'status', label: `Question: ${questionHeader(input) || 'Awaiting input'}`, ts: Date.now() });

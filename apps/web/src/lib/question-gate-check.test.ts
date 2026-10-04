@@ -1,38 +1,58 @@
 /**
- * checkQuestion: the question gate's server half. On/off by experiment, the
- * threshold, max pushbacks then pass-through, fail-open paths, and that every
- * check that ran is recorded (check record + ai_usage receipt).
+ * checkQuestion: the question gate's server half. The kill switch, stage 1
+ * (brief check / pushback, unconditional now), hard rails, stage 2
+ * (decide/hold/ask), fail-open paths, and that every answered stage-2 call is
+ * recorded to the decision ledger (plus its ai_usage receipt).
  */
 import { describe, expect, it } from 'bun:test';
-import { checkQuestion, type QuestionCheckDeps } from './question-gate-check';
-import type { QuestionGateArmDecision, QuestionGateRequest } from '@buildd/core/question-gate';
+import { checkQuestion, gateEnabledFromGitConfig, hardRailContextFromGitConfig, type QuestionCheckDeps, type QuestionCheckScope } from './question-gate-check';
+import type { QuestionGateRequest } from '@buildd/core/question-gate';
 
-const SCOPE = { teamId: 't', workspaceId: 'w', accountId: 'a', taskId: 'task-1', workerId: 'worker-1', taskTitle: 'Weekend surcharge', sensitive: false };
+const SCOPE: QuestionCheckScope = {
+  teamId: 't', workspaceId: 'w', accountId: 'a', taskId: 'task-1', missionId: null, workerId: 'worker-1',
+  taskTitle: 'Weekend surcharge', sensitive: false, gateEnabled: true, hardRail: {},
+};
 const BARE: QuestionGateRequest = { priorPushbacks: 0, question: { prompt: 'Should isWeekend use local time or UTC?', options: ['local time', 'UTC'] } };
 
-const arm = (over: Partial<QuestionGateArmDecision> = {}): QuestionGateArmDecision => ({
-  experimentId: 'e', policyVersion: 1, arm: 'treatment', propensity: 0.5, apply: true,
-  minConfidence: 0.7, maxPushbacks: 2, minSamplePerArm: 20, ...over,
-});
+const receipt = (decisionId: string) => ({ kind: 'decision' as const, decisionId, provider: 'openrouter', model: 'jev', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 4, outcome: 'ok' as const, attempts: 1 });
 
-const run = (value: string, confidence: number) => async (opts: any) => {
-  opts.onUsage?.({ kind: 'decision', decisionId: 'buildd.question_gate', provider: 'openrouter', model: 'jev', usage: { inputTokens: 1, outputTokens: 1, costUsd: 0 }, latencyMs: 4, outcome: 'ok', attempts: 1 });
+const gateRun = (value: string, confidence: number) => async (opts: any) => {
+  opts.onUsage?.(receipt('buildd.question_gate'));
   return {
     ok: true, decisionId: 'buildd.question_gate', version: 'qg1|jev|engine-1',
-    outcomes: { verdict: { status: confidence >= 0.7 ? 'applied' : 'suggested', reason: 'below_threshold', value, confidence, answer: {} } },
+    outcomes: { verdict: { status: 'applied', value, confidence, answer: {} } },
     result: { ok: true, answers: {}, model: 'jev', usage: {}, latencyMs: 4, attempts: 1 }, receipt: null,
-    _state: opts.state,
   } as any;
 };
+
+const decideRun = (disposition: string, optionLabel: string | null, confidence: number, optionConfidence = 0.8) => async (opts: any) => {
+  opts.onUsage?.(receipt('buildd.question_decide'));
+  return {
+    ok: true, decisionId: 'buildd.question_decide', version: 'qd1|jev|engine-1',
+    outcomes: {
+      disposition: { status: 'applied', value: disposition, confidence, answer: {} },
+      optionIndex: optionLabel
+        ? { status: 'applied', value: optionLabel, confidence: optionConfidence, answer: {} }
+        : { status: 'skipped', reason: 'not_candidate' },
+    },
+    result: { ok: true, answers: {}, model: 'jev', usage: {}, latencyMs: 4, attempts: 1 }, receipt: null,
+  } as any;
+};
+
+const FAILED_RUN = async () => ({
+  ok: false, decisionId: 'd', version: 'v',
+  outcomes: { verdict: { status: 'skipped', reason: 'error' }, disposition: { status: 'skipped', reason: 'error' }, optionIndex: { status: 'skipped', reason: 'error' } },
+  result: { ok: false, error: { kind: 'timeout' } }, receipt: null,
+} as any);
 
 function deps(over: Partial<QuestionCheckDeps> = {}) {
   const records: any[] = [];
   const receipts: any[] = [];
   const d: QuestionCheckDeps = {
-    resolveArm: async () => arm(),
     resolveAccess: async () => ({ ok: true, apiKey: 'sk-team', model: 'jev' }),
-    run: run('needs_context', 0.9) as any,
-    record: async (_a, _t, r) => { records.push(r); },
+    runGate: gateRun('actionable', 0.95) as any,
+    runDecide: decideRun('decide', 'opt1', 0.9) as any,
+    record: async (r) => { records.push(r); return 'rec-1'; },
     recordReceipts: async (r) => { receipts.push(...r); },
     ...over,
   };
@@ -40,77 +60,157 @@ function deps(over: Partial<QuestionCheckDeps> = {}) {
 }
 
 describe('checkQuestion', () => {
-  it('off: no running experiment sends the question and records nothing', async () => {
-    const { d, records } = deps({ resolveArm: async () => null, run: (() => { throw new Error('must not run'); }) as any });
-    expect(await checkQuestion(SCOPE, BARE, d)).toMatchObject({ verdict: 'send', outcome: 'off' });
+  it('kill switch off: sends, nothing runs, nothing is recorded', async () => {
+    const { d, records, receipts } = deps({
+      runGate: (() => { throw new Error('must not run'); }) as any,
+      runDecide: (() => { throw new Error('must not run'); }) as any,
+    });
+    expect(await checkQuestion({ ...SCOPE, gateEnabled: false }, BARE, d)).toMatchObject({ verdict: 'send', outcome: 'off' });
     expect(records).toEqual([]);
+    expect(receipts).toEqual([]);
   });
 
-  it('treatment + confident needs_context: pushback with the reason, recorded with its receipt', async () => {
-    let state: any;
-    const { d, records, receipts } = deps({ run: (async (o: any) => { state = o.state; return run('needs_context', 0.9)(o); }) as any });
+  it('a confident needs_context pushes back, unconditionally, with no running experiment', async () => {
+    const { d, records, receipts } = deps({ runGate: gateRun('needs_context', 0.9) as any });
     const reply = await checkQuestion(SCOPE, BARE, d);
     expect(reply.verdict).toBe('pushback');
     expect(reply.outcome).toBe('pushback');
     expect(reply.reason).toStartWith('Not sent: a reader with no context could not decide');
-    expect(reply.reason).toContain('Then ask again.');
-    expect(state.question.task).toBe('Weekend surcharge');
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ workerId: 'worker-1', outcome: 'pushback', label: 'needs_context', confidence: 0.9, priorPushbacks: 0, brief: { context: false, consequences: false, recommended: false } });
-    expect(JSON.stringify(records[0])).not.toContain('isWeekend');
+    expect(records).toEqual([]); // stage 1 has no ledger write — only stage 2 does
     expect(receipts).toHaveLength(1);
   });
 
-  it('below the configured threshold the question is sent', async () => {
-    const { d } = deps({ resolveArm: async () => arm({ minConfidence: 0.95 }) });
-    expect(await checkQuestion(SCOPE, BARE, d)).toMatchObject({ verdict: 'send', outcome: 'actionable', label: 'needs_context', confidence: 0.9 });
+  it('pushback cap enforced: at the cap, the brief model is never called, and the question still reaches stage 2', async () => {
+    const { d } = deps({
+      runGate: (() => { throw new Error('must not run'); }) as any,
+      runDecide: decideRun('ask', null, 0.9) as any,
+    });
+    const reply = await checkQuestion(SCOPE, { ...BARE, priorPushbacks: 2 }, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'asked' });
   });
 
-  it('control arm records the shadow verdict and sends', async () => {
-    const { d, records } = deps({ resolveArm: async () => arm({ arm: 'control', apply: false }) });
-    expect(await checkQuestion(SCOPE, BARE, d)).toMatchObject({ verdict: 'send', outcome: 'shadow_needs_context', arm: 'control' });
-    expect(records[0].outcome).toBe('shadow_needs_context');
-  });
-
-  it('after max pushbacks the question passes through without a model call', async () => {
-    const { d, records } = deps({ run: (() => { throw new Error('must not run'); }) as any });
-    expect(await checkQuestion(SCOPE, { ...BARE, priorPushbacks: 2 }, d)).toMatchObject({ verdict: 'send', outcome: 'max_pushbacks' });
-    expect(records[0]).toMatchObject({ outcome: 'max_pushbacks', priorPushbacks: 2 });
-  });
-
-  it('a sensitive workspace never sends text out', async () => {
-    const { d, records } = deps({ run: (() => { throw new Error('must not run'); }) as any });
+  it('a sensitive workspace never sends text out, and stage 2 never runs either', async () => {
+    const { d, records, receipts } = deps({
+      runGate: (() => { throw new Error('must not run'); }) as any,
+      runDecide: (() => { throw new Error('must not run'); }) as any,
+    });
     expect(await checkQuestion({ ...SCOPE, sensitive: true }, BARE, d)).toMatchObject({ verdict: 'send', outcome: 'sensitive' });
-    expect(records[0].outcome).toBe('sensitive');
+    expect(records).toEqual([]);
+    expect(receipts).toEqual([]);
   });
 
-  it('fails open: no key, a gateway decision model, a failed run, a throw', async () => {
-    const cases: Array<Partial<QuestionCheckDeps>> = [
-      { resolveAccess: async () => ({ ok: false, error: { kind: 'missing_key' } }) },
-      { resolveAccess: async () => ({ ok: true, apiKey: 'k', model: 'm', endpoint: { kind: 'chat', baseURL: 'https://gw.example', provider: 'openai' } as any }) },
-      { run: (async () => ({ ok: false, decisionId: 'd', version: 'v', outcomes: { verdict: { status: 'skipped', reason: 'error', error: { kind: 'timeout' } } }, result: { ok: false, error: { kind: 'timeout' } }, receipt: null })) as any },
-      { run: (async () => { throw new Error('boom'); }) as any },
-      { resolveArm: async () => { throw new Error('db down'); } },
+  it('a hard rail blocks decide/hold before any decide model call; recorded as rail_blocked', async () => {
+    const { d, records } = deps({ runDecide: (() => { throw new Error('must not run'); }) as any });
+    const scope = { ...SCOPE, hardRail: { pathManifest: ['packages/core/db/schema.ts'] } };
+    const reply = await checkQuestion(scope, BARE, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'hard_rail', disposition: 'ask', rail: 'migration' });
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ taskId: 'task-1', applied: false, status: 'suggested', reason: 'rail_blocked:migration' });
+  });
+
+  it('each of the five hard rails blocks decide, never attempted', async () => {
+    const cases: Array<{ scope: Partial<QuestionCheckScope>; rail: string }> = [
+      { scope: { hardRail: { pathManifest: ['packages/core/db/schema.ts'] } }, rail: 'migration' },
+      { scope: { hardRail: { pathManifest: ['apps/web/src/app/api/secrets/route.ts'] } }, rail: 'auth_secrets' },
+      { scope: { hardRail: { pathManifest: ['.github/workflows/build.yml'] } }, rail: 'ci_deploy' },
+      { scope: { hardRail: { pathManifest: ['infra/x.tf'], protectedPaths: ['infra/'] } }, rail: 'protected_path' },
+      { scope: { hardRail: {} }, rail: 'spending' },
     ];
     for (const c of cases) {
-      const { d } = deps(c);
-      const reply = await checkQuestion(SCOPE, BARE, d);
-      expect(reply.verdict).toBe('send');
-      expect(['error', 'off']).toContain(reply.outcome);
+      const { d } = deps({ runDecide: (() => { throw new Error('must not run'); }) as any });
+      const req = c.rail === 'spending' ? { priorPushbacks: 0, question: { prompt: 'Should we upgrade the plan for this?', options: ['Yes', 'No'] } } : BARE;
+      const reply = await checkQuestion({ ...SCOPE, ...c.scope } as QuestionCheckScope, req, d);
+      expect(reply.outcome).toBe('hard_rail');
+      expect(reply.rail).toBe(c.rail);
     }
   });
 
-  it('a complete brief is judged on its wording and recorded as complete', async () => {
-    const { d, records } = deps({ run: run('actionable', 0.95) as any });
-    const reply = await checkQuestion(SCOPE, {
-      priorPushbacks: 1,
-      question: {
-        prompt: 'Should it use local time or UTC?',
-        context: 'isWeekend() decides weekend surcharges.',
-        options: [{ label: 'Local time', consequence: 'own calendar', recommended: true }, { label: 'UTC', consequence: 'UTC calendar' }],
-      },
-    }, d);
-    expect(reply).toMatchObject({ verdict: 'send', outcome: 'actionable' });
-    expect(records[0].brief).toEqual({ context: true, consequences: true, recommended: true });
+  it('decide: Jev picks an option, verdict is `decide`, the answer stands in for a reply, and it is recorded applied', async () => {
+    const { d, records, receipts } = deps({ runDecide: decideRun('decide', 'opt1', 0.9) as any });
+    const reply = await checkQuestion(SCOPE, BARE, d);
+    expect(reply).toMatchObject({ verdict: 'decide', outcome: 'decided', disposition: 'decide' });
+    expect(reply.decision).toMatchObject({ optionIndex: 1, label: 'UTC', confidence: 0.9 });
+    expect(reply.reason).toContain('UTC');
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ applied: true, status: 'applied', appliedAnswer: 'UTC', verdict: 'decide' });
+    expect(receipts).toHaveLength(2); // stage 1 + stage 2
+  });
+
+  it('hold: parked like ask, tagged, and recorded applied', async () => {
+    const { d, records } = deps({ runDecide: decideRun('hold', null, 0.85) as any, now: () => 1_000_000 });
+    const reply = await checkQuestion(SCOPE, BARE, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'held', disposition: 'hold' });
+    expect(reply.holdReason).toBeTruthy();
+    expect(reply.resurfaceAt).toBe(new Date(1_000_000 + 15 * 60_000).toISOString());
+    expect(records[0]).toMatchObject({ applied: true, status: 'applied', appliedAnswer: 'hold', verdict: 'hold' });
+  });
+
+  it('ask: a confident, genuine ask — unchanged outward shape, recorded applied', async () => {
+    const { d, records } = deps({ runDecide: decideRun('ask', null, 0.9) as any });
+    const reply = await checkQuestion(SCOPE, BARE, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'asked', disposition: 'ask' });
+    expect(records[0]).toMatchObject({ applied: true, status: 'applied', appliedAnswer: 'ask' });
+  });
+
+  it('low-confidence ask (decide/hold fell back): same outward ask, recorded suggested with the fallback reason', async () => {
+    const { d, records } = deps({ runDecide: decideRun('decide', 'opt0', 0.4) as any });
+    const reply = await checkQuestion(SCOPE, BARE, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'asked', disposition: 'ask' });
+    expect(records[0]).toMatchObject({ applied: false, status: 'suggested', reason: 'low_confidence' });
+  });
+
+  it('a question with no options to pick from goes straight to ask, no decide call', async () => {
+    const { d, records } = deps({ runDecide: (() => { throw new Error('must not run'); }) as any });
+    const reply = await checkQuestion(SCOPE, { priorPushbacks: 0, question: { prompt: 'What should I do next?' } }, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'asked', disposition: 'ask' });
+    expect(records).toEqual([]);
+  });
+
+  it('fails open on a stage-1 failure: no key, a gateway model, a failed run, a throw — stage 2 never runs', async () => {
+    const cases: Array<Partial<QuestionCheckDeps>> = [
+      { resolveAccess: async () => ({ ok: false, error: { kind: 'missing_key' } }) },
+      { resolveAccess: async () => ({ ok: true, apiKey: 'k', model: 'm', endpoint: { kind: 'chat', baseURL: 'https://gw.example', provider: 'openai' } as any }) },
+      { runGate: FAILED_RUN as any },
+      { runGate: (async () => { throw new Error('boom'); }) as any },
+    ];
+    for (const c of cases) {
+      const { d } = deps({ ...c, runDecide: (() => { throw new Error('must not run'); }) as any });
+      const reply = await checkQuestion(SCOPE, BARE, d);
+      expect(reply).toMatchObject({ verdict: 'send', outcome: 'error' });
+    }
+  });
+
+  it('fails open on a stage-2 failure: recorded as a fallback, disposition ask', async () => {
+    const { d, records } = deps({ runDecide: FAILED_RUN as any });
+    const reply = await checkQuestion(SCOPE, BARE, d);
+    expect(reply).toMatchObject({ verdict: 'send', outcome: 'error', disposition: 'ask' });
+    expect(records[0]).toMatchObject({ applied: false, status: 'fallback', reason: 'timeout' });
+  });
+});
+
+describe('gateEnabledFromGitConfig / hardRailContextFromGitConfig', () => {
+  it('absent or true is on; only an explicit false is the kill switch', () => {
+    expect(gateEnabledFromGitConfig(undefined)).toBe(true);
+    expect(gateEnabledFromGitConfig({} as any)).toBe(true);
+    expect(gateEnabledFromGitConfig({ jevQuestionGate: true } as any)).toBe(true);
+    expect(gateEnabledFromGitConfig({ jevQuestionGate: false } as any)).toBe(false);
+  });
+
+  it('pulls risk-class paths and the workspace\'s own deny/escalate paths', () => {
+    const gitConfig = {
+      policyConfig: { riskClasses: [{ name: 'destructive_schema_change', detectedPaths: ['src/schema.ts'] }] },
+      mergePolicy: { tier: 'agent-review', threshold: { denyPaths: ['secrets/'] }, agentReview: { escalateToPaths: ['infra/'] } },
+      autoMergeDenyPaths: ['legacy/'],
+    } as any;
+    expect(hardRailContextFromGitConfig(gitConfig)).toEqual({
+      schemaPaths: ['src/schema.ts'],
+      authSecretsPaths: undefined,
+      ciDeployPaths: undefined,
+      protectedPaths: ['secrets/', 'infra/', 'legacy/'],
+    });
+  });
+
+  it('with no gitConfig at all, every list is the default fallback (undefined ⇒ detectHardRail\'s own hardcoded paths)', () => {
+    expect(hardRailContextFromGitConfig(undefined)).toEqual({ schemaPaths: undefined, authSecretsPaths: undefined, ciDeployPaths: undefined });
   });
 });

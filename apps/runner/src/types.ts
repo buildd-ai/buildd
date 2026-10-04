@@ -29,6 +29,11 @@ export interface WaitingFor {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
+  /** Set only to `'hold'` — Jev held this question rather than asking outright (question-gate.ts). */
+  disposition?: 'hold';
+  holdReason?: string;
+  /** ISO timestamp; see question-gate.ts `HOLD_RESURFACE_MS`. */
+  resurfaceAt?: string;
   toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
   // Permission-specific fields (when type === 'permission')
   toolName?: string;           // The tool requesting permission
@@ -327,7 +332,7 @@ export interface LocalWorker {
    * AskUserQuestion goes through POST /api/workers/[id]/question-check before
    * it is parked (apps/runner/src/question-gate.ts).
    */
-  questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number };
+  questionGate?: { maxPushbacks: number };
   /** Questions the gate sent back to the agent in this worker. */
   questionPushbacks?: number;
   /** Last file the agent edited or wrote, for the question brief's `where`. */
