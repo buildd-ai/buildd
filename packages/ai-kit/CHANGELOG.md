@@ -12,6 +12,28 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.18.0 — 2026-10-04
+
+Minor: a turn has one answer, live then settled.
+
+- `ChatThread answer` (new, optional): `append` (default, unchanged) or
+  `replace`. With `replace` an assistant turn draws one answer region, its
+  latest prose: text written early in a long turn shows at once, and the
+  final answer replaces it in the same node (keyed by the message) instead
+  of following it. Earlier prose stays in the parts, off screen, and no
+  longer splits a run of tool calls. The region is
+  `data-testid="kit-answer"`, `data-answer="live" | "settled"`, and
+  `aria-busy` while live so the settled answer is announced once. Class
+  `kit-answer`.
+- `/chat/contract`: `answerPartIndex(parts)` (which text part is the
+  answer: the latest non-empty one; a part still streaming, shorter than
+  `ANSWER_SWAP_MIN_CHARS` and with no finished sentence yields to the
+  prose before it, so the answer never
+  goes blank and a turn cut off mid-word keeps its useful text) and
+  `answerText(parts)` (that answer as plain text: a message's canonical
+  text, for the server). When to finalize and what the model writes stay
+  the app's.
+
 ## 0.17.0 — 2026-10-03
 
 Minor: the live turn is one line.
