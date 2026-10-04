@@ -1646,6 +1646,13 @@
       "when": 1791152261474,
       "tag": "0240_lying_mattie_franklin",
       "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1791154914886,
+      "tag": "0241_far_luckman",
+      "breakpoints": true
     }
   ]
 }

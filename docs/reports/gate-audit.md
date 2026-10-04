@@ -334,6 +334,16 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 |---|---|---|---|---|
 | 70 | `pr-landing.ts:landPr` | `pr_landing` | deferred / rejected / warned / accepted | the landing decision; `deferred` = a wait with an owner (branch update in flight, checks pending, fix queued), `rejected` = a human is needed, `warned` = shadow, `accepted` = merged |
 
+### Early release of dependents (planned — `docs/design/early-release.md`)
+
+Slug declared ahead of its call sites; listed as pending in
+`packages/core/__tests__/gate-slug-coverage.test.ts` until the first one lands.
+
+| Site | Gate | Outcome | Meaning |
+|------|------|---------|---------|
+| early-release decision (rule or decision model) | `early_release` | accepted / deferred | One row per `dependency_releases` decision: `accepted` = `start_now` / `start_stacked`, `deferred` = `wait`; `detail.source` = rule / model / fallback, `detail.reasonCode`. |
+| early-release reconciler | `early_release` | rejected / warned | A reconciler action on an earlier release (revoke, re-base); `detail.revokedReason`. |
+
 ### Coordination telemetry additions
 
 | Site | Gate | Outcome | Meaning |
