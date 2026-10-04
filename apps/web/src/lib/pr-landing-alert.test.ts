@@ -15,13 +15,25 @@ const MIN = 60_000;
 
 /** In-memory stand-ins for the task-context CAS writes, so concurrency is exercised for real. */
 function makeDeps(start = 1_000_000_000_000) {
-  const state = { now: start, observed: new Map<string, string>(), paged: new Set<string>(), sent: [] as Array<{ subject: any; payload: any }> };
+  const state = {
+    now: start,
+    observed: new Map<string, string>(),
+    progress: new Map<string, { fp: string; since: string }>(),
+    paged: new Set<string>(),
+    sent: [] as Array<{ subject: any; payload: any }>,
+  };
   const deps: LandingAlertDeps = {
     now: () => state.now,
     async observe(taskId, key, nowIso, startIfAbsent) {
       const k = `${taskId}|${key}`;
       if (!state.observed.has(k) && startIfAbsent) state.observed.set(k, nowIso);
       return state.observed.get(k) ?? null;
+    },
+    async markProgress(taskId, fp, nowIso) {
+      const cur = state.progress.get(taskId);
+      if (cur?.fp === fp) return cur.since;
+      state.progress.set(taskId, { fp, since: nowIso });
+      return nowIso;
     },
     async hasPagedHead(taskId, prefix) {
       return [...state.paged].some((k) => k.startsWith(`${taskId}|${prefix}`));
@@ -211,11 +223,25 @@ describe('alertOnLanding: copy and tap URL', () => {
     expect(urlTitle).toBe('Retry landing');
   });
 
-  it('says checks are red for a CI fix, and omits the stuck clause when nothing has been stuck yet', async () => {
+  it('says checks are green only when landing saw them green, and omits the stuck clause when nothing has been stuck yet', async () => {
     const { deps, state } = makeDeps();
-    await alertOnLanding(base(human('blocking_verdict', 'the reviewer requested changes')), deps);
+    await alertOnLanding(base(human('blocking_verdict', 'the reviewer requested changes'), { checks: 'green' }), deps);
     expect(state.sent[0].payload.message).toContain('checks green');
     expect(state.sent[0].payload.message).not.toContain('stuck');
+  });
+
+  it('never claims checks are green when landing did not see them', async () => {
+    const { deps, state } = makeDeps();
+    await alertOnLanding(base(human('blocking_verdict', 'the reviewer requested changes')), deps);
+    expect(state.sent[0].payload.message).not.toContain('checks green');
+  });
+
+  it('says checks are red for a stuck CI fix', async () => {
+    const { deps, state } = makeDeps();
+    await alertOnLanding(base(fix('ci_fix'), { checks: 'green' }), deps);
+    state.now += FIX_PICKUP_BOUND_MS + MIN;
+    await alertOnLanding(base(fix('ci_fix'), { checks: 'green' }), deps);
+    expect(state.sent[0].payload.message).toContain('checks red');
   });
 
   it('links a signed confirm URL whose token selects the primary action for the reason', async () => {
@@ -226,7 +252,7 @@ describe('alertOnLanding: copy and tap URL', () => {
     expect(url.pathname).toBe('/app/prs/42/act');
     const res = verifyLandingActionToken(url.searchParams.get('t'), state.now);
     expect(res.ok).toBe(true);
-    expect((res as any).payload).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head1', action: 'conflict', reason: 'needs_human:fix_exhausted' });
+    expect((res as any).payload).toMatchObject({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head1', action: 'conflict', reason: 'needs_human:fix_exhausted', taskId: 'task-1' });
     expect(state.sent[0].payload.urlTitle).toBe('Resolve conflicts');
   });
 
@@ -313,5 +339,94 @@ describe('actionsForReason: what one tap does', () => {
       const plan = actionsForReason(r);
       expect(plan.options).toContain(plan.primary);
     }
+  });
+});
+
+describe('alertOnLanding: the invariant alarm follows progress, not total held age', () => {
+  const waiting = (head: string): LandingOutcome => ({ kind: 'waiting_ci', headSha: head });
+
+  /**
+   * Replay: approved and held for about an hour on one head, then a base refresh
+   * pushes a new head whose CI is still running, and a re-review completes on it.
+   */
+  it('does not page a PR that just refreshed onto a new head with pending CI, then pages once if that head stalls', async () => {
+    const { deps, state } = makeDeps();
+    let reviewAt: number | null = state.now - 90 * MIN;
+    deps.lastReviewAt = async () => reviewAt;
+
+    await alertOnLanding(base(waiting('head1'), { checks: 'green', outcomeReason: 'the base moved' }), deps);
+    state.now += 40 * MIN;
+    await alertOnLanding(base(waiting('head1'), { checks: 'green' }), deps);
+    state.now += 20 * MIN; // held ~1h overall
+    // Base refresh: landing reports the head it produced.
+    await alertOnLanding(base({ kind: 'updating_branch', newHeadSha: 'head2' }, { headSha: 'head1' }), deps);
+    state.now += 2 * MIN;
+    await alertOnLanding(base(waiting('head2'), { headSha: 'head2', checks: 'pending' }), deps);
+    // The re-review on the refreshed head completes.
+    reviewAt = state.now;
+    state.now += MIN;
+    await alertOnLanding(base(waiting('head2'), { headSha: 'head2', checks: 'pending' }), deps);
+    expect(state.sent).toHaveLength(0);
+
+    // The refreshed head then makes no progress past the bound.
+    state.now += INVARIANT_ALARM_MS - 2 * MIN;
+    await alertOnLanding(base(waiting('head2'), { headSha: 'head2', checks: 'pending' }), deps);
+    expect(state.sent).toHaveLength(0);
+    state.now += 3 * MIN;
+    const stalled = base(waiting('head2'), { headSha: 'head2', checks: 'pending', outcomeReason: 'CI checks are still running' });
+    await alertOnLanding(stalled, deps);
+    await alertOnLanding(stalled, deps);
+    state.now += 30 * MIN;
+    await alertOnLanding(stalled, deps);
+    expect(state.sent).toHaveLength(1);
+
+    const { title, message, priority, url } = state.sent[0].payload;
+    expect(priority).toBe(1);
+    expect(title).toBe("PR #42 won't land: landing has stopped making progress");
+    expect(message).toContain('checks pending');
+    expect(message).not.toContain('checks green');
+    expect(message).toContain('no progress for 46m');
+    expect(message).toContain('CI checks are still running');
+    const res = verifyLandingActionToken(new URL(url).searchParams.get('t'), state.now);
+    expect((res as any).payload).toMatchObject({ headSha: 'head2', reason: 'invariant' });
+  });
+
+  it('a CI transition on the same head is progress', async () => {
+    const { deps, state } = makeDeps();
+    await alertOnLanding(base(waiting('head1')), deps);
+    state.now += 40 * MIN;
+    await alertOnLanding(base(fix('ci_fix')), deps); // went red; a fix is filed
+    state.now += 10 * MIN;
+    await alertOnLanding(base(waiting('head1'), { checks: 'pending' }), deps); // re-run
+    state.now += 10 * MIN;
+    await alertOnLanding(base(waiting('head1'), { checks: 'pending' }), deps);
+    expect(state.sent).toHaveLength(0);
+  });
+
+  it('a new review round on the same head is progress', async () => {
+    const { deps, state } = makeDeps();
+    let reviewAt: number | null = null;
+    deps.lastReviewAt = async () => reviewAt;
+    await alertOnLanding(base(waiting('head1')), deps);
+    state.now += 40 * MIN;
+    reviewAt = state.now;
+    await alertOnLanding(base(waiting('head1')), deps);
+    state.now += 10 * MIN;
+    await alertOnLanding(base(waiting('head1')), deps);
+    expect(state.sent).toHaveLength(0);
+  });
+
+  it('does not send a page for a head that is no longer live', async () => {
+    const { deps, state } = makeDeps();
+    deps.readLiveHead = async () => 'head2';
+    await alertOnLanding(base(waiting('head1')), deps);
+    state.now += INVARIANT_ALARM_MS + MIN;
+    await alertOnLanding(base(waiting('head1')), deps);
+    await alertOnLanding(base(human('size_cap')), deps);
+    expect(state.sent).toHaveLength(0);
+    // ...and the stale decision spent no dedupe key, so the live head can still page.
+    deps.readLiveHead = async () => 'head1';
+    await alertOnLanding(base(human('size_cap')), deps);
+    expect(state.sent).toHaveLength(1);
   });
 });
