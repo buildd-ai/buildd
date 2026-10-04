@@ -49,6 +49,7 @@ export type InferenceCapability =
   | 'endpoint_model_match'
   | 'question_gate'
   | 'post_session_triage'
+  | 'failure_incident_triage'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -234,6 +235,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Session quality triage',
     description: 'After an agent session ends, a decision model reads counts and outcomes (never code or text) and picks which sessions deserve a closer look. Never changes the task or its PR.',
     costHint: '~$0.00005 per session',
+  },
+  // Failure Pattern Sentinel triage (packages/core/decision-kind-failure-incident-triage.ts).
+  // Opt-in: asked only when an incident below critical opens or changes. It can
+  // raise an incident's severity, never lower the rule engine's floor.
+  failure_incident_triage: {
+    id: 'failure_incident_triage',
+    kind: 'opt_in',
+    label: 'Failure incident triage',
+    description: 'When a repeated failure pattern opens or grows, a decision model reads its counts (never logs or code) and says whether it is noise, worth watching, a bug to fix, or worth paging you. It can only raise the alert level.',
+    costHint: '~$0.00003 per incident change',
   },
   chat: {
     id: 'chat',

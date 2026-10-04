@@ -68,6 +68,30 @@ export interface UpsertIncidentResult {
 
 export const DEFAULT_MAX_UPSERT_ATTEMPTS = 5;
 
+/**
+ * Alert bookkeeping kept in `impact` beside the rule's counters, so the paging
+ * layer's re-alert state is as durable as `lastAlertSeverity` without a schema
+ * change. A detection overwrites the rule's counters but carries these over.
+ *  - `alertedScope`: the impact scope (see `impactScope` in
+ *    failure-incident-actions.ts) at the last page.
+ *  - `alertedRecurrence`: `recurrenceCount` at the last page, so a reopen pages
+ *    once and a retry of that page does not.
+ */
+export const ALERT_IMPACT_KEYS = ['alertedScope', 'alertedRecurrence'] as const;
+
+function carryAlertKeys(prior: Record<string, number> | null | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const k of ALERT_IMPACT_KEYS) if (typeof prior?.[k] === 'number') out[k] = prior[k];
+  return out;
+}
+
+/** The rule's own impact counters, without the alert bookkeeping. */
+export function ruleImpact(impact: Record<string, number> | null | undefined): Record<string, number> {
+  const out: Record<string, number> = { ...(impact ?? {}) };
+  for (const k of ALERT_IMPACT_KEYS) delete out[k];
+  return out;
+}
+
 function mergeAffected(
   fresh: FailureIncidentAffectedRefs,
   prior: FailureIncidentAffectedRefs,
@@ -115,7 +139,7 @@ export function mergeIncident(existing: StoredIncident | null, candidate: Incide
         recurrenceCount: 0,
         affectedRefs: boundAffected(candidate.affected),
         evidenceRefs: boundEvidenceRefs(candidate.evidence, MAX_EVIDENCE_REFS),
-        impact: candidate.impact,
+        impact: ruleImpact(candidate.impact),
         lastAlertedAt: null,
         lastAlertSeverity: null,
         linkedFixTaskId: null,
@@ -168,7 +192,7 @@ export function mergeIncident(existing: StoredIncident | null, candidate: Incide
       recurrenceCount: existing.recurrenceCount + (reopening ? 1 : 0),
       affectedRefs: mergeAffected(candidate.affected, existing.affectedRefs),
       evidenceRefs: boundEvidenceRefs([...candidate.evidence, ...existing.evidenceRefs], MAX_EVIDENCE_REFS),
-      impact: candidate.impact,
+      impact: { ...ruleImpact(candidate.impact), ...carryAlertKeys(existing.impact) },
       acknowledgedAt: reopening ? null : existing.acknowledgedAt,
       resolvedAt: reopening ? null : existing.resolvedAt,
     },
@@ -244,10 +268,17 @@ export async function recordIncidentCandidates(
 export type IncidentStateAction =
   | { type: 'acknowledge' }
   | { type: 'resolve' }
-  | { type: 'alerted'; severity: FailureIncidentSeverity }
+  /**
+   * A page was claimed at `severity`. Also raises the stored severity to it
+   * (a policy layer may raise, never lower) and records the alert scope and
+   * recurrence the page covered, when given.
+   */
+  | { type: 'alerted'; severity: FailureIncidentSeverity; scope?: number; recurrence?: number }
+  /** First writer wins: an incident already linked keeps its task. */
   | { type: 'link_fix_task'; taskId: string };
 
-function applyAction(row: StoredIncident, action: IncidentStateAction, now: string): NewStoredIncident {
+/** Pure: the row after `action`. `updateIncidentState` CASes this; the paging layer uses it inside its own claim loop. */
+export function applyIncidentAction(row: StoredIncident, action: IncidentStateAction, now: string): NewStoredIncident {
   const { id: _id, version: _version, ...base } = row;
   switch (action.type) {
     case 'acknowledge':
@@ -255,9 +286,19 @@ function applyAction(row: StoredIncident, action: IncidentStateAction, now: stri
     case 'resolve':
       return { ...base, status: 'resolved', resolvedAt: now };
     case 'alerted':
-      return { ...base, lastAlertedAt: now, lastAlertSeverity: action.severity };
+      return {
+        ...base,
+        severity: maxSeverity(base.severity, action.severity),
+        lastAlertedAt: now,
+        lastAlertSeverity: action.severity,
+        impact: {
+          ...base.impact,
+          ...(action.scope !== undefined ? { alertedScope: action.scope } : {}),
+          ...(action.recurrence !== undefined ? { alertedRecurrence: action.recurrence } : {}),
+        },
+      };
     case 'link_fix_task':
-      return { ...base, linkedFixTaskId: action.taskId };
+      return { ...base, linkedFixTaskId: base.linkedFixTaskId ?? action.taskId };
   }
 }
 
@@ -276,7 +317,7 @@ export async function updateIncidentState(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const row = await port.findById(incidentId);
     if (!row) return null;
-    const swapped = await port.compareAndSwap(row.id, row.version, applyAction(row, action, now));
+    const swapped = await port.compareAndSwap(row.id, row.version, applyIncidentAction(row, action, now));
     if (swapped) return swapped;
   }
   throw new Error(`failure incident ${action.type} lost to contention ${maxAttempts} times: ${incidentId}`);

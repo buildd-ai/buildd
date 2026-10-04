@@ -289,6 +289,31 @@ describe('updateIncidentState', () => {
     expect(res?.resolvedAt).toBe(at(6));
     expect(await updateIncidentState(port, 'missing', { type: 'resolve' }, { now: at(7) })).toBeNull();
   });
+
+  it('links only the first fix task: a racing second link keeps the first', async () => {
+    const { port } = memoryPort();
+    const o = await upsertIncident(port, forkCandidate([child('c1', 0), child('c2', 1)]));
+    await updateIncidentState(port, o.incident.id, { type: 'link_fix_task', taskId: 'fix-1' });
+    const second = await updateIncidentState(port, o.incident.id, { type: 'link_fix_task', taskId: 'fix-2' });
+    expect(second?.linkedFixTaskId).toBe('fix-1');
+  });
+
+  it('an alert raises stored severity (never lowers it) and its scope survives later detections', async () => {
+    const { port } = memoryPort();
+    const o = await upsertIncident(port, forkCandidate([child('c1', 0), child('c2', 1)]));
+    expect(o.incident.severity).toBe('high');
+    const alerted = await updateIncidentState(port, o.incident.id, { type: 'alerted', severity: 'critical', scope: 2, recurrence: 0 });
+    expect(alerted?.severity).toBe('critical');
+    expect(alerted?.impact).toMatchObject({ alertedScope: 2, alertedRecurrence: 0 });
+    const lower = await updateIncidentState(port, o.incident.id, { type: 'alerted', severity: 'high' });
+    expect(lower?.severity).toBe('critical');
+
+    const u = await upsertIncident(port, forkCandidate([child('c1', 0), child('c2', 1), child('c3', 4)]));
+    expect(u.outcome).toBe('updated');
+    expect(u.incident.impact.alertedScope).toBe(2);
+    expect(u.incident.impact.alertedRecurrence).toBe(0);
+    expect(u.incident.impact.children).toBe(3);
+  });
 });
 
 describe('mergeIncident (pure)', () => {
