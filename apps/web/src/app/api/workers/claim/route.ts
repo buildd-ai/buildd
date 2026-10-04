@@ -102,7 +102,7 @@ import {
   type MissionInFlightRow,
   type PlannerSignals,
 } from './claim-plan-input';
-import { fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } from './claim-plan-store';
+import { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } from './claim-plan-store';
 import {
   ClaimHoldCollector,
   acquireGatedStartPaths,
@@ -2536,6 +2536,8 @@ export async function POST(req: NextRequest) {
       plan: applyInitial.plan,
       actualPicks: claimedWorkers.filter(w => applyIds.has(w.taskId)).map(w => w.taskId),
       candidateCount: applyTasks.length,
+      capacity: availableSlots,
+      backend: effectiveBackendOf(applyTasks),
     });
   }
   if (recordPlan) {
@@ -2546,6 +2548,8 @@ export async function POST(req: NextRequest) {
       plan: recordPlan,
       actualPicks: claimedWorkers.filter(w => recordIds.has(w.taskId)).map(w => w.taskId),
       candidateCount: recordTasks.length,
+      capacity: availableSlots,
+      backend: effectiveBackendOf(recordTasks),
     });
   }
 

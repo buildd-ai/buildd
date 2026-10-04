@@ -28,7 +28,10 @@ mock.module('@buildd/core/db', () => ({ db: {
 } }));
 const claim = mock(async (_opts: any) => ({ rows: [], hold: {}, links: new Map() }));
 const manifest = mock(async (_opts: any) => ({ predictions: [], links: new Map() }));
-mock.module('@buildd/core/orchestration-readout-source', () => ({ loadClaimReadoutInput: claim, loadManifestReadoutInput: manifest }));
+const scheduling = mock(async (_opts: any) => []);
+mock.module('@buildd/core/orchestration-readout-source', () => ({
+  loadClaimReadoutInput: claim, loadManifestReadoutInput: manifest, loadSchedulingMetricsInput: scheduling,
+}));
 const group = () => ({
   capability: 'orchestration_claim',
   key: { decisionId: 'claim-hold', fingerprint: 'fingerprint', identity: 'identity', model: 'model', candidatePolicyVersion: 'policy', arm: 'observe' },
@@ -51,7 +54,7 @@ beforeEach(() => {
   process.env.BUILDD_CRON_RUN_RECORD_IN_TESTS = '0';
   workspaces = []; writes = [];
   insertedNotes.clear();
-  for (const fn of [select, claim, manifest, build, target, trigger]) fn.mockClear();
+  for (const fn of [select, claim, manifest, scheduling, build, target, trigger]) fn.mockClear();
 });
 
 it('refuses unauthorized requests before querying', async () => {
@@ -88,6 +91,34 @@ it('writes a private workspace aggregate and one eligible note without promotion
   expect(opts.window.until.getTime() - opts.plan.laterFrom.getTime()).toBe(7 * 86400000);
   expect(claim.mock.calls[0][0].workspaceId).toBe('workspace-fixture');
   expect(manifest.mock.calls[0][0].workspaceId).toBe('workspace-fixture');
+  expect(scheduling.mock.calls[0][0].workspaceId).toBe('workspace-fixture');
+});
+
+it('includes §6 scheduling metrics (counts and rates only, by ISO week) in the same private artifact', async () => {
+  workspaces = [{ workspaceId: 'workspace-fixture' }];
+  scheduling.mockImplementationOnce(async () => [{
+    workspaceId: 'workspace-fixture',
+    weekStart: new Date('2026-09-28T00:00:00Z'),
+    mode: 'apply',
+    deferrals: { path_overlap: 1, advisory_manifest: 0, ordered_behind: 0, codex_single_flight: 0 },
+    claimedTaskCount: 2,
+    strandedCount: 0,
+    mergeLatenciesMs: [],
+    conflictTaskCount: 0,
+    mergedPrCount: 0,
+    unsafeCoScheduleCount: 0,
+    coScheduleSampleCount: 0,
+    silentCompletionCount: 0,
+    supersessionCancelCount: 0,
+    supersessionRevertedCount: 0,
+    claimPlans: [],
+    plannerWouldBePickLabels: [],
+  }]);
+  await GET(req());
+  const content = JSON.parse(writes.find(w => w.table === artifacts).value.content);
+  expect(content.schedulingMetrics.weeks).toHaveLength(1);
+  expect(content.schedulingMetrics.weeks[0]).toMatchObject({ mode: 'apply', weekLabel: '2026-W40' });
+  expect(content.schedulingMetrics.weeks[0].metrics.primary.deferralsPerClaimedTask.value).toBe(0.5);
 });
 
 it('uses the same note identity on repeated runs', async () => {

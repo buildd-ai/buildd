@@ -21,7 +21,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-const { fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } = await import('./claim-plan-store');
+const { effectiveBackendOf, fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } = await import('./claim-plan-store');
 
 const plan = (picks: string[], orientation: any[] = []) => ({
   picks: picks.map((id, order) => ({ id, order, admittedBy: 'greedy' as const, softWeight: 0 })),
@@ -48,14 +48,30 @@ describe('fireOrderedBehind', () => {
 
 describe('fireClaimPlanRecord', () => {
   it('the same plan and picks coalesce on one key; a different outcome does not', () => {
-    const base = { mode: 'record' as const, workspaceId: 'ws', candidateCount: 3 };
+    const base = { mode: 'record' as const, workspaceId: 'ws', candidateCount: 3, capacity: 2, backend: 'claude' as const };
     fireClaimPlanRecord({ ...base, plan: plan(['a', 'c']), actualPicks: ['a', 'b', 'c'] });
     fireClaimPlanRecord({ ...base, plan: plan(['a', 'c']), actualPicks: ['a', 'b', 'c'] });
     fireClaimPlanRecord({ ...base, plan: plan(['a', 'c']), actualPicks: ['a', 'c'] });
     expect(repeatCalls[0].opts.key).toEqual(repeatCalls[1].opts.key);
     expect(repeatCalls[2].opts.key).not.toEqual(repeatCalls[0].opts.key);
-    expect(repeatCalls[0].input.detail).toMatchObject({ planned: ['a', 'c'], actual: ['a', 'b', 'c'], agree: false });
+    expect(repeatCalls[0].input.detail).toMatchObject({ planned: ['a', 'c'], actual: ['a', 'b', 'c'], agree: false, capacity: 2, backend: 'claude' });
     expect(repeatCalls[2].input.detail.agree).toBe(true);
+  });
+});
+
+describe('effectiveBackendOf', () => {
+  it('is the shared backend when every task agrees', () => {
+    expect(effectiveBackendOf([{ backend: 'claude' }, { backend: 'claude' }])).toBe('claude');
+    expect(effectiveBackendOf([{ backend: 'codex' }])).toBe('codex');
+  });
+  it('defaults an unset backend to claude', () => {
+    expect(effectiveBackendOf([{}, { backend: undefined }])).toBe('claude');
+  });
+  it('is "mixed" when the candidates span more than one backend', () => {
+    expect(effectiveBackendOf([{ backend: 'claude' }, { backend: 'codex' }])).toBe('mixed');
+  });
+  it('is "claude" for an empty list (vacuously one backend)', () => {
+    expect(effectiveBackendOf([])).toBe('claude');
   });
 });
 
