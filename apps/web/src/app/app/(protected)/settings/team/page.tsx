@@ -7,14 +7,21 @@ import TimezoneSection from '../TimezoneSection';
 import TeamDetailClient from '../../teams/[id]/TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
+import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * Settings → Team → Members: the active team's people, plus the team timezone.
  * Other teams stay reachable from Profile → Your teams (/app/teams/[id]).
+ * `?state=multi-member` (dev server only) adds a synthetic member row — see ./qa-state.ts.
  */
-export default async function TeamSettingsPage() {
+export default async function TeamSettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ state?: string | string[] }>;
+}) {
+  const qaState = resolveTeamQaState((await searchParams).state);
   const { user, teams: userTeams, currentTeam } = await loadSettingsContext();
 
   if (!currentTeam) {
@@ -49,14 +56,14 @@ export default async function TeamSettingsPage() {
       {team ? (
         <TeamDetailClient
           team={{ id: team.id, name: team.name, slug: team.slug, createdAt: team.createdAt.toISOString() }}
-          members={members.map((m) => ({
+          members={withQaFixtureMembers(members.map((m) => ({
             userId: m.userId,
             role: m.role as 'owner' | 'admin' | 'member',
             joinedAt: m.joinedAt.toISOString(),
             name: m.user.name,
             email: m.user.email,
             image: m.user.image,
-          }))}
+          })), qaState)}
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
