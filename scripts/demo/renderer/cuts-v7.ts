@@ -196,8 +196,6 @@ export function v7Captioned(s: Stills, spoken: Spoken): Cut {
   const chapters = v7Chapters(s);
   // The phone question fills the frame's height, so no caption can sit clear of it: its sentence goes on the shot before.
   const NO_CAPTION = new Set(['question']);
-  // The fleet's mission row sits in the bottom band, so its caption goes up top (under the scrim, over the dim stat strip).
-  for (const shot of chapters.flat()) if (shot.id === 'fleet') shot.captionAt = 'top';
   chapters.slice(0, -1).forEach((ch, i) => {
     const ss = sentences(V7_LINES[i]);
     const shots = ch.filter((x) => !NO_CAPTION.has(x.id));
