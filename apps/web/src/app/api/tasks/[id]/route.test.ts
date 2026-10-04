@@ -1963,3 +1963,64 @@ describe('DELETE /api/tasks/[id]', () => {
     expect(data.success).toBe(true);
   });
 });
+
+// A per-task token may edit only its own task's descriptive fields; how the
+// task runs or ends goes through complete_task and its gates.
+describe('PATCH /api/tasks/[id] — per-task token', () => {
+  const own = {
+    id: TASK_ID, title: 'T', status: 'in_progress', mode: 'execution', missionId: null,
+    dependsOn: [], workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1', name: 'ws' },
+  };
+  const scoped = (taskId = TASK_ID) => ({
+    id: 'acct-1', teamId: 'team-1', level: 'worker',
+    taskScope: { taskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 },
+  });
+  const patch = (body: Record<string, unknown>) =>
+    callHandler(PATCH, createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }), TASK_ID);
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(scoped());
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(own);
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue(null);
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockTasksUpdate.mockReset();
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => [own]) })) })) });
+  });
+
+  it('edits its own task’s description', async () => {
+    const res = await patch({ description: 'clarified scope' });
+    expect(res.status).toBe(200);
+    expect(mockTasksUpdate).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['status', { status: 'completed' }],
+    ['missionId', { missionId: '22222222-2222-2222-2222-222222222222' }],
+    ['held', { held: false }],
+    ['tier', { tier: 'premium' }],
+  ])('refuses %s, naming it, and writes nothing', async (field, body) => {
+    const res = await patch(body);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain(field);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('cannot edit another task', async () => {
+    mockAccountsFindFirst.mockResolvedValue(scoped('33333333-3333-3333-3333-333333333333'));
+    const res = await patch({ description: 'x' });
+    expect(res.status).toBe(404);
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('leaves an account key’s fields unrestricted', async () => {
+    mockAccountsFindFirst.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
+    const res = await patch({ priority: 3, held: false });
+    expect(res.status).not.toBe(403);
+  });
+});
