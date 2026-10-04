@@ -200,6 +200,7 @@ import {
   evaluateTreadmillBound,
   resolveLandingMode,
   outcomeOwner,
+  summarizeChecks,
   approvedGreenAt,
   latestCheckCompletion,
   TREADMILL_MAX_BASE_COMMITS,
@@ -1089,6 +1090,17 @@ describe('outcomeOwner', () => {
   });
 });
 
+describe('summarizeChecks', () => {
+  const run = (status: string, conclusion: string | null) => ({ name: 'c', status, conclusion });
+  it('is red on any failure, pending on anything unfinished, green only when every run passed', () => {
+    expect(summarizeChecks(undefined)).toBeNull();
+    expect(summarizeChecks([])).toBeNull();
+    expect(summarizeChecks([run('completed', 'success'), run('in_progress', null)])).toBe('pending');
+    expect(summarizeChecks([run('completed', 'failure'), run('in_progress', null)])).toBe('red');
+    expect(summarizeChecks([run('completed', 'success'), run('completed', 'skipped')])).toBe('green');
+  });
+});
+
 describe('landPr — alert hook', () => {
   const alertMock = mock(async (_i: any) => {});
   beforeEach(() => alertMock.mockClear());
@@ -1106,6 +1118,16 @@ describe('landPr — alert hook', () => {
       taskId: 'task-1',
       outcome: out,
     });
+  });
+
+  it('hands the live check state and the outcome reason, so a page never claims green on a running head', async () => {
+    gh.checkRuns = [{ name: 'build', status: 'in_progress', conclusion: null }];
+    const out = await land({}, { ...deps(), alert: alertMock });
+    expect(out.kind).toBe('waiting_ci');
+    const sent = alertMock.mock.calls[0]![0];
+    expect(sent.checks).toBe('pending');
+    expect(typeof sent.outcomeReason).toBe('string');
+    expect(sent.outcomeReason.length).toBeGreaterThan(0);
   });
 
   it('does not page from shadow or off', async () => {
