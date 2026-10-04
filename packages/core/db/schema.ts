@@ -906,6 +906,12 @@ export const workspaces = pgTable('workspaces', {
   // Data sensitivity class — controls knowledge ingestion, transcript retention, and redaction.
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
+  // Which transport delivers this workspace's dispatch outbox rows.
+  // 'in_app': the Vercel drain (default). 'shadow': also published to the
+  // Dispatch Worker, which records decisions but the in-app drain still
+  // delivers. 'dispatch': handed off; the in-app drain only takes rows the
+  // Worker never acked. knowledge-base buildd/design/cloudflare-dispatch-transport.md.
+  dispatchTransport: text('dispatch_transport').default('in_app').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
 
   // Max tasks from this workspace that may have an active worker at once. Repo-backed
   // workspaces isolate each task in its own git worktree, so parallel work is safe;
@@ -4460,7 +4466,9 @@ export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
   // wake; a scheduled wake keys on its due time so it is not folded into an
   // earlier immediate one.
   dedupeKey: text('dedupe_key').default('now').notNull(),
-  status: text('status').default('pending').notNull().$type<'pending' | 'delivering' | 'delivered' | 'failed'>(),
+  // 'handed_off': acked by the Dispatch transport, which now owns the delivery
+  // lifecycle; receipts project back onto this row.
+  status: text('status').default('pending').notNull().$type<'pending' | 'delivering' | 'delivered' | 'failed' | 'handed_off'>(),
   attemptCount: integer('attempt_count').default(0).notNull(),
   lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
   deliveredAt: timestamp('delivered_at', { withTimezone: true }),
@@ -4469,9 +4477,18 @@ export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
   lastError: text('last_error'),
   // Delivery hints that are not task state, e.g. { targetLocalUiUrl }.
   metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  // Dispatch transport. `publishedAt`: last publish attempt (unacked rows are
+  // retried oldest-first). `handedOffAt`: the Worker acked it. `mergedInto`:
+  // the Worker folded it into another queued intent with the same dedupe key.
+  transport: text('transport').default('in_app').notNull().$type<'in_app' | 'dispatch'>(),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  handedOffAt: timestamp('handed_off_at', { withTimezone: true }),
+  mergedInto: uuid('merged_into'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
+  unackedIdx: index('task_dispatch_outbox_unacked_idx').on(t.createdAt).where(sql`${t.status} = 'pending' AND ${t.handedOffAt} IS NULL`),
+  handedOffIdx: index('task_dispatch_outbox_handed_off_idx').on(t.notBefore).where(sql`${t.status} = 'handed_off'`),
   pendingDedupeIdx: uniqueIndex('task_dispatch_outbox_pending_dedupe_idx').on(t.taskId, t.dedupeKey).where(sql`${t.status} = 'pending'`),
   dueIdx: index('task_dispatch_outbox_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
   taskIdx: index('task_dispatch_outbox_task_idx').on(t.taskId, t.createdAt),

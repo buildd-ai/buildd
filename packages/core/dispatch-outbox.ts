@@ -25,6 +25,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { db } from './db';
+import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from '@buildd/dispatch-contract';
 
 /**
  * What kind of delivery an intent is. Buildd's policy decides what should
@@ -264,13 +265,10 @@ export async function claimDueDispatches(limit: number): Promise<ClaimedDispatch
   }));
 }
 
-/** Max delivery attempts before a row is parked as `failed` for reconciliation to report. */
-export const MAX_DELIVERY_ATTEMPTS = 8;
-
-/** Backoff before attempt `n + 1`: 15s doubling, capped at 30 minutes. */
-export function retryDelayMs(attemptCount: number): number {
-  return Math.min(15_000 * 2 ** Math.max(0, attemptCount - 1), 30 * 60_000);
-}
+// Max attempts before a row is parked as `failed`, and the backoff before
+// attempt `n + 1`. Shared with the Dispatch transport so a workspace's retry
+// cadence is the same on either side of the cutover.
+export { MAX_DELIVERY_ATTEMPTS, retryDelayMs };
 
 export async function markDispatchDelivered(id: string, via: string): Promise<void> {
   await db.execute(sql`-- dispatch_outbox:delivered
