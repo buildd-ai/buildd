@@ -949,10 +949,27 @@ describe('buildActionQueue — unblocked mission vs own mission', () => {
 describe('buildActionQueue — CI gate', () => {
   it('renders a live CI fix as an informational FIXING_CI card', () => {
     const result = buildActionQueue([], [escalationItem({
-      ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' },
+      ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' },
     })]);
     expect(result[0].chip).toBe('FIXING_CI');
-    expect(result[0].ciGate).toEqual({ kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' });
+    expect(result[0].ciGate).toEqual({ kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' });
+    expect(isActionableChip(result[0].chip)).toBe(false);
+  });
+
+  it('renders a live reviewer-retry fix as an informational FIXING_REVIEW card, never MERGE', () => {
+    const result = buildActionQueue([], [escalationItem({
+      policyTier: 'agent-review',
+      ciGate: {
+        kind: 'fixing',
+        label: 'Fix 1 of 3 queued',
+        taskId: 'fix-1',
+        taskTitle: 'fix: address reviewer feedback on subject anchors',
+        fixKind: 'review',
+      },
+    })]);
+    expect(result[0].chip).toBe('FIXING_REVIEW');
+    expect(result[0].chip).not.toBe('MERGE');
+    expect(result[0].chip).not.toBe('REVIEW');
     expect(isActionableChip(result[0].chip)).toBe(false);
   });
 
@@ -992,7 +1009,7 @@ describe('buildActionQueue — CI gate', () => {
         prUrl: 'https://github.com/org/repo/pull/1',
         prNumber: 1,
         taskId: 'fixing',
-        ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1' },
+        ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' },
       }),
       escalationItem({
         prUrl: 'https://github.com/org/repo/pull/2',
@@ -1012,7 +1029,7 @@ describe('buildActionQueue — CI gate', () => {
 
   it('never offers a merge on a CI-gated card', () => {
     const gated = buildActionQueue([], [escalationItem({
-      ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1' },
+      ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' },
     })]);
     expect(gated[0].chip).not.toBe('MERGE');
     expect(gated[0].chip).not.toBe('REVIEW');
