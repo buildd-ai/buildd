@@ -100,9 +100,24 @@ describe('POST /api/runner/github-token', () => {
       // The cloud runner keys its per-workspace snapshots by this, so the
       // container can never choose whose snapshot it reads (warm repos).
       workspaceId: 'ws-1',
+      // protectedBaseBranches() includes 'main' unconditionally even with no
+      // gitConfig/releaseConfig set (see auto-merge-bound.ts).
+      protectedBranches: ['main'],
     });
     // Repo identity from the github_repos link, not free text.
     expect(mockMint).toHaveBeenCalledWith({ installationId: 99, repoId: 4242, installedPermissions: { contents: 'write' } });
+  });
+
+  it('protectedBranches combines gitConfig.defaultBranch, releaseConfig.prodBranch and the repo\'s own default branch, deduped', async () => {
+    mockTasksFindFirst.mockResolvedValue(taskRow({
+      workspace: {
+        gitConfig: { defaultBranch: 'dev', branchingStrategy: 'trunk', commitStyle: 'conventional', requiresPR: true, autoCreatePR: true, useClaudeMd: true },
+        releaseConfig: { enabled: true, prodBranch: 'main' },
+        githubRepo: { id: 'repo-row-1', repoId: 4242, owner: 'acme', name: 'widget', fullName: 'acme/widget', defaultBranch: 'master', installation: { installationId: 99, suspendedAt: null, permissions: { contents: 'write' } } },
+      },
+    }));
+    const body = await (await POST(req())).json();
+    expect(new Set(body.protectedBranches)).toEqual(new Set(['main', 'dev', 'master']));
   });
 
   it('401 without an API key, 401 with a bad one', async () => {

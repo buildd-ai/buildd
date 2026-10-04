@@ -471,6 +471,13 @@ the gate and a self-merge routes around it), under `human` it is refused, and un
 `auto-threshold` it is permitted only if the same safety check auto-merge applies
 passes. An `admin`-level token may pass `force: true`.
 
+That is a guarantee about buildd's own code paths, not about the GitHub credential a
+cloud-sandboxed agent holds — that credential carries `pull_requests:write` +
+`contents:write`, enough on its own to call GitHub's merge endpoint or push over a
+protected branch directly. The cloud runner's egress handler refuses those two shapes
+before the credential is ever attached, independent of the gate above — see
+`docs/specs/cloud-egress-merge-guard.md`.
+
 **The escalate triggers are enforced server-side from the PR's file list**, never from
 the model's `escalationReason` — that text is downstream of an untrusted contributor
 diff. `enforceServerSideEscalation` re-derives them at verdict time, because
