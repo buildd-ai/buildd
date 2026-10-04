@@ -900,7 +900,7 @@ describe('PATCH /api/workspaces/[id] — webhookConfig', () => {
   });
 
   it('accepts an events opt-in', async () => {
-    const events = ['task.created', 'task.unblocked', 'task.retry', 'task.resume'];
+    const events = ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'];
     const res = await patch({ webhookConfig: { url: 'https://r.example/d', token: 't', enabled: true, events } });
     expect(res.status).toBe(200);
     expect(capturedUpdates.webhookConfig).toMatchObject({ events });

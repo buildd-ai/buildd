@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { handleRequest, timingSafeEqualString, type AgentHandle, type DispatcherEnv } from './http';
+import { SCHEDULE_MAX_AHEAD_MS, handleRequest, timingSafeEqualString, type AgentHandle, type DispatcherEnv } from './http';
 import { INITIAL_STATE, type RunState } from './lifecycle';
-import type { DispatchResult } from './supervisor';
+import type { DispatchResult, ScheduleDispatchResult } from './supervisor';
 
 const TOKEN = 'dispatch-token-for-tests';
 const ENV: DispatcherEnv = { DISPATCH_TOKEN: TOKEN, BUILDD_SERVER: 'http://127.0.0.1:9', BUILDD_API_KEY: 'bld_test' };
@@ -9,12 +9,12 @@ const TASK_ID = '0f1e2d3c-aaaa-bbbb-cccc-000011112222';
 
 /** A stub namespace: one fake agent per name, recording calls. */
 function stubAgents() {
-  const byName = new Map<string, { dispatches: number; state: RunState; requests: unknown[]; kills?: number }>();
+  const byName = new Map<string, { dispatches: number; state: RunState; requests: unknown[]; kills?: number; schedules: number[] }>();
   const lookups: string[] = [];
   const get = async (name: string): Promise<AgentHandle> => {
     lookups.push(name);
     let a = byName.get(name);
-    if (!a) { a = { dispatches: 0, state: { ...INITIAL_STATE }, requests: [] }; byName.set(name, a); }
+    if (!a) { a = { dispatches: 0, state: { ...INITIAL_STATE }, requests: [], schedules: [] }; byName.set(name, a); }
     const agent = a;
     return {
       async dispatch(request?: unknown): Promise<DispatchResult> {
@@ -23,6 +23,10 @@ function stubAgents() {
         if (agent.state.status === 'running') return { accepted: false, reason: 'already_live', attempt: agent.state.attempt, status: 'running' };
         agent.state = { ...agent.state, taskId: name, status: 'running', attempt: agent.state.attempt + 1 };
         return { accepted: true, attempt: agent.state.attempt };
+      },
+      async scheduleDispatch(notBefore: number): Promise<ScheduleDispatchResult> {
+        agent.schedules.push(notBefore);
+        return { scheduled: true, scheduledFor: notBefore, replaced: agent.schedules.length > 1 };
       },
       async getRunState() { return agent.state; },
       async killContainer() { agent.kills = (agent.kills ?? 0) + 1; return { killed: agent.state.status === 'running' }; },
@@ -104,6 +108,59 @@ describe('POST /dispatch', () => {
     const res = await handleRequest(post({ ...payload, event: 'task.resume', workerId: 'worker-9' }), ENV, agents.get);
     expect(res.status).toBe(202);
     expect(agents.byName.get(TASK_ID)!.requests).toEqual([{ resumeWorkerId: 'worker-9' }]);
+  });
+
+  describe('task.scheduled', () => {
+    const NOW = Date.parse('2026-01-01T00:00:00.000Z');
+    const now = () => NOW;
+    const scheduled = (notBefore: unknown) => post({ ...payload, event: 'task.scheduled', notBefore });
+
+    test('a future notBefore schedules the wake on the task agent instead of dispatching; 202', async () => {
+      const agents = stubAgents();
+      const res = await handleRequest(scheduled('2026-01-01T00:05:00.000Z'), ENV, agents.get, now);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ taskId: TASK_ID, scheduled: true, scheduledFor: NOW + 300_000, replaced: false });
+      const a = agents.byName.get(TASK_ID)!;
+      expect(a.schedules).toEqual([NOW + 300_000]);
+      expect(a.dispatches).toBe(0);
+    });
+
+    test('a notBefore in the past is passed through: the agent dispatches now', async () => {
+      const agents = stubAgents();
+      const res = await handleRequest(scheduled('2025-12-31T23:59:00.000Z'), ENV, agents.get, now);
+      expect(res.status).toBe(202);
+      expect(agents.byName.get(TASK_ID)!.schedules).toEqual([NOW - 60_000]);
+    });
+
+    test('up to 24 h ahead (plus clock-skew slack) is accepted; further is refused', async () => {
+      const agents = stubAgents();
+      expect((await handleRequest(scheduled(new Date(NOW + SCHEDULE_MAX_AHEAD_MS).toISOString()), ENV, agents.get, now)).status).toBe(202);
+      const res = await handleRequest(scheduled(new Date(NOW + SCHEDULE_MAX_AHEAD_MS + 3_600_000).toISOString()), ENV, agents.get, now);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'not_before_too_far' });
+      expect(agents.byName.get(TASK_ID)!.schedules).toHaveLength(1);
+    });
+
+    test.each([
+      ['missing', undefined],
+      ['not a date', 'soon'],
+      ['a number', NOW + 1_000],
+      ['empty', ''],
+    ])('notBefore %s -> 400 and no agent is touched', async (_label, notBefore) => {
+      const agents = stubAgents();
+      const res = await handleRequest(scheduled(notBefore), ENV, agents.get, now);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_not_before' });
+      expect(agents.lookups).toHaveLength(0);
+    });
+
+    test('notBefore on any other event is ignored: a plain dispatch', async () => {
+      const agents = stubAgents();
+      await handleRequest(post({ ...payload, event: 'task.retry', notBefore: '2026-01-01T00:05:00.000Z' }), ENV, agents.get, now);
+      const a = agents.byName.get(TASK_ID)!;
+      expect(a.requests).toEqual([{}]);
+      expect(a.schedules).toEqual([]);
+    });
   });
 
   test('any other event is a plain dispatch, whatever workerId it carries', async () => {

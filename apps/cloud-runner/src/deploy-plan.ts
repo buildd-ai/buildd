@@ -23,9 +23,11 @@ export interface ObservedWebhook {
  * Every dispatch event this Worker handles. buildd sends a webhook without an
  * `events` list only new and unblocked tasks (the behaviour webhooks had
  * before the list existed), so the Worker must opt in to hear about retries,
- * approved-plan children and deferred-start re-dispatches.
+ * approved-plan children and deferred-start re-dispatches. `task.scheduled`
+ * makes buildd send a deferred task at once with its start time, so the
+ * agent wakes itself then instead of waiting for buildd's hourly sweep.
  */
-export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry', 'task.resume'] as const;
+export const DISPATCH_EVENTS = ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] as const;
 export type DispatchEvent = (typeof DISPATCH_EVENTS)[number];
 
 export interface DeployInputs {

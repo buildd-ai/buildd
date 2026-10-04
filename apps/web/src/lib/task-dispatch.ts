@@ -10,7 +10,15 @@ import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
  * dispatcher, docs/design/cloudflare-sandbox-runner.md) keys on `taskId`; the
  * event only says which path made the task claimable.
  */
-export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume';
+export type TaskDispatchEvent = 'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume' | 'task.scheduled';
+
+/**
+ * How far ahead a `task.scheduled` dispatch may point. A task deferred further
+ * than this is left to the deferred-dispatch sweep, as before. Mirrors the
+ * cloud runner's bound (apps/cloud-runner/src/http.ts SCHEDULE_MAX_AHEAD_MS),
+ * which refuses anything later.
+ */
+export const SCHEDULED_DISPATCH_MAX_AHEAD_MS = 24 * 60 * 60 * 1000;
 
 /** How long a webhook POST may take before it counts as not dispatched. */
 export const WEBHOOK_DISPATCH_TIMEOUT_MS = 10_000;
@@ -53,7 +61,14 @@ export interface TaskWebhookPayload {
   roleSlug: string | null;
   /** `task.resume` only: the parked worker the consumer continues. */
   workerId?: string;
+  /**
+   * `task.scheduled` only: ISO time the task becomes claimable (its
+   * `startAt`). The consumer starts the run then, not now.
+   */
+  notBefore?: string;
 }
+
+type WebhookExtra = { workerId?: string; notBefore?: string };
 
 /** The task fields the dispatch chain reads. Full task rows satisfy it. */
 export interface DispatchTask {
@@ -67,6 +82,8 @@ export interface DispatchTask {
   backend?: string | null;
   roleSlug?: string | null;
   runnerPreference?: string | null;
+  /** Deferred start: the claim refuses the task until then. */
+  startAt?: Date | string | null;
 }
 
 export type DispatchWorkspace = {
@@ -78,7 +95,7 @@ export type DispatchWorkspace = {
   githubRepoId?: string | null;
 };
 
-export function buildWebhookPayload(task: DispatchTask, event: TaskDispatchEvent, extra: { workerId?: string } = {}): TaskWebhookPayload {
+export function buildWebhookPayload(task: DispatchTask, event: TaskDispatchEvent, extra: WebhookExtra = {}): TaskWebhookPayload {
   const message = `Work on Buildd task: ${task.title}
 
 ${task.description || 'No description provided.'}
@@ -98,7 +115,39 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
     backend: task.backend ?? null,
     roleSlug: task.roleSlug ?? null,
     ...(extra.workerId ? { workerId: extra.workerId } : {}),
+    ...(extra.notBefore ? { notBefore: extra.notBefore } : {}),
   };
+}
+
+/** The task's `startAt` when it is still in the future, else null. */
+function futureStartAt(task: DispatchTask): Date | null {
+  if (task.startAt == null) return null;
+  const at = new Date(task.startAt);
+  return Number.isFinite(at.getTime()) && at.getTime() > Date.now() ? at : null;
+}
+
+/**
+ * Whether a deferred task goes to this webhook as `task.scheduled` now,
+ * carrying its `startAt`, so the consumer wakes itself then instead of
+ * waiting for the deferred-dispatch sweep. Opt-in only: the config must list
+ * 'task.scheduled'. The task's runnerPreference must match, and `startAt`
+ * must be within SCHEDULED_DISPATCH_MAX_AHEAD_MS; anything further out is
+ * left to the sweep. The held gate is the caller's.
+ */
+function acceptsScheduledDispatch(
+  webhookConfig: WorkspaceWebhookConfig | null | undefined,
+  task: DispatchTask,
+  startAt: Date,
+): webhookConfig is WorkspaceWebhookConfig {
+  return !!webhookConfig?.enabled &&
+    !!webhookConfig.url &&
+    webhookSubscribes(webhookConfig, 'task.scheduled', false) &&
+    webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference) &&
+    startAt.getTime() - Date.now() <= SCHEDULED_DISPATCH_MAX_AHEAD_MS;
+}
+
+function dispatchScheduled(webhookConfig: WorkspaceWebhookConfig, task: DispatchTask, startAt: Date): Promise<boolean> {
+  return dispatchToWebhook(webhookConfig, task, 'task.scheduled', WEBHOOK_DISPATCH_TIMEOUT_MS, { notBefore: startAt.toISOString() });
 }
 
 /**
@@ -123,7 +172,7 @@ export async function dispatchToWebhook(
   task: DispatchTask,
   event: TaskDispatchEvent,
   timeoutMs: number = WEBHOOK_DISPATCH_TIMEOUT_MS,
-  extra: { workerId?: string } = {},
+  extra: WebhookExtra = {},
 ): Promise<boolean> {
   if (!webhookConfig.enabled || !webhookConfig.url) {
     return false;
@@ -192,9 +241,13 @@ export async function dispatchNewTask(
 
   // Check webhook dispatch
   let dispatched = false;
+  const startAt = futureStartAt(task);
   if (workspace?.webhookConfig) {
     const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
-    if (
+    if (startAt && acceptsScheduledDispatch(webhookConfig, task, startAt)) {
+      // Deferred, and the webhook wakes itself: send the time, not the task now.
+      dispatched = await dispatchScheduled(webhookConfig, task, startAt);
+    } else if (
       webhookSubscribes(webhookConfig, 'task.created', true) &&
       webhookAcceptsRunnerPreference(webhookConfig, options?.runnerPreference)
     ) {
@@ -244,7 +297,10 @@ export async function dispatchUnblockedTask(
     const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig;
     const event = options?.event ?? 'task.unblocked';
     const optedIn = Array.isArray(webhookConfig.events);
-    if (
+    const startAt = futureStartAt(task);
+    if (startAt && acceptsScheduledDispatch(webhookConfig, task, startAt)) {
+      dispatched = await dispatchScheduled(webhookConfig, task, startAt);
+    } else if (
       webhookSubscribes(webhookConfig, event, true) &&
       (!optedIn || webhookAcceptsRunnerPreference(webhookConfig, task.runnerPreference))
     ) {
@@ -277,16 +333,19 @@ export async function dispatchUnblockedTask(
  * When the webhook is tried:
  *  - It honours the task's runnerPreference, the filter dispatchNewTask
  *    applies, so a wake never reaches a webhook creation was kept away from.
- *  - A task deferred to a future `startAt` is not sent: the claim would
- *    refuse it until then, and a push consumer would spend a cold start
- *    learning that. The sweep re-sends it once `startAt` passes.
+ *  - A task deferred to a future `startAt` is not sent as `event`: the claim
+ *    would refuse it until then, and a push consumer would spend a cold start
+ *    learning that. A webhook that lists 'task.scheduled' gets it now as
+ *    `task.scheduled` with `notBefore` and wakes itself at that time; any
+ *    other is left to the sweep, which re-sends it once `startAt` passes (and
+ *    stays the backstop for the scheduled case too).
  *  - A held task, or one in a held or local-executor mission, is not sent
  *    (the claim route's notHeldOrLocal gate). A gate that cannot answer keeps
  *    the task off the webhook too.
  *  - No GitHub Actions dispatch: these paths never started an Actions run.
  */
 async function wakeOptInWebhookOrBroadcast(
-  task: DispatchTask & { startAt?: Date | string | null },
+  task: DispatchTask,
   workspace: DispatchWorkspace,
   event: TaskDispatchEvent,
 ): Promise<void> {
@@ -294,8 +353,15 @@ async function wakeOptInWebhookOrBroadcast(
 
   let dispatched = false;
   const webhookConfig = workspace?.webhookConfig as WorkspaceWebhookConfig | null | undefined;
-  const deferred = task.startAt != null && new Date(task.startAt).getTime() > Date.now();
+  const startAt = futureStartAt(task);
+  const deferred = startAt !== null;
   if (
+    startAt &&
+    acceptsScheduledDispatch(webhookConfig, task, startAt) &&
+    (await isTaskNotHeldOrLocal(task.id).catch(() => false))
+  ) {
+    dispatched = await dispatchScheduled(webhookConfig, task, startAt);
+  } else if (
     webhookConfig?.enabled &&
     webhookConfig.url &&
     !deferred &&
@@ -322,7 +388,7 @@ async function wakeOptInWebhookOrBroadcast(
  * it lists 'task.retry'; see wakeOptInWebhookOrBroadcast.
  */
 export async function dispatchRetriedTask(
-  task: DispatchTask & { startAt?: Date | string | null },
+  task: DispatchTask,
   workspace: DispatchWorkspace,
 ): Promise<void> {
   await wakeOptInWebhookOrBroadcast(task, workspace, 'task.retry');

@@ -17,8 +17,9 @@ import type { CrashReport, RunOutcome } from './lifecycle';
 /**
  * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
  * 3: adds `resume` (a parked run continued in a new container) and the park durations.
+ * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
  */
-export const RUN_REPORT_VERSION = 3;
+export const RUN_REPORT_VERSION = 4;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -540,6 +541,8 @@ export interface RunTimings {
   runnerMetrics?: RunnerMetrics;
   /** From the `BUILDD_REPO_SOURCE=` line. */
   repoSource?: RepoSourceLine;
+  /** A `task.scheduled` start: the time the wake was scheduled for. */
+  scheduledFor?: number;
 }
 
 // ── Assembly ──────────────────────────────────────────────────────────────────
@@ -605,6 +608,13 @@ export interface RunReport {
    * text reconstruction. `parkBytes`: the park bundle this attempt uploaded.
    */
   resume: { resumed: boolean; gapMs: number | null; layer: 1 | 2 | null; parkBytes: number | null };
+  /**
+   * A start from a `task.scheduled` wake. `scheduledFor`: the time buildd
+   * asked for (the task's startAt). `startedAt`: when the attempt actually
+   * started (= timestamps.dispatchReceivedAt). `lateMs`: the difference, null
+   * when the attempt was not a scheduled start.
+   */
+  schedule: { scheduledFor: number | null; startedAt: number | null; lateMs: number | null };
   egress: EgressCounters;
   /** Why requests failed: refusal reasons and upstream error codes, per class. */
   egressDetail: EgressDetail;
@@ -725,6 +735,11 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       gapMs: input.resumed === true ? span(ts(input.parkedAt), timestamps.dispatchReceivedAt) : null,
       layer: metric('resume_layer') === 1 ? 1 : metric('resume_layer') === 2 ? 2 : null,
       parkBytes: metric('park_bytes'),
+    },
+    schedule: {
+      scheduledFor: ts(t.scheduledFor),
+      startedAt: timestamps.dispatchReceivedAt,
+      lateMs: span(ts(t.scheduledFor), timestamps.dispatchReceivedAt),
     },
     egress,
     egressDetail: normalizeEgressDetail(input.egressDetail),

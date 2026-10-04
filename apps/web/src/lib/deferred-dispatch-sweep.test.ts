@@ -15,11 +15,15 @@ const mockExecute = mock(async (query: unknown) => {
 });
 const WEBHOOK_WS = { id: 'ws-hook', name: 'Hooked', repo: 'o/r', webhookConfig: { enabled: true, url: 'https://x.test/hook', token: 't' } };
 const PLAIN_WS = { id: 'ws-plain', name: 'Plain', repo: null, webhookConfig: null };
+const SCHEDULED_WS = {
+  id: 'ws-sched', name: 'Sched', repo: 'o/r',
+  webhookConfig: { enabled: true, url: 'https://x.test/hook', token: 't', events: ['task.retry', 'task.scheduled'] },
+};
 
 mock.module('@buildd/core/db', () => ({
   db: {
     execute: mockExecute,
-    query: { workspaces: { findMany: mock(async () => [WEBHOOK_WS, PLAIN_WS]) } },
+    query: { workspaces: { findMany: mock(async () => [WEBHOOK_WS, PLAIN_WS, SCHEDULED_WS]) } },
   },
 }));
 
@@ -70,6 +74,18 @@ describe('sweepDeferredDispatch', () => {
     expect(first.dispatched).toBe(1);
     expect(second).toEqual({ dispatched: 0, failed: 0 });
     expect(mockDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays the backstop for a webhook that schedules its own wake: a due task is still dispatched', async () => {
+    // A workspace whose webhook lists task.scheduled got the dispatch when the
+    // task was deferred; the sweep sends it again when due regardless, and the
+    // consumer treats a dispatch for a live or already-woken run as a no-op.
+    dueRows = [row('t1', 'ws-sched')];
+    const result = await sweepDeferredDispatch();
+    expect(result).toEqual({ dispatched: 1, failed: 0 });
+    const [task, workspace] = mockDispatch.mock.calls[0] as [{ id: string; startAt?: unknown }, { id: string }];
+    expect(task.startAt).toBeUndefined();
+    expect(workspace.id).toBe('ws-sched');
   });
 
   it('does nothing when no task is due', async () => {
