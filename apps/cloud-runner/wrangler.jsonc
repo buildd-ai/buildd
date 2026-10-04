@@ -5,6 +5,10 @@
   "compatibility_date": "2026-09-29",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Backstop for the egress handler: large bodies stream natively
+  // (run-report.ts measureResponse), but any JS work on a long request still
+  // counts against one invocation's CPU budget (default 30 s).
+  "limits": { "cpu_ms": 300000 },
 
   // One container application backing the WorkerAgent Durable Object. The
   // image is the runner's --once image (apps/runner/Dockerfile.once), built
