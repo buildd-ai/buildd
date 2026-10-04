@@ -566,7 +566,8 @@ export class BuilddClient {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (reply && typeof reply === 'object' && ((reply as { verdict?: unknown }).verdict === 'send' || (reply as { verdict?: unknown }).verdict === 'pushback')) {
+      const verdict = reply && typeof reply === 'object' ? (reply as { verdict?: unknown }).verdict : undefined;
+      if (verdict === 'send' || verdict === 'pushback' || verdict === 'decide') {
         return reply as QuestionGateReply;
       }
       return { verdict: 'send', outcome: 'error', error: 'bad_reply', version: null, latencyMs: Date.now() - started };

@@ -898,6 +898,19 @@ export interface ResultMeta {
    * which keeps that path byte-identical to before this field existed.
    */
   closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
+  /**
+   * Every end-of-session push the runner gave this worker (classifying why a
+   * session was ending without delivering, then sending label-specific text —
+   * see apps/runner/src/session-end-classification.ts) before its eventual
+   * terminal outcome: which label, when, and the exact text sent. Lets
+   * "pushes per session and how often a push led to delivery" be answered
+   * directly from completed-task result rows, without new telemetry infra.
+   */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
 }
 
 export const workspaces = pgTable('workspaces', {
