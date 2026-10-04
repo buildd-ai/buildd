@@ -69,7 +69,9 @@ From `apps/runner/src/run-once.ts`:
 Once the claim succeeds, the runner prints `BUILDD_WORKER_ID=<worker-id>` on
 its own stdout line. A supervisor that only knows the task ID reads it so it
 can mark the worker failed if the container dies before the runner reports
-(`apps/cloud-runner` does this). No line means no worker was created.
+(`apps/cloud-runner` does this, with `crashReconciled: true` so buildd retries
+it on the infra-retry budget instead of failing the task). No line means no
+worker was created.
 
 With `BUILDD_EXECUTOR=cloud` the runner also prints
 `BUILDD_PHASE=<phase> <epoch ms>` lines, `<phase>` one of `clone_start`,

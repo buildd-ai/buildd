@@ -63,6 +63,17 @@ reads it from the exec'd process's output and stores it. A crash before that
 line has no worker to mark (the claim never finished, or finished just before
 the crash); server-side stale detection covers that case.
 
+The report is `PATCH /api/workers/<id>` with `status: failed` and
+`crashReconciled: true`, the flag the runner's own boot reconciliation sends
+for a session its process lost. buildd treats it as an infrastructure failure:
+the task goes back to `pending` on the infra-retry budget (backoff 5, 15, 30
+minutes, counted in `context.infraRetryCount`), the deferred-dispatch sweep
+sends `task.retry` to the webhook on its first run after the backoff passes
+(it rides the hourly `pr-reconcile` cron, so a retry can wait up to an hour
+beyond its backoff), and after the last
+attempt the task fails as `infra_stalled`. Only a `crashed` outcome is reported;
+the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
+
 **Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
 exec'd process cannot be re-attached. On the next start the agent finds the
 run marked live, destroys the container, and records `crashed` (and reports
