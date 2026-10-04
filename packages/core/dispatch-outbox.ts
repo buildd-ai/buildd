@@ -25,6 +25,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { db } from './db';
+import { MAX_DELIVERY_ATTEMPTS, retryDelayMs } from '@buildd/dispatch-contract';
 
 /**
  * What kind of delivery an intent is. Buildd's policy decides what should
@@ -76,6 +77,38 @@ export type DispatchCause = (typeof DISPATCH_CAUSES)[number];
 
 export function isDispatchCause(v: unknown): v is DispatchCause {
   return typeof v === 'string' && (DISPATCH_CAUSES as readonly string[]).includes(v);
+}
+
+/**
+ * Most specific first. A coalesced row carries every cause that landed while
+ * it was pending; adapters route on the first match here, because a
+ * trigger-written `task.created` plus an app-written `plan_child.ready` is a
+ * plan child, not a plain new task.
+ */
+const CAUSE_PRECEDENCE: DispatchCause[] = [
+  'plan_child.ready',
+  'review.fix_requested',
+  'ci.retry',
+  'conflict.retry',
+  'task.reassigned',
+  'manual.start',
+  'dependency.satisfied',
+  'path_claim.released',
+  'budget.available',
+  'credential.restored',
+  'mission.released',
+  'task.unblocked',
+  'start_at.reached',
+  'task.requeued',
+  // Below the unblock causes: a dependent plan child that later becomes ready
+  // is delivered as dependency.satisfied, as it always was.
+  'plan_child.created',
+  'task.created',
+];
+
+export function primaryCause(causes: readonly string[], fallback: DispatchCause): DispatchCause {
+  for (const c of CAUSE_PRECEDENCE) if (causes.includes(c)) return c;
+  return fallback;
 }
 
 export interface EnqueueDispatchInput {
@@ -222,18 +255,36 @@ export interface ClaimedDispatch {
 export const DELIVERY_LEASE_MS = 120_000;
 
 /**
+ * How long an unacked work row of a `dispatch`-transport workspace is left to
+ * the publish path (lib/dispatch-transport.ts) before the in-app drain takes
+ * it as the fallback. Long enough for a publish retry after a Worker blip,
+ * short enough that a Dispatch outage costs minutes, not the wake.
+ */
+export const PUBLISH_GRACE_MS = 120_000;
+
+/**
  * Atomically take up to `limit` due rows for delivery. SKIP LOCKED plus the
  * status guard on the outer UPDATE mean two concurrent drains never take the
  * same row; a re-delivery only happens after a lease expires.
+ *
+ * Dispatch transport: a `handed_off` row is never taken (Dispatch owns its
+ * delivery lifecycle). An unacked work row of a `dispatch` workspace younger
+ * than PUBLISH_GRACE_MS is left to the publish path, so the in-app drain is
+ * the fallback for rows Dispatch never acked, not a racer. Every other row —
+ * all of an `in_app` or `shadow` workspace, and every non-work intent, which
+ * is never published — is taken exactly as before.
  */
 export function claimDueDispatchesSql(limit: number, nowIso?: string): SQL {
-  const args = { limit, leaseMs: DELIVERY_LEASE_MS, now: nowIso ?? null };
+  const args = { limit, leaseMs: DELIVERY_LEASE_MS, graceMs: PUBLISH_GRACE_MS, now: nowIso ?? null };
   return sql`-- dispatch_outbox:claim_due
 WITH args AS (SELECT ${JSON.stringify(args)}::jsonb AS a),
 clock AS (SELECT COALESCE((a->>'now')::timestamptz, now()) AS now FROM args),
 due AS (
   SELECT o.id FROM task_dispatch_outbox o, clock c
-  WHERE (o.status = 'pending' AND o.not_before <= c.now)
+  WHERE (o.status = 'pending' AND o.not_before <= c.now
+         AND NOT (o.handed_off_at IS NULL AND o.intent = 'work_execution'
+           AND o.created_at > c.now - ((SELECT a->>'graceMs' FROM args)::int * interval '1 millisecond')
+           AND EXISTS (SELECT 1 FROM workspaces w WHERE w.id = o.workspace_id AND w.dispatch_transport = 'dispatch')))
      OR (o.status = 'delivering' AND o.last_attempt_at < c.now - ((SELECT a->>'leaseMs' FROM args)::int * interval '1 millisecond'))
   ORDER BY o.not_before
   LIMIT (SELECT (a->>'limit')::int FROM args)
@@ -264,13 +315,10 @@ export async function claimDueDispatches(limit: number): Promise<ClaimedDispatch
   }));
 }
 
-/** Max delivery attempts before a row is parked as `failed` for reconciliation to report. */
-export const MAX_DELIVERY_ATTEMPTS = 8;
-
-/** Backoff before attempt `n + 1`: 15s doubling, capped at 30 minutes. */
-export function retryDelayMs(attemptCount: number): number {
-  return Math.min(15_000 * 2 ** Math.max(0, attemptCount - 1), 30 * 60_000);
-}
+// Max attempts before a row is parked as `failed`, and the backoff before
+// attempt `n + 1`. Shared with the Dispatch transport so a workspace's retry
+// cadence is the same on either side of the cutover.
+export { MAX_DELIVERY_ATTEMPTS, retryDelayMs };
 
 export async function markDispatchDelivered(id: string, via: string): Promise<void> {
   await db.execute(sql`-- dispatch_outbox:delivered
@@ -351,16 +399,36 @@ SET metadata = CASE WHEN jsonb_typeof(metadata) = 'object' THEN metadata ELSE '{
 WHERE id = ${id}::uuid AND status = 'pending'`);
 }
 
-/** Everything a reconciler needs to see: due-but-undelivered, stuck, and failed rows. */
-export async function dispatchOutboxHealth(): Promise<{ overdue: number; stuck: number; failed: number }> {
-  const result = await db.execute(sql`-- dispatch_outbox:health
-SELECT
-  count(*) FILTER (WHERE status = 'pending' AND not_before < now() - interval '5 minutes') AS overdue,
-  count(*) FILTER (WHERE status = 'delivering' AND last_attempt_at < now() - interval '5 minutes') AS stuck,
-  count(*) FILTER (WHERE status = 'failed' AND updated_at > now() - interval '1 day') AS failed
-FROM task_dispatch_outbox`);
+export interface DispatchOutboxHealth {
+  overdue: number;
+  stuck: number;
+  failed: number;
+  /** Work rows of a `dispatch` workspace the Worker has not acked for over a minute. */
+  unacked: number;
+  /** Handed off, due over an hour ago, and still no terminal receipt. */
+  orphaned: number;
+}
+
+/** Everything a reconciler needs to see: due-but-undelivered, stuck, failed, unacked and orphaned rows. */
+export async function dispatchOutboxHealth(): Promise<DispatchOutboxHealth> {
+  const result = await db.execute(dispatchOutboxHealthSql());
   const r = rowsOf(result)[0] ?? {};
-  return { overdue: Number(r.overdue ?? 0), stuck: Number(r.stuck ?? 0), failed: Number(r.failed ?? 0) };
+  return {
+    overdue: Number(r.overdue ?? 0), stuck: Number(r.stuck ?? 0), failed: Number(r.failed ?? 0),
+    unacked: Number(r.unacked ?? 0), orphaned: Number(r.orphaned ?? 0),
+  };
+}
+
+export function dispatchOutboxHealthSql(): SQL {
+  return sql`-- dispatch_outbox:health
+SELECT
+  count(*) FILTER (WHERE o.status = 'pending' AND o.not_before < now() - interval '5 minutes') AS overdue,
+  count(*) FILTER (WHERE o.status = 'delivering' AND o.last_attempt_at < now() - interval '5 minutes') AS stuck,
+  count(*) FILTER (WHERE o.status = 'failed' AND o.updated_at > now() - interval '1 day') AS failed,
+  count(*) FILTER (WHERE o.status = 'pending' AND o.handed_off_at IS NULL AND o.intent = 'work_execution'
+    AND o.created_at < now() - interval '1 minute' AND w.dispatch_transport = 'dispatch') AS unacked,
+  count(*) FILTER (WHERE o.status = 'handed_off' AND o.not_before < now() - interval '1 hour') AS orphaned
+FROM task_dispatch_outbox o LEFT JOIN workspaces w ON w.id = o.workspace_id`;
 }
 
 /** Delivered/failed rows older than this are pruned by the task-archive sweep. */
@@ -379,7 +447,8 @@ WITH gone AS (
 /** The intent trail for one task, oldest first — the "why did it (not) start" read. */
 export async function dispatchHistoryForTask(taskId: string, limit = 50) {
   const result = await db.execute(sql`-- dispatch_outbox:history
-SELECT id, intent, cause, causes, status, not_before, attempt_count, delivered_at, delivered_via, last_error, created_at
+SELECT id, intent, cause, causes, status, not_before, attempt_count, delivered_at, delivered_via, last_error, created_at,
+  transport, handed_off_at
 FROM task_dispatch_outbox WHERE task_id = ${taskId}::uuid ORDER BY created_at LIMIT ${limit}`);
   return rowsOf(result);
 }

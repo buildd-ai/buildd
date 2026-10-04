@@ -33,14 +33,17 @@ import {
   markDispatchDelivered,
   markDispatchFailed,
   MAX_DELIVERY_ATTEMPTS,
+  PUBLISH_GRACE_MS,
   type ClaimedDispatch,
   type DispatchIntent,
   type DispatchCause,
   type EnqueueDispatchInput,
+  primaryCause,
 } from '@buildd/core/dispatch-outbox';
 import { channels, events, triggerEvent } from '@/lib/pusher';
 import { clearDue, markDue, reseedDue } from '@/lib/redis';
 import { SCHEDULED_DISPATCH_MAX_AHEAD_MS, buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
+import { publishPendingDispatches } from '@/lib/dispatch-transport';
 import { ADAPTER_CHAINS, offerScheduledNotice, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
@@ -51,37 +54,10 @@ export const DRAIN_BATCH = 25;
 
 // ── Cause precedence ───────────────────────────────────────────────────────
 
-/**
- * Most specific first. A coalesced row carries every cause that landed while
- * it was pending; adapters route on the first match here, because a
- * trigger-written `task.created` plus an app-written `plan_child.ready` is a
- * plan child, not a plain new task.
- */
-const CAUSE_PRECEDENCE: DispatchCause[] = [
-  'plan_child.ready',
-  'review.fix_requested',
-  'ci.retry',
-  'conflict.retry',
-  'task.reassigned',
-  'manual.start',
-  'dependency.satisfied',
-  'path_claim.released',
-  'budget.available',
-  'credential.restored',
-  'mission.released',
-  'task.unblocked',
-  'start_at.reached',
-  'task.requeued',
-  // Below the unblock causes: a dependent plan child that later becomes ready
-  // is delivered as dependency.satisfied, as it always was.
-  'plan_child.created',
-  'task.created',
-];
-
-export function primaryCause(causes: readonly string[], fallback: DispatchCause): DispatchCause {
-  for (const c of CAUSE_PRECEDENCE) if (causes.includes(c)) return c;
-  return fallback;
-}
+// `primaryCause` lives in @buildd/core/dispatch-outbox so the Dispatch
+// envelope mapping (dispatch-envelope.ts) labels rows with the same
+// precedence the adapters route on. Re-exported for existing callers.
+export { primaryCause };
 
 // ── Enqueue + kick ─────────────────────────────────────────────────────────
 
@@ -100,7 +76,7 @@ export async function enqueueTaskDispatch(input: EnqueueDispatchInput): Promise<
   // that drains clears its own marker, so the happy path costs no tick.
   const marker = `kick:${input.taskId}:${Date.now()}`;
   await markDue(DISPATCH_DUE_QUEUE, marker, Date.now() + KICK_GRACE_MS);
-  kickDispatch(marker);
+  kickDispatch(marker, input.taskId);
 }
 
 /** How long a kick has to drain before the gated tick treats it as lost. */
@@ -172,8 +148,19 @@ export async function announceTaskCreated(task: DispatchTask, workspace: Dispatc
  * Never throws and never blocks the caller: the intent is already durable, so
  * a kick that fails costs latency (the next tick), not the wake.
  */
-export function kickDispatch(marker?: string): void {
-  const run = () => drainDispatchOutbox()
+export function kickDispatch(marker?: string, taskId?: string): void {
+  // Dispatch transport first: rows of `dispatch` workspaces it acks are
+  // handed off before the drain looks, so the drain never races them. A
+  // no-op unless DISPATCH_URL and DISPATCH_PUBLISH_SECRET are set and some
+  // workspace opted in. A failed publish, or one with rejected envelopes,
+  // leaves a due marker past the publish grace, so the gated tick's drain
+  // delivers any row Dispatch never acked (lib/dispatch-transport.ts).
+  const run = () => publishPendingDispatches({ taskId })
+    .then(pub => (pub.status === 'failed' || (pub.status === 'ok' && pub.rejected > 0)
+      ? markDue(DISPATCH_DUE_QUEUE, `publish:${Date.now()}`, Date.now() + PUBLISH_GRACE_MS + 5_000)
+      : undefined))
+    .catch(err => console.error('[dispatch] publish failed:', err))
+    .then(() => drainDispatchOutbox())
     .then(() => (marker ? clearDue(DISPATCH_DUE_QUEUE, marker) : undefined))
     .then(() => scheduleTimer())
     .catch(err => console.error('[dispatch] kick drain failed:', err));
@@ -266,7 +253,8 @@ export async function drainDispatchOutbox(opts: { limit?: number } = {}): Promis
 }
 
 
-async function loadForDelivery(taskId: string): Promise<{ task: DispatchContext['task']; workspace: DispatchWorkspace } | null> {
+/** The task and workspace a delivery decision reads. Shared with the Dispatch callbacks (lib/dispatch-resolve.ts). */
+export async function loadForDelivery(taskId: string): Promise<{ task: DispatchContext['task']; workspace: DispatchWorkspace } | null> {
   const row = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
     columns: {
