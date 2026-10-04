@@ -260,8 +260,10 @@ describe('team key policy', () => {
 
 describe('hasTeamInferenceKey (the billing model)', () => {
   it('is true when team work resolves a key for any provider', async () => {
-    secretRows = [row({ label: 'anthropic' })];
-    expect(await hasTeamInferenceKey('t-1')).toBe(true);
+    for (const label of ['anthropic', 'openai', 'openrouter']) {
+      secretRows = [row({ label })];
+      expect(await hasTeamInferenceKey('t-1')).toBe(true);
+    }
   });
 
   it('ignores personal keys: a person\'s key never pays for team work', async () => {
@@ -284,14 +286,14 @@ describe('resolveInferenceCredential', () => {
   it('reports which scope and row the key came from', async () => {
     secretRows = [row({ id: 'mine', userId: 'u-1', encryptedValue: 'enc:mine' })];
     expect(await resolveInferenceCredential({ provider: 'openrouter', teamId: 't-1', userId: 'u-1' }))
-      .toEqual({ key: 'mine', scope: 'user', secretId: 'mine', purpose: 'inference_key' });
+      .toEqual({ provider: 'openrouter', key: 'mine', scope: 'user', secretId: 'mine', purpose: 'inference_key' });
   });
 
   it('reports env as its own scope', async () => {
     process.env.NODE_ENV = 'development';
     process.env.OPENAI_API_KEY = 'sk-env';
     expect(await resolveInferenceCredential({ provider: 'openai', teamId: 't-1' }))
-      .toEqual({ key: 'sk-env', scope: 'env', secretId: null, purpose: null });
+      .toEqual({ provider: 'openai', key: 'sk-env', scope: 'env', secretId: null, purpose: null });
   });
 });
 
@@ -383,4 +385,20 @@ describe('verifyProviderKey', () => {
     });
     expect(r.error ?? '').not.toContain('sk-secret-value');
   });
+});
+
+describe('provider symmetry and resolved scope', () => {
+  for (const provider of ['anthropic', 'openai', 'openrouter'] as const) {
+    for (const policy of ['team', 'team_or_own', 'own'] as const) {
+      it(`${provider}: ${policy} keeps provider separate from credential scope`, async () => {
+        secretRows = [row({ label: provider, encryptedValue: 'enc:shared' }), row({ id: 'mine', label: provider, userId: 'u', encryptedValue: 'enc:personal' })];
+        const r = await resolveInferenceCredential({ provider, teamId: 't', userId: 'u', keyPolicy: policy });
+        expect(r).toMatchObject({ provider, scope: policy === 'team' ? 'team' : 'user', key: policy === 'team' ? 'shared' : 'personal' });
+        secretRows = [row({ label: provider, encryptedValue: 'enc:shared' })];
+        const unattended = await resolveInferenceCredential({ provider, teamId: 't', keyPolicy: policy });
+        if (policy === 'own') expect(unattended).toBeNull();
+        else expect(unattended).toMatchObject({ provider, scope: 'team' });
+      });
+    }
+  }
 });
