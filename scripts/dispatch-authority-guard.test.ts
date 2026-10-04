@@ -19,15 +19,6 @@ const SENDER_ALLOWED = new Set([
   'apps/web/src/lib/pusher.ts', // defines the event name
 ]);
 
-/**
- * Senders that predate the authority and are being migrated onto `wakeTask`.
- * May only shrink: the test fails when a listed file stops sending, so the
- * entry is removed in the same change that fixes it.
- */
-const SENDER_PENDING_MIGRATION = new Set([
-  'apps/web/src/app/api/tasks/[id]/start/route.ts', // manual start broadcasts directly
-]);
-
 const SENDER_RE = /\bevents\.TASK_ASSIGNED\b|['"`]task:assigned['"`]/;
 
 /** Whether `src` names the TASK_ASSIGNED event (the event constant or its wire name). */
@@ -82,15 +73,8 @@ describe('TASK_ASSIGNED is sent only by the dispatch authority', () => {
   });
 
   it('no other source file sends it', () => {
-    const offenders = taskAssignedSenders().filter(p => !SENDER_ALLOWED.has(p) && !SENDER_PENDING_MIGRATION.has(p));
+    const offenders = taskAssignedSenders().filter(p => !SENDER_ALLOWED.has(p));
     expect(offenders).toEqual([]);
-  });
-
-  it('the pending-migration list only shrinks', () => {
-    const senders = new Set(taskAssignedSenders());
-    const migrated = [...SENDER_PENDING_MIGRATION].filter(p => !senders.has(p));
-    // A file that no longer sends must leave the list, so it cannot regress silently.
-    expect(migrated).toEqual([]);
   });
 });
 
