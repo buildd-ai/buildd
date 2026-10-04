@@ -297,7 +297,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 4,
+      version: 5,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -331,6 +331,17 @@ describe('assembleRunReport', () => {
     expect(r.exitCode).toBeNull();
     expect(r.crashReport).toBe('no_worker_id');
     expect(r.egress.model).toEqual({ requests: 0, rejected: 0, responseBytes: 0 });
+  });
+
+  test('deferredRetry: present only when an outcome actually deferred, sanitized and null-backoff past the cap', () => {
+    expect(assembleRunReport(FULL).deferredRetry).toBeNull();
+    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' } }).deferredRetry)
+      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: 'workspace_cap' });
+    expect(assembleRunReport({ ...FULL, outcome: 'start_deferred', deferredRetry: { retryNumber: 6, backoffMs: null, reason: 'container_capacity' } }).deferredRetry)
+      .toEqual({ retryNumber: 6, backoffMs: null, reason: 'container_capacity' });
+    // A reason that is not a short identifier (stray prose, a credential-shaped string) is dropped, not passed through.
+    expect(assembleRunReport({ ...FULL, outcome: 'deferred', deferredRetry: { retryNumber: 1, backoffMs: 30_000, reason: 'not a valid reason!' } }).deferredRetry)
+      .toEqual({ retryNumber: 1, backoffMs: 30_000, reason: null });
   });
 
   test('a secret-looking value passed in any field cannot end up in the report', () => {
@@ -370,7 +381,7 @@ describe('assembleRunReport', () => {
 
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
-      'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
+      'attempt', 'containerInstanceId', 'crashReport', 'deferredRetry', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
       'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
   });

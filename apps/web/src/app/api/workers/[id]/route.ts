@@ -46,6 +46,7 @@ import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
 import {
@@ -4215,6 +4216,16 @@ export async function PATCH(
   // to a terminal state must decrement it so Gate B (maxConcurrentSessions) doesn't
   // permanently block claims after all real work is done.
   if (isTerminalStatus) await releaseTerminalSeat();
+
+  // This worker's terminal transition also frees a slot against the
+  // account's maxConcurrentWorkers cap (apps/web/src/app/api/workers/claim/
+  // route.ts) — the capacity wall a cloud container's claim can be refused
+  // for. Nothing else proactively re-checks a task deferred for exactly that
+  // reason; wake the oldest pending claimable task in the SAME workspace so a
+  // cloud-dispatched workspace gets a fresh attempt within seconds rather
+  // than waiting for the cloud runner's own backoff retry or a slow sweep.
+  // No-ops for a workspace with no active cloud-dispatch webhook.
+  if (isTerminalStatus) await wakeOldestPendingTaskOnCapacityFreed(worker.workspaceId, worker.taskId ?? null);
 
   // Release path claims on terminal status so waiting tasks can proceed.
   //

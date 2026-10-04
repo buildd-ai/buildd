@@ -141,7 +141,9 @@ normal execution.
 11. **Provider capacity is not runner slots.** Delivery does not consult
     provider walls, concurrency or budgets. A wake for a walled backend is
     refused by the claim route, and the re-wake comes from the state change
-    that lifts the wall (`budget.available`, `credential.restored`).
+    that lifts the wall (`budget.available`, `credential.restored`,
+    `capacity.freed` — a worker's own terminal transition, for the account's
+    `maxConcurrentWorkers` wall a cloud container's claim can be refused for).
 12. **Reconciliation is a backstop.** The `dispatch-drain` floor tick (start_at
     backfill, the dependency backstop, timer reseed, outbox health), the
     path-claims sweep and stale-worker requeue repair missed state. They never

@@ -1878,7 +1878,16 @@ export class WorkerManager {
       console.log(`No tasks claimed (reason: ${reason})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
-        { claimError: 'server_rejected' as const, claimReason: reason },
+        {
+          claimError: 'server_rejected' as const,
+          claimReason: reason,
+          // The specific gate that excluded this explicit taskId claim (e.g.
+          // `workspace_cap`, `mission_paced`), when the server named one —
+          // finer-grained than `reason` and what classifyClaimFailure
+          // (run-once.ts) uses to tell a temporary capacity defer from a
+          // permanent refusal.
+          claimTaskExclusionCode: diagnostics?.taskExclusion?.code,
+        },
       );
     }
 

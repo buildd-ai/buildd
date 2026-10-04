@@ -18,8 +18,9 @@ import type { CrashReport, RunOutcome } from './lifecycle';
  * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
  * 3: adds `resume` (a parked run continued in a new container) and the park durations.
  * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
+ * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
  */
-export const RUN_REPORT_VERSION = 4;
+export const RUN_REPORT_VERSION = 5;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -664,6 +665,15 @@ export interface RunReport {
   exitCode: number | null;
   outcome: RunOutcome | null;
   crashReport: CrashReport | null;
+  /**
+   * Set only when `outcome` is `deferred` or `start_deferred`: the backoff
+   * retry the supervisor scheduled itself (or declined to, past the cap).
+   * `reason`: the claim's taskExclusion/diagnostics code for `deferred`,
+   * `'container_capacity'` for `start_deferred`, null if the runner printed
+   * none. `retryNumber` is 1-indexed; `backoffMs` null means the cap
+   * (MAX_DEFERRED_RETRIES) was hit and nothing was scheduled.
+   */
+  deferredRetry: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
 }
 
 export interface RunReportInput {
@@ -682,12 +692,15 @@ export interface RunReportInput {
   resumed?: boolean;
   /** End of the parked attempt this one resumes (agent clock). */
   parkedAt?: number;
+  /** See RunReport.deferredRetry. */
+  deferredRetry?: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'crashed'];
+const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'deferred', 'start_deferred', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
+const DEFERRED_REASON_RE = /^[A-Za-z0-9_]{1,64}$/;
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
 // buildd, GitHub, Slack, AWS, generic `key-`/`token`). Task and worker IDs are
@@ -793,6 +806,13 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     exitCode: typeof input.exitCode === 'number' && Number.isInteger(input.exitCode) ? input.exitCode : null,
     outcome: input.outcome && OUTCOMES.includes(input.outcome) ? input.outcome : null,
     crashReport: input.crashReport && CRASH_REPORTS.includes(input.crashReport) ? input.crashReport : null,
+    deferredRetry: input.deferredRetry
+      ? {
+          retryNumber: count(input.deferredRetry.retryNumber),
+          backoffMs: ts(input.deferredRetry.backoffMs),
+          reason: typeof input.deferredRetry.reason === 'string' && DEFERRED_REASON_RE.test(input.deferredRetry.reason) ? input.deferredRetry.reason : null,
+        }
+      : null,
   };
 }
 

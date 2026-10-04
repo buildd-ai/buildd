@@ -97,6 +97,7 @@ export function routeForCause(cause: DispatchCause): CauseRoute {
     case 'budget.available':
     case 'credential.restored':
     case 'mission.released':
+    case 'capacity.freed':
     case 'task.unblocked':
     case 'start_at.reached':
       return { event: 'task.unblocked', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
