@@ -99,14 +99,48 @@ POSTing. An absent var keeps the default; `""` turns dry-run off.
 
 | Name | Kind | |
 |---|---|---|
-| `BUILDD_SERVER` | var | Callback base URL. No default; unset fails closed |
+| `BUILDD_SERVER` | var | Callback base URL. Set in `wrangler.jsonc` (production Buildd); unset or invalid fails closed |
 | `PUBLISH_SECRET` | secret | Key ring verifying producer → Dispatch |
 | `CALLBACK_SECRET` | secret | Key ring signing Dispatch → producer |
 | `DRY_RUN_TYPES` | var | See above |
 
+Vars live in `wrangler.jsonc`, never the dashboard: `wrangler deploy` replaces
+dashboard-set vars with the file's `vars`. Local `wrangler dev` overrides them
+via `.dev.vars` or `--var`.
+
 Key rings use the contract's `parseKeyRing`: `keyId:secret[,keyId:secret]`.
-Put the new key first to rotate (outbound signing uses the first entry), keep
-the old one until the producer has switched.
+Always store the explicit form, `k1:<hex>`, on both sides. Signing uses the
+first entry; verifying accepts any.
+
+### Rotation
+
+Each ring has one signer and one verifier:
+
+- `PUBLISH`: Buildd signs (`DISPATCH_PUBLISH_SECRET`), the Worker verifies
+  (`PUBLISH_SECRET`).
+- `CALLBACK`: the Worker signs (`CALLBACK_SECRET`), Buildd verifies
+  (`DISPATCH_CALLBACK_SECRET`).
+
+Rotate in three steps, finishing each before the next:
+
+1. Verifier adds the new key: `k2:<new>,k1:<old>`.
+2. Signer switches to `k2:<new>`.
+3. Verifier drops the old key: `k2:<new>`.
+
+On the Buildd side, change Doppler `prd` first, push to Vercel, then redeploy.
+A Vercel env change does not reach a running deployment.
+
+### Where the values live
+
+- Doppler `buildd/prd` is the only escrow for the Worker's secrets. `wrangler
+  secret` values are write-only, so a value not in Doppler is lost.
+- Never create `DISPATCH_*` directly in Vercel. A Sensitive var there silently
+  halts the whole Doppler → Vercel sync.
+- Preview (`stg`) has no `DISPATCH_*` on purpose: the transport is off on
+  previews.
+- The deploy token is `CF_DISPATCH_API_TOKEN` / `CF_DISPATCH_ACCOUNT_ID` in
+  Doppler `buildd/dev_ci`, pushed to GitHub Actions with `gh-secret-push`.
+  Never Vercel.
 
 ## Local development
 
@@ -122,12 +156,11 @@ curl localhost:8787/health
 
 1. Bind a wrangler profile to this directory (no `account_id` in
    `wrangler.jsonc`): `bunx wrangler auth activate personal apps/dispatch`.
-2. Secrets, one value per ring (`openssl rand -hex 32`):
-   `bunx wrangler secret put PUBLISH_SECRET` and
-   `bunx wrangler secret put CALLBACK_SECRET`. buildd gets the same values
-   (Doppler `prd` first, then Vercel).
-3. Set `BUILDD_SERVER` per deployment (dashboard, `--var` or an env block).
-4. Add a custom domain or route. `workers.dev` is blocked on the owner's
-   network.
-5. Deploy: `bun run deploy`. The CI deploy token lives in Doppler `dev_ci` →
-   GitHub Actions only, never Vercel.
+2. Secrets, one `k1:<hex>` value per ring (`openssl rand -hex 32`). Store them
+   in Doppler `prd` as `DISPATCH_PUBLISH_SECRET` / `DISPATCH_CALLBACK_SECRET`
+   first, then `bunx wrangler secret put PUBLISH_SECRET` and
+   `bunx wrangler secret put CALLBACK_SECRET` with the same values. Push
+   Doppler to Vercel and redeploy.
+3. Add a custom domain or route, and set `DISPATCH_URL` to it in Doppler
+   `prd`. `workers.dev` is blocked on the owner's network.
+4. Deploy: `bun run deploy`. CI deploys with the `dev_ci` token above.

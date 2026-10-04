@@ -6,7 +6,7 @@ import { parseKeyRing } from '@buildd/dispatch-contract';
 import { TARGET_TYPES, type TargetType } from './adapters/types';
 
 export interface DispatchConfigEnv {
-  /** Producer base URL for callbacks. No default. */
+  /** Producer base URL for callbacks. Set in wrangler.jsonc; no code default. */
   BUILDD_SERVER?: string;
   /** Key ring verifying producer -> Dispatch requests. Secret. */
   PUBLISH_SECRET?: string;
