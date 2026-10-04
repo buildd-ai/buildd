@@ -505,12 +505,6 @@ mock.module('@/lib/dispatch-authority', () => ({
   DISPATCH_DUE_QUEUE: 'dispatch',
   DRAIN_BATCH: 25,
 }));
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mock(() => Promise.resolve()),
-  dispatchRetriedTask: mock(() => Promise.resolve()),
-  dispatchUnblockedTask: mock(() => Promise.resolve()),
-  buildTaskPayload: mock((task: any) => task),
-}));
 /** Causes wakeTask was called with for one task, in call order. */
 const wakeCausesFor = (taskId: string) =>
   (mockWakeTask.mock.calls as any[][]).filter(c => c[0] === taskId).map(c => c[1]);

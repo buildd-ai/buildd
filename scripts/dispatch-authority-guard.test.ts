@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 // Task wakes have one sender: the dispatch authority
@@ -78,52 +78,31 @@ describe('TASK_ASSIGNED is sent only by the dispatch authority', () => {
   });
 });
 
-// ── (b) deprecated wrapper imports: ratchet to zero ───────────────────────
-
-const WRAPPERS = ['dispatchNewTask', 'dispatchUnblockedTask', 'dispatchRetriedTask', 'dispatchPlanChildTask'] as const;
+// ── (b) the pre-outbox dispatch module stays gone ────────────────────────
 
 /**
- * Non-test files importing a deprecated wrapper from lib/task-dispatch.
- * Lower it as call sites move to `wakeTask` / `announceTaskCreated`; never raise it.
+ * lib/task-dispatch.ts held five ad-hoc senders (dispatchNewTask & co.), each
+ * waking runners in its own way and none atomically with the write. It was
+ * deleted once every call site moved to `wakeTask` / `announceTaskCreated`;
+ * the delivery primitives live on in task-dispatch-delivery.ts.
  */
-const WRAPPER_IMPORT_BASELINE = 35;
+const OLD_MODULE = String.raw`['"](?:@/lib/|\./|\.\./(?:\.\./)*lib/)task-dispatch['"]`;
 
-const MODULE = String.raw`(?:@/lib/|\./|\.\./(?:\.\./)*lib/)task-dispatch`;
-const STATIC_IMPORT = new RegExp(String.raw`import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['"]${MODULE}['"]`, 'g');
-const DYNAMIC_IMPORT = new RegExp(String.raw`import\(\s*['"]${MODULE}['"]\s*\)`);
-const WRAPPER_WORD = new RegExp(String.raw`\b(?:${WRAPPERS.join('|')})\b`);
-
-/** Whether `src` imports a deprecated wrapper (static named import, or a dynamic import that uses one). */
-function importsDeprecatedWrapper(src: string): boolean {
-  for (const m of src.matchAll(STATIC_IMPORT)) {
-    if (WRAPPER_WORD.test(m[1])) return true;
-  }
-  return DYNAMIC_IMPORT.test(src) && WRAPPER_WORD.test(src);
-}
-
-function wrapperImporters(): string[] {
-  const tracked = new Set(trackedSources());
-  return grepFiles(String.raw`['"]${MODULE}['"]`)
-    .filter(p => tracked.has(p) && p !== 'apps/web/src/lib/task-dispatch.ts')
-    .filter(p => importsDeprecatedWrapper(readFileSync(join(REPO, p), 'utf8')));
-}
-
-describe('deprecated task-dispatch wrappers are not gaining importers', () => {
-  it('the pattern catches a wrapper import (the guard can fail)', () => {
-    expect(importsDeprecatedWrapper(`import { dispatchNewTask } from '@/lib/task-dispatch';`)).toBe(true);
-    expect(importsDeprecatedWrapper(`import {\n  buildTaskPayload,\n  dispatchRetriedTask,\n} from "./task-dispatch";`)).toBe(true);
-    expect(importsDeprecatedWrapper(`import { dispatchNewTask as d } from '../../lib/task-dispatch';`)).toBe(true);
-    expect(importsDeprecatedWrapper(`const [{ dispatchNewTask }] = await Promise.all([import('@/lib/task-dispatch')]);`)).toBe(true);
-    expect(importsDeprecatedWrapper(`import { dispatchResumedTask } from '@/lib/task-dispatch';`)).toBe(false);
-    expect(importsDeprecatedWrapper(`import { dispatchNewTask } from '@/lib/task-dispatch-delivery';`)).toBe(false);
-    expect(importsDeprecatedWrapper(`// dispatchNewTask used to live here\nimport { x } from '@/lib/other';`)).toBe(false);
+describe('the pre-outbox dispatch module stays gone', () => {
+  it('the pattern catches an import of it (the guard can fail)', () => {
+    const re = new RegExp(OLD_MODULE);
+    expect(re.test(`import { dispatchNewTask } from '@/lib/task-dispatch';`)).toBe(true);
+    expect(re.test(`mock.module("../../lib/task-dispatch", () => ({}))`)).toBe(true);
+    expect(re.test(`import { buildTaskPayload } from '@/lib/task-dispatch-delivery';`)).toBe(false);
   });
 
-  it(`at most ${WRAPPER_IMPORT_BASELINE} files import one`, () => {
-    const files = wrapperImporters();
-    if (files.length > WRAPPER_IMPORT_BASELINE) {
-      console.error(`New wrapper importers — use wakeTask / announceTaskCreated:\n  ${files.join('\n  ')}`);
-    }
-    expect(files.length).toBeLessThanOrEqual(WRAPPER_IMPORT_BASELINE);
+  it('lib/task-dispatch.ts does not exist', () => {
+    expect(existsSync(join(REPO, 'apps/web/src/lib/task-dispatch.ts'))).toBe(false);
+  });
+
+  it('nothing imports or mocks it', () => {
+    // git grep only sees tracked files; tests count too — a stale mock.module
+    // of a deleted path silently stubs nothing.
+    expect(grepFiles(OLD_MODULE).filter(p => p !== 'scripts/dispatch-authority-guard.test.ts')).toEqual([]);
   });
 });
