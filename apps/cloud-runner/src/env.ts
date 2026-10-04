@@ -46,6 +46,8 @@ export interface Env extends EgressEnv, OtelEgressEnv {
    * the SNAPSHOTS binding too (lifecycle.ts warmReposEnabled).
    */
   WARM_REPOS?: string;
+  /** `1` enables the debug POST /tasks/:id/kill (http.ts). Off by default; recovery testing only. */
+  ALLOW_DEBUG_KILL?: string;
   /**
    * `1` turns on resumable runs (Phase 2): a worker waiting for input is
    * parked (container released) and a `task.resume` dispatch continues it.

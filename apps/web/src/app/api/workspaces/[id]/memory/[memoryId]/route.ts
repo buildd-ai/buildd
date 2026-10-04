@@ -1,5 +1,5 @@
 /**
- * Individual memory operations — proxies to memory service.
+ * Individual memory operations on the team memory pool (the memories table).
  *
  * PATCH  /api/workspaces/:id/memory/:memoryId  → update a memory, or, with
  *        `{ action: 'promote' | 'dismiss' | 'reverified' }`, apply a review
@@ -124,7 +124,7 @@ export async function PATCH(
       }
       return NextResponse.json({ memory: data.memory, supersededIds: data.supersededIds });
     } catch (err) {
-      console.error('Memory service error:', err);
+      console.error('Memory route error:', err);
       return NextResponse.json({ error: 'Failed to update memory' }, { status: 500 });
     }
   }
@@ -145,7 +145,7 @@ export async function PATCH(
     }, { teamId: memClient.teamId, knowledgeStore: getMemoryIndexStore(), via: 'dashboard:update' });
     return NextResponse.json({ memory: data.memory, observation: data.memory });
   } catch (err) {
-    console.error('Memory service error:', err);
+    console.error('Memory route error:', err);
     return NextResponse.json({ error: 'Failed to update memory' }, { status: 500 });
   }
 }
@@ -178,7 +178,7 @@ export async function DELETE(
     );
     return NextResponse.json({ success: true });
   } catch (err) {
-    console.error('Memory service error:', err);
+    console.error('Memory route error:', err);
     return NextResponse.json({ error: 'Failed to delete memory' }, { status: 500 });
   }
 }

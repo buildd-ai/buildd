@@ -13,6 +13,11 @@
  *
  * Selective narrowing (lib/path-claim-check.ts `narrowPathClaim`) reuses the
  * delivery half, `deliverPathReleased`, for just the waiters it freed.
+ *
+ * Two different signals leave here. A pending waiting task (a claim-time
+ * path_overlap deferral) is woken by the dispatch outbox row the core
+ * statement already wrote; the kick below only delivers it promptly. A running
+ * waiting agent gets the `path_released` message. Neither replaces the other.
  */
 
 import { db } from '@buildd/core/db';
@@ -21,6 +26,7 @@ import { eq } from 'drizzle-orm';
 import { releaseClaims, rearmWaiter, type ReleaseResult } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage } from '@buildd/core/worker-messages';
 import { triggerEvent, channels } from '@/lib/pusher';
+import { kickDispatch } from '@/lib/dispatch-authority';
 
 /**
  * Why the locks dropped — decides what the waiting agent should do next.
@@ -75,6 +81,11 @@ export async function deliverPathReleased(
   try {
     const { workspaceId, releasedPaths, notifiedWaiters } = result;
     if (notifiedWaiters.length === 0) return;
+
+    // The core statement that stamped these waiters also wrote a
+    // `path_claim.released` intent for each pending one; this only delivers it
+    // now rather than on the next drain tick. Never throws, never blocks.
+    kickDispatch();
 
     // One message per waiting task, carrying every path that freed for it.
     // `waiters` is absent only if a caller passes an older result shape; the

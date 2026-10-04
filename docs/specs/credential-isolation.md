@@ -2,7 +2,7 @@
 title: Credential Isolation & MCP Injection Security Model
 status: active
 owner: builder
-last_verified: 2026-07-21
+last_verified: 2026-10-04
 summary: The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 domain: auth
 surfaces: [apps/runner/src/workers.ts, apps/runner/src/mcp-preflight.ts, apps/runner/src/hook-factory.ts, packages/core/redaction.ts]
@@ -21,6 +21,13 @@ assertions:
   - id: "mcp-preflight-tests"
     type: "test_file"
     path: "apps/runner/__tests__/unit/mcp-preflight.test.ts"
+  - id: "scoped-github-session"
+    type: "symbol"
+    name: "startScopedGitHubSession"
+    path: "apps/runner/src/agent-github-credentials.ts"
+  - id: "scoped-github-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/agent-github-credentials.test.ts"
   - id: "worker-runs-preflight"
     type: "symbol_reachable"
     symbol: "runMcpPreflight"
@@ -253,6 +260,46 @@ on paths matching `SENSITIVE_READ_PATHS` (`~/.buildd/config.json`,
 **Out of scope**: network-layer egress policies (not yet implemented); Codex
 bearer-token env isolation (requires Codex CLI change); filesystem jailing at the
 OS level (tracked as Tier 4 hardening).
+
+### 3a. Task-scoped GitHub credentials (self-hosted runners)
+
+**Capability statement**: Once the rollout reaches a workspace, an agent on a
+self-hosted runner MUST act on GitHub only with a short-lived GitHub App
+installation token scoped to its task's linked repository, minted by the
+server from the workspace's `github_repos` link — never from agent input — and
+refreshed before it expires. The runner operator's `GITHUB_TOKEN` / `GH_TOKEN`
+and host git/gh credentials MUST NOT be inherited. A workspace without the
+GitHub App opts out explicitly with `gitConfig.agentGitHubCredentials: 'runner'`.
+Rollout and opt-out: `docs/runner-github-credentials.md`.
+
+**Invariants**:
+- The claim's `githubCredentials` is a mode marker, never a token; it is sent
+  only to a runner declaring `scoped_github_token`, never on a cloud claim.
+- With `mode: 'scoped'`, the agent env holds no inherited GitHub token, and
+  git's command-line-level config empties every host/repo credential helper
+  before installing the scoped one. On any failure the agent has no GitHub
+  credential (fail closed), not the operator's.
+- `POST /api/runner/agent-github-token` mints only for a live worker claimed by
+  the calling account in a workspace it may still claim from.
+- Known gap (Codex only): the Codex subprocess holds the runner API key (see
+  AC-6), so a Codex agent could ask for a token for another live worker of the
+  same account. Still repo-scoped and short-lived; closing it needs the same
+  Codex auth change as AC-6.
+
+**Acceptance criteria**:
+- AC-7: GIVEN a scoped claim and an operator `GITHUB_TOKEN` plus a global git
+  credential helper WHEN the agent runs `git credential fill` for github.com
+  THEN it receives the task-scoped token and nothing from the operator.
+- AC-8: GIVEN the token fetch fails WHEN the agent starts THEN it has no GitHub
+  credential and its prompt tells it to report blocked.
+- AC-9: GIVEN `AGENT_GITHUB_TOKEN_ROLLOUT` unset, or a runner without the
+  feature WHEN it claims THEN the claim carries no `githubCredentials`.
+
+**Code surface**: `packages/core/agent-github-credentials.ts`,
+`apps/web/src/app/api/workers/claim/github-credential-injection.ts`,
+`apps/web/src/app/api/runner/agent-github-token/route.ts`,
+`apps/runner/src/agent-github-credentials.ts`. Tests beside each, and
+`apps/runner/__tests__/unit/agent-github-credentials.test.ts`.
 
 ---
 

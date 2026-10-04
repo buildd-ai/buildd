@@ -10,6 +10,7 @@
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
+import { clearCloneThrottles, noteCloneThrottled } from '../../src/git-clone';
 
 // ─── Mocks (must precede importing workers.ts) ──────────────────────────────
 
@@ -213,5 +214,44 @@ describe('prepareClaimedWorker: Pusher and poll claims prepare a worker the same
 
     expect(caught?.claimError).toBe('workspace_not_found');
     expect(markUnresolvable).toHaveBeenCalledWith('task-w-push2');
+  });
+
+  // The clone failed because GitHub throttled it (git-clone.ts remembers the
+  // repo). That is not "this runner cannot resolve the workspace": report it
+  // as an infrastructure failure so buildd requeues with backoff, and do not
+  // stop Pusher from offering the task again.
+  describe('a clone GitHub throttled', () => {
+    beforeEach(() => clearCloneThrottles());
+    afterEach(() => clearCloneThrottles());
+
+    test('poll claim: failed with githubThrottled, awaited, not marked unresolvable', async () => {
+      mockResolve = () => null;
+      noteCloneThrottled('https://example.test/o/r', 30);
+      let settled = false;
+      mockUpdateWorker.mockImplementation(async () => { await new Promise(r => setTimeout(r, 5)); settled = true; return {}; });
+      mockClaimTask.mockImplementation(async () => ({ workers: [claimed('w-thr')] }));
+      const markUnresolvable = mock((_id: string) => {});
+      (manager as any).pusherManager.markUnresolvable = markUnresolvable;
+
+      const started = await manager.claimPendingTasks();
+
+      expect(started).toHaveLength(0);
+      expect(mockUpdateWorker).toHaveBeenCalledWith('w-thr', expect.objectContaining({ status: 'failed', githubThrottled: true }));
+      const body = mockUpdateWorker.mock.calls.find((c: any[]) => c[0] === 'w-thr')![1] as { error: string };
+      expect(body.error).toMatch(/rate limit/i);
+      // A --once container exits right after this; the report must be out first.
+      expect(settled).toBe(true);
+      expect(markUnresolvable).not.toHaveBeenCalled();
+    });
+
+    test('Pusher claim: throws github_throttled', async () => {
+      mockResolve = () => null;
+      noteCloneThrottled('https://example.test/o/r', null);
+      mockClaimTask.mockImplementation(async () => ({ workers: [claimed('w-thr2')] }));
+      let caught: any;
+      try { await manager.claimAndStart({ id: 'task-w-thr2', title: 'T', workspaceId: 'ws-1' } as any); } catch (e) { caught = e; }
+      expect(caught?.claimError).toBe('github_throttled');
+      expect(mockUpdateWorker).toHaveBeenCalledWith('w-thr2', expect.objectContaining({ githubThrottled: true }));
+    });
   });
 });

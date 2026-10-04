@@ -28,6 +28,17 @@
         "wrangler": "4.147.0",
       },
     },
+    "apps/dispatch": {
+      "name": "@buildd/dispatch",
+      "version": "0.0.0",
+      "dependencies": {
+        "@buildd/dispatch-contract": "workspace:*",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "5.20261002.1",
+        "wrangler": "4.147.0",
+      },
+    },
     "apps/responder": {
       "name": "@buildd/responder",
       "version": "0.0.0",
@@ -42,7 +53,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.260.0",
+      "version": "0.267.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@buildd/core": "workspace:*",
@@ -62,7 +73,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.260.0",
+      "version": "0.267.0",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.65",
         "@ai-sdk/openai": "^4.0.78",
@@ -71,6 +82,7 @@
         "@aws-sdk/s3-request-presigner": "^3.985.0",
         "@axiomhq/js": "^2.0.0",
         "@buildd/core": "workspace:*",
+        "@buildd/dispatch-contract": "workspace:*",
         "@buildd/shared": "workspace:*",
         "@builddai/ai-kit": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.26.0",
@@ -111,7 +123,7 @@
     },
     "packages/ai-kit": {
       "name": "@builddai/ai-kit",
-      "version": "0.16.0",
+      "version": "0.17.0",
       "devDependencies": {
         "@ai-sdk/react": "^4.0.119",
         "@happy-dom/global-registrator": "^20.14.5",
@@ -142,10 +154,11 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.260.0",
+      "version": "0.267.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@ast-grep/napi": "^0.45.0",
+        "@buildd/dispatch-contract": "workspace:*",
         "@buildd/shared": "workspace:*",
         "@builddai/ai-kit": "workspace:*",
         "@neondatabase/serverless": "^1.0.0",
@@ -163,6 +176,13 @@
         "typescript": "^6.0.0",
       },
     },
+    "packages/dispatch-contract": {
+      "name": "@buildd/dispatch-contract",
+      "version": "0.0.0",
+      "devDependencies": {
+        "typescript": "^6.0.0",
+      },
+    },
     "packages/openclaw-skill": {
       "name": "@buildd/openclaw-skill",
       "version": "0.1.0",
@@ -175,7 +195,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.260.0",
+      "version": "0.267.0",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
@@ -339,6 +359,10 @@
     "@buildd/cloud-runner": ["@buildd/cloud-runner@workspace:apps/cloud-runner"],
 
     "@buildd/core": ["@buildd/core@workspace:packages/core"],
+
+    "@buildd/dispatch": ["@buildd/dispatch@workspace:apps/dispatch"],
+
+    "@buildd/dispatch-contract": ["@buildd/dispatch-contract@workspace:packages/dispatch-contract"],
 
     "@buildd/openclaw-skill": ["@buildd/openclaw-skill@workspace:packages/openclaw-skill"],
 

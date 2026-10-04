@@ -3,14 +3,15 @@
  * part 2): the phase label, an optional detail sentence, and one square dot
  * per current screen. A dot is coloured by the effective verdict (the human
  * decision where there is one); a decided dot carries a tick, and an unsure
- * screen nobody has decided is hollow.
+ * screen nobody has decided is hollow, matching the "N to review" label.
+ * A screen whose fix merged with no screenshot since is grey: nothing to decide.
  *
  * Every surface that states the phase renders this, so the wording lives in
  * one place: `describeVisualPhase` (lib/visual-review-model.ts), re-exported
  * here as `visualReviewPhaseCopy` for callers that need the bare strings.
  */
 import type { VisualReviewModel, VisualReviewPhase } from '@buildd/shared';
-import { describeVisualPhase } from '@/lib/visual-review-model';
+import { awaitingCapture, describeVisualPhase } from '@/lib/visual-review-model';
 import { VERDICT_DOT } from './ShotImage';
 
 export const visualReviewPhaseCopy = describeVisualPhase;
@@ -73,6 +74,9 @@ export function VerdictDots({ cells }: { cells: VisualReviewModel['cells'] }) {
         if (c.needsHuman) {
           return <i key={c.key} data-dot="awaiting" className="inline-block h-2.5 w-2.5 border-2 border-status-info" />;
         }
+        if (awaitingCapture(c)) {
+          return <i key={c.key} data-dot="fix_merged" className="inline-block h-2.5 w-2.5 bg-text-muted" />;
+        }
         return (
           <i key={c.key} data-dot={decided ? 'decided' : c.effectiveVerdict} className={`relative inline-block h-2.5 w-2.5 ${VERDICT_DOT[c.effectiveVerdict]}`}>
             {decided && (
@@ -92,7 +96,7 @@ export default function VisualReviewLine({ model, variant = 'compact', className
   const copy = describeVisualPhase(model);
   const tone = visualPhaseTone(model.phase);
   const s = model.summary;
-  const aria = [copy.label, s.shots > 0 ? `${s.shots} screens, ${s.reviewed} decided by you` : null].filter(Boolean).join('. ');
+  const aria = [copy.label, s.shots > 0 ? `${s.shots} screens, ${s.reviewed} reviewed` : null].filter(Boolean).join('. ');
   return (
     <div data-testid="visual-review-line" data-phase={model.phase} className={`min-w-0 ${className}`}>
       <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">

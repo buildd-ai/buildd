@@ -33,6 +33,23 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
+const mockWakeTask = mock(async (_id: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: async () => {},
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
 // Mock pusher
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
@@ -136,6 +153,7 @@ describe('POST /api/tasks/[id]/start', () => {
     mockConnectorSharesFindMany.mockReset();
     mockConnectorWorkspacesFindMany.mockReset();
     mockTriggerEvent.mockReset();
+    mockWakeTask.mockClear();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockDbUpdate.set.mockClear();
@@ -217,27 +235,9 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.taskId).toBe('task-123');
     expect(data.targetLocalUiUrl).toBeNull();
 
-    // Should trigger TASK_ASSIGNED event with minimal payload
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'workspace-ws-1',
-      'task:assigned',
-      {
-        task: {
-          id: 'task-123',
-          title: 'Test Task',
-          description: undefined,
-          workspaceId: 'ws-1',
-          status: 'pending',
-          mode: undefined,
-          priority: undefined,
-          workspace: {
-            name: 'Test Workspace',
-            repo: 'test/repo',
-          },
-        },
-        targetLocalUiUrl: null,
-      }
-    );
+    // A cause-labelled wake through the dispatch authority, not a raw broadcast.
+    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: null });
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 
   it('includes targetLocalUiUrl in TASK_ASSIGNED event when provided', async () => {
@@ -262,27 +262,8 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.started).toBe(true);
     expect(data.targetLocalUiUrl).toBe('http://localhost:3456');
 
-    // Should trigger TASK_ASSIGNED with the targetLocalUiUrl and minimal payload
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'workspace-ws-1',
-      'task:assigned',
-      {
-        task: {
-          id: 'task-123',
-          title: 'Test Task',
-          description: undefined,
-          workspaceId: 'ws-1',
-          status: 'pending',
-          mode: undefined,
-          priority: undefined,
-          workspace: {
-            name: 'Test Workspace',
-            repo: 'test/repo',
-          },
-        },
-        targetLocalUiUrl: 'http://localhost:3456',
-      }
-    );
+    // The target rides on the wake; delivery sends the targeted TASK_ASSIGNED.
+    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'manual.start', { targetLocalUiUrl: 'http://localhost:3456' });
   });
 
   it('returns 400 when task status is not pending', async () => {
@@ -387,7 +368,7 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.gateReason).toBe('deferred_start');
     expect(data.canForce).toBe(true);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('starts a deferred task when the human confirms the override', async () => {
@@ -407,7 +388,7 @@ describe('POST /api/tasks/[id]/start', () => {
 
     const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-123');
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalled();
+    expect(mockWakeTask).toHaveBeenCalled();
     // The override is expressed by clearing startAt — the ONLY mechanism the
     // claim route reads. `bypassStartGate` was a context key no gate ever read
     // (deleted); writing it again would recreate that false safety net.
@@ -453,7 +434,7 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.blockingDeps[0].prUrl).toBe('https://github.com/org/repo/pull/94');
     expect(data.blockingDeps[0].prNumber).toBe(94);
     // Should NOT have broadcast Pusher
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('does not gate when dep worker is not completed (status check handles it)', async () => {
@@ -485,7 +466,7 @@ describe('POST /api/tasks/[id]/start', () => {
 
     // No PR gate — should proceed to broadcast (dep status check is at claim time)
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalled();
+    expect(mockWakeTask).toHaveBeenCalled();
   });
 
   it('bypasses gate and broadcasts when forceOverride is true', async () => {
@@ -519,7 +500,7 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.started).toBe(true);
     // Should have broadcast Pusher
-    expect(mockTriggerEvent).toHaveBeenCalled();
+    expect(mockWakeTask).toHaveBeenCalled();
   });
 
   // ── New gate tests ─────────────────────────────────────────────────────────
@@ -553,7 +534,7 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.connectorFailures).toEqual([
       { connectorId: 'connector-1', connectorName: 'connector-1', mode: 'never_mounted' },
     ]);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('returns 422 connector_routing_mismatch when connector exists but belongs to a different team and is not shared', async () => {
@@ -588,7 +569,7 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.connectorFailures).toEqual([
       { connectorId: 'connector-1', connectorName: 'Email', mode: 'never_mounted' },
     ]);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('includes alternativeRole in connector_routing_mismatch when sibling role has no connectorRefs', async () => {
@@ -621,7 +602,7 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.gateReason).toBe('connector_routing_mismatch');
     expect(data.alternativeRole).toBe('builder');
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('omits alternativeRole from connector_routing_mismatch when no sibling role exists', async () => {
@@ -653,7 +634,7 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.gateReason).toBe('connector_routing_mismatch');
     expect(data.alternativeRole).toBeUndefined();
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('omits alternativeRole when sibling role also has connector failures', async () => {
@@ -688,7 +669,7 @@ describe('POST /api/tasks/[id]/start', () => {
     const data = await response.json();
     expect(data.gateReason).toBe('connector_routing_mismatch');
     expect(data.alternativeRole).toBeUndefined();
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('passes connector gate when connector is owned by same team', async () => {
@@ -719,7 +700,7 @@ describe('POST /api/tasks/[id]/start', () => {
 
     const response = await callHandler(createMockRequest(), 'task-123');
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   it('returns 422 mission_held when task belongs to a held mission', async () => {
@@ -746,7 +727,7 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.gateReason).toBe('mission_held');
     expect(data.missionId).toBe('mission-1');
     expect(data.canForce).toBe(true);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   // executor='local' (task 09ed6675): Start would broadcast to runners that
@@ -771,7 +752,7 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.gateReason).toBe('mission_local');
     expect(data.error).toContain('local session');
     expect(data.canForce).toBe(true);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('force-starts a held-mission task with forceOverride=true and writes bypassHeldGate to context', async () => {
@@ -798,7 +779,7 @@ describe('POST /api/tasks/[id]/start', () => {
 
     const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-123');
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
     // bypassHeldGate must be written to context
     expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
       context: expect.objectContaining({ bypassHeldGate: true }),
@@ -834,7 +815,7 @@ describe('POST /api/tasks/[id]/start', () => {
       (c: any) => c[0]?.columns && !('status' in c[0].columns),
     );
     expect(heldProbes).toHaveLength(0);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   it('returns 422 workspace_cap_reached when workspace is at its concurrency limit', async () => {
@@ -865,7 +846,7 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(data.cap).toBe(3);
     expect(data.queuePosition).toBe(1);
     expect(data.canExempt).toBe(true);
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('workspace_cap_reached includes queuePosition=0 when no other pending tasks', async () => {
@@ -917,7 +898,7 @@ describe('POST /api/tasks/[id]/start', () => {
 
     const response = await callHandler(createMockRequest({ body: { capExempt: true } }), 'task-123');
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
     // capExempt flag must be written to context
     expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
       context: expect.objectContaining({ capExempt: true }),
@@ -947,7 +928,7 @@ describe('POST /api/tasks/[id]/start', () => {
 
     const response = await callHandler(createMockRequest(), 'task-123');
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   // ── Durable start: manualStartAt + priority boost ─────────────────────────
@@ -1081,13 +1062,9 @@ describe('POST /api/tasks/[id]/start', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.started).toBe(true);
-    // Exactly one Pusher event — guards against duplicate broadcasts
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
-    expect(mockTriggerEvent).toHaveBeenCalledWith(
-      'workspace-ws-1',
-      'task:assigned',
-      expect.objectContaining({ task: expect.objectContaining({ id: 'task-clean' }) }),
-    );
+    // Exactly one wake — guards against duplicate broadcasts
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith('task-clean', 'manual.start', { targetLocalUiUrl: null });
   });
 });
 
@@ -1109,6 +1086,7 @@ describe('POST /api/tasks/[id]/start — subject gate', () => {
     mockConnectorSharesFindMany.mockReset();
     mockConnectorWorkspacesFindMany.mockReset();
     mockTriggerEvent.mockReset();
+    mockWakeTask.mockClear();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
     mockDbUpdate.set.mockClear();
@@ -1158,7 +1136,7 @@ describe('POST /api/tasks/[id]/start — subject gate', () => {
     expect(data.subjectPrNumber).toBe(1789);
     expect(data.canForce).toBe(true);
     // The old behavior: broadcast + priority bump on an unclaimable task.
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
     expect(mockDbUpdate.set).not.toHaveBeenCalled();
   });
 
@@ -1168,7 +1146,7 @@ describe('POST /api/tasks/[id]/start — subject gate', () => {
     const response = await callHandler(createMockRequest({ body: { forceOverride: true } }), 'task-dead');
 
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
     expect(mockDbUpdate.set).toHaveBeenCalledWith(expect.objectContaining({
       context: expect.objectContaining({ bypassSubjectGate: true }),
     }));
@@ -1180,7 +1158,7 @@ describe('POST /api/tasks/[id]/start — subject gate', () => {
     const response = await callHandler(createMockRequest(), 'task-dead');
 
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   it('REGRESSION (aeb80f): a text/derived anchor never gates /start', async () => {
@@ -1195,7 +1173,7 @@ describe('POST /api/tasks/[id]/start — subject gate', () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.started).toBe(true);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
     // No bypass flag needed — the anchor was never binding in the first place.
     expect(mockDbUpdate.set).not.toHaveBeenCalledWith(expect.objectContaining({
       context: expect.objectContaining({ bypassSubjectGate: true }),
@@ -1207,7 +1185,7 @@ describe('POST /api/tasks/[id]/start — subject gate', () => {
 
     const response = await callHandler(createMockRequest(), 'task-dead');
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   it('does not write bypassSubjectGate on a force-start of a healthy task', async () => {
@@ -1267,6 +1245,7 @@ describe('POST /api/tasks/[id]/start — mission budget gate', () => {
     mockWorkersFindMany.mockResolvedValue([]);
     mockWorkspaceSkillsFindMany.mockResolvedValue([]);
     mockTriggerEvent.mockClear();
+    mockWakeTask.mockClear();
     mockDbUpdate.set.mockClear();
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -1283,7 +1262,7 @@ describe('POST /api/tasks/[id]/start — mission budget gate', () => {
     expect(data.blockClass).toBe('policy');
     expect(data.canForce).toBe(true);
     expect(data.missionId).toBe('mission-A');
-    expect(mockTriggerEvent).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('force-starts the task and writes bypassMissionBudget to context', async () => {
@@ -1301,7 +1280,7 @@ describe('POST /api/tasks/[id]/start — mission budget gate', () => {
 
     const response = await callHandler(createMockRequest(), 'task-mb');
     expect(response.status).toBe(200);
-    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledTimes(1);
   });
 
   it('does not gate a task whose mission is active', async () => {

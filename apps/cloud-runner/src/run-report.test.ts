@@ -266,7 +266,7 @@ describe('assembleRunReport', () => {
     const r = assembleRunReport(FULL);
     expect(r).toMatchObject({
       kind: 'cloud-run-report',
-      version: 3,
+      version: 4,
       taskId: 'task-1',
       attempt: 2,
       workerId: 'worker-9',
@@ -280,6 +280,15 @@ describe('assembleRunReport', () => {
       crashReport: null,
     });
     expect(r.egress.github).toEqual({ requests: 5, rejected: 1, responseBytes: 99 });
+  });
+
+  test('a scheduled start: the time it was scheduled for, the actual start and the lateness', () => {
+    const r = assembleRunReport({ ...FULL, dispatchReceivedAt: 10_500, timings: { ...FULL.timings, scheduledFor: 10_000 } });
+    expect(r.schedule).toEqual({ scheduledFor: 10_000, startedAt: 10_500, lateMs: 500 });
+    // Not a scheduled start: no lateness to speak of.
+    expect(assembleRunReport(FULL).schedule).toEqual({ scheduledFor: null, startedAt: 1_000, lateMs: null });
+    // A start before the scheduled time (clock skew) is not negative lateness.
+    expect(assembleRunReport({ ...FULL, dispatchReceivedAt: 9_000, timings: { scheduledFor: 10_000 } }).schedule.lateMs).toBeNull();
   });
 
   test('missing pieces are null, never guessed', () => {
@@ -331,7 +340,7 @@ describe('assembleRunReport', () => {
   test('only allowlisted top-level keys', () => {
     expect(Object.keys(assembleRunReport({ ...FULL, extra: 'x' } as RunReportInput)).sort()).toEqual([
       'attempt', 'containerInstanceId', 'crashReport', 'durationsMs', 'egress', 'egressDetail', 'exitCode', 'instanceType', 'kind',
-      'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'taskId', 'timestamps', 'version', 'workerId',
+      'outcome', 'repo', 'resume', 'runLabel', 'runnerPhases', 'schedule', 'taskId', 'timestamps', 'version', 'workerId',
     ]);
   });
 

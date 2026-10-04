@@ -12,10 +12,12 @@ const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockGetPermissions = mock(() => Promise.resolve([] as any[]));
 const mockResolveRoute = mock((_o: any) => Promise.resolve(null as any));
+const mockResolveAnthropicAuth = mock((_o: any) => Promise.resolve(null as any));
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: mockGetPermissions }));
 mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveRoute }));
+mock.module('@/lib/claude-credential', () => ({ resolveAnthropicAuth: mockResolveAnthropicAuth }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -41,6 +43,7 @@ import { POST } from './route';
 const ACCOUNT = { id: 'account-1', teamId: 'team-1', level: 'worker' };
 const DISPATCH = 'dispatch-token-value';
 const KEY = 'sk-agent-endpoint-example';
+const ANTHROPIC_KEY = 'sk-ant-team-key-example';
 
 const ENDPOINT = {
   kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: KEY,
@@ -84,11 +87,13 @@ beforeEach(() => {
   mockWorkersFindMany.mockReset();
   mockGetPermissions.mockReset();
   mockResolveRoute.mockReset();
+  mockResolveAnthropicAuth.mockReset();
   mockAuthenticateApiKey.mockImplementation((key: string | null) => Promise.resolve(key ? ACCOUNT : null));
   mockTasksFindFirst.mockResolvedValue(taskRow());
   mockWorkersFindMany.mockResolvedValue([liveWorker()]);
   mockGetPermissions.mockResolvedValue([]);
   mockResolveRoute.mockResolvedValue({ winner: 'endpoint', endpoint: ENDPOINT });
+  mockResolveAnthropicAuth.mockResolvedValue(null);
 });
 
 describe('POST /api/runner/model-endpoint', () => {
@@ -106,14 +111,43 @@ describe('POST /api/runner/model-endpoint', () => {
     expect(mockResolveRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1' });
   });
 
-  it('default no-op: no endpoint resolves ⇒ 404, so egress falls through to the Worker route', async () => {
+  it('default no-op: no endpoint and no Anthropic key resolves ⇒ 404, so egress falls through to the Worker route', async () => {
     mockResolveRoute.mockResolvedValue(null);
     const res = await POST(req());
     expect(res.status).toBe(404);
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('404 when the endpoint loses the ranking (a workspace Anthropic key), never the Anthropic key', async () => {
+  it("the endpoint loses the ranking to the task's own Anthropic API key ⇒ that key, flagged for egress precedence", async () => {
+    mockResolveRoute.mockResolvedValue({ winner: 'anthropic', endpoint: ENDPOINT, beatenBy: 'workspace' });
+    mockResolveAnthropicAuth.mockResolvedValue({ headers: { 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, purpose: 'anthropic_api_key', secretId: 'secret-2' });
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toEqual({ source: 'anthropic_api_key', key: ANTHROPIC_KEY });
+    expect(mockResolveAnthropicAuth).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
+  });
+
+  it('no agent_endpoint at all, but the task has its own Anthropic API key ⇒ that key', async () => {
+    mockResolveRoute.mockResolvedValue(null);
+    mockResolveAnthropicAuth.mockResolvedValue({ headers: { 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' }, purpose: 'anthropic_api_key', secretId: 'secret-2' });
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ source: 'anthropic_api_key', key: ANTHROPIC_KEY });
+  });
+
+  it('404 when an OAuth seat or Claude credential wins instead — cloud egress never carries a seat token', async () => {
+    mockResolveRoute.mockResolvedValue({ winner: 'anthropic', endpoint: ENDPOINT, beatenBy: 'workspace' });
+    mockResolveAnthropicAuth.mockResolvedValue({ headers: { Authorization: `Bearer ${KEY}` }, purpose: 'oauth_token', secretId: 'secret-3' });
+    const res = await POST(req());
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await res.json())).not.toContain(KEY);
+
+    mockResolveAnthropicAuth.mockResolvedValue({ headers: { Authorization: `Bearer ${KEY}` }, purpose: 'claude_credential', secretId: 'secret-4' });
+    expect((await POST(req())).status).toBe(404);
+  });
+
+  it('404 when the endpoint loses the ranking and no Anthropic key resolves either, never the agent_endpoint key', async () => {
     mockResolveRoute.mockResolvedValue({ winner: 'anthropic', endpoint: ENDPOINT, beatenBy: 'workspace' });
     const res = await POST(req());
     expect(res.status).toBe(404);

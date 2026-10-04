@@ -44,7 +44,7 @@ import {
 } from '@buildd/core/experiment-cleanup';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 
 export interface FileExperimentCleanupTaskParams {
@@ -132,10 +132,11 @@ export async function fileExperimentCleanupTask(
       .where(cleanupTaskWorkspaceScope(workspaceId))
       .limit(1);
 
-    await dispatchNewTask(
+    await announceTaskCreated(
       { id: task.id, title, description, workspaceId },
       workspace ?? { id: workspaceId },
     );
+    await wakeTask(task.id, 'task.created');
   } catch (err) {
     console.error('[experiment-cleanup] dispatch failed:', err);
   }

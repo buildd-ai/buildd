@@ -3,12 +3,13 @@
  * crux"). Illustrative fixtures only: made-up ids, routes and findings.
  */
 import { describe, expect, it } from 'bun:test';
-import type { HumanShotReview, VisualReviewPhase } from '@buildd/shared';
+import type { HumanShotReview, VisualReviewCell, VisualReviewPhase } from '@buildd/shared';
 import { VISUAL_REVIEW_PHASES } from '@buildd/shared';
 import {
   NO_BROWSER_RUNNER_AFTER_MS,
   auditAwaitingRunner,
   buildVisualReviewModel,
+  standingOf,
   describeVisualPhase,
   visualReviewCellKey,
   type BuildVisualReviewInput,
@@ -262,16 +263,116 @@ describe('buildVisualReviewModel: fix tasks', () => {
     expect(m.summary.openFixes).toBe(1);
     expect(m.fixTasks.map(f => f.id).sort()).toEqual(['fx1', 'fx2']);
   });
+
+  it('classifies a merged fix PR as trunk or mission-branch by the mission\'s own integration branch', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx1' });
+    const b = shot('w1', '/b', 'mobile', 'issue', 2, { fixTaskId: 'fx2' });
+    const c = shot('w1', '/c', 'mobile', 'issue', 3, { fixTaskId: 'fx3' });
+    const tasks: VisualReviewTaskInput[] = [
+      audit('t1', 1, 'completed', 'w1'),
+      // No mission integration branch configured: a merged PR always reads trunk.
+      { id: 'fx1', title: '[surface fix] /a: x', status: 'completed', workers: [{ id: 'wf1', prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: at(90), prBaseRef: null }] },
+      // Mission uses one, and the PR based on it: merged, but only there.
+      { id: 'fx2', title: '[surface fix] /b: y', status: 'completed', workers: [{ id: 'wf2', prUrl: 'https://example.test/pr/2', prNumber: 2, mergedAt: at(90), prBaseRef: 'mission/x-12345678' }] },
+      // Mission uses one, but this PR based directly on trunk anyway.
+      { id: 'fx3', title: '[surface fix] /c: z', status: 'completed', workers: [{ id: 'wf3', prUrl: 'https://example.test/pr/3', prNumber: 3, mergedAt: at(90), prBaseRef: 'dev' }] },
+    ];
+    const m1 = buildVisualReviewModel(input({ shots: [a], tasks, missionIntegrationBranch: null }));
+    expect(m1.cells.find(c => c.route === '/a')!.current.fixTask).toMatchObject({ mergedInto: 'trunk' });
+
+    const m2 = buildVisualReviewModel(input({ shots: [a, b, c], tasks, missionIntegrationBranch: 'mission/x-12345678' }));
+    // An unrecorded prBaseRef defaults to mission-branch once the mission has one: unknown must undersell "shipped", never oversell it.
+    expect(m2.cells.find(c => c.route === '/a')!.current.fixTask).toMatchObject({ mergedInto: 'mission_branch' });
+    expect(m2.cells.find(c => c.route === '/b')!.current.fixTask).toMatchObject({ mergedInto: 'mission_branch' });
+    expect(m2.cells.find(c => c.route === '/c')!.current.fixTask).toMatchObject({ mergedInto: 'trunk' });
+  });
+});
+
+describe('buildVisualReviewModel: after a fix merges (fixCheck)', () => {
+  const fix = (id: string, status: string, mergedAt: string | null): VisualReviewTaskInput => ({
+    id, title: `[surface fix] /a: ${id}`, status,
+    workers: [{ id: `wf-${id}`, startedAt: at(10), prUrl: 'https://example.test/pr/7', prNumber: 7, mergedAt }],
+  });
+  const round2 = audit('t2', 2, 'completed', 'w2', { createdAt: at(100) });
+  const cellA = (m: ReturnType<typeof buildVisualReviewModel>) => m.cells.find(c => c.route === '/a')!;
+
+  it('a pending, running, failed or cancelled fix leaves the cell as it was: no fixCheck', () => {
+    for (const status of ['pending', 'in_progress', 'failed', 'cancelled']) {
+      const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+      const m = buildVisualReviewModel(input({ shots: [a], tasks: [audit('t1', 1, 'completed', 'w1'), fix('fx', status, null)] }));
+      expect(cellA(m).fixCheck).toBeNull();
+      expect(cellA(m).marker).toBe('awaiting');
+      // A live fix waits on nobody; a dead one leaves the issue to a person.
+      const dead = status === 'failed' || status === 'cancelled';
+      expect(cellA(m).standing).toBe(dead ? 'to_review' : 'fixing');
+      expect(m.queue.includes('/a|mobile|')).toBe(dead);
+    }
+  });
+
+  it('merged with no screenshot since: settled, out of the queue, never hollow, not to review', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const b = shot('w1', '/b', 'mobile', 'unsure', 2);
+    const m = buildVisualReviewModel(input({ shots: [a, b], tasks: [audit('t1', 1, 'completed', 'w1'), fix('fx', 'completed', at(90))] }));
+    const c = cellA(m);
+    expect(c.fixCheck).toMatchObject({ state: 'awaiting_capture', fix: { id: 'fx', prNumber: 7, mergedAt: at(90) }, beforeShotId: a.id, beforeRound: 1 });
+    expect(c.marker).toBe('fix_merged');
+    expect(c.needsHuman).toBe(false);
+    expect(c.standing).toBe('fixing');
+    expect(m.queue).toEqual(['/b|mobile|']);
+    expect(m.summary).toMatchObject({ awaitingCapture: 1, fixChecks: 0 });
+  });
+
+  it('a screenshot taken before the merge says nothing about the fix: still waiting', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const early = shot('w2', '/a', 'mobile', 'ok', 50);
+    const m = buildVisualReviewModel(input({ shots: [a, early], tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))] }));
+    expect(cellA(m).current.round).toBe(2);
+    expect(cellA(m).fixCheck?.state).toBe('awaiting_capture');
+  });
+
+  it('a screenshot after the merge: a fix check, queued after unsure and before issues', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const z = shot('w1', '/z', 'mobile', 'issue', 2);
+    const u = shot('w1', '/u', 'mobile', 'unsure', 3);
+    const after = shot('w2', '/a', 'mobile', 'ok', 120);
+    const m = buildVisualReviewModel(input({ shots: [a, z, u, after], tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))] }));
+    const c = cellA(m);
+    expect(c.current.shot.id).toBe(after.id);
+    expect(c.fixCheck).toMatchObject({ state: 'check', fix: { id: 'fx' }, beforeShotId: a.id, beforeRound: 1 });
+    expect(c.marker).toBe('awaiting');
+    expect(m.queue).toEqual(['/u|mobile|', '/a|mobile|', '/z|mobile|']);
+    expect(m.summary).toMatchObject({ fixChecks: 1, awaitingCapture: 0 });
+  });
+
+  it('the re-shot copying the merged fix id is still a check, and a decision on it is counted as reviewed', () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const after = shot('w2', '/a', 'mobile', 'ok', 120, { fixTaskId: 'fx' });
+    const m = buildVisualReviewModel(input({
+      shots: [a, after],
+      tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))],
+      reviews: [review(after.id, { round: 2, auditTaskId: 't2', agentVerdict: 'ok', decision: 'looks_right', relation: 'agree' })],
+    }));
+    expect(cellA(m).fixCheck).toMatchObject({ state: 'check', beforeShotId: a.id });
+    expect(m.summary).toMatchObject({ fixChecks: 0, reviewed: 1 });
+  });
+
+  it("the re-shot's own new fix, unmerged, takes over: the usual buttons again", () => {
+    const a = shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' });
+    const after = shot('w2', '/a', 'mobile', 'issue', 120, { fixTaskId: 'fx2' });
+    const m = buildVisualReviewModel(input({ shots: [a, after], tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90)), fix('fx2', 'pending', null)] }));
+    expect(cellA(m).fixCheck).toBeNull();
+  });
 });
 
 describe('buildVisualReviewModel: triage queue', () => {
-  it('orders unsure, then issue, then ok, then already reviewed; by route, variant, then phone first', () => {
+  it('holds only screens awaiting a decision: unsure, then an issue nobody is fixing; by route, variant, then phone first', () => {
     const rows = [
       shot('w1', '/b', 'desktop', 'ok', 1),
       shot('w1', '/b', 'mobile', 'ok', 2),
       shot('w1', '/a', 'desktop', 'issue', 3),
       shot('w1', '/z', 'mobile', 'unsure', 4),
       shot('w1', '/c', 'mobile', 'unsure', 5),
+      shot('w1', '/d', 'mobile', 'unsure', 6),
     ];
     const reviewed = rows[4];
     const m = buildVisualReviewModel(input({
@@ -279,8 +380,46 @@ describe('buildVisualReviewModel: triage queue', () => {
       tasks: [audit('t1', 1, 'completed', 'w1')],
       reviews: [review(reviewed.id)],
     }));
-    expect(m.queue).toEqual(['/z|mobile|', '/a|desktop|', '/b|mobile|', '/b|desktop|', '/c|mobile|']);
+    expect(m.queue).toEqual(['/d|mobile|', '/z|mobile|', '/a|desktop|']);
+    expect(m.summary.toReview).toBe(3);
   });
+});
+
+describe('standingOf: queue membership per state (design doc, "The deck queue")', () => {
+  const fixTask = (id: string, status: string, mergedAt: string | null = null): VisualReviewTaskInput => ({
+    id, title: `[surface fix] /a: ${id}`, status,
+    workers: [{ id: `wf-${id}`, startedAt: at(10), prUrl: mergedAt ? 'https://example.test/pr/7' : null, prNumber: mergedAt ? 7 : null, mergedAt }],
+  });
+  const cases: Array<[string, () => ReturnType<typeof buildVisualReviewModel>, VisualReviewCell['standing']]> = [
+    ['unsure, undecided', () => buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'unsure', 1)], tasks: [audit('t1', 1, 'completed', 'w1')] })), 'to_review'],
+    ['ok, undecided', () => buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'ok', 1)], tasks: [audit('t1', 1, 'completed', 'w1')] })), 'fine'],
+    ['issue, fix pending', () => buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' })], tasks: [audit('t1', 1, 'completed', 'w1'), fixTask('fx', 'pending')] })), 'fixing'],
+    ['issue, fix completed unmerged', () => buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' })], tasks: [audit('t1', 1, 'completed', 'w1'), fixTask('fx', 'completed')] })), 'fixing'],
+    ['issue, fix failed', () => buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' })], tasks: [audit('t1', 1, 'completed', 'w1'), fixTask('fx', 'failed')] })), 'to_review'],
+    ['issue, no fix', () => buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'issue', 1)], tasks: [audit('t1', 1, 'completed', 'w1')] })), 'to_review'],
+    ['decided looks right', () => {
+      const a = shot('w1', '/a', 'mobile', 'unsure', 1);
+      return buildVisualReviewModel(input({ shots: [a], tasks: [audit('t1', 1, 'completed', 'w1')], reviews: [review(a.id, { agentVerdict: 'unsure', decision: 'looks_right', relation: 'waive' })] }));
+    }, 'fine'],
+    ['decided needs fix', () => {
+      const a = shot('w1', '/a', 'mobile', 'unsure', 1);
+      return buildVisualReviewModel(input({ shots: [a], tasks: [audit('t1', 1, 'completed', 'w1')], reviews: [review(a.id, { agentVerdict: 'unsure', decision: 'needs_fix', relation: 'dispute' })] }));
+    }, 'fixing'],
+    ['fix merged, no screenshot since (settled)', () => buildVisualReviewModel(input({ shots: [shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' })], tasks: [audit('t1', 1, 'completed', 'w1'), fixTask('fx', 'completed', at(90))] })), 'fixing'],
+    ['fix merged, new screenshot unchecked', () => buildVisualReviewModel(input({
+      shots: [shot('w1', '/a', 'mobile', 'issue', 1, { fixTaskId: 'fx' }), shot('w2', '/a', 'mobile', 'ok', 120)],
+      tasks: [audit('t1', 1, 'completed', 'w1'), audit('t2', 2, 'completed', 'w2', { createdAt: at(100) }), fixTask('fx', 'completed', at(90))],
+    })), 'to_review'],
+  ];
+  for (const [name, build, want] of cases) {
+    it(`${name}: ${want}`, () => {
+      const m = build();
+      const c = m.cells.find(x => x.route === '/a')!;
+      expect(c.standing).toBe(want);
+      expect(standingOf(c)).toBe(want);
+      expect(m.queue.includes(c.key)).toBe(want === 'to_review');
+    });
+  }
 });
 
 describe('buildVisualReviewModel: phase', () => {
@@ -461,7 +600,7 @@ describe('buildVisualReviewModel: phase', () => {
     const copy = describeVisualPhase(m);
     expect(copy.label).toBe('1 of 1 ok');
     expect(copy.detail).not.toMatch(/issue/);
-    expect(copy.detail).toContain('1 decided by you');
+    expect(copy.detail).toContain('1 reviewed');
   });
 
   it('every phase has copy with no dash placeholders', () => {
@@ -557,7 +696,9 @@ describe('buildVisualReviewModel: shots from the wrong ref (visual-qa-auditor.md
     const wrong = shot('w2', '/a', 'mobile', 'unsure', 21, { ref: 'dev', refSource: 'trunk', label: 'trunk baseline' });
     const m = buildVisualReviewModel(input({ shots: [right, wrong], tasks, captureRef: MB }));
     expect(m.cells.map(c => c.current.shot.id)).toEqual([right.id]);
-    expect(m.queue).toEqual([visualReviewCellKey('/a', 'mobile', null)]);
+    // The surviving shot is ok: fine, so nothing is queued.
+    expect(m.queue).toEqual([]);
+    expect(m.cells[0].standing).toBe('fine');
     expect(m.summary.awaitingHuman).toBe(0);
     expect(m.summary.unsure).toBe(0);
     expect(m.superseded).toEqual([{ shotId: wrong.id, route: '/a', viewport: 'mobile', ref: 'dev', expectedRef: MB, supersededBy: right.id }]);

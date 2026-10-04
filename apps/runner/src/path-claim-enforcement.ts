@@ -444,5 +444,23 @@ export function isShipCommand(command: unknown): boolean {
     || /(^|[\s;&|(])gh\s+pr\s+create(\s|$)/.test(command);
 }
 
+/**
+ * The one coordination deadline for a path claim, and the edit's worst-case
+ * wait on it. Calibrated from production: round trips to the claim route run
+ * ~75-425ms (even a cheap 401), so the old 200ms abort fired on healthy
+ * requests — real grants were reported "unavailable" and, in enforce mode, a
+ * real 409 arriving late failed open. 1.5s is ~3.5x the observed worst case;
+ * past it the service is treated as genuinely unavailable and the edit fails
+ * open with its paths queued.
+ */
+export const PATH_CLAIM_TIMEOUT_MS = 1_500;
+
+/**
+ * Hook backstop, strictly above PATH_CLAIM_TIMEOUT_MS so it only fires for a
+ * client that ignores its abort signal — never ahead of a request that is
+ * still inside its own deadline.
+ */
+export const PATH_CLAIM_HOOK_DEADLINE_MS = PATH_CLAIM_TIMEOUT_MS + 250;
+
 /** Cap on queued paths; a coordination service down for a long session must not grow memory without bound. */
 export const MAX_PENDING_PATHS = 500;

@@ -75,8 +75,22 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: () => Promise.resolve(workspaceAccessResult),
   verifyAccountWorkspaceAccess: () => Promise.resolve(accountWorkspaceAccess),
 }));
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: (task: any) => { dispatchCalls.push(task); return Promise.resolve(); },
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: (task: any) => { dispatchCalls.push(task); return Promise.resolve(); },
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 import { POST } from './route';

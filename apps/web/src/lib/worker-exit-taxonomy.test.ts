@@ -291,6 +291,18 @@ describe('crash-reconciled restarts', () => {
   });
 });
 
+describe('GitHub-throttled clones', () => {
+  it('books a clone GitHub throttled as infra_failure, which does not consume a retry', () => {
+    const cause = classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, githubThrottled: true });
+    expect(cause).toBe('infra_failure');
+    expect(consumesRetryAttempt(cause)).toBe(false);
+  });
+
+  it('a cancelled task still wins', () => {
+    expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false, githubThrottled: true, taskCancelled: true })).toBe('task_cancelled');
+  });
+});
+
 // A catalog model the runner's CLI is too old to serve fails with a
 // deterministic 400 before the agent takes a turn. That says nothing about the
 // task, so it is infra and must not spend the task's retry budget.
