@@ -14,6 +14,10 @@ export const RUNNER_ENV_PASSTHROUGH: ReadonlySet<string> = new Set([
   'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
   // Node / Bun runtime (needed for tools the agent runs)
   'NODE_ENV', 'NODE_PATH', 'BUN_INSTALL', 'npm_config_cache',
+  // pnpm's content-addressable store (run-once.ts defaults this inside the
+  // warm-repo dependency cache; see warm-repo.ts's pnpmStoreDir) — needed so
+  // a pnpm install the agent runs itself lands in the same warmed location.
+  'npm_config_store_dir',
   // Proxy / network (needed for egress from agent tools)
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
   'http_proxy', 'https_proxy', 'no_proxy',
