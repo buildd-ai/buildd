@@ -1,4 +1,4 @@
-import type { RoleConfig, RoleInstructions } from './roles.js';
+import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
@@ -446,6 +446,10 @@ export interface LocalWorker {
   };
   // Role config from claim route (for role env resolution) — packaged roles only
   roleConfig?: RoleConfig;
+  // The packaged role bundle (CLAUDE.md, skills, .mcp.json, env mapping),
+  // fetched from roleConfig.configUrl at claim. Held in memory only: its files
+  // are written per session and removed at session end (session-prompt-files.ts).
+  roleBundle?: RoleBundle;
   // Role persona from claim route. Present whenever the task resolved a role
   // row, packaged or not; the only source of the agent's persona on both the
   // Claude (systemPrompt.append) and Codex (AGENTS.md) paths.
@@ -461,9 +465,10 @@ export interface LocalWorker {
   // requirement still records the existing "Role env degraded" milestone.
   roleEnvMissing?: string[];
   // Skill bundles resolved by the claim route for task.context.skillSlugs.
-  // Materialized to disk by syncSkillToLocal in startSession so the SDK's
-  // native Skill tool can find them — without this, a task instructed to
-  // invoke a skill has the instruction but not the skill.
+  // Written by syncSkillToLocal into <session cwd>/.claude/skills for each
+  // session so the SDK's native Skill tool can find them, and removed when the
+  // session ends — without this, a task instructed to invoke a skill has the
+  // instruction but not the skill.
   skillBundles?: SkillBundle[];
   // Degraded connectors (advisory mode) — connectors that are unavailable but
   // task was allowed to proceed. Injected into system prompt in startSession.

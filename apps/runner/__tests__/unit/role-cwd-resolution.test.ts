@@ -1,7 +1,8 @@
 /**
  * Where a role-assigned session runs, and where its role files land.
  *
- * Two defects met here. (1) cwd was keyed off the role bundle's `type`, which
+ * Two defects met here (and since: no role file outlives its session — see
+ * session-prompt-files.test.ts). (1) cwd was keyed off the role bundle's `type`, which
  * is derived from the role row's `repoUrl` — a field the dashboard role editor
  * never sends. So every role saved from the UI packaged as `'service'`, and the
  * runner then pointed repo tasks at `~/.buildd/roles/<slug>`: not a git
@@ -19,22 +20,35 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-import { resolveRoleCwd, overlayRoleFiles, getRoleDir, type RoleConfig } from '../../src/roles';
+import { resolveRoleCwd, overlayRoleFiles, type RoleConfig, type RoleBundle } from '../../src/roles';
+import { sessionRoleDir, sessionPromptRoot } from '../../src/session-prompt-files';
 
 let sandbox = '';
+const realFetch = globalThis.fetch;
+
+const BUNDLE: RoleBundle = {
+  slug: 'builder',
+  type: 'service',
+  claudeMd: '# persona',
+  mcpConfig: { mcpServers: { demo: { url: 'https://x.test' } } },
+  envMapping: {},
+  skills: [{ slug: 'demo', name: 'demo', content: '# demo' }],
+};
 
 /**
- * Role dirs resolve under the injected per-process `BUILDD_HOME`, so seeding
- * one here cannot reach the operator's real `~/.buildd/roles`. The sandbox
- * below only holds the fake worktrees.
+ * The bundle is fetched from its presigned URL on every claim (there is no
+ * disk cache); stub the fetch. Session dirs resolve under the injected
+ * per-process `BUILDD_HOME`, never the operator's real one.
  */
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'role-cwd-'));
+  globalThis.fetch = (async () => new Response(JSON.stringify(BUNDLE), { status: 200 })) as unknown as typeof fetch;
 });
 
 afterEach(() => {
+  globalThis.fetch = realFetch;
   rmSync(sandbox, { recursive: true, force: true });
-  rmSync(getRoleDir('builder'), { recursive: true, force: true });
+  rmSync(sessionPromptRoot(), { recursive: true, force: true });
 });
 
 function roleConfig(overrides: Partial<RoleConfig> = {}): RoleConfig {
@@ -52,108 +66,78 @@ function roleConfig(overrides: Partial<RoleConfig> = {}): RoleConfig {
   };
 }
 
-/**
- * Materialize a role dir at the already-synced hash, so `syncRoleToLocal`
- * short-circuits on its hash file instead of fetching the bundle from R2.
- */
-function seedLocalRole(slug: string, hash: string | null, skill = 'demo') {
-  const dir = getRoleDir(slug);
-  const skillDir = join(dir, '.claude', 'skills', skill);
-  mkdirSync(skillDir, { recursive: true });
-  writeFileSync(join(skillDir, 'SKILL.md'), `# ${skill}`);
-  writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { demo: { url: 'https://x.test' } } }));
-  writeFileSync(join(dir, 'CLAUDE.md'), '# persona');
-  if (hash) writeFileSync(join(dir, '.buildd-hash'), hash);
-  return dir;
-}
-
 const repoTask = { roleSlug: 'builder', workspace: { repo: 'acme/widgets' } };
 const serviceTask = { roleSlug: 'builder', workspace: { repo: null } };
 
 describe('resolveRoleCwd — packaged role', () => {
   // The headline regression: a `service`-typed bundle on a repo workspace.
   test('a service-typed bundle on a repo task still runs in the repo', async () => {
-    const roleDir = seedLocalRole('builder', 'hash-1');
-    const result = await resolveRoleCwd(roleConfig({ type: 'service' }), repoTask, '/repos/widgets');
+    const result = await resolveRoleCwd(roleConfig({ type: 'service' }), repoTask, '/repos/widgets', 'w1');
 
     expect(result.cwd).toBe('/repos/widgets');
-    expect(result.overlayFrom).toBe(roleDir);
+    expect(result.overlay).toBe(true);
+    expect(result.roleBundle?.slug).toBe('builder');
   });
 
   test('a builder-typed bundle on a repo task runs in the repo', async () => {
-    const roleDir = seedLocalRole('builder', 'hash-1');
-    const result = await resolveRoleCwd(roleConfig({ type: 'builder', repoUrl: 'https://github.com/acme/widgets' }), repoTask, '/repos/widgets');
+    const result = await resolveRoleCwd(roleConfig({ type: 'builder', repoUrl: 'https://github.com/acme/widgets' }), repoTask, '/repos/widgets', 'w1');
 
     expect(result.cwd).toBe('/repos/widgets');
-    expect(result.overlayFrom).toBe(roleDir);
+    expect(result.overlay).toBe(true);
   });
 
   // The role dir is the cwd only when there is no repo to run in — a
-  // coordination workspace, where it carries the .mcp.json and env mapping the
-  // session would otherwise have nowhere to read.
-  test('a task with no repo runs in the role dir, with nothing to overlay', async () => {
-    const roleDir = seedLocalRole('builder', 'hash-1');
-    const result = await resolveRoleCwd(roleConfig({ type: 'builder' }), serviceTask, '/repos/coordination');
+  // coordination workspace. It is this worker's session dir, not a cache.
+  test('a task with no repo runs in the session role dir, with nothing to overlay', async () => {
+    const result = await resolveRoleCwd(roleConfig({ type: 'builder' }), serviceTask, '/repos/coordination', 'w1');
 
-    expect(result.cwd).toBe(roleDir);
-    expect(result.overlayFrom).toBeUndefined();
+    expect(result.cwd).toBe(sessionRoleDir('w1'));
+    expect(existsSync(result.cwd)).toBe(true);
+    expect(result.overlay).toBeUndefined();
+  });
+
+  test('a failed bundle download is an error, not a stale local copy', async () => {
+    globalThis.fetch = (async () => new Response('nope', { status: 403, statusText: 'Forbidden' })) as unknown as typeof fetch;
+    await expect(resolveRoleCwd(roleConfig(), repoTask, '/repos/widgets', 'w1')).rejects.toThrow('403');
   });
 });
 
 describe('resolveRoleCwd — unpackaged role (no bundle on the claim)', () => {
-  test('a repo task overlays the locally-synced role dir into the repo', async () => {
-    const roleDir = seedLocalRole('builder', 'hash-1');
-    const result = await resolveRoleCwd(undefined, repoTask, '/repos/widgets');
-
-    expect(result.cwd).toBe('/repos/widgets');
-    expect(result.overlayFrom).toBe(roleDir);
+  test('a repo task runs in the repo with no role files', async () => {
+    const result = await resolveRoleCwd(undefined, repoTask, '/repos/widgets', 'w1');
+    expect(result).toEqual({ cwd: '/repos/widgets' });
   });
 
-  test('a task with no repo falls back to the locally-synced role dir as cwd', async () => {
-    const roleDir = seedLocalRole('builder', 'hash-1');
-    const result = await resolveRoleCwd(undefined, serviceTask, '/repos/coordination');
-
-    expect(result.cwd).toBe(roleDir);
-    expect(result.overlayFrom).toBeUndefined();
-  });
-
-  test('nothing local and no bundle leaves the workspace path alone', async () => {
-    const result = await resolveRoleCwd(undefined, repoTask, '/repos/widgets');
-
-    expect(result.cwd).toBe('/repos/widgets');
-    expect(result.overlayFrom).toBeUndefined();
+  test('a task with no repo runs in the workspace path — nothing is reused from disk', async () => {
+    const result = await resolveRoleCwd(undefined, serviceTask, '/repos/coordination', 'w1');
+    expect(result).toEqual({ cwd: '/repos/coordination' });
   });
 
   test('a task with no role at all leaves the workspace path alone', async () => {
-    seedLocalRole('builder', 'hash-1');
-    const result = await resolveRoleCwd(undefined, { workspace: { repo: 'acme/widgets' } }, '/repos/widgets');
-
-    expect(result.cwd).toBe('/repos/widgets');
-    expect(result.overlayFrom).toBeUndefined();
+    const result = await resolveRoleCwd(undefined, { workspace: { repo: 'acme/widgets' } }, '/repos/widgets', 'w1');
+    expect(result).toEqual({ cwd: '/repos/widgets' });
   });
 });
 
 describe('overlayRoleFiles into a worktree', () => {
-  test('role skills and .mcp.json land under the session cwd', async () => {
-    const roleDir = seedLocalRole('builder', 'hash-1', 'buildd-workflow');
+  test('.mcp.json lands under the session cwd; skills wait for the session', async () => {
     const worktree = join(sandbox, 'worktrees', 'task-1');
     mkdirSync(worktree, { recursive: true });
 
-    await overlayRoleFiles(roleDir, worktree);
+    await overlayRoleFiles(BUNDLE, worktree);
 
-    expect(existsSync(join(worktree, '.claude', 'skills', 'buildd-workflow', 'SKILL.md'))).toBe(true);
     expect(JSON.parse(readFileSync(join(worktree, '.mcp.json'), 'utf-8')).mcpServers.demo).toBeDefined();
+    expect(existsSync(join(worktree, '.claude', 'skills', 'demo'))).toBe(false);
   });
 
   // The repo's own CLAUDE.md is the project's, not the role's; the persona
   // travels via the system prompt instead.
   test('does not clobber the project CLAUDE.md', async () => {
-    const roleDir = seedLocalRole('builder', 'hash-1');
     const worktree = join(sandbox, 'worktrees', 'task-2');
     mkdirSync(worktree, { recursive: true });
     writeFileSync(join(worktree, 'CLAUDE.md'), '# project instructions');
 
-    await overlayRoleFiles(roleDir, worktree);
+    await overlayRoleFiles(BUNDLE, worktree);
 
     expect(readFileSync(join(worktree, 'CLAUDE.md'), 'utf-8')).toBe('# project instructions');
   });
@@ -193,5 +177,10 @@ describe('workers.ts call sites', () => {
   test('the overlay targets the session cwd', () => {
     const call = workersSrc.slice(workersSrc.indexOf('overlayRoleFiles('));
     expect(call.slice(0, 120)).toContain('sessionCwd');
+  });
+
+  test('role files are not read off a persistent per-slug dir', () => {
+    expect(workersSrc).not.toContain('getRoleDir(');
+    expect(workersSrc).not.toContain('syncRoleToLocal(');
   });
 });
