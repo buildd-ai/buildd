@@ -11,17 +11,18 @@
  * timer for future intents (a Redis-gated minute tick that touches Postgres
  * only when something is due) and the repair loop for kicks that never ran.
  *
- * A wake re-evaluates; it never assigns. Delivery sends the same nudge for
- * every substrate (webhook consumer, GitHub Actions, Pusher-connected runner)
- * and the claim route applies every gate — dependencies, path overlap,
- * provider capacity, Codex single-flight, budgets, startAt. Nothing here
- * duplicates those gates; the few filters below only decide which consumer
- * is worth a cold start.
+ * A wake means "reconsider this task now", never "assign it", and durable
+ * dispatch does not imply autonomous execution. Delivery hands each due
+ * intent to destination adapters (lib/dispatch-adapters.ts); which
+ * destination receives it, and in what execution mode, is policy there, not
+ * here. Today's adapters wake runners, and the claim route applies every gate
+ * — dependencies, path overlap, provider capacity, Codex single-flight,
+ * budgets, startAt. Nothing here duplicates those gates.
  */
 
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
+import { tasks } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import {
   claimDueDispatches,
@@ -33,17 +34,10 @@ import {
   type DispatchCause,
   type EnqueueDispatchInput,
 } from '@buildd/core/dispatch-outbox';
-import { channels, events, triggerEvent, triggerEventChecked } from '@/lib/pusher';
+import { channels, events, triggerEvent } from '@/lib/pusher';
 import { markDue, reseedDue } from '@/lib/redis';
-import {
-  buildTaskPayload,
-  dispatchToWebhook,
-  tryGitHubActionsDispatch,
-  type DispatchTask,
-  type DispatchWorkspace,
-  type TaskDispatchEvent,
-} from '@/lib/task-dispatch-delivery';
-import { isTaskNotHeldOrLocal } from '@/app/api/workers/claim/held-gate';
+import { buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
+import { TASK_WAKE_ADAPTERS, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
 
 /** The Redis due-queue (lib/cron-due-queue.ts) the dispatch-drain tick gates on. */
 export const DISPATCH_DUE_QUEUE = 'dispatch';
@@ -51,11 +45,11 @@ export const DISPATCH_DUE_QUEUE = 'dispatch';
 /** Rows one drain takes. A kick is per-request; a backlog is the cron's to chew through. */
 export const DRAIN_BATCH = 25;
 
-// ── Delivery policy (pure) ─────────────────────────────────────────────────
+// ── Cause precedence ───────────────────────────────────────────────────────
 
 /**
  * Most specific first. A coalesced row carries every cause that landed while
- * it was pending; the first match here decides the webhook event, because a
+ * it was pending; adapters route on the first match here, because a
  * trigger-written `task.created` plus an app-written `plan_child.ready` is a
  * plan child, not a plain new task.
  */
@@ -80,72 +74,6 @@ const CAUSE_PRECEDENCE: DispatchCause[] = [
 export function primaryCause(causes: readonly string[], fallback: DispatchCause): DispatchCause {
   for (const c of CAUSE_PRECEDENCE) if (causes.includes(c)) return c;
   return fallback;
-}
-
-interface CauseRoute {
-  event: TaskDispatchEvent;
-  /**
-   * Whether a webhook with no `events` list receives it. True exactly for the
-   * causes the pre-outbox `dispatchNewTask` / `dispatchUnblockedTask` reached
-   * a webhook for, so merging the outbox sends an existing consumer nothing
-   * new. A webhook that lists events gets every cause mapped to one it lists.
-   */
-  legacyDefault: boolean;
-  /** GitHub Actions repository_dispatch, which only those same two paths started. */
-  githubActions: boolean;
-  /**
-   * Legacy unblocked-path quirk: a webhook without `events` was never filtered
-   * by runnerPreference on this path. Kept so the default stays a no-op.
-   */
-  legacyUnfilteredRunnerPreference: boolean;
-}
-
-export function routeForCause(cause: DispatchCause): CauseRoute {
-  switch (cause) {
-    case 'task.created':
-    case 'review.fix_requested':
-    case 'ci.retry':
-    case 'conflict.retry':
-      return { event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false };
-    case 'plan_child.ready':
-      return { event: 'task.created', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
-    case 'dependency.satisfied':
-    case 'manual.start':
-      return { event: cause === 'manual.start' ? 'task.retry' : 'task.unblocked', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: true };
-    case 'path_claim.released':
-    case 'budget.available':
-    case 'credential.restored':
-    case 'mission.released':
-    case 'task.unblocked':
-    case 'start_at.reached':
-      return { event: 'task.unblocked', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
-    case 'task.requeued':
-    case 'task.reassigned':
-      return { event: 'task.retry', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
-  }
-}
-
-/** Whether the webhook should be tried for this task and cause. Pure; `notHeldOrLocal` is pre-resolved. */
-export function webhookWants(
-  config: WorkspaceWebhookConfig | null | undefined,
-  task: { runnerPreference?: string | null; startAt?: Date | string | null },
-  route: CauseRoute,
-  notHeldOrLocal: boolean,
-  nowMs: number = Date.now(),
-): boolean {
-  if (!config?.enabled || !config.url) return false;
-  const optedIn = Array.isArray(config.events);
-  const subscribed = optedIn ? config.events!.includes(route.event) : route.legacyDefault;
-  if (!subscribed) return false;
-  const prefOk = (!optedIn && route.legacyUnfilteredRunnerPreference)
-    || !config.runnerPreference
-    || config.runnerPreference === 'any'
-    || config.runnerPreference === (task.runnerPreference || 'any');
-  if (!prefOk) return false;
-  // A push consumer pays a cold start to learn the claim says "not yet".
-  const deferred = task.startAt != null && new Date(task.startAt).getTime() > nowMs;
-  if (deferred) return false;
-  return notHeldOrLocal;
 }
 
 // ── Enqueue + kick ─────────────────────────────────────────────────────────
@@ -276,9 +204,8 @@ export async function drainDispatchOutbox(opts: { limit?: number } = {}): Promis
   return result;
 }
 
-type DeliveryTask = DispatchTask & { status: string; startAt: Date | null };
 
-async function loadForDelivery(taskId: string): Promise<{ task: DeliveryTask; workspace: DispatchWorkspace } | null> {
+async function loadForDelivery(taskId: string): Promise<{ task: DispatchContext['task']; workspace: DispatchWorkspace } | null> {
   const row = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
     columns: {
@@ -293,57 +220,38 @@ async function loadForDelivery(taskId: string): Promise<{ task: DeliveryTask; wo
   });
   if (!row) return null;
   const { workspace, ...task } = row as typeof row & { workspace: DispatchWorkspace };
-  return { task: task as DeliveryTask, workspace: workspace ?? {} };
+  return { task: task as DispatchContext['task'], workspace: workspace ?? {} };
 }
 
 /**
- * Send one wake. Returns how it went out ('webhook' | 'pusher' |
- * 'pusher:unconfigured' | 'skipped:<why>'); throws when nothing could be
- * delivered, so the row is retried with backoff.
+ * Offer one due intent to the destination adapters, in order, and report how
+ * it went ('webhook' | 'pusher' | 'skipped:<why>' …). The first adapter that
+ * delivers or skips ends the chain; a declined offer passes to the next; a
+ * throw leaves the row for a retry with backoff.
  *
- * Order matches the pre-outbox chain: a targeted local runner, else the
- * workspace webhook (the only exclusive consumer), else GitHub Actions
- * (supplementary) and the Pusher broadcast every connected runner hears.
+ * This loop knows nothing about what a destination does with the intent — a
+ * dispatch means "reconsider this task now", not "start an agent". Runners
+ * are the first adapters (lib/dispatch-adapters.ts); an interactive session
+ * or an external work system would be another adapter, never a branch here.
  */
-export async function deliverTaskDispatch(row: ClaimedDispatch): Promise<string> {
+export async function deliverTaskDispatch(
+  row: ClaimedDispatch,
+  adapters: readonly DispatchAdapter[] = TASK_WAKE_ADAPTERS,
+): Promise<string> {
   const loaded = await loadForDelivery(row.taskId);
   if (!loaded) return 'skipped:task_gone';
-  const { task, workspace } = loaded;
-  // Not runnable any more (claimed, cancelled, held back). The claim route
-  // would refuse it; spending a wake on it only adds noise.
-  if (task.status !== 'pending') return `skipped:status_${task.status}`;
-  if (task.startAt && new Date(task.startAt).getTime() > Date.now()) return 'skipped:start_at_future';
-
-  const cause = primaryCause(row.causes, row.cause);
-  const route = routeForCause(cause);
-  const taskPayload = {
-    ...buildTaskPayload(task, workspace),
-    dispatch: { id: row.id, cause },
+  const ctx: DispatchContext = {
+    dispatchId: row.id,
+    cause: primaryCause(row.causes, row.cause),
+    causes: row.causes,
+    metadata: row.metadata,
+    task: loaded.task,
+    workspace: loaded.workspace,
   };
-
-  const targetLocalUiUrl = typeof row.metadata?.targetLocalUiUrl === 'string' ? row.metadata.targetLocalUiUrl : null;
-  if (targetLocalUiUrl) {
-    const sent = await triggerEventChecked(channels.workspace(task.workspaceId), events.TASK_ASSIGNED, { task: taskPayload, targetLocalUiUrl });
-    if (sent === 'failed') throw new Error('pusher targeted assignment failed');
-    return sent === 'sent' ? 'pusher:targeted' : 'pusher:unconfigured';
+  for (const adapter of adapters) {
+    const outcome = await adapter.offer(ctx);
+    if (outcome.kind === 'delivered') return outcome.via;
+    if (outcome.kind === 'skipped') return `skipped:${outcome.why}`;
   }
-
-  const webhookConfig = workspace.webhookConfig as WorkspaceWebhookConfig | null | undefined;
-  // The held gate is a query; ask it only once the pure policy says yes.
-  if (
-    webhookConfig
-    && webhookWants(webhookConfig, task, route, true)
-    && await isTaskNotHeldOrLocal(task.id).catch(() => false)
-    && await dispatchToWebhook(webhookConfig, task, route.event, undefined, { cause, dispatchId: row.id })
-  ) {
-    return 'webhook';
-  }
-
-  if (route.githubActions) {
-    tryGitHubActionsDispatch(workspace, task).catch(() => {});
-  }
-
-  const sent = await triggerEventChecked(channels.workspace(task.workspaceId), events.TASK_ASSIGNED, { task: taskPayload, targetLocalUiUrl: null });
-  if (sent === 'failed') throw new Error('pusher broadcast failed');
-  return sent === 'sent' ? 'pusher' : 'pusher:unconfigured';
+  return 'skipped:no_destination';
 }

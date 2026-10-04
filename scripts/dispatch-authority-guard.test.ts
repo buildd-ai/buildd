@@ -3,8 +3,8 @@ import { execFileSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
-// Task wakes have one sender: the dispatch authority
-// (apps/web/src/lib/dispatch-authority.ts, docs/specs/task-dispatch-authority.md).
+// Task wakes have one sender: the dispatch authority's runner adapters
+// (apps/web/src/lib/dispatch-adapters.ts, docs/specs/task-dispatch-authority.md).
 // A path that broadcasts TASK_ASSIGNED itself skips the outbox, so its wake is
 // lost on a crash, never retried, invisible to dispatch history, and bypasses
 // the per-cause webhook policy. State changes call `wakeTask(id, cause)`.
@@ -15,7 +15,7 @@ const REPO = join(import.meta.dir, '..');
 
 /** Files that may name the event without being a second sender, and why. */
 const SENDER_ALLOWED = new Set([
-  'apps/web/src/lib/dispatch-authority.ts', // the sender
+  'apps/web/src/lib/dispatch-adapters.ts', // the runner adapters: the only sender
   'apps/web/src/lib/pusher.ts', // defines the event name
 ]);
 
@@ -69,7 +69,7 @@ describe('TASK_ASSIGNED is sent only by the dispatch authority', () => {
   });
 
   it('git grep sees the authority itself (the scan is not empty)', () => {
-    expect(taskAssignedSenders()).toContain('apps/web/src/lib/dispatch-authority.ts');
+    expect(taskAssignedSenders()).toContain('apps/web/src/lib/dispatch-adapters.ts');
   });
 
   it('no other source file sends it', () => {

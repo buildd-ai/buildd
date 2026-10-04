@@ -101,14 +101,13 @@ const {
   drainDispatchOutbox,
   kickDispatch,
   primaryCause,
-  routeForCause,
-  webhookWants,
   wakeTask,
   wakeTasks,
   announceTaskCreated,
   DRAIN_BATCH,
 } = await import('./dispatch-authority');
 const { buildWebhookPayload } = await import('./task-dispatch-delivery');
+const { routeForCause, webhookWants, TASK_WAKE_ADAPTERS } = await import('./dispatch-adapters');
 type DispatchCause = (typeof DISPATCH_CAUSES)[number];
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
@@ -545,6 +544,57 @@ describe('deliverTaskDispatch: tasks that are no longer runnable', () => {
 
   it('a deleted task is skipped', async () => {
     expect(await deliverTaskDispatch(row('task.created', { taskId: 'gone' }))).toBe('skipped:task_gone');
+  });
+});
+
+// ── Invariant: durable dispatch does not imply autonomous execution ────────
+
+describe('deliverTaskDispatch: the dispatcher routes through adapters and owns no destination policy', () => {
+  const recording = (outcome: { kind: 'delivered'; via: string } | { kind: 'declined' } | { kind: 'skipped'; why: string }) => {
+    const seen: unknown[] = [];
+    return { seen, adapter: { name: 'test', offer: async (ctx: unknown) => { seen.push(ctx); return outcome; } } };
+  };
+
+  it('a non-runner destination receives the intent and no runner is woken', async () => {
+    seed({ webhookConfig: WEBHOOK });
+    const dest = recording({ kind: 'delivered', via: 'interactive-session' });
+    expect(await deliverTaskDispatch(row('dependency.satisfied'), [dest.adapter])).toBe('interactive-session');
+    expect(fetchCalls).toHaveLength(0);
+    expect(mockTriggerEventChecked).not.toHaveBeenCalled();
+    expect(mockGitHubDispatch).not.toHaveBeenCalled();
+  });
+
+  it('the context carries a stable id, the specific cause and the full trail', async () => {
+    seed();
+    const dest = recording({ kind: 'delivered', via: 'x' });
+    const r = row('task.created', { causes: ['task.created', 'ci.retry'], metadata: { hint: 1 } });
+    await deliverTaskDispatch(r, [dest.adapter]);
+    expect(dest.seen[0]).toMatchObject({
+      dispatchId: r.id, cause: 'ci.retry', causes: ['task.created', 'ci.retry'], metadata: { hint: 1 },
+      task: { id: TASK.id, status: 'pending' },
+    });
+  });
+
+  it('"only pending tasks" is runner policy, not dispatcher policy', async () => {
+    seed({}, { status: 'in_progress' });
+    const dest = recording({ kind: 'delivered', via: 'external-system' });
+    expect(await deliverTaskDispatch(row('task.unblocked'), [dest.adapter])).toBe('external-system');
+    expect(await deliverTaskDispatch(row('task.unblocked'), TASK_WAKE_ADAPTERS)).toBe('skipped:status_in_progress');
+  });
+
+  it('a declined offer passes on; a chain nobody takes closes as no_destination', async () => {
+    seed();
+    const a = recording({ kind: 'declined' });
+    const b = recording({ kind: 'delivered', via: 'b' });
+    expect(await deliverTaskDispatch(row('task.created'), [a.adapter, b.adapter])).toBe('b');
+    expect(a.seen).toHaveLength(1);
+    expect(await deliverTaskDispatch(row('task.created'), [recording({ kind: 'declined' }).adapter])).toBe('skipped:no_destination');
+  });
+
+  it('an adapter that throws leaves the intent for retry', async () => {
+    seed();
+    const boom = { name: 'boom', offer: async () => { throw new Error('down'); } };
+    await expect(deliverTaskDispatch(row('task.created'), [boom])).rejects.toThrow('down');
   });
 });
 

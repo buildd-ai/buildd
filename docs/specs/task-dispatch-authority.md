@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-03
 summary: Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 domain: tasks
-surfaces: [apps/web/src/lib/dispatch-authority.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql]
+surfaces: [apps/web/src/lib/dispatch-authority.ts, apps/web/src/lib/dispatch-adapters.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql]
 related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner-liveness, external-cron-triggers]
 keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask]
-verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts]
+verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts]
 supersedes: []
 ---
 # Task Dispatch Authority
@@ -48,7 +48,8 @@ normal execution.
    claim gate (dependencies, path overlap, provider capacity, Codex
    single-flight, budgets). Its filters only decide which consumer is worth a
    cold start, and a skipped row is marked delivered, never re-assigned.
-6. **One sender.** The dispatch authority is the only code that sends the
+6. **One sender.** The dispatch authority's runner adapters
+   (`dispatch-adapters.ts`) are the only code that sends the
    `TASK_ASSIGNED` Pusher event. Call sites call `wakeTask(taskId, cause)`, and
    the dashboard-only `TASK_CREATED` event goes through `announceTaskCreated`.
    Runners listen for the event; they do not send it.
@@ -75,15 +76,29 @@ normal execution.
     provider walls, concurrency or budgets. A wake for a walled backend is
     refused by the claim route, and the re-wake comes from the state change
     that lifts the wall (`budget.available`, `credential.restored`).
-12. **Reconciliation is a backstop.** Sweeps (the deferred-dispatch sweep,
-    stale-worker requeue, mission check-ins) repair missed state. They never
+12. **Reconciliation is a backstop.** The `dispatch-drain` floor tick (start_at
+    backfill, the dependency backstop, timer reseed, outbox health), the
+    path-claims sweep and stale-worker requeue repair missed state. They never
     drive normal execution, and a wake they send goes through the same outbox.
+13. **Durable dispatch does not imply autonomous execution.** A dispatch means
+    "this work should now be reconsidered or delivered", not "start an agent".
+    The dispatcher hands each due intent — stable id, primary cause, cause
+    trail, delivery hints, the task it names — to an ordered chain of
+    destination adapters and owns no destination policy itself. Delivery
+    target and execution mode are policy in the adapters, above the
+    substrate. Today's chain wakes autonomous runners; another destination
+    (an interactive session, an external work system) is a new adapter, and
+    its business semantics stay inside it.
 
 ---
 
 ## Delivery policy
 
-`deliverTaskDispatch` re-reads the task and sends one wake, in this order:
+`deliverTaskDispatch` re-reads the task and offers the intent to
+`TASK_WAKE_ADAPTERS` (`apps/web/src/lib/dispatch-adapters.ts`) in order. An
+adapter delivers (ends the chain), skips (closes the intent, nothing sent) or
+declines (passes it on); a throw leaves it for retry, and a chain nobody takes
+closes as `skipped:no_destination`. The runner chain today:
 
 1. Task gone → `skipped:task_gone`. Not `pending` → `skipped:status_<status>`.
    Future `start_at` → `skipped:start_at_future`.
@@ -173,9 +188,19 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 - AC-19: WHEN `kickDispatch` runs outside a request scope THEN it drains
   immediately, and inside one it defers to `after()`. In neither case does it
   throw.
-- AC-20: WHEN any non-test source file other than the authority (and the
-  event-name definition) names the `TASK_ASSIGNED` event THEN
+- AC-20: WHEN any non-test source file other than the runner adapters (and
+  the event-name definition) names the `TASK_ASSIGNED` event THEN
   `scripts/dispatch-authority-guard.test.ts` fails.
+- AC-21: GIVEN an adapter chain with a non-runner destination WHEN an intent
+  is delivered THEN that destination receives the stable context and no
+  runner, webhook or GitHub Actions dispatch fires; "only pending tasks" is
+  enforced by the runner chain's `runnerClaimability`, not by the dispatcher
+  (`apps/web/src/lib/dispatch-authority.test.ts`).
+- AC-22: WITH every reconciliation path disabled (no cron, no sweep, no
+  backstop, no poll) WHEN a task is created, requeued, released from a path
+  claim or has its last dependency resolve THEN the kick alone delivers its
+  wake, and not before the blocker clears
+  (`apps/web/tests/db/reconciliation-disabled.test.ts`).
 
 ---
 
@@ -188,7 +213,15 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 - Trigger: `packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql`.
 - Authority: `apps/web/src/lib/dispatch-authority.ts` — `wakeTask`,
   `wakeTasks`, `announceTaskCreated`, `kickDispatch`, `drainDispatchOutbox`,
-  `deliverTaskDispatch`, `routeForCause`, `webhookWants`, `primaryCause`.
+  `deliverTaskDispatch`, `primaryCause`.
+- Destination adapters: `apps/web/src/lib/dispatch-adapters.ts` —
+  `TASK_WAKE_ADAPTERS`, `routeForCause`, `webhookWants`.
+- Timer and repair cron: `apps/web/src/app/api/cron/dispatch-drain/route.ts`,
+  `apps/web/src/lib/dispatch-repair.ts`.
+- Path release and claim-time waiters: `packages/core/path-claim.ts` —
+  `registerClaimDeferralWaiters`, `releaseClaims`, `narrowPathClaims`.
+- Dependents: `packages/core/dispatch-dependents.ts` —
+  `enqueueReadyDependentsSql`, `findPendingTasksWithResolvedDepsAndNoWake`.
 - Delivery primitives: `apps/web/src/lib/task-dispatch-delivery.ts` —
   `buildWebhookPayload`, `dispatchToWebhook`, `buildTaskPayload`,
   `dispatchResumedTask` (a worker resume, not a task wake).
