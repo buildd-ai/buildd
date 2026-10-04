@@ -72,3 +72,29 @@ versions and counts, never text.
   pages the operator once per distinct set of seeded ids that would resolve to
   their public default (`apps/web/src/lib/prompt-fallback-alert.ts`). A
   deployment that never seeded is never alerted.
+
+## Measuring your prompts
+
+Public tests only exercise the public defaults, so replacement text needs its
+own measurement. `scripts/private-prompt-eval.ts` loads a prompts directory
+with the seed's checks, installs it as the text in effect, and runs every
+decision benchmark set (`scripts/decision-benchmark-sets.ts`) that has
+labelled cases over it:
+
+```sh
+bun run scripts/private-prompt-eval.ts --dry-run                                   # public defaults, no model calls
+OPENROUTER_API_KEY=... bun run scripts/private-prompt-eval.ts --prompts ../my-prompts
+```
+
+Cases live next to your prompts, not in this repo: `<dir>/evals/<set>.jsonl`
+(`task-category.jsonl`, `heartbeat-triage.jsonl`, `task-role.jsonl`), in the
+format `scripts/decision-benchmark.ts` documents. The report lists each prompt
+id with the row version and content hash that was scored, beside its scores.
+It never contains prompt text or case content: every byte is checked against
+the loaded bodies before it is written, and a match fails the run instead.
+`--require` makes a run with no private text, no cases or no key exit non-zero.
+
+buildd's own deployment runs this nightly (`.github/workflows/private-prompt-eval.yml`).
+It reads the prompts repo (`vars.PROMPTS_REPO_NAME`, default `<repo>-prompts` under the same owner) with `PROMPTS_REPO_TOKEN` or the release GitHub App,
+calls the model with `OPENROUTER_API_KEY`, and fails, naming the secret, when
+either is missing.
