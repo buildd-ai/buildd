@@ -10,7 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
@@ -99,7 +99,8 @@ export async function GET(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token lists tasks only in its own task's workspace.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   // Fall back to session auth
   const user = await getCurrentUser();
@@ -115,6 +116,7 @@ export async function GET(req: NextRequest) {
     let workspaceIds: string[] = await listReachableWorkspaceIds(
       apiAccount ? { account: apiAccount } : { userId: user!.id },
     );
+    if (apiAccount) workspaceIds = workspaceIds.filter(id => taskScopeAllowsWorkspace(apiAccount, id));
 
     // Optional query filters to scope the list and shrink the payload.
     //   ?workspaceId=<id>  — restrict to a single accessible workspace
@@ -360,7 +362,9 @@ export async function POST(req: NextRequest) {
   // Check API key auth first
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token may file tasks (follow-ups, friction) only in its own
+  // task's workspace, which is also where an unspecified workspace resolves.
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   // Fall back to session auth
   const user = await getCurrentUser();
@@ -536,6 +540,8 @@ export async function POST(req: NextRequest) {
         );
       }
       workspaceId = access.workspace.id;
+    } else if (apiAccount?.taskScope) {
+      workspaceId = apiAccount.taskScope.workspaceId;
     } else if (apiAccount) {
       // Auto-resolve: if account linked to exactly one workspace, use it
       const result = await autoResolveAccountWorkspace(apiAccount.id, apiAccount.name);
@@ -547,6 +553,9 @@ export async function POST(req: NextRequest) {
 
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
+    }
+    if (apiAccount && !taskScopeAllowsWorkspace(apiAccount, workspaceId)) {
+      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace' }, { status: 403 });
     }
     gateWorkspaceId = workspaceId;
 
