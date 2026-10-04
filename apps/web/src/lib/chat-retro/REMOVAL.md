@@ -18,11 +18,22 @@ is everything it adds. Nothing else in the codebase depends on it.
 - `apps/web/src/app/api/cron/chat-retro/`: the cron route and its test
 - `apps/web/src/app/api/teams/[id]/chat-retro/`: the settings and lessons API
   and its test
+- The visible-answer turn signal, whose only reader is the retro:
+  `apps/web/src/lib/chat/turn-signal.ts`, `turn-signal-store.ts` (and tests),
+  `apps/web/src/app/api/chat/[id]/turn-signal/`,
+  `apps/web/src/components/chat/turn-signal-tracker.ts`, `use-turn-signal.ts`
+  (and test), and `apps/web/scripts/chat-retro-visible-fixture.ts`
 
 ## Touch points (edit them)
 
 - `apps/web/src/app/app/(protected)/settings/ai/page.tsx`: the
   `ChatRetroSection` import and its one JSX line.
+- `apps/web/src/components/chat/ChatConversation.tsx`: the `useTurnSignal`
+  call and `turnSignal.onStop()` in `onStop`.
+- `apps/web/src/lib/chat/turn.ts`: `withTurnRef(...)` around the user
+  message's usage (keep `userTurnUsageRouted(...)`). Rows already saved keep
+  a harmless `usage.turn` object: ids, offsets and flags, no text.
+- `apps/web/package.json`: the `chat-retro:visible-fixture` script.
 - `cron-manifest.json`: the `"Buildd: Chat Retro"` job
   (`/api/cron/chat-retro`). Run `bun run cron:sync` after removing it, so the
   external scheduler stops calling the route.
