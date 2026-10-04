@@ -164,15 +164,15 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
   }
   // beforeAfter: two phones side by side. `view` shows the top part of each screenshot, so its text reads.
   const view = m.view ?? 1;
-  const ph = Math.round(H * 0.86);
+  const ph = Math.round(H * 0.8);
   const gap = Math.round(W * 0.06);
   const pw = Math.min(Math.round((ph * m.before.width) / (m.before.height * view)), Math.round((W * 0.9 - gap) / 2));
-  const x0 = Math.round(W / 2 - pw - gap / 2), x1 = Math.round(W / 2 + gap / 2), y = Math.round((H - ph) / 2 + H * 0.02);
+  const x0 = Math.round(W / 2 - pw - gap / 2), x1 = Math.round(W / 2 + gap / 2), y = Math.round((H - ph) / 2 + H * 0.04);
   const phone = (x: number, img: { src: string }, word: string) => {
     const fr = el('div', { position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${pw}px`, height: `${ph}px`, overflow: 'hidden', ...card(P, 10) }, root);
     const im = el('img', { width: '100%', display: 'block' }, fr);
     im.dataset.src = img.src;
-    const cap = el('div', { position: 'absolute', left: `${x}px`, top: `${y - Math.round(H * 0.05)}px`, display: 'flex', alignItems: 'center', gap: '12px', fontSize: `${Math.round(W * 0.012)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted }, root);
+    const cap = el('div', { position: 'absolute', left: `${x}px`, top: `${y - Math.round(H * 0.075)}px`, display: 'flex', alignItems: 'center', gap: '12px', fontSize: `${Math.round(W * 0.012)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted }, root);
     const sq = el('span', { width: '14px', height: '14px', background: P.muted }, cap);
     el('span', {}, cap, word.toUpperCase());
     return { fr, sq };

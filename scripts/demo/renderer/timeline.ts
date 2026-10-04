@@ -131,6 +131,8 @@ export type Cut = {
   voice?: Array<{ at: number; file: string; seconds: number }>;
   /** Cap the encoded mp4 (re-encoded down if larger). */
   maxBytes?: number;
+  /** A soft band of the ground behind captions, so dimmed UI never shows through under a caption's words. */
+  captionScrim?: boolean;
   theme?: 'dark' | 'light';
   /** Caption chip font size in px (default 32). */
   captionSize?: number;

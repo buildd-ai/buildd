@@ -69,7 +69,8 @@ export function v7Chapters(s: Stills): Shot[][] {
   const askLine = s.text(T, 'The invoice table overflows on phones.').rects[0];
   const confirm = s.box(T, 'kit-approval-confirm');
   const checks = motion('checks', 5.0, { kind: 'checks', label: '', title: 'Done when', items: ['Fits a 390px screen', 'No sideways scroll on /invoices', 'Phone screenshot approved'], from: -0.3, stagger: 0.7 });
-  const card = union([askLine, list, confirm]);
+  // The whole draft card, heading included (a crop from the ask line down clipped the title at the top edge).
+  const card = union([s.box(T, 'approval-card'), askLine, list, confirm]);
   const draft: Shot = {
     id: 'draft', layout: 'screen', dur: 2.6, images: [s.img(T)],
     // Held still: one light on the whole card, no tap, nothing moving but a slow push.
@@ -193,16 +194,21 @@ export const sentences = (line: string) => line.match(/[^.!?]+[.!?]+/g)!.map((x)
  */
 export function v7Captioned(s: Stills, spoken: Spoken): Cut {
   const chapters = v7Chapters(s);
+  // The phone question fills the frame's height, so no caption can sit clear of it: its sentence goes on the shot before.
+  const NO_CAPTION = new Set(['question']);
+  // The fleet's mission row sits in the bottom band, so its caption goes up top (under the scrim, over the dim stat strip).
+  for (const shot of chapters.flat()) if (shot.id === 'fleet') shot.captionAt = 'top';
   chapters.slice(0, -1).forEach((ch, i) => {
     const ss = sentences(V7_LINES[i]);
-    ch.forEach((shot, k) => {
+    const shots = ch.filter((x) => !NO_CAPTION.has(x.id));
+    shots.forEach((shot, k) => {
       if (k >= ss.length) return;
-      const mine = k === ch.length - 1 ? ss.slice(k) : [ss[k]];
+      const mine = k === shots.length - 1 ? ss.slice(k) : [ss[k]];
       shot.caption = mine.length === 1 ? mine[0] : mine.map((text, j) => ({ at: (j * shot.dur) / mine.length, text }));
     });
   });
   const { shots } = timeToVoice(chapters, spoken);
-  return { name: 'captioned', ...FRAME, fade: V7_FADE, captions: true, theme: 'dark', dip: true, loop: false, shots, poster: posterAt(shots, 'green', 1.5) };
+  return { name: 'captioned', ...FRAME, fade: V7_FADE, captions: true, captionScrim: true, theme: 'dark', dip: true, loop: false, shots, poster: posterAt(shots, 'green', 1.5) };
 }
 
 function posterAt(shots: Shot[], id: string, t: number): number {
