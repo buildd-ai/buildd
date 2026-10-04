@@ -59,7 +59,7 @@ export interface VisualReviewTrayProps {
 }
 
 const MARKER_LABEL: Record<VisualReviewMarker, string> = {
-  awaiting: 'not reviewed yet',
+  awaiting: 'not reviewed',
   confirmed: 'you agreed',
   disputed: 'you disagreed',
   waived: 'you waived it',

@@ -28,7 +28,7 @@ import {
 } from './outbound';
 import { rewriteOtlp } from './otel';
 import { measureResponse, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
-import { resumableRunsEnabled, warmReposEnabled } from './lifecycle';
+import { resumableRunsEnabled, warmMaxBundleBytes, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
 
 export interface EgressProps {
@@ -228,7 +228,9 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     }
     return handleSnapshotRequest(request, scope, new SnapshotStore(bucket as unknown as BucketPort), {
       enabled,
+      // Streamed straight into R2 with its length: never read into memory.
       fixedLength: (body, length) => body.pipeThrough(new FixedLengthStream(length)),
+      maxPartBytes: warmMaxBundleBytes(this.env),
     });
   }
 

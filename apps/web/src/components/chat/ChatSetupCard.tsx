@@ -30,7 +30,7 @@ export function chatSetupCopy(_reason: ChatSetupReason, canManage: boolean, poli
   }
   return canManage
     ? { title: 'Connect a model provider', body: 'Chat is where your team starts missions and asks about the fleet. It starts once the team has a key. OpenRouter covers every model with one key.', cta: { href: CHAT_SETTINGS_HREF.teamKeys, label: 'Connect a provider' }, secondary: null }
-    : { title: 'Chat is not set up yet', body: 'Ask a team admin to connect a model provider.', cta: null, secondary: null };
+    : { title: 'Chat is not set up', body: 'Ask a team admin to connect a model provider.', cta: null, secondary: null };
 }
 
 export default function ChatSetupCard({ reason, canManage, policy }: { reason: ChatSetupReason; canManage: boolean; policy?: 'team' | 'team_or_own' | 'own' }) {

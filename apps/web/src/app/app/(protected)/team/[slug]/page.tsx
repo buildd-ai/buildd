@@ -373,7 +373,7 @@ export default async function RoleProfilePage({
             <section>
               <h2 className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Recent Tasks</h2>
               {recentTasks.length === 0 ? (
-                <p className="text-sm text-text-muted">No tasks yet.</p>
+                <p className="text-sm text-text-muted">No tasks.</p>
               ) : (
                 <div className="space-y-1">
                   {recentTasks.map(task => {

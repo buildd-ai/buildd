@@ -42,7 +42,7 @@ describe('MissionReviewSummary — PRs counted by identity', () => {
     );
     expect(text(html)).toContain('2 merged');
     expect(text(html)).not.toContain('open');
-    expect(text(html)).not.toContain('not yet merged');
+    expect(text(html)).not.toContain('unmerged');
     expect(html.match(/href="https:\/\/github\.example\/org\/repo\/pull\/5"/g)?.length).toBe(1);
   });
 
@@ -57,6 +57,6 @@ describe('MissionReviewSummary — PRs counted by identity', () => {
       />,
     );
     expect(text(html)).toContain('0 merged · 2 open');
-    expect(text(html)).toContain('2 PRs not yet merged');
+    expect(text(html)).toContain('2 PRs unmerged');
   });
 });

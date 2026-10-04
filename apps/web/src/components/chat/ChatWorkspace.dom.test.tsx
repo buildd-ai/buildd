@@ -305,7 +305,7 @@ describe('empty canvas', () => {
   it('needs you: names it, row 1 is copper, the composer rule turns copper', async () => {
     await render({ pulse: { needsYou: [{ title: 'Pick a currency' }], live: 1 } });
     expect(q('[data-testid="canvas-empty"]')?.dataset.mood).toBe('needs');
-    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One thing needs you.');
+    expect(q('[data-testid="canvas-empty"]')?.textContent).toContain('One to review.');
     expect(q('[data-testid="canvas-picked-status"]')?.textContent).toBe('1 blocked');
     // The overline leads with the needs square; the header reads before the rows.
     expect(q('[data-testid="canvas-empty"] .kit-empty-overline .kit-mood-dot')?.getAttribute('data-mood')).toBe('needs');

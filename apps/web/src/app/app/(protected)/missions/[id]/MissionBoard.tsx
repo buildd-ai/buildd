@@ -279,7 +279,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
               </>
             ) : (
               <span data-testid="landed-empty" className="font-mono text-meta text-text-muted">
-                No tasks yet
+                No tasks
               </span>
             )}
           </>
@@ -302,7 +302,7 @@ export function Band({ model, compact, missionId, visual = null, onReview, strip
               ))}
             </span>
           ))}
-          {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has picked up work yet.</span>}
+          {model.runners.length === 0 && <span className="font-mono text-[12px] text-text-muted">No runner has claimed work.</span>}
         </div>
       </div>
       <div data-testid="needs-you-cell" className={`${cell} ${L.needs} ${needs ? 'bg-accent-soft' : ''}`}>

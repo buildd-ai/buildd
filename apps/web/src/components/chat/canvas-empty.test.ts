@@ -43,28 +43,28 @@ describe('canvasHero', () => {
     expect(h.mood).toBe('calm');
     expect(h.overline).toBe('SUN 27 SEP · CALM');
     expect(h.hero).toBe('All quiet.');
-    expect(h.sub).toBe('Nothing is waiting on you. A good morning to start something.');
+    expect(h.sub).toBe('Nothing to review.');
   });
 
   it('calm with agents at work: counts them, never invents', () => {
-    expect(canvasHero({ pulse: CALM_BUSY, name: null, now: NOW, timeZone: 'UTC' }).sub).toBe('Nothing is waiting on you. 3 agents are at work on their own.');
-    expect(canvasHero({ pulse: { needsYou: [], live: 1 }, name: null, now: NOW, timeZone: 'UTC' }).sub).toBe('Nothing is waiting on you. 1 agent is at work on its own.');
+    expect(canvasHero({ pulse: CALM_BUSY, name: null, now: NOW, timeZone: 'UTC' }).sub).toBe('Nothing to review. 3 agents are at work on their own.');
+    expect(canvasHero({ pulse: { needsYou: [], live: 1 }, name: null, now: NOW, timeZone: 'UTC' }).sub).toBe('Nothing to review. 1 agent is at work on its own.');
   });
 
   it('needs you: names the one thing', () => {
     const h = canvasHero({ pulse: ONE, name: 'Maya', now: NOW, timeZone: 'UTC' });
     expect(h.mood).toBe('needs');
-    expect(h.overline).toBe('SUN 27 SEP · NEEDS YOU');
-    expect(h.hero).toBe('One thing needs you.');
-    expect(h.sub).toBe('“Round per line, or only the total?” is waiting on your answer.');
+    expect(h.overline).toBe('SUN 27 SEP · TO REVIEW');
+    expect(h.hero).toBe('One to review.');
+    expect(h.sub).toBe('“Round per line, or only the total?”');
   });
 
   it('needs you, several: counts in words, and does not claim an exact count past the loader limit', () => {
-    expect(canvasHero({ pulse: TWO, name: null, now: NOW, timeZone: 'UTC' }).hero).toBe('Two things need you.');
-    expect(canvasHero({ pulse: TWO, name: null, now: NOW, timeZone: 'UTC' }).sub).toBe('“Pick a currency” and 1 more are waiting on you.');
+    expect(canvasHero({ pulse: TWO, name: null, now: NOW, timeZone: 'UTC' }).hero).toBe('Two to review.');
+    expect(canvasHero({ pulse: TWO, name: null, now: NOW, timeZone: 'UTC' }).sub).toBe('“Pick a currency” and 1 more');
     const capped = canvasHero({ pulse: { ...TWO, needsYouCapped: true }, name: null, now: NOW, timeZone: 'UTC' });
-    expect(capped.hero).toBe('Several things need you.');
-    expect(capped.sub).toBe('“Pick a currency” and more are waiting on you.');
+    expect(capped.hero).toBe('Several to review.');
+    expect(capped.sub).toBe('“Pick a currency” and more');
   });
 
   it('no pulse: the plain greeting, no mood claimed', () => {
@@ -112,8 +112,8 @@ describe('canvasSuggestions: a plain new chat (PICKED FOR YOU)', () => {
   });
 
   it('needs you, several: row 1 walks through all of them', () => {
-    expect(canvasSuggestions(PLAIN, TWO)[0]).toMatchObject({ label: 'Walk me through the 2 things waiting on me', text: 'What needs me right now?', tone: 'needs' });
-    expect(canvasSuggestions(PLAIN, { ...TWO, needsYouCapped: true })[0].label).toBe("Walk me through what's waiting on me");
+    expect(canvasSuggestions(PLAIN, TWO)[0]).toMatchObject({ label: 'Go through the 2 to review', text: 'What do I need to review?', tone: 'needs' });
+    expect(canvasSuggestions(PLAIN, { ...TWO, needsYouCapped: true })[0].label).toBe('Go through what to review');
   });
 
   it('calm with agents at work: check on them, then start something', () => {
