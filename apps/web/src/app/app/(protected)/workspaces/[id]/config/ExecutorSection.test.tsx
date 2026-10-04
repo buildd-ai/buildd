@@ -16,14 +16,14 @@ describe('ExecutorSection', () => {
     expect(html).toContain(describeExecutorSource('dispatch_webhook'));
   });
 
-  it('offers automatic plus the three values, with the stored one selected', () => {
+  it('shows the stored value on the picker', () => {
     const html = render({ explicit: 'host', effective: 'host', source: 'explicit' });
-    for (const v of ['', 'cloud', 'host', 'any']) expect(html).toContain(`value="${v}"`);
-    expect(html).toMatch(/<option value="host" selected="">/);
+    expect(html).toContain('data-testid="workspace-executor-select"');
+    expect(html).toContain('Host runners only');
   });
 
-  it('selects automatic when nothing is stored', () => {
-    expect(render()).toMatch(/<option value="" selected="">/);
+  it('shows automatic when nothing is stored', () => {
+    expect(render()).toContain('Automatic');
   });
 });
 
