@@ -1,8 +1,10 @@
 import { Fragment } from 'react';
+import Link from 'next/link';
 import { derivePrLifecycle, isPrMerged } from '@/lib/pr-presentation';
 import { countOf } from '@/lib/plural';
 import Disclosure from '@/components/ui/Disclosure';
 import { buildCommitChecksView, checkOutcome } from './commit-checks-view';
+import type { OpenAttemptInfo } from '@/lib/explain';
 
 const ExternalIcon = () => (
   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
@@ -86,6 +88,14 @@ export interface PrCardProps {
    * (Review & merge); the outcome card then shows none of its own.
    */
   hideAction?: boolean;
+  /**
+   * The canonical "is a fix attempt open on this PR's task" fact — see
+   * `loadOpenAttempt`/`viewForTask` in `@/lib/explain` (mission-state-view.ts
+   * rule 6½). While this is set the PR is about to change, so the card names
+   * the live fix task instead of inviting a merge the review-verdict gate
+   * would refuse.
+   */
+  openAttempt?: OpenAttemptInfo | null;
 }
 
 const isFailingRun = (r: CiCheckRun) =>
@@ -104,10 +114,42 @@ export function isCiRed(prLifecycleStatus: string | null | undefined, ciChecks: 
 }
 
 /** The card's primary link: label and target. */
-function primaryAction(prUrl: string, prLifecycleStatus: string | null | undefined, ciChecks: PrCardProps['ciChecks']) {
+function primaryAction(
+  prUrl: string,
+  prLifecycleStatus: string | null | undefined,
+  ciChecks: PrCardProps['ciChecks'],
+  openAttempt?: OpenAttemptInfo | null,
+) {
   if (isPrMerged(prLifecycleStatus)) return { label: 'Open PR', href: prUrl };
   if (isCiRed(prLifecycleStatus, ciChecks)) return { label: 'View failing checks', href: `${prUrl.replace(/\/+$/, '')}/checks` };
+  // A fix attempt is already open — the branch is about to change, so
+  // "Review & merge" would offer the exact action guardReviewVerdict is going
+  // to refuse. Fall back to a neutral link, same as the merged case.
+  if (openAttempt) return { label: 'View PR', href: prUrl };
   return { label: 'Review & merge', href: prUrl };
+}
+
+/** `"Fix 1 of 3"` / `"Fix"` — no claimed/queued suffix, same vocabulary as the Home action queue and the mission timeline. */
+function openAttemptName(a: OpenAttemptInfo): string {
+  if (a.iteration == null) return 'Fix';
+  return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
+}
+
+/**
+ * "Waiting for fix task: <title>" — the same fact Home's AgentHandledCard and
+ * the GitHub sticky comment name, rendered here so the task page never shows
+ * a stale "waiting on your merge" line while a fix is already queued/running.
+ */
+function OpenAttemptLine({ openAttempt }: { openAttempt: OpenAttemptInfo }) {
+  return (
+    <div className="text-[12px] text-text-muted">
+      <span className="text-status-warning">{openAttemptName(openAttempt)} {openAttempt.claimed ? 'in progress' : 'queued'}</span>
+      {' · '}
+      <Link href={`/app/tasks/${openAttempt.taskId}`} className="text-accent-text hover:underline">
+        {openAttempt.title}
+      </Link>
+    </div>
+  );
 }
 
 /**
@@ -132,13 +174,14 @@ export default function PrCard(props: PrCardProps) {
     reviews,
     mergeable,
     mergeableState,
+    openAttempt,
   } = props;
   const lifecycle = derivePrLifecycle(prLifecycleStatus, true);
   const hasDiff = linesAdded != null || linesRemoved != null || (filesChanged != null && filesChanged > 0);
 
   const isMerged = isPrMerged(prLifecycleStatus);
   const failingRuns = ciChecks?.runs.filter(isFailingRun) ?? [];
-  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks);
+  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks, openAttempt);
 
   const reviewLine = reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
     ? [
@@ -210,6 +253,10 @@ export default function PrCard(props: PrCardProps) {
           )}
         </div>
       )}
+
+      {/* Open fix attempt — outranks the mergeable/review lines below: the
+          branch is about to change, so naming the fix is the honest state. */}
+      {!isMerged && openAttempt && <OpenAttemptLine openAttempt={openAttempt} />}
 
       {/* Mergeable state */}
       {!isMerged && mergeable !== undefined && mergeable !== null && (
@@ -463,11 +510,11 @@ function DiffBar({ attempts }: { attempts: PrOutcome['attempts'] }) {
   );
 }
 
-function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false }: PrCardProps & { outcome: PrOutcome }) {
+function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable, mergeableState, reviews, outcome, hideAction = false, openAttempt }: PrCardProps & { outcome: PrOutcome }) {
   const lifecycle = derivePrLifecycle(prLifecycleStatus, true);
   const merged = isPrMerged(prLifecycleStatus);
   const ciRed = isCiRed(prLifecycleStatus, ciChecks);
-  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks);
+  const action = primaryAction(prUrl, prLifecycleStatus, ciChecks, openAttempt);
   const { totals, attempts } = outcome;
   const total = attempts.reduce((s, a) => s + a.add + a.rem, 0);
   const reviewLine = reviews && reviews.approved + reviews.changesRequested + reviews.pending > 0
@@ -492,6 +539,7 @@ function PrOutcomeCard({ prUrl, prNumber, prLifecycleStatus, ciChecks, mergeable
               {reviewLine && <> · {reviewLine}</>}
             </p>
             {outcome.summary && <p className="mt-2 text-[14px] md:text-[16px] text-text-primary leading-relaxed [overflow-wrap:anywhere]">{outcome.summary}</p>}
+            {!merged && openAttempt && <div className="mt-2"><OpenAttemptLine openAttempt={openAttempt} /></div>}
           </div>
           {!hideAction && (
             <a

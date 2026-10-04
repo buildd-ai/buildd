@@ -296,6 +296,32 @@ mock.module('@/lib/gate-ledger', () => ({
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
 }));
+// One open retry per retry family (rules and store tested in
+// lib/supersession*.test.ts). Here only the wiring: a claim asks the guard about
+// each attempt, and an attempt it cancels is skipped, never claimed.
+const mockGuardClaimedRetry = mock((_task: any) => Promise.resolve(false));
+mock.module('@/lib/supersession', () => ({
+  guardClaimedRetry: mockGuardClaimedRetry,
+  reconcileSubjectEvent: mock(() => Promise.resolve({ cancelled: [], lostRace: [], decisions: [] })),
+  checkDispatch: mock(() => Promise.resolve({ verdict: 'keep', rule: null })),
+  guardDispatchedTask: mock(() => Promise.resolve(false)),
+}));
+// Claim planner I/O (./claim-plan-store). Default: no signals, writes captured.
+const emptyPlannerSignals = () => ({ predictions: new Map(), overlapAnswers: [], starvationCredit: new Map(), dependentCount: new Map() });
+const mockLoadPlannerSignals = mock(async (_ids: string[], _ws: string[]): Promise<any> => emptyPlannerSignals());
+const mockFireOrderedBehind = mock((_e: any) => {});
+const mockFireClaimPlanRecord = mock((_e: any) => {});
+mock.module('./claim-plan-store', () => ({
+  loadPlannerSignals: mockLoadPlannerSignals,
+  fireOrderedBehind: mockFireOrderedBehind,
+  fireClaimPlanRecord: mockFireClaimPlanRecord,
+  effectiveBackendOf: (tasks: ReadonlyArray<{ backend?: unknown }>) => {
+    const backends = new Set(tasks.map(t => (t.backend === 'codex' ? 'codex' : 'claude')));
+    return backends.size <= 1 ? ([...backends][0] ?? 'claude') : 'mixed';
+  },
+  ORDERED_BEHIND_REASON: 'ordered_behind',
+  CLAIM_PLAN_REASON: 'claim_plan',
+}));
 // Terminal-write dependency cascade (item 4: workspace_mismatch must run it).
 const mockResolveCompletedTask = mock(() => Promise.resolve());
 mock.module('@/lib/task-dependencies', () => ({
@@ -6178,7 +6204,7 @@ describe('entity catalog injection at claim time', () => {
   });
   // OAuth budget pacing (packages/core/oauth-budget.ts). Seat auth reports no
   // cost, so pressure is learned from past exhaustion episodes. Its only effect
-  // is a lower per-seat concurrency cap (never below one) — see
+  // is a lower per-seat concurrency cap (retaining half the slots) — see
   // oauthParallelismCap.
   describe('oauth budget pacing', () => {
     // Several task UPDATEs can fire per claim (claim + post-claim bookkeeping),
@@ -6205,7 +6231,7 @@ describe('entity catalog injection at claim time', () => {
     /** Five episodes at 600 sonnet-equivalent turns → 'good' confidence, p25 = 600. */
     function learnedWindow() {
       return Array.from({ length: 5 }, (_, i) => ({
-        exhaustedAt: new Date(Date.now() - (24 + i) * 60 * 60 * 1000),
+        exhaustedAt: new Date(Date.now() - (1 + i) * 60 * 60 * 1000),
         resetsAt: new Date(Date.now() - 23 * 60 * 60 * 1000),
         workerCount: 10,
         turns: 600,
@@ -6301,11 +6327,40 @@ describe('entity catalog injection at claim time', () => {
       expect(claimPayload()).not.toBeNull();
     });
 
+    it('keeps a ten-slot healthy seat claiming when saturated forecast has one busy worker', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 10, type: 'user',
+        authType: 'oauth', maxConcurrentSessions: null,
+      });
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({ turns: 600, weightedTurns: 600 }));
+      mockCountLiveSeatWorkers.mockResolvedValue(1);
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+      }));
+      const data = await res.json();
+      expect(data.workers).toHaveLength(1);
+      expect(data.diagnostics?.deferrals?.oauth_parallelism).toBeUndefined();
+    });
+
+    it('fails open when the newest forecast observation belongs to a prior window', async () => {
+      mockLoadOauthEpisodes.mockResolvedValue(learnedWindow().map(e => ({
+        ...e, exhaustedAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
+      })));
+      mockMeasureOauthWindow.mockResolvedValue(windowUsage({weightedTurns: 99_999}));
+      mockCountLiveSeatWorkers.mockResolvedValue(4);
+      const res = await POST(createMockRequest({
+        headers: {Authorization: 'Bearer bld_test'}, body: {runner: 'test-runner'},
+      }));
+      expect((await res.json()).workers).toHaveLength(1);
+      expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
+    });
+
     it('narrows seat parallelism at high pressure instead of pausing', async () => {
       mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // Full window → cap of one session; the seat is already running one.
+      // Full forecast -> cap of three; the seat already has three Claude sessions.
       mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(1);
+      mockCountLiveSeatWorkers.mockResolvedValue(3);
 
       const res = await POST(createMockRequest({
         headers: { Authorization: 'Bearer bld_test' },
@@ -6348,12 +6403,12 @@ describe('entity catalog injection at claim time', () => {
           accessToken: 'at', refreshToken: 'rt', accountId: 'acc', tokenExpiresAt: null, lastRefreshedAt: null,
         });
         mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-        // Full window → Claude cap of one session.
+        // Full forecast -> Claude cap of three sessions.
         mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 6, turns: 600, weightedTurns: 600 }));
       });
 
       it('claims a failed-over task on Codex even when the Claude seat is at its cap', async () => {
-        mockCountLiveSeatWorkers.mockResolvedValue(1);
+        mockCountLiveSeatWorkers.mockResolvedValue(3);
         mockTasksFindMany.mockResolvedValue([
           pendingTask({ backend: 'claude', workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } }),
         ]);
@@ -6372,9 +6427,9 @@ describe('entity catalog injection at claim time', () => {
 
     it('claims only up to the narrowed cap in one batch', async () => {
       mockLoadOauthEpisodes.mockResolvedValue(learnedWindow());
-      // 75% → cap 3 of 5; two already live on the seat → one more slot.
+      // 75% → cap 4 of 5; three already live on the seat → one more slot.
       mockMeasureOauthWindow.mockResolvedValue(windowUsage({ workerCount: 3, turns: 450, weightedTurns: 450 }));
-      mockCountLiveSeatWorkers.mockResolvedValue(2);
+      mockCountLiveSeatWorkers.mockResolvedValue(3);
       mockTasksFindMany.mockResolvedValue([pendingTask(), pendingTask({ id: 'task-2' })]);
 
       const res = await POST(createMockRequest({
@@ -7713,6 +7768,27 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('1/1');
   });
 
+  it('a fix attempt with another open attempt in its retry family is cancelled at claim, not started beside it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
+    mockGuardClaimedRetry.mockResolvedValueOnce(true);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockGuardClaimedRetry).toHaveBeenCalledTimes(1);
+    expect((mockGuardClaimedRetry.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', reviewerRetryPrNumber: 3431 });
+    expect(data.diagnostics.deferrals.sibling_retry_open).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('sibling_retry_open');
+  });
+
+  it('a task that is not an attempt never consults the retry guard', async () => {
+    mockGuardClaimedRetry.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'work' })]);
+    await claim({ runner: 'mcp' });
+    expect(mockGuardClaimedRetry).not.toHaveBeenCalled();
+  });
+
   it('a task whose role env no channel can satisfy is deferred, not claimed, and names the vars', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'mailer' })]);
@@ -7959,6 +8035,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
 
   it('force: an admin explicit claim is not deferred by path overlap or the mission cap', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockRegisterClaimDeferralWaiters.mockClear();
     mockWorkersFindMany
       .mockResolvedValueOnce([]) // active workers
       .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
@@ -7972,6 +8049,9 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].taskId).toBe('task-1');
+    // Forced past the gate, not deferred — nothing is actually waiting.
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockRegisterClaimDeferralWaiters).not.toHaveBeenCalled();
   });
 
   // H2: the mission budget is a cost limit, not a person-overridable gate.
@@ -8468,5 +8548,262 @@ describe('hold/start shadow at claim (§5b): no claim behaviour change', () => {
       expect(capped.body.diagnostics?.deferrals?.mission_concurrent).toBe(1);
       expect(acquired).toHaveLength(1);
     });
+  });
+});
+
+describe('claim planner (gitConfig.claimPlanner)', () => {
+  const THRESHOLDS = { thetaOrder: 0.3, thetaSoft: 0.5, thetaIdle: 0.8 };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api', teamId: 'team-1' });
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    mockSecretsFindMany.mockReset();
+    mockSecretsFindMany.mockResolvedValue([]);
+    mockConnectorsFindMany.mockReset();
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockReset();
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    mockOauthEpisodesFindMany.mockReset();
+    mockOauthEpisodesFindMany.mockResolvedValue([]);
+    mockBackendPausesFindMany.mockReset();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    mockGetActiveClaimsByWorkspace.mockReset();
+    mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map());
+    mockDbSelect.mockReset();
+    mockDbSelect.mockReturnValue(makeSelectChain([]));
+    mockTasksUpdate.mockReset();
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'claimed' }]), catch: mock(() => {}) })) })),
+    });
+    mockDbExecute.mockReset();
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+    mockLoadPlannerSignals.mockReset();
+    mockLoadPlannerSignals.mockImplementation(async () => emptyPlannerSignals());
+    mockFireOrderedBehind.mockClear();
+    mockFireClaimPlanRecord.mockClear();
+    mockFireDeferralEvent.mockClear();
+    mockRegisterClaimDeferralWaiters.mockClear();
+  });
+
+  function plannedTask(id: string, over: Record<string, unknown> = {}, gitConfig: Record<string, unknown> | null = null) {
+    return {
+      id,
+      workspaceId: 'ws-1',
+      missionId: null,
+      title: `Task ${id}`,
+      backend: 'claude' as const,
+      priority: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      dependsOn: [],
+      pathManifest: null as string[] | null,
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig },
+      ...over,
+    };
+  }
+
+  /** Three candidates: a and b share a file, c is disjoint. Highest priority first. */
+  function overlappingTrio(gitConfig: Record<string, unknown> | null) {
+    return [
+      plannedTask('a', { priority: 5, pathManifest: ['src/x.ts'] }, gitConfig),
+      plannedTask('b', { priority: 4, pathManifest: ['src/x.ts'] }, gitConfig),
+      plannedTask('c', { priority: 3, pathManifest: ['src/y.ts'] }, gitConfig),
+    ];
+  }
+
+  async function claim(candidates: any[], body: Record<string, unknown> = {}) {
+    mockTasksFindMany.mockResolvedValueOnce(candidates);
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', ...body } }));
+    return { status: res.status, data: await res.json() };
+  }
+
+  const pickedIds = (data: any) => (data.workers ?? []).map((w: any) => w.taskId);
+  /** The response echoes each task's workspace.gitConfig; drop it so only behaviour is compared. */
+  const withoutGitConfig = (r: { status: number; data: any }) => JSON.parse(JSON.stringify(r), (k, v) => (k === 'gitConfig' ? undefined : v));
+
+  it('off: absent and explicit \'off\' give deep-equal responses and touch no planner I/O', async () => {
+    const absent = await claim(overlappingTrio(null));
+    const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
+    expect(withoutGitConfig(off)).toEqual(withoutGitConfig(absent));
+    // The legacy walk does not see in-batch overlap: all three are claimed.
+    expect(pickedIds(absent.data)).toEqual(['a', 'b', 'c']);
+    expect(mockLoadPlannerSignals).not.toHaveBeenCalled();
+    expect(mockFireClaimPlanRecord).not.toHaveBeenCalled();
+    expect(mockFireOrderedBehind).not.toHaveBeenCalled();
+  });
+
+  it('off: a deferral-only poll is identical too, diagnostics included', async () => {
+    const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
+    mockMissionsFindMany.mockResolvedValue(mission);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'] }]));
+    const absent = await claim([plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, null)]);
+    const off = await claim([plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, { claimPlanner: 'off' })]);
+    expect(withoutGitConfig(off)).toEqual(withoutGitConfig(absent));
+    expect(absent.data.diagnostics.deferrals).toEqual({ advisory_manifest: 1 });
+  });
+
+  it('record: same picks as off, and the plan is recorded beside them', async () => {
+    const off = await claim(overlappingTrio(null));
+    const record = await claim(overlappingTrio({ claimPlanner: 'record' }));
+    expect(pickedIds(record.data)).toEqual(pickedIds(off.data));
+    expect(mockLoadPlannerSignals).toHaveBeenCalledTimes(1);
+    expect(mockFireClaimPlanRecord).toHaveBeenCalledTimes(1);
+    const rec = mockFireClaimPlanRecord.mock.calls[0][0];
+    expect(rec.mode).toBe('record');
+    expect(rec.workspaceId).toBe('ws-1');
+    expect(rec.plan.picks.map((p: any) => p.id)).toEqual(['a', 'c']);
+    expect(rec.plan.orientation).toEqual([expect.objectContaining({ taskId: 'b', blockedBy: 'a', edge: 'path_overlap' })]);
+    expect(rec.actualPicks).toEqual(['a', 'b', 'c']);
+    // Record changes nothing: no ordered_behind rows.
+    expect(mockFireOrderedBehind).not.toHaveBeenCalled();
+  });
+
+  it('apply: claims a non-overlapping set and orders the rest behind its blocker', async () => {
+    const { data } = await claim(overlappingTrio({ claimPlanner: 'apply' }));
+    expect(pickedIds(data)).toEqual(['a', 'c']);
+    expect(mockFireOrderedBehind).toHaveBeenCalledTimes(1);
+    expect(mockFireOrderedBehind.mock.calls[0][0]).toMatchObject({ taskId: 'b', blockedBy: 'a', edge: 'path_overlap', orientation: 'in_flight' });
+    // The waiter is registered on the blocker so its release wakes b.
+    await new Promise(r => setTimeout(r, 0));
+    expect(mockRegisterClaimDeferralWaiters.mock.calls[0]).toEqual(['ws-1', [
+      { waitingTaskId: 'b', blockingTaskId: 'a', blockedPath: 'src/x.ts' },
+    ]]);
+    // No per-poll path_overlap deferral for the planned-out node.
+    const reasons = mockFireDeferralEvent.mock.calls.map((c: any[]) => `${c[0].taskId}:${c[0].reason}`);
+    expect(reasons).not.toContain('b:path_overlap');
+    expect(mockFireClaimPlanRecord.mock.calls[0][0]).toMatchObject({ mode: 'apply', actualPicks: ['a', 'c'] });
+  });
+
+  it('apply: the open-PR side goes first, whatever the score', async () => {
+    const cfg = { claimPlanner: 'apply' };
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([ // open PR pre-fetch: b's own earlier PR
+        { workspaceId: 'ws-1', taskId: 'b', prNumber: 7, prUrl: 'https://example.test/pull/7', status: 'completed', prLifecycleStatus: 'open' },
+      ]);
+    mockTasksFindMany
+      .mockResolvedValueOnce([
+        plannedTask('a', { priority: 9, pathManifest: ['src/x.ts'] }, cfg),
+        plannedTask('b', { priority: 1, pathManifest: ['src/x.ts'] }, cfg),
+      ])
+      .mockResolvedValueOnce([{ id: 'b', pathManifest: ['src/x.ts'] }]);
+    const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+    const data = await res.json();
+    expect(pickedIds(data)).toEqual(['b']);
+    const rec = mockFireClaimPlanRecord.mock.calls[0][0];
+    // The plan names b's open-PR node; the ledger row names the task that owns it.
+    expect(rec.plan.orientation[0]).toMatchObject({ taskId: 'a', blockedBy: 'pr:https://example.test/pull/7', reason: 'open_pr' });
+    expect(mockFireOrderedBehind.mock.calls[0][0]).toMatchObject({ taskId: 'a', blockedBy: 'b', orientation: 'open_pr' });
+  });
+
+  it('apply: never claims past the free slots, where the legacy walk would', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 2, type: 'user', authType: 'api', teamId: 'team-1' });
+    const four = (g: Record<string, unknown> | null) => ['p', 'q', 'r', 's'].map((id, i) => plannedTask(id, { priority: 9 - i, pathManifest: [`src/${id}.ts`] }, g));
+    const legacy = await claim(four(null));
+    expect(pickedIds(legacy.data)).toHaveLength(4);
+    const applied = await claim(four({ claimPlanner: 'apply' }));
+    expect(pickedIds(applied.data)).toEqual(['p', 'q']);
+  });
+
+  it('apply: a lost race moves to the next planned node', async () => {
+    const cfg = { claimPlanner: 'apply' };
+    const lost = { set: mock(() => ({ where: mock(() => ({ returning: mock(() => []), catch: mock(() => {}) })) })) };
+    mockTasksUpdate.mockReturnValueOnce(lost as any);
+    const { data } = await claim(overlappingTrio(cfg), { maxTasks: 1 });
+    // a was planned first and lost its race; with a gone, b is no longer
+    // ordered behind it and is the next planned node.
+    expect(pickedIds(data)).toEqual(['b']);
+  });
+
+  it('apply: a pick refused by an in-loop gate is dropped and the rest re-planned', async () => {
+    const cfg = { claimPlanner: 'apply' };
+    // a's mission is budget_exhausted: refused in the loop.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-X', status: 'budget_exhausted', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    const trio = overlappingTrio(cfg);
+    (trio[0] as any).missionId = 'mission-X';
+    const { data } = await claim(trio);
+    expect(pickedIds(data)).toEqual(['b', 'c']);
+    const reasons = mockFireDeferralEvent.mock.calls.map((c: any[]) => `${c[0].taskId}:${c[0].reason}`);
+    expect(reasons).toContain('a:mission_budget');
+  });
+
+  it('apply: repeated polls name the same (task, blocker) pair, and only through ordered_behind', async () => {
+    const cfg = { claimPlanner: 'apply' };
+    mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map([['holder', ['src/x.ts']]]));
+    for (let i = 0; i < 3; i++) {
+      const { data } = await claim([plannedTask('a', { pathManifest: ['src/x.ts'] }, cfg)]);
+      expect(pickedIds(data)).toEqual([]);
+      expect(data.diagnostics).toMatchObject({ reason: 'all_candidates_deferred', deferrals: { ordered_behind: 1 } });
+    }
+    const pairs = mockFireOrderedBehind.mock.calls.map((c: any[]) => `${c[0].taskId}<${c[0].blockedBy}`);
+    expect(new Set(pairs)).toEqual(new Set(['a<holder']));
+    expect(mockFireDeferralEvent.mock.calls.filter((c: any[]) => c[0].reason === 'path_overlap')).toHaveLength(0);
+  });
+
+  describe('advisory_manifest mutex under apply', () => {
+    const mission = [{ id: 'mission-A', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }];
+    const undeclared = (g: Record<string, unknown>) => [
+      plannedTask('a', { missionId: 'mission-A', pathManifest: ['**'] }, g),
+      plannedTask('b', { missionId: 'mission-A', pathManifest: ['**'] }, g),
+    ];
+    const predictions = (conf: number) => ({
+      ...emptyPlannerSignals(),
+      predictions: new Map([
+        ['a', { selected: ['src/a.ts'], setConfidence: conf, expectedSize: null, unknownScope: false }],
+        ['b', { selected: ['src/b.ts'], setConfidence: conf, expectedSize: null, unknownScope: false }],
+      ]),
+    });
+
+    beforeEach(() => { mockMissionsFindMany.mockResolvedValue(mission); });
+
+    it('is replaced by planner edges for confident, disjoint predicted scope', async () => {
+      mockLoadPlannerSignals.mockImplementation(async () => predictions(0.9));
+      const { data } = await claim(undeclared({ claimPlanner: 'apply', claimPlannerThresholds: THRESHOLDS }));
+      expect(pickedIds(data)).toEqual(['a', 'b']);
+    });
+
+    it('stays below thetaOrder', async () => {
+      mockLoadPlannerSignals.mockImplementation(async () => predictions(0.1));
+      const { data } = await claim(undeclared({ claimPlanner: 'apply', claimPlannerThresholds: THRESHOLDS }));
+      expect(pickedIds(data)).toEqual(['a']);
+      expect(mockFireOrderedBehind.mock.calls[0][0]).toMatchObject({ taskId: 'b', edge: 'no_scope_mutex' });
+    });
+
+    it('stays with thresholds null', async () => {
+      mockLoadPlannerSignals.mockImplementation(async () => predictions(0.9));
+      const { data } = await claim(undeclared({ claimPlanner: 'apply' }));
+      expect(pickedIds(data)).toEqual(['a']);
+    });
+  });
+
+  it('an explicit taskId claim never plans', async () => {
+    const cfg = { claimPlanner: 'apply' };
+    await claim([plannedTask('a', { pathManifest: ['src/x.ts'] }, cfg)], { taskId: 'a' });
+    expect(mockLoadPlannerSignals).not.toHaveBeenCalled();
+    expect(mockFireClaimPlanRecord).not.toHaveBeenCalled();
   });
 });

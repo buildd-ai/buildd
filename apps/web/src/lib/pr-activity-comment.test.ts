@@ -80,7 +80,7 @@ describe('status derivation — queued is never shown as working', () => {
     const header = headerOf(body);
     expect(header).toContain('**Fix 1 of 3 queued**');
     expect(header).toContain('waiting for a worker');
-    expect(header).toContain(`[task](${TASK})`);
+    expect(header).toContain(`[Open in Buildd](${TASK})`);
     expect(header).toContain(GLYPH.waiting);
     // The bug: "buildd is pushing fixes" while the fix task had no worker.
     expect(body).not.toContain(SPINNER_PATH);
@@ -180,6 +180,16 @@ describe('status derivation — queued is never shown as working', () => {
     expect(header).not.toContain(SPINNER_PATH);
   });
 
+  it('work cancelled by a supersession rule is an aside: a row, never the header, no motion', () => {
+    const before = headerOf(renderPrActivityComment([queued]));
+    const body = renderPrActivityComment([
+      queued, { kind: 'work_superseded', detail: 'fix cancelled · PR closed', at: at(20) },
+    ]);
+    expect(headerOf(body)).toBe(before);
+    expect(body).toContain('Superseded · fix cancelled · PR closed');
+    expect(body).not.toContain(SPINNER_PATH);
+  });
+
   for (const kind of ['review_escalated', 'review_failed', 'human_review_required', 'ci_exhausted'] as const) {
     it(`${kind} flags a human and stops moving`, () => {
       const body = renderPrActivityComment([reviewing, { kind, at: at(5) }]);
@@ -195,6 +205,22 @@ describe('status derivation — queued is never shown as working', () => {
     const closed = renderPrActivityComment([reviewing, fixing, { kind: 'closed_unmerged', at: at(40) }]);
     expect(headerOf(closed)).toContain(`${GLYPH.ended} **Closed without merging**`);
     expect(closed).not.toContain(SPINNER_PATH);
+  });
+
+  it('names the actual fix task in the header when its title is known', () => {
+    const named = {
+      ...queued,
+      taskTitle: '[reviewer retry #1] Fix flaky date parsing',
+    };
+    const header = headerOf(renderPrActivityComment([reviewing, named]));
+    expect(header).toContain('**Waiting for fix task: [reviewer retry #1] Fix flaky date parsing**');
+    expect(header).toContain('waiting for a worker');
+    expect(header).toContain(`[Open in Buildd](${TASK})`);
+    // The row stays within its own length budget — the title names the task
+    // in the header only, not in every row.
+    const row = renderPrActivityComment([reviewing, named]).split('\n').find((l) => l.includes('Changes requested'))!;
+    expect(row).toContain('fix 1 of 3 queued');
+    expect(row).not.toContain('flaky date parsing');
   });
 
   it('a lede correction is a timeline row, never the header', () => {

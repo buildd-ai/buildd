@@ -1,10 +1,11 @@
+import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
-import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
+import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
@@ -46,11 +47,17 @@ import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
-import { enforceServerSideEscalation, supersedeFixTaskOnApproval } from '@/lib/reviewer';
+import { enforceServerSideEscalation } from '@/lib/reviewer';
+import {
+  checkDispatch,
+  guardDispatchedTask,
+  reconcileSubjectEvent,
+  type DispatchProposal,
+  type SubjectEvent,
+} from '@/lib/supersession';
 import { parseReviewerOutput, applyConfidenceGate, REVIEWER_VERDICTS } from '@/lib/reviewer-output';
 import { attemptIdentityFrom } from '@/lib/attempt-identity';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
-import { findReviewTaskForPr } from '@/lib/pr-review-request';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
@@ -1181,9 +1188,149 @@ export async function PATCH(
   // outputReq !== 'none') so the planning-contract guard can see a PR that was
   // auto-detected from GitHub even on a task with no output requirement.
   let workerHasPR = !!worker.prUrl;
-  // Fetch mission ownership for every terminal transition. Completion also uses
-  // outputRequirement; failed/error transitions still need missionId so their
-  // final recorded cost can enforce the mission budget.
+  const sessionActualModel = resolveSessionActualModel(
+    actualModel,
+    (resultMeta ?? worker.resultMeta) as Parameters<typeof resolveSessionActualModel>[1],
+  );
+  // Call only after winning terminal ownership, including a silent refusal.
+  const accumulateTerminalSpend = async () => {
+    // Accumulate monthly spend + fire budget-threshold alerts (non-fatal).
+    // Guarded by the worker's prior status so a duplicate terminal PATCH can't
+    // double-count. Prefers the SDK's reported cost; falls back to a token-derived
+    // estimate (list prices) when cost is $0 — the OAuth / credit-pool case.
+    const wasTerminal = worker.status === 'completed' || worker.status === 'failed';
+    if (!wasTerminal) {
+      try {
+        const reportedCost = typeof costUsd === 'number'
+          ? costUsd
+          : parseFloat((worker.costUsd as string | null) ?? '0');
+        const usageForCost = (resultMeta?.modelUsage ?? (worker.resultMeta as any)?.modelUsage) as
+          | Parameters<typeof estimateCostUsd>[0]
+          | undefined;
+        // Per-model attribution first. It is EMPTY on seat/OAuth auth — the very
+        // case this estimate exists for — so fall back to pricing the session
+        // totals (which OAuth does populate) against the session's actual model.
+        const perModelEstimate = estimateCostUsd(usageForCost);
+        const totalsForCost = (resultMeta?.totalUsage ?? (worker.resultMeta as any)?.totalUsage) as
+          | Parameters<typeof estimateCostUsdFromTotals>[0]
+          | undefined;
+        const estimatedCost = perModelEstimate > 0
+          ? perModelEstimate
+          : estimateCostUsdFromTotals(totalsForCost, sessionActualModel);
+        const effectiveCost = reportedCost > 0 ? reportedCost : estimatedCost;
+
+        // Write effectiveCost back to the worker row so per-worker aggregations
+        // (e.g. mission spend) see a non-null value for OAuth workers that don't
+        // self-report costUsd. Only overwrite when the runner didn't report a
+        // positive cost (reportedCost > 0 means line 387 already set the right value).
+        if (effectiveCost > 0 && reportedCost <= 0) {
+          updates.costUsd = effectiveCost.toString();
+        }
+
+        // Codex and tenant-credential spend are billed elsewhere, so they do
+        // not draw on the pool. The worker row above still carries the cost
+        // either way.
+        const poolTaskRow = terminalTaskRow[0];
+        const countsTowardPool = countsTowardAgentSdkCreditPool({
+          backend: poolTaskRow?.backend ?? null,
+          authType: account.authType,
+          tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
+        });
+
+        if (effectiveCost > 0 && countsTowardPool) {
+          // Aggregate budget is tracked at the team level so all token-accounts
+          // under the same owner share one monthly cap (the Claude Agent SDK
+          // credit pool is a single pool per subscription).
+          //
+          // Optimistic locking: read the team budget, compute the next state, then
+          // commit only if the row is unchanged since we read it (CAS on cost+month).
+          // neon-http has no interactive transactions, so we retry on contention —
+          // concurrent worker completions under the same team must not lose spend
+          // or mis-fire threshold alerts by racing on a read-modify-write.
+          const envBudget = process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null;
+          let committed = false;
+
+          for (let attempt = 0; attempt < 5 && !committed; attempt++) {
+            // Explicit column list: an unfiltered teams query selects every column
+            // in schema.ts, so dropping one breaks this loop for the length of a
+            // build. These four are the whole budget CAS working set.
+            const team = await db.query.teams.findFirst({
+              where: eq(teams.id, account.teamId),
+              columns: {
+                monthlyBudgetUsd: true,
+                monthlyCostUsd: true,
+                monthlyCostMonth: true,
+                budgetAlertsSent: true,
+              },
+            });
+            if (!team) break;
+
+            const budgetUsd = team.monthlyBudgetUsd != null
+              ? parseFloat(team.monthlyBudgetUsd.toString())
+              : envBudget;
+            const prevCost = (team.monthlyCostUsd as string | null) ?? '0';
+            const prevMonth = team.monthlyCostMonth ?? null;
+
+            const result = applyBudgetUsage(
+              {
+                monthlyCostUsd: parseFloat(prevCost),
+                monthlyCostMonth: prevMonth,
+                alertsSent: (team.budgetAlertsSent ?? []) as number[],
+              },
+              effectiveCost,
+              budgetUsd,
+              new Date(),
+            );
+
+            // CAS guard: a concurrent writer that won the race will have changed
+            // cost or month (cost strictly moves on every charge), failing this
+            // WHERE and returning no rows, so we re-read and retry.
+            const rows = await db
+              .update(teams)
+              .set({
+                monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
+                monthlyCostMonth: result.monthlyCostMonth,
+                budgetAlertsSent: result.alertsSent,
+              })
+              .where(and(
+                eq(teams.id, account.teamId),
+                eq(teams.monthlyCostUsd, prevCost),
+                prevMonth === null ? isNull(teams.monthlyCostMonth) : eq(teams.monthlyCostMonth, prevMonth),
+              ))
+              .returning({ id: teams.id });
+
+            if (rows.length === 0) continue; // lost the race — re-read and retry
+            committed = true;
+
+            for (const threshold of result.crossed) {
+              void notifyTeamOf({ teamId: account.teamId }, 'needsAttention', {
+                priority: threshold >= 100 ? 1 : 0,
+                title: `Buildd budget ${threshold}% used`,
+                message: budgetUsd != null
+                  ? `$${result.monthlyCostUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} Agent SDK credit used this month (${result.monthlyCostMonth}).`
+                  : `$${result.monthlyCostUsd.toFixed(2)} spent this month (${result.monthlyCostMonth}).`,
+              });
+            }
+          }
+
+          if (!committed) {
+            console.warn(`[Worker ${id}] budget update lost contention after retries; charge of $${effectiveCost.toFixed(4)} not recorded`);
+          }
+        }
+      } catch (budgetErr) {
+        console.error(`[Worker ${id}] budget tracking failed:`, budgetErr);
+      }
+    }
+  };
+
+  const releaseTerminalSeat = async () => {
+    if ((LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status) && account.authType === 'oauth') {
+      await db.update(accounts)
+        .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` })
+        .where(eq(accounts.id, account.id));
+    }
+  };
+
   const isTerminalStatus = status === 'completed' || status === 'failed' || status === 'error';
 
   // §6d Passive observed-touches accumulation.
@@ -1193,6 +1340,11 @@ export async function PATCH(
   // which must not re-offer the whole accumulated list every tick: that would
   // put a SELECT plus an INSERT attempt for up to 500 paths on the hot sync
   // path to discover, every time, that they are all already held.
+  const sessionObservedTouches = [...new Set([
+    ...(Array.isArray(worker.observedTouches) ? worker.observedTouches as string[] : []),
+    ...(Array.isArray(touchedPaths)
+      ? touchedPaths.filter((path: unknown): path is string => typeof path === 'string') : []),
+  ])];
   let newlyObservedPaths: string[] = [];
   if (isTerminalStatus) {
     // Ground truth for the task-area-prediction experiment, captured HERE
@@ -1257,6 +1409,9 @@ export async function PATCH(
     newlyObservedPaths = (updates.observedTouches as string[]).filter(p => !existingSet.has(p));
   }
 
+  // Fetch mission ownership for every terminal transition. Completion also uses
+  // outputRequirement; failed/error transitions still need missionId so their
+  // final recorded cost can enforce the mission budget.
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
         // `taskClass` is here for the Option A′ auto-detect guard below:
@@ -1265,7 +1420,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1288,7 +1443,7 @@ export async function PATCH(
   // Captured outside the closure: narrowing of `worker` does not survive into a
   // function body.
   const workerStartedAt = worker.startedAt ?? null;
-  async function hasDeliverableArtifact(): Promise<boolean> {
+  async function hasDeliverableArtifact(strict = false): Promise<boolean> {
     // startedAt is written on the first `running` PATCH, so a completing worker
     // has one; epoch keeps a null from excluding everything.
     const workStart = workerStartedAt ? new Date(workerStartedAt) : new Date(0);
@@ -1302,7 +1457,14 @@ export async function PATCH(
           and(eq(artifacts.missionId, taskMissionId), isNull(artifacts.workerId), gte(artifacts.updatedAt, workStart)),
         )
       : eq(artifacts.workerId, id);
-    const rows = await db.query.artifacts.findMany({ where, limit: 1 });
+    const rows = await db.query.artifacts.findMany({
+      where: strict ? and(where,
+        sql`COALESCE(${artifacts.metadata}->>'salvaged', 'false') <> 'true'`,
+        sql`COALESCE(${artifacts.key}, '') NOT LIKE 'cloud-run-report:%'`,
+        or(not(inArray(artifacts.type, ['screenshot', 'diff', 'file', 'data', 'link', 'recording', 'calendar_event'])), isNotNull(artifacts.key)),
+      ) : where,
+      limit: 1,
+    });
     return rows.length > 0;
   }
 
@@ -1591,7 +1753,7 @@ export async function PATCH(
         // future arm cannot be added that persists the payload and forgets the
         // ledger (or the reverse).
         const frictionSignature = fireGateEvent({
-          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          gate: reason === 'silent_completion' ? GATE_SLUGS.SILENT_COMPLETION : GATE_SLUGS.OUTPUT_REQUIREMENT,
           surface: 'PATCH /api/workers/[id]',
           outcome: 'rejected',
           reason: `completion refused: outputRequirement ${reason} not satisfied`,
@@ -1668,6 +1830,65 @@ export async function PATCH(
 
         return frictionSignature;
       };
+
+      if (isSilentCompletion({
+        status, outputRequirement: outputReq, kind: terminalTaskRow[0]?.kind,
+        pathManifest: terminalTaskRow[0]?.pathManifest, taskClass: terminalTaskRow[0]?.taskClass,
+        isReviewer: isReviewerTask, commitCount: effectiveCommits,
+        filesChanged: Math.max(filesChanged ?? 0, worker.filesChanged ?? 0),
+        dirtyWorktree: effectiveDirtyWorktree,
+        observedTouches: sessionObservedTouches,
+        hasPR, mergedAt: worker.mergedAt, discardEdits,
+        summary: body.summary, summarySource: body.summarySource,
+      }) && !(await hasDeliverableArtifact(true))) {
+        const frictionSignature = await persistRejectedCompletionPayload('silent_completion');
+        const message = 'Silent completion refused: no editing evidence or deliverable, and the summary is unauthored narration or a fragment.';
+        // Fence on the active worker: duplicate completion requests cannot spend
+        // the retry budget twice or overwrite another attempt's outcome.
+        const failed = await db.update(workers).set({
+          status: 'failed', error: message, exitCause: 'code_failure',
+          completedAt: new Date(), updatedAt: new Date(),
+        }).where(and(eq(workers.id, id), not(inArray(workers.status, TERMINAL_WORKER_STATUSES)))).returning({ id: workers.id });
+        if (!failed.length) return workerConflictResponse(id);
+        await accumulateTerminalSpend();
+        // Persist metrics before the mission's spend aggregation reads them.
+        await db.update(workers).set({ ...updates, status: 'failed', error: message,
+          exitCause: 'code_failure', completedAt: new Date() }).where(eq(workers.id, id));
+        await releaseTerminalSeat();
+        if (taskMissionId) {
+          try { await checkAndExhaustMissionBudget(taskMissionId); }
+          catch (err) { console.error(`[Worker ${id}] Mission budget check failed:`, err); }
+        }
+        if (worker.taskId) {
+          const previousContext = (terminalTaskRow[0]?.context ?? {}) as Record<string, unknown>;
+          const next = silentCompletionRetryContext(previousContext);
+          const settled = await db.update(tasks).set({
+            status: next.retry ? 'pending' : 'failed', context: next.context,
+            claimedBy: null, claimedAt: null, startAt: null,
+            result: { summarySource: 'fallback' },
+            updatedAt: new Date(),
+          }).where(and(
+            eq(tasks.id, worker.taskId),
+            eq(tasks.status, terminalTaskRow[0]!.status),
+            sql`COALESCE(${tasks.context}->>'silentCompletionRetryCount', '0') = ${String(previousContext.silentCompletionRetryCount ?? 0)}`,
+          )).returning({ id: tasks.id });
+          if (settled.length && !next.retry) {
+            await db.insert(missionNotes).values({
+              missionId: taskMissionId, taskId: worker.taskId,
+              authorType: 'system', type: 'warning', status: 'open',
+              title: 'Silent completion retry exhausted', body: message,
+            });
+          }
+          await releaseAndNotify(worker.taskId, 'abandoned');
+          if (settled.length) {
+            await triggerEvent(channels.workspace(worker.workspaceId), events.TASK_UPDATED, { taskId: worker.taskId, status: next.retry ? 'pending' : 'failed' });
+            if (!next.retry) await resolveCompletedTask(worker.taskId, worker.workspaceId);
+          }
+          await triggerEvent(channels.worker(id), events.WORKER_FAILED, { workerId: id, taskId: worker.taskId, status: 'failed', error: message });
+          await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_FAILED, { workerId: id, taskId: worker.taskId, status: 'failed', error: message });
+        }
+        return NextResponse.json({ error: message, hint: 'silent_completion', gate: GATE_SLUGS.SILENT_COMPLETION, frictionSignature }, { status: 400 });
+      }
 
       // A visual-auditor task (the mission's [surface audit]) is gated on its
       // own evidence, which REPLACES hasDeliverableArtifact: a summary, a PR or
@@ -2591,140 +2812,7 @@ export async function PATCH(
   if (status === 'completed' || status === 'failed' || status === 'error') {
     updates.completedAt = new Date();
 
-    // Resolved once: the cost estimate needs it to price seat-session totals and
-    // the routing-outcome row needs it for task_outcomes.actual_model.
-    const sessionActualModel = resolveSessionActualModel(
-      actualModel,
-      (resultMeta ?? worker.resultMeta) as Parameters<typeof resolveSessionActualModel>[1],
-    );
-
-    // Accumulate monthly spend + fire budget-threshold alerts (non-fatal).
-    // Guarded by the worker's prior status so a duplicate terminal PATCH can't
-    // double-count. Prefers the SDK's reported cost; falls back to a token-derived
-    // estimate (list prices) when cost is $0 — the OAuth / credit-pool case.
-    const wasTerminal = worker.status === 'completed' || worker.status === 'failed';
-    if (!wasTerminal) {
-      try {
-        const reportedCost = typeof costUsd === 'number'
-          ? costUsd
-          : parseFloat((worker.costUsd as string | null) ?? '0');
-        const usageForCost = (resultMeta?.modelUsage ?? (worker.resultMeta as any)?.modelUsage) as
-          | Parameters<typeof estimateCostUsd>[0]
-          | undefined;
-        // Per-model attribution first. It is EMPTY on seat/OAuth auth — the very
-        // case this estimate exists for — so fall back to pricing the session
-        // totals (which OAuth does populate) against the session's actual model.
-        const perModelEstimate = estimateCostUsd(usageForCost);
-        const totalsForCost = (resultMeta?.totalUsage ?? (worker.resultMeta as any)?.totalUsage) as
-          | Parameters<typeof estimateCostUsdFromTotals>[0]
-          | undefined;
-        const estimatedCost = perModelEstimate > 0
-          ? perModelEstimate
-          : estimateCostUsdFromTotals(totalsForCost, sessionActualModel);
-        const effectiveCost = reportedCost > 0 ? reportedCost : estimatedCost;
-
-        // Write effectiveCost back to the worker row so per-worker aggregations
-        // (e.g. mission spend) see a non-null value for OAuth workers that don't
-        // self-report costUsd. Only overwrite when the runner didn't report a
-        // positive cost (reportedCost > 0 means line 387 already set the right value).
-        if (effectiveCost > 0 && reportedCost <= 0) {
-          updates.costUsd = effectiveCost.toString();
-        }
-
-        // Codex and tenant-credential spend are billed elsewhere, so they do
-        // not draw on the pool. The worker row above still carries the cost
-        // either way.
-        const poolTaskRow = terminalTaskRow[0];
-        const countsTowardPool = countsTowardAgentSdkCreditPool({
-          backend: poolTaskRow?.backend ?? null,
-          authType: account.authType,
-          tenantId: ((poolTaskRow?.context as Record<string, unknown> | null)?.tenantContext as { tenantId?: string } | undefined)?.tenantId ?? null,
-        });
-
-        if (effectiveCost > 0 && countsTowardPool) {
-          // Aggregate budget is tracked at the team level so all token-accounts
-          // under the same owner share one monthly cap (the Claude Agent SDK
-          // credit pool is a single pool per subscription).
-          //
-          // Optimistic locking: read the team budget, compute the next state, then
-          // commit only if the row is unchanged since we read it (CAS on cost+month).
-          // neon-http has no interactive transactions, so we retry on contention —
-          // concurrent worker completions under the same team must not lose spend
-          // or mis-fire threshold alerts by racing on a read-modify-write.
-          const envBudget = process.env.BUDGET_MONTHLY_USD ? parseFloat(process.env.BUDGET_MONTHLY_USD) : null;
-          let committed = false;
-
-          for (let attempt = 0; attempt < 5 && !committed; attempt++) {
-            // Explicit column list: an unfiltered teams query selects every column
-            // in schema.ts, so dropping one breaks this loop for the length of a
-            // build. These four are the whole budget CAS working set.
-            const team = await db.query.teams.findFirst({
-              where: eq(teams.id, account.teamId),
-              columns: {
-                monthlyBudgetUsd: true,
-                monthlyCostUsd: true,
-                monthlyCostMonth: true,
-                budgetAlertsSent: true,
-              },
-            });
-            if (!team) break;
-
-            const budgetUsd = team.monthlyBudgetUsd != null
-              ? parseFloat(team.monthlyBudgetUsd.toString())
-              : envBudget;
-            const prevCost = (team.monthlyCostUsd as string | null) ?? '0';
-            const prevMonth = team.monthlyCostMonth ?? null;
-
-            const result = applyBudgetUsage(
-              {
-                monthlyCostUsd: parseFloat(prevCost),
-                monthlyCostMonth: prevMonth,
-                alertsSent: (team.budgetAlertsSent ?? []) as number[],
-              },
-              effectiveCost,
-              budgetUsd,
-              new Date(),
-            );
-
-            // CAS guard: a concurrent writer that won the race will have changed
-            // cost or month (cost strictly moves on every charge), failing this
-            // WHERE and returning no rows, so we re-read and retry.
-            const rows = await db
-              .update(teams)
-              .set({
-                monthlyCostUsd: result.monthlyCostUsd.toFixed(6),
-                monthlyCostMonth: result.monthlyCostMonth,
-                budgetAlertsSent: result.alertsSent,
-              })
-              .where(and(
-                eq(teams.id, account.teamId),
-                eq(teams.monthlyCostUsd, prevCost),
-                prevMonth === null ? isNull(teams.monthlyCostMonth) : eq(teams.monthlyCostMonth, prevMonth),
-              ))
-              .returning({ id: teams.id });
-
-            if (rows.length === 0) continue; // lost the race — re-read and retry
-            committed = true;
-
-            for (const threshold of result.crossed) {
-              void notifyTeamOf({ teamId: account.teamId }, 'needsAttention', {
-                priority: threshold >= 100 ? 1 : 0,
-                title: `Buildd budget ${threshold}% used`,
-                message: budgetUsd != null
-                  ? `$${result.monthlyCostUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} Agent SDK credit used this month (${result.monthlyCostMonth}).`
-                  : `$${result.monthlyCostUsd.toFixed(2)} spent this month (${result.monthlyCostMonth}).`,
-              });
-            }
-          }
-
-          if (!committed) {
-            console.warn(`[Worker ${id}] budget update lost contention after retries; charge of $${effectiveCost.toFixed(4)} not recorded`);
-          }
-        }
-      } catch (budgetErr) {
-        console.error(`[Worker ${id}] budget tracking failed:`, budgetErr);
-      }
-    }
+    await accumulateTerminalSpend();
 
     // Update task status + snapshot deliverables
     // Skip task update for budget errors — already handled above
@@ -4033,12 +4121,7 @@ export async function PATCH(
   // activeSessions is incremented at claim time; every path that moves a live worker
   // to a terminal state must decrement it so Gate B (maxConcurrentSessions) doesn't
   // permanently block claims after all real work is done.
-  if (isTerminalStatus && (LIVE_WORKER_STATUSES as readonly string[]).includes(worker.status) && account.authType === 'oauth') {
-    await db
-      .update(accounts)
-      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - 1, 0)` })
-      .where(eq(accounts.id, account.id));
-  }
+  if (isTerminalStatus) await releaseTerminalSeat();
 
   // Release path claims on terminal status so waiting tasks can proceed.
   //
@@ -4646,7 +4729,7 @@ async function handleReviewerOutcomeIfNeeded(
 ): Promise<void> {
   const reviewerTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, reviewerTaskId),
-    columns: { id: true, category: true, context: true, missionId: true, title: true },
+    columns: { id: true, category: true, context: true, missionId: true, title: true, createdAt: true },
   });
 
   if (!reviewerTask) return;
@@ -4920,22 +5003,26 @@ async function handleReviewerOutcomeIfNeeded(
     }
   }
 
+  // The verdict is recorded: let the supersession table cancel what it made
+  // obsolete — every open review fix on an approve, and on any verdict a
+  // not-yet-started fix that answers an older round. Before the switch, so an
+  // approve's merge below never races a fix that is about to push. Never throws.
+  const verdictEvent: SubjectEvent = {
+    kind: 'verdict',
+    verdict: effectiveVerdict,
+    workspaceId,
+    prNumber,
+    reviewerTaskId,
+    headSha,
+    roundCreatedAt: reviewerTask.createdAt ?? null,
+    originalTaskId,
+    door: 'PATCH /api/workers/[id] (reviewer verdict)',
+    pr: { installationId, repoFullName },
+  };
+  await reconcileSubjectEvent(verdictEvent);
+
   switch (effectiveVerdict) {
     case 'approve': {
-      // An earlier changes-requested verdict may still have a fix task queued
-      // or running on this PR — that verdict is now stale. Cancel it before it
-      // can push a commit and force a re-review on an already-approved PR
-      // (task d57ba617).
-      await supersedeFixTaskOnApproval({
-        workspaceId,
-        originalTaskId,
-        installationId,
-        repoFullName,
-        prNumber,
-      }).catch((err) =>
-        console.error(`[reviewer] supersedeFixTaskOnApproval threw for PR #${prNumber}:`, err),
-      );
-
       // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
       const approvePolicy = reviewPolicy;
 
@@ -5151,10 +5238,20 @@ async function handleReviewerOutcomeIfNeeded(
         return;
       }
 
-      // Any newer round supersedes this verdict, including unfinished rounds.
-      const newestReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
-      if (newestReviewTask?.id !== reviewerTaskId) {
-        console.log(`[reviewer] Skipping stale fix dispatch for PR #${prNumber}`);
+      // Dispatch guard: the supersession table in skip_dispatch mode. A newer
+      // round (finished or not), an approve, or a merged/closed PR means this
+      // fix would be cancelled the moment it existed — so it is never created.
+      const fixProposal: DispatchProposal = {
+        kind: 'fix',
+        workspaceId,
+        prNumber,
+        parentTaskId: originalTaskId,
+        triggeringReviewTaskId: reviewerTaskId,
+        door: 'PATCH /api/workers/[id] (request-changes fix)',
+      };
+      const dispatchCheck = await checkDispatch(fixProposal);
+      if (dispatchCheck.verdict === 'skip_dispatch') {
+        console.log(`[reviewer] Skipping fix dispatch for PR #${prNumber}: ${dispatchCheck.rule}`);
         return;
       }
 
@@ -5230,17 +5327,12 @@ async function handleReviewerOutcomeIfNeeded(
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
       });
-      // Approval can sweep zero fixes after the initial check but before our
-      // insert. Re-read after insertion; together with the approval sweep this
-      // closes that gap. Target only our row so a newer round's fix is kept.
-      const dispatchReviewTask = await findReviewTaskForPr(workspaceId, prNumber);
-      if (dispatchReviewTask?.id !== reviewerTaskId) {
-        await supersedeFixTaskOnApproval({
-          workspaceId, originalTaskId, installationId, repoFullName, prNumber,
-          fixTaskId: retryTask.id, reason: 'newer_review',
-        });
-        return;
-      }
+      // A newer round or an approve can land between the check above and the
+      // insert, and the approve's own reconcile may have found nothing to
+      // cancel yet. Re-run the guard against the inserted row; it cancels only
+      // this row (through the same CAS and ledger), so a newer round's fix is
+      // kept.
+      if (await guardDispatchedTask(fixProposal, retryTask.id, verdictEvent)) return;
       // Approval may have cancelled the row while we read the newest round.
       const liveRetry = await db.query.tasks.findFirst({
         where: eq(tasks.id, retryTask.id), columns: { status: true },
@@ -5266,6 +5358,7 @@ async function handleReviewerOutcomeIfNeeded(
             maxIterations,
             note: output.feedback ?? output.summary ?? null,
             taskUrl: taskActivityUrl(retryTask.id),
+            taskTitle: retryTask.title,
           },
           workspaceId,
         });

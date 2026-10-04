@@ -77,3 +77,6 @@ scripts/dispatch-authority-guard.test.ts
 # Scans packages/dispatch-contract and apps/dispatch for imports of Buildd core,
 # its schema or a database driver: the Dispatch side must stay producer-agnostic.
 packages/dispatch-contract/src/no-producer-imports.test.ts
+# One Playwright version across every package.json, bun.lock and Renovate, and
+# no bare `bunx|npx playwright install` in runner/CI/script files.
+scripts/playwright-pin.test.ts

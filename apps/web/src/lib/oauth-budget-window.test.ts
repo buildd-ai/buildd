@@ -13,7 +13,7 @@ mock.module('@buildd/core/db', () => ({
     select: (shape: Record<string, unknown>) => {
       const isCount = !!shape && 'count' in shape;
       const where = (pred: any) => {
-        if (isCount) lastCountWhere = pred;
+        lastCountWhere = pred;
         return Promise.resolve(isCount ? mockLiveCountRows : mockWorkerRows);
       };
       return {
@@ -34,7 +34,7 @@ mock.module('@buildd/core/db', () => ({
 
 const { loadOauthEpisodes, measureOauthWindow, countLiveSeatWorkers, OAUTH_EPISODE_HORIZON_DAYS } =
   await import('./oauth-budget-window');
-const { learnOauthCapacity } = await import('@buildd/core/oauth-budget');
+const { learnOauthCapacity, oauthBudgetPressure } = await import('@buildd/core/oauth-budget');
 const { PgDialect } = await import('drizzle-orm/pg-core');
 
 function renderCountWhere(): { sql: string; params: unknown[] } {
@@ -218,4 +218,34 @@ describe('measureOauthWindow', () => {
 
     expect(result.usage.turns).toBe(7);
   });
+});
+
+it('measurement excludes Codex and tenant work just like the live seat count', async () => {
+  await measureOauthWindow({accountIds: ['acc1'], now: NOW, lastResetsAt: null});
+  const {sql, params} = renderCountWhere();
+  expect(params).toContain('codex');
+  expect(sql).toContain('tenantId');
+});
+
+it('expired measured workers are inert even with recent historical capacity', async () => {
+  mockWorkerRows = [{createdAt: new Date(NOW.getTime() - 6 * HOUR), turns: 9999, model: null}];
+  const result = await measureOauthWindow({accountIds: ['acc1'], now: NOW, lastResetsAt: null});
+  expect(result.usage.turns).toBe(0);
+});
+
+it('PR #2254 stale low-capacity episodes cannot masquerade as current-window usage', async () => {
+  // Historical samples remain useful for learning, but their expired work must
+  // never become a live 100% reading. Dropping all elapsed training episodes
+  // would leave fewer than MIN_SAMPLES forever.
+  mockEpisodeRows = Array.from({length: 5}, (_, i) => ({
+    exhaustedAt: new Date(NOW.getTime() - (6 + i) * HOUR),
+    resetsAt: new Date(NOW.getTime() - 5 * HOUR),
+    workerCount: 2, turns: 20, inputTokens: 500, outputTokens: 0,
+    weightedTurns: 20, weightedTokens: 500,
+  }));
+  mockWorkerRows = [{createdAt: new Date(NOW.getTime() - 6 * HOUR), turns: 200, inputTokens: 5000, model: null}];
+  const episodes = await loadOauthEpisodes(['acc1'], undefined, NOW);
+  const measurement = await measureOauthWindow({accountIds: ['acc1'], now: NOW, lastResetsAt: episodes[0].resetsAt});
+  const pressure = oauthBudgetPressure({capacity: learnOauthCapacity(episodes), usage: measurement.usage, now: NOW, windowStartedAt: measurement.windowStartedAt});
+  expect(pressure.pct).toBe(0);
 });

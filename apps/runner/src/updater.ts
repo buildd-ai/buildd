@@ -264,6 +264,27 @@ async function bunInstallAsync(cwd: string, timeoutMs = 120_000): Promise<void> 
 }
 
 /**
+ * Install the Chromium build the just-installed tree pins, through the repo's
+ * own Playwright (`bun run browser:install` in apps/runner). A no-op when that
+ * build is already present. It must be the repo's binary: a bare `bunx
+ * playwright` resolves a globally cached version, and `playwright install` from
+ * any version garbage-collects every build it does not own — including the one
+ * the browser self-check launches. See playwright-pin.ts.
+ */
+async function browserInstallAsync(installDir: string, timeoutMs = 5 * 60_000): Promise<void> {
+  const proc = Bun.spawn(['bun', 'run', 'browser:install'], {
+    cwd: join(installDir, 'apps', 'runner'), stdout: 'pipe', stderr: 'pipe',
+  });
+  const timer = setTimeout(() => { try { proc.kill(); } catch { /* already gone */ } }, timeoutMs);
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(`bun run browser:install failed (exit ${exitCode}): ${stderr.trim().slice(-500)}`);
+  }
+}
+
+/**
  * The exec seam `applyUpdate`/`rollbackTo` run through. Injectable for the
  * same reason `fsOps` is: tests supply fakes that never touch a real git repo
  * or spawn a real `bun install`, so the whole suite stays fast, deterministic
@@ -273,12 +294,15 @@ export interface UpdateExecOps {
   git: (args: string[], cwd: string, timeoutMs?: number) => Promise<string>;
   bunVersion: (cwd: string) => Promise<void>;
   bunInstall: (cwd: string) => Promise<void>;
+  /** Pinned-browser install after a reinstall; omitted ⇒ skipped. */
+  browserInstall?: (installDir: string) => Promise<void>;
 }
 
 const defaultExecOps: UpdateExecOps = {
   git: gitAsync,
   bunVersion: bunVersionAsync,
   bunInstall: bunInstallAsync,
+  browserInstall: browserInstallAsync,
 };
 
 /**
@@ -308,10 +332,20 @@ async function cleanReinstall(
     await execOps.bunVersion(installDir);
     fsOps.rmSync(join(installDir, 'node_modules'), { recursive: true, force: true });
     await execOps.bunInstall(installDir);
-    return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Update failed' };
   }
+  // A Playwright bump arrives through this reinstall, and its Chromium build
+  // with it. Best-effort: a host that cannot download a browser still runs,
+  // it just reports browser: no, which the self-check logs with the repair.
+  if (execOps.browserInstall) {
+    try {
+      await execOps.browserInstall(installDir);
+    } catch (err: any) {
+      console.warn(`[updater] pinned browser install failed (non-fatal): ${err?.message ?? err}`);
+    }
+  }
+  return { success: true };
 }
 
 /**

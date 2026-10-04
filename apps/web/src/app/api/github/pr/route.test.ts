@@ -236,7 +236,12 @@ mock.module('@/lib/base-refresh', () => ({
   refreshBehindPr: (p: any) => mockRefreshBehindPr(p),
   checkBaseRefreshHold: (p: any) => mockCheckBaseRefreshHold(p),
 }));
-mock.module('@/lib/retry-pr-supersession', () => ({ closeAncestorRetryPrs: mockCloseAncestorRetryPrs }));
+// The runner's recorded resume cause for the worker opening the PR.
+const mockResolveSupersessionCause = mock(async (_workerId: any) => 'unknown' as string);
+mock.module('@/lib/retry-pr-supersession', () => ({
+  closeAncestorRetryPrs: mockCloseAncestorRetryPrs,
+  resolveSupersessionCause: mockResolveSupersessionCause,
+}));
 
 import { POST, PATCH, PUT, GET } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -5559,6 +5564,9 @@ describe('Retry PR body generation', () => {
     if (patchedBody) {
       expect(uuidPattern.test(patchedBody)).toBe(false);
     }
+    // The PR was adopted — updated in place — so the stamp says so, replacing
+    // the old "resume failed; new branch" line rather than appending beside it.
+    expect(patchedBody).toBe('Original body\n\n---\n_Attempt 2/3 — updated this PR._');
   });
 });
 
@@ -5819,5 +5827,71 @@ describe('create_pr — retry supersession', () => {
     const data = await openPr({ taskClass: 'attempt', context: { iteration: 1 } });
     expect(data.ok).toBe(true);
     expect(data.supersededPrs).toBeUndefined();
+  });
+
+  // Regression: a review fix that could not check out its subject PR's branch
+  // (a sibling worktree held it) cut a fresh branch from the same tip and
+  // opened a SECOND PR, closing the subject as superseded. While the subject
+  // is open the retry must update it; a fresh PR only when the heads diverged.
+  describe('a retry bound to a still-open PR', () => {
+    const SUBJECT_BRANCH = 'buildd/t-8-original';
+
+    async function postRetryPr(compareStatus: string) {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(retryWorker({ taskClass: 'attempt', reviewerRetryPrNumber: 70, context: { iteration: 1 } }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMissionsFindFirst.mockResolvedValue(null);
+      mockGithubApi.mockReset();
+      mockGithubApi.mockImplementation(async (_inst: number, path: string, init?: any) => {
+        if (path.includes('/pulls?head=')) return [];
+        if (path.endsWith('/pulls/70')) {
+          return { number: 70, state: 'open', merged: false, head: { ref: SUBJECT_BRANCH, sha: 'subject-sha' }, html_url: 'https://github.com/owner/repo/pull/70' };
+        }
+        if (path.includes('/compare/')) return { status: compareStatus };
+        if (path.endsWith('/pulls') && init?.method === 'POST') {
+          return { number: 77, html_url: 'https://github.com/owner/repo/pull/77', state: 'open', title: 'Fix it', base: { ref: 'dev' } };
+        }
+        return {};
+      });
+      return POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-9', title: 'Fix it', head: WORKER_BRANCH },
+      }));
+    }
+
+    const openedPrs = () => mockGithubApi.mock.calls.filter((c: any[]) => String(c[1]).endsWith('/pulls') && c[2]?.method === 'POST');
+
+    it('REGRESSION (lineage fork): refuses a second PR when the new branch only adds to the subject — no PR opened, nothing closed', async () => {
+      const res = await postRetryPr('ahead');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.subjectPr.number).toBe(70);
+      expect(body.hint).toContain(`git push origin HEAD:${SUBJECT_BRANCH}`);
+      expect(openedPrs()).toHaveLength(0);
+      expect(mockCloseAncestorRetryPrs).not.toHaveBeenCalled();
+    });
+
+    it('opens a fresh PR only when the heads diverged and the runner recorded the branch missing, and says so on the PR', async () => {
+      mockResolveSupersessionCause.mockResolvedValueOnce('missing');
+      const res = await postRetryPr('diverged');
+      expect(res.status).toBe(200);
+      expect(openedPrs()).toHaveLength(1);
+      expect(mockResolveSupersessionCause).toHaveBeenCalledWith('w-9');
+      const body = JSON.parse(openedPrs()[0][2].body).body as string;
+      expect(body).toContain("PR #70's branch was missing on the runner and the heads diverged");
+      expect(body).not.toContain('resume failed');
+      expect(mockCloseAncestorRetryPrs).toHaveBeenCalledTimes(1);
+    });
+
+    it('REGRESSION ("resume failed; new branch" with no recorded failure): refuses a diverged head and opens no PR', async () => {
+      mockResolveSupersessionCause.mockResolvedValueOnce('unknown');
+      const res = await postRetryPr('diverged');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.subjectPr.number).toBe(70);
+      expect(body.hint).toContain(`git rebase origin/${SUBJECT_BRANCH}`);
+      expect(openedPrs()).toHaveLength(0);
+      expect(mockCloseAncestorRetryPrs).not.toHaveBeenCalled();
+    });
   });
 });
