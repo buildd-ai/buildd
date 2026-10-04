@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
-import { UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
 
 // The goal-criteria quality shadow (lib/goal-criteria-quality-shadow.ts) runs
 // for real after the response; only its decision call is stubbed, and gate
@@ -111,17 +110,31 @@ mock.module('@/lib/mission-integration-branch', () => ({
   reportMissionBranchUnresolved: mockReportMissionBranchUnresolved,
 }));
 
-let dispatchUnblockedTaskCalls: Array<any> = [];
+// Mission-release wakes: one wakeTasks call per release, carrying the cause.
+let wakeTasksCalls: Array<{ ids: string[]; cause: string }> = [];
 let shouldDispatchReject = false;
+const wokenIds = () => wakeTasksCalls.flatMap(c => c.ids);
 
-const mockDispatchUnblockedTask = mock(async (task: any, workspace: any) => {
+const mockWakeTasks = mock(async (ids: readonly string[], cause: string) => {
   if (shouldDispatchReject) {
     throw new Error('Dispatch failed');
   }
-  dispatchUnblockedTaskCalls.push({ task, workspace });
+  wakeTasksCalls.push({ ids: [...ids], cause });
 });
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchUnblockedTask: mockDispatchUnblockedTask,
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: async () => {},
+  wakeTasks: mockWakeTasks,
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
 }));
 
 let missionTasksToReturn: any[] = [];
@@ -279,8 +292,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockEscalateCriteriaFailure.mockClear();
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-11111111-1111-4111-8111-111111111111', created: true } as any);
     mockWakeMissionAfterResponse.mockClear();
-    dispatchUnblockedTaskCalls = [];
-    mockDispatchUnblockedTask.mockClear();
+    wakeTasksCalls = [];
+    mockWakeTasks.mockClear();
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -1569,7 +1582,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       }),
     }));
     updatedSetData = null;
-    dispatchUnblockedTaskCalls = [];
+    wakeTasksCalls = [];
     shouldDispatchReject = false;
     shouldFindManyReject = false;
     tasksFindManyWhereCalls = [];
@@ -1618,11 +1631,8 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const res = await PATCH(req, { params: makeParams(MID) });
     expect(res.status).toBe(200);
 
-    // Should have called dispatchUnblockedTask twice (once per task)
-    expect(dispatchUnblockedTaskCalls.length).toBe(2);
-    expect(dispatchUnblockedTaskCalls[0].task.id).toBe('task-1');
-    expect(dispatchUnblockedTaskCalls[1].task.id).toBe('task-2');
-    expect(dispatchUnblockedTaskCalls[0].workspace.id).toBe(WS_ID);
+    // One wake for the mission's pending tasks, labelled as a release
+    expect(wakeTasksCalls).toEqual([{ ids: ['task-1', 'task-2'], cause: 'mission.released' }]);
   });
 
   // The stranded card's "Continue on a runner" renders disabled with this same
@@ -1641,7 +1651,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const body = await res.json();
     expect(body.error).toMatch(/no workspace/);
     expect(updatedSetData).toBeNull();
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
   it('refuses local → runner on a completed mission', async () => {
@@ -1681,7 +1691,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(res.status).toBe(200);
 
     // No dispatch when executor is unchanged
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
   it('does not re-dispatch when executor changes from runner to local', async () => {
@@ -1708,7 +1718,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(res.status).toBe(200);
 
     // No dispatch when changing runner -> local
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
   it('does not re-dispatch tasks in running or completed status', async () => {
@@ -1744,21 +1754,18 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const res = await PATCH(req, { params: makeParams(MID) });
     expect(res.status).toBe(200);
 
-    // The route filters tasks by status, so running/completed tasks never reach dispatchUnblockedTask
-    expect(dispatchUnblockedTaskCalls.length).toBe(1);
+    // The route filters tasks by status, so running/completed tasks are never woken
+    expect(wokenIds()).toEqual(['task-pending']);
 
-    // Assert that the where clause filters to pending and assigned statuses
+    // Only `pending` is claimable; a wake for anything else is skipped at delivery.
     expect(tasksFindManyWhereCalls.length).toBeGreaterThan(0);
     const whereClause = tasksFindManyWhereCalls[0];
-    // The where clause should be an array with two conditions: missionId and status filter
     expect(Array.isArray(whereClause)).toBe(true);
-    // Find the inArray condition that filters by status
-    const statusFilter = whereClause.find((cond: any) => cond.type === 'inArray' && cond.values);
+    const statusFilter = whereClause.find((cond: any) => cond.type === 'eq' && cond.value === 'pending');
     expect(statusFilter).toBeDefined();
-    expect(statusFilter.values).toEqual([...UNCLAIMED_TASK_STATUSES]);
   });
 
-  it('returns 200 even if dispatchUnblockedTask rejects', async () => {
+  it('returns 200 even if the wake rejects', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: MID,
       teamId: 'team-1',
@@ -1782,7 +1789,7 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       },
     ];
 
-    // Make dispatchUnblockedTask reject
+    // Make the wake reject
     shouldDispatchReject = true;
 
     const req = new NextRequest(`http://localhost/api/missions/${MID}`, {
@@ -1822,10 +1829,10 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     expect(res.status).toBe(200);
     expect(updatedSetData.executor).toBe('runner');
     // No dispatch calls attempted since query failed
-    expect(dispatchUnblockedTaskCalls.length).toBe(0);
+    expect(wakeTasksCalls.length).toBe(0);
   });
 
-  it('re-dispatches only pending and assigned tasks', async () => {
+  it('wakes every task the pending query returned', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: MID,
       teamId: 'team-1',
@@ -1836,8 +1843,8 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
       priority: 0,
     });
 
-    // The route uses inArray(tasks.status, UNCLAIMED_TASK_STATUSES)
-    // so only those statuses will be returned by the mock
+    // The mock ignores the status filter, so this pins that the route wakes
+    // whatever its query returned, in order
     missionTasksToReturn = [
       {
         id: 'task-pending',
@@ -1869,10 +1876,54 @@ describe('PATCH /api/missions/[id] — executor change: re-dispatch tasks', () =
     const res = await PATCH(req, { params: makeParams(MID) });
     expect(res.status).toBe(200);
 
-    // Both pending and assigned tasks dispatched
-    expect(dispatchUnblockedTaskCalls.length).toBe(2);
-    expect(dispatchUnblockedTaskCalls[0].task.id).toBe('task-pending');
-    expect(dispatchUnblockedTaskCalls[1].task.id).toBe('task-assigned');
+    expect(wokenIds()).toEqual(['task-pending', 'task-assigned']);
+  });
+  // Arming a held mission and raising an exhausted budget used to send no wake
+  // at all: the tasks were already pending, so they waited for a runner poll.
+  const base = { id: MID, teamId: 'team-1', title: 'M', workspaceId: WS_ID, executor: 'runner', scheduleId: null, priority: 0 };
+  const send = (body: Record<string, unknown>) => PATCH(
+    new NextRequest(`http://localhost/api/missions/${MID}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    { params: makeParams(MID) },
+  );
+
+  it.each([
+    [{ arm: true }],
+    [{ startMode: 'armed' }],
+  ])('arming a held mission wakes its pending tasks as mission.released (%o)', async (body) => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: true, status: 'active' });
+    missionTasksToReturn = [{ id: 'task-1' }, { id: 'task-2' }];
+    const res = await send(body);
+    expect(res.status).toBe(200);
+    expect(wakeTasksCalls).toEqual([{ ids: ['task-1', 'task-2'], cause: 'mission.released' }]);
+  });
+
+  it('arming a mission that was not held wakes nothing', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: false, status: 'active' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    await send({ arm: true });
+    expect(wakeTasksCalls).toEqual([]);
+  });
+
+  it('holding a mission wakes nothing', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, isHeld: false, status: 'active' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    await send({ startMode: 'held' });
+    expect(wakeTasksCalls).toEqual([]);
+  });
+
+  it('raising an exhausted budget wakes its pending tasks as budget.available', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, status: 'budget_exhausted', costBudgetUsd: '10' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    const res = await send({ costBudgetUsd: 20 });
+    expect(res.status).toBe(200);
+    expect(wakeTasksCalls).toEqual([{ ids: ['task-1'], cause: 'budget.available' }]);
+  });
+
+  it('a budget change that leaves the mission exhausted wakes nothing', async () => {
+    mockMissionsFindFirst.mockReturnValue({ ...base, status: 'budget_exhausted', costBudgetUsd: '10' });
+    missionTasksToReturn = [{ id: 'task-1' }];
+    await send({ costBudgetUsd: 5 });
+    expect(wakeTasksCalls).toEqual([]);
   });
 });
 

@@ -132,6 +132,24 @@ mock.module('@/lib/mission-feed', () => ({
   systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
 }));
 
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mock(async () => {}),
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
+
 const { POST, invariantFrictionSignature } = await import('./route');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -230,6 +248,7 @@ beforeEach(() => {
   inserted.length = 0;
   updated.length = 0;
   mockNotify.mockClear();
+  mockWakeTask.mockClear();
   resolveCriteriaEscalationCalls = [];
   resolveCriteriaEscalationResult = { cleared: true };
   mockResolveCriteriaEscalation.mockClear();
@@ -379,6 +398,8 @@ describe('staging', () => {
     );
     expect(inserted[0].description).toContain('mission/example-1234');
     expect(mockNotify).toHaveBeenCalled();
+    // A filed report is work for a runner, woken like any other new task.
+    expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.created');
   });
 
   it('files a task for an open PR its base has outrun, and pages once', async () => {
@@ -496,7 +517,7 @@ describe('dedupe', () => {
     expect(body.filed).toBe(0);
     expect(body.appended).toBe(1);
     // An already-queued breach must not page again.
-    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('looks the existing task up by the invariant signature', async () => {

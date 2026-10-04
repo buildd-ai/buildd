@@ -121,7 +121,7 @@ describe('verdict-aware buttons', () => {
     const fix = qa('deck-fix').find(f => f.closest('[data-viewport="desktop"]'))!;
     expect(fix.textContent).toContain('The save bar covers the last settings row');
     expect(fix.textContent).toContain('PR #2');
-    expect(fix.textContent?.toLowerCase()).toContain('in progress');
+    expect(fix.textContent?.toLowerCase()).toContain('pr open, not merged');
   });
 });
 
@@ -310,14 +310,15 @@ describe('deciding', () => {
     const routes: string[] = [];
     for (let i = 0; i < 10 && !q('deck-end'); i++) { routes.push(route()!); key('j'); }
     expect(q('deck-end')).not.toBeNull();
-    // Never a fine route (/app/tasks), a fix under way (/app/settings) or a settled one (/app/inbox).
+    // Never a fine route (/app/tasks), a fix under way (/app/settings), a settled
+    // one (/app/inbox), or one whose fix finished without a PR (/app/workspaces/:id).
     expect(routes).toEqual(['/app/missions/:id', '/app/tasks/:id']);
     expect(q('deck-end')!.textContent).toContain('2 to review');
     const rows = (id: string) => [...q(id)!.querySelectorAll<HTMLElement>('[data-testid="deck-settled-row"]')].map(r => r.dataset.cell);
     expect(rows('deck-group-fine').sort()).toEqual(m.cells.filter(c => c.standing === 'fine').map(c => c.key).sort());
-    expect(rows('deck-group-fixing').sort()).toEqual(['/app/inbox|mobile|', '/app/settings|desktop|']);
+    expect(rows('deck-group-fixing').sort()).toEqual(['/app/inbox|mobile|', '/app/settings|desktop|', '/app/workspaces/:id|desktop|']);
     expect(q('deck-group-fine')!.textContent).toContain('Already fine (5)');
-    expect(q('deck-group-fixing')!.textContent).toContain('Fix under way (2)');
+    expect(q('deck-group-fixing')!.textContent).toContain('Fix under way (3)');
     expect(q('deck-group-fixing')!.textContent).toContain('Fix merged, waiting for a new screenshot');
     // Read-only: no buttons in the groups, and no batch accept.
     expect(q('deck-group-fine')!.querySelector('button')).toBeNull();

@@ -2,7 +2,7 @@
 title: Orchestration Decisions (Shadow and Promotion Guard)
 status: active
 owner: max
-last_verified: 2026-10-01
+last_verified: 2026-10-03
 summary: Creation-manifest and claim hold/start decisions MUST only record suggestions unless a committed readout promotion grants a cohort, and MUST fall back to the deterministic rule on every failure.
 domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
@@ -59,6 +59,15 @@ evidence-backed promotion grants an applying cohort for that exact definition.
 This contract describes **shadow-only** behaviour. As shipped, no promotion is
 recorded, so every applying fraction resolves to zero and both decisions are
 record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md` "Rollout status".
+
+**Relationship to the 2026-10-03 owner decision retiring shadow-first as the
+default decision-call rollout** (`knowledge-base: buildd/design/decision-calls.md`
+Point 2b, "Staying evidence-gated"): that decision does not flip this one live.
+A wrong gated START can produce a real merge collision, so this stays the one
+decision in the table that requires a committed, evidence-backed promotion —
+not a leftover shadow phase nobody got around to graduating, a deliberate
+exception for a decision whose correct confidence threshold cannot be chosen
+responsibly without first measuring it on decisions that already happened.
 
 **Invariants**:
 

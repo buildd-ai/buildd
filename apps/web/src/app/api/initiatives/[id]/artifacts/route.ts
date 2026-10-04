@@ -9,6 +9,7 @@ import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { appBaseUrl } from '@/lib/app-url';
 import { isUuid } from '@/lib/uuid';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
+import { shouldNotifyOnArtifact, notifyArtifactReady } from '@/lib/artifact-notify';
 
 
 /** Load the initiative and enforce access; returns the row or a NextResponse error. */
@@ -97,7 +98,7 @@ export async function POST(
   if (error) return error;
 
   const body = await req.json();
-  const { type, title, content, url, metadata, key } = body;
+  const { type, title, content, url, metadata, key, taskId } = body;
 
   // Single vocabulary (@buildd/shared ARTIFACT_TYPES) — see the note in
   // packages/shared/src/types.ts on why no route keeps its own list.
@@ -146,6 +147,15 @@ export async function POST(
       const shareUrl = updated.shareToken && updated.visibility === 'public'
         ? `${baseUrl}/share/${updated.shareToken}`
         : null;
+
+      // Notify if this artifact is meant for review, the task opted in, and content or title changed.
+      if (taskId && initiative!.workspaceId) {
+        const shouldNotify = await shouldNotifyOnArtifact(updated, taskId);
+        if (shouldNotify && (existing.content !== (content || null) || existing.title !== title)) {
+          await notifyArtifactReady(updated, taskId, initiative!.workspaceId);
+        }
+      }
+
       return NextResponse.json({ artifact: { ...updated, shareUrl }, upserted: true });
     }
   }
@@ -166,6 +176,14 @@ export async function POST(
       metadata: artifactMetadata,
     })
     .returning();
+
+  // Notify if this artifact is meant for review and the task opted in.
+  if (taskId && initiative!.workspaceId) {
+    const shouldNotify = await shouldNotifyOnArtifact(artifact, taskId);
+    if (shouldNotify) {
+      await notifyArtifactReady(artifact, taskId, initiative!.workspaceId);
+    }
+  }
 
   return NextResponse.json({ artifact: { ...artifact, shareUrl: null } });
 }

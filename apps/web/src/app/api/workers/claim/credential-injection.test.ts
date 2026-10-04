@@ -14,6 +14,7 @@ import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
 const mockSecretsFindMany = mock(async (_args?: any) => [] as any[]);
 const mockResolveCodex = mock(async (_scope?: any) => null as any);
 const mockResolveClaude = mock(async (_scope?: any) => null as any);
+const mockResolveOpenAiApiKey = mock(async (_scope?: any) => null as any);
 const mockProviderGet = mock(async (_id: string) => null as string | null);
 
 // Predicate stubs: `db` is mocked, so the WHERE clauses are the only place the
@@ -47,6 +48,9 @@ mock.module('@/lib/codex-credential', () => ({
 }));
 mock.module('@/lib/claude-credential', () => ({
   resolveClaudeCredential: mockResolveClaude,
+}));
+mock.module('@/lib/openai-credential', () => ({
+  resolveOpenAiApiKey: mockResolveOpenAiApiKey,
 }));
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({ get: mockProviderGet }),
@@ -85,6 +89,8 @@ beforeEach(() => {
   mockResolveCodex.mockResolvedValue(null);
   mockResolveClaude.mockReset();
   mockResolveClaude.mockResolvedValue(null);
+  mockResolveOpenAiApiKey.mockReset();
+  mockResolveOpenAiApiKey.mockResolvedValue(null);
   mockProviderGet.mockReset();
   mockProviderGet.mockResolvedValue(null);
 });
@@ -408,6 +414,68 @@ describe('attachCodexCredentials', () => {
     expect(workers[0].codexCredential).toBeUndefined();
     expect(mockResolveCodex).not.toHaveBeenCalled();
   });
+
+  // The plain OpenAI API key fallback — this is what makes "a stored team
+  // OpenAI key reaches a codex task" true. No ChatGPT/OAuth connect
+  // (codex_credential) exists, so the simpler sibling purpose wins.
+  describe('falling back to a plain openai_api_key', () => {
+    it('attaches it as an api_key codexCredential when no codex_credential resolves', async () => {
+      mockResolveCodex.mockResolvedValue(null);
+      mockResolveOpenAiApiKey.mockResolvedValue({ apiKey: 'sk-team-openai', secretId: 'sec-openai' });
+      const workers = [worker('t1')];
+
+      await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
+
+      expect(workers[0].codexCredential).toEqual({
+        credentialType: 'api_key',
+        apiKey: 'sk-team-openai',
+        expiresAt: null,
+      });
+    });
+
+    it('prefers an existing codex_credential over the openai_api_key fallback', async () => {
+      mockResolveCodex.mockResolvedValue({ credentialType: 'api_key', apiKey: 'sk-codex-cred', tokenExpiresAt: null });
+      mockResolveOpenAiApiKey.mockResolvedValue({ apiKey: 'sk-team-openai', secretId: 'sec-openai' });
+      const workers = [worker('t1')];
+
+      await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
+
+      expect(workers[0].codexCredential.apiKey).toBe('sk-codex-cred');
+      expect(mockResolveOpenAiApiKey).not.toHaveBeenCalled();
+    });
+
+    it('attaches nothing when neither credential resolves', async () => {
+      mockResolveCodex.mockResolvedValue(null);
+      mockResolveOpenAiApiKey.mockResolvedValue(null);
+      const workers = [worker('t1')];
+
+      await attachCodexCredentials(workers, [task('t1', 'codex')], 'acct-1');
+
+      expect(workers[0].codexCredential).toBeUndefined();
+    });
+
+    it('does not fall back for a claude-backend task', async () => {
+      const workers = [worker('t1')];
+
+      await attachCodexCredentials(workers, [task('t1', 'claude')], 'acct-1');
+
+      expect(workers[0].codexCredential).toBeUndefined();
+      expect(mockResolveOpenAiApiKey).not.toHaveBeenCalled();
+    });
+
+    it('resolves with the task workspace and the claiming account', async () => {
+      mockResolveCodex.mockResolvedValue(null);
+      mockResolveOpenAiApiKey.mockResolvedValue(null);
+
+      await attachCodexCredentials([worker('t1')], [task('t1', 'codex', 'team-9')], 'acct-7');
+
+      expect(mockResolveOpenAiApiKey).toHaveBeenCalledWith({
+        teamId: 'team-9',
+        accountId: 'acct-7',
+        workspaceId: 'ws-t1',
+      });
+    });
+  });
 });
 
 describe('attachClaudeCredentials', () => {
@@ -717,5 +785,13 @@ describe('endpointWorkers: the endpoint is the only model credential', () => {
     await attachPendingCredentialRefreshes(workers, [task('t1', 'claude'), task('t2', 'claude')], new Set(['w-t1']));
     expect(workers[0].pendingCredentialRefreshes).toBeUndefined();
     expect(workers[1].pendingCredentialRefreshes).toHaveLength(1);
+  });
+
+  it('attachCodexCredentials: no Codex credential — a team OpenAI-compatible agent endpoint won instead', async () => {
+    mockResolveCodex.mockResolvedValue({ credentialType: 'api_key', apiKey: 'sk-codex', tokenExpiresAt: null });
+    const workers = [worker('t1'), worker('t2')];
+    await attachCodexCredentials(workers, [task('t1', 'codex'), task('t2', 'codex')], 'acct-1', new Set(['w-t1']));
+    expect(workers[0].codexCredential).toBeUndefined();
+    expect(workers[1].codexCredential).toBeDefined();
   });
 });

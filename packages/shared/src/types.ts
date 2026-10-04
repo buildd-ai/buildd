@@ -1384,6 +1384,12 @@ export interface ClaimTasksInput {
    * only, never the provider's values.
    */
   llmProviderOverride?: boolean;
+  /**
+   * True when this runner's machine already has `OPENAI_BASE_URL` set, which
+   * beats the team's agent model endpoint for a Codex task the same way
+   * `llmProviderOverride` beats it for Claude. A boolean only, never the URL.
+   */
+  codexBaseUrlOverride?: boolean;
 }
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
@@ -1396,6 +1402,14 @@ export interface ClaimModelEndpoint {
   authHeader: 'authorization' | 'x-api-key';
   /** Native model id → proxy alias (gateway / anthropic-compatible only). */
   models: Record<string, string>;
+  /**
+   * The OpenAI-compatible root (e.g. `…/v1`), present only for `gateway` and
+   * `openrouter`. A Codex task's `OPENAI_BASE_URL` + `authToken` as
+   * `OPENAI_API_KEY`. Absent (including for `anthropic-compatible`, which has
+   * no OpenAI-format route) means a Codex task given this endpoint must fail
+   * clearly rather than guess a wire format.
+   */
+  openAiBaseUrl?: string;
 }
 
 export type ClaimDiagnosticReason =
@@ -1628,6 +1642,15 @@ export interface ClaimTasksResponse {
      * bypassed.
      */
     modelEndpointIgnored?: boolean;
+    /**
+     * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
+     * `scoped`: the runner strips inherited GitHub tokens and host git/gh
+     * credentials and fetches a task-scoped token from
+     * POST /api/runner/agent-github-token. `runner`: the workspace opted out.
+     * Absent: unchanged behaviour. A marker, not a credential; sent only to a
+     * runner that declares the `scoped_github_token` feature, never on a cloud claim.
+     */
+    githubCredentials?: { mode: 'scoped' | 'runner' };
     /** Credentials expiring within 2 hours, scoped to THIS task's workspace team.
      *  Kept per-worker because the runner also reads the claude_credential secretId
      *  off it to wire the worker to the broker at spawn time, and because a claim
@@ -2176,6 +2199,12 @@ export interface VisualReviewFixTask {
   prUrl: string | null;
   prNumber: number | null;
   mergedAt: string | null;
+  /**
+   * Where a merged PR landed. `null` unless `mergedAt` is set: `'trunk'` for an
+   * ordinary merge, `'mission_branch'` when the mission uses an integration
+   * branch and this PR based on it — merged there, but not yet shipped to trunk.
+   */
+  mergedInto: 'trunk' | 'mission_branch' | null;
   /** Who filed it: the auditor (`qa.fixTaskId`) or a human decision (the review row). */
   origin: 'auditor' | 'human';
 }
