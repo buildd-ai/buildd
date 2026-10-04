@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  CLAIM_PLANNER_CALIBRATION,
   DAILY_BUDGET_DOWNGRADE_FRACTION,
   overlapFraction,
   overlapPairKey,
@@ -524,5 +525,27 @@ describe('planClaimBatch — properties', () => {
         expect(without.has(key(e))).toBe(true);
       }
     }
+  });
+});
+
+describe('CLAIM_PLANNER_CALIBRATION', () => {
+  it('pins thresholds only with the readout they came from', () => {
+    const c = CLAIM_PLANNER_CALIBRATION;
+    if (c.thresholds) {
+      expect(c.verdict).toBe('eligible_for_gated');
+      expect(c.readoutRef).toBeTruthy();
+      expect(c.measuredOn).toBeTruthy();
+      for (const v of Object.values(c.thresholds)) expect(v >= 0 && v <= 1).toBe(true);
+      expect(c.thresholds.thetaIdle).toBeGreaterThanOrEqual(c.thresholds.thetaSoft);
+    } else {
+      expect(c.verdict).not.toBe('eligible_for_gated');
+      expect(c.reason.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('ships unpinned: no record-mode evidence has been read yet', () => {
+    expect(CLAIM_PLANNER_CALIBRATION.thresholds).toBeNull();
+    expect(CLAIM_PLANNER_CALIBRATION.verdict).toBe('insufficient_n');
+    expect(CLAIM_PLANNER_CALIBRATION.readoutRef).toBeNull();
   });
 });

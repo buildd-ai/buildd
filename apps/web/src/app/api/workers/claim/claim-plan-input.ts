@@ -16,6 +16,7 @@
  * sentinel stays bare — the planner reads it as "undeclared", never as a path.
  */
 import {
+  CLAIM_PLANNER_CALIBRATION,
   overlapPairKey,
   type ClaimPlanInput,
   type OverlapAnswer,
@@ -35,14 +36,17 @@ export interface ClaimPlannerConfig {
 
 const isUnit = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1;
 
-/** The workspace's planner mode and thresholds. Anything unrecognised is `off` / null. */
+/**
+ * The workspace's planner mode and thresholds. An unrecognised mode is `off`;
+ * absent or malformed thresholds fall back to the pinned calibration.
+ */
 export function resolveClaimPlannerConfig(gitConfig: unknown): ClaimPlannerConfig {
   const g = (gitConfig && typeof gitConfig === 'object' ? gitConfig : {}) as Record<string, unknown>;
   const mode: ClaimPlannerMode = g.claimPlanner === 'record' || g.claimPlanner === 'apply' ? g.claimPlanner : 'off';
   const t = g.claimPlannerThresholds as Record<string, unknown> | null | undefined;
   const thresholds = t && isUnit(t.thetaOrder) && isUnit(t.thetaSoft) && isUnit(t.thetaIdle)
     ? { thetaOrder: t.thetaOrder, thetaSoft: t.thetaSoft, thetaIdle: t.thetaIdle }
-    : null;
+    : CLAIM_PLANNER_CALIBRATION.thresholds;
   return { mode, thresholds };
 }
 

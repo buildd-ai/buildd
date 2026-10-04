@@ -28,6 +28,7 @@
  */
 
 import { PARALLELISM_PRESSURE_FLOOR } from './oauth-budget';
+import type { ReadoutVerdict } from './orchestration-promotion';
 import { hasConcretePathManifest, pathsOverlap, REPO_WIDE_SENTINEL, stripTrailingSep } from './path-overlap';
 
 /**
@@ -118,6 +119,36 @@ export interface PlannerThresholds {
   /** Work conservation: admitted when capacity would idle and weight is below this (≥ thetaSoft). */
   thetaIdle: number;
 }
+
+/**
+ * Where the planner's thresholds came from. Thresholds are pinned only from a
+ * readout over `record`-mode weeks: setConfidence recalibrated on a train
+ * window and judged on held-out and later windows. Never a guessed constant.
+ * The readout itself stays a private artifact; only its key lives here.
+ */
+export interface ClaimPlannerCalibration {
+  /** Null = declared/observed scope only, exactly as with no thresholds at all. */
+  thresholds: PlannerThresholds | null;
+  verdict: ReadoutVerdict;
+  /** Artifact key of the readout the thresholds were measured from; null when none was. */
+  readoutRef: string | null;
+  /** Identity of the readout run (its generated-at stamp); null when none was. */
+  measuredOn: string | null;
+  /** Why the thresholds are what they are, qualitatively. */
+  reason: string;
+}
+
+/**
+ * The reviewed, committed calibration. A workspace's own
+ * `gitConfig.claimPlannerThresholds` overrides it.
+ */
+export const CLAIM_PLANNER_CALIBRATION: ClaimPlannerCalibration = {
+  thresholds: null,
+  verdict: 'insufficient_n',
+  readoutRef: null,
+  measuredOn: null,
+  reason: 'No record-mode evidence: the planner has not run in record mode on any deployed workspace, so no prediction group has reached the readout floor.',
+};
 
 export type OverlapAnswer = 'REAL' | 'NOT_REAL';
 

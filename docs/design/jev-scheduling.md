@@ -45,7 +45,7 @@ assertions:
     entry: "apps/web/src/app/api/workers/claim/route.ts"
     as: "call"
     skip_until: "2026-12-15"
-    skip_reason: "Wired and passing, but the claim planner ships behind a per-workspace switch that defaults to off; record and apply are not yet rolled out. Suppressed so the design holds at 'partially' instead of reading as implemented before the planner actually orders claims."
+    skip_reason: "Wired and passing, but the planner does not order claims yet. The evaluation step found no record-mode evidence: the work has not reached a release and no workspace has opted in, so the readout is insufficient_n, the pinned thresholds stay null and no workspace runs apply. Suppressed so the design holds at 'partially' until a readout earns the flip. Contract: docs/specs/claim-ordering.md."
   - id: "claim-planner-tests"
     type: "test_file"
     path: "packages/core/__tests__/claim-planner.test.ts"
