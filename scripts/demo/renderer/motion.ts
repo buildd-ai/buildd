@@ -138,16 +138,33 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
     };
   }
   if (m.kind === 'doubt') {
-    // One quiet agent row; "Done ✓" lands; then a small question mark beside it.
-    const row = el('div', { position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.025)}px`,
-      padding: `${Math.round(H * 0.035)}px ${Math.round(W * 0.03)}px`, fontSize: `${Math.round(W * 0.022)}px`, whiteSpace: 'nowrap', opacity: '0', ...card(P, 8) }, root);
-    el('span', { width: '14px', height: '14px', background: '#0C72CB', flex: '0 0 auto' }, row);
-    el('span', { color: P.muted }, row, m.agent);
-    el('span', { fontWeight: '600' }, row, m.task);
-    const done = el('span', { display: 'flex', alignItems: 'center', gap: '12px', marginLeft: `${Math.round(W * 0.03)}px`, fontWeight: '600', color: OK, opacity: '0' }, row);
-    el('span', {}, done, 'Done ✓');
-    const q = el('span', { fontWeight: '700', color: ACCENT, fontSize: `${Math.round(W * 0.026)}px`, opacity: '0' }, row, '?');
+    // One quiet agent row; "Done ✓" lands; then a small question mark beside it. On a 4:5 phone frame it is
+    // sized from the frame's own width and wraps to two centred lines, so the whole row sits inside with margin.
+    const tall = H > FW;
+    const fs = tall ? Math.round(FW * 0.05) : Math.round(W * 0.022);
+    const row = el('div', { position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', display: 'flex', alignItems: 'center',
+      flexWrap: 'wrap', justifyContent: 'center', columnGap: `${Math.round(fs * 0.9)}px`, rowGap: `${Math.round(fs * 0.7)}px`,
+      boxSizing: 'border-box',
+      padding: `${Math.round(fs * 1.6)}px ${Math.round(fs * 1.3)}px`,
+      fontSize: `${fs}px`, whiteSpace: 'nowrap', opacity: '0', ...card(P, 8) }, root);
+    // On a 4:5 frame the agent label takes its own line (three short lines read larger than two long ones).
+    const who = el('span', { display: 'flex', alignItems: 'center', gap: `${Math.round(fs * 0.6)}px`, flexWrap: tall ? 'wrap' : 'nowrap', justifyContent: 'center', rowGap: `${Math.round(fs * 0.4)}px`, flexBasis: tall ? '100%' : 'auto' }, row);
+    const tag = el('span', { display: 'flex', alignItems: 'center', gap: `${Math.round(fs * 0.6)}px`, flexBasis: tall ? '100%' : 'auto', justifyContent: 'center' }, who);
+    el('span', { width: `${Math.round(fs * 0.5)}px`, height: `${Math.round(fs * 0.5)}px`, background: '#0C72CB', flex: '0 0 auto' }, tag);
+    el('span', { color: P.muted }, tag, m.agent);
+    el('span', { fontWeight: '600' }, who, m.task);
+    // Two lines at any size: the agent and its task, then "Done ✓ ?" with the question mark as the focal point.
+    const end = el('span', { display: 'flex', alignItems: 'center', gap: `${Math.round(fs * 0.6)}px`, flexBasis: '100%', justifyContent: 'center' }, row);
+    const done = el('span', { fontWeight: '600', color: OK, opacity: '0' }, end, 'Done ✓');
+    // The question mark is the focal point: larger than the row's type.
+    const q = el('span', { fontWeight: '700', color: ACCENT, fontSize: `${Math.round(fs * 2.4)}px`, lineHeight: '1', opacity: '0' }, end, '?');
+    // Laid out at its natural size, then scaled so the card spans ~70% of a wide frame (88% of a 4:5 one).
+    let scale = 0;
     return (t: number) => {
+      if (!scale && row.offsetWidth) {
+        scale = ((tall ? 0.88 : 0.7) * FW) / row.offsetWidth;
+        row.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(4)})`;
+      }
       const v = doubtAt(m, t);
       row.style.opacity = String(v.row);
       done.style.opacity = String(v.done);

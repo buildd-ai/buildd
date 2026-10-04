@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { basename, dirname, join, relative, resolve } from 'path';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, type AcceptRule,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, sparseFrame, type AcceptRule,
   type Finding, type Severity, type Word,
 } from './checks';
 
@@ -150,7 +150,8 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
     const floor = inFadeOut(t, p.duration, meta.loop) || dipping || isTypeCard(words, p.width, display) ? null : contrastFloor(luma, theme);
     // A hole in the layout (content above and below, nothing between); dips and the film's fade-out are empty by design.
     const gap = inFadeOut(t, p.duration, meta.loop) || dipping ? null : emptyGap(px.gray, px.width, px.height);
-    for (const f of [floor, gap, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit, target: reg ? boxes(reg.target) : undefined, artifacts: boxes(reg?.artifacts) }), ...layered]) if (f) findings.push({ ...f, t });
+    const sparse = inFadeOut(t, p.duration, meta.loop) || dipping ? null : sparseFrame(px.gray, px.width, px.height);
+    for (const f of [floor, gap, sparse, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit, target: reg ? boxes(reg.target) : undefined, artifacts: boxes(reg?.artifacts) }), ...layered]) if (f) findings.push({ ...f, t });
     // Numbers only from words OCR read confidently: a misread checkbox row ("000006") is not a claim.
     const sure = words.filter((w) => w.conf >= 90);
     const lines = new Map<number, Word[]>();

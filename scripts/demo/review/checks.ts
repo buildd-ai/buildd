@@ -185,6 +185,28 @@ export function flicker(frames: Uint8Array[], fps: number, o = FLICKER): Finding
   return [{ t: +t.toFixed(2), severity: 'high', check: 'flicker', issue: `${hits.length} region(s) re-appear within ${o.windowSec}s (lit or shown, then gone, then back), first at ${t.toFixed(1)}s` }];
 }
 
+/**
+ * Sparse: the frame's content (its non-flat blocks) fits in a box under
+ * `maxW` of its width and `maxH` of its height, so the clip reads as an empty
+ * panel with one thin thing in it (the 16:9 hero's lone row: three quarters
+ * of the width but a third of the height). emptyGap cannot see this: nothing
+ * sits above or below the row.
+ */
+export const SPARSE = { maxW: 0.8, maxH: 0.35, flatRms: 3 };
+export function sparseFrame(gray: Uint8Array, width: number, height: number): Finding | null {
+  const cols = 16, bw = width / cols, rows = Math.max(1, Math.round(height / bw)), bh = height / rows;
+  let x0 = cols, x1 = -1, y0 = rows, y1 = -1;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    let sum = 0, sq = 0, n = 0;
+    for (let y = Math.floor(r * bh); y < Math.floor((r + 1) * bh); y++) for (let x = Math.floor(c * bw); x < Math.floor((c + 1) * bw); x++) { const v = gray[y * width + x]; sum += v; sq += v * v; n++; }
+    const mean = sum / n;
+    if (Math.sqrt(Math.max(0, sq / n - mean * mean)) >= SPARSE.flatRms) { x0 = Math.min(x0, c); x1 = Math.max(x1, c); y0 = Math.min(y0, r); y1 = Math.max(y1, r); }
+  }
+  if (x1 < 0) return null; // an empty frame is the contrast floor's to judge
+  const w = (x1 - x0 + 1) / cols, h = (y1 - y0 + 1) / rows;
+  return w < SPARSE.maxW && h < SPARSE.maxH ? { severity: 'high', check: 'sparse', issue: `all the content sits in ${Math.round(w * 100)}% × ${Math.round(h * 100)}% of the frame: an empty panel with one small thing in it` } : null;
+}
+
 /** A clip that does not loop (the film) fades to black over its last second, by design. */
 export function inFadeOut(t: number, duration: number, loop: boolean): boolean {
   return !loop && t > duration - 1;

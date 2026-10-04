@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, type Word,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, sparseFrame, type Word,
 } from './checks';
 
 const W = (text: string, x: number, y: number, w: number, h: number, conf = 90, line = 1): Word => ({ text, x, y, w, h, conf, line });
@@ -160,6 +160,26 @@ describe('flicker: an element that re-appears (on, off, on) within 2s', () => {
   test('a whole-frame change (a dip or a cut) is not an element flickering', () => {
     const dip = (f: number) => (f >= 5 && f < 8) || (f >= 12 && f < 15);
     expect(flicker(series((fr) => (dip(fr) ? 10 : 150)), fps)).toEqual([]);
+  });
+});
+
+describe('sparseFrame: one small thing in a big empty frame', () => {
+  const W0 = 160, H0 = 90;
+  const frame = (fill: (x: number, y: number) => number) => { const g = new Uint8Array(W0 * H0); for (let y = 0; y < H0; y++) for (let x = 0; x < W0; x++) g[y * W0 + x] = fill(x, y); return g; };
+  const text = (x: number, y: number) => ((x * 7 + y * 3) % 5 === 0 ? 220 : 20);
+  test('a small row in the middle of an empty frame is flagged', () => {
+    const f = sparseFrame(frame((x, y) => (x > 60 && x < 100 && y > 40 && y < 50 ? text(x, y) : 20)), W0, H0);
+    expect(f?.severity).toBe('high');
+  });
+  test('a thin band across three quarters of the width (the old hero) is flagged too', () => {
+    expect(sparseFrame(frame((x, y) => (x > 20 && x < 140 && y > 32 && y < 58 ? text(x, y) : 20)), W0, H0)?.severity).toBe('high');
+  });
+  test('content spanning most of the width, or a good part of the height, passes', () => {
+    expect(sparseFrame(frame((x, y) => (x > 8 && x < 152 && y > 35 && y < 55 ? text(x, y) : 20)), W0, H0)).toBeNull();
+    expect(sparseFrame(frame((x, y) => (x > 30 && x < 130 && y > 25 && y < 68 ? text(x, y) : 20)), W0, H0)).toBeNull();
+  });
+  test('a full UI frame passes', () => {
+    expect(sparseFrame(frame(text), W0, H0)).toBeNull();
   });
 });
 
