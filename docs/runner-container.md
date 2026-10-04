@@ -99,7 +99,14 @@ restores the workspace's snapshot into the isolated clone path before any
 `git clone`: a `git bundle` of origin's refs, then `origin` set to the real
 URL with a fetch refspec for the default branch only (as narrow as the clone,
 below), the default branch checked out, and a `git fetch origin` to close the
-gap; plus the bun install cache. Any failure (no snapshot, store unreachable,
+gap; plus the bun install cache (which also carries pnpm's content-addressable
+store — `corepack enable` in the Dockerfile makes `pnpm` honour a task repo's
+`packageManager` pin, and the runner points `npm_config_store_dir` at a
+`pnpm-store` directory nested inside the bun cache dir, so it rides along in
+the same cache tarball with no separate upload or metric). A pnpm store big
+enough alone to push the cache tarball over the warm snapshot cap (below) is
+left out of that run's upload — logged, never a crash — while the rest of the
+cache still uploads. Any failure (no snapshot, store unreachable,
 snapshot larger than a quarter of free disk, corrupt bundle) falls back to the
 normal clone. After the run it uploads a new generation when the workspace had
 none (whatever the outcome), or, after a task that completed, when the one it
