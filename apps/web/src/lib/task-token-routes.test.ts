@@ -21,12 +21,18 @@ const REPO = join(import.meta.dir, '../../../..');
 const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
+  'apps/web/src/app/api/evidence/route.ts',
+  'apps/web/src/app/api/explain/route.ts',
   'apps/web/src/app/api/github/pr/review/route.ts',
   'apps/web/src/app/api/github/pr/route.ts',
+  'apps/web/src/app/api/health/failures/route.ts',
   'apps/web/src/app/api/mcp/route.ts',
+  'apps/web/src/app/api/tasks/[id]/error-traces/route.ts',
+  'apps/web/src/app/api/tasks/[id]/evidence/route.ts',
   'apps/web/src/app/api/tasks/[id]/route.ts',
   'apps/web/src/app/api/tasks/route.ts',
   'apps/web/src/app/api/workers/[id]/artifacts/route.ts',
+  'apps/web/src/app/api/workers/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
@@ -37,6 +43,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/claim/route.ts',
   'apps/web/src/app/api/workers/heartbeat/route.ts',
   'apps/web/src/app/api/workspaces/[id]/config/route.ts',
+  'apps/web/src/app/api/workspaces/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workspaces/[id]/memory/route.ts',
 ];
 
