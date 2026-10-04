@@ -10,9 +10,12 @@
   // (`bunx wrangler auth activate <profile> apps/dispatch`), so a deploy can
   // never land on whichever account the shell happens to be logged in to.
   //
-  // No routes yet. A custom domain is an owner setup step (README). The
-  // workers.dev hostname is blocked on the owner's network, so do not rely on
-  // it for anything but a quick check from elsewhere.
+  // Served on a Custom Domain in the same account's zone. Cloudflare creates
+  // the DNS record and certificate; that specific record overrides the zone's
+  // wildcard. workers.dev stays off: it is blocked on the owner's network and
+  // a second public hostname is one more thing to sign-gate.
+  "routes": [{ "pattern": "dispatch.buildd.dev", "custom_domain": true }],
+  "workers_dev": false,
 
   // One SQLite Durable Object per (source.system, source.scope): the durable
   // queue, its alarm, attempts, pending receipts and the target registry.
