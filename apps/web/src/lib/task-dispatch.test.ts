@@ -452,3 +452,104 @@ describe('dispatchRetriedTask: held and local-executor work stays off the webhoo
     expect(mockIsTaskNotHeldOrLocal).not.toHaveBeenCalled();
   });
 });
+
+// ── task.scheduled: the consumer wakes itself at startAt ─────────────────────
+
+describe('task.scheduled: a deferred dispatch to a webhook that opted in', () => {
+  type Ev = 'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume' | 'task.scheduled';
+  const SCHEDULED_WEBHOOK = {
+    ...LEGACY_WEBHOOK,
+    events: ['task.created', 'task.unblocked', 'task.retry', 'task.scheduled'] as Ev[],
+  };
+  const inFive = () => new Date(Date.now() + 5 * 60_000);
+
+  it('a deferred retry sends task.scheduled now, with notBefore = startAt, and skips the broadcast', async () => {
+    const startAt = inFive();
+    await dispatchRetriedTask({ ...TASK, startAt }, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(fetchCalls).toHaveLength(1);
+    expect(sentBody()).toEqual({
+      ...buildWebhookPayload(TASK, 'task.scheduled'),
+      event: 'task.scheduled',
+      taskId: 'task-w1',
+      notBefore: startAt.toISOString(),
+    });
+    expect(assignedCalls()).toHaveLength(0);
+  });
+
+  it('accepts startAt as an ISO string (raw rows)', async () => {
+    const startAt = inFive();
+    await dispatchRetriedTask({ ...TASK, startAt: startAt.toISOString() }, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(sentBody().notBefore).toBe(startAt.toISOString());
+  });
+
+  it('a webhook without task.scheduled is unchanged: nothing sent, Pusher wakes as before', async () => {
+    await dispatchRetriedTask({ ...TASK, startAt: inFive() }, { webhookConfig: WEBHOOK });
+    await dispatchRetriedTask({ ...TASK, startAt: inFive() }, { webhookConfig: LEGACY_WEBHOOK });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(2);
+  });
+
+  it('a due task (startAt passed or absent) is a normal task.retry, not task.scheduled: the sweep backstop', async () => {
+    await dispatchRetriedTask({ ...TASK, startAt: new Date(Date.now() - 1_000) }, { webhookConfig: SCHEDULED_WEBHOOK });
+    await dispatchRetriedTask(TASK, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(fetchCalls.map((_, i) => sentBody(i).event)).toEqual(['task.retry', 'task.retry']);
+    expect(sentBody(0).notBefore).toBeUndefined();
+  });
+
+  it('beyond the 24 h bound nothing is scheduled; the sweep dispatches it when due', async () => {
+    await dispatchRetriedTask({ ...TASK, startAt: new Date(Date.now() + 25 * 3_600_000) }, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(fetchCalls).toHaveLength(0);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  it('a failed scheduled dispatch falls back to the broadcast', async () => {
+    fetchStatus = 503;
+    await dispatchRetriedTask({ ...TASK, startAt: inFive() }, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(fetchCalls).toHaveLength(1);
+    expect(assignedCalls()).toHaveLength(1);
+  });
+
+  it('held / local-executor work and a runnerPreference mismatch are not scheduled', async () => {
+    taskNotParked = false;
+    await dispatchRetriedTask({ ...TASK, startAt: inFive() }, { webhookConfig: SCHEDULED_WEBHOOK });
+    taskNotParked = true;
+    await dispatchRetriedTask(
+      { ...TASK, startAt: inFive(), runnerPreference: 'user' },
+      { webhookConfig: { ...SCHEDULED_WEBHOOK, runnerPreference: 'service' as const } },
+    );
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('a disabled webhook sends nothing', async () => {
+    await dispatchRetriedTask({ ...TASK, startAt: inFive() }, { webhookConfig: { ...SCHEDULED_WEBHOOK, enabled: false } });
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('a new task created with a future startAt is sent as task.scheduled instead of task.created', async () => {
+    const startAt = inFive();
+    await dispatchNewTask({ ...TASK, startAt }, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(fetchCalls).toHaveLength(1);
+    expect(sentBody()).toMatchObject({ event: 'task.scheduled', notBefore: startAt.toISOString() });
+    expect(assignedCalls()).toHaveLength(0);
+  });
+
+  it('without the opt-in, a deferred new task still goes out as task.created, as before', async () => {
+    await dispatchNewTask({ ...TASK, startAt: inFive() }, { webhookConfig: WEBHOOK });
+    expect(sentBody().event).toBe('task.created');
+    expect(sentBody().notBefore).toBeUndefined();
+  });
+
+  it('a deferred unblocked task is sent as task.scheduled to an opted-in webhook', async () => {
+    await dispatchUnblockedTask({ ...TASK, startAt: inFive() }, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(sentBody().event).toBe('task.scheduled');
+  });
+
+  it('a deferred plan child is sent as task.scheduled to an opted-in webhook', async () => {
+    await dispatchPlanChildTask({ ...TASK, startAt: inFive() }, { webhookConfig: SCHEDULED_WEBHOOK });
+    expect(sentBody().event).toBe('task.scheduled');
+  });
+
+  it('other events never carry notBefore', () => {
+    expect('notBefore' in buildWebhookPayload(TASK, 'task.retry')).toBe(false);
+  });
+});

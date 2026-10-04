@@ -39,7 +39,13 @@ import {
 import type { EgressProps } from './egress';
 import { otlpInterceptHosts } from './otel';
 import { SNAPSHOT_HOST, type SnapshotScope } from './snapshots';
-import { TaskSupervisor, type ContainerPort, type DispatchResult } from './supervisor';
+import {
+  TaskSupervisor,
+  type ContainerPort,
+  type DispatchResult,
+  type ScheduleDispatchResult,
+  type ScheduledDispatchPayload,
+} from './supervisor';
 
 /** `ctx.exports` loopback for the EgressHandler entrypoint exported from index.ts. */
 type EgressExports = { EgressHandler(options: { props: EgressProps }): Fetcher };
@@ -94,6 +100,12 @@ export class WorkerAgent extends Agent<Env, RunState> {
       waitUntil: (p) => this.ctx.waitUntil(p),
       installEgress: () => this.installEgressHandlers(),
       mintTaskToken: () => this.mintTaskToken(),
+      // One-shot alarms only (Agents SDK schedule, backed by the Durable
+      // Object alarm), for task.scheduled. The callback is runScheduledDispatch.
+      scheduler: {
+        scheduleAt: async (at, payload) => (await this.schedule(new Date(at), 'runScheduledDispatch', payload)).id,
+        cancel: async (id) => { await this.cancelSchedule(id); },
+      },
       fetch: (input, init) => fetch(input, init),
       now: () => Date.now(),
       sleep: (ms) => new Promise(resolve => setTimeout(resolve, ms)),
@@ -111,6 +123,26 @@ export class WorkerAgent extends Agent<Env, RunState> {
   /** RPC from the dispatcher Worker. Idempotent while a run is live. */
   async dispatch(request: DispatchRequest = {}): Promise<DispatchResult> {
     return this.supervisor.dispatch(request);
+  }
+
+  /** RPC from the dispatcher Worker for `task.scheduled`: start a run at `notBefore` (epoch ms). */
+  async scheduleDispatch(notBefore: number): Promise<ScheduleDispatchResult> {
+    return this.supervisor.scheduleDispatch(notBefore);
+  }
+
+  /**
+   * Agents SDK schedule callback: the `task.scheduled` wake is due. The SDK
+   * passes the schedule row, whose id tells the latest wake from a replaced
+   * one. Never throws, so the SDK has nothing to retry.
+   */
+  async runScheduledDispatch(payload: ScheduledDispatchPayload, schedule?: { id: string }): Promise<void> {
+    if (!this.ctx.container) return;
+    try {
+      const result = this.supervisor.fireScheduledDispatch(payload, schedule?.id);
+      console.log(`[cloud-runner] task ${this.name}: scheduled dispatch fired: ${JSON.stringify(result)}`);
+    } catch (err) {
+      console.log(`[cloud-runner] task ${this.name}: scheduled dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**

@@ -671,8 +671,10 @@ export interface WorkspaceWebhookConfig {
   // children and deferred-start re-dispatches reach a webhook only when listed here;
   // otherwise they wake runners over Pusher. A listed config also has runnerPreference
   // applied to unblocked dispatches. 'task.resume' (cloud runner park → answer)
-  // is only ever sent to a webhook that lists it.
-  events?: Array<'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume'>;
+  // is only ever sent to a webhook that lists it. 'task.scheduled' (also only when
+  // listed): a task deferred to a future startAt (<= 24 h) is sent at once with
+  // `notBefore`, and the consumer starts it then; the deferred sweep stays the backstop.
+  events?: Array<'task.created' | 'task.unblocked' | 'task.retry' | 'task.resume' | 'task.scheduled'>;
   // The same column also carries POST /api/webhooks/ingest's keys (webhookSecret,
   // labelFilter, ...). PATCH /api/workspaces/[id] merges onto the stored object, so
   // setting or clearing the dispatch keys above leaves those untouched.
