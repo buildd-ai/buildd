@@ -86,7 +86,11 @@ mock.module('@buildd/core/dispatch-outbox', () => ({
 let publishResult: { status: string } = { status: 'unconfigured' };
 const callOrder: string[] = [];
 const mockPublish = mock(async (_opts: unknown) => { callOrder.push('publish'); return publishResult; });
-mock.module('@/lib/dispatch-transport', () => ({ publishPendingDispatches: mockPublish }));
+let transportConfigured = false;
+mock.module('@/lib/dispatch-transport', () => ({
+  publishPendingDispatches: mockPublish,
+  dispatchTransportConfig: () => (transportConfigured ? { url: 'https://dispatch.test', key: { keyId: 'k1', secret: 's' } } : null),
+}));
 
 /** `after` that throws outside a request scope, like Next's; queues inside one. */
 let afterQueue: Array<() => unknown> | null = null;
@@ -695,9 +699,19 @@ describe('offerScheduledNotice: task.scheduled advance notice (opt-in)', () => {
 describe('drainDispatchOutbox', () => {
   it('claims up to DRAIN_BATCH by default, or the given limit', async () => {
     await drainDispatchOutbox();
-    expect(mockClaimDue).toHaveBeenLastCalledWith(DRAIN_BATCH);
+    expect(mockClaimDue).toHaveBeenLastCalledWith(DRAIN_BATCH, { graceMs: 0 });
     await drainDispatchOutbox({ limit: 3 });
-    expect(mockClaimDue).toHaveBeenLastCalledWith(3);
+    expect(mockClaimDue).toHaveBeenLastCalledWith(3, { graceMs: 0 });
+  });
+
+  it('waits out the publish grace only when a Worker is configured to ack rows', async () => {
+    transportConfigured = true;
+    try {
+      await drainDispatchOutbox();
+      expect(mockClaimDue).toHaveBeenLastCalledWith(DRAIN_BATCH, {});
+    } finally {
+      transportConfigured = false;
+    }
   });
 
   it('counts delivered, skipped and failed, and marks each row accordingly', async () => {

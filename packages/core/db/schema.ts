@@ -925,11 +925,14 @@ export const workspaces = pgTable('workspaces', {
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
   // Which transport delivers this workspace's dispatch outbox rows.
-  // 'in_app': the Vercel drain (default). 'shadow': also published to the
-  // Dispatch Worker, which records decisions but the in-app drain still
-  // delivers. 'dispatch': handed off; the in-app drain only takes rows the
-  // Worker never acked. knowledge-base buildd/design/cloudflare-dispatch-transport.md.
-  dispatchTransport: text('dispatch_transport').default('in_app').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
+  // 'dispatch' (default): handed off to the Dispatch Worker; the in-app drain
+  // only takes rows the Worker never acked, and nothing is published at all
+  // unless DISPATCH_URL and DISPATCH_PUBLISH_SECRET are set, so a self-hosted
+  // install without the Worker keeps in-app delivery. 'in_app': the Vercel
+  // drain only (the per-workspace kill switch). 'shadow': published and
+  // recorded, in-app still delivers (webhook-less workspaces only while
+  // webhooks are live on the Worker).
+  dispatchTransport: text('dispatch_transport').default('dispatch').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
 
   // Max tasks from this workspace that may have an active worker at once. Repo-backed
   // workspaces isolate each task in its own git worktree, so parallel work is safe;
