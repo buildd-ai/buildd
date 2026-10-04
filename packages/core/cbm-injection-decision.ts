@@ -12,7 +12,8 @@
  * Gated at a provisional threshold. Below it — and on any failure — the runner
  * injects callers: Max chose live injection, and the diff is factual and capped.
  */
-import { choice, defineDecision, type DecisionRun } from '@builddai/ai-kit/decide';
+import { choice, type DecisionRun } from '@builddai/ai-kit/decide';
+import { definePromptedDecision } from './prompted-decision';
 import type { CbmInjectionAction, CbmInjectionDecisionReply, CbmInjectionFacts } from './cbm-injection';
 
 export const CBM_INJECTION_PROMPT_VERSION = 'csi1';
@@ -41,7 +42,7 @@ export const CBM_INJECTION_QUESTIONS = {
   ),
 };
 
-export const CBM_INJECTION_DECISION = defineDecision({
+export const CBM_INJECTION_DECISION = definePromptedDecision({
   id: 'buildd.cbm_search_injection',
   promptVersion: CBM_INJECTION_PROMPT_VERSION,
   questions: CBM_INJECTION_QUESTIONS,

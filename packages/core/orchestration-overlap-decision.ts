@@ -18,7 +18,8 @@
  * apply from the first PR, with every call logged so the threshold can be
  * recalibrated from evidence later (jev-scheduling §6).
  */
-import { choice, defineDecision, type Decision } from '@builddai/ai-kit/decide';
+import { choice, type Decision } from '@builddai/ai-kit/decide';
+import { definePromptedDecision } from './prompted-decision';
 import { overlapFraction, overlapPairKey } from './claim-planner';
 import { candidateDigest } from './orchestration-decision';
 import { hasConcretePathManifest, REPO_WIDE_SENTINEL } from './path-overlap';
@@ -53,7 +54,7 @@ export const OVERLAP_REAL_LABELS: readonly OverlapRealLabel[] = ['REAL', 'NOT_RE
 /** A starting threshold, not yet measured on held-out Jev outcomes; jev-scheduling §6 recalibrates it from logged evidence. */
 export const OVERLAP_REAL_MIN_CONFIDENCE = 0.7;
 
-export const OVERLAP_REAL_DECISION = defineDecision({
+export const OVERLAP_REAL_DECISION = definePromptedDecision({
   id: 'buildd.orchestration_overlap_real',
   promptVersion: OVERLAP_REAL_PROMPT_VERSION,
   questions: OVERLAP_REAL_QUESTIONS,

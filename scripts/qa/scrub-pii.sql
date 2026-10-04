@@ -226,6 +226,7 @@ DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
+DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.

@@ -22,7 +22,7 @@ const RUNNER_SRC = join(REPO, 'apps/runner/src');
 const CORE = join(REPO, 'packages/core');
 
 /** A call with a literal object config is a definition; the generic wrapper that forwards `config` is not. */
-const DEFINITION_RE = /\b(?:defineDecision|defineDecisionKind|defineBuilddDecisionKind)\s*(?:<[^>]*>)?\s*\(\s*\{/;
+const DEFINITION_RE = /\b(?:defineDecision|definePromptedDecision|defineDecisionKind|defineBuilddDecisionKind)\s*(?:<[^>]*>)?\s*\(\s*\{/;
 const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)['"]([^'"]+)['"]/gm;
 
 function walk(dir: string, out: string[] = []): string[] {
