@@ -26,7 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
-import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
+import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig, WorkspaceQualityScoutConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
 export const teams = pgTable('teams', {
@@ -524,6 +524,12 @@ export interface WorkspaceGitConfig {
   // Owner decisions the repo cannot tell us (docs/design/workspace-onboarding.md §2).
   // The readiness report itself is recomputed, never stored. Absent ⇒ current behaviour.
   onboarding?: WorkspaceOnboardingConfig;
+
+  // Quality Scout probe declarations: verification command, test environment,
+  // CLI/API journeys, UI routes, fixture setup, write constraints. Read only
+  // through resolveScoutExtension() in scout-capabilities.ts. Absent ⇒ Scout
+  // uses what the readiness report detects, read-only.
+  qualityScout?: WorkspaceQualityScoutConfig;
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →

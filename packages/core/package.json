@@ -136,6 +136,7 @@
     "./ecosystem-detect": "./ecosystem-detect.ts",
     "./risk-class-detect": "./risk-class-detect.ts",
     "./workspace-readiness": "./workspace-readiness.ts",
+    "./scout-capabilities": "./scout-capabilities.ts",
     "./onboarding-scaffold": "./onboarding-scaffold.ts",
     "./onboarding-spec": "./onboarding-spec.ts",
     "./spec-conformance": "./spec-conformance.ts",
