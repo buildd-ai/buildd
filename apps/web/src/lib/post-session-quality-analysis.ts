@@ -389,14 +389,19 @@ function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) : s;
 }
 
-function baseRefs(input: PostSessionAnalysisInput): FindingEvidenceRef[] {
+/**
+ * Pointers to the session itself. `withPr: false` for a memory-correction
+ * finding: its proposal reads every non-session ref as contradicting evidence,
+ * and the session's own PR is not evidence against the memory.
+ */
+function baseRefs(input: PostSessionAnalysisInput, opts: { withPr: boolean } = { withPr: true }): FindingEvidenceRef[] {
   const ctx = input.facts.context;
   const refs: FindingEvidenceRef[] = [
     { kind: 'post_session_run', ref: input.runId },
     { kind: 'worker', ref: ctx.workerId },
     { kind: 'task', ref: ctx.taskId },
   ];
-  if (input.facts.outcome.prNumber !== null) refs.push({ kind: 'pr', ref: String(input.facts.outcome.prNumber) });
+  if (opts.withPr && input.facts.outcome.prNumber !== null) refs.push({ kind: 'pr', ref: String(input.facts.outcome.prNumber) });
   return refs;
 }
 
@@ -427,7 +432,7 @@ function toFinding(input: PostSessionAnalysisInput, spec: PostSessionCheckSpec, 
     severity: r.severity ?? spec.defaultSeverity,
     confidence: r.confidence ?? spec.defaultConfidence,
     title: clip(spec.title, MAX_TITLE_CHARS),
-    evidenceRefs: mergeRefs(baseRefs(input), r.evidenceRefs, ...related.map(x => x.evidenceRefs), evidenceObjectRefs(input, spec.id)),
+    evidenceRefs: mergeRefs(baseRefs(input, { withPr: spec.proposedAction !== 'propose_memory_correction' }), r.evidenceRefs, ...related.map(x => x.evidenceRefs), evidenceObjectRefs(input, spec.id)),
     signature: r.signature,
     recurrenceKey: `post_session:${cls}:${spec.id}`,
     proposedAction: spec.proposedAction,
