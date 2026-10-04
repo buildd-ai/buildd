@@ -13,6 +13,7 @@ import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
 import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
+import { PATH_CLAIM_TIMEOUT_MS } from './path-claim-enforcement';
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -450,14 +451,15 @@ export class BuilddClient {
   }
 
   /**
-   * POST /api/tasks/{taskId}/path-claim with a 200ms timeout.
+   * POST /api/tasks/{taskId}/path-claim, aborted after PATH_CLAIM_TIMEOUT_MS.
    *
    * Three answers, kept distinct because enforcement treats them differently:
    *  - `claimed`: every path is leased to this task.
    *  - `conflict`: a confirmed live holder (the server's 409). Nothing was
    *    granted — declarations are all-or-nothing — and `blocked` lists every
    *    requested path that is held, so a caller can keep the free ones queued.
-   *  - `unavailable`: timeout, network error, 5xx, or a body that is neither.
+   *  - `unavailable`: `timeout` when our deadline expired (or the caller
+   *    aborted); `error` for a network error, 5xx, or a body that is neither.
    *    Fail-open: the caller must not block on it.
    */
   async claimPaths(taskId: string, paths: string[]): Promise<PathClaimResponse> {
@@ -465,7 +467,7 @@ export class BuilddClient {
       const body = await this.fetch(`/api/tasks/${taskId}/path-claim`, {
         method: 'POST',
         body: JSON.stringify({ paths }),
-        signal: AbortSignal.timeout(200),
+        signal: AbortSignal.timeout(PATH_CLAIM_TIMEOUT_MS),
       }, [409]) as Record<string, unknown> | null;
       if (body?.claimed === true) return { kind: 'claimed' };
       if (body?.claimed === false && typeof body.blockingTaskId === 'string') {
