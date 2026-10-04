@@ -298,6 +298,13 @@ export interface WorkspaceGitConfig {
 
   // Agent instructions (prepended to prompt)
   agentInstructions?: string;         // Free-form, admin-defined
+
+  // GitHub credentials for agents on self-hosted runners
+  // (@buildd/core/agent-github-credentials). Absent ⇒ a task-scoped GitHub App
+  // token once the rollout reaches this workspace. 'runner' is the explicit
+  // opt-out for a workspace without the GitHub App: its agents keep the runner
+  // operator's own GitHub credentials. JSON field, no migration.
+  agentGitHubCredentials?: 'runner';
   useClaudeMd: boolean;               // Whether to load CLAUDE.md (default: true if exists)
 
   // Permission mode

@@ -89,6 +89,8 @@ import {
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
 import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachGitHubCredentialModes } from './github-credential-injection';
+import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
@@ -2652,6 +2654,15 @@ export async function POST(req: NextRequest) {
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
       });
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
+
+  // Which GitHub credentials the agent gets: a mode marker only, gated on the
+  // rollout stage and the runner declaring the feature. See ./github-credential-injection.
+  if (!cloudExecutor) {
+    attachGitHubCredentialModes(claimedWorkers, {
+      rollout: parseAgentGitHubRollout(process.env[AGENT_GITHUB_TOKEN_ROLLOUT_ENV]),
+      runnerFeatures: body.runnerFeatures,
+    });
+  }
 
   // Inject active MCP connectors — resolution rules (role connectorRefs ∩ workspace
   // enablement ∩ team visibility, and owner-team credential keying) live in

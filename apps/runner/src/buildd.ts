@@ -1,6 +1,7 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment';
 import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
+import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
 import type { CbmInjectionDecisionReply, CbmInjectionFacts } from '@buildd/core/cbm-injection';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
 import type { PromptCompositionEvent } from './memory-digest-policy';
@@ -178,7 +179,10 @@ export class BuilddClient {
       // (workers.ts); without it the server keeps sending Anthropic credentials.
       // QUESTION_GATE_RUNNER_FEATURE: this build routes AskUserQuestion
       // through /question-check when the claim carries a questionGate marker.
-      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE],
+      // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
+      // githubCredentials (agent-github-credentials.ts); without it the
+      // server never asks this runner to scope the agent's GitHub access.
+      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
@@ -505,6 +509,39 @@ export class BuilddClient {
         : err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'transport';
       return { ok: false, error, latencyMs: Date.now() - started, version: null };
     }
+  }
+
+  /**
+   * The task-scoped GitHub token for a worker whose claim said
+   * `githubCredentials.mode = 'scoped'` (agent-github-credentials.ts). Throws
+   * on failure; the error carries `permanent: true` when asking again cannot
+   * help (no linked repo, worker gone, access revoked), so the refresher stops.
+   */
+  async getAgentGitHubToken(workerId: string): Promise<{ token: string; expiresAt: Date }> {
+    let body: any;
+    try {
+      body = await this.fetch('/api/runner/agent-github-token', {
+        method: 'POST',
+        body: JSON.stringify({ workerId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err: any) {
+      if (isServerRefusal(err)) {
+        const refusal = err as ServerRefusalError;
+        let message = `HTTP ${refusal.status}`;
+        try {
+          const parsed = JSON.parse(refusal.raw);
+          if (typeof parsed?.error === 'string') message = `${parsed.error} (HTTP ${refusal.status})`;
+        } catch { /* keep the status */ }
+        throw Object.assign(new Error(message), { permanent: refusal.status >= 400 && refusal.status < 500 && refusal.status !== 429 });
+      }
+      throw err;
+    }
+    const expiresAt = typeof body?.expiresAt === 'string' ? new Date(body.expiresAt) : null;
+    if (typeof body?.token !== 'string' || !body.token || !expiresAt || Number.isNaN(expiresAt.getTime())) {
+      throw new Error('agent-github-token reply had no token/expiresAt');
+    }
+    return { token: body.token, expiresAt };
   }
 
   /**

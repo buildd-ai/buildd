@@ -12,6 +12,7 @@ import { mergePolicySchema } from '@/lib/merge-policy';
 import { findRemovedPathFieldInGitConfig, removedPolicyPathFieldError } from '@buildd/shared';
 import { getInstallationOwnerTeamIds } from '@/lib/github-installation-access';
 import { toPublicWorkspace } from '@/lib/workspace-public';
+import { AGENT_GITHUB_CREDENTIALS_OPT_OUT } from '@buildd/core/agent-github-credentials';
 
 const RUNNER_PREFERENCES = new Set(['any', 'user', 'service', 'action']);
 const WEBHOOK_EVENTS = new Set(['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled']);
@@ -335,6 +336,17 @@ export async function PATCH(
         if (mode !== null && mode !== 'advisory' && mode !== 'enforce') {
           return NextResponse.json(
             { error: "gitConfig.pathClaimEnforcement must be 'advisory', 'enforce' or null" },
+            { status: 400 },
+          );
+        }
+      }
+      // GitHub credentials opt-out for self-hosted agents: the one accepted
+      // value is 'runner', so a typo cannot hand agents the operator's token.
+      if ('agentGitHubCredentials' in gitConfig) {
+        const mode = (gitConfig as Record<string, unknown>).agentGitHubCredentials;
+        if (mode !== null && mode !== AGENT_GITHUB_CREDENTIALS_OPT_OUT) {
+          return NextResponse.json(
+            { error: `gitConfig.agentGitHubCredentials must be '${AGENT_GITHUB_CREDENTIALS_OPT_OUT}' or null` },
             { status: 400 },
           );
         }
