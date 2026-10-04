@@ -16,6 +16,41 @@ const context: ActionContext = {
 };
 
 describe('MCP update_progress', () => {
+  it('uses the assigned session worker when workerId is omitted', async () => {
+    const api = mock(async () => ({ status: 'running' }));
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'update_progress',
+      { progress: 10, kind: 'engineering' }, context);
+
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(api.mock.calls[0]?.[0]).toBe(`/api/workers/${WORKER_ID}`);
+    expect(api.mock.calls[0]?.[1]?.method).toBe('PATCH');
+    expect(JSON.parse(String(api.mock.calls[0]?.[1]?.body)).kind).toBe('engineering');
+    expect(result.content[0]?.text).toContain('Progress updated: 10%');
+  });
+
+  it('honours an explicit workerId instead of the session default', async () => {
+    const api = mock(async () => ({ status: 'running' }));
+    await handleBuilddAction(api as unknown as ApiFn, 'update_progress',
+      { workerId: 'worker-explicit', progress: 10 }, context);
+
+    expect(api.mock.calls[0]?.[0]).toBe('/api/workers/worker-explicit');
+  });
+
+  it('requires an explicit workerId when the session has no worker context', async () => {
+    const api = mock(async () => ({ status: 'running' }));
+    await expect(handleBuilddAction(api as unknown as ApiFn, 'update_progress',
+      { progress: 10 }, { ...context, workerId: undefined })).rejects.toThrow('workerId is required');
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it('accepts an explicit workerId from a session without worker context', async () => {
+    const api = mock(async () => ({ status: 'running' }));
+    await handleBuilddAction(api as unknown as ApiFn, 'update_progress',
+      { workerId: 'worker-explicit', progress: 10 }, { ...context, workerId: undefined });
+
+    expect(api.mock.calls[0]?.[0]).toBe('/api/workers/worker-explicit');
+  });
+
   it('records a plan through the worker PATCH endpoint with the progress update', async () => {
     const api = mock(async () => ({ status: 'running', progress: 25 }));
 
