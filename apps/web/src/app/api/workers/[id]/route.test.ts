@@ -11314,6 +11314,59 @@ describe('PATCH /api/workers/[id]', () => {
         expect(failedWorker.exitCause).toBe('budget_limited');
       });
 
+      // The runner could not clone the workspace repo because GitHub throttled
+      // it (HTTP 429 / secondary rate limit) after its own retries. It used to
+      // report a bare {failed, "Cannot resolve workspace"}, booked code_failure:
+      // a non-mission task was failed permanently by GitHub's rate limiter.
+      describe('GitHub-throttled clone', () => {
+        const throttledBody = {
+          status: 'failed',
+          error: 'Cannot clone the workspace repo: GitHub is rate limiting this runner (HTTP 429)',
+          githubThrottled: true,
+        };
+
+        it('requeues on the infra budget with backoff and books infra_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const before = Date.now();
+          const res = await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: throttledBody,
+          }), { params: mockParams });
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.context.retryCount).toBeUndefined();
+          expect(requeue.startAt.getTime()).toBeGreaterThanOrEqual(before + 5 * 60_000 - 1_000);
+          expect(taskSetCalls.some((c: any) => c.status === 'failed')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+        });
+
+        it('stalls once the infra budget is spent', async () => {
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
+          await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: throttledBody,
+          }), { params: mockParams });
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          expect(taskSetCalls.find((c: any) => c.status === 'failed')?.result.errorType).toBe('infra_stalled');
+        });
+
+        it('the same error text without the flag stays code_failure', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          await PATCH(createMockRequest({
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer bld_test' },
+            body: { status: 'failed', error: throttledBody.error },
+          }), { params: mockParams });
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('code_failure');
+        });
+      });
+
       // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts)
       // reports a container that died under the runner with the same flag. It
       // used to send a bare {failed, error}, which booked code_failure and left

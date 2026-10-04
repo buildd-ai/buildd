@@ -21,7 +21,7 @@
  * CURL_CA_BUNDLE, set by buildd-once).
  */
 import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, relative } from 'path';
 import {
@@ -31,6 +31,7 @@ import {
   type RepoFallbackReason,
   type RunMetric,
 } from './phase-lines';
+import { fetchOriginWithRetry } from './git-clone';
 
 export const WARM_ENV_FLAG = 'BUILDD_WARM_REPO';
 /**
@@ -249,6 +250,10 @@ export interface WarmRepoDeps {
   freeBytes(path: string): number | null;
   now(): number;
   log(message: string): void;
+  /** The post-restore fetch's retry wait (git-clone.ts fetchOriginWithRetry); real sleep when absent. */
+  sleep?(ms: number): void;
+  /** Retry-After for origin after a 429; probed through the egress when absent. */
+  retryAfter?(remoteUrl: string): number | null;
   /** Where phase / metric / source lines go (phase-lines.ts). */
   lineOpts?: { env?: Record<string, string | undefined>; log?: (line: string) => void };
 }
@@ -299,6 +304,60 @@ export function gitFailureText(r: { status: number | null; stderr?: string | nul
 function run(cwd: string, args: string[], timeout = GIT_TIMEOUT_MS): void {
   const r = spawnSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
   if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${gitFailureText(r)}`);
+}
+
+// ── Shallow snapshots ─────────────────────────────────────────────────────────
+
+/**
+ * A cloud container's clone is shallow (git-clone.ts). A bundle of a shallow
+ * clone holds the boundary commits but not their parents, and still claims a
+ * complete history, so fetching it into an empty repo fails on the first
+ * missing parent. The boundary travels in the bundle as one ref per boundary
+ * commit under this prefix: read back from the header with `git bundle
+ * list-heads` (no objects needed) and written to `.git/shallow` before the
+ * fetch. The refs exist in the clone only while its bundle is built, and the
+ * restore never fetches them. A full clone's bundle has none, as before.
+ */
+export const SHALLOW_REF_PREFIX = 'refs/buildd/shallow/';
+const OID_RE = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function shallowPath(clonePath: string): string {
+  const p = gitOut(clonePath, ['rev-parse', '--git-path', 'shallow']) || join('.git', 'shallow');
+  return p.startsWith('/') ? p : join(clonePath, p);
+}
+
+function gitStdin(cwd: string, args: string[], input: string): void {
+  const r = spawnSync('git', args, { cwd, input, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: GIT_TIMEOUT_MS });
+  if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${gitFailureText(r)}`);
+}
+
+/** `git bundle create --remotes`, plus the shallow boundary when the clone is shallow. */
+export function bundleRemotes(clonePath: string, bundle: string): void {
+  const shallow = gitOut(clonePath, ['rev-parse', '--is-shallow-repository']) === 'true';
+  const boundary = shallow && existsSync(shallowPath(clonePath))
+    ? readFileSync(shallowPath(clonePath), 'utf-8').split('\n').map(l => l.trim()).filter(l => OID_RE.test(l))
+    : [];
+  if (boundary.length === 0) {
+    run(clonePath, ['bundle', 'create', '-q', bundle, '--remotes']);
+    return;
+  }
+  const refs = boundary.map(id => `${SHALLOW_REF_PREFIX}${id}`);
+  try {
+    gitStdin(clonePath, ['update-ref', '--stdin'], boundary.map((id, i) => `create ${refs[i]} ${id}\n`).join(''));
+    run(clonePath, ['bundle', 'create', '-q', bundle, '--remotes', `--glob=${SHALLOW_REF_PREFIX}*`]);
+  } finally {
+    spawnSync('git', ['update-ref', '--stdin'], { cwd: clonePath, input: refs.map(r => `delete ${r}\n`).join(''), stdio: ['pipe', 'ignore', 'ignore'], timeout: 30_000 });
+  }
+}
+
+/** Before fetching a warm bundle: make the new repo shallow at the boundary the bundle names, if any. */
+export function writeShallowBoundary(clonePath: string, bundle: string): void {
+  const ids = gitOut(clonePath, ['bundle', 'list-heads', bundle])
+    .split('\n')
+    .map(l => l.trim().split(/\s+/))
+    .filter(([id, ref]) => !!ref && ref.startsWith(SHALLOW_REF_PREFIX) && OID_RE.test(id ?? ''))
+    .map(([id]) => id!);
+  if (ids.length > 0) writeFileSync(shallowPath(clonePath), `${[...new Set(ids)].join('\n')}\n`);
 }
 
 /**
@@ -360,6 +419,10 @@ export class WarmRepoSession {
       run(clonePath, ['init', '-q', '-b', manifest.defaultBranch]);
       // No -q: with it, a bundle missing its prerequisites fails silently.
       run(clonePath, ['bundle', 'verify', bundle]);
+      // A snapshot of a shallow clone (cloud, git-clone.ts) names its
+      // boundary commits; without them in .git/shallow the fetch below fails
+      // its connectivity check on the first missing parent.
+      writeShallowBoundary(clonePath, bundle);
       run(clonePath, ['fetch', '-q', '--no-tags', bundle, '+refs/remotes/origin/*:refs/remotes/origin/*']);
       run(clonePath, ['remote', 'add', 'origin', cloneUrl]);
       const head = `refs/remotes/origin/${manifest.defaultBranch}`;
@@ -386,7 +449,8 @@ export class WarmRepoSession {
     const before = objectBytes(clonePath);
     let fetchBytes = 0;
     try {
-      run(clonePath, ['fetch', '-q', 'origin']);
+      const fetchError = fetchOriginWithRetry(clonePath, { sleep: this.d.sleep, retryAfter: this.d.retryAfter, log: this.d.log });
+      if (fetchError) throw new Error(`git fetch failed: ${fetchError}`);
       fetchBytes = Math.max(0, objectBytes(clonePath) - before);
       run(clonePath, ['merge', '-q', '--ff-only', `origin/${manifest.defaultBranch}`]);
     } catch (err) {
@@ -455,7 +519,8 @@ export class WarmRepoSession {
     let uploaded = 0;
     try {
       // Remote-tracking refs only: local task branches may hold unpushed work.
-      run(clonePath, ['bundle', 'create', '-q', bundle, '--remotes']);
+      // A shallow clone also names its boundary (SHALLOW_REF_PREFIX).
+      bundleRemotes(clonePath, bundle);
       const repoSize = statSync(bundle).size;
       if (repoSize > WARM_MAX_UPLOAD_BYTES) throw new Error(`bundle is ${repoSize} bytes, over the upload limit`);
       const up = this.d.transport.upload(`/warm/${generation}/repo`, bundle);

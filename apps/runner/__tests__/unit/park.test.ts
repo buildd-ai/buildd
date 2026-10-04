@@ -299,6 +299,37 @@ describe('resume when origin cannot be fetched (rate limited, unreachable)', () 
     expect(sleeps[1]!).toBeGreaterThan(sleeps[0]!);
   });
 
+  test('a shallow resuming clone (cloud) that lacks the prerequisite fetches it by id, without deepening origin/main', () => {
+    // Run 1 built its task on origin/main; then origin moved on, so a fresh
+    // shallow clone of the newer main does not reach the bundle's base.
+    writeFileSync(join(worktree, 'feature.ts'), 'export const x = 1;\n');
+    git(worktree, 'add', 'feature.ts');
+    commit(worktree, 'task work');
+    writeFileSync(join(worktree, 'wip.txt'), 'uncommitted\n');
+    const head = git(worktree, 'rev-parse', 'HEAD');
+    const built = park();
+    const saved = join(dir, 'park.tar');
+    writeFileSync(saved, readFileSync(built.tarPath));
+    landOnOrigin('A.md');
+    landOnOrigin('B.md');
+    // GitHub serves any reachable commit by id; a local bare repo needs telling.
+    git(origin, 'config', 'uploadpack.allowReachableSHA1InWant', 'true');
+
+    rmSync(join(dir, 'run1'), { recursive: true, force: true });
+    const cp = join(dir, 'run1', 'buildd-home', 'once-workspaces', 'ws-1');
+    execFileSync('git', ['clone', '-q', '--depth', '1', '--no-single-branch', `file://${origin}`, cp], { stdio: 'pipe' });
+    expect(git(cp, 'rev-parse', '--is-shallow-repository')).toBe('true');
+
+    const sleeps: number[] = [];
+    applyParkRepo(readParkBundle(saved, join(dir, 'stage')), cp, { sleep: (ms) => sleeps.push(ms), retryAfter: () => null });
+    expect(git(worktree, 'rev-parse', 'HEAD')).toBe(head);
+    expect(status(worktree)).toEqual(['?? wip.txt']);
+    expect(sleeps).toEqual([]);
+    // Still shallow: only the missing base came in, not origin's history.
+    expect(git(cp, 'rev-parse', '--is-shallow-repository')).toBe('true');
+    expect(Number(git(cp, 'rev-list', '--count', 'origin/main'))).toBe(1);
+  });
+
   test('a 429 honours Retry-After, and the total wait is capped', () => {
     expect(fetchRetryDelayMs({ attempt: 0, stderr: 'fatal: unable to access \'https://github.com/acme/widget.git/\': The requested URL returned error: 429', retryAfterS: 7, waitedMs: 0 })).toBe(7_000);
     expect(fetchRetryDelayMs({ attempt: 0, stderr: 'error: 429', retryAfterS: 600, waitedMs: 0 })).toBe(PARK_FETCH_RETRY_BUDGET_MS);

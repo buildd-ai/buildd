@@ -6,6 +6,7 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+import { cloneThrottledRecently } from './git-clone';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -1581,7 +1582,7 @@ export class WorkerManager {
   ): Promise<
     | { kind: 'ready'; task: BuilddTask; cwd: string; overlayFrom?: string }
     | { kind: 'no_task' }
-    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string }
+    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string; githubThrottled?: boolean }
   > {
     const task: BuilddTask | undefined = claimedWorker.task || fallbackTask;
     if (!task) return { kind: 'no_task' };
@@ -1598,6 +1599,21 @@ export class WorkerManager {
     if (!workspacePath) {
       const wsName = task.workspace?.name || task.workspaceId;
       const repoHint = task.workspace?.repo ? ` (repo: ${task.workspace.repo})` : '';
+      // The clone failed because GitHub is throttling it (git-clone.ts, after
+      // its own retries). Not this runner's to fix and not the task's fault:
+      // report an infrastructure failure, which buildd requeues on its
+      // infra-retry budget with backoff, and leave the task offerable.
+      // Awaited: a --once container exits right after this.
+      const throttle = task.workspace?.repo ? cloneThrottledRecently(task.workspace.repo) : null;
+      if (throttle) {
+        console.error(`Cannot clone the workspace for claimed task ${task.title} (${task.id}): GitHub is rate limiting this runner; reporting an infrastructure failure for a retry`);
+        await this.buildd.updateWorker(claimedWorker.id, {
+          status: 'failed',
+          error: `Cannot clone workspace "${wsName}"${repoHint}: GitHub is rate limiting clones from this runner (HTTP 429 / rate limit). Infrastructure failure; buildd retries it after a backoff.`,
+          githubThrottled: true,
+        }).catch(() => {});
+        return { kind: 'unresolvable', task, wsName, repoHint, githubThrottled: true };
+      }
       console.error(`Cannot resolve workspace for claimed task: ${task.title} (${task.id}) — will skip on future retries`);
       // Skip this task on future Pusher nudges; a poll re-claim would fail the
       // same way.
@@ -1832,6 +1848,12 @@ export class WorkerManager {
     // above). Same preparation as the poll path — one shared routine.
     const prepared = await this.prepareClaimedWorker(claimedWorker, task);
     if (prepared.kind === 'unresolvable') {
+      if (prepared.githubThrottled) {
+        throw Object.assign(
+          new Error(`Workspace "${prepared.wsName}" could not be cloned${prepared.repoHint}: GitHub is rate limiting this runner (reported as an infrastructure failure)`),
+          { claimError: 'github_throttled' as const },
+        );
+      }
       throw Object.assign(
         new Error(`Workspace "${prepared.wsName}" is not cloned locally${prepared.repoHint} — clone the repo first`),
         { claimError: 'workspace_not_found' as const },

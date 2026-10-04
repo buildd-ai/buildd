@@ -156,11 +156,17 @@ export function createOnceResolver(
    */
   opts: { preferIsolated?: boolean } = {},
 ): WorkspaceResolver {
+  // Set when the isolated clone ended throttled by GitHub: the base resolver's
+  // fallback would only auto-clone the same repo again, a second identical
+  // request into the same rate limit. (The other order is covered by the
+  // clone itself: git-clone.ts refuses a repo it was just throttled on.)
+  let throttled = false;
   const isolated = (workspace: { id: string; repo?: string | null }): string | null => {
     if (!workspace.id || !workspace.repo) return null;
     try {
       return clone({ id: workspace.id, repo: workspace.repo }, isolationRoot);
     } catch (err) {
+      throttled = (err as { throttled?: unknown } | null)?.throttled === true;
       console.error(`[once] could not clone ${workspace.repo}: ${err instanceof Error ? err.message : err}`);
       return null;
     }
@@ -168,7 +174,10 @@ export function createOnceResolver(
   return {
     ...base,
     resolve(workspace, taskContext) {
-      if (opts.preferIsolated) return isolated(workspace) ?? base.resolve(workspace, taskContext);
+      if (opts.preferIsolated) {
+        throttled = false;
+        return isolated(workspace) ?? (throttled ? null : base.resolve(workspace, taskContext));
+      }
       return base.resolve(workspace, taskContext) ?? isolated(workspace);
     },
   };
