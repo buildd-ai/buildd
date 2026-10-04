@@ -1,26 +1,41 @@
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { expectDecisionPinned } from '@builddai/ai-kit/decide';
 import {
   DEFAULT_QUESTION_GATE_MAX_PUSHBACKS,
   DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,
+  OPTION_SLOTS,
+  QUESTION_DECIDE_DECISION,
+  QUESTION_DECIDE_QUESTIONS,
   QUESTION_GATE_DECISION,
   QUESTION_GATE_QUESTIONS,
   buildQuestionGateState,
-  decideQuestionGateArm,
   defaultQuestionGateConfig,
+  detectHardRail,
+  fingerprintOf,
   gateQuestion,
   parseQuestionGateConfig,
   parseQuestionGateRequest,
+  readQuestionDecideRun,
+  resolveDecideOutcome,
 } from '../question-gate';
 
-describe('definition', () => {
-  it('is pinned: change a definition, the gate or the model, and bump the prompt version', () => {
+describe('definitions', () => {
+  it('stage 1 is pinned: change a definition, the gate or the model, and bump the prompt version', () => {
     expectDecisionPinned(QUESTION_GATE_DECISION, { fingerprint: 'ed7f3938d8e3', version: 'qg1|typesafe/jev-1.13|engine-1' });
   });
 
-  it('two contrastive labels', () => {
+  it('stage 1 has two contrastive labels', () => {
     expect(Object.keys(QUESTION_GATE_QUESTIONS.verdict.criteria).sort()).toEqual(['actionable', 'needs_context']);
     for (const def of Object.values(QUESTION_GATE_QUESTIONS.verdict.criteria)) expect(String(def)).toContain('Not for');
+  });
+
+  it('stage 2 (decide/hold/ask) is pinned', () => {
+    expectDecisionPinned(QUESTION_DECIDE_DECISION, { fingerprint: '7a098d6cdad3', version: 'qd1|typesafe/jev-1.13|engine-1' });
+  });
+
+  it('stage 2 offers exactly decide/hold/ask, and OPTION_SLOTS option-index labels', () => {
+    expect(Object.keys(QUESTION_DECIDE_QUESTIONS.disposition.criteria).sort()).toEqual(['ask', 'decide', 'hold']);
+    expect(Object.keys(QUESTION_DECIDE_QUESTIONS.optionIndex.criteria)).toHaveLength(OPTION_SLOTS);
   });
 });
 
@@ -38,42 +53,19 @@ describe('config', () => {
   });
 });
 
-describe('arm', () => {
-  const row = { id: 'exp-1', kind: 'question_gate', status: 'running', treatmentFraction: 0.5, policyVersion: 1, config: { minConfidence: 0.8 } };
-
-  it('is deterministic per task and only treatment applies', () => {
-    const a = decideQuestionGateArm(row, 'task-a');
-    expect(decideQuestionGateArm(row, 'task-a')).toEqual(a);
-    expect(a.apply).toBe(a.arm === 'treatment');
-    expect(a.minConfidence).toBe(0.8);
-  });
-
-  it('splits tasks across both arms', () => {
-    const arms = new Set(Array.from({ length: 40 }, (_, i) => decideQuestionGateArm(row, `task-${i}`).arm));
-    expect(arms).toEqual(new Set(['control', 'treatment']));
-  });
-});
-
-describe('gateQuestion', () => {
-  const treatment = { apply: true, minConfidence: 0.7 };
-  const control = { apply: false, minConfidence: 0.7 };
-
-  it('pushes back a confident needs_context in treatment', () => {
-    expect(gateQuestion({ label: 'needs_context', confidence: 0.9 }, treatment)).toEqual({ verdict: 'pushback', outcome: 'pushback' });
+describe('gateQuestion (stage 1)', () => {
+  it('pushes back a confident needs_context', () => {
+    expect(gateQuestion({ label: 'needs_context', confidence: 0.9 }, 0.7)).toEqual({ verdict: 'pushback', outcome: 'pushback' });
   });
 
   it('threshold is inclusive; below it the question is sent', () => {
-    expect(gateQuestion({ label: 'needs_context', confidence: 0.7 }, treatment).verdict).toBe('pushback');
-    expect(gateQuestion({ label: 'needs_context', confidence: 0.69 }, treatment)).toEqual({ verdict: 'send', outcome: 'actionable' });
-  });
-
-  it('control only records what it would have done', () => {
-    expect(gateQuestion({ label: 'needs_context', confidence: 0.99 }, control)).toEqual({ verdict: 'send', outcome: 'shadow_needs_context' });
+    expect(gateQuestion({ label: 'needs_context', confidence: 0.7 }, 0.7).verdict).toBe('pushback');
+    expect(gateQuestion({ label: 'needs_context', confidence: 0.69 }, 0.7)).toEqual({ verdict: 'send', outcome: 'actionable' });
   });
 
   it('actionable is sent; a failed decision fails open', () => {
-    expect(gateQuestion({ label: 'actionable', confidence: 0.99 }, treatment).verdict).toBe('send');
-    expect(gateQuestion(null, treatment)).toEqual({ verdict: 'send', outcome: 'error' });
+    expect(gateQuestion({ label: 'actionable', confidence: 0.99 }, 0.7).verdict).toBe('send');
+    expect(gateQuestion(null, 0.7)).toEqual({ verdict: 'send', outcome: 'error' });
   });
 });
 
@@ -125,30 +117,104 @@ describe('state', () => {
   });
 });
 
-describe('source', () => {
-  it('running scope: team AND running AND this kind; upsert appends to the task row', async () => {
-    const { drizzle } = await import('drizzle-orm/pg-proxy');
-    const schema = await import('../db/schema');
-    const offline = drizzle(async () => ({ rows: [] }), { schema });
-    mock.module('../db/client', () => ({ db: offline }));
-    const src = await import('../question-gate-source');
-    const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+describe('detectHardRail', () => {
+  it('migration: the destructive-schema-change paths, default or detected', () => {
+    expect(detectHardRail({ pathManifest: ['packages/core/db/schema.ts'] })).toBe('migration');
+    expect(detectHardRail({ pathManifest: ['packages/core/drizzle/0001_x.sql'] })).toBe('migration');
+    expect(detectHardRail({ pathManifest: ['src/schema.ts'], schemaPaths: ['src/schema.ts'] })).toBe('migration');
+  });
 
-    const sel = offline.select({ id: schema.experiments.id }).from(schema.experiments).where(src.runningQuestionGateScope('t-1')).toSQL();
-    expect(norm(sel.sql)).toContain('where ("experiments"."team_id" = $1 and "experiments"."status" = $2 and "experiments"."kind" = $3)');
-    expect(sel.params).toEqual(['t-1', 'running', 'question_gate']);
+  it('auth_secrets', () => {
+    expect(detectHardRail({ pathManifest: ['apps/web/src/app/api/secrets/route.ts'] })).toBe('auth_secrets');
+    expect(detectHardRail({ pathManifest: ['packages/core/secrets/crypto.ts'] })).toBe('auth_secrets');
+  });
 
-    const arm = { experimentId: 'e-1', policyVersion: 2, arm: 'treatment' as const, propensity: 0.5, apply: true, minConfidence: 0.7, maxPushbacks: 2, minSamplePerArm: 20 };
-    const record = {
-      at: '2026-01-01T00:00:00.000Z', workerId: 'w-1', outcome: 'pushback' as const, label: 'needs_context' as const,
-      confidence: 0.9, priorPushbacks: 0, brief: { context: false, consequences: false, recommended: false }, version: 'v', latencyMs: 5,
-    };
-    const up = src.questionGateCheckUpsert(arm, 'task-1', record).toSQL();
-    const text = norm(up.sql);
-    expect(text).toContain('insert into "experiment_assignments"');
-    expect(text).toContain('on conflict ("experiment_id","task_id") do update');
-    expect(text).toContain(`'questiongatechecks'`);
-    expect(up.params).toContain('task');
-    expect(up.params).toContain(JSON.stringify([record]));
+  it('ci_deploy', () => {
+    expect(detectHardRail({ pathManifest: ['.github/workflows/build.yml'] })).toBe('ci_deploy');
+    expect(detectHardRail({ pathManifest: ['vercel.json'] })).toBe('ci_deploy');
+  });
+
+  it('protected_path: only the workspace\'s own declared paths, never assumed', () => {
+    expect(detectHardRail({ pathManifest: ['infra/terraform/main.tf'], protectedPaths: ['infra/terraform/'] })).toBe('protected_path');
+    expect(detectHardRail({ pathManifest: ['infra/terraform/main.tf'] })).toBeNull();
+  });
+
+  it('spending: a heuristic over the question\'s own text, not a path lookup', () => {
+    expect(detectHardRail({ questionText: 'Should we upgrade the plan to cover this?' })).toBe('spending');
+    expect(detectHardRail({ questionText: 'That costs $50/mo — approve the subscription?' })).toBe('spending');
+    expect(detectHardRail({ questionText: 'Local time or UTC?' })).toBeNull();
+  });
+
+  it('checks in a fixed order; the first rail hit wins', () => {
+    expect(detectHardRail({ pathManifest: ['packages/core/db/schema.ts', '.github/workflows/x.yml'] })).toBe('migration');
+  });
+
+  it('no manifest and ordinary text: no rail', () => {
+    expect(detectHardRail({})).toBeNull();
+  });
+});
+
+describe('readQuestionDecideRun / resolveDecideOutcome (stage 2)', () => {
+  const run = (overrides: Partial<{ disposition: string; dispositionConfidence: number; optionLabel: string | null; optionConfidence: number | null }> = {}) => {
+    const d = { disposition: 'decide', dispositionConfidence: 0.9, optionLabel: 'opt1', optionConfidence: 0.8, ...overrides };
+    return {
+      ok: true, decisionId: 'buildd.question_decide', version: 'v',
+      outcomes: {
+        disposition: { status: 'applied', value: d.disposition, confidence: d.dispositionConfidence, answer: {} },
+        optionIndex: d.optionLabel
+          ? { status: 'applied', value: d.optionLabel, confidence: d.optionConfidence, answer: {} }
+          : { status: 'skipped', reason: 'not_candidate' },
+      },
+      result: { ok: true, answers: {}, model: 'jev', usage: {}, latencyMs: 4, attempts: 1 }, receipt: null,
+    } as any;
+  };
+
+  it('reads disposition and the option index', () => {
+    const answer = readQuestionDecideRun(run());
+    expect(answer).toEqual({ disposition: 'decide', dispositionConfidence: 0.9, optionIndex: 1, optionIndexConfidence: 0.8 });
+  });
+
+  it('a decide with a confident, valid index resolves to decide', () => {
+    const resolution = resolveDecideOutcome(readQuestionDecideRun(run()) as any, 2, 0.7);
+    expect(resolution).toEqual({ disposition: 'decide', confidence: 0.9, optionIndex: 1, optionConfidence: 0.8 });
+  });
+
+  it('low confidence falls back to ask, whatever the disposition', () => {
+    const answer = readQuestionDecideRun(run({ dispositionConfidence: 0.5 })) as any;
+    expect(resolveDecideOutcome(answer, 2, 0.7)).toMatchObject({ disposition: 'ask', fellBackReason: 'low_confidence' });
+  });
+
+  it('decide with no usable option index falls back to ask', () => {
+    const noIndex = readQuestionDecideRun(run({ optionLabel: null })) as any;
+    expect(resolveDecideOutcome(noIndex, 2, 0.7)).toMatchObject({ disposition: 'ask', fellBackReason: 'invalid_option' });
+    const outOfRange = readQuestionDecideRun(run({ optionLabel: 'opt5' })) as any;
+    expect(resolveDecideOutcome(outOfRange, 2, 0.7)).toMatchObject({ disposition: 'ask', fellBackReason: 'invalid_option' });
+  });
+
+  it('decide with no options on the question at all falls back to ask', () => {
+    const answer = readQuestionDecideRun(run()) as any;
+    expect(resolveDecideOutcome(answer, 0, 0.7)).toMatchObject({ disposition: 'ask', fellBackReason: 'no_options' });
+  });
+
+  it('a confident hold resolves to hold', () => {
+    const answer = readQuestionDecideRun(run({ disposition: 'hold', optionLabel: null })) as any;
+    expect(resolveDecideOutcome(answer, 2, 0.7)).toEqual({ disposition: 'hold', confidence: 0.9 });
+  });
+
+  it('a confident ask resolves to ask with no fallback reason', () => {
+    const answer = readQuestionDecideRun(run({ disposition: 'ask', optionLabel: null })) as any;
+    expect(resolveDecideOutcome(answer, 2, 0.7)).toEqual({ disposition: 'ask', confidence: 0.9 });
+  });
+
+  it('a failed run reads as an error', () => {
+    const failed = { ok: false, decisionId: 'd', version: 'v', outcomes: { disposition: { status: 'skipped', reason: 'error' }, optionIndex: { status: 'skipped', reason: 'error' } }, result: { ok: false, error: { kind: 'timeout' } }, receipt: null } as any;
+    expect(readQuestionDecideRun(failed)).toEqual({ error: 'timeout' });
+  });
+});
+
+describe('fingerprintOf', () => {
+  it('is deterministic and sensitive to its input', () => {
+    expect(fingerprintOf({ a: 1 })).toBe(fingerprintOf({ a: 1 }));
+    expect(fingerprintOf({ a: 1 })).not.toBe(fingerprintOf({ a: 2 }));
   });
 });

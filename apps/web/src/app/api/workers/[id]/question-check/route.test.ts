@@ -1,7 +1,8 @@
 /**
  * POST /api/workers/[id]/question-check: the question gate's route. The gate
  * itself is covered in lib/question-gate-check.test.ts; this pins auth,
- * ownership, body validation and the scope the check runs under.
+ * ownership, body validation and the scope the check runs under (including
+ * the kill switch and hard-rail context read off the workspace/task rows).
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
@@ -12,8 +13,8 @@ const ACCOUNT = '44444444-4444-4444-8444-444444444444';
 let authed: { id: string } | null;
 let authArgs: unknown[];
 let worker: { id: string; accountId: string; workspaceId: string; taskId: string | null } | null;
-let workspace: { id: string; teamId: string | null; dataClass: string | null } | null;
-let task: { title: string } | null;
+let workspace: { id: string; teamId: string | null; dataClass: string | null; gitConfig: unknown } | null;
+let task: { title: string; pathManifest: string[] | null; missionId: string | null } | null;
 let checked: Array<{ scope: unknown; req: unknown }>;
 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: async (...args: unknown[]) => { authArgs = args; return authed; } }));
@@ -31,6 +32,13 @@ mock.module('@/lib/question-gate-check', () => ({
     checked.push({ scope, req });
     return { verdict: 'pushback', outcome: 'pushback', reason: 'Not sent: ...', version: 'v', latencyMs: 3 };
   },
+  gateEnabledFromGitConfig: (gc: any) => gc?.jevQuestionGate !== false,
+  hardRailContextFromGitConfig: (gc: any) => ({
+    schemaPaths: gc?.policyConfig?.riskClasses?.find((c: any) => c.name === 'destructive_schema_change')?.detectedPaths,
+    authSecretsPaths: undefined,
+    ciDeployPaths: undefined,
+    ...(gc?.mergePolicy?.threshold?.denyPaths ? { protectedPaths: gc.mergePolicy.threshold.denyPaths } : {}),
+  }),
 }));
 
 import { POST } from './route';
@@ -49,8 +57,8 @@ beforeEach(() => {
   authed = { id: ACCOUNT };
   authArgs = [];
   worker = { id: WORKER, accountId: ACCOUNT, workspaceId: 'ws-1', taskId: 'task-1' };
-  workspace = { id: 'ws-1', teamId: 'team-1', dataClass: null };
-  task = { title: 'Weekend surcharge' };
+  workspace = { id: 'ws-1', teamId: 'team-1', dataClass: null, gitConfig: null };
+  task = { title: 'Weekend surcharge', pathManifest: null, missionId: null };
   checked = [];
 });
 
@@ -81,16 +89,23 @@ describe('POST /api/workers/[id]/question-check', () => {
     expect(checked).toEqual([]);
   });
 
-  it('checks under the worker\'s team, task and sensitivity', async () => {
-    workspace = { ...workspace!, dataClass: 'sensitive' };
+  it('checks under the worker\'s team, task, sensitivity and the kill switch, with the task\'s pathManifest as hard-rail context', async () => {
+    workspace = { ...workspace!, dataClass: 'sensitive', gitConfig: { jevQuestionGate: false, mergePolicy: { threshold: { denyPaths: ['infra/'] } } } };
+    task = { ...task!, pathManifest: ['infra/terraform/main.tf'], missionId: 'mission-1' };
     const res = await POST(req(BODY), params());
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ verdict: 'pushback' });
     expect(checked).toHaveLength(1);
-    expect(checked[0].scope).toEqual({
-      teamId: 'team-1', workspaceId: 'ws-1', accountId: ACCOUNT, taskId: 'task-1', workerId: WORKER,
-      taskTitle: 'Weekend surcharge', sensitive: true,
+    expect(checked[0].scope).toMatchObject({
+      teamId: 'team-1', workspaceId: 'ws-1', accountId: ACCOUNT, taskId: 'task-1', missionId: 'mission-1', workerId: WORKER,
+      taskTitle: 'Weekend surcharge', sensitive: true, gateEnabled: false,
+      hardRail: { pathManifest: ['infra/terraform/main.tf'], protectedPaths: ['infra/'] },
     });
     expect((checked[0].req as any).question.prompt).toBe('Local or UTC?');
+  });
+
+  it('defaults gateEnabled true and an empty hard-rail context with no gitConfig', async () => {
+    await POST(req(BODY), params());
+    expect(checked[0].scope).toMatchObject({ gateEnabled: true, hardRail: { pathManifest: null } });
   });
 });
