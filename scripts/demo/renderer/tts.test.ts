@@ -55,3 +55,29 @@ test('providers: kokoro and elevenlabs by name; anything else is an error', () =
   expect(provider('elevenlabs').name).toBe('elevenlabs');
   expect(() => provider('nope')).toThrow('unknown provider');
 });
+
+describe('one continuous read, split at its own sentence pauses', () => {
+  const { findPauses, lineCuts, sentenceCount } = require('./tts');
+  test('sentenceCount', () => {
+    expect(sentenceCount("Coding agents are fast. But they'll tell you they're done when they aren't.")).toBe(2);
+    expect(sentenceCount('Done means the checks pass.')).toBe(1);
+  });
+  test('findPauses: quiet runs of at least minSec, as [start, end] seconds', () => {
+    const sr = 1000, x = new Float32Array(3000);
+    for (let i = 0; i < 3000; i++) x[i] = (i < 1000 || i >= 1400) && !(i >= 2200 && i < 2300) ? Math.sin(i) * 0.5 : 0;
+    const p = findPauses(x, sr, { minSec: 0.2 });
+    expect(p).toHaveLength(1);
+    expect(p[0][0]).toBeCloseTo(1.0, 1);
+    expect(p[0][1]).toBeCloseTo(1.4, 1);
+  });
+  test('lineCuts: the pauses that end each line, chosen by sentence counts, cut at their middles', () => {
+    // 5 sentences over 3 lines (2, 1, 2): 4 sentence pauses; the lines end after sentences 2 and 3.
+    const pauses: Array<[number, number]> = [[1, 1.3], [2, 2.4], [3, 3.2], [4, 4.5]];
+    expect(lineCuts(pauses, [2, 1, 2])).toEqual([2.2, 3.1]);
+  });
+  test('lineCuts picks the longest pauses as sentence ends when commas leave short ones too', () => {
+    const pauses: Array<[number, number]> = [[0.5, 0.6], [1, 1.3], [1.6, 1.68], [2, 2.4]];
+    // 3 sentences, 2 lines (2, 1): sentence pauses are the two longest, [1,1.3] and [2,2.4]; the line ends after sentence 2.
+    expect(lineCuts(pauses, [2, 1])).toEqual([2.2]);
+  });
+});

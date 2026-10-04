@@ -35,7 +35,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from 'path';
 import { fullCut, heroLoop, type Stills } from './cuts';
 import { v5Film, v5Hero, type V5 } from './cuts-v5';
-import { speakAll } from './tts';
+import { speakPassage } from './tts';
 import { V7_LINES, V7_VOICE, v7Captioned, v7Film } from './cuts-v7';
 import { askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
 import { copyFileSync, renameSync, statSync } from 'fs';
@@ -180,7 +180,8 @@ export const FAMILIES: Record<string, Family> = {
   // v7: the voiced film. Its lines are spoken first (tts.ts, cached), so the cuts can be timed to them.
   v7: {
     dir: 'v7', prefix: 'buildd-demo-v7', theme: 'dark',
-    prepare: async () => speakAll(V7_LINES.map((text) => ({ text, ...V7_VOICE }))),
+    // One continuous read, cut into its lines at the reader's own pauses (tts.ts speakPassage).
+    prepare: async () => speakPassage(V7_LINES, V7_VOICE),
     cuts: (s, spoken) => [v7Film(s, spoken), v7Captioned(s, spoken)],
   },
   v6x: { dir: 'x', prefix: 'buildd-demo-v6x', theme: 'dark', cuts: (s) => [v6xFilm(s), v6xHero(s), v6xHero(s, 'dark', { mobile: true })] },

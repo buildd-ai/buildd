@@ -4,7 +4,7 @@
  * square corners, 2px rules, hard offset shadows, the orange accent, flat
  * fills; no gradients, no blur. Bundled into the stage.
  */
-import { beforeAfterAt, chapterIn, doneIn, fleetRows, phoneChosen, recapAt, screenChecks, splitAt, splitHeadline, titleIn, typedChars, verifyAt, type Motion } from './motion-model';
+import { beforeAfterAt, chapterIn, checksIn, doubtAt, doneIn, fleetRows, phoneChosen, recapAt, screenChecks, splitAt, splitHeadline, titleIn, typedChars, verifyAt, type Motion } from './motion-model';
 
 export type MotionPalette = { bg: string; surface: string; text: string; muted: string; rule: string; shadow: string; track: string };
 
@@ -87,9 +87,45 @@ function buildVerify(m: Extract<Motion, { kind: 'verify' }>, root: HTMLElement, 
  * v7's type pieces: the hook's big lines, chapter cards, the recap, and the
  * before/after phone screenshots. Big type, square corners, the accent square.
  */
-function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'beforeAfter' }>, root: HTMLElement, P: MotionPalette, frame: { width: number; height: number }) {
+function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'beforeAfter' | 'doubt' | 'checks' }>, root: HTMLElement, P: MotionPalette, frame: { width: number; height: number }) {
   const W = frame.width, H = frame.height;
   const pad = Math.round(W * 0.083);
+  if (m.kind === 'doubt') {
+    // One quiet agent row; "Done ✓" lands; then a small question mark beside it.
+    const row = el('div', { position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.025)}px`,
+      padding: `${Math.round(H * 0.035)}px ${Math.round(W * 0.03)}px`, fontSize: `${Math.round(W * 0.022)}px`, whiteSpace: 'nowrap', opacity: '0', ...card(P, 8) }, root);
+    el('span', { width: '14px', height: '14px', background: '#0C72CB', flex: '0 0 auto' }, row);
+    el('span', { color: P.muted }, row, m.agent);
+    el('span', { fontWeight: '600' }, row, m.task);
+    const done = el('span', { display: 'flex', alignItems: 'center', gap: '12px', marginLeft: `${Math.round(W * 0.03)}px`, fontWeight: '600', color: OK, opacity: '0' }, row);
+    el('span', {}, done, 'Done ✓');
+    const q = el('span', { fontWeight: '700', color: ACCENT, fontSize: `${Math.round(W * 0.026)}px`, opacity: '0' }, row, '?');
+    return (t: number) => {
+      const v = doubtAt(m, t);
+      row.style.opacity = String(v.row);
+      done.style.opacity = String(v.done);
+      q.style.opacity = String(v.doubt);
+      q.style.transform = `translateY(${-8 * (1 - v.doubt)}px)`;
+    };
+  }
+  if (m.kind === 'checks') {
+    // "Done when" and its checks, set large, in the hero's style: each appears once and stays.
+    const box = el('div', { position: 'absolute', left: `${pad * 1.6}px`, right: `${pad}px`, top: '50%', transform: 'translateY(-50%)' }, root);
+    const head = el('div', { display: 'flex', alignItems: 'center', gap: '16px', fontSize: `${Math.round(W * 0.013)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted, marginBottom: `${Math.round(H * 0.05)}px`, opacity: '0' }, box);
+    el('span', { width: '14px', height: '14px', background: ACCENT }, head);
+    el('span', {}, head, m.title.toUpperCase());
+    const items = m.items.map((text) => {
+      const row = el('div', { display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.02)}px`, fontSize: `${Math.round(W * 0.032)}px`, fontWeight: '600', marginBottom: `${Math.round(H * 0.045)}px`, opacity: '0' }, box);
+      el('span', { width: `${Math.round(W * 0.026)}px`, height: `${Math.round(W * 0.026)}px`, border: `3px solid ${P.rule}`, flex: '0 0 auto' }, row);
+      el('span', {}, row, text);
+      return row;
+    });
+    return (t: number) => {
+      const v = checksIn(m, t);
+      head.style.opacity = String(v.title);
+      v.items.forEach((o, i) => { items[i].style.opacity = String(o); items[i].style.transform = `translateY(${12 * (1 - o)}px)`; });
+    };
+  }
   if (m.kind === 'title') {
     const box = el('div', { position: 'absolute', left: `${pad}px`, right: `${pad}px`, top: '50%', transform: 'translateY(-50%)' }, root);
     const lines = m.lines.map((t, i) => {
@@ -115,7 +151,7 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
       el('span', {}, row, t);
       return row;
     });
-    const line = el('div', { fontSize: `${Math.round(W * 0.047)}px`, fontWeight: '600', letterSpacing: '-0.02em', marginTop: `${Math.round(H * 0.05)}px`, opacity: '0' }, box, m.line);
+    const line = el('div', { fontSize: `${Math.round(W * (m.titles.length ? 0.047 : 0.06))}px`, fontWeight: '600', letterSpacing: '-0.02em', marginTop: `${Math.round(H * (m.titles.length ? 0.05 : 0))}px`, opacity: '0' }, box, m.line);
     const url = el('div', { display: 'flex', alignItems: 'center', gap: '16px', fontSize: `${Math.round(W * 0.019)}px`, color: P.muted, marginTop: `${Math.round(H * 0.025)}px`, opacity: '0' }, box);
     el('span', { width: '14px', height: '14px', background: ACCENT }, url);
     el('span', {}, url, m.url);
@@ -123,12 +159,14 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
       const r = recapAt(m, t);
       r.titles.forEach((o, i) => { titles[i].style.opacity = String(o); });
       line.style.opacity = String(r.line);
-      url.style.opacity = String(r.line);
+      url.style.opacity = String(r.url);
     };
   }
-  // beforeAfter: two phones side by side, the screenshot filling each screen.
-  const ph = Math.round(H * 0.86), pw = Math.round((ph * m.before.width) / m.before.height);
-  const gap = Math.round(W * 0.07);
+  // beforeAfter: two phones side by side. `view` shows the top part of each screenshot, so its text reads.
+  const view = m.view ?? 1;
+  const ph = Math.round(H * 0.86);
+  const gap = Math.round(W * 0.06);
+  const pw = Math.min(Math.round((ph * m.before.width) / (m.before.height * view)), Math.round((W * 0.9 - gap) / 2));
   const x0 = Math.round(W / 2 - pw - gap / 2), x1 = Math.round(W / 2 + gap / 2), y = Math.round((H - ph) / 2 + H * 0.02);
   const phone = (x: number, img: { src: string }, word: string) => {
     const fr = el('div', { position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${pw}px`, height: `${ph}px`, overflow: 'hidden', ...card(P, 10) }, root);
@@ -163,7 +201,7 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
 export function buildMotion(m: Motion, layer: HTMLElement, P: MotionPalette, frame = { width: 1920, height: 1080 }): (local: number) => void {
   const root = el('div', { position: 'absolute', inset: '0', fontFamily: MONO, color: P.text }, layer);
   if (m.kind === 'verify') return buildVerify(m, root, P, frame);
-  if (m.kind === 'title' || m.kind === 'chapter' || m.kind === 'recap' || m.kind === 'beforeAfter') return buildV7(m, root, P, frame);
+  if (m.kind === 'title' || m.kind === 'chapter' || m.kind === 'recap' || m.kind === 'beforeAfter' || m.kind === 'doubt' || m.kind === 'checks') return buildV7(m, root, P, frame);
   label(root, P, m.label);
 
   if (m.kind === 'type') {

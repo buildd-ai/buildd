@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { basename, dirname, join, relative, resolve } from 'path';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, emptyGap, isTypeCard, type AcceptRule,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, type AcceptRule,
   type Finding, type Severity, type Word,
 } from './checks';
 
@@ -103,6 +103,14 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
   for (const f of parseFreeze(det, p.duration)) {
     const share = (f.end - f.start) / p.duration;
     findings.push({ t: f.start, severity: share > 0.6 ? 'medium' : 'low', check: 'freeze', issue: `no motion ${f.start.toFixed(1)}–${f.end.toFixed(1)}s (${Math.round(share * 100)}% of the clip)` });
+  }
+
+  // Flicker: a coarse grid of block averages at 10fps, one decode.
+  {
+    const raw = sh(['ffmpeg', '-v', 'error', '-i', file, '-vf', 'fps=10,scale=32:18:flags=area,format=gray', '-f', 'rawvideo', '-']).out;
+    const frames: Uint8Array[] = [];
+    for (let i = 0; i + 576 <= raw.length; i += 576) frames.push(new Uint8Array(raw.subarray(i, i + 576)));
+    findings.push(...flicker(frames, 10));
   }
 
   const times = sampleTimes(p.duration, meta.crossfades, { loop: meta.loop, fps: p.fps });

@@ -21,16 +21,18 @@ export const V7_FADE = 0.6;
 const DIM = 0.72;
 const PAD = 14;
 
-/** The approved voice, one line per chapter. */
+/**
+ * The approved voice: one passage, read once (tts.ts speakPassage), cut into
+ * one line per chapter at the reader's own sentence pauses.
+ */
 export const V7_LINES = [
-  "Agents say they're done. buildd checks.",
-  "Say what's wrong. buildd turns it into checks you can read.",
-  'One runner works several tasks. It settles routine calls itself, and asks you the rest.',
-  'The agent said done. The check said no. Second try, it fits.',
-  'Say what done means. Let agents work. buildd checks.',
+  "Coding agents are fast. But they'll tell you they're done when they aren't.",
+  'With buildd, you start by writing down what done means.',
+  'Then the agents get to work on your own machine, a few tasks at a time. If they need a decision from you, it comes to your phone.',
+  "When an agent says it's finished, buildd runs your checks. Here, the table still didn't fit, so the work went back. On the second try, it passed.",
+  'Done means the checks pass.',
 ];
 export const V7_VOICE = { voice: 'af_heart', speed: 1.0 };
-export const CHAPTERS = ['Say what done means', 'Agents work', 'buildd checks'];
 
 export type Spoken = Array<{ file: string; seconds: number }>;
 
@@ -51,7 +53,6 @@ function typed(frames: Array<{ src: string; width: number; height: number; at: n
 }
 
 const motion = (id: string, dur: number, m: Motion): Shot => ({ id, layout: 'motion', dur, images: [], motion: m });
-const chapter = (n: number, title: string): Shot => motion(`ch${n}`, 1.3, { kind: 'chapter', label: '', index: String(n).padStart(2, '0'), title, from: 0.05 });
 
 /** The chapters' shots, before timing: [hook], [ch1...], [ch2...], [ch3...], [recap]. */
 export function v7Chapters(s: Stills): Shot[][] {
@@ -59,41 +60,21 @@ export function v7Chapters(s: Stills): Shot[][] {
   const f = (step: string, rect: Rect, padding: number, t = 0, viewport: 'desktop' | 'phone' = 'desktop'): CamKey => aim(look, s.img(step, viewport), rect, padding, t);
   const key = (t: number, rects: Rect[], dim = DIM) => ({ at: t, rects, dim, padPx: PAD });
 
-  const hook = motion('hook', 5, { kind: 'title', label: '', lines: ["Agents say they're done.", 'buildd checks.'], from: -0.5, stagger: 1.6 });
+  // Opening, quiet and abstract: an agent says it's done, and a question mark appears.
+  const open = motion('open', 4.6, { kind: 'doubt', label: '', agent: 'agent', task: 'invoices · rows as cards', from: 0.1, doneAt: 0.9, doubtAt: 2.4 });
 
-  // 1. Say what done means: the ask typed; the draft's Done-when rows lit one by one; Confirm.
-  const composer = s.box('s01-ask', 'chat-composer');
-  const t1 = typed(s.typing('s01-ask'), 0.5, 2.4);
-  const ask: Shot = {
-    id: 'ask', layout: 'screen', dur: 3.2, images: t1.images, keys: t1.keys,
-    spot: [key(0.2, [composer])], camera: [f('s01-ask', composer, 1.7, 0), f('s01-ask', composer, 1.55, 1)],
-  };
+  // 1. What done means: the checks set large, each appearing once, held; then the real draft card, held still.
   const T = 's02-thread';
   const list = s.box(T, 'approval-draft-criteria');
-  const line = (p: string) => s.text(T, p).rects[0];
-  const askLine = line('The invoice table overflows on phones.');
-  const rowLabels = ['Fits a 390px screen', 'No sideways scroll on /invoices', 'Phone screenshot approved'];
-  const labelRects = rowLabels.map(line);
-  const rows = labelRects.map((r, i): Rect => {
-    const next = labelRects[i + 1];
-    const y1 = next ? next.y - 0.004 : list.y + list.h;
-    return { x: list.x, y: r.y - 0.004, w: list.w, h: y1 - (r.y - 0.004) };
-  });
+  const askLine = s.text(T, 'The invoice table overflows on phones.').rects[0];
   const confirm = s.box(T, 'kit-approval-confirm');
-  const REVEAL = [1.0, 1.6, 2.2];
-  const slots = (askOn: boolean, n: number) => [askOn ? askLine : ghost(askLine), ...rows.map((r, i) => (i < n ? r : { x: r.x, y: r.y, w: r.w, h: 0 }))];
+  const checks = motion('checks', 5.0, { kind: 'checks', label: '', title: 'Done when', items: ['Fits a 390px screen', 'No sideways scroll on /invoices', 'Phone screenshot approved'], from: 0.2, stagger: 0.7 });
   const card = union([askLine, list, confirm]);
-  const criteria: Shot = {
-    id: 'criteria', layout: 'screen', dur: 4.6, images: [s.img(T)],
-    masks: rows.map((r, i): Mask => ({ rect: { x: r.x - 0.004, y: r.y, w: r.w + 0.008, h: r.h }, from: 0, until: REVEAL[i], max: 0.7 })),
-    spot: [key(0.2, slots(true, 0)), ...REVEAL.map((t, i) => key(t, slots(false, i + 1)))],
-    camera: [f(T, card, 1.1, 0), f(T, card, 1.06, 1)],
-  };
-  const confirming: Shot = {
-    id: 'confirm', layout: 'screen', dur: 2.8, images: [s.img(T)],
-    spot: [key(0.1, [list]), { ...key(0.9, [confirm]), cross: true }],
-    camera: [f(T, card, 1.06, 0), f(T, card, 1.05, 1)],
-    taps: [press(1.6, confirm)], controls: [confirm],
+  const draft: Shot = {
+    id: 'draft', layout: 'screen', dur: 2.6, images: [s.img(T)],
+    // Held still: one light on the whole card, no tap, nothing moving but a slow push.
+    spot: [key(0, [card], DIM * 0.6)],
+    camera: [f(T, card, 1.08, 0), f(T, card, 1.05, 1)],
   };
 
   // 2. Agents work: one runner, three slots lighting up; the question on the phone.
@@ -102,7 +83,7 @@ export function v7Chapters(s: Stills): Shot[][] {
   const slotRows = s.boxAttrs(H, 'fleet-slot');
   const right = fleetBox.x + fleetBox.w;
   const fleet: Shot = {
-    id: 'fleet', layout: 'screen', dur: 5.2, images: [s.img(H)],
+    id: 'fleet', layout: 'screen', dur: 4.6, images: [s.img(H)],
     masks: slotRows.map((x, i): Mask => ({ rect: { x: x.rect.x, y: x.rect.y, w: right - x.rect.x, h: x.rect.h }, until: 0.6 + i * 0.55, wipe: 0.6, fill: 'dim' })),
     spot: [key(0, [fleetBox])],
     camera: [f(H, fleetBox, 1.08, 0), f(H, fleetBox, 1.05, 1)],
@@ -113,9 +94,10 @@ export function v7Chapters(s: Stills): Shot[][] {
   const lift = Math.min(all.y, 0.3);
   const qRect = { x: all.x, y: all.y - lift, w: all.w, h: all.h + lift };
   const phone = s.img(Q, 'phone');
-  const beatLook: Look = { ...look, beat: true, minPx: 1.4, reserve: 0 };
+  // The question card framed wide enough to read at 1280 (a 390px phone at 2.3 output px per CSS px).
+  const beatLook: Look = { ...look, beat: true, minPx: 2.3, reserve: 0 };
   const question: Shot = {
-    id: 'question', layout: 'screen', dur: 5.0,
+    id: 'question', layout: 'screen', dur: 4.6,
     images: [phone, { ...s.img('s05b-answered', 'phone', 3.0), fade: 0 }],
     spot: [key(0.3, [qRect]), key(1.3, [opts[0]]), { ...key(3.0, [qRect], 0), cross: true }],
     camera: [aim(beatLook, phone, qRect, 1.12, 0), aim(beatLook, phone, qRect, 1.08, 1)],
@@ -124,17 +106,18 @@ export function v7Chapters(s: Stills): Shot[][] {
 
   // 3. buildd checks: red (attempt 1 said done, the check said no), attempt 2, green, before/after, Looks right.
   const chip = (step: string) => s.box(step, '[data-loop-status]');
-  const hist = (step: string) => s.box(step, 'loop-history');
+  // The history's text column (its timestamps sit on the right): framed tighter so the lines read at 1280.
+  const hist = (step: string) => { const h = s.box(step, 'loop-history'); return { ...h, w: h.w * 0.74 }; };
   const taskCrop = (step: string) => union([chip(step), hist(step)]);
   // The chip first ("LOOPING · ATTEMPT 2/3"), then the history close enough to read why.
   const red: Shot = {
-    id: 'red', layout: 'screen', dur: 3.8, images: [s.img('s06-sent-back')],
+    id: 'red', layout: 'screen', dur: 3.4, images: [s.img('s06-sent-back')],
     // Both lit from the start (the chip alone left the frame a dark panel), then the light settles on the history.
     spot: [key(0.1, [chip('s06-sent-back'), hist('s06-sent-back')]), key(1.3, [ghost(chip('s06-sent-back')), hist('s06-sent-back')])],
     camera: [f('s06-sent-back', taskCrop('s06-sent-back'), 1.05, 0), f('s06-sent-back', taskCrop('s06-sent-back'), 1.05, 0.25), f('s06-sent-back', hist('s06-sent-back'), 1.08, 0.45), f('s06-sent-back', hist('s06-sent-back'), 1.05, 1)],
   };
   const retry: Shot = {
-    id: 'attempt2', layout: 'screen', dur: 2.4, images: [s.img('s07-attempt2')],
+    id: 'attempt2', layout: 'screen', dur: 3.0, images: [s.img('s07-attempt2')],
     spot: [key(0.2, [chip('s07-attempt2'), hist('s07-attempt2')])],
     camera: [f('s07-attempt2', taskCrop('s07-attempt2'), 1.08, 0), f('s07-attempt2', taskCrop('s07-attempt2'), 1.06, 1)],
   };
@@ -149,13 +132,14 @@ export function v7Chapters(s: Stills): Shot[][] {
     kind: 'beforeAfter', label: '',
     before: s.file('scripts/demo/stories/shots/invoices-list-mobile-before.png'),
     after: s.file('scripts/demo/stories/shots/invoices-list-mobile-after.png'),
-    brokenAt: 0.25, afterAt: 0.9, checkAt: 1.6,
+    brokenAt: 0.25, afterAt: 0.9, checkAt: 1.6, view: 0.5,
   });
   const btn = s.box('s09-deck', 'deck-looks-right');
   const deck = s.box('s09-deck', 'visual-review-deck');
   const looks: Shot = {
-    id: 'looks', layout: 'screen', dur: 2.8,
-    images: [s.img('s09-deck'), { ...s.img('s09b-agreed', 'desktop', 2.2), fade: 0 }],
+    id: 'looks', layout: 'screen', dur: 3.0,
+    // Held on the deck: after the tap it moves to "Nothing to review", which reads as nothing happening.
+    images: [s.img('s09-deck')],
     spot: [key(0.2, [deck], DIM * 0.8), { ...key(1.0, [btn], DIM * 0.8), cross: true }],
     camera: [f('s09-deck', deck, 1.04, 0), f('s09-deck', deck, 1.03, 1)],
     taps: [press(1.6, btn)], controls: [btn],
@@ -163,15 +147,9 @@ export function v7Chapters(s: Stills): Shot[][] {
     artifacts: [{ x: deck.x, y: deck.y, w: deck.w, h: Math.max(0, btn.y - 0.03 - deck.y) }],
   };
 
-  const recap = motion('recap', 6, { kind: 'recap', label: '', titles: CHAPTERS, from: -0.3, stagger: 0.45, line: 'Done means the checks pass.', lineAt: 2.1, url: 'buildd.dev' });
+  const end = motion('end', 4.2, { kind: 'recap', label: '', titles: [], from: 0, stagger: 0, line: 'Done means the checks pass.', lineAt: 0.1, url: 'buildd.dev' });
 
-  return [
-    [hook],
-    [chapter(1, CHAPTERS[0]), ask, criteria, confirming],
-    [chapter(2, CHAPTERS[1]), fleet, question],
-    [chapter(3, CHAPTERS[2]), red, retry, green, ba, looks],
-    [recap],
-  ];
+  return [[open], [checks, draft], [fleet, question], [red, retry, green, ba, looks], [end]];
 }
 
 /**
@@ -203,13 +181,10 @@ export function v7Film(s: Stills, spoken: Spoken): Cut {
     poster: posterAt(shots, 'green', 1.5), keyStills: keyStills(shots), shots };
 }
 
-/** The silent cut: the chapter's line as a caption on its first content shot. */
+/** The silent cut: each chapter's line as a caption on its first shot (the end card already shows its words). */
 export function v7Captioned(s: Stills, spoken: Spoken): Cut {
   const chapters = v7Chapters(s);
-  chapters.forEach((ch, i) => {
-    const first = ch.find((x) => x.layout === 'screen');
-    if (first) first.caption = V7_LINES[i];
-  });
+  chapters.slice(0, -1).forEach((ch, i) => { ch[0].caption = V7_LINES[i]; });
   const { shots } = timeToVoice(chapters, spoken);
   return { name: 'captioned', ...FRAME, fade: V7_FADE, captions: true, theme: 'dark', dip: true, loop: false, shots, poster: posterAt(shots, 'green', 1.5) };
 }
@@ -222,7 +197,7 @@ function posterAt(shots: Shot[], id: string, t: number): number {
 
 function keyStills(shots: Shot[]): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const [name, id, t] of [['hook', 'hook', 3.5], ['criteria', 'criteria', 3.2], ['fleet', 'fleet', 3.0], ['question', 'question', 2.0], ['red', 'red', 2.6], ['green', 'green', 1.5], ['before-after', 'beforeAfter', 2.4], ['looks-right', 'looks', 1.8], ['recap', 'recap', 4.0]] as const) {
+  for (const [name, id, t] of [['open', 'open', 3.5], ['checks', 'checks', 3.6], ['draft', 'draft', 1.5], ['fleet', 'fleet', 3.0], ['question', 'question', 2.0], ['red', 'red', 2.6], ['green', 'green', 1.5], ['before-after', 'beforeAfter', 2.4], ['looks-right', 'looks', 1.8], ['end', 'end', 2.5]] as const) {
     const at = posterAt(shots, id, t);
     if (at) out[name] = at;
   }

@@ -144,6 +144,44 @@ export function isTypeCard(words: Word[], sourceWidth: number, displayWidth: num
   return words.some((w) => w.conf >= 80 && (w.text.match(/[A-Za-z]/g) ?? []).length >= 3 && fontPx(w) * k >= 32);
 }
 
+/**
+ * Flicker: an element that re-appears, lit or shown, then dimmed or hidden,
+ * then lit or shown again, within `windowSec`. Read from a coarse grid of
+ * block averages over time (`frames[f][b]`, 8-bit luma at `fps`): a block's
+ * change of more than `delta` is a transition; three alternating transitions
+ * in the window is a re-appearance. One pulse (on, then off) is not flicker,
+ * and a frame where over a third of the blocks change at once is a cut or a
+ * dip, not an element.
+ */
+export const FLICKER = { delta: 18, windowSec: 2, globalShare: 0.34 };
+export function flicker(frames: Uint8Array[], fps: number, o = FLICKER): Finding[] {
+  if (frames.length < 3) return [];
+  const blocks = frames[0].length;
+  const steps: Array<Array<{ f: number; sign: number }>> = Array.from({ length: blocks }, () => []);
+  for (let f = 1; f < frames.length; f++) {
+    const moved: Array<{ b: number; sign: number }> = [];
+    for (let b = 0; b < blocks; b++) {
+      const d = frames[f][b] - frames[f - 1][b];
+      if (Math.abs(d) > o.delta) moved.push({ b, sign: Math.sign(d) });
+    }
+    if (moved.length > blocks * o.globalShare) continue;
+    for (const m of moved) {
+      const s = steps[m.b];
+      // Consecutive frames of the same fade are one transition.
+      if (s.length && s[s.length - 1].sign === m.sign && f - s[s.length - 1].f <= 3) { s[s.length - 1].f = f; continue; }
+      s.push({ f, sign: m.sign });
+    }
+  }
+  const hits: number[] = [];
+  for (const s of steps) for (let i = 0; i + 2 < s.length; i++) {
+    const [a, b, c] = [s[i], s[i + 1], s[i + 2]];
+    if (a.sign !== b.sign && b.sign !== c.sign && (c.f - a.f) / fps <= o.windowSec) { hits.push(a.f / fps); break; }
+  }
+  if (!hits.length) return [];
+  const t = Math.min(...hits);
+  return [{ t: +t.toFixed(2), severity: 'high', check: 'flicker', issue: `${hits.length} region(s) re-appear within ${o.windowSec}s (lit or shown, then gone, then back), first at ${t.toFixed(1)}s` }];
+}
+
 /** A clip that does not loop (the film) fades to black over its last second, by design. */
 export function inFadeOut(t: number, duration: number, loop: boolean): boolean {
   return !loop && t > duration - 1;

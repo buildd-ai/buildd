@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, isTypeCard, type Word,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, type Word,
 } from './checks';
 
 const W = (text: string, x: number, y: number, w: number, h: number, conf = 90, line = 1): Word => ({ text, x, y, w, h, conf, line });
@@ -132,6 +132,30 @@ test('isTypeCard: a frame with display-size type is a title card, not a dark rec
   expect(isTypeCard([W('buildd', 100, 100, 300, 70, 92)], 1920, 1280)).toBe(true);
   expect(isTypeCard([W('subtitle', 100, 100, 120, 14, 92)], 1920, 1280)).toBe(false);
   expect(isTypeCard([W('blur', 100, 100, 300, 70, 40)], 1920, 1280)).toBe(false);
+});
+
+describe('flicker: an element that re-appears (on, off, on) within 2s', () => {
+  const fps = 10, blocks = 20;
+  const series = (fn: (f: number, b: number) => number, n = 60) => Array.from({ length: n }, (_, f) => Uint8Array.from({ length: blocks }, (_, b) => fn(f, b)));
+  test('a block that lights, dims and lights again within 2s is flagged', () => {
+    const lit = (f: number) => (f >= 5 && f < 10) || (f >= 15 && f < 20);
+    const f = flicker(series((fr, b) => (b === 3 && lit(fr) ? 200 : 30)), fps);
+    expect(f).toHaveLength(1);
+    expect(f[0].severity).toBe('high');
+    expect(f[0].t).toBeCloseTo(0.5, 1);
+  });
+  test('a reveal that stays, or a tap that pulses once (on then off), is not flicker', () => {
+    expect(flicker(series((fr, b) => (b === 3 && fr >= 5 ? 200 : 30)), fps)).toEqual([]);
+    expect(flicker(series((fr, b) => (b === 3 && fr >= 5 && fr < 9 ? 200 : 30)), fps)).toEqual([]);
+  });
+  test('the same toggles 3s apart are not flicker', () => {
+    const lit = (f: number) => (f >= 5 && f < 10) || (f >= 40 && f < 45);
+    expect(flicker(series((fr, b) => (b === 3 && lit(fr) ? 200 : 30)), fps)).toEqual([]);
+  });
+  test('a whole-frame change (a dip or a cut) is not an element flickering', () => {
+    const dip = (f: number) => (f >= 5 && f < 8) || (f >= 12 && f < 15);
+    expect(flicker(series((fr) => (dip(fr) ? 10 : 150)), fps)).toEqual([]);
+  });
 });
 
 describe('seamCheck', () => {

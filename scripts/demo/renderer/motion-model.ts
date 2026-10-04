@@ -14,6 +14,8 @@
  *   recap   v7: the chapter titles stacked, then one closing line and the URL
  *   beforeAfter v7: two phone screenshots side by side; the before is marked
  *           broken, then the after is checked
+ *   doubt   v7.1 opening: one agent row; "Done ✓" lands, then a small question mark
+ *   checks  v7.1: "Done when" and its checks set large, each appearing once and staying
  *   verify  the hero: a short list of checks and the agents' bars. Each agent
  *           fills its bar ("I'm done"), then its check ticks (buildd checks);
  *           after the last, one "Done.". It resets to its first frame by the
@@ -31,7 +33,9 @@ export type Motion =
   | { kind: 'title'; label: string; lines: string[]; from: number; stagger: number }
   | { kind: 'chapter'; label: string; index: string; title: string; from: number }
   | { kind: 'recap'; label: string; titles: string[]; from: number; stagger: number; line: string; lineAt: number; url: string }
-  | { kind: 'beforeAfter'; label: string; before: { src: string; width: number; height: number }; after: { src: string; width: number; height: number }; brokenAt: number; afterAt: number; checkAt: number }
+  | { kind: 'beforeAfter'; label: string; before: { src: string; width: number; height: number }; after: { src: string; width: number; height: number }; brokenAt: number; afterAt: number; checkAt: number; view?: number }
+  | { kind: 'doubt'; label: string; agent: string; task: string; from: number; doneAt: number; doubtAt: number }
+  | { kind: 'checks'; label: string; title: string; items: string[]; from: number; stagger: number }
   | { kind: 'verify'; label: string; checks: string[]; colors: string[]; from: number; stagger: number; grow: number; spread: number; lag: number; doneAt: number; resetAt: number; resetDur: number };
 
 function ease(u: number) {
@@ -132,13 +136,23 @@ export function chapterIn(m: Extract<Motion, { kind: 'chapter' }>, local: number
 }
 
 /** Recap: each title's opacity, then the closing line's. */
-export function recapAt(m: Extract<Motion, { kind: 'recap' }>, local: number): { titles: number[]; line: number } {
-  return { titles: m.titles.map((_, i) => ease((local - (m.from + i * m.stagger)) / 0.4)), line: ease((local - m.lineAt) / 0.5) };
+export function recapAt(m: Extract<Motion, { kind: 'recap' }>, local: number): { titles: number[]; line: number; url: number } {
+  return { titles: m.titles.map((_, i) => ease((local - (m.from + i * m.stagger)) / 0.4)), line: ease((local - m.lineAt) / 0.5), url: ease((local - (m.lineAt + 0.8)) / 0.5) };
 }
 
 /** Before/after: the broken mark on the before, the after sliding in, then its check. */
 export function beforeAfterAt(m: Extract<Motion, { kind: 'beforeAfter' }>, local: number): { broken: number; after: number; check: number } {
   return { broken: ease((local - m.brokenAt) / 0.3), after: ease((local - m.afterAt) / 0.5), check: ease((local - m.checkAt) / 0.25) };
+}
+
+/** Opening: the row, its "Done ✓", then the doubt, each 0..1 and never going back. */
+export function doubtAt(m: Extract<Motion, { kind: 'doubt' }>, local: number): { row: number; done: number; doubt: number } {
+  return { row: ease((local - m.from) / 0.5), done: ease((local - m.doneAt) / 0.3), doubt: ease((local - m.doubtAt) / 0.35) };
+}
+
+/** Checks: the title, then each item once; opacity only rises. */
+export function checksIn(m: Extract<Motion, { kind: 'checks' }>, local: number): { title: number; items: number[] } {
+  return { title: ease((local - m.from) / 0.4), items: m.items.map((_, i) => ease((local - (m.from + 0.5 + i * m.stagger)) / 0.45)) };
 }
 
 /** The sounds a motion beat makes, in seconds into its shot. */
@@ -161,6 +175,8 @@ export function motionCues(m: Motion): Array<{ type: 'key' | 'tap' | 'pluck' | '
     case 'screens': return m.checks.map((at) => ({ type: 'tap' as const, at }));
     case 'done': return [{ type: 'chime', at: m.from + 0.2 }];
     case 'title': return [];
+    case 'doubt': return [];
+    case 'checks': return [];
     case 'chapter': return [];
     case 'recap': return [];
     // One soft click as the after lands, and the gentle tone is the green check's (cuts-v7 puts it on the check).
