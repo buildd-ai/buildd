@@ -13,7 +13,12 @@ const endpoint = {
   kind: 'anthropic-compatible' as const, baseUrl: 'https://litellm.example.com', apiKey: 'sk-agent-example',
   authHeader: 'authorization' as const, models: { 'claude-sonnet-5': 'team-sonnet' }, secretId: 's-1', scope: 'team' as const,
 };
+const openAiEndpoint = {
+  kind: 'openrouter' as const, baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-agent-example',
+  authHeader: 'authorization' as const, models: {}, openAiBaseUrl: 'https://openrouter.ai/api/v1', secretId: 's-2', scope: 'team' as const,
+};
 const win: AgentModelDecision = { winner: 'endpoint', endpoint };
+const winOpenAi: AgentModelDecision = { winner: 'endpoint', endpoint: openAiEndpoint };
 const lose: AgentModelDecision = { winner: 'anthropic', endpoint, beatenBy: 'workspace' };
 
 function claim(backend?: string) {
@@ -36,7 +41,7 @@ describe('attachAgentEndpoints', () => {
       kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', authToken: 'sk-agent-example',
       authHeader: 'authorization', models: { 'claude-sonnet-5': 'team-sonnet' },
     });
-    expect(resolve).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'acc-1' });
+    expect(resolve).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'acc-1', backend: 'claude' });
   });
 
   it('endpoint loses the ranking: nothing attached, worker not reported', async () => {
@@ -64,12 +69,44 @@ describe('attachAgentEndpoints', () => {
     expect(JSON.stringify(workers)).not.toContain('sk-agent-example');
   });
 
-  it('codex tasks are skipped without resolving', async () => {
+  it('codex task: resolves with backend "codex" and attaches an OpenAI-compatible endpoint', async () => {
     const { workers, tasks } = claim('codex');
-    const resolve = mock(async () => win);
+    const resolve = mock(async () => winOpenAi);
     const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve });
-    expect(won.size).toBe(0);
-    expect(resolve).not.toHaveBeenCalled();
+    expect([...won]).toEqual(['worker-1']);
+    expect(workers[0].modelEndpoint).toEqual({
+      kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', authToken: 'sk-agent-example',
+      authHeader: 'authorization', models: {}, openAiBaseUrl: 'https://openrouter.ai/api/v1',
+    });
+    expect(resolve).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'acc-1', backend: 'codex' });
+  });
+
+  it('codex task, anthropic-compatible-only endpoint: still attached (no openAiBaseUrl), so the runner fails it clearly', async () => {
+    const { workers, tasks } = claim('codex');
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, runnerSupportsEndpoint: true }, { resolve: async () => win });
+    expect([...won]).toEqual(['worker-1']);
+    expect(workers[0].modelEndpoint).toEqual({
+      kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', authToken: 'sk-agent-example',
+      authHeader: 'authorization', models: { 'claude-sonnet-5': 'team-sonnet' },
+    });
+    expect('openAiBaseUrl' in workers[0].modelEndpoint).toBe(false);
+  });
+
+  it('codex task, machine OPENAI_BASE_URL override: the key is not sent, only the ignored marker', async () => {
+    const { workers, tasks } = claim('codex');
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: false, codexBaseUrlOverride: true, runnerSupportsEndpoint: true }, { resolve: async () => winOpenAi });
+    expect([...won]).toEqual(['worker-1']);
+    expect(workers[0].modelEndpoint).toBeUndefined();
+    expect(workers[0].modelEndpointIgnored).toBe(true);
+    expect(JSON.stringify(workers)).not.toContain('sk-agent-example');
+  });
+
+  it('codex task, no machine override: llmProviderOverride (the Claude-side flag) does not apply to it', async () => {
+    const { workers, tasks } = claim('codex');
+    const won = await attachAgentEndpoints(workers, tasks, 'acc-1', { llmProviderOverride: true, runnerSupportsEndpoint: true }, { resolve: async () => winOpenAi });
+    expect([...won]).toEqual(['worker-1']);
+    expect(workers[0].modelEndpoint).toBeDefined();
+    expect(workers[0].modelEndpointIgnored).toBeUndefined();
   });
 
   it('no ENCRYPTION_KEY: a no-op', async () => {

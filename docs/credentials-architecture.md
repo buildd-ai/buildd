@@ -112,6 +112,51 @@ LiteLLM row above; its root minus `/v1`) or `{ "kind": "openrouter" |
 team, a tie to the endpoint, only the winner delivered. The key policy does not
 bind it. Design: `docs/design/agent-model-endpoint.md`.
 
+**The same row also routes Codex tasks**, for a `kind` that has an
+OpenAI-compatible wire in addition to its Anthropic one: `gateway` (LiteLLM
+speaks both off the same base) and `openrouter` (its native wire *is* OpenAI
+chat-completions) both do; `anthropic-compatible` doesn't — it's a
+self-contained proxy that promises only the Anthropic Messages API, so there's
+no OpenAI-format route to guess at. `resolveEndpointFromBlob` computes this as
+`AgentEndpointRoute.openAiBaseUrl` (present only for the two OpenAI-compatible
+kinds).
+
+Ranking for a Codex task calls `resolveAgentModelRoute({ ..., backend: 'codex'
+})`, which competes the endpoint against `openai_api_key` / `codex_credential`
+instead of the Anthropic purposes — the credentials a Codex run would
+otherwise use, same shape (most specific scope wins, tie to the endpoint). The
+claim (`attachAgentEndpoints`) attaches `modelEndpoint` to a Codex worker the
+same way it does for Claude, including when the endpoint has no
+`openAiBaseUrl`: the worker still gets it, specifically so the runner can fail
+the task with a clear message (`agent-model-env.ts`'s `applyModelEnv`, surfaced
+as `ModelEnvResult.error`) instead of silently falling back to local Codex
+auth as if no endpoint had been configured.
+
+The runner applies it as `OPENAI_BASE_URL` = `openAiBaseUrl`, `OPENAI_API_KEY`
+= the endpoint key — Codex's `authHeader` is always effectively Bearer (the
+OpenAI wire has no `x-api-key` concept), so that field is ignored on this path.
+A per-machine override works the same way the Claude path's `LLM_PROVIDER`
+does: a runner whose machine already has `OPENAI_BASE_URL` set reports
+`codexBaseUrlOverride: true` on the claim, the server withholds the endpoint
+key (`modelEndpointIgnored`), and the runner's own `OPENAI_BASE_URL` /
+`OPENAI_API_KEY` are left untouched. `OPENAI_BASE_URL` had to be added to
+`RUNNER_ENV_PASSTHROUGH` (`apps/runner/src/agent-env.ts`) for this override to
+actually reach the agent subprocess at all — it previously wasn't allowlisted.
+
+Capability gating (the claim route's `capability_mismatch` filter,
+`backend-failover.ts`'s `isBackendConfigured`) treats an OpenAI-compatible
+agent endpoint as "Codex is configured" exactly like `hasCodexCredential` /
+`hasOpenAiApiKey` — via `hasOpenAiCompatibleAgentEndpoint`, a cheap existence
+check (endpoint resolves and has `openAiBaseUrl`), not the full ranking. The
+claim-time check additionally requires the runner to have declared
+`AGENT_ENDPOINT_RUNNER_FEATURE`, since a runner that hasn't would never
+actually apply `modelEndpoint` and the task would then fail at spawn with no
+credential at all.
+
+Cloud-runner support for Codex through the endpoint remains out of scope
+(`POST /api/runner/model-endpoint` still 404s a Codex task outright) — this is
+the host-runner path only.
+
 ### Cloud egress precedence vs the operator's `MODEL_PROXY_URL`
 
 A host runner has no concept of an operator proxy override: it just sends

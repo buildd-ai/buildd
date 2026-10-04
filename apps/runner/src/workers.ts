@@ -3274,12 +3274,19 @@ export class WorkerManager {
         teamEndpointWithheld: worker.modelEndpointIgnored,
         budgetModel: TIER_DEFAULTS.budget.model,
       });
+      // Preflight: a Codex task whose team agent model endpoint has no
+      // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
+      // fail clearly rather than silently falling back to local Codex auth as
+      // if no endpoint had been configured.
+      if (modelEnv.error) {
+        throw new Error(modelEnv.error);
+      }
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
-        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no Anthropic credential given to the agent`);
+        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no ${isCodexTask ? 'Codex' : 'Anthropic'} credential given to the agent`);
       }
       if (modelEnv.teamEndpointIgnored) {
-        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's LLM_PROVIDER (per-machine config) takes priority`);
+        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
       }
       if (this.config.llmProvider?.provider === 'openrouter') {
         console.log(`[Worker ${worker.id}] Using OpenRouter provider`);

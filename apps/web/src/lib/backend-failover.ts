@@ -26,6 +26,7 @@ import {
 } from '@buildd/core/backend-policy';
 import { hasCodexCredential } from './codex-credential';
 import { hasOpenAiApiKey } from './openai-credential';
+import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { effectiveBudgetResetAt, isBudgetExhausted } from './budget-errors';
 
 export type PauseReason = 'budget' | 'auth';
@@ -180,13 +181,15 @@ export async function isBackendConfigured(backend: BackendId, scope: BackendScop
       workspaceId: scope.workspaceId ?? null,
     };
     try {
-      // Either a ChatGPT/OAuth connect (codex_credential) or a plain team/workspace
-      // OpenAI API key (openai_api_key) is enough to run Codex.
-      const [hasCodex, hasOpenAi] = await Promise.all([
+      // Either a ChatGPT/OAuth connect (codex_credential), a plain team/workspace
+      // OpenAI API key (openai_api_key), or a team agent model endpoint with an
+      // OpenAI-compatible route (LiteLLM/OpenRouter) is enough to run Codex.
+      const [hasCodex, hasOpenAi, hasEndpoint] = await Promise.all([
         hasCodexCredential(credScope),
         hasOpenAiApiKey(credScope),
+        hasOpenAiCompatibleAgentEndpoint(credScope),
       ]);
-      return hasCodex || hasOpenAi;
+      return hasCodex || hasOpenAi || hasEndpoint;
     } catch (err) {
       console.warn('[backend-failover] Codex credential check failed:', err);
       return false;

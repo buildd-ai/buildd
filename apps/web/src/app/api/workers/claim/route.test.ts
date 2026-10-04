@@ -233,7 +233,14 @@ mock.module('@buildd/core/db/schema', () => ({
 // Agent model endpoint ranking (docs/design/agent-model-endpoint.md §2).
 // Default null: no endpoint, so every other test sees today's claim.
 const mockResolveAgentModelRoute = mock(async (_o: any) => null as any);
-mock.module('@buildd/core/agent-endpoint', () => ({ resolveAgentModelRoute: mockResolveAgentModelRoute, AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint' }));
+// Default false: no OpenAI-compatible endpoint, so every Codex capability-gate
+// test sees today's behaviour (hasCodexCredential / hasOpenAiApiKey only).
+const mockHasOpenAiCompatibleAgentEndpoint = mock(async (_o: any) => false);
+mock.module('@buildd/core/agent-endpoint', () => ({
+  resolveAgentModelRoute: mockResolveAgentModelRoute,
+  hasOpenAiCompatibleAgentEndpoint: mockHasOpenAiCompatibleAgentEndpoint,
+  AGENT_ENDPOINT_RUNNER_FEATURE: 'agent_endpoint',
+}));
 
 mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: () => ({
@@ -429,6 +436,8 @@ describe('POST /api/workers/claim', () => {
     mockHasCodexCredential.mockResolvedValue(false);
     mockHasOpenAiApiKey.mockReset();
     mockHasOpenAiApiKey.mockResolvedValue(false);
+    mockHasOpenAiCompatibleAgentEndpoint.mockReset();
+    mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(false);
     mockTeamsFindFirst.mockReset();
     mockTeamsFindFirst.mockResolvedValue(null); // default: enabledBackends null => all enabled
 
@@ -1540,6 +1549,80 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.workers.length).toBe(1);
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
+  // A team agent model endpoint with an OpenAI-compatible route (LiteLLM,
+  // OpenRouter) is also enough to run Codex — but only for a runner that
+  // declares AGENT_ENDPOINT_RUNNER_FEATURE; it is the one actually applying
+  // `modelEndpoint`, so a runner that doesn't would pass the gate here and
+  // then fail at spawn with no credential at all.
+  it('claims a codex task on a runner with no local/Codex-specific auth when the team has an OpenAI-compatible agent endpoint, for a runner that supports it', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(true);
+      mockDbExecute.mockReturnValue(Promise.resolve({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] }));
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          runnerFeatures: ['agent_endpoint'],
+          environment: { tools: [], envKeys: ['backend:codex'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
+  });
+
+  it('does NOT claim a codex task via the team\'s agent endpoint for a runner that does not declare AGENT_ENDPOINT_RUNNER_FEATURE', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3, type: 'user', authType: 'api' });
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        { id: 'task-1', workspaceId: 'ws-1', title: 'Codex task', backend: 'codex', requiredCapabilities: [], workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' } },
+      ]);
+      mockHasCodexCredential.mockResolvedValue(false);
+      mockHasOpenAiApiKey.mockResolvedValue(false);
+      mockHasOpenAiCompatibleAgentEndpoint.mockResolvedValue(true);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          // No runnerFeatures: this build would never apply modelEndpoint.
+          environment: { tools: [], envKeys: ['backend:codex'], mcp: [], labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' }, scannedAt: '2026-01-01T00:00:00.000Z' },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.diagnostics.reason).toBe('capability_mismatch');
     } finally {
       if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
       else process.env.ENCRYPTION_KEY = origKey;
@@ -2929,7 +3012,7 @@ describe('POST /api/workers/claim', () => {
         await withEncryptionKey(async () => {
           setupTeamWithEveryCredential();
           const data = await claimWith();
-          expect(mockResolveAgentModelRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1' });
+          expect(mockResolveAgentModelRoute).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-1', backend: 'claude' });
           expect(data.workers[0].serverApiKey).toBe('decrypted-secret-value');
           expect(data.workers[0].serverOauthToken).toBe('decrypted-secret-value');
           expect('modelEndpoint' in data.workers[0]).toBe(false);
