@@ -1,3 +1,4 @@
+import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -1091,6 +1092,9 @@ export async function POST(req: NextRequest) {
     //   workspace gitConfig.defaultBackend → schema default ('claude').
     let resolvedBackend: 'claude' | 'codex' | undefined =
       ['claude', 'codex'].includes(rawBackend) ? (rawBackend as 'claude' | 'codex') : undefined;
+    // The caller named the backend itself (not inherited): budget failover must
+    // not override it. tasks.backend alone can't say so — it defaults to 'claude'.
+    const backendPinnedCtx = resolvedBackend ? { [BACKEND_PINNED_KEY]: true } : {};
 
     // Fields a mission task can inherit from its mission. Fetch once and reuse
     // for both outputRequirement and backend resolution.
@@ -1386,6 +1390,7 @@ export async function POST(req: NextRequest) {
           // see task-routing-preview.ts. Lets analytics and the model cell tell
           // "the filer said this" apart from "we guessed this".
           ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+          ...backendPinnedCtx,
         },
         ...(project ? { project } : {}),
         ...(category ? { category } : {}),
@@ -1436,6 +1441,7 @@ export async function POST(req: NextRequest) {
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
             ...(emitsPlan ? { requiresPlanApproval: true } : {}),
             ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+            ...backendPinnedCtx,
             startResolution: deferredStart.resolution,
           },
         } : {}),

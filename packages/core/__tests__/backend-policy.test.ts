@@ -3,7 +3,11 @@ import {
   BACKEND_REGISTRY,
   DISPATCHABLE_BACKENDS,
   backendLabel,
+  BACKEND_PINNED_KEY,
+  BACKEND_ROUTING_KEY,
+  describeBackendRouting,
   failoverCandidates,
+  isBackendPinned,
   isBackendEnabled,
   isBackendMasked,
   isDispatchableBackend,
@@ -186,3 +190,64 @@ describe('resolveEffectiveBackend', () => {
 });
 
 type AgentBackendList = Parameters<typeof maskBackend>[1];
+
+describe('pinned backend', () => {
+  it('reads the creator pin off the task context', () => {
+    expect(isBackendPinned({ [BACKEND_PINNED_KEY]: true })).toBe(true);
+  });
+
+  it('treats a missing, false or non-boolean marker as not pinned', () => {
+    expect(isBackendPinned(null)).toBe(false);
+    expect(isBackendPinned(undefined)).toBe(false);
+    expect(isBackendPinned({})).toBe(false);
+    expect(isBackendPinned({ [BACKEND_PINNED_KEY]: false })).toBe(false);
+    expect(isBackendPinned({ [BACKEND_PINNED_KEY]: 'yes' })).toBe(false);
+  });
+});
+
+describe('describeBackendRouting', () => {
+  it('explains a claim-time budget failover in words', () => {
+    const d = describeBackendRouting({
+      [BACKEND_ROUTING_KEY]: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted', at: NOW.toISOString() },
+    });
+    expect(d).not.toBeNull();
+    expect(d!.backend).toBe('codex');
+    expect(d!.from).toBe('claude');
+    expect(d!.source).toBe('claim');
+    expect(d!.summary).toBe('routed to Codex by budget failover (Claude seat exhausted)');
+  });
+
+  it('explains the provider toggle and the reverse wall', () => {
+    expect(describeBackendRouting({
+      [BACKEND_ROUTING_KEY]: { backend: 'codex', from: 'claude', reason: 'claude_disabled' },
+    })!.summary).toBe('routed to Codex because Claude is disabled for the team');
+    expect(describeBackendRouting({
+      [BACKEND_ROUTING_KEY]: { backend: 'claude', from: 'codex', reason: 'codex_rate_limited' },
+    })!.summary).toBe('routed to Claude by budget failover (Codex rate-limited)');
+  });
+
+  it('falls back to a worker-report failover stamp', () => {
+    const d = describeBackendRouting({ failedOverFrom: 'codex', failoverReason: 'budget_exhausted' }, 'claude');
+    expect(d).toEqual({
+      backend: 'claude', from: 'codex', reason: 'budget_exhausted', source: 'worker_report',
+      summary: 'moved to Claude by failover after Codex hit a budget wall',
+    });
+    expect(describeBackendRouting({ failedOverFrom: 'claude', failoverReason: 'auth_failure' }, 'codex')!.summary)
+      .toBe('moved to Codex by failover after Claude rejected its credential');
+  });
+
+  it('prefers the newer claim-time stamp over an older worker-report one', () => {
+    const d = describeBackendRouting({
+      failedOverFrom: 'codex', failoverReason: 'budget_exhausted',
+      [BACKEND_ROUTING_KEY]: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' },
+    }, 'claude');
+    expect(d!.source).toBe('claim');
+  });
+
+  it('is null when the backend was never changed, and ignores malformed stamps', () => {
+    expect(describeBackendRouting(null)).toBeNull();
+    expect(describeBackendRouting({})).toBeNull();
+    expect(describeBackendRouting({ [BACKEND_ROUTING_KEY]: 'codex' })).toBeNull();
+    expect(describeBackendRouting({ [BACKEND_ROUTING_KEY]: { backend: 'gpt', from: 'claude', reason: 'x' } })).toBeNull();
+  });
+});

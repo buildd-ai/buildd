@@ -7,7 +7,7 @@ import { hasTokenScope, requiredScopeForAction } from './token-scopes';
  */
 
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
-import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
+import { DISPATCHABLE_BACKENDS, backendLabel, describeBackendRouting, isBackendPinned } from './backend-policy';
 import { TIERS, isTierSurface, type Tier, type TierSurface } from './model-tier-defaults';
 import { isTaskTier, isAcceptableModelPin } from './model-pin';
 import type { MissionControlCapability } from './mission-control-capabilities';
@@ -1821,6 +1821,14 @@ export async function handleBuilddAction(
         lines.push(`**Phase:** ${task.missionPhaseIndex} · ${task.missionPhaseLabel}`);
       }
       if (task.kind) lines.push(`**Kind:** ${task.kind}${task.roleSlug ? ` (role: ${task.roleSlug})` : ''}`);
+      // Only when it says something: a claim/failover moved the task, or the
+      // backend is pinned so failover will leave it alone.
+      const backendRouting = describeBackendRouting(task.context, task.backend);
+      if (backendRouting) {
+        lines.push(`**Backend:** ${backendLabel(backendRouting.backend)} (${backendRouting.summary})`);
+      } else if (isBackendPinned(task.context)) {
+        lines.push(`**Backend:** ${backendLabel(task.backend)} (pinned: failover will not move it)`);
+      }
       if (task.startAt) lines.push(`**Starts at:** ${new Date(task.startAt).toISOString()}`);
       if (task.loopConfig) {
         const maxLoops = task.loopConfig.maxLoops ?? 5;

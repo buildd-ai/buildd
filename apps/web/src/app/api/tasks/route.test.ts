@@ -1582,6 +1582,33 @@ describe('POST /api/tasks', () => {
     expect(captured().backend).toBe('claude');
   });
 
+  // tasks.backend defaults to 'claude', so only this marker tells budget
+  // failover that the creator asked for the backend (provider-failover spec).
+  it('pins an explicitly requested backend so failover never overrides it', async () => {
+    const captured = backendCase();
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', backend: 'claude' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('claude');
+    expect(captured().context?.backendPinned).toBe(true);
+  });
+
+  it('does not pin a backend inherited from a role, mission or workspace default', async () => {
+    const captured = backendCase();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: 'codex' });
+    const request = createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'T', roleSlug: 'builder' },
+    });
+    await POST(request);
+    expect(captured().backend).toBe('codex');
+    expect(captured().context?.backendPinned).toBeUndefined();
+  });
+
   it('omits backend (schema default applies) when neither task nor role specify one', async () => {
     const captured = backendCase();
     mockWorkspaceSkillsFindFirst.mockResolvedValue({ defaultBackend: null });
