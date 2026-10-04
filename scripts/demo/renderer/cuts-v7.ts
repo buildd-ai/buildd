@@ -136,11 +136,17 @@ export function v7Chapters(s: Stills, look: Look = FILM_LOOK): Shot[][] {
     spot: [key(0.2, [chip('s07-attempt2'), hist('s07-attempt2')])],
     camera: [f('s07-attempt2', taskCrop('s07-attempt2'), 1.08, 0), f('s07-attempt2', taskCrop('s07-attempt2'), 1.06, 1)],
   };
+  const tallFrame = look.frame.height > look.frame.width;
+  const gImg = s.img('s08-green');
   const green: Shot = {
     id: 'green', layout: 'screen', dur: 3.0, images: [s.img('s08-green')],
     // Once the task lands, its PR card sits between the chip and the history; frame the history alone (both attempts).
-    spot: [key(0.2, [hist('s08-green')])],
-    camera: [f('s08-green', hist('s08-green'), 1.1, 0), f('s08-green', hist('s08-green'), 1.06, 1)],
+    // On a phone frame no loop history reads (its lines are long), so the attempt-2 result is the task's own chip,
+    // "LOOP SATISFIED · 2/3", framed large; the desktop keeps the history's text column.
+    spot: [key(0.2, [tallFrame ? chip('s08-green') : hist('s08-green')])],
+    camera: tallFrame
+      ? [aim({ ...look, minPx: 2.6 }, gImg, chip('s08-green'), 1.6, 0), aim({ ...look, minPx: 2.6 }, gImg, chip('s08-green'), 1.5, 1)]
+      : [f('s08-green', hist('s08-green'), 1.1, 0), f('s08-green', hist('s08-green'), 1.06, 1)],
     chime: 0.6,
   };
   const ba = motion('beforeAfter', 3.0, {
@@ -211,6 +217,8 @@ export function v7Captioned(s: Stills, spoken: Spoken): Cut {
   const chapters = v7Chapters(s);
   // The phone question and the review deck fill the frame, so no caption sits clear of them: their sentences go on the neighbours.
   const NO_CAPTION = new Set(['question', 'looks']);
+  // The before/after phones sit shorter and higher here, so the caption band is clear of their rows.
+  for (const shot of chapters.flat()) if (shot.motion?.kind === 'beforeAfter') shot.motion = { ...shot.motion, heightShare: 0.66 };
   chapters.slice(0, -1).forEach((ch, i) => {
     const ss = sentences(V7_LINES[i]);
     const shots = ch.filter((x) => !NO_CAPTION.has(x.id));
@@ -250,7 +258,9 @@ export function v7Steps(s: Stills, o: { mobile?: boolean; theme?: 'dark' | 'ligh
   const all = v7Chapters(s, look).flat();
   return STEPS.map((step) => ({
     name: `beat-${step}${o.mobile ? '-mobile' : ''}`, ...look.frame, fps: FRAME.fps, fade: V7_FADE, captions: false, theme: look.theme, dip: true,
-    shots: STEP_SHOTS[step].map((id) => ({ ...all.find((x) => x.id === id)!, caption: undefined, chime: undefined })),
+    // A phone frame can't show the loop history readably (and a small chip leaves an empty frame), so on phones
+    // step3 is the before/after and Looks right; the desktop keeps the attempt-2 history.
+    shots: STEP_SHOTS[step].filter((id) => !(o.mobile && id === 'green')).map((id) => ({ ...all.find((x) => x.id === id)!, caption: undefined, chime: undefined })),
   }));
 }
 

@@ -150,7 +150,7 @@ describe('v7.2 site clips', () => {
       const cuts = v7Steps(fake, o);
       expect(cuts.map((c: any) => c.name)).toEqual(['step1', 'step2', 'step3'].map((x) => `beat-${x}${(o as any).mobile ? '-mobile' : ''}`));
       for (const c of cuts) { expect(c.captions).toBe(false); expect(c.loop).toBeFalsy(); for (const sh of c.shots) { expect(sh.caption).toBeUndefined(); expect(sh.chime).toBeUndefined(); } }
-      expect(cuts.map((c: any) => c.shots.map((s: any) => s.id))).toEqual([['checks'], ['decided', 'question'], ['green', 'beforeAfter', 'looks']]);
+      expect(cuts.map((c: any) => c.shots.map((s: any) => s.id))).toEqual([['checks'], ['decided', 'question'], (o as any).mobile ? ['beforeAfter', 'looks'] : ['green', 'beforeAfter', 'looks']]);
     }
   });
   test('the hero: the quiet opening, one shot, 8-12s, a seamless loop', () => {

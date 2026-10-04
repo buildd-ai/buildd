@@ -96,7 +96,8 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
   if (m.kind === 'decided') {
     // Question chips in plain words: the routine ones tick to "decided"; the last lifts toward a phone outline.
     const tall = H > FW;
-    const box = el('div', { position: 'absolute', left: `${pad}px`, top: '50%', transform: 'translateY(-50%)', display: 'flex', flexDirection: 'column', gap: `${Math.round(H * 0.04)}px` }, root);
+    const box = el('div', { position: 'absolute', left: `${pad}px`, top: tall ? `${Math.round(H * 0.08)}px` : '50%', transform: tall ? 'none' : 'translateY(-50%)', display: 'flex', flexDirection: 'column', gap: `${Math.round(H * 0.035)}px`,
+      maxWidth: tall ? `${FW - 2 * pad}px` : `${Math.round(FW * 0.62)}px` }, root);
     const chips = m.chips.map((text, i) => {
       const chip = el('div', { display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.016)}px`, padding: `${Math.round(W * 0.012)}px ${Math.round(W * 0.018)}px`,
         fontSize: `${Math.round(W * 0.026)}px`, fontWeight: '600', whiteSpace: tall ? 'normal' : 'nowrap', width: 'fit-content', maxWidth: `${FW - 2 * pad}px`, opacity: '0', ...card(P, 6) }, box);
@@ -107,20 +108,33 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
     });
     // The phone outline the last chip lifts toward.
     const pw = Math.round(H * (tall ? 0.2 : 0.3) * 0.48), ph = Math.round(H * (tall ? 0.2 : 0.3));
-    const phone = el('div', { position: 'absolute', right: `${pad}px`, top: tall ? `${Math.round(H * 0.08)}px` : '50%', transform: tall ? 'none' : 'translateY(-50%)', width: `${pw}px`, height: `${ph}px`,
+    const phone = el('div', { position: 'absolute', right: tall ? 'auto' : `${pad}px`, left: tall ? `calc(50% - ${Math.round(pw / 2)}px)` : 'auto', top: tall ? 'auto' : '50%', bottom: tall ? `${Math.round(H * 0.06)}px` : 'auto', transform: tall ? 'none' : 'translateY(-50%)', width: `${pw}px`, height: `${ph}px`,
       border: `3px solid ${P.rule}`, borderRadius: `${Math.round(pw * 0.14)}px`, opacity: '0' }, root);
     el('div', { position: 'absolute', left: '50%', top: '8px', width: `${Math.round(pw * 0.3)}px`, height: '6px', marginLeft: `-${Math.round(pw * 0.15)}px`, background: P.rule, borderRadius: '3px' }, phone);
+    // The last chip stays where it is: its border turns to the accent and a line grows from it to the
+    // phone outline beside it. Nothing moves across anything, and each element animates once.
     const last = chips[chips.length - 1].chip;
+    const line = el('div', { position: 'absolute', height: '3px', background: ACCENT, transformOrigin: 'left center', transform: 'scaleX(0)' }, root);
+    let placed = false;
     return (t: number) => {
       const v = decidedAt(m, t);
-      v.chips.forEach((o, i) => { if (i < chips.length - 1) { chips[i].chip.style.opacity = String(o); chips[i].chip.style.transform = `translateY(${10 * (1 - o)}px)`; } });
+      v.chips.forEach((o, i) => { chips[i].chip.style.opacity = String(o); chips[i].chip.style.transform = `translateY(${10 * (1 - o)}px)`; });
       v.ticks.forEach((o, i) => { if (chips[i].tick) chips[i].tick!.style.opacity = String(o); });
       phone.style.opacity = String(v.phone);
-      // The last chip lifts toward the phone: it rises and moves right, shrinking a little, but stays readable.
-      const o = v.chips[chips.length - 1];
-      last.style.opacity = String(o * (1 - 0.35 * v.lift));
-      last.style.transform = `translate(${Math.round((tall ? FW * 0.25 : FW * 0.42) * v.lift)}px, ${Math.round(-(tall ? H * 0.32 : H * 0.12) * v.lift)}px) scale(${1 - 0.25 * v.lift})`;
       last.style.borderColor = v.lift > 0.5 ? ACCENT : P.rule;
+      if (!placed) {
+        // Measure once, after layout: from the last chip's right edge to the phone's left edge, at the chip's middle.
+        const a = last.getBoundingClientRect(), b = phone.getBoundingClientRect(), r = root.getBoundingClientRect();
+        if (a.width && b.width) {
+          const y = tall ? a.bottom - r.top + 4 : a.top - r.top + a.height / 2;
+          const x0 = tall ? a.left - r.left + a.width / 2 : a.right - r.left + 12, x1 = tall ? x0 : b.left - r.left - 12;
+          Object.assign(line.style, tall
+            ? { left: `${x0}px`, top: `${y}px`, width: '3px', height: `${Math.max(0, b.top - r.top - y - 12)}px`, transformOrigin: 'center top' }
+            : { left: `${x0}px`, top: `${y - 1}px`, width: `${Math.max(0, x1 - x0)}px` });
+          placed = true;
+        }
+      }
+      line.style.transform = tall ? `scaleY(${v.lift})` : `scaleX(${v.lift})`;
     };
   }
   if (m.kind === 'doubt') {
@@ -197,13 +211,13 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
   }
   // beforeAfter: two phones side by side. `view` shows the top part of each screenshot, so its text reads.
   const view = m.view ?? 1;
-  const ph = Math.round(H * 0.8);
+  const ph = Math.round(H * (m.heightShare ?? 0.8));
   const gap = Math.round(W * 0.06);
   // Side by side on a wide frame; on a 4:5 phone frame one phone, the after sliding in over the before.
   const pw = H > frame.width ? Math.min(Math.round((ph * m.before.width) / (m.before.height * view)), Math.round(frame.width * 0.86))
     : Math.min(Math.round((ph * m.before.width) / (m.before.height * view)), Math.round((frame.width * 0.9 - gap) / 2));
   const tallBA = H > FW;
-  const x0 = tallBA ? Math.round((FW - pw) / 2) : Math.round(FW / 2 - pw - gap / 2), x1 = tallBA ? x0 : Math.round(FW / 2 + gap / 2), y = Math.round((H - ph) / 2 + H * 0.04);
+  const x0 = tallBA ? Math.round((FW - pw) / 2) : Math.round(FW / 2 - pw - gap / 2), x1 = tallBA ? x0 : Math.round(FW / 2 + gap / 2), y = m.heightShare && m.heightShare < 0.8 ? Math.round(H * 0.1) : Math.round((H - ph) / 2 + H * 0.04);
   const phone = (x: number, img: { src: string }, word: string) => {
     const fr = el('div', { position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${pw}px`, height: `${ph}px`, overflow: 'hidden', ...card(P, 10) }, root);
     const im = el('img', { width: '100%', display: 'block' }, fr);
@@ -224,12 +238,24 @@ function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'bef
   return (t: number) => {
     const v = beforeAfterAt(m, t);
     // Stacked (4:5), the after covers the before: its label and mark give way, so nothing prints over anything.
-    xs.style.opacity = String(tallBA ? v.broken * (1 - v.after) : v.broken);
-    if (tallBA) { b.cap.style.opacity = String(1 - v.after); a.cap.style.opacity = String(v.after); }
+    // Stacked, the stamp turns from the red X straight to the green check (the X gives way only as the check arrives), never emptying in between.
+    xs.style.opacity = String(tallBA ? v.broken * (1 - v.check) : v.broken);
+    if (tallBA) {
+      // Stacked: BEFORE stays where it is; AFTER appears at the right end of the same line (a label swapping in place read as flicker).
+      a.cap.style.left = 'auto'; a.cap.style.right = `${FW - (x1 + pw)}px`;
+      a.cap.style.opacity = String(v.after);
+    }
     xs.style.transform = `scale(${1.25 - 0.25 * v.broken})`;
     b.sq.style.background = v.broken > 0.5 ? '#d4473a' : P.muted;
-    a.fr.style.opacity = String(v.after);
-    a.fr.style.transform = `translateX(${30 * (1 - v.after)}px)`;
+    if (tallBA) {
+      // Stacked: the after slides in over the before, opaque (a blend read as overprint, a fade-swap as flicker):
+      // every spot of the frame changes once.
+      a.fr.style.opacity = v.after > 0 ? '1' : '0';
+      a.fr.style.transform = `translateX(${Math.round((1 - v.after) * (FW - x1 + 20))}px)`;
+    } else {
+      a.fr.style.opacity = String(v.after);
+      a.fr.style.transform = `translateX(${30 * (1 - v.after)}px)`;
+    }
     ok.style.opacity = String(v.check);
     ok.style.transform = `scale(${1.25 - 0.25 * v.check})`;
     a.sq.style.background = v.check > 0.5 ? OK : P.muted;

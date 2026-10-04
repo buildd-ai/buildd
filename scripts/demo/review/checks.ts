@@ -151,9 +151,10 @@ export function isTypeCard(words: Word[], sourceWidth: number, displayWidth: num
  * change of more than `delta` is a transition; three alternating transitions
  * in the window is a re-appearance. One pulse (on, then off) is not flicker,
  * and a frame where over a third of the blocks change at once is a cut or a
- * dip, not an element.
+ * dip, not an element. Each state has to hold `minHoldSec`, so a moving edge
+ * (a frame or two dark as it passes) is not counted.
  */
-export const FLICKER = { delta: 18, windowSec: 2, globalShare: 0.34 };
+export const FLICKER = { delta: 18, windowSec: 2, globalShare: 0.34, minHoldSec: 0.3 };
 export function flicker(frames: Uint8Array[], fps: number, o = FLICKER): Finding[] {
   if (frames.length < 3) return [];
   const blocks = frames[0].length;
@@ -175,7 +176,9 @@ export function flicker(frames: Uint8Array[], fps: number, o = FLICKER): Finding
   const hits: number[] = [];
   for (const s of steps) for (let i = 0; i + 2 < s.length; i++) {
     const [a, b, c] = [s[i], s[i + 1], s[i + 2]];
-    if (a.sign !== b.sign && b.sign !== c.sign && (c.f - a.f) / fps <= o.windowSec) { hits.push(a.f / fps); break; }
+    // Each state must hold (minHoldSec): a moving edge passing a block is a frame or two of change, not an element toggling.
+    const held = (b.f - a.f) / fps >= o.minHoldSec && (c.f - b.f) / fps >= o.minHoldSec;
+    if (held && a.sign !== b.sign && b.sign !== c.sign && (c.f - a.f) / fps <= o.windowSec) { hits.push(a.f / fps); break; }
   }
   if (!hits.length) return [];
   const t = Math.min(...hits);

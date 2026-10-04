@@ -99,7 +99,9 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
   // Blank or frozen stretches, one pass. A hold is a design choice; a hold
   // over most of the clip, or any black, is not.
   const det = sh(['ffmpeg', '-hide_banner', '-i', file, '-vf', 'blackdetect=d=0.25:pix_th=0.05,freezedetect=n=0.001:d=3.5,metadata=mode=print', '-f', 'null', '-']).err;
-  for (const b of parseBlack(det)) findings.push({ t: b.start, severity: 'high', check: 'black', issue: `black frames ${b.start.toFixed(2)}–${b.end.toFixed(2)}s` });
+  // A folded beat's seam dips through black by design (render.ts seamlessLoopFilter): black inside that last fade is the dip.
+  const seamFrom = meta.folded ? p.duration - (cut?.fade ?? 0.8) - 0.05 : Infinity;
+  for (const b of parseBlack(det)) if (b.start < seamFrom) findings.push({ t: b.start, severity: 'high', check: 'black', issue: `black frames ${b.start.toFixed(2)}–${b.end.toFixed(2)}s` });
   for (const f of parseFreeze(det, p.duration)) {
     const share = (f.end - f.start) / p.duration;
     findings.push({ t: f.start, severity: share > 0.6 ? 'medium' : 'low', check: 'freeze', issue: `no motion ${f.start.toFixed(1)}–${f.end.toFixed(1)}s (${Math.round(share * 100)}% of the clip)` });

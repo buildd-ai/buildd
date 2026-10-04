@@ -34,7 +34,7 @@ export type Motion =
   | { kind: 'title'; label: string; lines: string[]; from: number; stagger: number }
   | { kind: 'chapter'; label: string; index: string; title: string; from: number }
   | { kind: 'recap'; label: string; titles: string[]; from: number; stagger: number; line: string; lineAt: number; url: string }
-  | { kind: 'beforeAfter'; label: string; before: { src: string; width: number; height: number }; after: { src: string; width: number; height: number }; brokenAt: number; afterAt: number; checkAt: number; view?: number }
+  | { kind: 'beforeAfter'; label: string; before: { src: string; width: number; height: number }; after: { src: string; width: number; height: number }; brokenAt: number; afterAt: number; checkAt: number; view?: number; heightShare?: number }
   | { kind: 'doubt'; label: string; agent: string; task: string; from: number; doneAt: number; doubtAt: number; resetAt?: number; resetDur?: number }
   | { kind: 'decided'; label: string; chips: string[]; from: number; stagger: number; tickAt: number[]; liftAt: number }
   | { kind: 'checks'; label: string; title: string; items: string[]; from: number; stagger: number }

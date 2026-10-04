@@ -148,6 +148,11 @@ describe('flicker: an element that re-appears (on, off, on) within 2s', () => {
     expect(flicker(series((fr, b) => (b === 3 && fr >= 5 ? 200 : 30)), fps)).toEqual([]);
     expect(flicker(series((fr, b) => (b === 3 && fr >= 5 && fr < 9 ? 200 : 30)), fps)).toEqual([]);
   });
+  test('a moving edge passing over (one frame dark, then the new content) is motion, not flicker', () => {
+    // light, a 1-frame dark edge, light again, then a real change that stays.
+    const v = (f: number) => (f === 10 ? 30 : 200);
+    expect(flicker(series((fr, b) => (b === 3 ? v(fr) : 120)), fps)).toEqual([]);
+  });
   test('the same toggles 3s apart are not flicker', () => {
     const lit = (f: number) => (f >= 5 && f < 10) || (f >= 40 && f < 45);
     expect(flicker(series((fr, b) => (b === 3 && lit(fr) ? 200 : 30)), fps)).toEqual([]);
