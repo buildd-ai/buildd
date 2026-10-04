@@ -403,27 +403,34 @@ describe('grants and dry-run', () => {
   const SENTINEL = 'grant-sentinel-7f3a9c';
 
   test('a grant is never written to storage, receipts or logs', async () => {
-    let status = 500;
-    const h = harness({ respond: () => new Response(null, { status }) });
+    const h = harness({ respond: () => new Response(null, { status: 500 }) });
     h.producer.resolveAnswer = {
       decision: 'deliver',
       payload: { dispatchId: 'x' },
       grant: { url: `https://hook.example/run?sig=${SENTINEL}`, headers: { Authorization: `Bearer ${SENTINEL}` } },
     };
-    const e = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first', resolve: true }] } });
+    const e = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first', resolve: true }, { target: WAKE, mode: 'first' }] } });
     await h.engine.publish(SCOPE_KEY, [e]);
-    await h.runToAlarm(); // 500 → retry
-    status = 202;
-    while (h.intent(e.id)?.state === 'queued') await h.runToAlarm();
-    expect(h.intent(e.id)?.state).toBe('delivered');
+    await h.runToAlarm();
 
-    expect(h.outbound.calls).toHaveLength(2);
+    expect(h.outbound.calls).toHaveLength(1);
     expect((h.outbound.calls[0]!.init.headers as Record<string, string>).Authorization).toBe(`Bearer ${SENTINEL}`);
     expect(h.dumpAll()).not.toContain(SENTINEL);
     expect(JSON.stringify(h.logs)).not.toContain(SENTINEL);
     expect(JSON.stringify([...h.producer.receipts, ...h.pendingReceipts()])).not.toContain(SENTINEL);
     expect(JSON.stringify(h.engine.detail(e.id))).not.toContain(SENTINEL);
-    expect(h.dumpAll()).toContain('http_500');
+    expect(h.dumpAll()).toContain('webhook_failed:http_500');
+  });
+
+  test('a failed webhook POST falls through to the runner wake in the same attempt, like in-app', async () => {
+    const h = harness({ respond: () => new Response(null, { status: 503 }) });
+    h.producer.resolveAnswer = { decision: 'deliver', payload: {}, grant: { url: 'https://hook.example/run', headers: {} } };
+    const e = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first', resolve: true }, { target: WAKE, mode: 'first' }] } });
+    await h.engine.publish(SCOPE_KEY, [e]);
+    await h.runToAlarm();
+    expect(h.intent(e.id)?.state).toBe('delivered');
+    expect(h.intent(e.id)?.attempt).toBe(1);
+    expect(h.producer.relayCalls).toHaveLength(1);
   });
 
   test('dry-run types resolve and record the decision without an outbound POST', async () => {

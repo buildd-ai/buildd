@@ -26,7 +26,7 @@ describe('http adapter', () => {
     expect((f.calls[0]!.init.headers as Record<string, string>).Authorization).toBe('Bearer t');
   });
 
-  test('non-2xx, a redirect, a timeout and an expired grant throw without the URL', async () => {
+  test('non-2xx, a redirect, a timeout and an expired grant decline (fall through, like in-app) without the URL', async () => {
     for (const [respond, msg] of [
       [() => new Response(null, { status: 500 }), 'http_500'],
       [() => new Response(null, { status: 302 }), 'http_302'],
@@ -34,10 +34,10 @@ describe('http adapter', () => {
       [() => { throw new Error('connect failed https://hook.example/run'); }, 'network_error'],
     ] as const) {
       const a = createAdapters({ fetch: recordingFetch(respond).fn, producer: new FakeProducer() }).http!;
-      await expect(a.deliver(ctx(), step, grant())).rejects.toThrow(new RegExp(`^${msg}$`));
+      expect(await a.deliver(ctx(), step, grant())).toEqual({ kind: 'declined', why: `webhook_failed:${msg}` });
     }
     const a = createAdapters({ fetch: recordingFetch().fn, producer: new FakeProducer(), now: () => T0 }).http!;
-    await expect(a.deliver(ctx(), step, grant({ expiresAt: new Date(T0 - 1).toISOString() }))).rejects.toThrow('grant_expired');
+    expect(await a.deliver(ctx(), step, grant({ expiresAt: new Date(T0 - 1).toISOString() }))).toEqual({ kind: 'declined', why: 'webhook_failed:grant_expired' });
   });
 
   test('no grant declines', async () => {
