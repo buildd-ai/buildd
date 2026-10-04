@@ -162,9 +162,16 @@ describe('Concurrency Control', () => {
       }
     }
 
+    // Re-check against the server's authoritative count rather than the pre-flight
+    // `availableSlots` snapshot: on a shared CI test account, other workers can finish
+    // (or get cleaned up as stale) between the pre-flight check and this claim loop,
+    // freeing a slot the snapshot didn't know about and letting one extra claim through
+    // legitimately. The invariant that actually matters is that the server never let
+    // total active workers exceed the account limit.
+    const { workers: finalActiveList } = await api('/api/workers/mine?status=idle,running,starting,waiting_input');
     assert(
-      claimedWorkerIds.length <= availableSlots,
-      `Claimed workers (${claimedWorkerIds.length}) <= available slots (${availableSlots})`
+      finalActiveList.length <= maxConcurrent,
+      `Active workers after claiming (${finalActiveList.length}) <= max concurrent (${maxConcurrent})`
     );
   }, TIMEOUT);
 
