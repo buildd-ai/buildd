@@ -234,6 +234,42 @@ describe('planDecision', () => {
     expect(plan.kind === 'ok' && plan.shots[0]).toMatchObject({ relation: 'agree', intent: 'none' });
   });
 
+  describe('after a fix merged', () => {
+    const MERGED = '2026-03-10T10:20:00.000Z';
+    const merged: VisualReviewTaskInput = { id: 'fix-a', title: '[surface fix] /app/x: broken', status: 'completed', workers: [{ id: 'wf', prUrl: 'https://example.test/pr/1', prNumber: 1, mergedAt: MERGED }] };
+    const round2: VisualReviewTaskInput = { id: 'audit-2', title: '[surface audit] round 2: M', status: 'completed', roleSlug: 'visual-auditor', createdAt: AT, context: { surfaceAuditRound: 2 }, workers: [{ id: 'worker-2', status: 'completed' }] };
+    const after = (verdict: 'ok' | 'issue' | 'unsure', fixTaskId?: string) =>
+      ({ ...shot('a-m2', '/app/x', 'mobile', verdict, 'looks fixed', fixTaskId), workerId: 'worker-2', taskId: 'audit-2', createdAt: '2026-03-10T10:40:00.000Z' });
+
+    it('no screenshot since the merge: any decision is stale, there is nothing to decide', () => {
+      model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a')], { tasks: [merged] });
+      expect(model.cells[0].fixCheck?.state).toBe('awaiting_capture');
+      for (const d of ['looks_right', 'needs_fix'] as const) {
+        expect(planDecision(model, req(['a-m'], d, { 'a-m': 'issue' })).kind).toBe('stale');
+      }
+    });
+
+    it('Still broken on the new screenshot files a new fix for the route, whatever the agent said', () => {
+      for (const verdict of ['ok', 'issue', 'unsure'] as const) {
+        // The re-shot may carry the merged fix id over; it still files.
+        for (const carried of [undefined, 'fix-a']) {
+          model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a'), after(verdict, carried)], { tasks: [round2, merged] });
+          expect(model.cells[0].fixCheck?.state).toBe('check');
+          const plan = planDecision(model, req(['a-m2'], 'needs_fix', { 'a-m2': verdict }, 'header still overflows'));
+          expect(plan.kind === 'ok' && plan.shots[0].intent).toBe('file_fix');
+          expect(plan.kind === 'ok' && plan.fixGroups).toEqual([{ route: '/app/x', artifactIds: ['a-m2'], reuseFixId: null }]);
+        }
+      }
+    });
+
+    it('Fixed on the new screenshot records only', () => {
+      model = buildModel([shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a'), after('ok', 'fix-a')], { tasks: [round2, merged] });
+      const plan = planDecision(model, req(['a-m2'], 'looks_right', { 'a-m2': 'ok' }));
+      expect(plan.kind === 'ok' && plan.shots[0]).toMatchObject({ relation: 'agree', intent: 'none' });
+      expect(plan.kind === 'ok' && [...plan.fixGroups, ...plan.waives, ...plan.guides]).toEqual([]);
+    });
+  });
+
   it('a looks-right redecide withdraws the fix the earlier human decision filed', () => {
     model = buildModel([shot('a-m', '/app/x', 'mobile', 'ok', 'fine')], {
       reviews: [review({ id: 'rev-old', artifactId: 'a-m', fixTaskId: 'fix-h' })],
@@ -300,6 +336,7 @@ describe('applyDecision', () => {
     const body = out.body as any;
     expect(body.fixTaskId).toBe('fix-new');
     expect(body.fixTaskIds).toEqual(['fix-new']);
+    expect(body.outcome).toBe('fix_filed');
     expect(body.reviews).toHaveLength(2);
     expect(body.reviews.every((r: any) => r.relation === 'dispute')).toBe(true);
     // The mission's conversation hears that the decision filed a fix.
@@ -391,6 +428,7 @@ describe('applyDecision', () => {
       const body = out.body as any;
       expect(body.cancelledFixTaskId).toBe('fix-a');
       expect(body.guidanceTaskId).toBeNull();
+      expect(body.outcome).toBe('fix_cancelled');
       const rec = calls.find(c => c.op === 'update' && c.table === 'visual_shot_reviews' && c.set.cancelledFixTaskId);
       expect(rec?.set).toEqual({ cancelledFixTaskId: 'fix-a' });
       // Never a second fix, and never the auditor's qa.
@@ -405,6 +443,7 @@ describe('applyDecision', () => {
       expect(calls.some(c => c.op === 'update' && c.table === 'tasks')).toBe(false);
       expect((out.body as any).guidanceTaskId).toBe('fix-a');
       expect((out.body as any).annotated).toEqual([{ fixTaskId: 'fix-a', reason: 'still_linked' }]);
+      expect((out.body as any).outcome).toBe('fix_still_linked');
       const note = calls.find(c => c.op === 'insert' && c.table === 'mission_notes');
       expect(note?.values.body).toContain('Another screen still links this fix');
     });
@@ -422,6 +461,7 @@ describe('applyDecision', () => {
       expect(body.cancelledFixTaskId).toBeNull();
       expect(body.guidanceTaskId).toBe('fix-a');
       expect(body.annotated).toEqual([{ fixTaskId: 'fix-a', reason: 'started' }]);
+      expect(body.outcome).toBe('fix_started');
       const note = calls.find(c => c.op === 'insert' && c.table === 'mission_notes');
       expect(note?.values).toMatchObject({ missionId: MISSION.id, taskId: 'fix-a', type: 'guidance', authorType: 'user', status: 'open' });
       expect(note?.values.body).toContain('This is intended');
@@ -440,6 +480,54 @@ describe('applyDecision', () => {
     expect(note?.values).toMatchObject({ taskId: 'fix-a', type: 'guidance' });
     expect((out.body as any).guidanceTaskId).toBe('fix-a');
     expect((out.body as any).annotated).toEqual([{ fixTaskId: 'fix-a', reason: 'note' }]);
+    expect((out.body as any).outcome).toBe('fix_noted');
+  });
+
+  describe('outcome: what the confirmation says, from the branch the server took', () => {
+    const issueWith = (status: string, opts: { roundCapOpen?: boolean } = {}) => buildModel(
+      [shot('a-m', '/app/x', 'mobile', 'issue', 'broken', 'fix-a')],
+      { tasks: [{ id: 'fix-a', title: '[surface fix] /app/x: broken', status }], ...opts },
+    );
+    const decide = async (decision: 'looks_right' | 'needs_fix', verdict: 'ok' | 'issue' | 'unsure' = 'issue') => {
+      inScope = ['a-m'];
+      const out = await applyDecision({ mission: MISSION, reviewer: REVIEWER, request: req(['a-m'], decision, { 'a-m': verdict }) });
+      expect(out.status).toBe(200);
+      return (out.body as any).outcome;
+    };
+
+    it('needs fix on an issue whose fix is open, no note: the fix is kept', async () => {
+      model = issueWith('in_progress');
+      expect(await decide('needs_fix')).toBe('fix_kept');
+    });
+
+    it('the same once the last automatic round ran (round-cap note open): no re-check left', async () => {
+      model = issueWith('pending', { roundCapOpen: true });
+      expect(await decide('needs_fix')).toBe('fix_kept_no_recheck');
+    });
+
+    it('needs fix on an issue whose fix completed: recorded, the next screenshot re-checks it', async () => {
+      model = issueWith('completed');
+      expect(await decide('needs_fix')).toBe('fix_done');
+      expect(calls.some(c => c.op === 'insert' && c.table === 'tasks')).toBe(false);
+    });
+
+    it('looks right on an issue with no open fix: marked not a bug', async () => {
+      model = issueWith('completed');
+      expect(await decide('looks_right')).toBe('not_a_bug');
+    });
+
+    it('looks right on ok or unsure: marked fine', async () => {
+      model = buildModel([shot('a-m', '/app/x', 'mobile', 'unsure', 'not sure')]);
+      expect(await decide('looks_right', 'unsure')).toBe('marked_fine');
+    });
+
+    it('a needs-fix redecide that reuses the open human fix: added to it', async () => {
+      model = buildModel([shot('a-m', '/app/x', 'mobile', 'ok', 'fine')], {
+        reviews: [review({ id: 'rev-old', artifactId: 'a-m', fixTaskId: 'fix-h' })],
+        tasks: [{ id: 'fix-h', title: '[surface fix] /app/x: broken', status: 'pending' }],
+      });
+      expect(await decide('needs_fix', 'ok')).toBe('fix_added');
+    });
   });
 
   it('a needs-fix note on a shot whose open fix a human filed keeps that fix on the new row', async () => {
@@ -464,6 +552,7 @@ describe('applyDecision', () => {
     const out = await applyDecision({ mission: MISSION, reviewer: REVIEWER, request: req(['a-m'], 'needs_fix', { 'a-m': 'ok' }) });
     expect(out.status).toBe(409);
     expect((out.body as any).error).toBe('round_ceiling');
+    expect((out.body as any).message).not.toMatch(/round|\d/i);
     expect(calls.filter(c => c.op === 'insert' || c.op === 'update')).toHaveLength(0);
   });
 

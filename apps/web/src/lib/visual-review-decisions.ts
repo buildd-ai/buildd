@@ -17,7 +17,7 @@
  * (neon-http), and the partial unique index on active reviews per artifact
  * turns a concurrent duplicate into a 409 before any side effect runs.
  *
- * `planShotReviewEffect` and `planDecision` are pure; `applyDecision` and
+ * `planShotReviewEffect` (visual-review-outcome.ts) and `planDecision` are pure; `applyDecision` and
  * `undoDecision` do the writes. Authorization is the caller's (the route).
  */
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
@@ -42,7 +42,6 @@ import {
   type VisualReviewAnnotation,
 } from '@buildd/shared';
 import {
-  MAX_TOTAL_SURFACE_AUDIT_ROUNDS,
   SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE,
   SURFACE_FIX_TITLE_PREFIX,
   isSurfaceAuditTask,
@@ -60,42 +59,13 @@ import { detachFixFromPendingAudit, ensureMissionSurfaceAudit } from '@/lib/miss
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { postMissionFeedEvent } from '@/lib/mission-feed';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { decisionOutcome, planShotReviewEffect, type ShotReviewIntent } from '@/lib/visual-review-outcome';
 
-// ── The effect table (pure) ─────────────────────────────────────────────────
+// ── The effect table (pure, in visual-review-outcome.ts) ────────────────────
 
-/** What a decision does beyond recording itself. */
-export type ShotReviewIntent = 'none' | 'file_fix' | 'waive_fix' | 'guide_fix';
+export { planShotReviewEffect, type ShotReviewIntent } from '@/lib/visual-review-outcome';
 
 const TERMINAL = new Set<string>(TERMINAL_TASK_STATUSES);
-
-/**
- * One shot's relation and intent. `linkedFix` is the cell's fix (an earlier
- * human fix, else the auditor's `qa.fixTaskId`) with its status, or null when
- * the shot never had one.
- *
- * A linked fix that completed means the shot predates the fix and its
- * re-check round is what shows whether it worked: Needs fix on it records the
- * human's view and files nothing, rather than a duplicate fix off a pre-fix
- * screenshot. A fix that failed or was cancelled solved nothing, so Needs fix
- * files again.
- */
-export function planShotReviewEffect(
-  agentVerdict: VisualQaVerdict,
-  decision: VisualReviewDecision,
-  opts: { linkedFix: { id: string; status: string } | null; hasNote: boolean },
-): { relation: VisualReviewRelation; intent: ShotReviewIntent } {
-  const open = !!opts.linkedFix && !TERMINAL.has(opts.linkedFix.status);
-  const fixDone = opts.linkedFix?.status === 'completed';
-  if (agentVerdict === 'ok' || agentVerdict === 'unsure') {
-    if (decision === 'looks_right') return { relation: agentVerdict === 'ok' ? 'agree' : 'waive', intent: 'none' };
-    // An open earlier human fix is reused by planDecision rather than filed twice.
-    return { relation: 'dispute', intent: fixDone ? 'none' : 'file_fix' };
-  }
-  // issue
-  if (decision === 'looks_right') return { relation: 'dispute', intent: open ? 'waive_fix' : 'none' };
-  if (open) return { relation: 'agree', intent: opts.hasNote ? 'guide_fix' : 'none' };
-  return { relation: 'agree', intent: fixDone ? 'none' : 'file_fix' };
-}
 
 const TITLE_MAX = 200;
 const oneLine = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
@@ -150,6 +120,8 @@ export interface PlannedShot {
   intent: ShotReviewIntent;
   /** The active review this decision replaces. */
   priorReview: HumanShotReview | null;
+  /** The shot's linked fix is open (not completed, failed or cancelled). */
+  linkedOpen: boolean;
 }
 
 export interface FixGroup {
@@ -203,14 +175,18 @@ export function planDecision(model: VisualReviewModel, request: VisualReviewDeci
       if (older && !stale.includes(older)) stale.push(older);
       continue;
     }
-    if (request.expected[artifactId] !== cell.current.agentVerdict) {
+    // A shot whose fix merged with no screenshot since has nothing to decide:
+    // the client that sent this held an older model.
+    if (request.expected[artifactId] !== cell.current.agentVerdict || cell.fixCheck?.state === 'awaiting_capture') {
       if (!stale.includes(cell)) stale.push(cell);
       continue;
     }
-    const fix = cell.current.fixTask;
+    // A fix check: the merged fix is what the new screenshot tests, so Still
+    // broken files a new fix rather than reading the merged one as done.
+    const fix = cell.fixCheck?.state === 'check' && cell.current.fixTask?.id === cell.fixCheck.fix.id ? null : cell.current.fixTask;
     const linkedFix = fix ? { id: fix.id, status: openFix.get(fix.id)?.status ?? fix.status } : null;
     const effect = planShotReviewEffect(cell.current.agentVerdict, request.decision, { linkedFix, hasNote: !!oneLine(request.note) });
-    shots.push({ artifactId, cell, ...effect, priorReview: cell.current.review });
+    shots.push({ artifactId, cell, ...effect, priorReview: cell.current.review, linkedOpen: !!linkedFix && !TERMINAL.has(linkedFix.status) });
   }
   if (stale.length > 0 || shots.length !== request.artifactIds.length) return { kind: 'stale', cells: stale };
 
@@ -499,7 +475,7 @@ export async function applyDecision(input: {
         status: 409,
         body: {
           error: 'round_ceiling',
-          message: `This mission has had ${MAX_TOTAL_SURFACE_AUDIT_ROUNDS} audit rounds, so no new round opens. Open a task by hand.`,
+          message: 'No re-check left for this mission. Open a task by hand.',
         },
       };
     }
@@ -685,6 +661,15 @@ export async function applyDecision(input: {
       cancelledFixTaskIds,
       guidanceTaskIds,
       annotated,
+      outcome: decisionOutcome({
+        decision: request.decision,
+        shots: plan.shots.map(s => ({ agentVerdict: s.cell.current.agentVerdict, check: s.cell.fixCheck?.state === 'check', linkedOpen: s.linkedOpen })),
+        filed: plan.fixGroups.some(g => !g.reuseFixId),
+        reused: plan.fixGroups.some(g => !!g.reuseFixId),
+        cancelled: cancelledFixTaskIds.length > 0,
+        annotated: annotated.map(a => a.reason),
+        roundCapOpen: model.roundCapOpen,
+      }),
       model: fresh,
     },
   };

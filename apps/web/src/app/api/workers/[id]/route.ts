@@ -834,6 +834,9 @@ export async function PATCH(
     // Set by the runner's startup reconciliation (worker-sync.ts
     // restoreWorkersFromDisk) when it finds a local session whose process died
     // without ever reporting a terminal status — never sent by a live session.
+    // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts) sends
+    // it for the same fact: the container or the runner process died before the
+    // runner reported. Either way it rides the infra-retry budget below.
     // Distinguishes a terminal record's outcome ('crashed') from an ordinary
     // agent-reported failure, since both arrive as status: 'failed'.
     crashReconciled,
@@ -3760,6 +3763,7 @@ export async function PATCH(
                   ...(!isSensitive && structuredOutput && typeof structuredOutput === 'object' ? { structuredOutput } : {}),
                   ...(isHeartbeat && structuredOutput ? { heartbeatStatus: (structuredOutput as any)?.status } : {}),
                 },
+                taskId,
               });
             }
           }

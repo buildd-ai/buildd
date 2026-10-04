@@ -69,8 +69,9 @@ describe('VisualReviewTray with shots', () => {
     const onReview = mock((_k: string | null) => {});
     render(<VisualReviewTray model={model} onReview={onReview} />);
     const btn = q('visual-review-review-button')!;
-    // The same count the Line and the Ask use: screens awaiting you.
+    // The same count the Line and the Ask use: unsure screens awaiting you (fix checks wait in the deck).
     expect(model.summary.awaitingHuman).toBeGreaterThan(0);
+    expect(model.summary.fixChecks).toBeGreaterThan(0);
     expect(model.summary.unreviewed).not.toBe(model.summary.awaitingHuman);
     expect(btn.textContent).toContain(`Review ${model.summary.awaitingHuman}`);
     act(() => btn.click());
@@ -85,6 +86,23 @@ describe('VisualReviewTray with shots', () => {
     expect(done.summary.awaitingHuman).toBe(0);
     render(<VisualReviewTray model={done} onReview={() => {}} />);
     expect(q('visual-review-review-button')!.textContent).toBe(`All ${done.cells.length} screens`);
+  });
+
+  it('after a fix merges, a thumb says so in plain words and never names a round', () => {
+    render(<VisualReviewTray model={model} />);
+    const thumb = (key: string) => qa('visual-review-thumb').find(t => t.dataset.cell === key)!;
+    const settled = thumb('/app/inbox|mobile|');
+    expect(settled.dataset.marker).toBe('fix_merged');
+    expect(settled.textContent).toContain('Fix merged');
+    expect(settled.getAttribute('aria-label')).toContain('fix merged, waiting for a new screenshot');
+    const check = thumb('/app/tasks/:id|mobile|');
+    expect(check.dataset.fixCheck).toBe('check');
+    expect(check.textContent).toContain('After fix');
+    expect(check.getAttribute('aria-label')).toContain('fix merged, new screenshot to check');
+    for (const t of [settled, check]) {
+      expect(t.textContent).not.toMatch(/round|R\d/i);
+      expect(t.getAttribute('aria-label')).not.toMatch(/round/i);
+    }
   });
 
   it('with no callback there is nothing to click', () => {

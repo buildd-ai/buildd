@@ -310,6 +310,41 @@ describe('crash handling', () => {
     expect(h.state.error).toMatch(/container stopped/);
   });
 
+  // A container that died under the runner is infrastructure, not the
+  // agent's verdict on the work. The report carries the same structured flag
+  // the runner's own boot reconciliation sends for a session its process lost
+  // (`crashReconciled`), so buildd puts the task on its infra-retry budget
+  // (backoff, infraRetryCount, infra_stalled at the cap) instead of failing it.
+  test.each([
+    ['signal-killed runner', (h: ReturnType<typeof harness>) => h.fc.exits[0]!.resolve(137)],
+    ['container stopped under the process', (h: ReturnType<typeof harness>) => h.fc.kill()],
+  ] as const)('a crash report for a %s is flagged as an infrastructure crash', async (_name, crash) => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-infra']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-infra');
+    crash(h);
+    await h.settle();
+    const patches = h.fetches.filter(f => f.init.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    const body = JSON.parse(patches[0]!.init.body as string);
+    expect(body).toMatchObject({ status: 'failed', crashReconciled: true });
+  });
+
+  test.each([
+    [0, 'done'], [1, 'failed'], [3, 'refused'], [64, 'usage'], [4, 'parked'],
+  ] as const)('exit %p (%p) sends no crash report, so nothing is flagged infra', async (code) => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-own']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-own');
+    h.fc.exits[0]!.resolve(code);
+    await h.settle();
+    const patches = h.fetches.filter(f => f.init.method === 'PATCH');
+    expect(patches).toHaveLength(0);
+    expect(h.fetches.some(f => typeof f.init.body === 'string' && f.init.body.includes('crashReconciled'))).toBe(false);
+  });
+
   test('a crash before any worker id is not reported (nothing to mark)', async () => {
     const h = harness();
     h.sup.dispatch();
@@ -359,6 +394,7 @@ describe('orphan recovery', () => {
     await h.sup.recoverOrphan();
     expect(h.state).toMatchObject({ status: 'exited', outcome: 'crashed', attempt: 3, crashReport: 'sent' });
     expect(h.fetches[0]!.url).toContain('/api/workers/w-orphan');
+    expect(JSON.parse(h.fetches[0]!.init.body as string)).toMatchObject({ status: 'failed', crashReconciled: true });
     expect(h.fc.starts).toHaveLength(0); // recovery never starts a run
   });
 

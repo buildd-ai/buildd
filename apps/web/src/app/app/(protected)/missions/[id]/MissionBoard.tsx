@@ -502,8 +502,8 @@ function Tile({ task: t, model, now, span, link, popSide, compact = false, visua
         {visualStuck ? <span data-testid="board-tile-visual-stuck" className="text-status-warning">{visualStuck}</span> : t.status === 'ready' ? 'ready · next free slot' : (
           <>
             after
-            {t.deps.filter(d => !d.ok).concat(t.deps.filter(d => d.ok)).map(d => (
-              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.ok ? 'ok' : 'ghost'} className="max-w-full overflow-hidden" />
+            {t.deps.filter(d => !d.satisfied).concat(t.deps.filter(d => d.satisfied)).map(d => (
+              <ScopeChip key={d.id} scope={d.scope ?? d.label} tone={d.satisfied ? 'ok' : 'ghost'} className="max-w-full overflow-hidden" />
             ))}
           </>
         )}
@@ -609,7 +609,7 @@ type PopoverSide = 'left' | 'right' | 'below';
 
 function TilePopover({ task: t, model, now, side, href }: { task: BoardTask; model: MissionBoardModel; now: number; side: PopoverSide; href: string }) {
   const recent = t.milestones.slice(-4);
-  const deps = t.deps.map(d => `${d.scope ?? d.label}${d.ok ? ' ✓' : ''}`).join('  ');
+  const deps = t.deps.map(d => `${d.scope ?? d.label}${d.satisfied ? ' ✓' : ''}`).join('  ');
   const running = t.startedAt != null ? formatAge((t.endedAt ?? now) - t.startedAt) : null;
   return (
     // display:none until hovered: an `invisible` box is still laid out, and

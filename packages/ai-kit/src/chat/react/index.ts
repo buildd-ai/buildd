@@ -32,7 +32,7 @@ export {
   type ComposerStore, type ComposerStoreOptions, type ComposerPrefsAdapter, type TierPrefsAdapter, type ComposerSeed, type ComposerSnapshot,
 } from './composer-store';
 export {
-  thinkingSteps, isApprovalPart, approvalRowGroup, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
+  thinkingSteps, stepWeight, liveStep, pinnedStep, stepGroups, THINKING_TAIL, THINKING_TAIL_ID, type StepGroup, isApprovalPart, approvalRowGroup, toolRowState, toolRowLabel, toolSummary, humanizeToolName, tierLabel, greeting,
   formatCost, formatPer1k,
   type ToolRowState, type ApprovalRowGroup,
 } from './model';
