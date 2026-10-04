@@ -550,6 +550,12 @@ export interface WorkspaceGitConfig {
   // Owner decisions the repo cannot tell us (docs/design/workspace-onboarding.md §2).
   // The readiness report itself is recomputed, never stored. Absent ⇒ current behaviour.
   onboarding?: WorkspaceOnboardingConfig;
+
+  // Post-session quality loop (artifact post-session-quality-loop-spec §11).
+  // Read only through `resolvePostSessionQualityMode` — absent or unrecognised
+  // ⇒ 'shadow' (record, never file). 'off' stops new runs; 'propose' applies
+  // the follow-up action policy.
+  postSessionQuality?: import('../post-session-quality').PostSessionQualityConfig;
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
@@ -5126,6 +5132,9 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
 
+export type Artifact = typeof artifacts.$inferSelect;
+export type NewArtifact = typeof artifacts.$inferInsert;
+
 // Stored Jev "is this overlap real" answers (jev-scheduling.md §5,
 // packages/core/orchestration-overlap-decision.ts): one row per task pair per
 // decision, asked once from the creation-manifest prediction hook for a new
@@ -5157,5 +5166,113 @@ export const orchestrationOverlapAnswers = pgTable('orchestration_overlap_answer
 export type OrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferSelect;
 export type NewOrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferInsert;
 
-export type Artifact = typeof artifacts.$inferSelect;
-export type NewArtifact = typeof artifacts.$inferInsert;
+/**
+ * Post-session quality loop — one row per (worker attempt, policy version).
+ * Spec: artifact post-session-quality-loop-spec §4–§6, §12.
+ *
+ * The loop is out of band. This table is its ONLY write target for a run: no
+ * stage may update the worker or task it describes, so a failure here can
+ * never make finished work look unfinished.
+ *
+ * Idempotency lives in the unique (worker_id, policy_version) index: the
+ * collector inserts with ON CONFLICT DO NOTHING and retries only a `failed`
+ * (or crashed-`collecting`) row through a compare-and-set on `attempts`, so two
+ * sweeps racing over the same worker produce one row and one collection.
+ *
+ * Stage A writes `facts` (bounded, no free text — see
+ * packages/core/post-session-quality.ts); later stages fill the triage,
+ * hard-trigger and trace-coverage columns on the same row.
+ */
+export const postSessionRuns = pgTable('post_session_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  policyVersion: text('policy_version').notNull(),
+  // The workspace mode in effect when the run was created — a later mode
+  // change must not reinterpret what an old run was allowed to do.
+  mode: text('mode').notNull().$type<import('../post-session-quality').PostSessionQualityMode>(),
+  state: text('state').notNull().default('collecting').$type<import('../post-session-quality').PostSessionRunState>(),
+  // Collection attempts so far. The retry CAS keys on it.
+  attempts: integer('attempts').notNull().default(1),
+  facts: jsonb('facts').$type<import('../post-session-quality').StageAFacts | null>(),
+  factsSchemaVersion: integer('facts_schema_version'),
+  // Stage A metadata: does a transcript object exist. Not coverage.
+  transcriptAvailability: text('transcript_availability').$type<import('../post-session-quality').TranscriptAvailability>(),
+  // §12 coverage truth, written by whoever actually reads the transcript.
+  // NULL = not established yet — never read as 'full'.
+  traceAvailability: text('trace_availability').$type<import('../post-session-quality').TraceAvailability>(),
+  traceSource: text('trace_source'),
+  traceMissing: jsonb('trace_missing').$type<Record<string, unknown> | null>(),
+  // Stage B. NULL until triage ran.
+  triage: jsonb('triage').$type<import('../post-session-quality').PostSessionTriageRecord | null>(),
+  hardTriggered: boolean('hard_triggered'),
+  hardTriggerReasons: jsonb('hard_trigger_reasons').$type<string[] | null>(),
+  // The final routing after hard-trigger override — what actually happened.
+  finalDecision: text('final_decision').$type<import('../post-session-quality').TriageDecision>(),
+  // Failure diagnostics. Bounded at write time; never cleared by a later
+  // success so the history of a retried run stays readable.
+  errorStage: text('error_stage').$type<import('../post-session-quality').PostSessionFailureStage>(),
+  lastError: text('last_error'),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+  collectedAt: timestamp('collected_at', { withTimezone: true }),
+  triagedAt: timestamp('triaged_at', { withTimezone: true }),
+  analysedAt: timestamp('analysed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workerPolicyIdx: uniqueIndex('post_session_runs_worker_policy_idx').on(t.workerId, t.policyVersion),
+  workspaceCreatedIdx: index('post_session_runs_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  stateUpdatedIdx: index('post_session_runs_state_updated_idx').on(t.state, t.updatedAt),
+  taskIdx: index('post_session_runs_task_idx').on(t.taskId),
+}));
+
+export type PostSessionRun = typeof postSessionRuns.$inferSelect;
+export type NewPostSessionRun = typeof postSessionRuns.$inferInsert;
+
+/**
+ * Post-session finding ledger — one row per (workspace, signature, policy
+ * version), aggregated across every session that exhibited it (spec §8–§9).
+ * Recurrence, highest severity and action state live here so the action
+ * policy can promote a repeated medium finding exactly once; the unique index
+ * is what makes "same incident reprocessed" an upsert rather than a new row.
+ */
+export const postSessionFindings = pgTable('post_session_findings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  policyVersion: text('policy_version').notNull(),
+  signature: text('signature').notNull(),
+  // Broader family key, for "same kind of thing" readouts across signatures.
+  recurrenceKey: text('recurrence_key'),
+  class: text('class').notNull().$type<import('../post-session-quality').FindingClass>(),
+  // Highest severity seen across occurrences.
+  severity: text('severity').notNull().$type<import('../post-session-quality').FindingSeverity>(),
+  // Highest confidence seen across occurrences.
+  confidence: decimal('confidence', { precision: 4, scale: 3 }),
+  title: text('title').notNull(),
+  summary: text('summary'),
+  proposedAction: text('proposed_action').notNull().$type<import('../post-session-quality').FindingProposedAction>(),
+  occurrenceCount: integer('occurrence_count').notNull().default(1),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  // Capped by the writer; occurrenceCount stays exact past the cap.
+  affectedRefs: jsonb('affected_refs').notNull().default([]).$type<import('../post-session-quality').FindingAffectedRef[]>(),
+  evidenceRefs: jsonb('evidence_refs').notNull().default([]).$type<import('../post-session-quality').FindingEvidenceRef[]>(),
+  // Run ids ever folded into this row, capped far above affectedRefs so the
+  // dedup check in aggregateFindingOccurrence survives affectedRefs aging out.
+  seenRunIds: jsonb('seen_run_ids').notNull().default([]).$type<string[]>(),
+  actionState: text('action_state').notNull().default('observed').$type<import('../post-session-quality').FindingActionState>(),
+  actionTaskId: uuid('action_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  actionArtifactId: uuid('action_artifact_id').references(() => artifacts.id, { onDelete: 'set null' }),
+  actionAt: timestamp('action_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceSignaturePolicyIdx: uniqueIndex('post_session_findings_ws_signature_policy_idx').on(t.workspaceId, t.signature, t.policyVersion),
+  workspaceRecurrenceIdx: index('post_session_findings_ws_recurrence_idx').on(t.workspaceId, t.recurrenceKey),
+  actionStateIdx: index('post_session_findings_action_state_idx').on(t.actionState),
+}));
+
+export type PostSessionFinding = typeof postSessionFindings.$inferSelect;
+export type NewPostSessionFinding = typeof postSessionFindings.$inferInsert;
