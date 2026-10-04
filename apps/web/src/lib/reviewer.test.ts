@@ -10,6 +10,9 @@ let reviewerTaskFindFirstResult: any = null;
 let liveReviewerTaskResult: any = null;
 let liveReviewerProbeArgs: any[] = [];
 let taskUpdateReturning: any[] = [];
+let fixCandidates: any[] | null = null;
+let cancellationWon = false;
+let workerReadAfterCancellation = false;
 // When set, the reviewer task insert conflicts (a concurrent producer already
 // inserted this row) and the live probe then finds the winner.
 let reviewerInsertConflictWinner: { id: string } | null = null;
@@ -66,18 +69,37 @@ mock.module('@buildd/core/db', () => ({
     update: mock((table: string) => ({
       set: mock((values: Record<string, unknown>) => {
         if (table === 'workers') workerUpdateCalls.push({ set: values });
-        return { where: mock(() => whereResult(taskUpdateReturning)) };
+        return { where: mock(() => {
+          if (table !== 'workers') cancellationWon = taskUpdateReturning.length > 0;
+          return whereResult(taskUpdateReturning);
+        }) };
       }),
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
-      workers: { findMany: mock(() => Promise.resolve([])) },
+      workers: { findMany: mock(() => {
+        workerReadAfterCancellation = cancellationWon;
+        return Promise.resolve(reviewerTaskFindFirstResult?.workers ?? []);
+      }) },
       missions: { findFirst: mock(() => Promise.resolve(missionFindFirstResult)) },
       // Two different callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
       // passes a `with: { workers }` relation; the pre-dispatch duplicate probe in
       // createReviewerTask does not — dispatch on that so one fixture cannot
       // silently answer the other query.
       tasks: {
+        findMany: mock((args: any) => {
+          const rows = fixCandidates ?? (reviewerTaskFindFirstResult ? [reviewerTaskFindFirstResult] : []);
+          const predicates = args.where as any[];
+          return Promise.resolve(rows.filter(row => predicates.every(p => {
+            if (p.a === 'workspaceId') return row.workspaceId === p.b;
+            if (p.a === 'reviewerRetryPrNumber') return row.reviewerRetryPrNumber == null || row.reviewerRetryPrNumber === p.b;
+            if (p.a === 'parentTaskId') return row.parentTaskId === p.b;
+            if (p.a === 'id') return row.id === p.b;
+            if (p.a === 'status' && row.status) return p.b.includes(row.status);
+            if (p.a === 'taskClass' && row.taskClass) return row.taskClass === p.b;
+            return true;
+          })));
+        }),
         findFirst: mock((args: any) => {
           // Four callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
           // passes a `with: { workers }` relation; the pre-dispatch duplicate probe
@@ -106,6 +128,8 @@ mock.module('@buildd/core/db/schema', () => ({
     subjectPrNumber: 'subjectPrNumber',
     subjectHeadSha: 'subjectHeadSha',
     parentTaskId: 'parentTaskId',
+    taskClass: 'taskClass',
+    reviewerRetryPrNumber: 'reviewerRetryPrNumber',
     id: 'id',
     createdAt: 'createdAt',
   },
@@ -155,6 +179,12 @@ mock.module('@/lib/path-claim-release', () => ({
 // deltaFiles to exercise the real fetch path.
 let githubApiImpl: (installationId: number, path: string) => Promise<unknown> = () =>
   Promise.reject(new Error('unmocked githubApi call in this test'));
+const mockReconcileSubjectEvent = mock(async (..._args: any[]): Promise<any> => ({ cancelled: [], lostRace: [], decisions: [] }));
+mock.module('./supersession', () => ({
+  reconcileSubjectEvent: mockReconcileSubjectEvent,
+  checkDispatch: async () => ({ verdict: 'keep', rule: null }),
+}));
+
 mock.module('@/lib/github', () => ({
   githubApi: (installationId: number, path: string) => githubApiImpl(installationId, path),
 }));
@@ -170,6 +200,7 @@ import {
   renderSpecConformanceGuidance,
   resolvePriorVerdict,
   supersedeReviewerTaskOnMerge,
+  supersedeFixTaskOnApproval,
   REVIEWER_TASK_OUTPUT_SCHEMA,
 } from './reviewer';
 import { composeBodyWithLede } from '@buildd/core/pr-lede';
@@ -604,163 +635,55 @@ describe('resolvePolicy', () => {
   });
 });
 
-// ── supersedeReviewerTaskOnMerge (AC-4) ─────────────────────────────────────
-// A human merging a PR directly must cancel any still-pending or still-running
-// reviewer task for it, rather than letting the reviewer run against an
-// already-merged PR.
-
-function resetSupersedeFixtures() {
-  insertedMissionNote = undefined;
-  reviewerTaskFindFirstResult = null;
-  taskUpdateReturning = [];
-  workerUpdateCalls = [];
-  pusherCalls.length = 0;
-  mockAppendPrActivity.mockClear();
-  releaseAndNotifyCalls.length = 0;
-}
+// ── Legacy supersession entry points ────────────────────────────────────────
+// Both helpers are wrappers over the supersession reconciler, each running its
+// one rule; the cancellation itself (CAS, worker abort, claims, ledger) is
+// covered in supersession.test.ts and supersession-store.test.ts.
 
 describe('supersedeReviewerTaskOnMerge', () => {
-  it('cancels a PENDING reviewer task with no live worker', async () => {
-    resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = { id: 'reviewer-task-1', missionId: 'mission-1', workers: [] };
-    taskUpdateReturning = [{ id: 'reviewer-task-1' }];
-
+  it('runs merge_supersedes_review as a merged event for the PR', async () => {
+    mockReconcileSubjectEvent.mockClear();
+    liveReviewerTaskResult = { workspaceId: 'ws-1' };
+    mockReconcileSubjectEvent.mockImplementationOnce(async () => ({
+      cancelled: [{ taskId: 'reviewer-1', rule: 'merge_supersedes_review' }], lostRace: [], decisions: [],
+    }));
     const result = await supersedeReviewerTaskOnMerge({
-      originalTaskId: 'task-1',
-      installationId: 1,
-      repoFullName: 'buildd-ai/buildd',
-      prNumber: 2029,
+      originalTaskId: 'orig-1', installationId: 1, repoFullName: 'o/r', prNumber: 42,
     });
-
-    expect(result).toEqual({ superseded: true, reviewerTaskId: 'reviewer-task-1' });
-    expect(workerUpdateCalls).toHaveLength(0); // no live worker → nothing to interrupt
-    expect(insertedMissionNote?.type).toBe('reviewer_superseded');
-    expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
-    // Path-claims leak regression: this cancellation happens outside
-    // PATCH /api/tasks/[id], so it must release the reviewer task's own path
-    // claims itself.
-    expect(releaseAndNotifyCalls).toEqual([['reviewer-task-1', 'abandoned']]);
+    expect(result).toEqual({ superseded: true, reviewerTaskId: 'reviewer-1' });
+    const [event, opts] = mockReconcileSubjectEvent.mock.calls[0] as any[];
+    expect(event).toMatchObject({
+      kind: 'merged', workspaceId: 'ws-1', prNumber: 42, originalTaskId: 'orig-1',
+      pr: { installationId: 1, repoFullName: 'o/r' },
+    });
+    expect(opts).toEqual({ rules: ['merge_supersedes_review'] });
+    liveReviewerTaskResult = null;
   });
 
-  it('interrupts the live worker when the reviewer task is RUNNING', async () => {
-    resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = {
-      id: 'reviewer-task-2',
-      missionId: 'mission-1',
-      workers: [{ id: 'worker-9', status: 'running' }],
-    };
-    taskUpdateReturning = [{ id: 'reviewer-task-2' }];
-
+  it('reports nothing superseded when the reconciler cancelled nothing (lost race, nothing live)', async () => {
+    liveReviewerTaskResult = { workspaceId: 'ws-1' };
+    mockReconcileSubjectEvent.mockImplementationOnce(async () => ({ cancelled: [], lostRace: ['reviewer-1'], decisions: [] }));
     const result = await supersedeReviewerTaskOnMerge({
-      originalTaskId: 'task-2',
-      installationId: 1,
-      repoFullName: 'buildd-ai/buildd',
-      prNumber: 3001,
+      originalTaskId: 'orig-1', installationId: 1, repoFullName: 'o/r', prNumber: 42,
     });
-
-    expect(result.superseded).toBe(true);
-    expect(workerUpdateCalls).toHaveLength(1);
-    expect(workerUpdateCalls[0].set.status).toBe('failed');
-    expect(workerUpdateCalls[0].set.exitCause).toBe('condition_unmet');
-    // Merges on this path are not only human (gh pr merge, automation).
-    expect(workerUpdateCalls[0].set.error).not.toContain('human');
-    expect(workerUpdateCalls[0].set.error).toContain('PR merged before review completed');
-  });
-
-  it('pushes an abort to the running reviewer session and broadcasts the cancel', async () => {
-    resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = {
-      id: 'reviewer-task-6',
-      missionId: 'mission-1',
-      workspaceId: 'ws-1',
-      workers: [{ id: 'worker-7', status: 'running' }],
-    };
-    taskUpdateReturning = [{ id: 'reviewer-task-6' }];
-
-    await supersedeReviewerTaskOnMerge({
-      originalTaskId: 'task-6',
-      installationId: 1,
-      repoFullName: 'buildd-ai/buildd',
-      prNumber: 7005,
-    });
-
-    const abort = pusherCalls.find(c => c.event === 'worker:command');
-    expect(abort?.channel).toBe('private-worker-worker-7');
-    expect(abort?.data.action).toBe('abort');
-    const updated = pusherCalls.find(c => c.event === 'task:updated');
-    expect(updated?.channel).toBe('workspace-ws-1');
-    expect(updated?.data.task).toMatchObject({ id: 'reviewer-task-6', status: 'cancelled' });
-    expect(insertedMissionNote?.title).not.toContain('human');
-  });
-
-  it('sends no abort when the reviewer task has no live worker', async () => {
-    resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = { id: 'reviewer-task-7', missionId: null, workspaceId: 'ws-1', workers: [] };
-    taskUpdateReturning = [{ id: 'reviewer-task-7' }];
-
-    await supersedeReviewerTaskOnMerge({
-      originalTaskId: 'task-7',
-      installationId: 1,
-      repoFullName: 'buildd-ai/buildd',
-      prNumber: 8006,
-    });
-
-    expect(pusherCalls.find(c => c.event === 'worker:command')).toBeUndefined();
-    expect(pusherCalls.find(c => c.event === 'task:updated')).toBeDefined();
-  });
-
-  it('is a no-op when no reviewer task exists for the merged PR', async () => {
-    resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = null;
-
-    const result = await supersedeReviewerTaskOnMerge({
-      originalTaskId: 'task-3',
-      installationId: 1,
-      repoFullName: 'buildd-ai/buildd',
-      prNumber: 4002,
-    });
-
     expect(result).toEqual({ superseded: false, reviewerTaskId: null });
-    expect(insertedMissionNote).toBeUndefined();
-    expect(mockAppendPrActivity).not.toHaveBeenCalled();
-    expect(releaseAndNotifyCalls).toHaveLength(0);
+    liveReviewerTaskResult = null;
   });
+});
 
-  it('does not record a supersession when the cancel write loses its CAS race', async () => {
-    resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = { id: 'reviewer-task-4', missionId: 'mission-1', workers: [] };
-    // Simulates another writer (e.g. the reviewer completing concurrently)
-    // already moved the task out of a cancellable status.
-    taskUpdateReturning = [];
-
-    const result = await supersedeReviewerTaskOnMerge({
-      originalTaskId: 'task-4',
-      installationId: 1,
-      repoFullName: 'buildd-ai/buildd',
-      prNumber: 5003,
+describe('supersedeFixTaskOnApproval', () => {
+  it('runs approve_supersedes_fix as an approve verdict event for the PR', async () => {
+    mockReconcileSubjectEvent.mockClear();
+    mockReconcileSubjectEvent.mockImplementationOnce(async () => ({
+      cancelled: [{ taskId: 'fix-1', rule: 'approve_supersedes_fix' }], lostRace: [], decisions: [],
+    }));
+    const result = await supersedeFixTaskOnApproval({
+      originalTaskId: 'orig-1', workspaceId: 'ws-1', installationId: 1, repoFullName: 'o/r', prNumber: 42,
     });
-
-    expect(result).toEqual({ superseded: false, reviewerTaskId: null });
-    expect(insertedMissionNote).toBeUndefined();
-    expect(mockAppendPrActivity).not.toHaveBeenCalled();
-    expect(releaseAndNotifyCalls).toHaveLength(0);
-  });
-
-  it('skips the mission note when the reviewer task has no mission', async () => {
-    resetSupersedeFixtures();
-    reviewerTaskFindFirstResult = { id: 'reviewer-task-5', missionId: null, workers: [] };
-    taskUpdateReturning = [{ id: 'reviewer-task-5' }];
-
-    const result = await supersedeReviewerTaskOnMerge({
-      originalTaskId: 'task-5',
-      installationId: 1,
-      repoFullName: 'buildd-ai/buildd',
-      prNumber: 6004,
-    });
-
-    expect(result.superseded).toBe(true);
-    expect(insertedMissionNote).toBeUndefined();
-    expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ superseded: true, fixTaskId: 'fix-1' });
+    const [event, opts] = mockReconcileSubjectEvent.mock.calls[0] as any[];
+    expect(event).toMatchObject({ kind: 'verdict', verdict: 'approve', workspaceId: 'ws-1', prNumber: 42 });
+    expect(opts).toEqual({ rules: ['approve_supersedes_fix'] });
   });
 });
 

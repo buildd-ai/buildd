@@ -891,9 +891,8 @@ export async function noteMissionPrOpenFailure(
   const key = `[${result.reason}]`;
   const body =
     `${key} ${result.detail ?? result.reason}\n\n` +
-    `This mission's deliverable work has landed on its integration branch, but the mission PR ` +
-    `has not opened. It will keep retrying on the next task-PR merge and reconciliation sweep; ` +
-    `if this note repeats, the failure is not transient and needs a look.`;
+    `Mission PR not opened. Work is on the integration branch. Retries on the next task-PR merge ` +
+    `and reconciliation sweep; a repeat of this note means the failure is not transient.`;
 
   try {
     const since = new Date(Date.now() - MISSION_PR_FAILURE_NOTE_WINDOW_MS);

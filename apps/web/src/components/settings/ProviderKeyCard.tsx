@@ -131,7 +131,9 @@ export function ProviderKeyCard({
 
   return (
     <div className="card" data-testid={`provider-key-${info.id}`} data-configured={configured ? 'true' : 'false'}>
-      <div className="flex items-center gap-2.5 px-3 py-2.5 border-b border-border-default">
+      {/* Wraps on narrow cards: name + "recommended" + badge do not fit at 320px,
+          so the badge drops to its own line (ml-auto keeps it right-aligned). */}
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 min-w-0 px-3 py-2.5 border-b border-border-default">
         {/* Same tone as the badge (lib/status-tone.ts), like a runner row. */}
         <span
           className={`w-2.5 h-2.5 shrink-0 ${loading ? STATUS_TONE_SQUARE.muted : STATUS_TONE_SQUARE[keyHealthTone(status)]}`}
@@ -139,10 +141,9 @@ export function ProviderKeyCard({
           data-tone={loading ? 'muted' : keyHealthTone(status)}
           aria-hidden
         />
-        <b className="text-[13px] font-semibold text-text-primary">{info.label}</b>
+        <b className="min-w-0 break-words text-body font-semibold text-text-primary">{info.label}</b>
         {recommended && <span className="text-[11px] font-semibold uppercase tracking-[1px] text-accent-text">recommended</span>}
-        <span className="flex-1" />
-        <span className={`status-pill status-pill-${pill.tone} shrink-0`} data-testid="provider-key-health">{pill.label}</span>
+        <span className={`status-pill status-pill-${pill.tone} shrink-0 ml-auto`} data-testid="provider-key-health">{pill.label}</span>
       </div>
 
       <div className="px-3 pt-2 pb-3 space-y-1.5 text-xs">

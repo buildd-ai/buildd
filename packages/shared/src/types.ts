@@ -1497,6 +1497,11 @@ export interface ClaimDiagnostics {
     routing_paused?: number;
     /** Task already had a live worker when the atomic insert ran (dup guard). */
     duplicate_worker?: number;
+    /**
+     * Retry attempt cancelled instead of claimed: another fix attempt in its
+     * retry family is already open (one open retry per subject).
+     */
+    sibling_retry_open?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
@@ -2086,6 +2091,43 @@ export interface VisualQaMeta {
   /** The auditor's own fix link. A human-filed fix is on the review row instead. */
   fixTaskId?: string;
   variant?: string;
+  /**
+   * The branch the shot was captured from, and why that branch
+   * (`CaptureRefSource` in @buildd/core/visual-qa-capture-ref). Absent on
+   * shots that predate the capture ref; those are never judged wrong-ref.
+   */
+  ref?: string;
+  refSource?: string;
+}
+
+/**
+ * A shot captured from a ref other than the mission's capture ref, with a
+ * correct-ref shot at the same route, viewport and state. Hidden from the deck;
+ * the artifact is kept for audit (docs/design/visual-qa-auditor.md, "Page source").
+ */
+export interface VisualReviewSupersededShot {
+  shotId: string;
+  route: string;
+  viewport: VisualQaViewport;
+  /** The ref the shot recorded, normalized. */
+  ref: string;
+  expectedRef: string;
+  /** The correct-ref shot that replaces it. */
+  supersededBy: string;
+}
+
+/**
+ * A wrong-ref shot with no correct-ref sibling: a capture the auditor still
+ * owes, never a question for a person.
+ */
+export interface VisualReviewCaptureGap {
+  shotId: string;
+  route: string;
+  viewport: VisualQaViewport;
+  ref: string;
+  expectedRef: string;
+  auditTaskId: string | null;
+  round: number;
 }
 
 /** One audit screenshot, as every surface renders it. */
@@ -2200,6 +2242,8 @@ export interface VisualReviewSummary {
   rounds: number;
   /** `[surface fix]` tasks of the mission still open. */
   openFixes: number;
+  /** Wrong-ref shots with no correct-ref sibling (`VisualReviewModel.captureGaps`). */
+  captureGaps?: number;
 }
 
 export interface VisualReviewAuditTask {
@@ -2251,6 +2295,10 @@ export interface VisualReviewModel {
   queue: string[];
   summary: VisualReviewSummary;
   fixTasks: VisualReviewFixTask[];
+  /** Wrong-ref shots hidden because a correct-ref sibling exists. Never in `cells` or `queue`. */
+  superseded?: VisualReviewSupersededShot[];
+  /** Wrong-ref shots the auditor still has to recapture. Never in `cells` or `queue`. */
+  captureGaps?: VisualReviewCaptureGap[];
   generatedAt: string;
 }
 
@@ -3240,6 +3288,55 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+}
+/**
+ * Aggregate counts over the orchestration decision ledger
+ * (`orchestration_decisions`, `orchestration_manifest_predictions`) — the
+ * DB-free answer to "is this decision shadow collecting evidence?".
+ * Served by `GET /api/stats/coordination?metric=orchestrationDecisions`.
+ */
+export interface OrchestrationDecisionCounts {
+  total: number;
+  applied: number;
+  suggested: number;
+  fallback: number;
+  /** Rows whose task has an `orchestration_touch_labels` row (an outcome label). */
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  capability: string;
+  decisionId: string;
+  fingerprint: string;
+  candidatePolicyVersion: string;
+  experimentArm: string;
+  mode: string;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+export interface OrchestrationPredictionCounts {
+  total: number;
+  complete: number;
+  unknownScope: number;
+  allApplied: number;
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
+  decisionCapabilities: CoordinationDecisionCapability[];
+  decisions: OrchestrationDecisionCounts & {
+    firstAt: string | null;
+    lastAt: string | null;
+    byGroup: OrchestrationDecisionGroup[];
+    /** `day` is a UTC calendar date (YYYY-MM-DD). */
+    byDay: Array<OrchestrationDecisionCounts & { day: string; capability: string }>;
+    byReason: Array<{ capability: string; status: string; reason: string | null; total: number }>;
+  };
+  manifestPredictions: OrchestrationPredictionCounts & {
+    byDay: Array<OrchestrationPredictionCounts & { day: string }>;
+    byStopReason: Array<{ stopReason: string; total: number }>;
+  };
+  coverage: { note: string };
 }
 
 // ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { requestTaskRetry } from '@/lib/task-actions';
 
 /**
  * Compact retry affordance for a failed task row in the mission timeline.
@@ -25,15 +26,10 @@ export default function InlineTaskRetry({ taskId }: { taskId: string }) {
         if (loading) return;
         setLoading(true);
         setFailed(false);
-        try {
-          const res = await fetch(`/api/tasks/${taskId}/reassign?force=true`, { method: 'POST' });
-          if (res.ok) router.refresh();
-          else setFailed(true);
-        } catch {
-          setFailed(true);
-        } finally {
-          setLoading(false);
-        }
+        const out = await requestTaskRetry(taskId);
+        setLoading(false);
+        if (out.ok) router.refresh();
+        else setFailed(true);
       }}
       disabled={loading}
       className={`pointer-events-auto relative z-10 inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 transition-colors disabled:opacity-50 ${

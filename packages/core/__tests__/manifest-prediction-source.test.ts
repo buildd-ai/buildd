@@ -330,6 +330,48 @@ describe('predictCreationManifest', () => {
     // The access read happens once, not per pick.
   });
 
+  it('records the set confidence (product of pick confidences) and the expected size from the same neighbours', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    const estimateSize = mock(async (_a: any) => ({ files: 4, minutes: 30, source: 'neighbours' as const, k: 5, n: 5 }));
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess,
+      loadNeighbours: neighbours,
+      call: pickFirst(2) as any,
+      recordPrediction,
+      recordDecision: async () => {},
+      estimateSize,
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    // Two file picks at 0.9 each (the set exhausted before a DONE pick).
+    expect(row.setConfidence).toBeCloseTo(0.81, 10);
+    expect(row.expectedSize).toEqual({ files: 4, minutes: 30, source: 'neighbours', k: 5, n: 5 });
+    const args = (estimateSize.mock.calls[0] as any)[0];
+    expect(args).toMatchObject({ workspaceId: WS, taskId: TASK, cutoff: CREATED, neighbourTaskIds: [N1, N2] });
+    // Coverage stays alongside.
+    expect(row.coverage.source).toBe('neighbour_diff_only');
+  });
+
+  it('no picks ⇒ null set confidence; a failing size estimate is null, never a failed prediction', async () => {
+    const recordPrediction = mock(async (_row: any) => {});
+    await src.predictCreationManifest(input(), {
+      resolveAccess: async () => okAccess,
+      loadNeighbours: async () => [],
+      tree: { lookup: async () => ({ status: 'unavailable', reason: 'test' }) },
+      recordPrediction,
+      estimateSize: async () => { throw new Error('db down'); },
+    });
+    const row = (recordPrediction.mock.calls[0] as any)[0];
+    expect(row.stopReason).toBe('no_candidates');
+    expect(row.setConfidence).toBeNull();
+    expect(row.expectedSize).toBeNull();
+  });
+
+  it('a pick without a confidence makes the set confidence unknown', () => {
+    expect(src.setConfidenceOf([{ confidence: 0.5 }, { confidence: null }] as any)).toBeNull();
+    expect(src.setConfidenceOf([{ confidence: 0.5 }, { confidence: 0.5 }] as any)).toBe(0.25);
+    expect(src.setConfidenceOf([])).toBeNull();
+  });
+
   it('a requested applying fraction without readout evidence is granted as zero (promotion guard)', async () => {
     const rows: any[] = [];
     await src.predictCreationManifest(input(), {

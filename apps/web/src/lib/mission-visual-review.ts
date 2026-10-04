@@ -54,6 +54,9 @@ export interface QaMeta {
    * the route, kept in its own cell, and never counted toward coverage.
    */
   state?: string;
+  /** The branch the shot was captured from (`qa.ref`), and why (`qa.refSource`). */
+  ref?: string;
+  refSource?: string;
 }
 
 export interface VisualShot {
@@ -103,6 +106,8 @@ export function parseQaMeta(metadata: unknown): QaMeta | null {
   const variant = [q.variant, q.locale, q.label].find(nonEmpty);
   if (variant) meta.variant = variant.trim();
   if (nonEmpty(q.state)) meta.state = q.state.trim();
+  if (nonEmpty(q.ref)) meta.ref = q.ref.trim();
+  if (nonEmpty(q.refSource)) meta.refSource = q.refSource.trim();
   return meta;
 }
 

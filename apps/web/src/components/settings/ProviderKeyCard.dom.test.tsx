@@ -184,4 +184,18 @@ describe('ProviderKeyCard', () => {
     render({ status: UNSET, recommended: true });
     expect(host.textContent).toContain('recommended');
   });
+
+  // Regression: at 390px and 320px the OpenRouter header (name + RECOMMENDED +
+  // NOT CONNECTED) could not wrap, so the badge ran past the card's border.
+  // happy-dom has no layout, so this pins the classes that let it wrap.
+  it('lets the header wrap so the badge drops to its own line on a narrow card', () => {
+    render({ status: UNSET, recommended: true });
+    const pill = host.querySelector('[data-testid="provider-key-health"]')!;
+    const header = pill.parentElement!;
+    expect(header.className).toContain('flex-wrap');
+    expect(header.className).toContain('min-w-0');
+    expect(pill.className).toContain('ml-auto');
+    // A flex-1 spacer would wrap on its own and strand the badge.
+    expect(header.querySelector('.flex-1')).toBeNull();
+  });
 });

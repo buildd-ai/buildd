@@ -21,6 +21,12 @@ assertions:
     type: "symbol_reachable"
     symbol: "buildAuditScreenshotKey"
     entry: "apps/web/src/app/api/artifacts/upload-url/route.ts"
+  # "Page source" → "Which ref is captured": the capture ref is resolveTaskPrBase's
+  # answer, and get_page_source's resolver resolves it for the auditor.
+  - id: "capture-ref-from-pr-base"
+    type: "symbol_reachable"
+    symbol: "resolveVisualQaCaptureRef"
+    entry: "apps/web/src/lib/visual-qa-page-source.ts"
 ---
 
 # visual-qa-auditor

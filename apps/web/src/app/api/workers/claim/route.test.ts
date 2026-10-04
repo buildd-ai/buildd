@@ -258,8 +258,11 @@ mock.module('@/lib/pushover', () => ({
 }));
 // path_claims backstop (layer 2). Real module hits the DB; default to "no locks".
 const mockGetActiveClaimsByWorkspace = mock(() => Promise.resolve(new Map<string, string[]>()));
+// Waiter registration on a path_overlap deferral — real module hits the DB.
+const mockRegisterWaiter = mock((..._args: any[]) => Promise.resolve({ registered: true } as any));
 mock.module('@buildd/core/path-claim', () => ({
   getActiveClaimsByWorkspace: mockGetActiveClaimsByWorkspace,
+  registerWaiter: mockRegisterWaiter,
 }));
 // Gate ledger: capture deferral events so a test can read the `detail` bag a
 // coalesced gate row is merged from. GATE_SLUGS echoes the key it is asked for.
@@ -272,6 +275,16 @@ mock.module('@/lib/gate-ledger', () => ({
   fireRepeatGateEvent: mockFireRepeatGateEvent,
   gateCallerOrigin: () => 'api',
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
+}));
+// One open retry per retry family (rules and store tested in
+// lib/supersession*.test.ts). Here only the wiring: a claim asks the guard about
+// each attempt, and an attempt it cancels is skipped, never claimed.
+const mockGuardClaimedRetry = mock((_task: any) => Promise.resolve(false));
+mock.module('@/lib/supersession', () => ({
+  guardClaimedRetry: mockGuardClaimedRetry,
+  reconcileSubjectEvent: mock(() => Promise.resolve({ cancelled: [], lostRace: [], decisions: [] })),
+  checkDispatch: mock(() => Promise.resolve({ verdict: 'keep', rule: null })),
+  guardDispatchedTask: mock(() => Promise.resolve(false)),
 }));
 // Terminal-write dependency cascade (item 4: workspace_mismatch must run it).
 const mockResolveCompletedTask = mock(() => Promise.resolve());
@@ -5513,6 +5526,67 @@ describe('path-overlap claim guard', () => {
       detail: 'Its files overlap an active claim held by task task-9 (apps/web/src/lib/mcp-oauth.ts). Wait for that task to finish, or rebase onto its work.',
     });
   });
+
+  // A pending task deferred here has no active worker to ever see a
+  // `path_released` worker message (nothing polls it until claimed), and the
+  // runner fallback poll defaults to a full hour (BUILDD_RUNNER_POLL_MIN).
+  // Registering it as a waiter on the blocker is what lets path-claim-release
+  // dispatch-wake it the moment the blocker's claim actually releases, instead
+  // of leaving it to that hourly poll.
+  it('layer 1: registers the deferred task as a waiter on the blocking PR\'s task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockRegisterWaiter.mockClear();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([
+        { workspaceId: 'ws-1', taskId: 'sibling-task', prNumber: 2700, prUrl: 'https://github.com/org/repo/pull/2700', status: 'running', prLifecycleStatus: 'open' },
+      ]);
+
+    mockTasksFindMany
+      .mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])])
+      .mockResolvedValueOnce([{ id: 'sibling-task', pathManifest: ['apps/web/src/lib/mcp-oauth.ts'] }]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toHaveLength(0);
+    expect(mockRegisterWaiter).toHaveBeenCalledWith(
+      'sibling-task', 'task-1', 'apps/web/src/lib/mcp-oauth.ts', 'ws-1',
+    );
+  });
+
+  it('layer 2: registers the deferred task as a waiter on the active-claim holder', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+    setupForClaim();
+    mockRegisterWaiter.mockClear();
+
+    mockWorkersFindMany
+      .mockResolvedValueOnce([]) // active workers
+      .mockResolvedValueOnce([]); // no open PR tasks — this is the layer-2 backstop
+    mockGetActiveClaimsByWorkspace.mockResolvedValueOnce(
+      new Map([['task-9', ['apps/web/src/lib/mcp-oauth.ts']]]),
+    );
+
+    mockTasksFindMany.mockResolvedValueOnce([taskWithManifest(['apps/web/src/lib/mcp-oauth.ts'])]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner', taskId: 'task-1' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).workers).toHaveLength(0);
+    expect(mockRegisterWaiter).toHaveBeenCalledWith(
+      'task-9', 'task-1', 'apps/web/src/lib/mcp-oauth.ts', 'ws-1',
+    );
+  });
 });
 
 describe('entity catalog injection at claim time', () => {
@@ -7065,6 +7139,67 @@ describe('claim insert — atomic duplicate-worker guard', () => {
     });
   });
 
+
+  it('cannot claim a review-fix cancelled after candidate selection', async () => {
+    mockWorkersInsert.mockClear();
+    // The candidate was pending when selected, then approval won cancellation.
+    // Evaluate the claim CAS against that current status.
+    const currentStatus = 'cancelled';
+    let pendingGuardChecked = false;
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock((predicate: any) => {
+          const pendingGuard = predicate.args.find((p: any) =>
+            p.type === 'eq' && p.field === 'status' && p.value === 'pending');
+          pendingGuardChecked = Boolean(pendingGuard);
+          return { returning: mock(() => pendingGuard && currentStatus !== pendingGuard.value ? [] : [{ id: 'task-1' }]) };
+        }),
+      })),
+    });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+    }));
+    expect(pendingGuardChecked).toBe(true);
+    // Auxiliary reads may use execute; no worker may be inserted.
+    const statements = mockDbExecute.mock.calls.map(([q]: any) => q.strings?.join(' ') ?? '');
+    expect(statements.some((sql: string) => sql.includes('INSERT INTO'))).toBe(false);
+    expect(mockWorkersInsert).not.toHaveBeenCalled();
+  });
+
+
+  it('locks and rechecks the assigned task inside worker insertion so cancellation cannot race past it', async () => {
+    mockDbExecute.mockResolvedValue({ rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }] });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+    }));
+    const insert = mockDbExecute.mock.calls.find(([q]: any) => q.strings?.join(' ').includes('INSERT INTO'));
+    expect(insert).toBeDefined();
+    const sql = (insert![0] as any).strings.join('?');
+    expect(sql).toContain("t_claim.status = 'assigned'");
+    expect(sql).toContain('t_claim.claimed_by');
+    expect(sql).toContain('FOR UPDATE');
+  });
+
+  it('does not roll a concurrently cancelled attempt back to pending when worker insertion is refused', async () => {
+    mockDbExecute.mockResolvedValue({ rows: [] });
+    const writes: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((values: any) => ({
+        where: mock((predicate: any) => {
+          writes.push({ values, predicate });
+          return { returning: mock(() => [{ id: 'task-1' }]), then: (resolve: any) => Promise.resolve().then(resolve) };
+        }),
+      })),
+    });
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' },
+    }));
+    const rollback = writes.find(w => w.values.status === 'pending');
+    expect(rollback).toBeDefined();
+    expect(rollback.predicate.args).toContainEqual({ field: 'status', value: 'assigned', type: 'eq' });
+    expect(rollback.predicate.args).toContainEqual({ field: 'claimedBy', value: 'account-1', type: 'eq' });
+  });
+
   it('requires the task to have no live worker inside the insert statement', async () => {
     mockDbExecute.mockReturnValue(Promise.resolve({
       rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
@@ -7419,6 +7554,27 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.detail).toContain('1/1');
   });
 
+  it('a fix attempt with another open attempt in its retry family is cancelled at claim, not started beside it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'attempt', reviewerRetryPrNumber: 3431, parentTaskId: 'orig' })]);
+    mockGuardClaimedRetry.mockResolvedValueOnce(true);
+
+    const data = await (await claim({ runner: 'mcp' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(mockGuardClaimedRetry).toHaveBeenCalledTimes(1);
+    expect((mockGuardClaimedRetry.mock.calls[0] as any[])[0]).toMatchObject({ id: 'task-1', reviewerRetryPrNumber: 3431 });
+    expect(data.diagnostics.deferrals.sibling_retry_open).toBe(1);
+    expect(data.diagnostics.taskExclusion.code).toBe('sibling_retry_open');
+  });
+
+  it('a task that is not an attempt never consults the retry guard', async () => {
+    mockGuardClaimedRetry.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindMany.mockResolvedValueOnce([task({ taskClass: 'work' })]);
+    await claim({ runner: 'mcp' });
+    expect(mockGuardClaimedRetry).not.toHaveBeenCalled();
+  });
+
   it('a task whose role env no channel can satisfy is deferred, not claimed, and names the vars', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindMany.mockResolvedValueOnce([task({ roleSlug: 'mailer' })]);
@@ -7665,6 +7821,7 @@ describe('explicit taskId claims (organizer workflow)', () => {
 
   it('force: an admin explicit claim is not deferred by path overlap or the mission cap', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
+    mockRegisterWaiter.mockClear();
     mockWorkersFindMany
       .mockResolvedValueOnce([]) // active workers
       .mockResolvedValueOnce([{ workspaceId: 'ws-1', taskId: 'sibling', prNumber: 7, prUrl: 'https://github.com/o/r/pull/7', status: 'completed', prLifecycleStatus: 'open' }]);
@@ -7678,6 +7835,8 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
     expect(data.workers).toHaveLength(1);
     expect(data.workers[0].taskId).toBe('task-1');
+    // Forced past the gate, not deferred — nothing is actually waiting.
+    expect(mockRegisterWaiter).not.toHaveBeenCalled();
   });
 
   // H2: the mission budget is a cost limit, not a person-overridable gate.

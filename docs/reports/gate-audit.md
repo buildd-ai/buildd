@@ -237,6 +237,8 @@ happen is recorded rather than logged, and the hourly pr-reconcile sweep retries
 |---|---|---|---|---|
 | 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
 | 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
+| 61e | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | rejected | create_pr refused a fresh PR from a retry whose subject PR is still open and whose head is an ancestor of the new branch (or vice versa), or diverged from it with no runner trace proving the subject branch missing or diverged (`detail.resumeCause`): the retry must update the subject PR |
+| 61f | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | warned | a retry opened a fresh PR while its subject PR was open: `detail.freshPrReason` is `diverged` (GitHub compare, plus the runner's `detail.resumeCause` of `missing` or `diverged`) or `unverified` (unreadable, failed open) |
 
 ### Automatic supersession of closed PRs (`lib/pr-supersession-detect.ts`)
 
@@ -248,6 +250,30 @@ is recorded only when the content verifies.
 |---|---|---|---|---|
 | 61a | `pr-supersession-detect.ts:recordVerified` | `auto_pr_supersession` | accepted | candidate's merged diff carries the closed PR's changes; edge recorded with `detail.method` (patch-id or content) and `detail.confidence` |
 | 61b | `pr-supersession-detect.ts:detectPrSupersession` | `auto_pr_supersession` | deferred | candidate found but not content-verified: suggestion stored for the mission card, no edge |
+
+### Supersession reconciler (`lib/supersession.ts`, `lib/supersession-store.ts`)
+
+One rule table decides which queued or running work a subject event made
+obsolete: a reviewer verdict, a PR merged or closed (webhook and both merge
+routes), a task cancelled, a task whose PR merged. Every cancel is a status
+CAS; only the caller that wins it writes the ledger row, so two doors seeing
+the same event record one cancellation.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 61c | `supersession-store.ts:recordSupersession` | `supersession` | accepted | one row per task a rule cancelled; `detail.rule` is the rule id, `detail.event` the subject event, `surface` the door |
+| 61d | `supersession-store.ts:recordBulkRefusal` | `supersession` | rejected | one event matched more than the per-event cap: nothing cancelled, `detail.wouldCancel` holds the set, and a warning note is posted |
+
+The dispatch guard also runs the table before a fix or CI retry is created
+(`checkDispatch`) and against the inserted row (`guardDispatchedTask`).
+`open_retry_supersedes_duplicate` keeps one subject PR to one open retry: a
+newcomer is not filed, and of two racing inserts the newer cancels itself —
+recorded as row 61c with that rule id. The open set covers the whole retry
+family (`collectRetryFamily`), so a sibling fixing a sibling's PR blocks too.
+The claim route runs the same rule (`guardClaimedRetry`) before starting an
+attempt: one with an older open sibling, or a newer one already running, is
+cancelled (row 61c, surface `POST /api/workers/claim`) and counted as the
+`sibling_retry_open` claim-loop deferral.
 
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 
@@ -317,6 +343,6 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 | `apps/web/src/lib/path-claim-check.ts:checkPathClaim` | `path_claim` | accepted | Each successful call, including an already-held-path no-op; excluded from friction rankings and bypass rates. |
 | `apps/web/src/app/api/tasks/route.ts:POST` | `decomposition_refused` | rejected | Re-checks, at the moment the organizer's own planning task tries to create a non-retry child, whether sibling tasks were pre-filed against the mission after that planning task was created. `runMission()`'s own pre-filed-task detection only runs once, inside the SAME request that creates the mission — too early to see tasks a creator files right after. `detail.preFiledTaskIds`, `detail.organizerTaskId`; persists `missions.decompositionSkipped=true` and a mission note on the first trip. Exempt: manual-orchestration missions, and any create with an explicit `parentTaskId` (a retry naming the failing task). |
 
-`get_manifest_coverage` and `get_path_claim_stats` read aggregate REST metrics.
+`get_manifest_coverage`, `get_path_claim_stats` and `get_decision_stats` read aggregate REST metrics.
 Use `get_failure_analytics` with `family=gate` and
 `errorPrefix="Change intent conflict"` to count delivered change-intent warnings.
