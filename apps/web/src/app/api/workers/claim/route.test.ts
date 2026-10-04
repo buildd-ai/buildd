@@ -166,6 +166,11 @@ mock.module('@buildd/core/db', () => ({
     delete: (table: any) => ({ where: mock(() => Promise.resolve()) }),
     select: mockDbSelect,
     execute: mockDbExecute,
+    // The worker-claim advisory lock + insert run as one neon-http batch
+    // (same protocol as packages/core/path-claim.ts). Statements are already
+    // `db.execute(...)` calls by the time they reach here, so this just
+    // awaits them together and hands back their results in order.
+    batch: (statements: any[]) => Promise.all(statements),
   },
 }));
 
@@ -7676,7 +7681,9 @@ describe('claim insert — atomic duplicate-worker guard', () => {
     await POST(req);
 
     expect(mockDbExecute).toHaveBeenCalled();
-    const insertSql = (mockDbExecute.mock.calls[0][0] as any).strings.join('?');
+    const insertCall = mockDbExecute.mock.calls.find(([q]: any) => q.strings?.join(' ').includes('INSERT INTO'));
+    expect(insertCall).toBeDefined();
+    const insertSql = (insertCall![0] as any).strings.join('?');
     expect(insertSql).toContain('INSERT INTO');
     // The guard must live in the same statement as the insert — a pre-read is
     // exactly the TOCTOU that produced the duplicate rows.
