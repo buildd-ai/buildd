@@ -126,6 +126,26 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
+// The CI-retry path (lib/ci-failure-retry) creates through the dispatch
+// authority: its announce is counted with the route's own dispatches, and its
+// wake carries the cause. Full export surface: mock.module is process-global.
+const mockWakeTask = mock((_taskId: string, _cause: string, _opts?: unknown) => Promise.resolve());
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  announceTaskCreated: (...args: unknown[]) => (mockDispatchNewTask as (...a: unknown[]) => Promise<void>)(...args),
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
 const mockCaptureCiJobLogEvidence = mock((_input: any) => Promise.resolve({ status: 'stored' }));
 mock.module('@/lib/ci-job-log-evidence', () => ({
   captureCiJobLogEvidence: mockCaptureCiJobLogEvidence,
@@ -663,6 +683,7 @@ function resetAll() {
   mockWorkerOwnsPrUrl.mockClear();
   mockWorkspaceRepoMatches.mockClear();
   mockDispatchNewTask.mockReset();
+  mockWakeTask.mockClear();
   mockCaptureCiJobLogEvidence.mockClear();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
@@ -1239,6 +1260,7 @@ describe('POST /api/github/webhook', () => {
       expect((inserted.context as any).baseBranch).toBe('buildd/abc12345-fix');
       expect(insertCalls[0].conflict).toBe('nothing');
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'ci.retry']]);
     });
 
     // byo-evidence-storage AC-3: the failed job's log is captured as evidence
