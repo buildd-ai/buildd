@@ -43,10 +43,13 @@ import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
 import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { missionCardProgress, ownerUnmergedPrs, type MissionCardTaskRow } from '@/lib/mission-card-view';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { latestDispatchForTask } from '@buildd/core/dispatch-outbox';
 import { deriveCiRedChains } from './ci-red-chain';
 import {
   buildStateBecause,
   buildConflictBecause,
+  dispatchWakeLink,
+  withDispatchLink,
   type BaseSideMerge,
   type StateBecauseExtras,
   type ConflictSubject,
@@ -800,7 +803,13 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
     prNumber: task.workers?.[0]?.prNumber ?? null,
   };
 
-  const because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
+  // A pending task may be waiting on its wake rather than on a claim gate:
+  // the latest outbox row is undelivered, handed off past due, or failed.
+  // Read only for pending tasks; a read failure leaves the chain as it was.
+  const wake = task.status === 'pending'
+    ? dispatchWakeLink(await latestDispatchForTask(taskId).catch(() => null), { taskId, workspaceId }, Date.now())
+    : null;
+  const because = withDispatchLink(buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras), wake);
   const gateHistory = await loadGateHistory(taskId);
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })

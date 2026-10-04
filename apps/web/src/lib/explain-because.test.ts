@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildStateBecause, buildConflictBecause, type BaseSideMerge, type ConflictSubject } from './explain-because';
+import { buildStateBecause, buildConflictBecause, dispatchWakeLink, withDispatchLink, type BaseSideMerge, type ConflictSubject } from './explain-because';
 import { rankGatedSubjects, waitingOnRank, type ExplainAnswer } from './explain-types';
 import { deriveMissionStateView, type MissionStateInput } from './mission-state-view';
 
@@ -324,5 +324,54 @@ describe('workspace ranking', () => {
 
   it('ranks a quiet subject last so it can never outrank a blocker', () => {
     expect(waitingOnRank(null)).toBeGreaterThan(waitingOnRank({ kind: 'self_resolving_wait' } as never));
+  });
+});
+
+describe('dispatchWakeLink (explain for a pending task)', () => {
+  const NOW = Date.parse('2026-10-04T12:00:00.000Z');
+  const subject = { taskId: 'task-1', workspaceId: 'ws-1' };
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'outbox-1', status: 'pending', cause: 'task.created', transport: 'dispatch', attempt_count: 0,
+    not_before: new Date(NOW - 10 * 60_000).toISOString(), handed_off_at: null, last_error: null, ...over,
+  });
+
+  it('a wake due over 5 min and undelivered names the outbox row', () => {
+    const l = dispatchWakeLink(row(), subject, NOW)!;
+    expect(l.claim).toContain('undelivered');
+    expect(l.claim).toContain('2026-10-04T11:50:00.000Z');
+    expect(l.refs).toEqual({ taskId: 'task-1', workspaceId: 'ws-1', outboxId: 'outbox-1' });
+    expect(l.derivedFrom).toBe('task_dispatch_outbox.status');
+  });
+
+  it('handed off to Dispatch past due, with no receipt', () => {
+    const l = dispatchWakeLink(row({ status: 'handed_off', handed_off_at: new Date(NOW - 9 * 60_000).toISOString() }), subject, NOW)!;
+    expect(l.claim).toContain('handed off to Dispatch');
+    expect(l.claim).toContain('no delivery receipt');
+  });
+
+  it('failed: attempts and the last error', () => {
+    const l = dispatchWakeLink(row({ status: 'failed', attempt_count: 5, last_error: 'http_500' }), subject, NOW)!;
+    expect(l.claim).toContain('failed after 5 attempts');
+    expect(l.claim).toContain('http_500');
+  });
+
+  it('nothing to say: a wake still inside its window, a future wake, a delivered one, no row', () => {
+    expect(dispatchWakeLink(row({ not_before: new Date(NOW - 60_000).toISOString() }), subject, NOW)).toBeNull();
+    expect(dispatchWakeLink(row({ not_before: new Date(NOW + 3600_000).toISOString() }), subject, NOW)).toBeNull();
+    expect(dispatchWakeLink(row({ status: 'delivered' }), subject, NOW)).toBeNull();
+    expect(dispatchWakeLink(null, subject, NOW)).toBeNull();
+  });
+
+  it('withDispatchLink puts the link before the closing conclusion and renumbers', () => {
+    const chain = [
+      { order: 1, claim: 'a', derivedFrom: 'tasks.dependsOn' as const, refs: {} },
+      { order: 2, claim: 'State is stalled.', derivedFrom: 'tasks.status + workers.status' as const, refs: {} },
+    ];
+    const l = dispatchWakeLink(row(), subject, NOW)!;
+    const out = withDispatchLink(chain, l);
+    expect(out.map(x => x.order)).toEqual([1, 2, 3]);
+    expect(out[1].refs.outboxId).toBe('outbox-1');
+    expect(out[2].claim).toBe('State is stalled.');
+    expect(withDispatchLink(chain, null)).toBe(chain);
   });
 });

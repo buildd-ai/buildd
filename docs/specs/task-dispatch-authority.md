@@ -7,8 +7,8 @@ summary: Every state change that may make a task runnable MUST leave a durable d
 domain: tasks
 surfaces: [apps/web/src/lib/dispatch-authority.ts, apps/web/src/lib/dispatch-adapters.ts, packages/core/dispatch-outbox.ts, packages/core/drizzle/0231_task_dispatch_outbox_trigger.sql]
 related: [webhook-dataflow, mission-task-lifecycle, path-claim-ownership, runner-liveness, external-cron-triggers]
-keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask, dispatch transport, handed_off, dispatch_transport, orphan reconcile, dispatchFallbackAt, callback rate limit]
-verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts, apps/web/tests/db/dispatch-handoff.test.ts, apps/web/src/lib/dispatch-resolve.test.ts, apps/web/src/lib/dispatch-transport.test.ts, apps/web/src/app/api/dispatch/v1/resolve/route.test.ts, apps/web/src/app/api/dispatch/v1/receipts/route.test.ts, packages/core/__tests__/dispatch-envelope.test.ts, packages/core/__tests__/dispatch-handoff-render.test.ts, apps/web/tests/db/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-callback-auth.test.ts]
+keywords: [task_dispatch_outbox, wakeTask, task:assigned, dispatch-drain, not_before, start_at, outbox, wake, dispatchNewTask, dispatchRetriedTask, dispatch transport, handed_off, dispatch_transport, orphan reconcile, dispatchFallbackAt, callback rate limit, dispatch_health, unackedStale, dispatch alerts]
+verified_by: [apps/web/tests/db/dispatch-outbox.test.ts, apps/web/tests/db/reconciliation-disabled.test.ts, apps/web/tests/db/path-release.test.ts, apps/web/tests/db/dependency-wake.test.ts, apps/web/tests/db/retry-wake.test.ts, apps/web/tests/db/start-at-timer.test.ts, apps/web/src/lib/dispatch-authority.test.ts, apps/web/src/lib/task-dispatch-delivery.test.ts, scripts/dispatch-authority-guard.test.ts, apps/web/tests/db/dispatch-handoff.test.ts, apps/web/src/lib/dispatch-resolve.test.ts, apps/web/src/lib/dispatch-transport.test.ts, apps/web/src/app/api/dispatch/v1/resolve/route.test.ts, apps/web/src/app/api/dispatch/v1/receipts/route.test.ts, packages/core/__tests__/dispatch-envelope.test.ts, packages/core/__tests__/dispatch-handoff-render.test.ts, apps/web/tests/db/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-reconcile.test.ts, apps/web/src/lib/dispatch-callback-auth.test.ts, apps/web/tests/db/dispatch-health.test.ts, apps/web/src/lib/dispatch-health.test.ts, apps/web/src/lib/dispatch-alerts.test.ts, apps/web/src/app/api/health/dispatch/route.test.ts, packages/core/__tests__/dispatch-health-report.test.ts]
 supersedes: []
 assertions:
   - id: wake-task-symbol
@@ -340,9 +340,40 @@ signed callbacks. Wire contract: `@buildd/dispatch-contract`.
   closes as delivered via `expired`, because a wake nobody took is not a
   consumer rejecting wakes. Shadow rows are never changed by receipts.
 - **Observability.** `dispatchOutboxHealth` adds `unacked` (pending work
-  rows of `dispatch` workspaces with no ack for over a minute) and `orphaned`
-  (`handed_off` rows an hour past due). `dispatchHistoryForTask` returns
-  `transport` and `handed_off_at`.
+  rows of `dispatch` workspaces with no ack for over a minute), `orphaned`
+  (`handed_off` rows an hour past due) and `unackedStale` (unacked rows
+  created and due over 5 min ago that were never taken back: the in-app
+  fallback did not happen). `dispatchHistoryForTask` returns `transport` and
+  `handedOffAt`, newest 50 oldest first.
+  - *Health is Postgres first.* Receipts project the Worker's outcomes onto
+    the rows, so one report (`getDispatchHealth`,
+    `apps/web/src/lib/dispatch-health.ts`, over core `dispatchTeamHealthSql`)
+    counts a team's or one workspace's outbox: pending, due, overdue,
+    delivering, stuck, handed off, unacked, unacked past the fallback,
+    orphaned, failed in 24 h, delivered in 24 h by `delivered_via`, and
+    p50/p95 of `delivered_at - not_before` (merged and expired excluded). It
+    adds each workspace's `dispatch_transport`, the latest `dispatch-drain`
+    floor run's reconcile counts from `cron_runs` (platform-wide), and one
+    Worker call: unsigned `GET /health` with a 1.5 s timeout, reported as
+    reachable / unreachable / not configured, never an error. No per-scope
+    Worker call is made on a health read. The verdict and the text are pure
+    (`packages/core/dispatch-health-report.ts`).
+  - *Two surfaces, one implementation.* The `dispatch_health { workspaceId? }`
+    MCP action (worker level, `analytics:read`, through
+    `GET /api/health/dispatch`, team-scoped like `/api/health/failures`) and
+    the Dispatch section of `/app/health`. `get_task include:["dispatch"]`
+    prints a task's trail; `explain` on a pending task adds a `because[]`
+    link (with `refs.outboxId`) when its latest wake is undelivered over
+    5 min past due, handed off past due with no receipt, or failed.
+  - *Alerts are bug signals, sent when the event happens.* The receipts
+    route pages the operator (`lib/dispatch-alerts.ts`, Pushover alerts app)
+    when a batch moves rows to `failed`, at most once per workspace per 3 h.
+    The hourly floor is the backstop: it pages when its reconcile
+    republished, projected or fell back anything, had Worker errors or threw,
+    or when health shows `orphaned` or `unackedStale`; at most once per
+    condition set per 4 h, with one recovery note when a later run is clean.
+    Fresh `unacked` rows never page (the in-app drain takes them after the
+    grace). Dedupe is Redis and fails open.
 - **Orphan reconcile** (`reconcileOrphans`, the hourly floor, after the
   publish sweep and before the drain). Candidates are `handed_off` dispatch
   rows due over `ORPHAN_MIN_AGE_MS` (10 min) ago. The floor asks the Worker
@@ -448,6 +479,26 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   counter. Redis unavailable fails open
   (`apps/web/src/lib/dispatch-callback-auth.test.ts`). The Worker keeps
   receipts queued on a 429 (`apps/dispatch/src/engine.test.ts`).
+- AC-35: `dispatchTeamHealth` counts only the workspaces it is given;
+  `unackedStale` excludes fresh, future-dated, taken-back and non-dispatch
+  rows; a merged wake counts as delivered by route but is never a latency
+  sample (`apps/web/tests/db/dispatch-health.test.ts`). `dispatch_health`
+  and `/app/health` read the same report; a key reads only its own team, a
+  workspace of another team 404s, and a workspace-restricted token cannot
+  read team-wide (`apps/web/src/app/api/health/dispatch/route.test.ts`,
+  `apps/web/src/lib/token-route-policy.test.ts`). A Worker outage is a
+  verdict, not a failed read (`apps/web/src/lib/dispatch-health.test.ts`).
+- AC-36: GIVEN a receipt batch moves rows to `failed` THEN the operator is
+  alerted at once, once per workspace per window, failing open on Redis; a
+  resent batch reports no failed rows and so cannot alert twice; an alert
+  error never fails the callback
+  (`apps/web/src/app/api/dispatch/v1/receipts/route.test.ts`,
+  `apps/web/src/lib/dispatch-alerts.test.ts`).
+- AC-37: GIVEN the floor republished, projected or fell back rows, had
+  Worker errors, or health shows orphaned or unacked-past-fallback rows THEN
+  it alerts once per condition set per window, and sends one recovery note
+  when a later run is clean. Fresh unacked, failed and overdue counts do not
+  alert from the floor (`apps/web/src/app/api/cron/dispatch-drain/route.test.ts`).
 
 ---
 
@@ -477,6 +528,12 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   Non-work intents are recorded with `dispatchIntent` (dispatch-authority.ts).
 - Timer and repair cron: `apps/web/src/app/api/cron/dispatch-drain/route.ts`,
   `apps/web/src/lib/dispatch-repair.ts`.
+- Observability: `packages/core/dispatch-health-report.ts` (`dispatchVerdict`,
+  `formatDispatchHealth`), `apps/web/src/lib/dispatch-health.ts`
+  (`getDispatchHealth`, `probeDispatchWorker`),
+  `apps/web/src/lib/dispatch-alerts.ts` (`alertDispatchFailed`,
+  `alertFloorRepair`), `apps/web/src/app/api/health/dispatch/route.ts`,
+  `apps/web/src/app/app/(protected)/health/DispatchSection.tsx`.
 - Path release and claim-time waiters: `packages/core/path-claim.ts` —
   `registerClaimDeferralWaiters`, `releaseClaims`, `narrowPathClaims`.
 - Dependents: `packages/core/dispatch-dependents.ts` —
