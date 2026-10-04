@@ -308,3 +308,28 @@ describe('manage_workspaces author_spec', () => {
     expect(buildParamsDescription(['manage_workspaces'])).toContain('action=author_spec');
   });
 });
+
+// Where a workspace's work runs (packages/shared/src/executor.ts).
+describe('manage_workspaces update — gitConfig.executor', () => {
+  it('passes a known value (or null to clear) through to the PATCH', async () => {
+    for (const executor of ['cloud', 'host', 'any', null]) {
+      const api = mock(async () => ({}));
+      await handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces',
+        { action: 'update', workspaceId: WORKSPACE_ID, gitConfig: { executor } }, createContext());
+      expect(JSON.parse((api.mock.calls[0] as any)[1].body)).toEqual({ gitConfig: { executor } });
+    }
+  });
+
+  it('refuses an unknown value without calling the API', async () => {
+    const api = mock();
+    await expect(
+      handleBuilddAction(api as unknown as ApiFn, 'manage_workspaces',
+        { action: 'update', workspaceId: WORKSPACE_ID, gitConfig: { executor: 'local' } }, createContext()),
+    ).rejects.toThrow("gitConfig.executor must be 'cloud', 'host', 'any' or null");
+    expect(api).not.toHaveBeenCalled();
+  });
+
+  it('is named in the action docs', () => {
+    expect(buildParamsDescription(adminActions)).toContain('gitConfig.executor');
+  });
+});

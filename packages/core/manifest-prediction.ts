@@ -48,6 +48,7 @@ import {
   type RunOptions,
 } from '@builddai/ai-kit/decide';
 import type { OrchestrationDecisionOutcome } from './orchestration-decision';
+import { activePrompt, notePromptRejected, resolvedPromptVersion } from './prompts';
 import { hasConcretePathManifest, pathsOverlap, REPO_WIDE_SENTINEL } from './path-overlap';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -362,6 +363,38 @@ const PICK_INSTRUCTIONS =
 const DONE_CRITERION =
   'No remaining file in this list is likely to be edited by the task. Not for: uncertainty between two listed files.';
 
+/**
+ * The pick text in effect. A pick's questions are built per call (one label per
+ * offered file), so the prompts-table override for `MANIFEST_DECISION_ID` is
+ * the text parts only: a JSON object `{ "instructions": string, "done": string }`.
+ * A body that does not fit is rejected and the public text runs (`prompts.ts`).
+ */
+export function resolveManifestPromptText(): { instructions: string; done: string; promptVersion: string } {
+  const row = activePrompt(MANIFEST_DECISION_ID);
+  if (row) {
+    try {
+      const parsed = JSON.parse(row.body) as { instructions?: unknown; done?: unknown } | null;
+      const ok = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+      if (parsed && ok(parsed.instructions) && ok(parsed.done)) {
+        return {
+          instructions: parsed.instructions,
+          done: parsed.done,
+          promptVersion: resolvedPromptVersion(MANIFEST_PROMPT_VERSION, { source: 'active', version: row.version }),
+        };
+      }
+      notePromptRejected(row, 'body needs non-empty "instructions" and "done" strings');
+    } catch {
+      notePromptRejected(row, 'body is not JSON');
+    }
+  }
+  return { instructions: PICK_INSTRUCTIONS, done: DONE_CRITERION, promptVersion: MANIFEST_PROMPT_VERSION };
+}
+
+/** The prompt version to stamp on manifest rows: names the text in effect. */
+export function manifestPromptVersion(): string {
+  return resolveManifestPromptText().promptVersion;
+}
+
 export type PickQuestions = { pick: ReturnType<typeof choice<string>> };
 
 /**
@@ -377,6 +410,7 @@ export function buildPickDecision(
   if (offered.length > MANIFEST_MAX_CANDIDATES) {
     throw new Error(`manifest pick offers ${offered.length} files (max ${MANIFEST_MAX_CANDIDATES} plus ${DONE_LABEL})`);
   }
+  const text = resolveManifestPromptText();
   const labelMap: Record<string, string> = {};
   const criteria: Record<string, string> = {};
   offered.forEach((p, i) => {
@@ -384,13 +418,13 @@ export function buildPickDecision(
     labelMap[l] = p;
     criteria[l] = `Edit the file ${p}`;
   });
-  criteria[DONE_LABEL] = DONE_CRITERION;
+  criteria[DONE_LABEL] = text.done;
   const mode = opts.mode ?? MANIFEST_PICK_MODE;
   const minConfidence = opts.minConfidence ?? MANIFEST_PICK_MIN_CONFIDENCE;
   const decision = defineDecision({
     id: MANIFEST_DECISION_ID,
-    promptVersion: MANIFEST_PROMPT_VERSION,
-    questions: { pick: choice(PICK_INSTRUCTIONS, criteria) },
+    promptVersion: text.promptVersion,
+    questions: { pick: choice(text.instructions, criteria) },
     mode,
     ...(minConfidence !== null ? { minConfidence } : {}),
   }) as unknown as Decision<PickQuestions>;
@@ -771,7 +805,7 @@ export async function evaluateManifestPicks(input: {
     summary: summarizeDecisionEval(predictions, { thresholds: input.thresholds, applyAt }),
     fingerprints,
     decisionId: MANIFEST_DECISION_ID,
-    promptVersion: MANIFEST_PROMPT_VERSION,
+    promptVersion: manifestPromptVersion(),
   };
 }
 

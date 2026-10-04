@@ -239,6 +239,7 @@ mock.module('@/lib/base-refresh', () => ({
 // The runner's recorded resume cause for the worker opening the PR.
 const mockResolveSupersessionCause = mock(async (_workerId: any) => 'unknown' as string);
 mock.module('@/lib/retry-pr-supersession', () => ({
+  collectRetryLineage: async (taskId: string) => [taskId],
   closeAncestorRetryPrs: mockCloseAncestorRetryPrs,
   resolveSupersessionCause: mockResolveSupersessionCause,
 }));
@@ -729,6 +730,138 @@ describe('POST /api/github/pr', () => {
   // Once a mission has an integration base, the server already knows the
   // correct head (the worker's own branch) and base (the integration branch)
   // — a caller-supplied value is checked against the derivation, not trusted.
+  // An agent run (the account that claimed the worker) may record only a PR
+  // its task owns: lib/agent-capabilities/pr-ownership.ts. Teammates and a
+  // person's session are exempt.
+  describe('agent-run PR ownership', () => {
+    const TASK_ID = 'aaaa1111-0000-4000-8000-000000000001';
+    const OWN = 'buildd/aaaa1111-own-thing';
+    const FOREIGN = 'buildd/dddd4444-someone-else';
+    const agentWorker = (o: Record<string, unknown> = {}) => ({
+      id: 'w-1', accountId: 'account-1', taskId: TASK_ID, workspaceId: 'ws-1', branch: OWN, name: 'test-worker',
+      workspace: { ...WORKSPACE_OK, id: 'ws-1' },
+      task: { id: TASK_ID, title: 'feat: own thing', description: '', context: {}, dependsOn: [] },
+      ...o,
+    });
+    const created = { number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' };
+    const opened = () => mockGithubApi.mock.calls.some((c: any[]) => (c[2] as { method?: string } | undefined)?.method === 'POST' && c[1] === '/repos/owner/repo/pulls');
+    const post = (body: Record<string, unknown>) => POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', ...body },
+    }));
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        return Promise.resolve(created);
+      });
+    });
+
+    it('opens a PR from the task’s own branch', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: OWN });
+      expect(res.status).toBe(200);
+      expect(opened()).toBe(true);
+    });
+
+    it('refuses to open a PR from another task’s branch, before calling GitHub to create it', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.code).toBe('head_not_owned');
+      expect(data.hint).toBe(`Open the PR with head='${OWN}'.`);
+      expect(opened()).toBe(false);
+    });
+
+    it('refuses to open a PR from a protected branch (the repo default)', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: 'main' });
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('protected_head');
+      expect(opened()).toBe(false);
+    });
+
+    it('opens from a dependency’s branch', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker({
+        task: { id: TASK_ID, title: 'feat: phase two', description: '', context: {}, dependsOn: ['dddd4444-0000-4000-8000-000000000004'] },
+      }));
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a teammate open from any head, as before', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'person-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a person’s session on the shared account open from any head', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, sessionUserId: 'user-1' });
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(200);
+    });
+
+    describe('dedup-by-head', () => {
+      const existing = { number: 77, html_url: 'https://github.com/owner/repo/pull/77', head: { ref: FOREIGN }, base: { ref: 'main' } };
+
+      beforeEach(() => {
+        mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/pulls?head=')) return Promise.resolve([existing]);
+          if (path === '/repos/owner/repo/pulls/77') return Promise.resolve(existing);
+          return Promise.resolve(created);
+        });
+      });
+
+      it('adopts an open PR on a foreign head when the task names it', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker({
+          task: { id: TASK_ID, title: 'fix: address review on #77', description: '', context: {}, dependsOn: [] },
+        }));
+        const res = await post({ head: FOREIGN });
+        expect(res.status).toBe(200);
+        expect((await res.json()).pr.number).toBe(77);
+      });
+
+      it('refuses to adopt an open PR on a foreign head the task does not name', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        const res = await post({ head: FOREIGN });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+      });
+    });
+
+    describe('prUrl adoption', () => {
+      it('refuses a PR outside the workspace’s linked repo', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        const res = await post({ head: OWN, prUrl: 'https://github.com/elsewhere/other/pull/5' });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('pr_outside_linked_repo');
+      });
+
+      it('judges the head GitHub reports, not the one the caller claims', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        mockGithubApi.mockImplementation((_i: number, path: string) =>
+          Promise.resolve(path === '/repos/owner/repo/pulls/9' ? { number: 9, head: { ref: FOREIGN }, base: { ref: 'main' } } : null));
+        const res = await post({ head: OWN, prUrl: 'https://github.com/owner/repo/pull/9' });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+      });
+
+      it('adopts a PR whose real head is the task’s own branch', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        mockGithubApi.mockImplementation((_i: number, path: string) =>
+          Promise.resolve(path === '/repos/owner/repo/pulls/9' ? { number: 9, head: { ref: OWN }, base: { ref: 'main' } } : null));
+        const res = await post({ head: OWN, prUrl: 'https://github.com/owner/repo/pull/9' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).pr.number).toBe(9);
+      });
+    });
+  });
+
   describe('Option A′ — derive, don’t accept (P1)', () => {
     const INTEGRATION_BRANCH = 'mission/checkout-arc-1a2b3c4d';
     const WORKER_BRANCH = 'buildd/t-1-do-thing';

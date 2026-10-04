@@ -11,6 +11,7 @@ import { BUILDD_MCP_TOOL_NAME } from './action-events';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
 import { questionFromToolInput, runQuestionGate } from './question-gate.js';
+import type { QuestionGateReply } from '@buildd/core/question-gate';
 import type { PathClaimResponse } from './buildd';
 import {
   extractEditPaths,
@@ -78,7 +79,7 @@ export interface HookFactoryContext {
    * (`worker.questionGate`), once the question gate let the question through;
    * otherwise handleMessage parks it as before.
    */
-  parkQuestion?: (worker: LocalWorker, toolInput: Record<string, unknown>, toolUseId?: string) => Promise<void>;
+  parkQuestion?: (worker: LocalWorker, toolInput: Record<string, unknown>, toolUseId?: string, gateReply?: QuestionGateReply) => Promise<void>;
   pendingPermissionRequests: Map<string, {
     resolve: (result: any) => void;
     toolInput: Record<string, unknown>;
@@ -512,7 +513,15 @@ export class HookFactory {
               'rewrite the question as a self-contained decision brief (what is being decided in this task and why it matters, what each option leads to, your recommended default first marked "(Recommended)") and call AskUserQuestion again',
             ));
           }
-          await this.ctx.parkQuestion?.(worker, toolInput, toolUseId);
+          if (gate.action === 'answer') {
+            // Jev decided: the answer stands in for a person's reply. Nobody
+            // was asked and nothing was parked — denying the tool call with
+            // the answer as the reason is how the agent gets it, exactly like
+            // a pushback, just not a request to rewrite.
+            this.ctx.addMilestone(worker, { type: 'status', label: 'Question decided automatically', ts: Date.now() });
+            return denyPreToolUse(runnerDenial(gate.reason, 'continue with this answer'));
+          }
+          await this.ctx.parkQuestion?.(worker, toolInput, toolUseId, gate.reply ?? undefined);
         }
         return {
           hookSpecificOutput: {

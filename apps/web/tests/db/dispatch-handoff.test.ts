@@ -150,6 +150,14 @@ describe('in-app drain exclusion', () => {
     expect(await claimedIds()).toContain(r.id);
   });
 
+  test('with no Worker configured (grace 0) a young unacked dispatch row is taken at once', async () => {
+    await settleOutbox();
+    const d = await seedTask(dispatch);
+    const [r] = await rowsFor(d);
+    const ids = (await q<{ id: string }>(claimDueDispatchesSql(1000, undefined, 0))).map(x => x.id);
+    expect(ids).toContain(r.id);
+  });
+
   test('in_app and shadow workspaces are claimed exactly as before (no grace)', async () => {
     await settleOutbox();
     const a = await seedTask(inApp);

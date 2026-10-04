@@ -143,8 +143,10 @@ async function firstGrant(deps: ResolveDeps, req: ResolveRequest): Promise<boole
 }
 
 async function resolveWebhook(ctx: DispatchContext, req: ResolveRequest, deps: ResolveDeps): Promise<ResolveResponse> {
+  // A future start_at skips, as in-app does: the outbox trigger always writes
+  // a separate `start_at:<ms>` row due at that time, so rescheduling this one
+  // too would deliver the webhook twice (two container cold starts).
   const skip = claimabilitySkip(ctx.task);
-  if (skip === 'start_at_future') return { decision: 'reschedule', notBefore: new Date(ctx.task.startAt!).toISOString() };
   if (skip) return { decision: 'skip', why: skip };
   if (targetLocalUiUrlOf(ctx.metadata)) return { decision: 'decline', why: 'targeted_local_runner' };
   if (!(await webhookEligible(ctx))) return { decision: 'decline', why: 'webhook_not_wanted' };

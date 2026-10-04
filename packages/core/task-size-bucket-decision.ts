@@ -13,7 +13,8 @@
  * Pure: no DB, no env. The I/O half is in `./manifest-prediction-source.ts`,
  * the only call site.
  */
-import { choice, defineDecision } from '@builddai/ai-kit/decide';
+import { choice } from '@builddai/ai-kit/decide';
+import { definePromptedDecision } from './prompted-decision';
 import type { ExpectedTaskSize } from './db/schema';
 
 export const SIZE_BUCKET_PROMPT_VERSION = 'sb1';
@@ -40,7 +41,7 @@ export const SIZE_BUCKET_LABELS: readonly SizeBucketLabel[] = ['S', 'M', 'L'];
 /** A starting threshold, not yet measured on held-out Jev outcomes; recalibrated from logged evidence (jev-scheduling §6). */
 export const SIZE_BUCKET_MIN_CONFIDENCE = 0.6;
 
-export const SIZE_BUCKET_DECISION = defineDecision({
+export const SIZE_BUCKET_DECISION = definePromptedDecision({
   id: 'buildd.orchestration_size_bucket',
   promptVersion: SIZE_BUCKET_PROMPT_VERSION,
   questions: SIZE_BUCKET_QUESTIONS,

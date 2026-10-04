@@ -6,6 +6,7 @@ import type { CbmInjectionDecisionReply, CbmInjectionFacts } from '@buildd/core/
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
+import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
@@ -436,6 +437,27 @@ export class BuilddClient {
     }
   }
 
+  /**
+   * GET /api/workers/{id}/prompt-bundles: the claim's role and skill payload,
+   * resolved again for a session resumed by a process that no longer holds it
+   * (session-prompt-bundles.ts). Null on any refusal or transport failure —
+   * the caller fails open.
+   */
+  async getWorkerPromptBundles(workerId: string): Promise<PromptBundlesPayload | null> {
+    try {
+      const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/prompt-bundles`, { method: 'GET' });
+      if (!res.ok) {
+        console.warn(`[Worker ${workerId}] GET /prompt-bundles answered ${res.status}`);
+        return null;
+      }
+      const body = await res.json().catch(() => null);
+      return body && typeof body === 'object' ? body as PromptBundlesPayload : null;
+    } catch (err) {
+      console.warn(`[Worker ${workerId}] GET /prompt-bundles failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   private async parkCall<T>(workerId: string, route: string, method: string, pick: (body: any) => T | null): Promise<T | null> {
     try {
       const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/${route}`, { method });
@@ -566,7 +588,8 @@ export class BuilddClient {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (reply && typeof reply === 'object' && ((reply as { verdict?: unknown }).verdict === 'send' || (reply as { verdict?: unknown }).verdict === 'pushback')) {
+      const verdict = reply && typeof reply === 'object' ? (reply as { verdict?: unknown }).verdict : undefined;
+      if (verdict === 'send' || verdict === 'pushback' || verdict === 'decide') {
         return reply as QuestionGateReply;
       }
       return { verdict: 'send', outcome: 'error', error: 'bad_reply', version: null, latencyMs: Date.now() - started };

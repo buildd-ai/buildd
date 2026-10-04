@@ -504,6 +504,14 @@ export interface WorkspaceGitConfig {
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
 
+  // The 'Jev keeps agents moving' question gate (docs/design/human-question-gate.md,
+  // packages/core/question-gate.ts): Jev decides, holds or asks on every agent
+  // question, and the brief-quality pushback runs unconditionally. Absent / true
+  // = ON (default). Set to false — the one emergency kill switch — to revert to
+  // exactly pre-mission behaviour: every question reaches a person unchanged,
+  // with no pushback and no decide/hold.
+  jevQuestionGate?: boolean;
+
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and
@@ -901,6 +909,19 @@ export interface ResultMeta {
    * which keeps that path byte-identical to before this field existed.
    */
   closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
+  /**
+   * Every end-of-session push the runner gave this worker (classifying why a
+   * session was ending without delivering, then sending label-specific text —
+   * see apps/runner/src/session-end-classification.ts) before its eventual
+   * terminal outcome: which label, when, and the exact text sent. Lets
+   * "pushes per session and how often a push led to delivery" be answered
+   * directly from completed-task result rows, without new telemetry infra.
+   */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -925,11 +946,14 @@ export const workspaces = pgTable('workspaces', {
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
   // Which transport delivers this workspace's dispatch outbox rows.
-  // 'in_app': the Vercel drain (default). 'shadow': also published to the
-  // Dispatch Worker, which records decisions but the in-app drain still
-  // delivers. 'dispatch': handed off; the in-app drain only takes rows the
-  // Worker never acked. knowledge-base buildd/design/cloudflare-dispatch-transport.md.
-  dispatchTransport: text('dispatch_transport').default('in_app').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
+  // 'dispatch' (default): handed off to the Dispatch Worker; the in-app drain
+  // only takes rows the Worker never acked, and nothing is published at all
+  // unless DISPATCH_URL and DISPATCH_PUBLISH_SECRET are set, so a self-hosted
+  // install without the Worker keeps in-app delivery. 'in_app': the Vercel
+  // drain only (the per-workspace kill switch). 'shadow': published and
+  // recorded, in-app still delivers (webhook-less workspaces only while
+  // webhooks are live on the Worker).
+  dispatchTransport: text('dispatch_transport').default('dispatch').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
 
   // Max tasks from this workspace that may have an active worker at once. Repo-backed
   // workspaces isolate each task in its own git worktree, so parallel work is safe;
@@ -3793,6 +3817,23 @@ export const systemCache = pgTable('system_cache', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }),
 });
+
+// Versioned prompt text (packages/core/prompts.ts). An active row replaces the
+// public default compiled into the repo for prompt `id`; with no active row the
+// default runs. Rows are append-only versions; at most one is active per id.
+// `content_hash` is the sha256 hex of `body`; the loader skips a row whose hash
+// does not match. Read in-process by packages/core/prompts-source.ts, never per call.
+export const prompts = pgTable('prompts', {
+  id: text('id').notNull(),
+  version: integer('version').notNull(),
+  contentHash: text('content_hash').notNull(),
+  body: text('body').notNull(),
+  active: boolean('active').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.id, t.version] }),
+  oneActivePerIdIdx: uniqueIndex('prompts_one_active_per_id').on(t.id).where(sql`${t.active}`),
+}));
 
 // Tenant budget exhaustion tracking (Dispatch multi-tenant mode)
 export const tenantBudgets = pgTable('tenant_budgets', {

@@ -4700,7 +4700,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockGithubApi.mockImplementation((_installationId: number, path: string) => {
         if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
         if (path === '/repos/org/repo/pulls/2165') {
-          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165' });
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165', head: { ref: 'feature/pr-2165' } });
         }
         return Promise.resolve(null);
       });
@@ -4714,6 +4714,116 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedTaskSet?.result?.prNumber).toBe(2165);
+    });
+
+    // The fallback adopts a PR the task names, so ownership passes on that
+    // basis — except for a protected head: naming a release PR does not make
+    // it this task's deliverable (lib/agent-capabilities/pr-ownership.ts).
+    it('pr_required + referenced PR is merged but its head is the protected default branch → not recorded', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSets.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ ...baseWorker, status: 'failed' }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Unblock release PR #2165',
+        description: '',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1', fullName: 'org/repo', defaultBranch: 'dev', installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165', head: { ref: 'dev' }, base: { ref: 'main' } });
+        }
+        return Promise.resolve(null);
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(workerSets.some(u => u.prNumber === 2165)).toBe(false);
+      expect(capturedTaskSet?.result?.prNumber).not.toBe(2165);
+      expect(res.status).not.toBe(200);
+    });
+
+    describe('self-reported PR (prUrl / prNumber in the PATCH body)', () => {
+      const workerSets: any[] = [];
+      const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', ...body },
+      }), { params: mockParams });
+
+      beforeEach(() => {
+        workerSets.length = 0;
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((u: any) => {
+            workerSets.push(u);
+            return { where: mock(() => ({ returning: mock(() => [baseWorker]) })) };
+          }),
+        });
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst.mockResolvedValue(baseWorker);
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', title: 'feat: auto pr', description: '', context: {}, dependsOn: [] });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1', fullName: 'org/repo', defaultBranch: 'main', installation: { installationId: 123 },
+        });
+      });
+
+      const githubHead = (ref: string) => mockGithubApi.mockImplementation((_i: number, path: string) =>
+        Promise.resolve(path === '/repos/org/repo/pulls/50'
+          ? { number: 50, html_url: 'https://github.com/org/repo/pull/50', head: { ref }, base: { ref: 'main' } }
+          : null));
+
+      it('records a PR whose real head is the worker’s own branch', async () => {
+        githubHead('feature/auto-pr');
+        const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50', prNumber: 50 });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => u.prUrl === 'https://github.com/org/repo/pull/50' && u.prNumber === 50)).toBe(true);
+      });
+
+      it('drops a PR on another task’s head but still applies the rest of the update', async () => {
+        githubHead('buildd/dddd4444-someone-else');
+        const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50', prNumber: 50, progress: 40 });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => 'prUrl' in u || 'prNumber' in u)).toBe(false);
+        expect(workerSets.length).toBeGreaterThan(0);
+      });
+
+      it('drops a PR outside the linked repo without reading GitHub', async () => {
+        const res = await patch({ prUrl: 'https://github.com/elsewhere/other/pull/50' });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => 'prUrl' in u)).toBe(false);
+        expect(mockGithubApi).not.toHaveBeenCalled();
+      });
+
+      it('records a person’s session report as given', async () => {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', sessionUserId: 'user-1' });
+        const res = await patch({ prUrl: 'https://github.com/org/repo/pull/50' });
+        expect(res.status).toBe(200);
+        expect(workerSets.some(u => u.prUrl === 'https://github.com/org/repo/pull/50')).toBe(true);
+        expect(mockGithubApi).not.toHaveBeenCalled();
+      });
     });
 
     it('pr_required + referenced PR exists but is not merged → still refuses completion', async () => {
@@ -4797,7 +4907,7 @@ describe('PATCH /api/workers/[id]', () => {
             number: 15,
             merged: false,
             html_url: 'https://github.com/org/repo/pull/15',
-            head: { sha: 'abc123def' },
+            head: { ref: 'feature/pr-15', sha: 'abc123def' },
           });
         }
         return Promise.resolve(null);
@@ -4860,7 +4970,7 @@ describe('PATCH /api/workers/[id]', () => {
             number: 15,
             merged: false,
             html_url: 'https://github.com/org/repo/pull/15',
-            head: { sha: 'fresh-push-sha' },
+            head: { ref: 'feature/pr-15', sha: 'fresh-push-sha' },
           });
         }
         return Promise.resolve(null);
@@ -4899,7 +5009,7 @@ describe('PATCH /api/workers/[id]', () => {
             number: 15,
             merged: false,
             html_url: 'https://github.com/org/repo/pull/15',
-            head: { sha: 'someone-elses-commit' },
+            head: { ref: 'feature/pr-15', sha: 'someone-elses-commit' },
           });
         }
         return Promise.resolve(null);

@@ -101,6 +101,7 @@ import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
 import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
+import { verifyReportedWorkerPr, type ReportedPrVerdict } from '@/lib/agent-capabilities/reported-pr';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
 
@@ -1137,9 +1138,52 @@ export async function PATCH(
   if (Array.isArray(subagentSpans)) updates.subagentSpans = subagentSpans;
   if (typeof subagentSpansObserved === 'number') updates.subagentSpansObserved = subagentSpansObserved;
   if (typeof backgroundAgentMs === 'number') updates.backgroundAgentMs = backgroundAgentMs;
-  // Self-reported PR (for runners that open PRs outside the create_pr MCP action)
-  if (typeof selfReportedPrUrl === 'string' && selfReportedPrUrl) updates.prUrl = selfReportedPrUrl;
-  if (typeof selfReportedPrNumber === 'number' && selfReportedPrNumber > 0) updates.prNumber = selfReportedPrNumber;
+  // Self-reported PR (for runners that open PRs outside the create_pr MCP
+  // action). An agent run's report is held to create_pr's questions — linked
+  // repo, a head the task owns, the mission base — before it is recorded
+  // (lib/agent-capabilities/reported-pr.ts). A refused report drops only the
+  // PR fields; the rest of this PATCH still applies. A person's session on
+  // the shared account, and a workspace with no App to verify against, keep
+  // recording it as given.
+  const reportedPrUrl = typeof selfReportedPrUrl === 'string' && selfReportedPrUrl ? selfReportedPrUrl : null;
+  const reportedPrNumber = typeof selfReportedPrNumber === 'number' && selfReportedPrNumber > 0 ? selfReportedPrNumber : null;
+  if (reportedPrUrl || reportedPrNumber) {
+    let verdict: ReportedPrVerdict = { accept: true, verified: false, pr: { url: reportedPrUrl, number: reportedPrNumber } };
+    if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {
+      const reportingTask = worker.taskId
+        ? await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId),
+            columns: { id: true, title: true, description: true, context: true, dependsOn: true, missionId: true, taskClass: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true },
+          })
+        : null;
+      verdict = await verifyReportedWorkerPr({
+        worker: { id: worker.id, branch: worker.branch, workspaceId: worker.workspaceId, taskId: worker.taskId },
+        task: reportingTask ?? null,
+        reported: { url: reportedPrUrl, number: reportedPrNumber },
+      });
+    }
+    if (verdict.accept) {
+      if (verdict.verified) {
+        updates.prUrl = verdict.pr.url;
+        updates.prNumber = verdict.pr.number;
+      } else {
+        if (reportedPrUrl) updates.prUrl = reportedPrUrl;
+        if (reportedPrNumber) updates.prNumber = reportedPrNumber;
+      }
+    } else {
+      fireGateEvent({
+        gate: GATE_SLUGS.PR_OWNERSHIP,
+        surface: 'PATCH /api/workers/[id]',
+        outcome: 'rejected',
+        reason: verdict.reasonCode,
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId,
+        workerId: worker.id,
+        callerOrigin: 'worker',
+      });
+      console.warn(`[workers/${id}] self-reported PR not recorded: ${verdict.reasonCode}`);
+    }
+  }
 
   // Status audit trail: record terminal transitions in milestones for debugging
   if (status === 'completed' || status === 'failed') {
@@ -1421,7 +1465,7 @@ export async function PATCH(
         // PR wrongly pointed at trunk. Title alone would exempt nothing.
         // `backend` decides whether this session's spend draws on the Agent
         // SDK credit pool (countsTowardAgentSdkCreditPool).
-        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber })
+        .select({ kind: tasks.kind, pathManifest: tasks.pathManifest, status: tasks.status, outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass, backend: tasks.backend, roleSlug: tasks.roleSlug, reviewerRetryPrNumber: tasks.reviewerRetryPrNumber, ciRetryPrNumber: tasks.ciRetryPrNumber, conflictRetryPrNumber: tasks.conflictRetryPrNumber, dependsOn: tasks.dependsOn })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1738,6 +1782,32 @@ export async function PATCH(
               effectiveLastCommitSha && pr?.head?.sha && pr.head.sha === effectiveLastCommitSha,
             );
             if (pr?.merged || headShaMatch) {
+              // Named by the task, so it is owned unless its head is a
+              // protected branch; it still needs the linked repo and the
+              // mission base, like every other door.
+              if (!(account as { sessionUserId?: string | null }).sessionUserId && worker.workspaceId) {
+                const row = terminalTaskRow[0];
+                const verdict = await verifyReportedWorkerPr({
+                  worker: { id: worker.id, branch: worker.branch, workspaceId: worker.workspaceId, taskId: worker.taskId },
+                  task: row && worker.taskId ? { ...row, id: worker.taskId } : null,
+                  reported: { number: prNumber },
+                  view: pr,
+                });
+                if (!verdict.accept) {
+                  fireGateEvent({
+                    gate: GATE_SLUGS.PR_OWNERSHIP,
+                    surface: 'PATCH /api/workers/[id]',
+                    outcome: 'rejected',
+                    reason: verdict.reasonCode,
+                    workspaceId: worker.workspaceId,
+                    missionId: row?.missionId ?? null,
+                    taskId: worker.taskId,
+                    workerId: worker.id,
+                    callerOrigin: 'worker',
+                  });
+                  continue;
+                }
+              }
               await db.update(workers).set({
                 prUrl: pr.html_url,
                 prNumber: pr.number,

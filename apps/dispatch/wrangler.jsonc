@@ -36,8 +36,12 @@
     // so a dashboard value is wiped on the next deploy. Local `wrangler dev`
     // overrides it via `.dev.vars` or `--var`.
     "BUILDD_SERVER": "https://buildd.dev",
-    // P1 shadow: these adapter types call resolve and record the decision
-    // (`dry-run:<type>:<decision>`) but never POST. Set to "" for real delivery.
-    "DRY_RUN_TYPES": "http,github-repository-dispatch"
+    // Adapter types that call resolve and record the decision
+    // (`dry-run:<type>:<decision>`) but never POST. Webhooks (`http`) are live
+    // since the scratch cutover; this is global, so while it is live a
+    // `shadow` workspace WITH a webhook gets that webhook twice (Dispatch and
+    // in-app). Only put webhook-less workspaces on shadow, or move them to
+    // `dispatch`. GitHub Actions stays dry until a workspace needs it.
+    "DRY_RUN_TYPES": "github-repository-dispatch"
   }
 }
