@@ -35,6 +35,7 @@ export const DISPATCH_CAUSES = [
   'dependency.satisfied',
   'review.fix_requested',
   'ci.retry',
+  'conflict.retry',
   'path_claim.released',
   'budget.available',
   'task.reassigned',
@@ -42,6 +43,7 @@ export const DISPATCH_CAUSES = [
   'plan_child.ready',
   'task.unblocked',
   'credential.restored',
+  'mission.released',
 ] as const;
 export type DispatchCause = (typeof DISPATCH_CAUSES)[number];
 

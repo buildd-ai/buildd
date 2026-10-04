@@ -63,12 +63,14 @@ const CAUSE_PRECEDENCE: DispatchCause[] = [
   'plan_child.ready',
   'review.fix_requested',
   'ci.retry',
+  'conflict.retry',
   'task.reassigned',
   'manual.start',
   'dependency.satisfied',
   'path_claim.released',
   'budget.available',
   'credential.restored',
+  'mission.released',
   'task.unblocked',
   'start_at.reached',
   'task.requeued',
@@ -103,6 +105,7 @@ export function routeForCause(cause: DispatchCause): CauseRoute {
     case 'task.created':
     case 'review.fix_requested':
     case 'ci.retry':
+    case 'conflict.retry':
       return { event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false };
     case 'plan_child.ready':
       return { event: 'task.created', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
@@ -112,6 +115,7 @@ export function routeForCause(cause: DispatchCause): CauseRoute {
     case 'path_claim.released':
     case 'budget.available':
     case 'credential.restored':
+    case 'mission.released':
     case 'task.unblocked':
     case 'start_at.reached':
       return { event: 'task.unblocked', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
@@ -155,9 +159,6 @@ export function webhookWants(
  */
 export async function enqueueTaskDispatch(input: EnqueueDispatchInput): Promise<void> {
   await db.execute(enqueueDispatchSql(input));
-  if (input.notBefore && input.notBefore.getTime() > Date.now()) {
-    await scheduleTimer();
-  }
   kickDispatch();
 }
 
@@ -191,6 +192,15 @@ export async function wakeTask(
   }
 }
 
+/** `wakeTask` for many tasks with one cause (a mission released, a parent's children). */
+export async function wakeTasks(taskIds: readonly string[], cause: DispatchCause): Promise<void> {
+  if (taskIds.length === 0) return;
+  const results = await Promise.allSettled(taskIds.map(id => db.execute(enqueueDispatchSql({ taskId: id, cause }))));
+  const failed = results.filter(r => r.status === 'rejected').length;
+  if (failed) console.error(`[dispatch] wakeTasks: ${failed}/${taskIds.length} enqueues failed (${cause})`);
+  kickDispatch();
+}
+
 /** Dashboard-only realtime event for a new task. Not a wake: runners ignore it. */
 export async function announceTaskCreated(task: DispatchTask, workspace: DispatchWorkspace): Promise<void> {
   await triggerEvent(channels.workspace(task.workspaceId), events.TASK_CREATED, { task: buildTaskPayload(task, workspace) });
@@ -202,9 +212,9 @@ export async function announceTaskCreated(task: DispatchTask, workspace: Dispatc
  * a kick that fails costs latency (the next tick), not the wake.
  */
 export function kickDispatch(): void {
-  const run = () => drainDispatchOutbox().then(() => undefined, err => {
-    console.error('[dispatch] kick drain failed:', err);
-  });
+  const run = () => drainDispatchOutbox()
+    .then(() => scheduleTimer())
+    .catch(err => console.error('[dispatch] kick drain failed:', err));
   try {
     after(run);
   } catch {
