@@ -85,6 +85,12 @@ export interface PlannerCandidate extends PlannerScopeFields {
    * Such nodes are exempt from the no-scope mission mutex, as they are today.
    */
   editsFiles?: boolean;
+  /**
+   * In-flight ids this candidate never conflicts with: the open PR a fix
+   * attempt or subject-anchored task exists to work on, and PRs stacked on it.
+   * Same exemption the claim route's open-PR backstop applies.
+   */
+  exemptFrom?: string[];
 }
 
 export type PlannerInFlightKind = 'worker' | 'open_pr' | 'lease';
@@ -290,6 +296,7 @@ function compareScores(x: ScoreParts & { id: string }, y: ScoreParts & { id: str
 /** The hard edge between a candidate and another node, or null. Candidate-first. */
 function hardEdgeBetween(c: Node, o: Node): HardEdgeKind | null {
   if (o.ownerTaskId === c.id) return null;
+  if (o.inFlight && c.candidate?.exemptFrom?.includes(o.id)) return null;
   if (c.scope.concrete && o.scope.concrete && pathsOverlap(c.scope.concrete, o.scope.concrete)) {
     if (o.inFlight?.kind === 'lease') return 'lease_overlap';
     if (o.inFlight?.kind === 'open_pr') return 'open_pr_overlap';
@@ -308,6 +315,7 @@ function hardEdgeBetween(c: Node, o: Node): HardEdgeKind | null {
 
 function softWeightBetween(a: Node, b: Node, input: ClaimPlanInput): number {
   if (!input.thresholds) return 0;
+  if (b.inFlight && (b.ownerTaskId === a.id || a.candidate?.exemptFrom?.includes(b.id))) return 0;
   if (!a.scope.predicted && !b.scope.predicted) return 0;
   const sa = a.scope.concrete ?? a.scope.predicted;
   const sb = b.scope.concrete ?? b.scope.predicted;

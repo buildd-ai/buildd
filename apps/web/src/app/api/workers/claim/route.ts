@@ -45,7 +45,7 @@ import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type Ag
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
-import { findBlockingPr, findStackedPrs, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
@@ -91,6 +91,18 @@ import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpo
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
+import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/core/claim-planner';
+import {
+  buildClaimPlanInput,
+  EMPTY_PLANNER_SIGNALS,
+  plannerScopedTaskIds,
+  resolveClaimPlannerConfig,
+  splitOwnOpenPrs,
+  type ClaimPlannerMode,
+  type MissionInFlightRow,
+  type PlannerSignals,
+} from './claim-plan-input';
+import { fireClaimPlanRecord, fireOrderedBehind, loadPlannerSignals } from './claim-plan-store';
 import {
   ClaimHoldCollector,
   acquireGatedStartPaths,
@@ -1091,6 +1103,7 @@ export async function POST(req: NextRequest) {
     codex_single_flight: 0,
     oauth_parallelism: 0,
     role_env_unsatisfied: 0,
+    ordered_behind: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1341,6 +1354,8 @@ export async function POST(req: NextRequest) {
    * before a reviewer ever gets a turn.
    */
   const missionAdvisoryInFlight = new Map<string, Set<string>>();
+  /** The same in-flight rows, kept for the claim planner's input. */
+  let missionInFlightRows: MissionInFlightRow[] = [];
 
   const filteredMissionIds = [...new Set(
     filteredTasks.map(t => (t as any).missionId as string | null).filter(Boolean) as string[],
@@ -1363,7 +1378,7 @@ export async function POST(req: NextRequest) {
     // guard below, which needs the in-flight tasks' manifests. Row-level instead
     // of aggregated so we don't add a second round trip; the count is the same
     // number of joined worker rows the aggregate produced.
-    const missionInFlightRows = await db
+    missionInFlightRows = await db
       .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category, context: tasks.context, outputRequirement: tasks.outputRequirement })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
@@ -1425,7 +1440,86 @@ export async function POST(req: NextRequest) {
     };
   };
 
-  for (const task of filteredTasks) {
+  // ── Claim-time batch planner (./claim-plan-input, knowledge-base: buildd/design/jev-scheduling.md §5) ──
+  // Per workspace, gitConfig.claimPlanner: 'off' (default) leaves everything
+  // below exactly as it was — no extra read, no extra write, same walk.
+  // 'record' plans beside the legacy walk and records both. 'apply' claims in
+  // plan order: every gate in the loop still runs on each pick, and a pick
+  // that is refused or loses its race is dropped and the rest re-planned.
+  // Never for an explicit taskId claim (which includes every force claim), and
+  // never 'apply' while a gated START is reachable — that path keeps its walk.
+  const plannerConfigs = new Map<string, ReturnType<typeof resolveClaimPlannerConfig>>();
+  const plannerModeOf = (t: { workspaceId: string }): ClaimPlannerMode => {
+    if (taskId) return 'off';
+    let cfg = plannerConfigs.get(t.workspaceId);
+    if (!cfg) {
+      cfg = resolveClaimPlannerConfig((t as any).workspace?.gitConfig);
+      plannerConfigs.set(t.workspaceId, cfg);
+    }
+    return cfg.mode === 'apply' && holdStartGated ? 'record' : cfg.mode;
+  };
+  // A candidate a pre-filter already refuses (connector, role env) is not
+  // planned: it would only hold a slot it can never take. It still walks the
+  // loop below so its own deferral is recorded.
+  const plannedTasks = filteredTasks.filter(t =>
+    plannerModeOf(t) !== 'off' && !connectorMismatchTaskIds.has(t.id) && !roleEnvGaps.has(t.id));
+  let plannerSignals: PlannerSignals = EMPTY_PLANNER_SIGNALS;
+  if (plannedTasks.length > 0) {
+    plannerSignals = await loadPlannerSignals(plannedTasks.map(t => t.id), [...new Set(plannedTasks.map(t => t.workspaceId))]);
+  }
+  /** One threshold set per plan: the planned workspaces' own, when they all agree; else declared scope only. */
+  const plannerThresholdsFor = (ts: Array<{ workspaceId: string }>): PlannerThresholds | null => {
+    const sets = [...new Set(ts.map(t => JSON.stringify(plannerConfigs.get(t.workspaceId)?.thresholds ?? null)))];
+    return sets.length === 1 ? (JSON.parse(sets[0]) as PlannerThresholds | null) : null;
+  };
+  const planFor = (cands: typeof filteredTasks, claimed: unknown[], capacity: number) => {
+    const ctx = buildClaimPlanInput({
+      candidates: cands,
+      openPrTasksByWorkspace,
+      activePathClaimsByWorkspace,
+      missionInFlightRows,
+      claimedThisBatch: claimed,
+      capacity,
+      pressure: { dailyBudgetPct, oauthPressure: oauthPressure?.pct ?? null, confidence: oauthPressure?.confidence ?? null },
+      thresholds: plannerThresholdsFor(cands),
+      signals: plannerSignals,
+    });
+    return { ctx, plan: planClaimBatch(ctx.input) };
+  };
+  const singleWorkspaceOf = (ts: Array<{ workspaceId: string }>): string | null => {
+    const ws = [...new Set(ts.map(t => t.workspaceId))];
+    return ws.length === 1 ? ws[0] : null;
+  };
+
+  // 'record': the plan the planner would make right now, before anything is claimed.
+  const recordTasks = plannedTasks.filter(t => plannerModeOf(t) === 'record');
+  const recordPlan: ClaimPlan | null = recordTasks.length > 0 ? planFor(recordTasks, [], availableSlots).plan : null;
+
+  // 'apply': claim order is produced lazily, one pick at a time, so each pick
+  // is planned against what this batch has claimed so far.
+  const applyTasks = plannedTasks.filter(t => plannerModeOf(t) === 'apply');
+  const applyIds = new Set(applyTasks.map(t => t.id));
+  const applyTaskById = new Map(applyTasks.map(t => [t.id, t]));
+  const applyInitial = applyTasks.length > 0 ? planFor(applyTasks, [], availableSlots) : null;
+  /** Predicted-scope tasks whose advisory_manifest mutex the planner's edges replace. */
+  const plannerReplacesMutex = applyInitial ? plannerScopedTaskIds(applyInitial.ctx) : new Set<string>();
+  const plannerAttempted = new Set<string>();
+  const claimedTasksSoFar = () => claimedWorkers.map(w => w.task as unknown);
+  function* plannedClaimOrder(): Generator<(typeof filteredTasks)[number]> {
+    while (claimedWorkers.length < availableSlots) {
+      const remaining = applyTasks.filter(t => !plannerAttempted.has(t.id));
+      if (remaining.length === 0) break;
+      const next = planFor(remaining, claimedTasksSoFar(), availableSlots - claimedWorkers.length).plan.picks[0];
+      if (!next) break;
+      plannerAttempted.add(next.id);
+      yield applyTaskById.get(next.id)!;
+    }
+    // Everything the planner does not order walks as before, in the legacy order.
+    for (const t of filteredTasks) if (!applyIds.has(t.id)) yield t;
+  }
+  const claimOrder: Iterable<(typeof filteredTasks)[number]> = applyTasks.length > 0 ? plannedClaimOrder() : filteredTasks;
+
+  for (const task of claimOrder) {
     // Set only by a gated START that relaxed the open-PR overlap: these
     // declared paths are acquired exclusively right before the atomic claim.
     let gatedStartPaths: string[] | null = null;
@@ -1514,19 +1608,9 @@ export async function POST(req: NextRequest) {
     const taskManifest = (task as any).pathManifest as string[] | null;
     if (taskManifest?.length) {
       const openPrTasks = openPrTasksByWorkspace.get(task.workspaceId) ?? [];
-      const ownRetryPrNumber = ((task as any).conflictRetryPrNumber
-        ?? (task as any).reviewerRetryPrNumber
-        ?? (task as any).ciRetryPrNumber) as number | null | undefined;
-      const ownSubjectPrNumber = (task as any).subjectKind === 'pull_request'
-        ? ((task as any).subjectPrNumber as number | null | undefined)
-        : null;
-      const isOwnPr = (pr: typeof openPrTasks[number]) =>
-        pr.taskId === task.id
-        || (!!ownRetryPrNumber && pr.prNumber === ownRetryPrNumber)
-        || (!!ownSubjectPrNumber && pr.prNumber === ownSubjectPrNumber);
-      const ownPrs = openPrTasks.filter(isOwnPr);
-      const stackedOnOwn = findStackedPrs(ownPrs.map(pr => pr.branch).filter((b): b is string => !!b), openPrTasks);
-      const filterOpenPrTasks = openPrTasks.filter(pr => !isOwnPr(pr) && !stackedOnOwn.has(pr));
+      // Own PRs (its earlier worker's, the PR a fix attempt fixes, its subject
+      // PR) and PRs stacked on them never block it — see splitOwnOpenPrs.
+      const filterOpenPrTasks = splitOwnOpenPrs(task, openPrTasks).others;
       const blocking = findBlockingPr(taskManifest, filterOpenPrTasks);
       // Shadow-only by default: note the deferral (no I/O). A gated START
       // (unreachable as shipped) relaxes ONLY this layer; layer 2 and every
@@ -1713,8 +1797,11 @@ export async function POST(req: NextRequest) {
         //    have no files to collide on. Without this a research task filed
         //    without a manifest (there is no way to add one after creation)
         //    waited behind any unrelated '**' task in the mission.
+        //    Under the planner's 'apply', a task with a confident predicted
+        //    scope (plannerReplacesMutex) was already ordered by real edges
+        //    against that scope, so the mutex no longer applies to it.
         if ((task as any).category !== 'review' && !producesNoFileEdits((task as any).outputRequirement)
-          && declaresNoScope(taskManifest)) {
+          && declaresNoScope(taskManifest) && !plannerReplacesMutex.has(task.id)) {
           const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
@@ -2406,6 +2493,60 @@ export async function POST(req: NextRequest) {
       });
     }
     if (usesOauthSeat && oauthSeatSlotsLeft !== null) oauthSeatSlotsLeft--;
+  }
+
+  // Planner bookkeeping. Under 'apply', every planned task never attempted is
+  // re-planned against what is now in flight; the ones ordered behind a
+  // blocker get ONE `ordered_behind` row per (task, blocker) — repeat polls
+  // write nothing — in place of the per-poll path_overlap / advisory_manifest
+  // deferral they would have had, and a waiter on the blocker so its release
+  // wakes them.
+  if (applyInitial) {
+    const remaining = applyTasks.filter(t => !plannerAttempted.has(t.id));
+    const final = remaining.length > 0
+      ? planFor(remaining, claimedTasksSoFar(), Math.max(0, availableSlots - claimedWorkers.length))
+      : null;
+    for (const o of final?.plan.orientation ?? []) {
+      const waiting = applyTaskById.get(o.taskId);
+      if (!waiting) continue;
+      const blocker = final!.ctx.inFlightMeta.get(o.blockedBy);
+      const blockerTaskId = blocker ? blocker.taskId : o.blockedBy;
+      deferrals.ordered_behind++;
+      fireOrderedBehind({
+        taskId: waiting.id,
+        workspaceId: waiting.workspaceId,
+        missionId: (waiting as any).missionId ?? null,
+        blockedBy: blockerTaskId ?? o.blockedBy,
+        edge: o.edge,
+        orientation: o.reason,
+      });
+      if (blockerTaskId && (o.edge === 'path_overlap' || o.edge === 'lease_overlap' || o.edge === 'open_pr_overlap')) {
+        const own = ((waiting as any).pathManifest as string[] | null) ?? [];
+        const theirs = blocker?.paths ?? (((applyTaskById.get(blockerTaskId) as any)?.pathManifest as string[] | null) ?? []);
+        const path = intersectPaths(own, theirs)[0] ?? own[0];
+        if (path) {
+          registerWaiter(blockerTaskId, waiting.id, path, waiting.workspaceId)
+            .catch(err => console.warn(`[claim] registerWaiter (planner) failed for task ${waiting.id}:`, err));
+        }
+      }
+    }
+    fireClaimPlanRecord({
+      mode: 'apply',
+      workspaceId: singleWorkspaceOf(applyTasks),
+      plan: applyInitial.plan,
+      actualPicks: claimedWorkers.filter(w => applyIds.has(w.taskId)).map(w => w.taskId),
+      candidateCount: applyTasks.length,
+    });
+  }
+  if (recordPlan) {
+    const recordIds = new Set(recordTasks.map(t => t.id));
+    fireClaimPlanRecord({
+      mode: 'record',
+      workspaceId: singleWorkspaceOf(recordTasks),
+      plan: recordPlan,
+      actualPicks: claimedWorkers.filter(w => recordIds.has(w.taskId)).map(w => w.taskId),
+      candidateCount: recordTasks.length,
+    });
   }
 
   // Hold/start shadow decisions run after the response is sent (after()).

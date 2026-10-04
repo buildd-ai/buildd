@@ -183,6 +183,49 @@ export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Pro
 }
 
 /**
+ * Write a task's gate event once per `key`, ever: if the task already has a row
+ * with the same (gate, outcome, reason) whose `detail` contains `key`, nothing
+ * is written at all.
+ *
+ * For a deferral that names its cause, where the cause is the event. The claim
+ * planner's `ordered_behind` uses it per (task, blocker) pair, so a task held
+ * behind the same blocker for a hundred polls is one row, a new blocker is a
+ * new row, and the row count per task is the number of distinct times it was
+ * passed over (its starvation credit). `recordOrCoalesceDeferral` cannot do
+ * this: it only compares against the task's latest row, so two blockers seen
+ * on alternating polls would write a row every poll.
+ */
+export async function recordDeferralOnce(
+  input: RecordGateEventInput,
+  key: Record<string, string>,
+): Promise<string | null> {
+  const taskId = uuidOrNull(input.taskId);
+  if (!taskId) return null;
+  const normalizedReason = normalizeErrorSignature(input.reason);
+  try {
+    const [existing] = await db
+      .select({ id: gateEvents.id })
+      .from(gateEvents)
+      .where(and(
+        eq(gateEvents.taskId, taskId),
+        eq(gateEvents.gate, input.gate),
+        eq(gateEvents.outcome, input.outcome),
+        eq(gateEvents.reason, normalizedReason),
+        sql`${gateEvents.detail} @> ${JSON.stringify(key)}::jsonb`,
+      ))
+      .limit(1);
+    if (existing) return existing.id;
+    return await recordGateEvent({
+      ...input,
+      detail: { ...(input.detail ?? {}), ...key, firstDeferredAt: new Date().toISOString() },
+    });
+  } catch (err) {
+    console.error(`[gate-ledger] failed to record-once ${input.gate}/${input.outcome}:`, err);
+    return null;
+  }
+}
+
+/**
  * Write a gate event, collapsing repeats of the same (gate, outcome, reason,
  * key) within `windowMs` into ONE row whose `detail.count` climbs.
  *

@@ -79,6 +79,13 @@ export function describeExplicitDeferral(
         code: reason,
         detail: 'Another fix attempt for the same PR is already open, so this one was cancelled rather than started beside it: one retry lineage updates one PR.',
       };
+    case 'ordered_behind': {
+      const blocker = str(detail.blockedBy);
+      return {
+        code: reason,
+        detail: `The claim planner ordered it behind ${blocker ? `${blocker}, ` : ''}work it would collide with; it is claimable once that clears.`,
+      };
+    }
     case 'runner_capability': {
       const model = str(detail.model);
       const req = str(detail.requiredVersion);

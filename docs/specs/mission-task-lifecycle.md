@@ -410,6 +410,13 @@ stops being an excuse at that point. `advisory_manifest` is the case that
 matters — its blocking peer may be parked in `waiting_input`, holding the slot
 until a human answers, which never self-clears in practice.
 
+A workspace whose `gitConfig.claimPlanner` is `apply` claims in the batch
+planner's order instead (`apps/web/src/app/api/workers/claim/claim-plan-input.ts`).
+A task the plan orders behind a blocker reports the soft deferral
+`ordered_behind` in place of `path_overlap` / `advisory_manifest`, written once
+per (task, blocker) pair, so repeated polls add no rows. The default `off` MUST
+leave the claim exactly as described above. Explicit `taskId` claims never plan.
+
 The watchdog reports two reasons that are NOT `gateReason` values and never will
 be, ordered below every gate `/start` can name (so `/start`'s 422 ordering is
 reproduced verbatim) and among themselves by permanence:

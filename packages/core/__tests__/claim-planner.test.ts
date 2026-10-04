@@ -96,6 +96,33 @@ describe('planClaimBatch — hard edges', () => {
     expect(picks(r)).toEqual(['a']);
   });
 
+  it('a candidate is never blocked by an in-flight row it is exempt from (a fix attempt on its own PR)', () => {
+    const r = planClaimBatch(input({
+      candidates: [cand('fix', { declaredScope: ['a.ts'], predictedScope: null })],
+      inFlight: [
+        flight('pr-orig', { kind: 'open_pr', taskId: 'orig', declaredScope: ['a.ts'] }),
+      ],
+    }));
+    expect(picks(r)).toEqual([]);
+    const exempt = planClaimBatch(input({
+      candidates: [cand('fix', { declaredScope: ['a.ts'], exemptFrom: ['pr-orig'] })],
+      inFlight: [flight('pr-orig', { kind: 'open_pr', taskId: 'orig', declaredScope: ['a.ts'] })],
+    }));
+    expect(picks(exempt)).toEqual(['fix']);
+  });
+
+  it('exemption covers only the named row: another overlapping PR still blocks', () => {
+    const r = planClaimBatch(input({
+      candidates: [cand('fix', { declaredScope: ['a.ts'], exemptFrom: ['pr-orig'] })],
+      inFlight: [
+        flight('pr-orig', { kind: 'open_pr', taskId: 'orig', declaredScope: ['a.ts'] }),
+        flight('pr-other', { kind: 'open_pr', taskId: 'other', declaredScope: ['a.ts'] }),
+      ],
+    }));
+    expect(picks(r)).toEqual([]);
+    expect(r.orientation[0]).toMatchObject({ taskId: 'fix', blockedBy: 'pr-other', edge: 'open_pr_overlap' });
+  });
+
   it('the same serialized surface is a hard edge even with disjoint paths', () => {
     const r = planClaimBatch(input({
       candidates: [

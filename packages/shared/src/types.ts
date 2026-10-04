@@ -1502,6 +1502,12 @@ export interface ClaimDiagnostics {
      * retry family is already open (one open retry per subject).
      */
     sibling_retry_open?: number;
+    /**
+     * Claim planner in `apply` mode ordered this task behind a picked, in-flight
+     * or open-PR node it would collide with. Replaces the per-poll
+     * path_overlap / advisory_manifest deferral for that task.
+     */
+    ordered_behind?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
