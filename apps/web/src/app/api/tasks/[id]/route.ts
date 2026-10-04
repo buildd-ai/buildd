@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -283,6 +284,17 @@ export async function PATCH(
         const { budgetExhausted: _paused, budgetResetsAt: _resets, ...restCtx } = taskCtx;
         updateData.startAt = null;
         updateData.context = { ...restCtx, switchedBackendFrom: currentBackend };
+      }
+
+      // An operator naming a different backend has chosen it, so budget failover
+      // must not move it back (BACKEND_PINNED_KEY); clearing to the default
+      // drops the pin. Re-sending the current backend leaves context untouched.
+      const baseCtx = (updateData.context ?? taskCtx) as Record<string, unknown>;
+      if (nextBackend && nextBackend !== currentBackend) {
+        updateData.context = { ...baseCtx, [BACKEND_PINNED_KEY]: true };
+      } else if (!nextBackend && baseCtx[BACKEND_PINNED_KEY] !== undefined) {
+        const { [BACKEND_PINNED_KEY]: _pin, ...unpinned } = baseCtx;
+        updateData.context = unpinned;
       }
     }
     // Model pin for the NEXT claim or retry (never the in-flight session).

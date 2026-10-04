@@ -20,6 +20,7 @@
  * the five underlying derivations. This module does not decide what a state is;
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
+import { BACKEND_ROUTING_KEY, describeBackendRouting } from '@buildd/core/backend-policy';
 import { OPEN_TASK_STATUSES as SHARED_OPEN_TASK_STATUSES, LIVE_WORKER_STATUSES as SHARED_LIVE_WORKER_STATUSES, type TaskEvidence, type TaskMismatch } from '@buildd/shared';
 import { collectLineage } from '@/lib/attempt-lineage';
 import { evidenceHint } from '@/lib/task-evidence';
@@ -615,6 +616,22 @@ export async function explainMission(missionId: string): Promise<ExplainResult |
  * "mission" is deliberate — a second accessor for tasks is exactly the
  * divergence this whole line of work exists to prevent.
  */
+/** Attach "why is it on this backend" when something moved the task (see ExplainAnswer.backendRouting). */
+function withBackendRouting(answer: ExplainAnswer, task: { context: Record<string, unknown> | null; backend?: string | null }): ExplainAnswer {
+  const routing = describeBackendRouting(task.context, task.backend);
+  if (!routing) return answer;
+  return {
+    ...answer,
+    backendRouting: routing,
+    derivedFrom: {
+      ...answer.derivedFrom,
+      backendRouting: routing.source === 'claim'
+        ? `tasks.context.${BACKEND_ROUTING_KEY}`
+        : 'tasks.context.failedOverFrom + tasks.backend',
+    },
+  };
+}
+
 async function viewForTask(taskId: string): Promise<{
   view: MissionStateView;
   task: LoadedTask;
@@ -627,10 +644,10 @@ async function viewForTask(taskId: string): Promise<{
 } | null> {
   const task = (await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true },
+    columns: { ...TASK_COLUMNS, workspaceId: true, missionId: true, dependsOn: true, backend: true },
     with: { workers: WORKER_WITH },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null }) | undefined;
+  })) as any as (LoadedTask & { workspaceId: string | null; missionId: string | null; dependsOn: string[] | null; backend?: string | null }) | undefined;
   if (!task) return null;
 
   const attempts = (await db.query.tasks.findMany({
@@ -788,7 +805,7 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   const evidenceObjects = workspaceId
     ? await loadInlineEvidence(workspaceId, taskId, { surface: 'explain', actor })
     : [];
-  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
+  return { scope: 'task', subjects: [withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task)] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────
@@ -932,7 +949,7 @@ export async function explainPr(worker: {
   // rejections, review_verdict deferrals) is the task's.
   const gateHistory = await loadGateHistory(worker.taskId);
   const evidenceObjects = await loadInlineEvidence(worker.workspaceId, worker.taskId, { surface: 'explain', actor });
-  return { scope: 'pr', subjects: [answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects)] };
+  return { scope: 'pr', subjects: [withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task)] };
 }
 
 // ─── Workspace scope ──────────────────────────────────────────────────────────

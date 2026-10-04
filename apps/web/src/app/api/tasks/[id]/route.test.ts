@@ -776,6 +776,26 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(sets[0]?.context).toBeUndefined();
     });
 
+    // An operator's switch is an explicit choice: budget failover must not undo it.
+    it('pins the backend an operator switches to, and unpins on clear', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+      mockAccountsFindFirst.mockResolvedValue(null);
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { note: 'kept' } });
+      let sets = captureUpdate();
+      let res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: 'claude' } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.context?.backendPinned).toBe(true);
+      expect(sets[0]?.context?.note).toBe('kept');
+
+      mockTasksFindFirst.mockResolvedValue({ ...pausedCodexTask(), context: { backendPinned: true, note: 'kept' } });
+      sets = captureUpdate();
+      res = await callHandler(PATCH, createMockRequest({ method: 'PATCH', body: { backend: null } }), TASK_ID);
+      expect(res.status).toBe(200);
+      expect(sets[0]?.backend).toBeNull();
+      expect('backendPinned' in (sets[0]?.context ?? {})).toBe(false);
+      expect(sets[0]?.context?.note).toBe('kept');
+    });
+
     it('does not touch start_at for a task that is not budget-paused', async () => {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
       mockAccountsFindFirst.mockResolvedValue(null);

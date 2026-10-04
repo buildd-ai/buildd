@@ -40,7 +40,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { backendLabel } from '@buildd/core/backend-policy';
+import { backendLabel, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
@@ -2583,7 +2583,9 @@ export async function PATCH(
     // now, waking at that moment beats sleeping through our own (later) reset —
     // the claim route re-runs the same failover decision when the task wakes.
     let earliestAlternateReset: Date | null = null;
-    if (taskForBudget?.workspaceId && teamId) {
+    // A backend the creator asked for explicitly is never failed over: the task
+    // waits out its own provider's reset (provider-failover spec, pinned backends).
+    if (taskForBudget?.workspaceId && teamId && !isBackendPinned(taskForBudget?.context)) {
       try {
         const decision = await resolveFailoverBackend({
           from: walledBackend,
@@ -2768,6 +2770,7 @@ export async function PATCH(
 
         if (
           !alreadyFlipped &&
+          !isBackendPinned(authTaskCtx) &&
           authTeamId &&
           authTask?.workspaceId &&
           authTask?.status !== 'cancelled'

@@ -575,3 +575,29 @@ describe('get_task — include validation and scheduling view', () => {
     expect(text).toContain('**Tier:** unset');
   });
 });
+
+describe('get_task backend line', () => {
+  const read = async (task: Record<string, unknown>) => {
+    const a = mock(async () => ({ id: TASK_ID, title: 't', status: 'in_progress', ...task }));
+    const out = await handleBuilddAction(a as unknown as ApiFn, 'get_task', { taskId: TASK_ID, include: ['workers'] }, ctx());
+    return out.content[0].text as string;
+  };
+
+  it('says why the backend changed when a claim flipped it', async () => {
+    const text = await read({
+      backend: 'claude',
+      context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+    });
+    expect(text).toContain('**Backend:** Codex (routed to Codex by budget failover (Claude seat exhausted))');
+  });
+
+  it('marks a pinned backend', async () => {
+    const text = await read({ backend: 'claude', context: { backendPinned: true } });
+    expect(text).toContain('**Backend:** Claude (pinned: failover will not move it)');
+  });
+
+  it('prints nothing about the backend when it is the unpinned default', async () => {
+    const text = await read({ backend: 'claude', context: {} });
+    expect(text).not.toContain('**Backend:**');
+  });
+});
