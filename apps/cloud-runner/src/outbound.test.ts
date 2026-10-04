@@ -31,6 +31,10 @@ import {
   rewriteOutbound,
   MODEL_API_ROUTES,
   modelApiPathAllowed,
+  latin1Decode,
+  needsGithubBodyPeek,
+  parseReceivePackPushedBranches,
+  pushedProtectedBranch,
   type GithubGrant,
   type ModelRoute,
 } from './outbound';
@@ -386,6 +390,157 @@ describe('rewriteOutbound: GitHub', () => {
   });
 });
 
+/** A pkt-line: 4-hex-digit length (including itself) + the line. */
+function pktLine(data: string): string {
+  return (data.length + 4).toString(16).padStart(4, '0') + data;
+}
+
+const OLD_OID = '0'.repeat(40);
+const NEW_OID = '1'.repeat(40);
+
+/** A minimal git-receive-pack push body: ref-update pkt-lines, a flush-pkt, then opaque "pack data" that must never be parsed. */
+function receivePackBody(refs: string[], trailer = '\x50\x41\x43\x4b\xff\xfe\x00binary-pack-bytes'): string {
+  const lines = refs.map((ref, i) => pktLine(`${OLD_OID} ${NEW_OID} refs/heads/${ref}${i === 0 ? '\0report-status\n' : '\n'}`));
+  return lines.join('') + '0000' + trailer;
+}
+
+describe('rewriteOutbound: merge guard blocks direct PR merges and protected-branch pushes', () => {
+  const grant = { ...GRANT, protectedBranches: ['main', 'dev'] };
+  const ctx = { model: gateway, github: grant, now: NOW };
+
+  test('REST merge endpoint is blocked before any credential is attached', () => {
+    const d = rewriteOutbound({ url: 'https://api.github.com/repos/acme/widget/pulls/42/merge', method: 'PUT', headers: hostileHeaders() }, ctx);
+    expect(d.action).toBe('reject');
+    if (d.action === 'reject') {
+      expect(d.status).toBe(403);
+      expect(d.reason).toBe('merge_blocked');
+      expect(d.message).toContain('merge_pr');
+    }
+  });
+
+  test('the REST merge path only matches PUT, not other methods or neighbouring paths', () => {
+    for (const method of ['GET', 'POST', 'DELETE']) {
+      expect(forwarded(rewriteOutbound({ url: 'https://api.github.com/repos/acme/widget/pulls/42/merge', method, headers: {} }, ctx)).injected).toBe('github_bearer');
+    }
+    expect(forwarded(rewriteOutbound({ url: 'https://api.github.com/repos/acme/widget/pulls/42', method: 'PUT', headers: {} }, ctx)).injected).toBe('github_bearer');
+    expect(forwarded(rewriteOutbound({ url: 'https://api.github.com/repos/acme/widget/pulls/42/merge/extra', method: 'PUT', headers: {} }, ctx)).injected).toBe('github_bearer');
+  });
+
+  test.each(['mergePullRequest', 'enablePullRequestAutoMerge'])('GraphQL mutation %s is blocked', (name) => {
+    const d = rewriteOutbound(
+      { url: 'https://api.github.com/graphql', method: 'POST', headers: hostileHeaders(), bodyPeek: JSON.stringify({ query: `mutation { ${name}(input: {pullRequestId: "x"}) { clientMutationId } }` }) },
+      ctx,
+    );
+    expect(d.action).toBe('reject');
+    if (d.action === 'reject') {
+      expect(d.reason).toBe('merge_blocked');
+      expect(d.message).toContain('merge_pr');
+    }
+  });
+
+  test('an ordinary GraphQL query (no blocked mutation name, or no peek at all) is forwarded', () => {
+    const withQuery = forwarded(rewriteOutbound(
+      { url: 'https://api.github.com/graphql', method: 'POST', headers: {}, bodyPeek: JSON.stringify({ query: '{ repository(owner: "acme", name: "widget") { id } }' }) },
+      ctx,
+    ));
+    expect(withQuery.injected).toBe('github_bearer');
+    const noPeek = forwarded(rewriteOutbound({ url: 'https://api.github.com/graphql', method: 'POST', headers: {} }, ctx));
+    expect(noPeek.injected).toBe('github_bearer');
+  });
+
+  test('pushing to a protected branch is blocked', () => {
+    const d = rewriteOutbound(
+      { url: 'https://github.com/acme/widget.git/git-receive-pack', method: 'POST', headers: hostileHeaders(), bodyPeek: receivePackBody(['main']) },
+      ctx,
+    );
+    expect(d.action).toBe('reject');
+    if (d.action === 'reject') {
+      expect(d.reason).toBe('merge_blocked');
+      expect(d.message).toContain('main');
+      expect(d.message).toContain('merge_pr');
+    }
+  });
+
+  test('pushing the task branch (not protected) still works, pack data is never parsed as a ref', () => {
+    const d = forwarded(rewriteOutbound(
+      { url: 'https://github.com/acme/widget.git/git-receive-pack', method: 'POST', headers: {}, bodyPeek: receivePackBody(['buildd/task-123']) },
+      ctx,
+    ));
+    expect(d.injected).toBe('github_basic');
+  });
+
+  test('a push with no bodyPeek (egress.ts did not peek) is not blocked', () => {
+    const d = forwarded(rewriteOutbound({ url: 'https://github.com/acme/widget.git/git-receive-pack', method: 'POST', headers: {} }, ctx));
+    expect(d.injected).toBe('github_basic');
+  });
+
+  test('a grant with no protectedBranches fails open on push protection (REST/GraphQL blocks still apply)', () => {
+    const noList = { model: gateway, github: GRANT, now: NOW };
+    expect(forwarded(rewriteOutbound(
+      { url: 'https://github.com/acme/widget.git/git-receive-pack', method: 'POST', headers: {}, bodyPeek: receivePackBody(['main']) },
+      noList,
+    )).injected).toBe('github_basic');
+    expect(rewriteOutbound({ url: 'https://api.github.com/repos/acme/widget/pulls/1/merge', method: 'PUT', headers: {} }, noList).action).toBe('reject');
+  });
+
+  test('a multi-branch push is blocked if ANY ref is protected, even listed second', () => {
+    const d = rewriteOutbound(
+      { url: 'https://github.com/acme/widget.git/git-receive-pack', method: 'POST', headers: {}, bodyPeek: receivePackBody(['buildd/task-123', 'dev']) },
+      ctx,
+    );
+    expect(d.action).toBe('reject');
+  });
+});
+
+describe('parseReceivePackPushedBranches / pushedProtectedBranch', () => {
+  test('parses one or more ref-update lines and stops at the flush-pkt', () => {
+    expect(parseReceivePackPushedBranches(receivePackBody(['main']))).toEqual(['main']);
+    expect(parseReceivePackPushedBranches(receivePackBody(['feature/x', 'main']))).toEqual(['feature/x', 'main']);
+  });
+
+  test('a truncated or non-pkt-line prefix yields no refs (fails open, never guesses)', () => {
+    expect(parseReceivePackPushedBranches('')).toEqual([]);
+    expect(parseReceivePackPushedBranches('not pkt-line at all')).toEqual([]);
+    expect(parseReceivePackPushedBranches(pktLine(`${OLD_OID} ${NEW_OID} refs/heads/`).slice(0, 10))).toEqual([]);
+  });
+
+  test('pushedProtectedBranch fails open with no bodyPeek or no protected list', () => {
+    expect(pushedProtectedBranch(undefined, ['main'])).toBeNull();
+    expect(pushedProtectedBranch(receivePackBody(['main']), undefined)).toBeNull();
+    expect(pushedProtectedBranch(receivePackBody(['main']), [])).toBeNull();
+  });
+
+  test('pushedProtectedBranch returns the matching branch name', () => {
+    expect(pushedProtectedBranch(receivePackBody(['feature/x', 'dev']), ['main', 'dev'])).toBe('dev');
+    expect(pushedProtectedBranch(receivePackBody(['feature/x']), ['main', 'dev'])).toBeNull();
+  });
+});
+
+describe('needsGithubBodyPeek', () => {
+  test.each([
+    ['api.github.com', 'POST', '/graphql', true],
+    ['api.github.com', 'GET', '/graphql', false],
+    ['api.github.com', 'POST', '/repos/acme/widget/pulls', false],
+    ['github.com', 'POST', '/acme/widget.git/git-receive-pack', true],
+    ['github.com', 'GET', '/acme/widget.git/git-receive-pack', false],
+    ['github.com', 'POST', '/acme/widget.git/info/refs', false],
+    ['uploads.github.com', 'POST', '/repos/acme/widget/releases/1/assets', false],
+  ] as const)('%s %s %s -> %s', (host, method, pathname, expected) => {
+    expect(needsGithubBodyPeek(host, method, pathname)).toBe(expected);
+  });
+});
+
+describe('latin1Decode', () => {
+  test('every byte round-trips to its own code unit, including non-ASCII bytes', () => {
+    const bytes = new Uint8Array([0x00, 0x0a, 0x30, 0xff, 0x80]);
+    const s = latin1Decode(bytes);
+    expect(s.length).toBe(bytes.length);
+    expect(s.charCodeAt(0)).toBe(0x00);
+    expect(s.charCodeAt(1)).toBe(0x0a);
+    expect(s.charCodeAt(2)).toBe(0x30);
+  });
+});
+
 describe('rewriteOutbound: why a GitHub request went out without our credential', () => {
   const url = 'https://github.com/acme/widget.git/info/refs?service=git-upload-pack';
   const go = (c: Partial<Parameters<typeof rewriteOutbound>[1]>, u = url) =>
@@ -575,6 +730,15 @@ describe('parseGithubGrant', () => {
     [{ token: '', expiresAt: new Date(NOW).toISOString(), repository: { owner: 'a', name: 'b' } }],
   ])('rejects %p', (body) => {
     expect(() => parseGithubGrant(body)).toThrow();
+  });
+
+  test('keeps protectedBranches when it is a non-empty array of strings', () => {
+    const base = { token: 'ghs_x', expiresAt: new Date(NOW).toISOString(), repository: { owner: 'acme', name: 'widget' } };
+    expect(parseGithubGrant({ ...base, protectedBranches: ['main', 'dev'] }).protectedBranches).toEqual(['main', 'dev']);
+    expect(parseGithubGrant({ ...base, protectedBranches: [] }).protectedBranches).toBeUndefined();
+    expect(parseGithubGrant({ ...base, protectedBranches: 'main' }).protectedBranches).toBeUndefined();
+    expect(parseGithubGrant({ ...base, protectedBranches: ['main', 7, ''] }).protectedBranches).toEqual(['main']);
+    expect('protectedBranches' in parseGithubGrant(base)).toBe(false);
   });
 });
 
@@ -935,7 +1099,7 @@ describe('api.anthropic.com: only the model API paths are forwarded', () => {
 
   test('the egress handler passes the request method', async () => {
     const src = await Bun.file(new URL('./egress.ts', import.meta.url)).text();
-    expect(src).toMatch(/rewriteOutbound\(\s*\{ url: request\.url, method: request\.method, headers: request\.headers \}/);
+    expect(src).toMatch(/rewriteOutbound\(\s*\{ url: request\.url, method: request\.method, headers: request\.headers, /);
   });
 
   test('the egress handler passes why there is no grant, and labels every GitHub forward and its status', async () => {
