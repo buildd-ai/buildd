@@ -67,6 +67,7 @@ import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-ga
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
+import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
 import { notifyConnectorBlocked } from './connector-block-notify';
@@ -684,6 +685,17 @@ export async function POST(req: NextRequest) {
   if (!forceClaim) explicitTaskGates.workspaceCap = workspaceCapGate();
   if (explicitTaskGates.workspaceCap) claimableConditions.push(explicitTaskGates.workspaceCap);
 
+  // Workspace executor (gitConfig.executor, packages/shared/src/executor.ts):
+  // a host claim skips workspaces whose work runs in the cloud, so a runner's
+  // cross-workspace poll cannot beat the cold-starting container to the task;
+  // a cloud claim skips host-only workspaces. Applies to a person's explicit
+  // interactive claim_task {taskId} too (the container is already on its way
+  // for that task); only an admin force claim lifts it.
+  if (!forceClaim) {
+    explicitTaskGates.workspaceExecutor = workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host');
+    claimableConditions.push(explicitTaskGates.workspaceExecutor);
+  }
+
   // Per-runner cooldown: skip tasks where this runner recently had a worker
   // error. Prevents Pusher-driven burn loops (2026-04-16 incident: one runner
   // re-claimed the same task ~12x in 52s after OAuth budget exhaustion).
@@ -754,6 +766,7 @@ export async function POST(req: NextRequest) {
         missionLocal: missionNotLocal(),
         subject: subjectLivenessCondition(),
         workspaceCap: workspaceCapGate(),
+        workspaceExecutor: workspaceExecutorGate(cloudExecutor ? 'cloud' : 'host'),
         startAt: or(isNull(tasks.startAt), lte(tasks.startAt, now))!,
       },
     });
