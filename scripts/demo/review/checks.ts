@@ -14,9 +14,12 @@ export type Finding = { clip?: string; t?: number; severity: Severity; check: st
 export type Word = { text: string; x: number; y: number; w: number; h: number; conf: number; line: number };
 
 /** The width the site shows a clip at (site-landing-v2: beats in a 700px column, 360 on a phone; heroes and the film full-bleed). */
+/** The films (played once, full-bleed): the voiced cut and the silent captioned one. */
+export const FILMS = ['full', 'captioned'];
+
 export function displayWidth(name: string): number {
   const mobile = name.endsWith('-mobile');
-  if (name === 'full') return 1280;
+  if (FILMS.includes(name)) return 1280;
   if (name.startsWith('hero')) return mobile ? 360 : 1280;
   return mobile ? 360 : 700;
 }
@@ -29,7 +32,7 @@ export type ClipMeta = { folded: boolean; loop: boolean; crossfades: number[] };
  * encoded t = cut t - fade and the seam is itself a crossfade.
  */
 export function clipMeta(name: string, cut: { loop: boolean; shots: Array<{ start: number; dur: number }> }, fade: number): ClipMeta {
-  const folded = !name.startsWith('hero') && name !== 'full';
+  const folded = !name.startsWith('hero') && !FILMS.includes(name);
   const mids = cut.shots.slice(1).map((s) => s.start + fade / 2 - (folded ? fade : 0));
   // A folded beat's seam is a transition too: the last `fade` of the encoded clip.
   if (folded) mids.push(cut.shots.reduce((x, s) => x + s.dur, 0) - fade / 2);
@@ -133,6 +136,12 @@ export function emptyGap(gray: Uint8Array, width: number, height: number, share 
   }
   const worst = held / (rows * cols);
   return worst > share ? { severity: 'high', check: 'empty-gap', issue: `an empty region covers ${Math.round(worst * 100)}% of the frame between content` } : null;
+}
+
+/** A title card: some word set at display size (32px or more at page size), read with confidence. Its plain ground is the design. */
+export function isTypeCard(words: Word[], sourceWidth: number, displayWidth: number): boolean {
+  const k = displayWidth / sourceWidth;
+  return words.some((w) => w.conf >= 80 && (w.text.match(/[A-Za-z]/g) ?? []).length >= 3 && fontPx(w) * k >= 32);
 }
 
 /** A clip that does not loop (the film) fades to black over its last second, by design. */
@@ -343,7 +352,8 @@ export function numberContradictions(frames: Array<{ t: number; text: string }>)
       if (!/^\d+$/.test(tok)) return;
       const n = +tok;
       const fwd = toks.slice(i + 1, i + 4);
-      if (fwd[0] && /^[A-Za-z]/.test(fwd[0]) && fwd[0] !== fwd[0].toUpperCase()) add(key(fwd), n);
+      // A count's noun is lowercase ("3 tasks", "1 decision"); a capitalized word after a number is a label ("Iteration 1 Condition").
+      if (fwd[0] && /^[a-z]/.test(fwd[0])) add(key(fwd), n);
       // A stat label is the run of caps words right before the number ("YOUR ANSWERS 2"), nothing in between.
       const back: string[] = [];
       for (let j = i - 1; j >= Math.max(0, i - 3) && /^[A-Z][A-Z']+$/.test(toks[j]); j--) back.unshift(toks[j]);

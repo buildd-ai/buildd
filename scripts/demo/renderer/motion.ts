@@ -4,7 +4,7 @@
  * square corners, 2px rules, hard offset shadows, the orange accent, flat
  * fills; no gradients, no blur. Bundled into the stage.
  */
-import { doneIn, fleetRows, phoneChosen, screenChecks, splitAt, splitHeadline, typedChars, verifyAt, type Motion } from './motion-model';
+import { beforeAfterAt, chapterIn, doneIn, fleetRows, phoneChosen, recapAt, screenChecks, splitAt, splitHeadline, titleIn, typedChars, verifyAt, type Motion } from './motion-model';
 
 export type MotionPalette = { bg: string; surface: string; text: string; muted: string; rule: string; shadow: string; track: string };
 
@@ -83,9 +83,87 @@ function buildVerify(m: Extract<Motion, { kind: 'verify' }>, root: HTMLElement, 
   };
 }
 
+/**
+ * v7's type pieces: the hook's big lines, chapter cards, the recap, and the
+ * before/after phone screenshots. Big type, square corners, the accent square.
+ */
+function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'beforeAfter' }>, root: HTMLElement, P: MotionPalette, frame: { width: number; height: number }) {
+  const W = frame.width, H = frame.height;
+  const pad = Math.round(W * 0.083);
+  if (m.kind === 'title') {
+    const box = el('div', { position: 'absolute', left: `${pad}px`, right: `${pad}px`, top: '50%', transform: 'translateY(-50%)' }, root);
+    const lines = m.lines.map((t, i) => {
+      const row = el('div', { display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.02)}px`, fontSize: `${Math.round(W * 0.062)}px`, fontWeight: '600', letterSpacing: '-0.02em', lineHeight: '1.15', opacity: '0', color: i === m.lines.length - 1 ? ACCENT : P.text }, box);
+      el('span', {}, row, t);
+      return row;
+    });
+    return (t: number) => titleIn(m, t).forEach((o, i) => { lines[i].style.opacity = String(o); lines[i].style.transform = `translateY(${16 * (1 - o)}px)`; });
+  }
+  if (m.kind === 'chapter') {
+    const box = el('div', { position: 'absolute', left: `${pad}px`, top: '50%', transform: 'translateY(-50%)', opacity: '0' }, root);
+    const idx = el('div', { display: 'flex', alignItems: 'center', gap: '16px', fontSize: `${Math.round(W * 0.013)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted, marginBottom: `${Math.round(H * 0.025)}px` }, box);
+    el('span', { width: '14px', height: '14px', background: ACCENT }, idx);
+    el('span', {}, idx, m.index);
+    el('div', { fontSize: `${Math.round(W * 0.056)}px`, fontWeight: '600', letterSpacing: '-0.02em' }, box, m.title);
+    return (t: number) => { const o = chapterIn(m, t); box.style.opacity = String(o); box.style.transform = `translateY(calc(-50% + ${14 * (1 - o)}px))`; };
+  }
+  if (m.kind === 'recap') {
+    const box = el('div', { position: 'absolute', left: `${pad}px`, right: `${pad}px`, top: '50%', transform: 'translateY(-50%)' }, root);
+    const titles = m.titles.map((t, i) => {
+      const row = el('div', { display: 'flex', alignItems: 'baseline', gap: '22px', fontSize: `${Math.round(W * 0.03)}px`, fontWeight: '500', color: P.muted, marginBottom: `${Math.round(H * 0.012)}px`, opacity: '0' }, box);
+      el('span', { fontSize: `${Math.round(W * 0.012)}px`, letterSpacing: '0.2em', color: ACCENT }, row, String(i + 1).padStart(2, '0'));
+      el('span', {}, row, t);
+      return row;
+    });
+    const line = el('div', { fontSize: `${Math.round(W * 0.047)}px`, fontWeight: '600', letterSpacing: '-0.02em', marginTop: `${Math.round(H * 0.05)}px`, opacity: '0' }, box, m.line);
+    const url = el('div', { display: 'flex', alignItems: 'center', gap: '16px', fontSize: `${Math.round(W * 0.019)}px`, color: P.muted, marginTop: `${Math.round(H * 0.025)}px`, opacity: '0' }, box);
+    el('span', { width: '14px', height: '14px', background: ACCENT }, url);
+    el('span', {}, url, m.url);
+    return (t: number) => {
+      const r = recapAt(m, t);
+      r.titles.forEach((o, i) => { titles[i].style.opacity = String(o); });
+      line.style.opacity = String(r.line);
+      url.style.opacity = String(r.line);
+    };
+  }
+  // beforeAfter: two phones side by side, the screenshot filling each screen.
+  const ph = Math.round(H * 0.86), pw = Math.round((ph * m.before.width) / m.before.height);
+  const gap = Math.round(W * 0.07);
+  const x0 = Math.round(W / 2 - pw - gap / 2), x1 = Math.round(W / 2 + gap / 2), y = Math.round((H - ph) / 2 + H * 0.02);
+  const phone = (x: number, img: { src: string }, word: string) => {
+    const fr = el('div', { position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${pw}px`, height: `${ph}px`, overflow: 'hidden', ...card(P, 10) }, root);
+    const im = el('img', { width: '100%', display: 'block' }, fr);
+    im.dataset.src = img.src;
+    const cap = el('div', { position: 'absolute', left: `${x}px`, top: `${y - Math.round(H * 0.05)}px`, display: 'flex', alignItems: 'center', gap: '12px', fontSize: `${Math.round(W * 0.012)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted }, root);
+    const sq = el('span', { width: '14px', height: '14px', background: P.muted }, cap);
+    el('span', {}, cap, word.toUpperCase());
+    return { fr, sq };
+  };
+  const b = phone(x0, m.before, 'Before'), a = phone(x1, m.after, 'After');
+  const stamp = (x: number, color: string, check: boolean) => {
+    const st = el('div', { position: 'absolute', left: `${x + pw - 46}px`, top: `${y - 30}px`, width: '76px', height: '76px', background: color, border: `2px solid ${P.rule}`, boxShadow: `6px 6px 0 0 ${P.shadow}`, opacity: '0' }, root);
+    if (check) el('div', { position: 'absolute', left: '23px', top: '11px', width: '20px', height: '38px', borderRight: '8px solid #ffffff', borderBottom: '8px solid #ffffff', transform: 'rotate(45deg)' }, st);
+    else for (const r of [45, -45]) el('div', { position: 'absolute', left: '34px', top: '14px', width: '8px', height: '48px', background: '#ffffff', transform: `rotate(${r}deg)` }, st);
+    return st;
+  };
+  const xs = stamp(x0, '#d4473a', false), ok = stamp(x1, OK, true);
+  return (t: number) => {
+    const v = beforeAfterAt(m, t);
+    xs.style.opacity = String(v.broken);
+    xs.style.transform = `scale(${1.25 - 0.25 * v.broken})`;
+    b.sq.style.background = v.broken > 0.5 ? '#d4473a' : P.muted;
+    a.fr.style.opacity = String(v.after);
+    a.fr.style.transform = `translateX(${30 * (1 - v.after)}px)`;
+    ok.style.opacity = String(v.check);
+    ok.style.transform = `scale(${1.25 - 0.25 * v.check})`;
+    a.sq.style.background = v.check > 0.5 ? OK : P.muted;
+  };
+}
+
 export function buildMotion(m: Motion, layer: HTMLElement, P: MotionPalette, frame = { width: 1920, height: 1080 }): (local: number) => void {
   const root = el('div', { position: 'absolute', inset: '0', fontFamily: MONO, color: P.text }, layer);
   if (m.kind === 'verify') return buildVerify(m, root, P, frame);
+  if (m.kind === 'title' || m.kind === 'chapter' || m.kind === 'recap' || m.kind === 'beforeAfter') return buildV7(m, root, P, frame);
   label(root, P, m.label);
 
   if (m.kind === 'type') {

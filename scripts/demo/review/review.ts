@@ -22,14 +22,14 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { basename, dirname, join, relative, resolve } from 'path';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, emptyGap, type AcceptRule,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, emptyGap, isTypeCard, type AcceptRule,
   type Finding, type Severity, type Word,
 } from './checks';
 
 const arg = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 const flag = (name: string) => process.argv.includes(`--${name}`);
 const MENLO = '/System/Library/Fonts/Menlo.ttc';
-const PROMPT_VERSION = 'v5';
+const PROMPT_VERSION = 'v6';
 
 function sh(cmd: string[], opts: { stdout?: 'pipe' } = {}): { out: Buffer; err: string; code: number } {
   const r = Bun.spawnSync(cmd, { stdout: 'pipe', stderr: 'pipe', ...opts });
@@ -68,6 +68,7 @@ function siteCopy(clipsTs?: string): Record<string, Copy> {
     if (h1) out.hero = { headline: h1[1].replace(/&apos;/g, "'"), body: 'the site hero loop, full-bleed above the fold' };
   }
   out.full = { headline: 'Watch it ship (the full film, with sound)', body: 'the whole story in one cut' };
+  out.captioned = { headline: 'The full film, silent, with its lines as captions', body: 'for autoplay without sound' };
   return out;
 }
 const baseOf = (name: string) => name.replace(/-light/, '').replace(/-mobile$/, '');
@@ -136,7 +137,7 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
     const layered = blending ? [] : [...collisions(words), ...(motion ? textOverShape(words, { ...px, displayWidth: display }) : [])];
     // Transitions dip through the ground, so the frame at a dip's midpoint is empty by design.
     const dipping = meta.crossfades.some((c) => Math.abs(c - t) < 0.3);
-    const floor = inFadeOut(t, p.duration, meta.loop) || dipping ? null : contrastFloor(luma, theme);
+    const floor = inFadeOut(t, p.duration, meta.loop) || dipping || isTypeCard(words, p.width, display) ? null : contrastFloor(luma, theme);
     // A hole in the layout (content above and below, nothing between); dips and the film's fade-out are empty by design.
     const gap = inFadeOut(t, p.duration, meta.loop) || dipping ? null : emptyGap(px.gray, px.width, px.height);
     for (const f of [floor, gap, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit, target: reg ? boxes(reg.target) : undefined, artifacts: boxes(reg?.artifacts) }), ...layered]) if (f) findings.push({ ...f, t });
@@ -185,7 +186,7 @@ Read these images with the Read tool (they are at the clip's real display size; 
 1. ${images[0]}: frames every 0.5s across the clip.
 ${images[1] ? `2. ${images[1]}: the transition frames (crossfade midpoints), then the loop seam (the last frame, then the first).` : ''}
 
-${c.name === 'full' ? 'This is the full film: it plays once, in a dialog, with a soundtrack you cannot hear from frames (do not judge the sound), and it ends on a deliberate fade to black. It is NOT a loop, so do not compare its last frame with its first.\n\n' : ''}How these clips are made (so you judge the right things): each is a crop of a real product screen, zoomed onto one element. Everything outside that element is dimmed on purpose, so dimmed text cut off at the frame edge is expected. Flag cut-off text only when it is in the lit (bright) element, or is the thing the headline names. The clips are silent loops with no captions, because the page's headline sits beside them; a missing caption is not a finding. Transitions between shots dip through the background (the old shot fades out, then the new one fades in), so a frame at a transition's midpoint is briefly empty by design; judge whether the dip reads as deliberate, not that it is empty. A loop's last frame should look like its first.
+${c.name === 'full' ? 'This is the full film: it plays once, in a dialog, with a voiceover and soundtrack you cannot hear from frames (do not judge the sound; the voice carries the words, so no captions is expected), and it ends on a deliberate fade to black. It is NOT a loop, so do not compare its last frame with its first.\n\n' : c.name === 'captioned' ? 'This is the full film, silent: it plays once and carries its spoken lines as captions. It is NOT a loop, so do not compare its last frame with its first.\n\n' : ''}How these clips are made (so you judge the right things): each is a crop of a real product screen, zoomed onto one element. Everything outside that element is dimmed on purpose, so dimmed text cut off at the frame edge is expected. Flag cut-off text only when it is in the lit (bright) element, or is the thing the headline names. ${c.name === 'full' || c.name === 'captioned' ? '' : "The clips are silent loops with no captions, because the page's headline sits beside them; a missing caption is not a finding. "}Transitions between shots dip through the background (the old shot fades out, then the new one fades in), so a frame at a transition's midpoint is briefly empty by design; judge whether the dip reads as deliberate, not that it is empty. A loop's last frame should look like its first.
 
 Judge:
 - Does the clip show what the headline claims?

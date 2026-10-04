@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, type Word,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, isTypeCard, type Word,
 } from './checks';
 
 const W = (text: string, x: number, y: number, w: number, h: number, conf = 90, line = 1): Word => ({ text, x, y, w, h, conf, line });
@@ -15,6 +15,7 @@ describe('displayWidth: the width the site shows each clip at', () => {
     expect(displayWidth('hero')).toBe(1280);
     expect(displayWidth('hero-light-mobile')).toBe(360);
     expect(displayWidth('full')).toBe(1280);
+    expect(displayWidth('captioned')).toBe(1280);
   });
 });
 
@@ -32,6 +33,11 @@ describe('clipMeta: crossfade midpoints in the clip\'s own time', () => {
     expect(m.folded).toBe(false);
     expect(m.loop).toBe(true);
     expect(m.crossfades).toEqual([]);
+  });
+  test('the captioned film is a film too: not folded, not a loop', () => {
+    const m = clipMeta('captioned', { loop: false, shots }, 0.8);
+    expect(m.folded).toBe(false);
+    expect(m.loop).toBe(false);
   });
   test('the film is not a loop', () => {
     const m = clipMeta('full', { loop: false, shots }, 0.8);
@@ -120,6 +126,12 @@ describe('emptyGap: a big flat hole between content (the spec list before its ro
   test('a small flat area between content passes', () => {
     expect(emptyGap(frame((x, y) => (y < 40 || y > 50 ? text(x, y) : 20)), W0, H0)).toBeNull();
   });
+});
+
+test('isTypeCard: a frame with display-size type is a title card, not a dark rectangle', () => {
+  expect(isTypeCard([W('buildd', 100, 100, 300, 70, 92)], 1920, 1280)).toBe(true);
+  expect(isTypeCard([W('subtitle', 100, 100, 120, 14, 92)], 1920, 1280)).toBe(false);
+  expect(isTypeCard([W('blur', 100, 100, 300, 70, 40)], 1920, 1280)).toBe(false);
 });
 
 describe('seamCheck', () => {
@@ -276,6 +288,9 @@ describe('numberContradictions', () => {
   test('legibility: the lit target is high, from the renderer\'s regions', () => {
     const w = W('tiny', 10, 40, 30, 9);
     expect(legibility([w], { sourceWidth: 1280, displayWidth: 700, lit: new Set([w]), target: [{ x: 0, y: 0, w: 100, h: 100 }] })[0].severity).toBe('high');
+  });
+  test('a capitalized label after a number is not a count: "Iteration 1 Condition unmet" beside "Iteration 2 Condition met"', () => {
+    expect(numberContradictions([{ t: 0, text: 'Iteration 1 Condition unmet COMMAND · Iteration 2 Condition met COMMAND' }])).toEqual([]);
   });
   test('consistent numbers pass', () => {
     expect(numberContradictions([{ t: 1, text: 'LANDED 13 of 13 · 4/4 criteria' }])).toEqual([]);

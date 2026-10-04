@@ -1,0 +1,134 @@
+# The v7 film (scripts/demo/renderer/cuts-v7.ts): a visual UI fix. The invoice
+# table overflows on phones; one runner works three tasks; one question reaches
+# the phone; the fix's own check fails, sends it back, and passes on attempt 2.
+#
+#   bun run demo:shoot scripts/demo/storyboards/demo-v7.yaml --out <dir>
+#   bun run demo:render --shots <dir>/demo-v7 --out <video dir> --cuts v7
+story: ../stories/invoice-phone.json
+name: demo-v7
+viewport: { width: 1440, height: 810, scale: 2 }
+viewports: { phone: { width: 390, height: 844, scale: 3 } }
+themes: [dark]
+hide: [canvas-ask]
+highlight:
+  - chat-composer
+  - approval-card
+  - approval-draft-criteria
+  - kit-approval-confirm
+  - kit-step-fold
+  - kit-thinking-summary
+  - object-card
+  - home-fleet
+  - fleet-slot
+  - fleet-runner
+  - home-stat-strip
+  - question-option
+  - loop-history
+  - '[data-loop-status]'
+  - mission-screens-row
+  - visual-review-deck
+  - deck-looks-right
+  - visual-review-thumb
+  - goal-band
+  - mission-completion-record
+  - canvas-ask
+steps:
+  # 1. The ask, typed on the current chat (never sent).
+  - id: s01-ask
+    goto: /app/chat
+    waitFor: canvas-empty
+    type: { into: '[data-testid="chat-composer"] textarea', text: "The invoice table overflows on phones.", frames: 14 }
+    hold: 600
+
+  # 2. The thread (the turn folds to "Did 3 steps") and the draft's Done-when list.
+  - id: s02-thread
+    goto: /app/chat/{C1}
+    waitFor: [approval-card, approval-draft-criteria]
+    fullPage: true
+    highlightText:
+      - { text: "The invoice table overflows on phones.", within: approval-card }
+      - { text: "Fits a 390px screen", within: approval-card }
+      - { text: "pnpm playwright test invoices-phone", within: approval-card }
+      - { text: "No sideways scroll on /invoices", within: approval-card }
+      - { text: "pnpm playwright test invoices-scroll", within: approval-card }
+      - { text: "Phone screenshot approved", within: approval-card }
+    hold: 900
+
+  # 3. Confirmed: the mission is filed.
+  - id: s03-filed
+    advance: "0:20"
+    goto: /app/chat/{C1}
+    waitFor: object-card
+    fullPage: true
+    hold: 900
+
+  # 4. One runner, three tasks.
+  - id: s04-home
+    advance: "1:00"
+    goto: /app/home
+    waitFor: home-fleet
+    fullPage: true
+
+  # 5. The question on the phone (T2 waits 1:24 -> 2:30), then answered.
+  - id: s05-question
+    advance: "1:30"
+    goto: /app/tasks/{T2}/respond
+    viewports: [phone]
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
+    hold: 700
+
+  # 6. The check: attempt 1 said done, its exit condition said no (4:00 -> 4:12 re-queued).
+  - id: s06-sent-back
+    advance: "4:05"
+    goto: /app/tasks/{T1}
+    waitFor: loop-history
+    fullPage: true
+    hold: 900
+
+  # 7. Attempt 2 running on the same branch.
+  - id: s07-attempt2
+    advance: "4:40"
+    goto: /app/tasks/{T1}
+    waitFor: loop-history
+    fullPage: true
+    hold: 900
+
+  # 8. Second try, it fits.
+  - id: s08-green
+    advance: "5:30"
+    goto: /app/tasks/{T1}
+    waitFor: loop-history
+    fullPage: true
+    hold: 900
+
+  # 9. The visual review: the phone screenshot, then Looks right.
+  - id: s09-deck
+    advance: "7:00"
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    click: mission-screens-row
+    hold: 1200
+
+  - id: s09b-agreed
+    goto: /app/missions/{M1}
+    waitFor: mission-screens-row
+    click: [mission-screens-row, deck-looks-right]
+    reseedPerTheme: true
+    hold: 1500
+
+  # 10. Done: the goal band, all three checks passed.
+  - id: s10-done
+    advance: end
+    goto: /app/missions/{M1}
+    waitFor: goal-band
+    hold: 900
+
+  # Last: answering is a real write.
+  - id: s05b-answered
+    advance: "1:30"
+    goto: /app/tasks/{T2}/respond
+    viewports: [phone]
+    waitFor: '[data-testid="chat-object-sheet"] [data-kind="question"]'
+    click: '[data-testid="chat-object-sheet"] [data-testid="question-option"]'
+    reseedPerTheme: true
+    hold: 4000

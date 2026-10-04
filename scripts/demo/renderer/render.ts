@@ -35,6 +35,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from 'path';
 import { fullCut, heroLoop, type Stills } from './cuts';
 import { v5Film, v5Hero, type V5 } from './cuts-v5';
+import { speakAll } from './tts';
+import { V7_LINES, V7_VOICE, v7Captioned, v7Film } from './cuts-v7';
 import { askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
 import { copyFileSync, renameSync, statSync } from 'fs';
 import { cutDuration, frameCount, shotStarts, soundCues, type Cut, type Rect, type ShotImage } from './timeline';
@@ -162,7 +164,7 @@ export function mergeShotlists<T extends { name: string }>(prior: T[], now: T[])
 }
 
 /** A family of cuts: one film and its hero loop, rendered into `dir` under `prefix`. */
-type Family = { dir: string; prefix: string; theme: 'dark' | 'light'; cuts: (s: Stills) => Cut[] };
+type Family = { dir: string; prefix: string; theme: 'dark' | 'light'; cuts: (s: Stills, prep?: any) => Cut[]; prepare?: () => Promise<any> };
 const v5 = (variant: V5, theme: 'dark' | 'light'): Family => ({
   dir: variant, prefix: `buildd-demo-v5${variant}`, theme,
   cuts: (s) => [v5Film(s, variant, theme), v5Hero(s, variant, theme)],
@@ -175,6 +177,12 @@ export const FAMILIES: Record<string, Family> = {
   v6a: { dir: 'a', prefix: 'buildd-demo-v6a', theme: 'dark', cuts: (s) => [v6aFilm(s), v6aHero(s), ...v6aBeats(s), ...v6aBeats(s, { mobile: true })] },
   // The site's light set: the same beats and the v6x hero loop, on light stills.
   v6l: { dir: 'l', prefix: 'buildd-demo-v6l', theme: 'light', cuts: (s) => [v6xHero(s, 'light'), v6xHero(s, 'light', { mobile: true }), ...v6aBeats(s, { theme: 'light' }), ...v6aBeats(s, { mobile: true, theme: 'light' })] },
+  // v7: the voiced film. Its lines are spoken first (tts.ts, cached), so the cuts can be timed to them.
+  v7: {
+    dir: 'v7', prefix: 'buildd-demo-v7', theme: 'dark',
+    prepare: async () => speakAll(V7_LINES.map((text) => ({ text, ...V7_VOICE }))),
+    cuts: (s, spoken) => [v7Film(s, spoken), v7Captioned(s, spoken)],
+  },
   v6x: { dir: 'x', prefix: 'buildd-demo-v6x', theme: 'dark', cuts: (s) => [v6xFilm(s), v6xHero(s), v6xHero(s, 'dark', { mobile: true })] },
 };
 
@@ -187,7 +195,7 @@ async function main() {
   }
   const manifest = JSON.parse(readFileSync(join(shotsDir, 'manifest.json'), 'utf8'));
   const board = manifest.storyboard ?? '';
-  const names = arg('cuts')?.split(',') ?? (/demo-v6\.ya?ml$/.test(board) ? ['v6a', 'v6x', 'v6l'] : /demo-v5\.ya?ml$/.test(board) ? ['v5a', 'v5b', 'v5c'] : ['v4']);
+  const names = arg('cuts')?.split(',') ?? (/demo-v7\.ya?ml$/.test(board) ? ['v7'] : /demo-v6\.ya?ml$/.test(board) ? ['v6a', 'v6x', 'v6l'] : /demo-v5\.ya?ml$/.test(board) ? ['v5a', 'v5b', 'v5c'] : ['v4']);
   // v6 promises: the floating Ask button never shows, and nothing below is drawn if a check fails.
   if (names.some((n) => n.startsWith('v6'))) {
     const asks = askButtonShots(manifest);
@@ -196,12 +204,15 @@ async function main() {
   const only = arg('only')?.split(',') ?? ['full', 'hero'];
   const stillTimes = arg('stills')?.split(',').map(Number);
   const files = new Map<string, string>();
+  // A family may need async work before its cuts exist (v7 speaks its lines, so shots can be timed to them).
+  const preps = new Map<string, any>();
+  for (const name of names) if (FAMILIES[name]?.prepare) preps.set(name, await FAMILIES[name].prepare!());
   const jobs = names.map((name) => {
     const fam = FAMILIES[name];
     if (!fam) throw new Error(`[render] unknown cut family "${name}" (${Object.keys(FAMILIES).join(', ')})`);
     const stills = stillsFrom(manifest, shotsDir, arg('theme') ?? fam.theme, files);
-    const cuts = fam.cuts(stills).filter((c) => wantsCut(only, c.name));
-    if (name.startsWith('v6')) for (const c of cuts) {
+    const cuts = fam.cuts(stills, preps.get(name)).filter((c) => wantsCut(only, c.name));
+    if (name.startsWith('v6') || name === 'v7') for (const c of cuts) {
       const bad = [...captionCollisions(c).map((x) => `caption "${x.text}" covers a lit element or control in ${x.shot} at ${x.t}s`), ...fanoutEscapes(c)];
       if (bad.length) throw new Error(`[render] ${name} ${c.name}:\n  ${bad.join('\n  ')}`);
     }
@@ -307,10 +318,24 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
           ff('-i', mid, '-q:v', '3', join(outDir, `${PREFIX}-${cut.name}-poster.jpg`));
         } else if (cut.name === 'full') {
           const audio = join(outDir, `.${PREFIX}.wav`);
-          writeFileSync(audio, wav(synthesize(soundCues(cut), duration)));
+          if (cut.voice?.length) {
+            // Voice over clicks: no bed; the clicks duck under the voice (sidechain), then a limiter.
+            const clicks = join(outDir, `.${PREFIX}-clicks.wav`);
+            writeFileSync(clicks, wav(synthesize(soundCues(cut), duration, { bed: false })));
+            const ins = [clicks, ...cut.voice.map((v) => v.file)].flatMap((f) => ['-i', f]);
+            const delays = cut.voice.map((v, i) => `[${i + 1}:a]aresample=48000,adelay=${Math.round(v.at * 1000)}:all=1,apad[v${i}]`).join(';');
+            const mixV = `${cut.voice.map((_, i) => `[v${i}]`).join('')}amix=inputs=${cut.voice.length}:normalize=0:duration=longest,volume=1.0[voice]`;
+            const graph = `${delays};${mixV};[voice]asplit[vo][vk];[0:a]aresample=48000[ck];[ck][vk]sidechaincompress=threshold=0.015:ratio=10:attack=8:release=350[duck];` +
+              `[duck][vo]amix=inputs=2:normalize=0:duration=first,alimiter=limit=0.9,atrim=0:${duration.toFixed(3)}[a]`;
+            ff(...ins, '-filter_complex', graph, '-map', '[a]', '-ac', '1', '-ar', '48000', audio);
+            rmSync(clicks, { force: true });
+          } else {
+            writeFileSync(audio, wav(synthesize(soundCues(cut), duration)));
+          }
           const withAudio = (fmt: string[], acodec: string[], file: string) => ff(...input, '-i', audio, ...fmt, ...acodec, '-shortest', join(outDir, file));
           withAudio(x264, ['-c:a', 'aac', '-b:a', '192k'], `${PREFIX}.mp4`);
           withAudio(vp9, ['-c:a', 'libopus', '-b:a', '128k'], `${PREFIX}.webm`);
+          if (cut.maxBytes) capMp4(join(outDir, `${PREFIX}.mp4`), cut.maxBytes);
           ff(...input, ...x264, '-an', join(outDir, `${PREFIX}-silent.mp4`));
           ff(...input, ...vp9, '-an', join(outDir, `${PREFIX}-silent.webm`));
           ff('-i', poster, '-q:v', '2', join(outDir, `${PREFIX}-poster.jpg`));
@@ -338,7 +363,7 @@ html,body{margin:0}*{box-sizing:border-box}img{display:block}</style></head>
     server.stop(true);
   }
   const site = arg('site');
-  if (site) assembleSite(outRoot, resolve(site));
+  if (site) assembleSite(outRoot, resolve(site), names.length === 1 && names[0] === 'v7' ? v7SiteFiles() : siteFiles());
   // Optional: review the published clips' pixels (scripts/demo/review). Exits non-zero on a high finding.
   if (site && process.argv.includes('--review')) {
     const r = Bun.spawnSync(['bun', 'run', join(import.meta.dir, '../review/review.ts'), '--clips', resolve(site)], { stdout: 'inherit', stderr: 'inherit' });
@@ -386,6 +411,12 @@ export function crfLadder(start: number, max: number): number[] {
 /** A site beat clip (each of mp4 and webm) stays under this. */
 export const BEAT_MAX_BYTES = 1.2 * 1024 * 1024;
 
+/** The v7 set: the voiced film and the silent captioned cut, with posters (no webm: one source each). */
+export function v7SiteFiles(): Array<[from: string, to: string]> {
+  return [['v7/buildd-demo-v7.mp4', 'full.mp4'], ['v7/buildd-demo-v7-poster.jpg', 'full-poster.jpg'],
+    ['v7/buildd-demo-v7-captioned.mp4', 'captioned.mp4'], ['v7/buildd-demo-v7-captioned-poster.jpg', 'captioned-poster.jpg']];
+}
+
 /** The site's film with sound stays under this; assembleSite re-encodes it down if the render is bigger. */
 export const FULL_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -422,19 +453,19 @@ function capMp4(file: string, max: number) {
   if (statSync(file).size > max) throw new Error(`[render] ${file} is still over ${max} bytes at crf 36`);
 }
 
-function assembleSite(outRoot: string, site: string) {
-  const missing = siteFiles().filter(([from]) => !existsSync(join(outRoot, from))).map(([from]) => from);
+function assembleSite(outRoot: string, site: string, files = siteFiles()) {
+  const missing = files.filter(([from]) => !existsSync(join(outRoot, from))).map(([from]) => from);
   if (missing.length) throw new Error(`[render] --site: not rendered yet:\n  ${missing.join('\n  ')}`);
   const probe = (f: string) => +Bun.spawnSync(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).stdout.toString().trim();
   const size = (f: string) => Bun.spawnSync(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', f]).stdout.toString().trim().split(',').filter(Boolean).map(Number);
   publishDir(site, (tmp) => {
-    for (const [from, to] of siteFiles()) copyFileSync(join(outRoot, from), join(tmp, to));
+    for (const [from, to] of files) copyFileSync(join(outRoot, from), join(tmp, to));
     capMp4(join(tmp, 'full.mp4'), FULL_MAX_BYTES);
-    const clips = siteFiles().map(([, to]) => to).filter((f) => f.endsWith('.mp4')).map((f) => f.slice(0, -4));
+    const clips = files.map(([, to]) => to).filter((f) => f.endsWith('.mp4')).map((f) => f.slice(0, -4));
     // Each clip carries its cut's shots, so `demo:review` can find the crossfades from the site set alone.
     const shotlists = new Map<string, any[]>();
     const cutOf = (to: string) => {
-      const from = siteFiles().find(([, t]) => t === to)?.[0];
+      const from = files.find(([, t]) => t === to)?.[0];
       if (!from) return undefined;
       const { dir, cut } = clipSource(from);
       if (!shotlists.has(dir)) {
