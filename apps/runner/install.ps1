@@ -1,5 +1,12 @@
 # buildd runner installer for Windows
 # Usage: irm buildd.dev/install.ps1 | iex
+# With the background service: &([ScriptBlock]::Create((irm buildd.dev/install.ps1))) -Service
+
+param(
+    # Register the background Scheduled Task non-interactively (for scripted
+    # installs). Without it, an interactive session is asked at the end.
+    [switch]$Service
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -77,7 +84,16 @@ if "%PROJECTS_ROOT%"=="" (
     set "PROJECTS_ROOT=!ROOTS!"
 )
 
+REM Restart loop (exit code 75 = update applied, restart) — mirrors install.sh's
+REM bash launcher so the self-updater behaves the same on every platform.
+:runloop
 bun run "%USERPROFILE%\.buildd\apps\runner\src\index.ts" %*
+if %ERRORLEVEL% EQU 75 (
+    echo Restarting after update...
+    timeout /t 1 /nobreak >nul
+    goto runloop
+)
+exit /b %ERRORLEVEL%
 '@ | Set-Content "$BinDir\buildd.cmd"
 
 # Add to PATH if needed
@@ -90,8 +106,41 @@ if ($UserPath -notlike "*$BinDir*") {
 Write-Host ""
 Write-Host "Installation complete!" -ForegroundColor Green
 Write-Host ""
-Write-Host "Run buildd to start:"
-Write-Host "  buildd"
+
+# Offer to register buildd as a Scheduled Task that starts at logon and
+# restarts if it crashes, so it survives closing the terminal and reboots —
+# see apps/runner/README.md "Running as a service". -Service registers
+# non-interactively; otherwise ask when there's an interactive session.
+$TaskName = "buildd runner"
+$InstallService = $false
+if ($Service) {
+    $InstallService = $true
+} elseif ([Environment]::UserInteractive) {
+    $Answer = Read-Host "Run buildd in the background so it survives closing this terminal and reboots? [Y/n]"
+    $InstallService = -not ($Answer -match '^[nN]')
+}
+
+if ($InstallService) {
+    try {
+        $Action = New-ScheduledTaskAction -Execute "$BinDir\buildd.cmd"
+        $Trigger = New-ScheduledTaskTrigger -AtLogOn
+        $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+        $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Force | Out-Null
+        Start-ScheduledTask -TaskName $TaskName
+        Write-Host "Registered Scheduled Task '$TaskName' (runs at logon, as your user, restarts on crash)." -ForegroundColor Green
+        Write-Host "Manage it with: Get-ScheduledTask -TaskName '$TaskName' | Unregister-ScheduledTask -Confirm:`$false"
+    } catch {
+        Write-Host "Could not register the Scheduled Task ($($_.Exception.Message)) — run buildd manually, or retry from an elevated PowerShell." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Run buildd to start:"
+    Write-Host "  buildd"
+    Write-Host ""
+    Write-Host "Tip: re-run this installer with -Service to run it in the background." -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "Then open http://localhost:8766 to connect your account."
 Write-Host ""

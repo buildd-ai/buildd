@@ -1647,6 +1647,8 @@ export async function POST(req: NextRequest) {
 
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)
     const taskContext = task.context as Record<string, unknown> | null;
+    // Backend is pinned by the task creator — must not flip it for any reason.
+    const backendPinned = isBackendPinned(taskContext);
 
     // Path-overlap backstop (layer 1): if this task declares a pathManifest and
     // any open PR in the same workspace comes from a task with an overlapping
@@ -1908,11 +1910,12 @@ export async function POST(req: NextRequest) {
     // rest sees the effective backend. Disabling a provider here redirects matching
     // jobs to an enabled one at dispatch time, without touching stored settings;
     // re-enabling restores them automatically. See packages/core/backend-policy.ts.
+    // A task whose creator named its backend is never moved (backendPinned).
     const taskTeamId = (task as any).workspace?.teamId as string | undefined;
     const enabledBackends = await teamEnabledBackends(taskTeamId);
     const codexEnabledForTeam = !enabledBackends || enabledBackends.includes('codex');
     const maskedBackend = maskBackend((task as any).backend as AgentBackend, enabledBackends);
-    if (maskedBackend !== (task as any).backend) {
+    if (!backendPinned && maskedBackend !== (task as any).backend) {
       if (maskedBackend === 'codex') {
         // Claude disabled team-wide → must run on Codex. Skip (leave pending) if
         // Codex has no credential or its single per-workspace slot is taken.
@@ -1924,6 +1927,11 @@ export async function POST(req: NextRequest) {
         (task as any).backend = 'claude';
         console.log(`[claim] Provider toggle: task ${task.id} → Claude (Codex disabled for team ${taskTeamId})`);
       }
+    } else if (backendPinned && maskedBackend !== (task as any).backend) {
+      // Backend is pinned by task creator. Team provider toggle is not applied to pinned backends.
+      // The backend is deferred to let it wait for its intended provider to become available.
+      deferTask(task, 'provider_unavailable', { backend: (task as any).backend, reason: 'pinned' });
+      continue;
     }
 
     // Is the CLAUDE pool walled right now? Computed for every task, not just
@@ -1969,7 +1977,6 @@ export async function POST(req: NextRequest) {
     const isTenantTask = !!tenantCtx?.tenantId;
     const claudeRunUsesSeat = async (): Promise<boolean> =>
       isTenantTask || routeUsesOauthSeat(await claudeRouteFor(taskTeamId, task.workspaceId));
-    const backendPinned = isBackendPinned(taskContext);
 
     // Codex wall → escape to Claude while its pool is open, rather than claiming
     // onto a provider that will immediately report a rate-limit. A task pinned
