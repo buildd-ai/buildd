@@ -33,7 +33,7 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
 export type ActionChip =
   | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
-  | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
+  | 'RESOLVING' | 'FIXING_CI' | 'FIXING_REVIEW' | 'CI_RUNNING' | 'AUTO_MERGE' | 'FIXING_SPEC';
 
 /** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
 export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
@@ -44,7 +44,7 @@ export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
  * above work that genuinely needs a human.
  */
 const AGENT_HANDLED_CHIPS: ReadonlySet<ActionChip> = new Set<ActionChip>([
-  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
+  'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ]);
 
 export function isActionableChip(chip: ActionChip): boolean {
@@ -400,7 +400,7 @@ export interface ActionQueueItem {
 const CHIP_ORDER: ActionChip[] = [
   'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
-  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
+  'RESOLVING', 'FIXING_CI', 'FIXING_REVIEW', 'CI_RUNNING', 'AUTO_MERGE', 'FIXING_SPEC',
 ];
 
 /**
@@ -964,15 +964,17 @@ export function buildActionQueue(
     // RESOLVING: conflict retry is live — agent is handling it, not the human.
     // Otherwise: human-gate = MERGE, agent-review = REVIEW.
     // Precedence: a conflict outranks CI (an unmergeable branch is why CI
-    // cannot pass), and any CI gate outranks the merge policy — a red PR is not
-    // waiting on the human until no agent is left working on it.
+    // cannot pass), and any CI/review-fix gate outranks the merge policy — a
+    // red PR, or one with an open reviewer-retry attempt, is not waiting on
+    // the human until no agent is left working on it (mirrors mission-state-view.ts
+    // rule 6½: an open fix attempt outranks the merge reading).
     const ciGate = item.ciGate ?? null;
     const baseChip: ActionChip = item.deadZoneExhausted
       ? 'BLOCKED'
       : item.conflictRetryTaskId
         ? 'RESOLVING'
         : ciGate?.kind === 'fixing'
-          ? 'FIXING_CI'
+          ? (ciGate.fixKind === 'review' ? 'FIXING_REVIEW' : 'FIXING_CI')
           : ciGate?.kind === 'running'
             ? 'CI_RUNNING'
             : ciGate?.kind === 'blocked'

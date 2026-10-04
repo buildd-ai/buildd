@@ -17,13 +17,20 @@
  * `teams.enabledDecisionShadows` (`opt_in` capabilities,
  * packages/core/inference-policy.ts), and only when a decision key resolves.
  * The policy check runs before the candidate query, so a team that has not
- * opted in costs a team-row read or two. When the call was made under
- * `task_role_apply` the result says so (`applyEnabled`), and
- * `task-role-apply.ts` decides whether to write; this module never does.
+ * opted in costs a team-row read or two.
+ *
+ * Owner decision 2026-10-03 (knowledge-base: buildd/design/decision-calls.md):
+ * applying is now the default once either capability is on — a role-less task
+ * no longer needs a second opt-in to have the answer written, it only needs
+ * the rails in `task-role-apply.ts` (candidate-set membership, the measured-
+ * model check, the confidence gate) to pass. `applyEnabled` is therefore
+ * always true once `access.ok`; `task-role-apply.ts` still does the actual
+ * writing and gating, this module never does.
  *
  * Telemetry: one `[decision-shadow]` line per look, ids, slugs, labels and
  * numbers only — never the task's text or a role's routing text.
  */
+import { resolvedPromptVersion, resolvePromptValueEntry } from '@buildd/core/prompts';
 import { createHash } from 'node:crypto';
 import { EXPLICIT_ROLE_SLUGS } from '@buildd/shared';
 // Types only at module scope. The client (and the DB layer behind it) is loaded
@@ -37,6 +44,7 @@ import type {
 } from '@buildd/core/decision-client';
 import type { TaskKind } from '@buildd/core/model-router';
 import { readRoleRouting, renderRoutingCriterion } from './role-routing';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const SHADOW_TIMEOUT_MS = 3_000;
 export const SHADOW_DESCRIPTION_CHARS = 1_500;
@@ -291,13 +299,35 @@ export function buildRoleQuestion(candidates: readonly RoleCandidate[]): { quest
     slugFor,
     question: {
       type: 'choice',
-      instructions: {
-        question: 'Which role should do the work described in `task`?',
-        rule: 'Follow the role definitions. The task title often names an action ("fix", "review", "document") that a definition assigns to a different role; the definition wins.',
-      },
+      instructions: { ...currentTaskRolePrompt().value.roleInstructions },
       criteria,
     },
   };
+}
+
+/**
+ * The question text of this decision, resolved through the versioned prompts
+ * table (`@buildd/core/prompts`): an active row's body is JSON of exactly this
+ * shape (the kind labels unchanged), else this public default runs. The role
+ * criteria are each workspace's own routing text and are never part of it.
+ */
+export const TASK_ROLE_PROMPT_ID = 'buildd.task_role';
+
+export const TASK_ROLE_PROMPT_DEFAULT = {
+  roleInstructions: {
+    question: 'Which role should do the work described in `task`?',
+    rule: 'Follow the role definitions. The task title often names an action ("fix", "review", "document") that a definition assigns to a different role; the definition wins.',
+  },
+  kind: TASK_KIND_QUESTION,
+};
+
+function currentTaskRolePrompt() {
+  return resolvePromptValueEntry(TASK_ROLE_PROMPT_ID, TASK_ROLE_PROMPT_DEFAULT);
+}
+
+/** The prompt version naming the text in effect. */
+export function taskRolePromptVersion(): string {
+  return resolvedPromptVersion(TASK_ROLE_PROMPT_VERSION, currentTaskRolePrompt());
 }
 
 /** The task fields the call may see (§5). Everything else, `context` included, is never sent. */
@@ -333,6 +363,19 @@ export function buildTaskRoleState(t: TaskRoleStateInput) {
 /** Deterministic 1-in-N sample of stated-role tasks, keyed on the task id. */
 export function inStatedRoleSample(taskId: string): boolean {
   return createHash('sha256').update(taskId).digest()[0] % STATED_ROLE_SAMPLE_EVERY === 0;
+}
+
+/**
+ * A hash of the inputs the model is actually asked about (the candidate set
+ * and the state it sees), for the decision ledger. Independent of whether the
+ * call itself succeeds, so a timed-out or errored look still carries a
+ * fingerprint a later look at the same facts can be compared against.
+ */
+export function taskRoleFingerprint(input: { candidates: readonly string[]; askKind: boolean; state: unknown }): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ candidates: [...input.candidates].sort(), askKind: input.askKind, state: input.state }))
+    .digest('hex')
+    .slice(0, 16);
 }
 
 // ── The run ──────────────────────────────────────────────────────────────────
@@ -381,6 +424,8 @@ export type TaskRoleShadowOutcome =
 export interface TaskRoleShadowRecord {
   site: 'task_role';
   v: string;
+  /** Hash of the candidate set and state the model saw (decision ledger). */
+  fingerprint: string;
   taskId: string;
   workspaceId: string;
   stated?: string;
@@ -408,6 +453,8 @@ export interface TaskRoleShadowResult {
   record?: TaskRoleShadowRecord;
   /** The call was made under `task_role_apply`: the team allows this answer to be written. */
   applyEnabled?: boolean;
+  /** Set once the candidate set is known, even on `too_few_candidates` or `error` (decision ledger). */
+  fingerprint?: string;
 }
 
 export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRoleShadowDeps = {}): Promise<TaskRoleShadowResult> {
@@ -428,15 +475,21 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     if (access?.ok) capability = TASK_ROLE_APPLY_CAPABILITY;
     else access = await resolveAccess({ capability: TASK_ROLE_CAPABILITY, ...scope });
     if (!access.ok) return { outcome: 'disabled' };
-    const applyEnabled = capability === TASK_ROLE_APPLY_CAPABILITY;
+    // Apply is the default once the capability is on at all: a separate
+    // "shadow only" tier no longer exists for this decision (2026-10-03 owner
+    // decision). Listing either capability is enough; the rails in
+    // task-role-apply.ts are what actually gate the write.
+    const applyEnabled = true;
 
     const { candidates, excluded } = await buildRoleCandidates(input, deps);
-    const roleQ = buildRoleQuestion(candidates);
-    if (!roleQ) return { outcome: 'too_few_candidates' };
-
     const askKind = !input.kind;
+    const state = buildTaskRoleState(input);
+    const fingerprint = taskRoleFingerprint({ candidates: candidates.map(c => c.slug), askKind, state });
+    const roleQ = buildRoleQuestion(candidates);
+    if (!roleQ) return { outcome: 'too_few_candidates', fingerprint };
+
     const questions: TaskRoleQuestions = askKind
-      ? { role: roleQ.question, kind: TASK_KIND_QUESTION }
+      ? { role: roleQ.question, kind: currentTaskRolePrompt().value.kind }
       : { role: roleQ.question };
 
     const decide = deps.decide ?? (client!.decisionCall as DecideFn);
@@ -445,7 +498,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
       teamId: input.teamId,
       workspaceId: input.workspaceId,
       accountId: input.accountId ?? null,
-      state: buildTaskRoleState(input),
+      state,
       questions,
       timeoutMs: SHADOW_TIMEOUT_MS,
       access,
@@ -453,7 +506,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
 
     if (!res.ok) {
       log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify({ site: 'task_role', taskId: input.taskId, error: res.error.kind, latencyMs: res.latencyMs })}`);
-      return { outcome: 'error' };
+      return { outcome: 'error', fingerprint };
     }
 
     // Read-only: the answer is useless for apply once a runner has the task (Open decision 5).
@@ -466,7 +519,8 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
       : null;
     const record: TaskRoleShadowRecord = {
       site: 'task_role',
-      v: `${TASK_ROLE_PROMPT_VERSION}|${res.model}`,
+      v: `${taskRolePromptVersion()}|${res.model}`,
+      fingerprint,
       taskId: input.taskId,
       workspaceId: input.workspaceId,
       ...(input.statedRoleSlug ? { stated: input.statedRoleSlug } : {}),
@@ -486,7 +540,7 @@ export async function runTaskRoleShadow(input: TaskRoleShadowInput, deps: TaskRo
     };
     // Ids, slugs and numbers only: never the task's text or a role's routing text.
     log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify(record)}`);
-    return { outcome: 'logged', record, applyEnabled };
+    return { outcome: 'logged', record, applyEnabled, fingerprint };
   } catch (err) {
     console.error(`${DECISION_SHADOW_LOG_PREFIX} task_role failed (non-fatal, task unaffected):`, err);
     return { outcome: 'error' };
@@ -510,3 +564,6 @@ export function scheduleTaskRoleShadow(
     void run();
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(TASK_ROLE_PROMPT_ID, TASK_ROLE_PROMPT_DEFAULT);

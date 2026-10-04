@@ -1,11 +1,13 @@
 import { db } from '@buildd/core/db';
+import { resolvePromptTemplate } from '@buildd/core/prompts';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
+import { registerTemplatePrompt } from '@buildd/core/prompts';
 
 /**
  * Batched, repo-grounded criteria evaluator.
@@ -213,6 +215,58 @@ export async function resolveCriteriaWorkerEval(opts: {
   };
 }
 
+// ── Prompt text (versioned prompts table, public defaults) ───────────────────
+// The evaluator task's instructions resolve through the prompts table
+// (`@buildd/core/prompts`); an active row must keep each template's
+// placeholders exactly, or the public text below runs.
+
+export const WORKER_EVAL_PROMPT_IDS = {
+  main: 'buildd.mission_criteria.worker_eval',
+  commandSection: 'buildd.mission_criteria.worker_eval.command',
+  proseSection: 'buildd.mission_criteria.worker_eval.prose',
+} as const;
+
+export const WORKER_EVAL_TEMPLATE = `## Goal criteria evaluation
+
+Mission: **{{missionTitle}}**
+{{missionDescriptionBlock}}
+{{workingBranchLine}}
+You are evaluating this mission's goal criteria. This is a **read-only verification task**:
+- Do NOT change code.
+- Do NOT open PRs or create tasks.
+- Do NOT fix failures you find — only report what you observe.
+
+### Criteria to evaluate ({{criteriaCount}})
+{{criteriaList}}
+
+{{commandSection}}{{proseSection}}### Output
+Return one entry per criterion via your outputSchema using the SAME \`index\` values
+listed above. Keep your turn short — observe, judge, report.`;
+
+export const WORKER_EVAL_COMMAND_SECTION = `### Command criteria ({{count}})
+For each command criterion:
+1. Run the command exactly as written using Bash.
+2. Observe the exit code and any relevant output.
+3. \`pass\` if it exits 0.
+4. \`fail\` ONLY if the command ran and its own assertion came back false (e.g. tests ran and reported
+   failures). This means the criterion is genuinely not met.
+5. \`UNVERIFIED\` if the command could not be evaluated at all: exit code 126 or 127, "command not
+   found", "permission denied", a timeout, a missing dependency, or any other environment error that
+   prevented the command from actually running. An unrunnable command proves nothing about the
+   criterion either way — it is NOT evidence of failure, so never grade it \`fail\`.
+6. In \`evidence\`, state the exit code and any key output line.
+
+`;
+
+export const WORKER_EVAL_PROSE_SECTION = `### Prose criteria ({{count}})
+For each prose criterion:
+1. Read the repository to find relevant evidence.
+2. \`pass\` if the evidence directly supports the criterion.
+3. \`fail\` if the evidence directly contradicts it.
+4. \`UNVERIFIED\` if evidence is absent, ambiguous, or insufficient.
+
+`;
+
 function buildEvalPrompt(
   mission: { title: string; description: string | null; workingBranch: string | null },
   criteria: WorkerEvalCriterionInput[],
@@ -227,42 +281,19 @@ function buildEvalPrompt(
   const commandCriteria = criteria.filter(c => c.type === 'command');
   const proseCriteria = criteria.filter(c => c.type !== 'command');
 
-  return `## Goal criteria evaluation
-
-Mission: **${mission.title}**
-${mission.description ? `\n${mission.description}\n` : ''}
-${mission.workingBranch ? `Working branch: \`${mission.workingBranch}\`\n` : ''}
-You are evaluating this mission's goal criteria. This is a **read-only verification task**:
-- Do NOT change code.
-- Do NOT open PRs or create tasks.
-- Do NOT fix failures you find — only report what you observe.
-
-### Criteria to evaluate (${criteria.length})
-${criteriaList}
-
-${commandCriteria.length > 0 ? `### Command criteria (${commandCriteria.length})
-For each command criterion:
-1. Run the command exactly as written using Bash.
-2. Observe the exit code and any relevant output.
-3. \`pass\` if it exits 0.
-4. \`fail\` ONLY if the command ran and its own assertion came back false (e.g. tests ran and reported
-   failures). This means the criterion is genuinely not met.
-5. \`UNVERIFIED\` if the command could not be evaluated at all: exit code 126 or 127, "command not
-   found", "permission denied", a timeout, a missing dependency, or any other environment error that
-   prevented the command from actually running. An unrunnable command proves nothing about the
-   criterion either way — it is NOT evidence of failure, so never grade it \`fail\`.
-6. In \`evidence\`, state the exit code and any key output line.
-
-` : ''}${proseCriteria.length > 0 ? `### Prose criteria (${proseCriteria.length})
-For each prose criterion:
-1. Read the repository to find relevant evidence.
-2. \`pass\` if the evidence directly supports the criterion.
-3. \`fail\` if the evidence directly contradicts it.
-4. \`UNVERIFIED\` if evidence is absent, ambiguous, or insufficient.
-
-` : ''}### Output
-Return one entry per criterion via your outputSchema using the SAME \`index\` values
-listed above. Keep your turn short — observe, judge, report.`;
+  return resolvePromptTemplate(WORKER_EVAL_PROMPT_IDS.main, WORKER_EVAL_TEMPLATE, {
+    missionTitle: mission.title,
+    missionDescriptionBlock: mission.description ? `\n${mission.description}\n` : '',
+    workingBranchLine: mission.workingBranch ? `Working branch: \`${mission.workingBranch}\`\n` : '',
+    criteriaCount: criteria.length,
+    criteriaList,
+    commandSection: commandCriteria.length > 0
+      ? resolvePromptTemplate(WORKER_EVAL_PROMPT_IDS.commandSection, WORKER_EVAL_COMMAND_SECTION, { count: commandCriteria.length })
+      : '',
+    proseSection: proseCriteria.length > 0
+      ? resolvePromptTemplate(WORKER_EVAL_PROMPT_IDS.proseSection, WORKER_EVAL_PROSE_SECTION, { count: proseCriteria.length })
+      : '',
+  });
 }
 
 async function dispatchWorkerEvalTask(opts: {
@@ -316,10 +347,11 @@ async function dispatchWorkerEvalTask(opts: {
 
   if (!task) return { ok: false, reason: 'Worker eval task insert returned no row' };
 
-  await dispatchNewTask(
+  await announceTaskCreated(
     { id: task.id, title, description: null, workspaceId: mission.workspaceId, mode: 'execution', priority: 2, missionId: mission.id },
     workspace as any,
   ).catch(e => console.error(`[criteria-worker-eval] dispatch failed for task ${task.id}:`, e));
+  await wakeTask(task.id, 'task.created');
 
   console.log(
     `[criteria-worker-eval] mission ${mission.id}: dispatched ${task.id} to evaluate criteria [${evalContext.criterionIndices.join(', ')}]`
@@ -515,3 +547,8 @@ export async function handleCriteriaWorkerEvalOutcome(
 
   return { applied: applied || marker.criterionIndices.length > 0 };
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTemplatePrompt(WORKER_EVAL_PROMPT_IDS.main, WORKER_EVAL_TEMPLATE);
+registerTemplatePrompt(WORKER_EVAL_PROMPT_IDS.commandSection, WORKER_EVAL_COMMAND_SECTION);
+registerTemplatePrompt(WORKER_EVAL_PROMPT_IDS.proseSection, WORKER_EVAL_PROSE_SECTION);

@@ -72,7 +72,7 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
           <textarea
             value={value}
             onChange={e => setValue(e.target.value)}
-            placeholder="Add what the organizer should follow when it plans the next step…&#10;&#10;Example:&#10;- File each build task with the files it will touch&#10;- Keep the API change and the UI change in separate tasks&#10;- Propose completion once the release PR is merged"
+            placeholder="Rules for planning the next step, e.g.&#10;- File each build task with the files it touches&#10;- Separate API and UI changes&#10;- Complete once the release PR merges"
             rows={8}
             className="w-full px-3 py-2 bg-surface-3 border border-card-border rounded-lg text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent/40 resize-y font-mono transition-colors"
             autoFocus

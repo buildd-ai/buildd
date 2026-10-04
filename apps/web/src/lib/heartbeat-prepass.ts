@@ -43,6 +43,20 @@ function classifySingleTaskWait(t: WaitClassifiableTask, now: Date): MissionWait
     return { reason: 'provider budget/rate-limit pause', waitUntil: t.startAt };
   }
 
+  // Infra-retry backoff: an infrastructure failure (a cloud container that died
+  // under the runner, a crash-reconciled runner restart, a stale worker) is
+  // requeued on the infraRetryCount budget with startAt = now + backoff (the
+  // worker PATCH route and stale-workers.ts). The platform retries it by itself
+  // — the deferred-dispatch sweep wakes the runner once startAt passes — so
+  // until then it is a wait with a known end, not a stall or a failure.
+  if (
+    t.status === 'pending' &&
+    typeof t.context?.infraRetryCount === 'number' && t.context.infraRetryCount > 0 &&
+    t.startAt && t.startAt > now
+  ) {
+    return { reason: 'infrastructure failure, automatic retry scheduled', waitUntil: t.startAt };
+  }
+
   // Loop task inside its backoff (docs/design/loop-until-verified.md) — covers a
   // CI run in progress via the pr_checks_green exit condition, a command loop
   // still failing, etc. loopState 'running' means a worker is actively iterating

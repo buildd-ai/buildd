@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 import { NextRequest } from 'next/server';
 
 // Mock functions

@@ -50,7 +50,7 @@ export function missionCardRows(model: MissionBoardModel, max = 6): { rows: Boar
 export function missionCountsLine(model: MissionBoardModel): string {
   const running = Object.values(model.tasks).filter(t => t.status === 'running').length;
   const bits = [`${model.landed.done} of ${model.landed.total} landed`];
-  if (model.landed.total === 0) bits[0] = model.planning ? 'planning' : 'no tasks yet';
+  if (model.landed.total === 0) bits[0] = model.planning ? 'planning' : 'no tasks';
   if (running > 0) bits.push(`${running} running`);
   if (model.needsYou.length > 0) bits.push(`${model.needsYou.length} need${model.needsYou.length === 1 ? 's' : ''} you`);
   return bits.join(' · ');
@@ -58,7 +58,7 @@ export function missionCountsLine(model: MissionBoardModel): string {
 
 function TaskRow({ t }: { t: BoardTask }) {
   const st = STATUS_TEXT[t.status];
-  const meta = t.status === 'blocked' && t.deps.find(d => !d.ok) ? `waits on ${t.deps.find(d => !d.ok)!.label}` : t.runner;
+  const meta = t.status === 'blocked' && t.deps.find(d => !d.satisfied) ? `waits on ${t.deps.find(d => !d.satisfied)!.label}` : t.runner;
   return (
     <li data-testid="mission-card-row" data-status={t.status} className="flex min-h-9 min-w-0 items-center gap-2.5 border-t border-border-default font-mono text-[12.5px]">
       <RoleGlyph task={t} />

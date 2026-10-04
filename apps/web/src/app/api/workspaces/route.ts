@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { accountWorkspaces, githubRepos, workspaces } from '@buildd/core/db/schema';
+import { accountWorkspaces, githubRepos, workspaces, type WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -160,7 +160,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { name, repoUrl, defaultBranch, githubRepo, githubInstallationId, accessMode, teamId: requestedTeamId } = body;
+    const { name, repoUrl, defaultBranch, gitConfig, githubRepo, githubInstallationId, accessMode, teamId: requestedTeamId } = body;
 
     // Auto-derive name from repoUrl if not provided
     let workspaceName = name;
@@ -244,6 +244,15 @@ export async function POST(req: NextRequest) {
       githubRepoDbId = upserted.id;
     }
 
+    // Merge gitConfig: support both top-level defaultBranch (legacy) and gitConfig.defaultBranch (new)
+    const mergedGitConfig: Record<string, unknown> = {
+      ...(gitConfig && typeof gitConfig === 'object' ? gitConfig : {}),
+    };
+    // If defaultBranch is provided at top level, add it to gitConfig
+    if (defaultBranch) {
+      mergedGitConfig.defaultBranch = defaultBranch;
+    }
+
     const [workspace] = await db
       .insert(workspaces)
       .values({
@@ -255,6 +264,7 @@ export async function POST(req: NextRequest) {
         githubRepoId: githubRepoDbId,
         githubInstallationId: githubInstallationId || null,
         accessMode: accessMode || 'open',
+        gitConfig: Object.keys(mergedGitConfig).length > 0 ? (mergedGitConfig as unknown as WorkspaceGitConfig) : null,
         teamId,
       })
       .returning();

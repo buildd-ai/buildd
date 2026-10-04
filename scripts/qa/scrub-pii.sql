@@ -226,8 +226,14 @@ DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
+DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Failure incident ledger: titles and evidence refs echo task/PR titles and
+-- error text; derived from gate_events and worker failures, wiped with them.
+DELETE FROM failure_incidents;
+-- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
+DELETE FROM task_dispatch_outbox;
 DELETE FROM watcher_events;
 -- Watches and their ledger: payloads carry task/PR titles and repo names.
 DELETE FROM notification_deliveries;
@@ -238,6 +244,11 @@ DELETE FROM task_area_prediction_events;
 DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;
 DELETE FROM orchestration_decisions;
+DELETE FROM orchestration_overlap_answers;
+-- Model decision ledger: reasons can be prose and human overrides free-form.
+DELETE FROM decision_outcomes;
+DELETE FROM decision_challenger_runs;
+DELETE FROM decision_records;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
 TRUNCATE knowledge_chunks, knowledge_entities, entity_aliases, chunk_entities,

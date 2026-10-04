@@ -1026,7 +1026,7 @@ export default async function MissionDetailPage({
           </div>
           <p className="text-[13px] text-text-secondary">
             {missionIntegrationPr.state === 'not_opened'
-              ? `Task PRs merge into this mission's integration branch. No PR from that branch into the target branch exists yet, so none of this mission's work is on the target branch.`
+              ? `Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.`
               : missionIntegrationPr.state === 'merged'
                 ? `This mission's work reached the target branch through one PR from its integration branch.`
                 : `The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only.`}
@@ -1319,6 +1319,8 @@ export default async function MissionDetailPage({
     criteriaState: goalCriteriaStateFull?.criteria ?? [],
     artifacts: allArtifacts.map(a => ({ key: a.key ?? null, type: a.type ?? null })),
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
+    // Another mission's dependency is judged by the claim gate, not dropped.
+    externalDeps: [...foreignDeps.values()],
   });
   // The lede answers "what changed for me?" in place of the D3 text; every
   // other header variant sits above it.

@@ -13,7 +13,7 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 // ── Mock helpers ──────────────────────────────────────────────────────────────
 
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
-const mockAccountsFindMany = mock(() => Promise.resolve([]));
+const mockAccountsFindMany = mock((_opts?: any) => Promise.resolve([]));
 const mockMissionsFindMany = mock(() => Promise.resolve([]));
 const mockTenantBudgetsFindFirst = mock(() => Promise.resolve(null));
 const mockBackendPausesFindFirst = mock((_opts?: any) => Promise.resolve(null));
@@ -263,4 +263,23 @@ describe('getBudgetForecast — Codex vs Claude tenant walls', () => {
     expect(forecast.codex?.isExhausted).toBe(false);
     expect(forecast.codex?.resetsAt).toBeNull();
   });
+});
+
+it('OAuth output explicitly identifies a forecast floor and sample basis, never actual percent used', async () => {
+  mockAccountsFindMany.mockImplementation(() => Promise.resolve([{id: 'acc-test', name: 'test', seatId: null, budgetResetsAt: null}] as any));
+  const forecast = await getBudgetForecast(TEAM_ID, []);
+  const row = forecast.oauthSessions[0];
+  expect(row.source).toBe('learned_exhaustion_floor');
+  expect(row.pressureLabel).toBe('forecast floor pressure');
+  expect(row.providerUsagePct).toBeNull();
+  expect(row.sampleBasis.quantile).toBe(0.9);
+  expect(row.sampleBasis.metric).toBeNull();
+  expect(row).not.toHaveProperty('pctUsed');
+  mockAccountsFindMany.mockImplementation(() => Promise.resolve([]));
+});
+
+it('does not truncate sibling registrations before grouping seats', async () => {
+  mockAccountsFindMany.mockClear();
+  await getBudgetForecast(TEAM_ID, []);
+  expect(mockAccountsFindMany.mock.calls[0][0]).not.toHaveProperty('limit');
 });

@@ -1,19 +1,21 @@
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
+import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch } from './git-clone';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
-import { syncSkillToLocal } from './skills.js';
-import { resolveRoleEnv, unmetRoleEnv, RoleEnvGapLog, getRoleDir, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleConfig, type RoleInstructions } from './roles.js';
+import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
+import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
+import { rehydratePromptBundles, writeSessionPromptFiles } from './session-prompt-bundles.js';
 import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
@@ -31,6 +33,7 @@ import { hostUserMemoryExcludes, primaryCloneMemoryExcludes } from './host-memor
 import { sweepTerminalWorktrees } from './terminal-worktree-sweep';
 import { resolveBuilddHome } from './buildd-home';
 import { isolateAgentRunnerHome, cleanupAgentRunnerHome } from './agent-runner-home';
+import { startScopedGitHubSession, type ScopedGitHubSession } from './agent-github-credentials';
 import { PusherManager } from './pusher-manager';
 import {
   authContextOf,
@@ -97,9 +100,9 @@ import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
-import { HUMAN_UI_DENIAL } from './runner-denial';
+import { HUMAN_UI_DENIAL, RUNNER_DENIAL_MARKER } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
-import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
+import { detectCreatedPr, prRequiredUnmet } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
@@ -130,7 +133,19 @@ import {
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
-import { questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import { holdTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import type { QuestionGateReply } from '@buildd/core/question-gate';
+import { QUESTION_GATE_RUNNER_TIMEOUT_MS } from '@buildd/core/question-gate';
+import {
+  classifySessionEnd,
+  genuinelyBlockedQuestionInput,
+  GENUINELY_BLOCKED_FAIL_OPTION,
+  GENUINELY_BLOCKED_RETRY_OPTION,
+  isBackgroundJobOutstanding,
+  lastToolWasDeniedByRunner,
+  SESSION_END_PUSH_TEXT,
+  type SessionEndLabel,
+} from './session-end-classification.js';
 import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -299,15 +314,13 @@ const CLOSING_TURN_INSTRUCTION =
   'Output Requirement section. Do no other work — no new investigation, no ' +
   'additional edits.';
 
-// The one extra turn given to a pr_required session that ended naturally with
-// no PR, no commits and no way to open one (see startSession's
-// shouldFailForMissingPr branch). Unlike CLOSING_TURN_INSTRUCTION it does not
-// assume work was delivered: it names both ways out of the dead end, and the
-// blocked way out (AskUserQuestion) parks the task instead of failing it.
-const NO_DELIVERABLE_NUDGE =
-  'Your session is about to end with nothing delivered. Write your deliverable ' +
-  '(PR or artifact) now, or call complete_task. If you are genuinely blocked, ' +
-  'use AskUserQuestion.';
+// How many end-of-session pushes (session-end-classification.ts) one worker
+// may receive across any resumed turns before the runner parks it instead of
+// pushing or failing again. Replaces PR #3143's one-shot
+// `noDeliverableNudged` boolean with a counted bound — safe to check even
+// from within an already-resumed push turn (isClosingTurn=true), since the
+// counter itself is the recursion guard, not the flag.
+const SESSION_END_MAX_PUSHES = 2;
 
 /**
  * SDK maxTurns for a closing turn. The SDK counts model round trips, and
@@ -798,7 +811,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       pendingPermissionRequests: this.pendingPermissionRequests,
       onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
-      parkQuestion: (worker, toolInput, toolUseId) => this.parkQuestion(worker, toolInput, toolUseId),
+      parkQuestion: (worker, toolInput, toolUseId, gateReply) => this.parkQuestion(worker, toolInput, toolUseId, gateReply),
     });
     this.recoveryManager = new RecoveryManager({
       workers: this.workers,
@@ -809,7 +822,13 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       addMilestone: (worker, milestone) => this.addMilestone(worker, milestone),
       unsubscribeFromWorker: (workerId) => this.pusherManager.unsubscribeFromWorker(workerId),
-      startSession: (worker, cwd, task, resumeSessionId?) => this.startSession(worker, cwd, task, resumeSessionId),
+      // Every resume, retry and recovery restart goes through here. A worker
+      // restored from disk (runner restart, park → reattach) lost its role and
+      // skill payload; get it back before the session continues.
+      startSession: async (worker, cwd, task, resumeSessionId?) => {
+        await this.ensurePromptBundles(worker);
+        return this.startSession(worker, cwd, task, resumeSessionId);
+      },
     });
     this.workerSync = new WorkerSync({
       config,
@@ -1554,13 +1573,35 @@ export class WorkerManager {
   }
 
   /**
+   * Give one agent session the task-scoped GitHub token instead of the
+   * operator's credentials (agent-github-credentials.ts). Fails closed: on
+   * any failure the agent has no GitHub credential, and a milestone says why.
+   */
+  private async startScopedGitHubCredentials(worker: LocalWorker, env: Record<string, string>, homeDir: string): Promise<ScopedGitHubSession> {
+    const log = (msg: string) => console.log(`[Worker ${worker.id}] ${msg}`);
+    const session = await startScopedGitHubSession({
+      env,
+      homeDir,
+      fetchToken: () => this.buildd.getAgentGitHubToken(worker.id),
+      log,
+    });
+    if (session.ok) {
+      log('GitHub: task-scoped installation token (runner credentials withheld)');
+      this.addMilestone(worker, { type: 'status', label: 'GitHub: task-scoped token', ts: Date.now() });
+    } else {
+      this.addMilestone(worker, { type: 'status', label: `GitHub: no credentials (${session.reason})`.slice(0, 200), ts: Date.now() });
+    }
+    return session;
+  }
+
+  /**
    * Prepare and start a single claimed worker from the poll path.
    * Extracted from the claim loop so a failure here is contained to one worker.
    */
   private async startClaimedWorker(claimedWorker: any): Promise<LocalWorker | null> {
     const prepared = await this.prepareClaimedWorker(claimedWorker);
     if (prepared.kind !== 'ready') return null;
-    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.role);
   }
 
   /**
@@ -1579,9 +1620,9 @@ export class WorkerManager {
     claimedWorker: any,
     fallbackTask?: BuilddTask,
   ): Promise<
-    | { kind: 'ready'; task: BuilddTask; cwd: string; overlayFrom?: string }
+    | { kind: 'ready'; task: BuilddTask; cwd: string; role?: { bundle: RoleBundle; overlay: boolean } }
     | { kind: 'no_task' }
-    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string }
+    | { kind: 'unresolvable'; task: BuilddTask; wsName: string; repoHint: string; githubThrottled?: boolean }
   > {
     const task: BuilddTask | undefined = claimedWorker.task || fallbackTask;
     if (!task) return { kind: 'no_task' };
@@ -1591,6 +1632,8 @@ export class WorkerManager {
         id: task.workspaceId,
         name: task.workspace?.name || 'unknown',
         repo: task.workspace?.repo,
+        // The one branch a cloud clone takes (git-clone.ts).
+        defaultBranch: task.workspace?.gitConfig?.defaultBranch ?? null,
       },
       (task.context as Record<string, unknown> | null) ?? null
     );
@@ -1598,6 +1641,21 @@ export class WorkerManager {
     if (!workspacePath) {
       const wsName = task.workspace?.name || task.workspaceId;
       const repoHint = task.workspace?.repo ? ` (repo: ${task.workspace.repo})` : '';
+      // The clone failed because GitHub is throttling it (git-clone.ts, after
+      // its own retries). Not this runner's to fix and not the task's fault:
+      // report an infrastructure failure, which buildd requeues on its
+      // infra-retry budget with backoff, and leave the task offerable.
+      // Awaited: a --once container exits right after this.
+      const throttle = task.workspace?.repo ? cloneThrottledRecently(task.workspace.repo) : null;
+      if (throttle) {
+        console.error(`Cannot clone the workspace for claimed task ${task.title} (${task.id}): GitHub is rate limiting this runner; reporting an infrastructure failure for a retry`);
+        await this.buildd.updateWorker(claimedWorker.id, {
+          status: 'failed',
+          error: `Cannot clone workspace "${wsName}"${repoHint}: GitHub is rate limiting clones from this runner (HTTP 429 / rate limit). Infrastructure failure; buildd retries it after a backoff.`,
+          githubThrottled: true,
+        }).catch(() => {});
+        return { kind: 'unresolvable', task, wsName, repoHint, githubThrottled: true };
+      }
       console.error(`Cannot resolve workspace for claimed task: ${task.title} (${task.id}) — will skip on future retries`);
       // Skip this task on future Pusher nudges; a poll re-claim would fail the
       // same way.
@@ -1610,9 +1668,10 @@ export class WorkerManager {
       return { kind: 'unresolvable', task, wsName, repoHint };
     }
 
-    // Role cwd + overlay source. The overlay itself is deferred to
-    // startFromClaim, which runs it against the worktree once one exists.
-    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath);
+    // Role cwd + bundle (fetched per claim, held in memory). The overlay is
+    // deferred to startFromClaim, which runs it against the worktree once one
+    // exists; role skill files are written per session in startSession.
+    const roleCwd = await resolveRoleCwd((claimedWorker as any).roleConfig as RoleConfig | undefined, task, workspacePath, claimedWorker.id);
     if (roleCwd.cwd !== workspacePath) {
       console.log(`[Worker ${claimedWorker.id}] Using role dir as cwd (workspace has no repo): ${roleCwd.cwd}`);
     }
@@ -1627,7 +1686,7 @@ export class WorkerManager {
       notifyBrokerCredentials(pendingRefreshes);
     }
 
-    return { kind: 'ready', task, cwd: roleCwd.cwd, overlayFrom: roleCwd.overlayFrom };
+    return { kind: 'ready', task, cwd: roleCwd.cwd, ...(roleCwd.roleBundle ? { role: { bundle: roleCwd.roleBundle, overlay: !!roleCwd.overlay } } : {}) };
   }
 
   /**
@@ -1832,21 +1891,27 @@ export class WorkerManager {
     // above). Same preparation as the poll path — one shared routine.
     const prepared = await this.prepareClaimedWorker(claimedWorker, task);
     if (prepared.kind === 'unresolvable') {
+      if (prepared.githubThrottled) {
+        throw Object.assign(
+          new Error(`Workspace "${prepared.wsName}" could not be cloned${prepared.repoHint}: GitHub is rate limiting this runner (reported as an infrastructure failure)`),
+          { claimError: 'github_throttled' as const },
+        );
+      }
       throw Object.assign(
         new Error(`Workspace "${prepared.wsName}" is not cloned locally${prepared.repoHint} — clone the repo first`),
         { claimError: 'workspace_not_found' as const },
       );
     }
     if (prepared.kind !== 'ready') return null; // unreachable: `task` is the fallback
-    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.overlayFrom);
+    return this.startFromClaim(claimedWorker, prepared.task, prepared.cwd, prepared.role);
   }
 
   private async startFromClaim(
-    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
+    claimedWorker: { id: string; branch?: string; task?: BuilddTask; serverApiKey?: string; serverOauthToken?: string; modelEndpoint?: ClaimModelEndpoint; modelEndpointIgnored?: boolean; githubCredentials?: { mode: 'scoped' | 'runner' }; claudeAccessToken?: string; claudeTokenExpiresAt?: string | null; claudeTokenScopes?: string[]; claudeAiArtifacts?: ClaudeAiArtifactAccess; mcpSecrets?: Record<string, string>; mcpConnectors?: ResolvedMcpConnector[]; codexCredential?: { credentialType?: 'oauth' | 'api_key'; accessToken?: string; refreshToken?: string; accountId?: string; idToken?: string; apiKey?: string; expiresAt: Date | null }; roleConfig?: RoleConfig; roleInstructions?: RoleInstructions; roleEnvSecrets?: Record<string, string>; roleEnvMissing?: string[]; skillBundles?: SkillBundle[]; cbmExperiment?: { experimentId: string; policyVersion: number; arm: string; withheld: boolean }; questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number } },
     fullTask: BuilddTask,
     workspacePath: string,
-    /** Role directory to overlay into the session cwd once the worktree exists. */
-    roleOverlayDir?: string,
+    /** Role bundle; `overlay` = merge its .mcp.json into the session cwd once the worktree exists. */
+    role?: { bundle: RoleBundle; overlay: boolean },
   ): Promise<LocalWorker | null> {
 
     // Refresh the runner heartbeat record immediately so the stale-workers cron
@@ -1977,6 +2042,9 @@ export class WorkerManager {
       console.log(`[Worker ${claimedWorker.id}] Received team agent model endpoint (${claimedWorker.modelEndpoint.kind})`);
     }
     if (claimedWorker.modelEndpointIgnored) worker.modelEndpointIgnored = true;
+    if (claimedWorker.githubCredentials?.mode === 'scoped' || claimedWorker.githubCredentials?.mode === 'runner') {
+      worker.githubCredentials = { mode: claimedWorker.githubCredentials.mode };
+    }
     if (claimedWorker.claudeAccessToken) {
       worker.claudeAccessToken = claimedWorker.claudeAccessToken;
       worker.claudeTokenExpiresAt = claimedWorker.claudeTokenExpiresAt
@@ -2021,6 +2089,9 @@ export class WorkerManager {
       worker.codexCredential = claimedWorker.codexCredential;
       console.log(`[Worker ${claimedWorker.id}] Received Codex credential for accountId=${claimedWorker.codexCredential.accountId}`);
     }
+    if (role) worker.roleBundle = role.bundle;
+    // The claim IS the payload; a resume in this process needs no re-fetch.
+    worker.promptBundlesLoaded = true;
     if (claimedWorker.roleConfig) {
       worker.roleConfig = claimedWorker.roleConfig;
       console.log(`[Worker ${claimedWorker.id}] Received role config: ${claimedWorker.roleConfig.slug} (${claimedWorker.roleConfig.type})`);
@@ -2165,6 +2236,14 @@ export class WorkerManager {
           fallbacks: [gitConfig?.targetBranch, defaultBranch],
           worktreeFallback: setupResult.fallback ?? null,
         });
+        // A narrow (cloud) clone holds the default branch and whatever setup
+        // fetched; a PR base beyond those (a target branch, a stacked
+        // predecessor) is fetched now, by name, so the path-claim sweep and the
+        // PR diff measure against a real ref. A full clone: a no-op.
+        const prBaseBranch = branchOfRemoteRef(worker.prBaseRef);
+        if (prBaseBranch && worker.prBaseRef !== setupResult.base) {
+          ensureRemoteBranch(workspacePath, prBaseBranch, { log: (m) => console.log(`[Worker ${worker.id}] ${m}`) });
+        }
         // Resume and shared-branch collision recovery can both change the ref.
         // The server must acknowledge this actual branch before the agent starts
         // (see startWithPersistedBranch below), since create_pr derives its head
@@ -2273,9 +2352,9 @@ export class WorkerManager {
     // `git worktree add` only checks out tracked content, so role skills and
     // .mcp.json written into the base clone first never reached the directory
     // the agent actually runs in (and `settingSources: 'project'` reads from).
-    if (roleOverlayDir && !startBlock) {
+    if (role?.overlay && !startBlock) {
       try {
-        await overlayRoleFiles(roleOverlayDir, sessionCwd);
+        await overlayRoleFiles(role.bundle, sessionCwd);
       } catch (err) {
         // Non-fatal: the persona still arrives via the system prompt. Visible
         // rather than silent, because missing skills change what the agent can do.
@@ -2718,12 +2797,12 @@ export class WorkerManager {
    * session abort. Called from handleMessage, or for a gated worker from the
    * PreToolUse hook once the question gate let the question through.
    */
-  async parkQuestion(worker: LocalWorker, input: Record<string, unknown>, toolUseId?: string): Promise<void> {
+  async parkQuestion(worker: LocalWorker, input: Record<string, unknown>, toolUseId?: string, gateReply?: QuestionGateReply): Promise<void> {
     const questions = input.questions as Array<{ question: string; header?: string }> | undefined;
     const firstQuestion = questions?.[0];
     const questionText = firstQuestion?.question || 'Awaiting input';
     console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
-    const question = questionFromToolInput(worker, input, toolUseId);
+    const question = holdTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
     worker.waitingFor = question;
     worker.currentAction = questionHeader(input) || 'Question';
     this.addMilestone(worker, { type: 'status', label: `Question: ${questionHeader(input) || 'Awaiting input'}`, ts: Date.now() });
@@ -2809,6 +2888,122 @@ export class WorkerManager {
   }
 
   /**
+   * Give a session ending without delivering one more bounded turn, with
+   * label-specific text (session-end-classification.ts) instead of PR
+   * #3143's one generic nudge. Records the push (label, text, timestamp) on
+   * the worker BEFORE resuming, so the sequence is reconstructable even if
+   * the resumed turn itself throws or never reaches a completion PATCH.
+   */
+  private async pushSessionEnd(
+    worker: LocalWorker,
+    cwd: string,
+    task: BuilddTask,
+    label: SessionEndLabel,
+    text: string,
+    resumeId: string,
+    carriedStructuredOutput?: Record<string, unknown>,
+  ): Promise<void> {
+    worker.sessionEndPushCount = (worker.sessionEndPushCount ?? 0) + 1;
+    worker.sessionEndPushes = [...(worker.sessionEndPushes ?? []), { label, at: Date.now(), text }];
+    sessionLog(worker.id, 'info', 'session_end_push', `label=${label} count=${worker.sessionEndPushCount} resume=${resumeId}`, worker.taskId);
+    this.addMilestone(worker, { type: 'status', label: `Session ended with nothing delivered (${label}) — one more turn`, ts: Date.now() });
+    const pushTask: BuilddTask = { ...task, description: text };
+    await this.startSession(worker, cwd, pushTask, resumeId, true, carriedStructuredOutput);
+    // The nested call owns this worker's whole completion lifecycle from
+    // here, exactly as with an ordinary closing turn.
+  }
+
+  /**
+   * Park with the classified reason recorded and visible on the task page —
+   * reusing the same `waitingFor`/`waiting_input` surface a live
+   * `AskUserQuestion` already renders, so no new UI is needed. `disposition`
+   * 'hold' tags it the same way the Jev gate tags a live held question
+   * (parks exactly like 'ask' today; see question-gate.ts HOLD_RESURFACE_MS).
+   */
+  private async parkSessionEnd(
+    worker: LocalWorker,
+    label: SessionEndLabel,
+    disposition: 'ask' | 'hold',
+    note: string,
+  ): Promise<void> {
+    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${disposition}`, worker.taskId);
+    const question: WaitingFor = {
+      type: 'question',
+      prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
+      context: `Classified as: ${label}. ${note}`.trim(),
+      ...(disposition === 'hold' ? { disposition: 'hold' as const, holdReason: note } : {}),
+    };
+    worker.waitingFor = question;
+    worker.status = 'waiting';
+    worker.currentAction = 'Needs a person';
+    worker.hasNewActivity = true;
+    this.addMilestone(worker, { type: 'status', label: `Parked — ${label}`, ts: Date.now() });
+    await this.buildd.updateWorker(worker.id, {
+      status: 'waiting_input',
+      currentAction: worker.currentAction,
+      milestones: worker.milestones,
+      waitingFor: questionPayload(question) as any,
+    }).catch(() => {});
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+  }
+
+  /**
+   * Route a `genuinely_blocked` session end through the same Jev decide/
+   * hold/ask question gate a live `AskUserQuestion` goes through
+   * (`@buildd/core/question-gate`, `POST /api/workers/[id]/question-check`) —
+   * there is no live question here (the agent never called
+   * `AskUserQuestion`), so this asks on the agent's behalf whether to retry,
+   * fail, or hand it to a person. Only a `decide` on one of the two offered
+   * options ever avoids a human-facing park; every other reply (`hold`,
+   * `ask`, a hard rail, or any failure) fails open to one — never throws.
+   */
+  private async routeGenuinelyBlocked(
+    worker: LocalWorker,
+    task: BuilddTask,
+  ): Promise<
+    | { action: 'retry' | 'fail'; text: string }
+    | { action: 'park'; disposition: 'ask' | 'hold'; text: string }
+  > {
+    const diagnosis = (worker.lastAssistantMessage || '').trim().slice(0, 300);
+    const input = genuinelyBlockedQuestionInput(diagnosis || undefined);
+    const question = questionFromToolInput(worker, input);
+    let reply: QuestionGateReply;
+    try {
+      reply = await this.buildd.checkQuestion(
+        worker.id,
+        { question: questionPayload(question), priorPushbacks: 0 },
+        QUESTION_GATE_RUNNER_TIMEOUT_MS,
+      );
+    } catch {
+      return { action: 'park', disposition: 'ask', text: 'Could not reach the decision gate for this; a person should look at it.' };
+    }
+    sessionLog(worker.id, 'info', 'genuinely_blocked_gate', `verdict=${reply.verdict} outcome=${reply.outcome}`, task.id);
+
+    if (reply.verdict === 'decide' && reply.decision) {
+      if (reply.decision.label === GENUINELY_BLOCKED_RETRY_OPTION) {
+        return {
+          action: 'retry',
+          text: reply.reason || 'Jev decided you should take one more shot at this. Deliver now, or call complete_task.',
+        };
+      }
+      if (reply.decision.label === GENUINELY_BLOCKED_FAIL_OPTION) {
+        return { action: 'fail', text: reply.reason || '' };
+      }
+    }
+    // Any other reply (hard rail, ask, hold, max_pushbacks, sensitive, off,
+    // error, or a `decide` on neither offered option) fails open to a
+    // human-facing park — the only gate reply this mechanism ever treats as
+    // "apply the decision without a person" is an actual `decide` on one of
+    // the two options above.
+    return {
+      action: 'park',
+      disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
+      text: reply.reason || (reply.disposition === 'hold' ? 'Held — it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
+    };
+  }
+
+  /**
    * @param isClosingTurn Set only by the recursive self-call from this same
    * method's post-loop logic: this invocation IS a session's one bounded
    * closing turn (see CLOSING_TURN_INSTRUCTION), not a fresh dispatch or an
@@ -2831,9 +3026,33 @@ export class WorkerManager {
    * the server). The claim-delivered source is independent of `roleConfig` so
    * an MCP-registered role with no R2 bundle still gets its declared vars.
    */
-  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleConfig' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
-    const fileBased = worker.roleConfig
-      ? await resolveRoleEnv(getRoleDir(worker.roleConfig.slug), process.env as Record<string, string>)
+  /**
+   * Re-fetch a restored worker's role and skill payload (see
+   * session-prompt-bundles.ts). Fail-open: a session that cannot get it back
+   * resumes without, with a visible milestone, and the next resume retries.
+   */
+  private async ensurePromptBundles(worker: LocalWorker): Promise<void> {
+    const outcome = await rehydratePromptBundles(worker, {
+      fetchPromptBundles: (id) => this.buildd.getWorkerPromptBundles(id),
+    });
+    if (outcome.kind === 'restored') {
+      const parts = [
+        outcome.skills.length ? `${outcome.skills.length} skill(s)` : '',
+        outcome.role ? `role ${outcome.role}` : '',
+      ].filter(Boolean);
+      if (parts.length) {
+        console.log(`[Worker ${worker.id}] Restored prompt bundles for resume: ${parts.join(', ')}`);
+        this.addMilestone(worker, { type: 'status', label: `Resume: restored ${parts.join(', ')}`, ts: Date.now() });
+      }
+    } else if (outcome.kind === 'failed') {
+      console.warn(`[Worker ${worker.id}] Could not restore role/skills for resume: ${outcome.reason}`);
+      this.addMilestone(worker, { type: 'status', label: 'Resume: role/skills unavailable, continuing without', ts: Date.now() });
+    }
+  }
+
+  private async resolveWorkerRoleEnv(worker: Pick<LocalWorker, 'roleBundle' | 'roleEnvSecrets' | 'roleEnvMissing'>): Promise<{ resolved: Record<string, string>; missing: string[] }> {
+    const fileBased = worker.roleBundle
+      ? resolveRoleEnvMapping(worker.roleBundle.envMapping, process.env as Record<string, string>)
       : { resolved: {}, missing: [] };
     return {
       resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
@@ -2924,6 +3143,9 @@ export class WorkerManager {
     // Per-worker CLAUDE_CONFIG_DIR for managed claude_credential tokens.
     // Cleaned up in finally — never persist between runs (access_token is refreshed at claim time).
     let claudeConfigDir: string | undefined;
+    // Set when this session wrote role/skill files into <cwd>/.claude/skills,
+    // which the SDK reads only through the `project` setting source.
+    let wroteSessionSkills = false;
     // Codex AGENTS.md handle (Phase 2A): records whether we created or appended
     // to an AGENTS.md in the repo cwd so the finally block can restore/remove it
     // and avoid dirtying the repo.
@@ -2936,6 +3158,8 @@ export class WorkerManager {
     let cbmSharedCache = false;
     // Per-session throwaway BUILDD_HOME for the agent env; removed in finally.
     let agentRunnerHome: string | undefined;
+    // Keeps this session's task-scoped GitHub token fresh; stopped in finally.
+    let githubTokenRefresher: ScopedGitHubSession | undefined;
     // Capture CLI stderr durably. Every chunk is filed into the per-worker session
     // log the instant it arrives (previously stderr only reached console.log, i.e.
     // the runner's screen buffer, and died with it — 0 of 201 per-worker log files
@@ -3054,26 +3278,22 @@ export class WorkerManager {
           )
         : [];
 
-      // Sync skills to disk for native SDK discovery (no prompt injection).
+      // Write role and skill files for THIS session only (no prompt injection,
+      // no cross-task disk cache): into <cwd>/.claude/skills, where the SDK
+      // discovers them via the `project` setting source. Recorded in the
+      // worker's session manifest and removed in this invocation's finally.
       // Bundles arrive on the claim response (worker.skillBundles), resolved
       // from task.context.skillSlugs by attachSkillBundles server-side —
       // never on task.context itself, which only ever carries the slugs.
       const skillBundles = worker.skillBundles;
       const skillSlugs: string[] = (task.context as any)?.skillSlugs || [];
 
-      if (skillBundles && skillBundles.length > 0) {
-        for (const bundle of skillBundles) {
-          try {
-            await syncSkillToLocal(bundle);
-            this.addMilestone(worker, { type: 'status', label: `Skill synced: ${bundle.name}`, ts: Date.now() });
-            if (!skillSlugs.includes(bundle.slug)) {
-              skillSlugs.push(bundle.slug);
-            }
-          } catch (err) {
-            console.error(`[Worker ${worker.id}] Failed to sync skill ${bundle.slug}:`, err);
-            this.addMilestone(worker, { type: 'status', label: `Skill sync failed: ${bundle.slug}`, ts: Date.now() });
-          }
-        }
+      // Same writer for a fresh and a resumed session (session-prompt-bundles.ts).
+      const promptFiles = await writeSessionPromptFiles(worker, cwd, (label) =>
+        this.addMilestone(worker, { type: 'status', label, ts: Date.now() }));
+      if (promptFiles.wroteSkills) wroteSessionSkills = true;
+      for (const slug of promptFiles.syncedSkills) {
+        if (!skillSlugs.includes(slug)) skillSlugs.push(slug);
       }
 
       // Build prompt with workspace context
@@ -3139,6 +3359,23 @@ export class WorkerManager {
       // host, including ones that predate the in-repo test-home guard) would
       // otherwise fall back to ~/.buildd, which is THIS runner's live store.
       agentRunnerHome = isolateAgentRunnerHome(cleanEnv, worker.id);
+
+      // GitHub: when the claim says `scoped`, the agent gets only the
+      // installation token minted for its task's repo — the operator's
+      // GITHUB_TOKEN/GH_TOKEN and host git/gh credentials are withheld. See
+      // agent-github-credentials.ts. Absent or `runner`: unchanged.
+      if (worker.githubCredentials?.mode === 'scoped') {
+        githubTokenRefresher = await this.startScopedGitHubCredentials(worker, cleanEnv, agentRunnerHome);
+        if (!githubTokenRefresher.ok) {
+          promptText += '\n\n' + [
+            '## GitHub access unavailable',
+            '',
+            `This session has no GitHub credentials (${githubTokenRefresher.reason}).`,
+            'Do not look for other credentials on this machine. If the task needs a',
+            'push or a PR, report it as **blocked** with that reason.',
+          ].join('\n');
+        }
+      }
 
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
@@ -3207,12 +3444,19 @@ export class WorkerManager {
         teamEndpointWithheld: worker.modelEndpointIgnored,
         budgetModel: TIER_DEFAULTS.budget.model,
       });
+      // Preflight: a Codex task whose team agent model endpoint has no
+      // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
+      // fail clearly rather than silently falling back to local Codex auth as
+      // if no endpoint had been configured.
+      if (modelEnv.error) {
+        throw new Error(modelEnv.error);
+      }
       const teamEndpointApplied = modelEnv.endpoint === 'team';
       if (teamEndpointApplied) {
-        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no Anthropic credential given to the agent`);
+        console.log(`[Worker ${worker.id}] Using the team agent model endpoint (${modelEnv.baseUrlOrigin}); no ${isCodexTask ? 'Codex' : 'Anthropic'} credential given to the agent`);
       }
       if (modelEnv.teamEndpointIgnored) {
-        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's LLM_PROVIDER (per-machine config) takes priority`);
+        console.log(`[Worker ${worker.id}] Team agent model endpoint ignored: this runner's ${isCodexTask ? 'OPENAI_BASE_URL' : "LLM_PROVIDER"} (per-machine config) takes priority`);
       }
       if (this.config.llmProvider?.provider === 'openrouter') {
         console.log(`[Worker ${worker.id}] Using OpenRouter provider`);
@@ -4046,16 +4290,21 @@ export class WorkerManager {
           : {}),
         abortController,
         env: cleanEnv,
-        settingSources: useClaudeMd ? ['user', 'project'] : ['user'],  // Load user skills + optionally CLAUDE.md
-        // 'user' is needed for skills in ~/.claude/skills, but must not carry
-        // the host operator's own CLAUDE.md / rules into the worker. 'project'
-        // walks every ancestor of the cwd, which for a nested worktree includes
-        // the primary clone — its CLAUDE.md arrived headed with the primary path
-        // and sent agents there (see primaryCloneMemoryExcludes).
+        // 'user' keeps the operator's own ~/.claude/skills available, but must
+        // not carry the host operator's own CLAUDE.md / rules into the worker.
+        // 'project' loads CLAUDE.md AND the session skills written into
+        // <cwd>/.claude/skills — so a workspace that opted out of CLAUDE.md
+        // still gets 'project' when this session wrote skills, with the
+        // project memory files excluded instead. 'project' walks every ancestor
+        // of the cwd, which for a nested worktree includes the primary clone —
+        // its CLAUDE.md arrived headed with the primary path and sent agents
+        // there (see primaryCloneMemoryExcludes).
+        settingSources: useClaudeMd || wroteSessionSkills ? ['user', 'project'] : ['user'],
         settings: {
           claudeMdExcludes: [
             ...hostUserMemoryExcludes(homedir(), cleanEnv.CLAUDE_CONFIG_DIR),
             ...primaryCloneMemoryExcludes(cwd, repoPath),
+            ...(!useClaudeMd && wroteSessionSkills ? projectMemoryExcludes(cwd) : []),
           ],
         },
         permissionMode,
@@ -4793,51 +5042,83 @@ export class WorkerManager {
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
-      } else if (shouldFailForMissingPr({
-        outputRequirement: task.outputRequirement,
-        prCreated: worker.prCreated,
-        commitCount: worker.commits.length,
-      })) {
-        // pr_required, but the session produced NO confirmed PR and NO commits —
-        // there is nothing to open a PR from (e.g. a blocked environment where the
-        // agent could not run shell commands). Attempting completion would only
-        // earn the server's generic "requires a pull request" 400, whose text
-        // buries the agent's real explanation. Fail with the agent's own report so
-        // the failure is truthful. (When commits exist we fall through to the
-        // server, which can still auto-detect a PR opened via `gh pr create`.)
-        sessionLog(worker.id, 'warn', 'output_requirement_unmet', 'pr_required (no commits)', worker.taskId);
+      } else if (prRequiredUnmet({ outputRequirement: task.outputRequirement, prCreated: worker.prCreated })) {
+        // pr_required, but the session produced no runner-confirmed PR. Does
+        // NOT require zero commits — the mission's own motivating case (dozens
+        // of commits, no PR, a session that just stopped mid-wait) has real
+        // commits, and classifying it is the whole point. Attempting
+        // completion with nothing resolved would only earn the server's
+        // generic "requires a pull request" 400, whose text buries the
+        // agent's real explanation.
+        const commitCountAtEntry = worker.commits.length;
+        sessionLog(worker.id, 'warn', 'output_requirement_unmet', `pr_required (commits=${commitCountAtEntry})`, worker.taskId);
 
-        // One last nudge before giving up. The session ended by its own choice
-        // (it paused to wait, stopped after a denied tool, asked in prose), so
-        // the failure below throws away real work the agent may still be able
-        // to hand over — or park properly with AskUserQuestion. Everything that
-        // is not a voluntary end never reaches this branch (auth, budget and
+        // Classify why, then push, route or park — before giving up. The
+        // session ended by its own choice (it paused to wait, stopped after a
+        // denied tool, asked in prose), so failing outright throws away real
+        // work the agent may still be able to hand over. Everything that is
+        // not a voluntary end never reaches this branch (auth, budget and
         // rate-limit exits, aborts, needs_input parks and waiting workers all
         // returned above or went through the catch block).
         //
-        // Bounded: never from a closing/nudge turn itself, and never twice for
-        // one worker even across separately resumed sessions.
-        if (!isClosingTurn && !worker.noDeliverableNudged) {
+        // Bounded by SESSION_END_MAX_PUSHES (a counter), not by `isClosingTurn`
+        // (a flag) — the counter is itself the recursion guard, so this check
+        // runs even from within an already-pushed turn, up to the cap.
+        const pushesSoFar = worker.sessionEndPushCount ?? 0;
+        if (pushesSoFar < SESSION_END_MAX_PUSHES) {
           const remote = await this.remoteSessionState(worker);
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
           if (!remote.workerTerminal && !remote.taskCancelled && resumeId) {
-            worker.noDeliverableNudged = true;
-            sessionLog(worker.id, 'info', 'no_deliverable_nudge', `resume=${resumeId}`, worker.taskId);
-            this.addMilestone(worker, { type: 'status', label: 'Session ended with nothing delivered — giving one last turn', ts: Date.now() });
-            const nudgeTask: BuilddTask = { ...task, description: NO_DELIVERABLE_NUDGE };
-            delegatedToClosingTurn = true;
-            await this.startSession(worker, cwd, nudgeTask, resumeId, true, structuredOutput);
-            // The nested call owns this worker's whole completion lifecycle
-            // from here, exactly as with a closing turn.
-            return;
+            const label = classifySessionEnd({
+              alreadyTerminalOnServer: false, // remote.workerTerminal is false here
+              hasProgress: worker.commits.length > 0,
+              backgroundJobOutstanding: isBackgroundJobOutstanding(worker),
+              lastToolDeniedByRunner: lastToolWasDeniedByRunner(worker),
+            });
+
+            if (label === 'genuinely_blocked') {
+              const routed = await this.routeGenuinelyBlocked(worker, task);
+              if (routed.action === 'park') {
+                await this.parkSessionEnd(worker, label, routed.disposition, routed.text);
+                return;
+              }
+              if (routed.action === 'retry') {
+                delegatedToClosingTurn = true;
+                await this.pushSessionEnd(worker, cwd, task, label, routed.text, resumeId, structuredOutput);
+                return;
+              }
+              // routed.action === 'fail' falls through to the standard failure below.
+            } else {
+              delegatedToClosingTurn = true;
+              await this.pushSessionEnd(worker, cwd, task, label, SESSION_END_PUSH_TEXT[label], resumeId, structuredOutput);
+              return;
+            }
           }
+        } else {
+          // Cap reached: park with the classified reason recorded and visible,
+          // rather than failing outright — the task may still be salvageable
+          // by a person even though the runner is out of pushes to give it.
+          const lastLabel: SessionEndLabel = worker.sessionEndPushes?.[worker.sessionEndPushes.length - 1]?.label ?? 'genuinely_blocked';
+          await this.parkSessionEnd(
+            worker, lastLabel, 'ask',
+            `This session used its ${SESSION_END_MAX_PUSHES} pushes (${(worker.sessionEndPushes ?? []).map(p => p.label).join(', ')}) and still has nothing delivered.`,
+          );
+          return;
         }
 
+        // Nothing pushed or parked above (not resumable, the push cap was
+        // already spent in a way that fell through, or Jev decided this
+        // should simply fail) — fail truthfully. A non-zero commit count
+        // used to fall through to the server's own auto-detect-by-branch
+        // lookup instead of failing locally; that case now gets a real
+        // chance to resolve itself via a push first (above), so reaching
+        // here with commits means that chance didn't change anything either.
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const diagnosis = (worker.lastAssistantMessage || '').trim();
+        const commitClause = commitCountAtEntry === 0 ? ' and no commits were made' : '';
         const errMsg = diagnosis
-          ? `No PR was created and no commits were made. Agent's final report:\n\n${diagnosis}`
-          : 'No PR was created and no commits were made before the session ended (pr_required).';
+          ? `No PR was created${commitClause}. Agent's final report:\n\n${diagnosis}`
+          : `No PR was created${commitClause} before the session ended (pr_required).`;
         worker.status = 'error';
         worker.error = errMsg;
         worker.currentAction = 'No deliverable produced';
@@ -4851,6 +5132,7 @@ export class WorkerManager {
             closingTurnOutcome: isClosingTurn
               ? (closingTurnFailure ? `declined:${closingTurnFailure}` as const : 'declined' as const)
               : 'skipped:no_deliverable' as const,
+            ...(worker.sessionEndPushes?.length ? { sessionEndPushes: worker.sessionEndPushes } : {}),
           },
         });
         this.emit({ type: 'worker_update', worker });
@@ -5042,13 +5324,33 @@ export class WorkerManager {
           }
         }
 
-        // Re-read AFTER the three blocks above. All three can assign a
-        // brand-new object to worker.resultMeta (the SDK never emitted a
-        // result message, e.g. the provision-failure path), and the
-        // completion PATCH used to spread a const captured before them — so
-        // on exactly the path whose comment promises the metrics "travel
-        // with the completion payload", the cbm/toolCounts objects were
-        // built and then silently dropped.
+        // A completion that followed one or more session-end-classification.ts
+        // pushes — "pushes per session and how often a push led to delivery"
+        // needs this on the SUCCESS path too, not just the failure path (see
+        // the hard-failure resultMeta below), or a push that worked would be
+        // invisible to that query.
+        if (worker.sessionEndPushes?.length) {
+          if (worker.resultMeta) {
+            worker.resultMeta.sessionEndPushes = worker.sessionEndPushes;
+          } else {
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              sessionEndPushes: worker.sessionEndPushes,
+            };
+          }
+        }
+
+        // Re-read AFTER the blocks above. Each one can assign a brand-new
+        // object to worker.resultMeta (the SDK never emitted a result
+        // message, e.g. the provision-failure path), and the completion PATCH
+        // used to spread a const captured before them — so on exactly the
+        // path whose comment promises the metrics "travel with the
+        // completion payload", the cbm/toolCounts objects were built and
+        // then silently dropped.
         const resultMeta = worker.resultMeta || undefined;
 
         // Loop-until-verified: run verification command and collect evidence (spec §2).
@@ -5328,9 +5630,14 @@ export class WorkerManager {
       // This invocation's own throwaway BUILDD_HOME. First and unconditional:
       // it is unique to this call, so neither the closing-turn early return
       // below nor a superseded/deregistered session may skip it.
+      githubTokenRefresher?.stop();
       if (agentRunnerHome) {
         cleanupAgentRunnerHome(agentRunnerHome);
       }
+      // Role and skill text written for this session. Unconditional and per
+      // invocation, like the runner home above: a resumed or closing-turn
+      // session writes its own copy from the in-memory bundles.
+      cleanupSessionPromptFiles(worker.id);
       if (delegatedToClosingTurn) {
         // The nested closing-turn call above already ran ITS OWN full
         // try/catch/finally to completion — including this exact cleanup
@@ -6119,6 +6426,18 @@ export class WorkerManager {
               ? `Tool not run (${nonExecKind}): "${feedback.slice(0, 80)}"`
               : `Tool not run: ${nonExecKind}`;
             this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+            // Recorded for session-end-classification.ts: a session that ends
+            // right after a runner-attributed denial (PR #3146's runnerDenial,
+            // not a person) is "asking_permission_it_has", not genuinely
+            // blocked — the denial text itself already says to carry on.
+            // Overwritten on every non-execution; only meaningful when it
+            // matches the LAST recorded tool call (lastToolWasDeniedByRunner).
+            worker.lastToolDenial = {
+              ...(toolUseId ? { toolUseId } : {}),
+              kind: nonExecKind,
+              runnerAttributed: typeof feedback === 'string' && feedback.includes(RUNNER_DENIAL_MARKER),
+              ts: Date.now(),
+            };
             console.log(
               `[Worker ${worker.id}] tool non-execution: kind=${nonExecKind} ` +
               `tool=${nonExecSource ?? '?'}` +

@@ -20,6 +20,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
+import { wakeTasks } from '@/lib/dispatch-authority';
 
 /** How far back a failed task can be to still count as a recoverable casualty. */
 export const RECOVERY_WINDOW_HOURS = 24;
@@ -81,6 +82,9 @@ export async function requeueAuthFailedTasks(teamId: string): Promise<RequeueRes
     .update(tasks)
     .set({ status: 'pending', updatedAt: new Date() })
     .where(and(inArray(tasks.id, toRequeue), eq(tasks.status, 'failed')));
+  // The tasks trigger already made each flip durable; this labels the wake
+  // and kicks delivery. A task the guard skipped is skipped again at delivery.
+  await wakeTasks(toRequeue, 'credential.restored');
 
   if (toRequeue.length > 0) {
     console.log(

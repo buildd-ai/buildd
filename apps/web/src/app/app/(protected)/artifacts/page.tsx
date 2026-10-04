@@ -32,7 +32,7 @@ export default async function ArtifactsPage({
       <main className="min-h-screen pt-14 px-4 pb-4 md:p-8">
         <div className="max-w-4xl mx-auto">
           <h1 className="text-2xl font-semibold tracking-tight mb-2">Artifacts</h1>
-          <p className="text-text-muted">No workspaces yet. Create one to collect artifacts.</p>
+          <p className="text-text-muted">No workspaces.</p>
         </div>
       </main>
     );

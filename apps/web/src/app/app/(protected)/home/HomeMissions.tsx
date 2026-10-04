@@ -107,7 +107,7 @@ export function HomeMissions({
       {missions.length === 0 ? (
         <div className="border border-dashed border-border-default p-6">
           <p className="text-[14px] text-text-secondary">
-            No missions yet. <NewWorkLink kind="mission" className="text-accent-text hover:underline">Create one</NewWorkLink>.
+            No missions. <NewWorkLink kind="mission" className="text-accent-text hover:underline">Create one</NewWorkLink>.
           </p>
         </div>
       ) : views.length === 0 ? (

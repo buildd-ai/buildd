@@ -38,7 +38,7 @@ function DeviceContent() {
         setStatus('error');
       }
     } catch {
-      setErrorMessage('Could not reach buildd. This device is not approved yet.');
+      setErrorMessage('Could not reach buildd. This device is not approved.');
       setStatus('error');
     }
   }

@@ -22,14 +22,14 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { basename, dirname, join, relative, resolve } from 'path';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, type AcceptRule,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, inFadeOut, applyAccepted, emptyGap, isTypeCard, flicker, sparseFrame, type AcceptRule,
   type Finding, type Severity, type Word,
 } from './checks';
 
 const arg = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i > 0 ? process.argv[i + 1] : undefined; };
 const flag = (name: string) => process.argv.includes(`--${name}`);
 const MENLO = '/System/Library/Fonts/Menlo.ttc';
-const PROMPT_VERSION = 'v5';
+const PROMPT_VERSION = 'v6';
 
 function sh(cmd: string[], opts: { stdout?: 'pipe' } = {}): { out: Buffer; err: string; code: number } {
   const r = Bun.spawnSync(cmd, { stdout: 'pipe', stderr: 'pipe', ...opts });
@@ -68,6 +68,7 @@ function siteCopy(clipsTs?: string): Record<string, Copy> {
     if (h1) out.hero = { headline: h1[1].replace(/&apos;/g, "'"), body: 'the site hero loop, full-bleed above the fold' };
   }
   out.full = { headline: 'Watch it ship (the full film, with sound)', body: 'the whole story in one cut' };
+  out.captioned = { headline: 'The full film, silent, with its lines as captions', body: 'for autoplay without sound' };
   return out;
 }
 const baseOf = (name: string) => name.replace(/-light/, '').replace(/-mobile$/, '');
@@ -98,10 +99,20 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
   // Blank or frozen stretches, one pass. A hold is a design choice; a hold
   // over most of the clip, or any black, is not.
   const det = sh(['ffmpeg', '-hide_banner', '-i', file, '-vf', 'blackdetect=d=0.25:pix_th=0.05,freezedetect=n=0.001:d=3.5,metadata=mode=print', '-f', 'null', '-']).err;
-  for (const b of parseBlack(det)) findings.push({ t: b.start, severity: 'high', check: 'black', issue: `black frames ${b.start.toFixed(2)}–${b.end.toFixed(2)}s` });
+  // A folded beat's seam dips through black by design (render.ts seamlessLoopFilter): black inside that last fade is the dip.
+  const seamFrom = meta.folded ? p.duration - (cut?.fade ?? 0.8) - 0.05 : Infinity;
+  for (const b of parseBlack(det)) if (b.start < seamFrom) findings.push({ t: b.start, severity: 'high', check: 'black', issue: `black frames ${b.start.toFixed(2)}–${b.end.toFixed(2)}s` });
   for (const f of parseFreeze(det, p.duration)) {
     const share = (f.end - f.start) / p.duration;
     findings.push({ t: f.start, severity: share > 0.6 ? 'medium' : 'low', check: 'freeze', issue: `no motion ${f.start.toFixed(1)}–${f.end.toFixed(1)}s (${Math.round(share * 100)}% of the clip)` });
+  }
+
+  // Flicker: a coarse grid of block averages at 10fps, one decode.
+  {
+    const raw = sh(['ffmpeg', '-v', 'error', '-i', file, '-vf', 'fps=10,scale=32:18:flags=area,format=gray', '-f', 'rawvideo', '-']).out;
+    const frames: Uint8Array[] = [];
+    for (let i = 0; i + 576 <= raw.length; i += 576) frames.push(new Uint8Array(raw.subarray(i, i + 576)));
+    findings.push(...flicker(frames, 10));
   }
 
   const times = sampleTimes(p.duration, meta.crossfades, { loop: meta.loop, fps: p.fps });
@@ -136,8 +147,11 @@ async function measure(name: string, file: string, entry: any, out: string): Pro
     const layered = blending ? [] : [...collisions(words), ...(motion ? textOverShape(words, { ...px, displayWidth: display }) : [])];
     // Transitions dip through the ground, so the frame at a dip's midpoint is empty by design.
     const dipping = meta.crossfades.some((c) => Math.abs(c - t) < 0.3);
-    const floor = inFadeOut(t, p.duration, meta.loop) || dipping ? null : contrastFloor(luma, theme);
-    for (const f of [floor, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit, target: reg ? boxes(reg.target) : undefined, artifacts: boxes(reg?.artifacts) }), ...layered]) if (f) findings.push({ ...f, t });
+    const floor = inFadeOut(t, p.duration, meta.loop) || dipping || isTypeCard(words, p.width, display) ? null : contrastFloor(luma, theme);
+    // A hole in the layout (content above and below, nothing between); dips and the film's fade-out are empty by design.
+    const gap = inFadeOut(t, p.duration, meta.loop) || dipping ? null : emptyGap(px.gray, px.width, px.height);
+    const sparse = inFadeOut(t, p.duration, meta.loop) || dipping ? null : sparseFrame(px.gray, px.width, px.height);
+    for (const f of [floor, gap, sparse, ...legibility(words, { sourceWidth: p.width, displayWidth: display, sourceHeight: p.height, lit, target: reg ? boxes(reg.target) : undefined, artifacts: boxes(reg?.artifacts) }), ...layered]) if (f) findings.push({ ...f, t });
     // Numbers only from words OCR read confidently: a misread checkbox row ("000006") is not a claim.
     const sure = words.filter((w) => w.conf >= 90);
     const lines = new Map<number, Word[]>();
@@ -183,7 +197,7 @@ Read these images with the Read tool (they are at the clip's real display size; 
 1. ${images[0]}: frames every 0.5s across the clip.
 ${images[1] ? `2. ${images[1]}: the transition frames (crossfade midpoints), then the loop seam (the last frame, then the first).` : ''}
 
-${c.name === 'full' ? 'This is the full film: it plays once, in a dialog, with a soundtrack you cannot hear from frames (do not judge the sound), and it ends on a deliberate fade to black. It is NOT a loop, so do not compare its last frame with its first.\n\n' : ''}How these clips are made (so you judge the right things): each is a crop of a real product screen, zoomed onto one element. Everything outside that element is dimmed on purpose, so dimmed text cut off at the frame edge is expected. Flag cut-off text only when it is in the lit (bright) element, or is the thing the headline names. The clips are silent loops with no captions, because the page's headline sits beside them; a missing caption is not a finding. Transitions between shots dip through the background (the old shot fades out, then the new one fades in), so a frame at a transition's midpoint is briefly empty by design; judge whether the dip reads as deliberate, not that it is empty. A loop's last frame should look like its first.
+${c.name === 'full' ? 'This is the full film: it plays once, in a dialog, with a voiceover and soundtrack you cannot hear from frames (do not judge the sound; the voice carries the words, so no captions is expected), and it ends on a deliberate fade to black. It is NOT a loop, so do not compare its last frame with its first.\n\n' : c.name === 'captioned' ? 'This is the full film, silent: it plays once and carries its spoken lines as captions. It is NOT a loop, so do not compare its last frame with its first.\n\n' : ''}How these clips are made (so you judge the right things): each is a crop of a real product screen, zoomed onto one element. Everything outside that element is dimmed on purpose, so dimmed text cut off at the frame edge is expected. Flag cut-off text only when it is in the lit (bright) element, or is the thing the headline names. ${c.name === 'full' || c.name === 'captioned' ? '' : "The clips are silent loops with no captions, because the page's headline sits beside them; a missing caption is not a finding. "}Transitions between shots dip through the background (the old shot fades out, then the new one fades in), so a frame at a transition's midpoint is briefly empty by design; judge whether the dip reads as deliberate, not that it is empty. A loop's last frame should look like its first.
 
 Judge:
 - Does the clip show what the headline claims?

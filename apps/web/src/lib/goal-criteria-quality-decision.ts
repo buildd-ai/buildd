@@ -16,16 +16,19 @@
  * sent or warned on. A `command` is graded on the outcome its label says the
  * command asserts, not on the fact that it runs.
  *
- * Shadow first, modelled on `mission_strand_choice`
- * (strand-choice-decision.ts): with the team's `mission_goal_quality`
- * capability on, the verdict is logged as a `[decision-shadow]` line and weak
- * criteria get a `warned` row in the gate ledger. The response is unchanged.
- * `GOAL_QUALITY_MODE` moves to `surface` in code, in its own PR, after the
- * readout; never by configuration.
+ * With the team's `mission_goal_quality` capability on, the verdict is logged
+ * as a `[decision-shadow]` line and weak criteria get a `warned` row in the
+ * gate ledger. 2026-10-03 owner decision (knowledge-base:
+ * buildd/design/decision-calls.md Point 2b): `GOAL_QUALITY_MODE` ships
+ * `surface` from this point on — the response carries an `advisory` when the
+ * verdict lands in time and something is weak — not shadow-then-a-later-PR;
+ * `shadow` stays available as an explicit per-call override for tests. Never
+ * raised by configuration, workspace setting or request flag.
  *
  * Fails open by construction: disabled, no key, a sensitive workspace, a
  * timeout, an error, an unknown label or a throw all return null.
  */
+import { renderTemplate, resolvedPromptVersion, resolvePromptValueEntry } from '@buildd/core/prompts';
 import { createHash } from 'node:crypto';
 import type { GoalCriterion } from '@buildd/shared';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
@@ -38,6 +41,7 @@ import type {
 } from '@buildd/core/decision-client';
 import type { GateCallerOrigin, RecordGateEventInput } from '@buildd/core/gate-events';
 import { CODE_RUBRIC, GOAL_QUALITY_BASELINE_RUBRIC, type GoalQualityRubric } from './goal-criteria-rubric';
+import { registerValuePrompt } from '@buildd/core/prompts';
 
 export const DECISION_SHADOW_LOG_PREFIX = '[decision-shadow]';
 export const GOAL_QUALITY_CAPABILITY = 'mission_goal_quality' as const;
@@ -55,8 +59,10 @@ export const GOAL_QUALITY_PROMPT_VERSION = 'gq2';
 
 /**
  * `shadow`: log and ledger only, response unchanged. `surface`: the response
- * carries an advisory. Raised in code, in its own PR, after
- * the readout — never by configuration, workspace setting or request flag.
+ * carries an advisory when the verdict lands in time and something is weak
+ * (`withGoalQualityAdvisory`). Shipped `surface` since 2026-10-03 (owner
+ * decision retiring shadow-first as the default decision-call rollout) —
+ * never raised by configuration, workspace setting or request flag.
  */
 export const GOAL_QUALITY_MODE: 'shadow' | 'surface' = 'surface';
 
@@ -80,7 +86,7 @@ export const GOAL_QUALITY_REWRITES: Record<RewriteLabel, string | null> = {
   none: null,
 };
 
-/** The code-owned baseline rubric (lib/goal-criteria-rubric.ts); a team's memory may replace it. */
+/** The public baseline rubric (lib/goal-criteria-rubric.ts); a prompts row, then a team's memory, may replace it. */
 export const GOAL_QUALITY_RUBRIC = GOAL_QUALITY_BASELINE_RUBRIC;
 
 const NOTICEABLE_DEFINITIONS: Record<NoticeableLabel, { what: string; not_for: string }> = {
@@ -127,6 +133,32 @@ const REWRITE_DEFINITIONS: Record<RewriteLabel, { what: string; not_for: string 
     not_for: 'Any goal where one of the three rewrites would make it clearer or checkable.',
   },
 };
+
+/**
+ * The judge's question text, resolved through the versioned prompts table
+ * (`@buildd/core/prompts`). An active row's body is JSON of exactly this
+ * shape: the same labels, each question keeping its `{{i}}` placeholder. The
+ * baseline rubric resolves on its own id (`goal-criteria-rubric.ts`).
+ */
+export const GOAL_QUALITY_PROMPT_ID = 'buildd.goal_quality.questions';
+
+export const GOAL_QUALITY_PROMPT_DEFAULT = {
+  noticeableQuestion: 'Would a user notice the outcome that criteria[{{i}}] states?',
+  checkableQuestion: 'Can whether criteria[{{i}}] holds be checked without a person reading prose and deciding?',
+  rewriteQuestion: 'Taking the criteria together, which one change would most improve this goal?',
+  noticeable: NOTICEABLE_DEFINITIONS,
+  checkable: CHECKABLE_DEFINITIONS,
+  rewrite: REWRITE_DEFINITIONS,
+};
+
+function currentGoalQualityText() {
+  return resolvePromptValueEntry(GOAL_QUALITY_PROMPT_ID, GOAL_QUALITY_PROMPT_DEFAULT);
+}
+
+/** The prompt version naming the question text in effect (the rubric is versioned separately). */
+export function goalQualityPromptVersion(): string {
+  return resolvedPromptVersion(GOAL_QUALITY_PROMPT_VERSION, currentGoalQualityText());
+}
 
 // ── Facts ────────────────────────────────────────────────────────────────────
 
@@ -191,35 +223,36 @@ function asksCheckable(c: GoalCriterion): boolean {
  * `c{i}_noticeable`, and `c{i}_checkable` when its type is not checked by a
  * machine already. One `rewrite` for the whole goal.
  */
-export function buildGoalQualityQuestions(graded: readonly IndexedCriterion[], rubric: string = GOAL_QUALITY_RUBRIC) {
+export function buildGoalQualityQuestions(graded: readonly IndexedCriterion[], rubric: string = CODE_RUBRIC.text) {
+  const text = currentGoalQualityText().value;
   const questions: Questions = {};
   graded.forEach((g, i) => {
     questions[`c${i}_noticeable`] = {
       type: 'choice',
       instructions: {
-        question: `Would a user notice the outcome that criteria[${i}] states?`,
+        question: renderTemplate(text.noticeableQuestion, { i }),
         rule: rubric,
       },
-      criteria: NOTICEABLE_DEFINITIONS,
+      criteria: text.noticeable,
     };
     if (asksCheckable(g.criterion)) {
       questions[`c${i}_checkable`] = {
         type: 'choice',
         instructions: {
-          question: `Can whether criteria[${i}] holds be checked without a person reading prose and deciding?`,
+          question: renderTemplate(text.checkableQuestion, { i }),
           rule: rubric,
         },
-        criteria: CHECKABLE_DEFINITIONS,
+        criteria: text.checkable,
       };
     }
   });
   questions.rewrite = {
     type: 'choice',
     instructions: {
-      question: 'Taking the criteria together, which one change would most improve this goal?',
+      question: text.rewriteQuestion,
       rule: rubric,
     },
-    criteria: REWRITE_DEFINITIONS,
+    criteria: text.rewrite,
   };
   return questions as Questions & { rewrite: ChoiceQuestion<RewriteLabel> };
 }
@@ -300,7 +333,7 @@ function toVerdict(
     rewriteConfidence: r.confidence,
     suggestion: weakCount > 0 ? GOAL_QUALITY_REWRITES[rewrite] : null,
     model: cached.model,
-    promptVersion: GOAL_QUALITY_PROMPT_VERSION,
+    promptVersion: goalQualityPromptVersion(),
     rubricVersion,
   };
 }
@@ -312,7 +345,7 @@ function toVerdict(
 export function goalQualityCacheKey(graded: readonly IndexedCriterion[], rubricVersion: string = CODE_RUBRIC.version): string {
   const state = buildGoalQualityState(graded.map(g => g.criterion));
   const digest = createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 16);
-  return `${GOAL_QUALITY_PROMPT_VERSION}:${rubricVersion}:${digest}`;
+  return `${goalQualityPromptVersion()}:${rubricVersion}:${digest}`;
 }
 
 type DecideFn = typeof decisionCall<Questions>;
@@ -410,7 +443,7 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
 
     const mission = facts.missionId.slice(0, 8);
     if (!res.ok) {
-      log(logLine({ v: GOAL_QUALITY_PROMPT_VERSION, rubric: rubric.version, mission, error: res.error.kind, latencyMs: res.latencyMs }));
+      log(logLine({ v: goalQualityPromptVersion(), rubric: rubric.version, mission, error: res.error.kind, latencyMs: res.latencyMs }));
       return null;
     }
     const answers: Record<string, Answer> = {};
@@ -422,7 +455,7 @@ export async function adviseGoalQuality(facts: GoalQualityFacts, deps: GoalQuali
 
     // Labels, numbers and fingerprints only — never criterion text.
     log(logLine({
-      v: `${GOAL_QUALITY_PROMPT_VERSION}|${res.model}`,
+      v: `${goalQualityPromptVersion()}|${res.model}`,
       rubric: rubric.version,
       mission,
       mode: facts.mode ?? GOAL_QUALITY_MODE,
@@ -564,3 +597,6 @@ export function goalQualityBypasses(
   }
   return rows;
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerValuePrompt(GOAL_QUALITY_PROMPT_ID, GOAL_QUALITY_PROMPT_DEFAULT);

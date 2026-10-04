@@ -73,6 +73,23 @@ mock.module('@buildd/core/db/schema', () => ({
   specDiscrepancies: schemaSpecDiscrepancies,
 }));
 
+const mockWakeTask = mock(async (_id: string, _cause: string) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: async () => {},
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 
@@ -117,6 +134,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockUpdateReturning.mockReturnValue([{ id: '44444444-4444-4444-8444-444444444444' }]);
     mockDiscrepancyUpdateSets.length = 0;
     mockDiscrepancyUpdateReturning = [];
+    mockWakeTask.mockClear();
 
     // Default: grant access
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -229,6 +247,8 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(inserted.context.existingKey).toBe('existingValue');
     expect(inserted.context.planFeedback).toBe('Add error handling steps');
     expect(inserted.context.previousPlanTaskId).toBe('44444444-4444-4444-8444-444444444444');
+    // The revision used to reach a runner only by polling.
+    expect(mockWakeTask).toHaveBeenCalledWith('new-plan-task-1', 'task.created');
   });
 
   it('preserves missionId on revised planning task', async () => {
@@ -461,6 +481,7 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).taskId).toBeNull();
     expect(mockInsertValues).toHaveLength(0);
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('the rejection is still persisted on the doc-fix task itself', async () => {

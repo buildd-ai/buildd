@@ -11,6 +11,7 @@ import { BUILDD_MCP_TOOL_NAME } from './action-events';
 import { asksAQuestion, EMPTY_QUESTION_DENY_REASON } from './ask-user-question.js';
 import { runnerDenial } from './runner-denial.js';
 import { questionFromToolInput, runQuestionGate } from './question-gate.js';
+import type { QuestionGateReply } from '@buildd/core/question-gate';
 import type { PathClaimResponse } from './buildd';
 import {
   extractEditPaths,
@@ -19,16 +20,13 @@ import {
   isShipCommand,
   describeHolder,
   MAX_PENDING_PATHS,
+  PATH_CLAIM_HOOK_DEADLINE_MS,
   type PathCollision,
   type CollisionSource,
 } from './path-claim-enforcement.js';
 
-/**
- * Hard ceiling on how long the path-claim hook holds an edit. The client's own
- * request timeout is 200ms; this bounds the hook even if a request ignores its
- * abort signal, so a hung coordination service can never freeze a session.
- */
-export const PATH_CLAIM_HOOK_DEADLINE_MS = 300;
+/** Re-exported: the hook's backstop deadline lives beside the request timeout it must exceed. */
+export { PATH_CLAIM_HOOK_DEADLINE_MS };
 
 /**
  * Deny-reason parts once a checkpoint collision is recorded, spread into
@@ -81,7 +79,7 @@ export interface HookFactoryContext {
    * (`worker.questionGate`), once the question gate let the question through;
    * otherwise handleMessage parks it as before.
    */
-  parkQuestion?: (worker: LocalWorker, toolInput: Record<string, unknown>, toolUseId?: string) => Promise<void>;
+  parkQuestion?: (worker: LocalWorker, toolInput: Record<string, unknown>, toolUseId?: string, gateReply?: QuestionGateReply) => Promise<void>;
   pendingPermissionRequests: Map<string, {
     resolve: (result: any) => void;
     toolInput: Record<string, unknown>;
@@ -111,10 +109,10 @@ export class HookFactory {
    * holder denies the edit and names the blocking task and path. After a
    * recorded checkpoint collision every further edit is refused.
    *
-   * FAIL-OPEN in both modes (non-negotiable): the call is bounded by
-   * PATH_CLAIM_HOOK_DEADLINE_MS; a timeout, network error or 5xx lets the edit
-   * proceed, queues the path in worker.pendingPaths and records degraded
-   * enforcement. Queued paths flush in their OWN request alongside the edit's,
+   * FAIL-OPEN in both modes (non-negotiable): the request is bounded by
+   * PATH_CLAIM_TIMEOUT_MS (backstopped by PATH_CLAIM_HOOK_DEADLINE_MS); a
+   * timeout, network error or 5xx lets the edit proceed, queues the path in
+   * worker.pendingPaths and records degraded enforcement. Queued paths flush in their OWN request alongside the edit's,
    * so a held queued path can never deny an unrelated free edit, and only the
    * paths the server actually answered for leave the queue. A queued path the
    * server now reports held was already written: in enforce mode that is a
@@ -235,7 +233,11 @@ export class HookFactory {
     }
   }
 
-  /** claimPaths, bounded by the hook's own deadline even if the client ignores its abort signal. */
+  /**
+   * claimPaths, backstopped by the hook's deadline in case the client ignores
+   * its abort signal. The backstop sits above the request timeout, so a slow
+   * answer still inside PATH_CLAIM_TIMEOUT_MS is always consumed.
+   */
   private async claimWithinDeadline(taskId: string, paths: string[]): Promise<PathClaimResponse> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<PathClaimResponse>(resolve => {
@@ -511,7 +513,15 @@ export class HookFactory {
               'rewrite the question as a self-contained decision brief (what is being decided in this task and why it matters, what each option leads to, your recommended default first marked "(Recommended)") and call AskUserQuestion again',
             ));
           }
-          await this.ctx.parkQuestion?.(worker, toolInput, toolUseId);
+          if (gate.action === 'answer') {
+            // Jev decided: the answer stands in for a person's reply. Nobody
+            // was asked and nothing was parked — denying the tool call with
+            // the answer as the reason is how the agent gets it, exactly like
+            // a pushback, just not a request to rewrite.
+            this.ctx.addMilestone(worker, { type: 'status', label: 'Question decided automatically', ts: Date.now() });
+            return denyPreToolUse(runnerDenial(gate.reason, 'continue with this answer'));
+          }
+          await this.ctx.parkQuestion?.(worker, toolInput, toolUseId, gate.reply ?? undefined);
         }
         return {
           hookSpecificOutput: {

@@ -36,7 +36,7 @@
 import { db } from '@buildd/core/db';
 import { specDiscrepancies, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import {
   docFixTaskTitle,
@@ -336,7 +336,8 @@ export async function dispatchDocFix(
 
   const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, row.workspaceId) });
   if (workspace) {
-    await dispatchNewTask(docFixTask, workspace);
+    await announceTaskCreated(docFixTask, workspace);
+    await wakeTask(docFixTask.id, 'task.created');
   }
 
   return {

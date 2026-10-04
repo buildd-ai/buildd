@@ -1,3 +1,4 @@
+import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { TERMINAL_TASK_STATUSES, isTerminalTaskStatus, type TaskStatusValue } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -10,7 +11,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
+import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
@@ -1090,6 +1092,9 @@ export async function POST(req: NextRequest) {
     //   workspace gitConfig.defaultBackend → schema default ('claude').
     let resolvedBackend: 'claude' | 'codex' | undefined =
       ['claude', 'codex'].includes(rawBackend) ? (rawBackend as 'claude' | 'codex') : undefined;
+    // The caller named the backend itself (not inherited): budget failover must
+    // not override it. tasks.backend alone can't say so — it defaults to 'claude'.
+    const backendPinnedCtx = resolvedBackend ? { [BACKEND_PINNED_KEY]: true } : {};
 
     // Fields a mission task can inherit from its mission. Fetch once and reuse
     // for both outputRequirement and backend resolution.
@@ -1341,7 +1346,7 @@ export async function POST(req: NextRequest) {
     }) => {
       let created: typeof tasks.$inferSelect | undefined;
       try {
-        [created] = await db
+        const insert = db
           .insert(tasks)
           .values({
         id: subjectOverrides.id,
@@ -1385,6 +1390,7 @@ export async function POST(req: NextRequest) {
           // see task-routing-preview.ts. Lets analytics and the model cell tell
           // "the filer said this" apart from "we guessed this".
           ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+          ...backendPinnedCtx,
         },
         ...(project ? { project } : {}),
         ...(category ? { category } : {}),
@@ -1435,11 +1441,18 @@ export async function POST(req: NextRequest) {
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
             ...(emitsPlan ? { requiresPlanApproval: true } : {}),
             ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+            ...backendPinnedCtx,
             startResolution: deferredStart.resolution,
           },
         } : {}),
           })
           .returning();
+        // A task created for one local runner carries that target from birth,
+        // in the insert's own transaction: otherwise a drain running in another
+        // request could broadcast the bare creation wake to every runner first.
+        [created] = assignToLocalUiUrl
+          ? await withDispatchHint({ metadata: { targetLocalUiUrl: assignToLocalUiUrl } }, insert)
+          : await insert;
       } catch (error) {
         // The partial unique index tasks_active_planning_per_mission (one
         // active mode:'planning' task per mission) only ever collides on
@@ -1522,10 +1535,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (intake.outcome.action !== 'attached') {
-      await dispatchNewTask(task, targetWorkspace, {
-        assignToLocalUiUrl,
-        runnerPreference,
-      });
+      await announceTaskCreated(task, targetWorkspace);
+      await wakeTask(task.id, 'task.created', { targetLocalUiUrl: assignToLocalUiUrl });
     }
 
     // The decision model's look at the category (lib/task-category-decision.ts):
@@ -1585,27 +1596,14 @@ export async function POST(req: NextRequest) {
     // The creation-manifest shadow (lib/task-manifest-prediction.ts, design
     // §5a): which files the decision model would declare for a missing-scope
     // task. Opt-in per team, after the response, record only — the manifest,
-    // dependsOn and every rejection above are already final. Explicit (or
-    // deterministically inferred) concrete manifests win, so none is scheduled.
-    if (
-      intake.outcome.action !== 'attached'
-      && (task.taskClass ?? 'work') === 'work'
-      && targetWorkspace.teamId
-      && !hasConcretePathManifest(task.pathManifest ?? null)
-    ) {
+    // dependsOn and every rejection above are already final. The hook decides
+    // eligibility: explicit (or deterministically inferred) concrete manifests
+    // win, and only work rows of a file-shaped kind are predicted.
+    if (intake.outcome.action !== 'attached') {
       try {
-        const taskContext = (task.context ?? null) as Record<string, unknown> | null;
-        scheduleCreationManifestShadow({
-          taskId: task.id,
+        scheduleCreationManifestShadow(task, {
           teamId: targetWorkspace.teamId,
-          workspaceId,
-          missionId: task.missionId ?? null,
           accountId: creatorContext.createdByAccountId ?? null,
-          title: task.title,
-          description: task.description ?? null,
-          createdAt: task.createdAt instanceof Date ? task.createdAt : new Date(),
-          callerManifest: task.pathManifest ?? null,
-          baseRef: typeof taskContext?.baseBranch === 'string' ? taskContext.baseBranch : null,
         }, after);
       } catch (err) {
         console.error('[task-create] manifest shadow scheduling failed (non-fatal):', err);

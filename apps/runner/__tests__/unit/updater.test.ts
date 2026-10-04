@@ -4,7 +4,7 @@
  * Run: cd apps/runner && bun test __tests__/unit/updater.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterAll, spyOn } from 'bun:test';
 import { join } from 'path';
 
 // nodeFs is fetched via CommonJS require (not ES module import) so it bypasses
@@ -117,6 +117,37 @@ describe('applyUpdate', () => {
     for (const banned of ['fetch', 'reset', 'checkout', 'bun ']) {
       expect(execSyncCmds.some((cmd: string) => typeof cmd === 'string' && cmd.includes(banned))).toBe(false);
     }
+  });
+
+  test('installs the pinned browser through the repo after the reinstall', async () => {
+    const order: string[] = [];
+    const execOps = fakeExecOps({
+      bunInstall: mock(async () => { order.push('bunInstall'); }),
+      browserInstall: mock(async () => { order.push('browserInstall'); }),
+    });
+    const result = await applyUpdate(TMP_HOME, nodeFs, execOps);
+    expect(result.success).toBe(true);
+    expect(execOps.browserInstall).toHaveBeenCalledWith(TMP_HOME);
+    expect(order).toEqual(['bunInstall', 'browserInstall']);
+  });
+
+  test('a failed browser install does not fail the update', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    const execOps = fakeExecOps({ browserInstall: mock(async () => { throw new Error('download failed'); }) });
+    const result = await applyUpdate(TMP_HOME, nodeFs, execOps);
+    expect(result.success).toBe(true);
+    expect(warn.mock.calls.some((c: any[]) => String(c[0]).includes('download failed'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  test('skips the browser install when bun install fails', async () => {
+    const execOps = fakeExecOps({
+      bunInstall: mock(async () => { throw new Error('lockfile'); }),
+      browserInstall: mock(async () => {}),
+    });
+    const result = await applyUpdate(TMP_HOME, nodeFs, execOps);
+    expect(result.success).toBe(false);
+    expect(execOps.browserInstall).not.toHaveBeenCalled();
   });
 
   test('clean-reinstalls: removes node_modules before a frozen bun install', async () => {

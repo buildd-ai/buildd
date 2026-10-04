@@ -1,4 +1,4 @@
-import type { RoleConfig, RoleInstructions } from './roles.js';
+import type { RoleBundle, RoleConfig, RoleInstructions } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
 import type { BashCommandCounts } from './bash-classify.js';
@@ -29,6 +29,11 @@ export interface WaitingFor {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
+  /** Set only to `'hold'` — Jev held this question rather than asking outright (question-gate.ts). */
+  disposition?: 'hold';
+  holdReason?: string;
+  /** ISO timestamp; see question-gate.ts `HOLD_RESURFACE_MS`. */
+  resurfaceAt?: string;
   toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
   // Permission-specific fields (when type === 'permission')
   toolName?: string;           // The tool requesting permission
@@ -200,9 +205,29 @@ export interface LocalWorker {
   prCreated?: boolean;
   // PR URL captured from a successful create_pr result, when parseable.
   prUrl?: string;
-  // Set once the runner has spent its single "nothing delivered" nudge turn on
-  // this worker, so a later resumed session can never earn a second one.
-  noDeliverableNudged?: boolean;
+  /**
+   * How many end-of-session pushes (session-end-classification.ts) this
+   * worker has received across any resumed turns. Capped at
+   * SESSION_END_MAX_PUSHES; once reached the session is parked instead of
+   * pushed or failed, with the reason recorded and visible — see
+   * `sessionEndPushes` and `parkSessionEnd`. Replaces the old one-shot
+   * `noDeliverableNudged` boolean with a counted bound.
+   */
+  sessionEndPushCount?: number;
+  /** One entry per push given under `sessionEndPushCount`, for reconstructing the sequence afterward. */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
+  /**
+   * The most recent tool call the runner itself denied (a PreToolUse hook
+   * deny), used by session-end-classification.ts to tell "the agent backed
+   * off after a runner refusal it could route around" from a genuine stop.
+   * Overwritten on every denial; only meaningful when it matches the LAST
+   * recorded tool call (see `lastToolWasDeniedByRunner`).
+   */
+  lastToolDenial?: { toolUseId?: string; kind: string; runnerAttributed: boolean; ts: number };
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
@@ -327,7 +352,7 @@ export interface LocalWorker {
    * AskUserQuestion goes through POST /api/workers/[id]/question-check before
    * it is parked (apps/runner/src/question-gate.ts).
    */
-  questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number };
+  questionGate?: { maxPushbacks: number };
   /** Questions the gate sent back to the agent in this worker. */
   questionPushbacks?: number;
   /** Last file the agent edited or wrote, for the question brief's `where`. */
@@ -396,6 +421,9 @@ export interface LocalWorker {
   modelEndpoint?: import('@buildd/shared').ClaimModelEndpoint;
   // The claim withheld a winning endpoint because this runner has a per-machine provider.
   modelEndpointIgnored?: boolean;
+  // Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
+  // 'scoped': only the task-scoped token (agent-github-credentials.ts). A mode, not a secret.
+  githubCredentials?: { mode: 'scoped' | 'runner' };
   // Managed Claude access token (from claude_credential purpose). When set, the runner
   // creates a per-worker CLAUDE_CONFIG_DIR and writes credentials.json with ONLY this
   // access_token — no refresh_token — preventing in-session token rotation.
@@ -418,6 +446,10 @@ export interface LocalWorker {
   };
   // Role config from claim route (for role env resolution) — packaged roles only
   roleConfig?: RoleConfig;
+  // The packaged role bundle (CLAUDE.md, skills, .mcp.json, env mapping),
+  // fetched from roleConfig.configUrl at claim. Held in memory only: its files
+  // are written per session and removed at session end (session-prompt-files.ts).
+  roleBundle?: RoleBundle;
   // Role persona from claim route. Present whenever the task resolved a role
   // row, packaged or not; the only source of the agent's persona on both the
   // Claude (systemPrompt.append) and Codex (AGENTS.md) paths.
@@ -433,10 +465,15 @@ export interface LocalWorker {
   // requirement still records the existing "Role env degraded" milestone.
   roleEnvMissing?: string[];
   // Skill bundles resolved by the claim route for task.context.skillSlugs.
-  // Materialized to disk by syncSkillToLocal in startSession so the SDK's
-  // native Skill tool can find them — without this, a task instructed to
-  // invoke a skill has the instruction but not the skill.
+  // Written by syncSkillToLocal into <session cwd>/.claude/skills for each
+  // session so the SDK's native Skill tool can find them, and removed when the
+  // session ends — without this, a task instructed to invoke a skill has the
+  // instruction but not the skill.
   skillBundles?: SkillBundle[];
+  // True once this process holds the task's role/skill payload (set at claim,
+  // or by rehydratePromptBundles). Never persisted: a worker restored from disk
+  // lacks it, which is how a resume knows to re-fetch (session-prompt-bundles.ts).
+  promptBundlesLoaded?: boolean;
   // Degraded connectors (advisory mode) — connectors that are unavailable but
   // task was allowed to proceed. Injected into system prompt in startSession.
   degradedConnectors?: Array<{ id: string; name: string; failureMode: string }>;
@@ -566,6 +603,18 @@ export interface ResultMeta {
    * same as every other field in this local copy.
    */
   closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
+  /**
+   * Every end-of-session push this worker received (session-end-classification.ts)
+   * before its eventual terminal outcome — label, when, and the exact text sent.
+   * Lets "pushes per session and how often a push led to delivery" be queried
+   * directly from already-recorded completions instead of new telemetry infra.
+   * Mirrors packages/core/db/schema.ts's ResultMeta — kept in sync manually.
+   */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
 }
 
 // Loop exit condition (spec §1)

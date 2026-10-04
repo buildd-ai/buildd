@@ -36,7 +36,7 @@ import {
 } from '@buildd/shared';
 import { reconcileApprovals, recordApprovalRequests, dbDecide, storeApprovalResult, isToolPart, type DecideFn } from './approvals';
 import { renderChatContextBlock } from './context-block';
-import { CHAT_INSTRUCTIONS } from './instructions';
+import { chatInstructions } from './instructions';
 import { routeTurn, askTopicQuestion, isAcknowledgement, logRoutingRecord, FALLBACK_TIER, type RoutableWorkspace, type RoutingRecord, type TurnRoute } from './routing';
 import { resolveDecisionAccess, type DecisionAccess } from '@buildd/core/decision-client';
 import { titleToCheck } from './retitle-policy';
@@ -50,6 +50,7 @@ import { APPROVAL_ROW_CAP, ONE_CARD_PER_TURN_REASON, ROW_CAP_REASON } from '@bui
 import { resolveTaskRef } from './targets';
 import { opSpec, type ToolGroup } from './registry';
 import { canSkipCard, contentInContext, toolOutputInHistory } from './permissions';
+import { roleHas } from '@/lib/permissions';
 import { directivePart, proposeDirectiveCard, withDirectiveCard, type ChatDirectiveHooks } from './directives';
 import { renderStandingRules } from '@buildd/core/chat-directives';
 import { backfillSteps, createStepTracker, knownCalls, mergeStepParts, withThinkingSteps } from './thinking-steps';
@@ -382,7 +383,7 @@ export async function runChatTurn(args: {
     uiMessages = history.map(m => (m.id === continuing!.id ? { ...m, parts: continuing!.parts } as UIMessage : m));
   }
 
-  const canAdmin = user.teamRole === 'owner' || user.teamRole === 'admin';
+  const canAdmin = roleHas(user.teamRole, 'use_chat_admin_tools');
   const docked = await dockedPromise;
   const previewEnv = {
     read,
@@ -469,7 +470,7 @@ export async function runChatTurn(args: {
     },
   ]));
   const dockedBlock = docked ? `\n\n${renderDocked(docked)}` : '';
-  const instructions = `${CHAT_INSTRUCTIONS}\n\n${renderChatContextBlock({
+  const instructions = `${chatInstructions()}\n\n${renderChatContextBlock({
     now,
     timeZone: user.timeZone,
     conversationId: conv.id,

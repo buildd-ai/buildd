@@ -1,10 +1,12 @@
 import type { BuilddTask, LocalUIConfig } from './types';
 import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment';
 import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
+import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
 import type { CbmInjectionDecisionReply, CbmInjectionFacts } from '@buildd/core/cbm-injection';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
+import type { PromptBundlesPayload } from './session-prompt-bundles';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { CLOUD_EXECUTOR, stripClaimCredentials } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
@@ -12,6 +14,7 @@ import { createRedactionInterceptor } from '@buildd/core/redaction';
 import { ServerRefusalError, isServerRefusal } from './server-refusal';
 import { TRACKED_BRANCH, type RunnerUpdateSnapshot } from './updater';
 import { claimHealth, describeClaimErrorBody } from './claim-budget-signals';
+import { PATH_CLAIM_TIMEOUT_MS } from './path-claim-enforcement';
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -178,11 +181,17 @@ export class BuilddClient {
       // (workers.ts); without it the server keeps sending Anthropic credentials.
       // QUESTION_GATE_RUNNER_FEATURE: this build routes AskUserQuestion
       // through /question-check when the claim carries a questionGate marker.
-      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE],
+      // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
+      // githubCredentials (agent-github-credentials.ts); without it the
+      // server never asks this runner to scope the agent's GitHub access.
+      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
       llmProviderOverride: !!this.config.llmProvider,
+      // Same idea for Codex: a machine that already points OPENAI_BASE_URL
+      // somewhere specific keeps that over the team's agent model endpoint.
+      codexBaseUrlOverride: !!process.env.OPENAI_BASE_URL,
     };
     if (availableSkills && availableSkills.length > 0) {
       body.availableSkills = availableSkills;
@@ -315,6 +324,8 @@ export class BuilddClient {
     // never sent by a live session. Tells the server's terminal-record ledger
     // to classify this outcome as 'crashed' rather than an ordinary failure.
     crashReconciled?: boolean;
+    /** The workspace clone was throttled by GitHub (git-clone.ts): the server books infra_failure and requeues with backoff. */
+    githubThrottled?: boolean;
     /**
      * The server REFUSED a mutation for this session (a 4xx, or an unqueueable
      * 5xx) rather than the session crashing. Chargeability is the SERVER's
@@ -426,6 +437,27 @@ export class BuilddClient {
     }
   }
 
+  /**
+   * GET /api/workers/{id}/prompt-bundles: the claim's role and skill payload,
+   * resolved again for a session resumed by a process that no longer holds it
+   * (session-prompt-bundles.ts). Null on any refusal or transport failure —
+   * the caller fails open.
+   */
+  async getWorkerPromptBundles(workerId: string): Promise<PromptBundlesPayload | null> {
+    try {
+      const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/prompt-bundles`, { method: 'GET' });
+      if (!res.ok) {
+        console.warn(`[Worker ${workerId}] GET /prompt-bundles answered ${res.status}`);
+        return null;
+      }
+      const body = await res.json().catch(() => null);
+      return body && typeof body === 'object' ? body as PromptBundlesPayload : null;
+    } catch (err) {
+      console.warn(`[Worker ${workerId}] GET /prompt-bundles failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   private async parkCall<T>(workerId: string, route: string, method: string, pick: (body: any) => T | null): Promise<T | null> {
     try {
       const res = await this.transport.request(`/api/workers/${encodeURIComponent(workerId)}/${route}`, { method });
@@ -441,14 +473,15 @@ export class BuilddClient {
   }
 
   /**
-   * POST /api/tasks/{taskId}/path-claim with a 200ms timeout.
+   * POST /api/tasks/{taskId}/path-claim, aborted after PATH_CLAIM_TIMEOUT_MS.
    *
    * Three answers, kept distinct because enforcement treats them differently:
    *  - `claimed`: every path is leased to this task.
    *  - `conflict`: a confirmed live holder (the server's 409). Nothing was
    *    granted — declarations are all-or-nothing — and `blocked` lists every
    *    requested path that is held, so a caller can keep the free ones queued.
-   *  - `unavailable`: timeout, network error, 5xx, or a body that is neither.
+   *  - `unavailable`: `timeout` when our deadline expired (or the caller
+   *    aborted); `error` for a network error, 5xx, or a body that is neither.
    *    Fail-open: the caller must not block on it.
    */
   async claimPaths(taskId: string, paths: string[]): Promise<PathClaimResponse> {
@@ -456,7 +489,7 @@ export class BuilddClient {
       const body = await this.fetch(`/api/tasks/${taskId}/path-claim`, {
         method: 'POST',
         body: JSON.stringify({ paths }),
-        signal: AbortSignal.timeout(200),
+        signal: AbortSignal.timeout(PATH_CLAIM_TIMEOUT_MS),
       }, [409]) as Record<string, unknown> | null;
       if (body?.claimed === true) return { kind: 'claimed' };
       if (body?.claimed === false && typeof body.blockingTaskId === 'string') {
@@ -506,6 +539,39 @@ export class BuilddClient {
   }
 
   /**
+   * The task-scoped GitHub token for a worker whose claim said
+   * `githubCredentials.mode = 'scoped'` (agent-github-credentials.ts). Throws
+   * on failure; the error carries `permanent: true` when asking again cannot
+   * help (no linked repo, worker gone, access revoked), so the refresher stops.
+   */
+  async getAgentGitHubToken(workerId: string): Promise<{ token: string; expiresAt: Date }> {
+    let body: any;
+    try {
+      body = await this.fetch('/api/runner/agent-github-token', {
+        method: 'POST',
+        body: JSON.stringify({ workerId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err: any) {
+      if (isServerRefusal(err)) {
+        const refusal = err as ServerRefusalError;
+        let message = `HTTP ${refusal.status}`;
+        try {
+          const parsed = JSON.parse(refusal.raw);
+          if (typeof parsed?.error === 'string') message = `${parsed.error} (HTTP ${refusal.status})`;
+        } catch { /* keep the status */ }
+        throw Object.assign(new Error(message), { permanent: refusal.status >= 400 && refusal.status < 500 && refusal.status !== 429 });
+      }
+      throw err;
+    }
+    const expiresAt = typeof body?.expiresAt === 'string' ? new Date(body.expiresAt) : null;
+    if (typeof body?.token !== 'string' || !body.token || !expiresAt || Number.isNaN(expiresAt.getTime())) {
+      throw new Error('agent-github-token reply had no token/expiresAt');
+    }
+    return { token: body.token, expiresAt };
+  }
+
+  /**
    * Question gate: may this question reach a person, or should the agent add
    * context first? Decided server-side on the team's key. Bounded by
    * `timeoutMs` and never throws: any failure is a `send` reply (fail open).
@@ -522,7 +588,8 @@ export class BuilddClient {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (reply && typeof reply === 'object' && ((reply as { verdict?: unknown }).verdict === 'send' || (reply as { verdict?: unknown }).verdict === 'pushback')) {
+      const verdict = reply && typeof reply === 'object' ? (reply as { verdict?: unknown }).verdict : undefined;
+      if (verdict === 'send' || verdict === 'pushback' || verdict === 'decide') {
         return reply as QuestionGateReply;
       }
       return { verdict: 'send', outcome: 'error', error: 'bad_reply', version: null, latencyMs: Date.now() - started };

@@ -21,6 +21,7 @@ export const MARKETING_PATHS: ReadonlySet<string> = new Set([
   "/pricing",
   "/integrations",
   "/memory",
+  "/ai-kit",
   "/privacy",
   "/terms",
 ]);
@@ -100,6 +101,7 @@ export const config = {
     "/pricing",
     "/integrations",
     "/memory",
+    "/ai-kit",
     "/privacy",
     "/terms",
   ],

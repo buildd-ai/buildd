@@ -365,6 +365,32 @@ describe('GET /api/tasks/[id]/summary', () => {
     expect(data.failover?.reason).toBe('budget_exhausted');
   });
 
+  // A claim-time flip leaves tasks.backend alone; only the context stamp says it ran on Codex.
+  it('surfaces a claim-time budget failover recorded on the context', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: '00000000-0000-4000-8000-00000000000d',
+      title: 'Claim-flipped task',
+      status: 'running',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: 'claude',
+      context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    const res = await callGET('00000000-0000-4000-8000-00000000000d');
+    const data = await res.json();
+    expect(data.failover?.from).toBe('claude');
+    expect(data.failover?.reason).toBe('claude_seat_exhausted');
+    expect(data.failover?.summary).toBe('routed to Codex by budget failover (Claude seat exhausted)');
+  });
+
   it('surfaces the latest error excerpt for a failed task', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockTasksFindFirst.mockResolvedValue({

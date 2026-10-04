@@ -97,12 +97,12 @@ describe('StandingRulesSection', () => {
 
   it('says rules attached to tasks chat files are visible to people in that workspace', async () => {
     await mount();
-    expect(q('standing-rules')!.textContent).toContain('people in that workspace can see them on the task');
+    expect(q('standing-rules')!.textContent).toContain('visible to the workspace');
   });
 
   it('says so when there are none', async () => {
     directives = [];
     await mount();
-    expect(q('standing-rules-empty')!.textContent).toBe('No rules yet.');
+    expect(q('standing-rules-empty')!.textContent).toBe('No rules.');
   });
 });

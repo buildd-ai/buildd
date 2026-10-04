@@ -68,7 +68,7 @@ mock.module('@/lib/mission-integration-branch', () => ({
 // Mocks for the mission-integration-branch auto-review feature
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }) as any);
 const mockFindLiveReviewerTaskForHead = mock(() => Promise.resolve(null) as any);
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve());
 const mockPickReviewerRole = mock(() => ({ role: 'reviewer', source: 'policy' as const }) as any);
 const mockListWorkspaceRoles = mock(() => Promise.resolve([{ slug: 'reviewer', isRole: true }]) as any);
@@ -174,8 +174,22 @@ mock.module('@/lib/reviewer', () => ({
 }));
 
 // Mock task-dispatch — dispatching the reviewer task once created
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 // Mock pr-activity-comment — sticky "reviewing" comment on the PR
@@ -222,7 +236,13 @@ mock.module('@/lib/base-refresh', () => ({
   refreshBehindPr: (p: any) => mockRefreshBehindPr(p),
   checkBaseRefreshHold: (p: any) => mockCheckBaseRefreshHold(p),
 }));
-mock.module('@/lib/retry-pr-supersession', () => ({ closeAncestorRetryPrs: mockCloseAncestorRetryPrs }));
+// The runner's recorded resume cause for the worker opening the PR.
+const mockResolveSupersessionCause = mock(async (_workerId: any) => 'unknown' as string);
+mock.module('@/lib/retry-pr-supersession', () => ({
+  collectRetryLineage: async (taskId: string) => [taskId],
+  closeAncestorRetryPrs: mockCloseAncestorRetryPrs,
+  resolveSupersessionCause: mockResolveSupersessionCause,
+}));
 
 import { POST, PATCH, PUT, GET } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -271,8 +291,9 @@ describe('POST /api/github/pr', () => {
     mockCreateReviewerTask.mockResolvedValue({ id: 'reviewer-task-1' });
     mockFindLiveReviewerTaskForHead.mockReset();
     mockFindLiveReviewerTaskForHead.mockResolvedValue(null);
-    mockDispatchNewTask.mockReset();
-    mockDispatchNewTask.mockResolvedValue(undefined);
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
+    mockAnnounceTaskCreated.mockResolvedValue(undefined);
     mockAppendPrActivity.mockReset();
     mockAppendPrActivity.mockResolvedValue(undefined);
     mockPickReviewerRole.mockReset();
@@ -709,6 +730,138 @@ describe('POST /api/github/pr', () => {
   // Once a mission has an integration base, the server already knows the
   // correct head (the worker's own branch) and base (the integration branch)
   // — a caller-supplied value is checked against the derivation, not trusted.
+  // An agent run (the account that claimed the worker) may record only a PR
+  // its task owns: lib/agent-capabilities/pr-ownership.ts. Teammates and a
+  // person's session are exempt.
+  describe('agent-run PR ownership', () => {
+    const TASK_ID = 'aaaa1111-0000-4000-8000-000000000001';
+    const OWN = 'buildd/aaaa1111-own-thing';
+    const FOREIGN = 'buildd/dddd4444-someone-else';
+    const agentWorker = (o: Record<string, unknown> = {}) => ({
+      id: 'w-1', accountId: 'account-1', taskId: TASK_ID, workspaceId: 'ws-1', branch: OWN, name: 'test-worker',
+      workspace: { ...WORKSPACE_OK, id: 'ws-1' },
+      task: { id: TASK_ID, title: 'feat: own thing', description: '', context: {}, dependsOn: [] },
+      ...o,
+    });
+    const created = { number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' };
+    const opened = () => mockGithubApi.mock.calls.some((c: any[]) => (c[2] as { method?: string } | undefined)?.method === 'POST' && c[1] === '/repos/owner/repo/pulls');
+    const post = (body: Record<string, unknown>) => POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', ...body },
+    }));
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockImplementation((_i: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        return Promise.resolve(created);
+      });
+    });
+
+    it('opens a PR from the task’s own branch', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: OWN });
+      expect(res.status).toBe(200);
+      expect(opened()).toBe(true);
+    });
+
+    it('refuses to open a PR from another task’s branch, before calling GitHub to create it', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.code).toBe('head_not_owned');
+      expect(data.hint).toBe(`Open the PR with head='${OWN}'.`);
+      expect(opened()).toBe(false);
+    });
+
+    it('refuses to open a PR from a protected branch (the repo default)', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: 'main' });
+      expect(res.status).toBe(403);
+      expect((await res.json()).code).toBe('protected_head');
+      expect(opened()).toBe(false);
+    });
+
+    it('opens from a dependency’s branch', async () => {
+      mockWorkersFindFirst.mockResolvedValue(agentWorker({
+        task: { id: TASK_ID, title: 'feat: phase two', description: '', context: {}, dependsOn: ['dddd4444-0000-4000-8000-000000000004'] },
+      }));
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a teammate open from any head, as before', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'person-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(200);
+    });
+
+    it('lets a person’s session on the shared account open from any head', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, sessionUserId: 'user-1' });
+      mockWorkersFindFirst.mockResolvedValue(agentWorker());
+      const res = await post({ head: FOREIGN });
+      expect(res.status).toBe(200);
+    });
+
+    describe('dedup-by-head', () => {
+      const existing = { number: 77, html_url: 'https://github.com/owner/repo/pull/77', head: { ref: FOREIGN }, base: { ref: 'main' } };
+
+      beforeEach(() => {
+        mockGithubApi.mockImplementation((_i: number, path: string) => {
+          if (path.includes('/pulls?head=')) return Promise.resolve([existing]);
+          if (path === '/repos/owner/repo/pulls/77') return Promise.resolve(existing);
+          return Promise.resolve(created);
+        });
+      });
+
+      it('adopts an open PR on a foreign head when the task names it', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker({
+          task: { id: TASK_ID, title: 'fix: address review on #77', description: '', context: {}, dependsOn: [] },
+        }));
+        const res = await post({ head: FOREIGN });
+        expect(res.status).toBe(200);
+        expect((await res.json()).pr.number).toBe(77);
+      });
+
+      it('refuses to adopt an open PR on a foreign head the task does not name', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        const res = await post({ head: FOREIGN });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+      });
+    });
+
+    describe('prUrl adoption', () => {
+      it('refuses a PR outside the workspace’s linked repo', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        const res = await post({ head: OWN, prUrl: 'https://github.com/elsewhere/other/pull/5' });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('pr_outside_linked_repo');
+      });
+
+      it('judges the head GitHub reports, not the one the caller claims', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        mockGithubApi.mockImplementation((_i: number, path: string) =>
+          Promise.resolve(path === '/repos/owner/repo/pulls/9' ? { number: 9, head: { ref: FOREIGN }, base: { ref: 'main' } } : null));
+        const res = await post({ head: OWN, prUrl: 'https://github.com/owner/repo/pull/9' });
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+      });
+
+      it('adopts a PR whose real head is the task’s own branch', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker());
+        mockGithubApi.mockImplementation((_i: number, path: string) =>
+          Promise.resolve(path === '/repos/owner/repo/pulls/9' ? { number: 9, head: { ref: OWN }, base: { ref: 'main' } } : null));
+        const res = await post({ head: OWN, prUrl: 'https://github.com/owner/repo/pull/9' });
+        expect(res.status).toBe(200);
+        expect((await res.json()).pr.number).toBe(9);
+      });
+    });
+  });
+
   describe('Option A′ — derive, don’t accept (P1)', () => {
     const INTEGRATION_BRANCH = 'mission/checkout-arc-1a2b3c4d';
     const WORKER_BRANCH = 'buildd/t-1-do-thing';
@@ -1087,6 +1240,30 @@ describe('POST /api/github/pr', () => {
       expect(res.status).toBe(400);
       const data = await res.json();
       expect(data.error).toContain(INTEGRATION_BRANCH);
+    });
+
+    it("adopts a trunk-based PR when the integration branch is unusable for this task's own repo", async () => {
+      // A multi-repo mission (mission a955fed9): the integration branch lives
+      // in the mission's home repo, not necessarily this task's own repo.
+      // `ensureIntegrationBaseForTaskPr` reporting `usable: false` for THIS
+      // task must not leave adoption refusing the only base that can work —
+      // mirrors the fresh-create path's `integrationBaseMissing` escape
+      // hatch further down in this same route.
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      optedInMission();
+      mockEnsureIntegrationBaseForTaskPr.mockResolvedValue({ usable: false, recreated: false, detail: 'no_repo' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
+          base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
     });
 
     it('refuses adoption when the claimed base is omitted entirely', async () => {
@@ -2531,7 +2708,8 @@ describe('POST /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).toHaveBeenCalled();
-      expect(mockDispatchNewTask).toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
       const createArgs = mockCreateReviewerTask.mock.calls[0][0];
       expect(createArgs.prNumber).toBe(42);
       expect(createArgs.headSha).toBe('headsha');
@@ -2563,7 +2741,8 @@ describe('POST /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
 
     it('Rule K2-19: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
@@ -2721,7 +2900,8 @@ describe('POST /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).toHaveBeenCalled();
-      expect(mockDispatchNewTask).toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
   });
 });
@@ -5541,6 +5721,9 @@ describe('Retry PR body generation', () => {
     if (patchedBody) {
       expect(uuidPattern.test(patchedBody)).toBe(false);
     }
+    // The PR was adopted — updated in place — so the stamp says so, replacing
+    // the old "resume failed; new branch" line rather than appending beside it.
+    expect(patchedBody).toBe('Original body\n\n---\n_Attempt 2/3 — updated this PR._');
   });
 });
 
@@ -5801,5 +5984,71 @@ describe('create_pr — retry supersession', () => {
     const data = await openPr({ taskClass: 'attempt', context: { iteration: 1 } });
     expect(data.ok).toBe(true);
     expect(data.supersededPrs).toBeUndefined();
+  });
+
+  // Regression: a review fix that could not check out its subject PR's branch
+  // (a sibling worktree held it) cut a fresh branch from the same tip and
+  // opened a SECOND PR, closing the subject as superseded. While the subject
+  // is open the retry must update it; a fresh PR only when the heads diverged.
+  describe('a retry bound to a still-open PR', () => {
+    const SUBJECT_BRANCH = 'buildd/t-8-original';
+
+    async function postRetryPr(compareStatus: string) {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(retryWorker({ taskClass: 'attempt', reviewerRetryPrNumber: 70, context: { iteration: 1 } }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMissionsFindFirst.mockResolvedValue(null);
+      mockGithubApi.mockReset();
+      mockGithubApi.mockImplementation(async (_inst: number, path: string, init?: any) => {
+        if (path.includes('/pulls?head=')) return [];
+        if (path.endsWith('/pulls/70')) {
+          return { number: 70, state: 'open', merged: false, head: { ref: SUBJECT_BRANCH, sha: 'subject-sha' }, html_url: 'https://github.com/owner/repo/pull/70' };
+        }
+        if (path.includes('/compare/')) return { status: compareStatus };
+        if (path.endsWith('/pulls') && init?.method === 'POST') {
+          return { number: 77, html_url: 'https://github.com/owner/repo/pull/77', state: 'open', title: 'Fix it', base: { ref: 'dev' } };
+        }
+        return {};
+      });
+      return POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-9', title: 'Fix it', head: WORKER_BRANCH },
+      }));
+    }
+
+    const openedPrs = () => mockGithubApi.mock.calls.filter((c: any[]) => String(c[1]).endsWith('/pulls') && c[2]?.method === 'POST');
+
+    it('REGRESSION (lineage fork): refuses a second PR when the new branch only adds to the subject — no PR opened, nothing closed', async () => {
+      const res = await postRetryPr('ahead');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.subjectPr.number).toBe(70);
+      expect(body.hint).toContain(`git push origin HEAD:${SUBJECT_BRANCH}`);
+      expect(openedPrs()).toHaveLength(0);
+      expect(mockCloseAncestorRetryPrs).not.toHaveBeenCalled();
+    });
+
+    it('opens a fresh PR only when the heads diverged and the runner recorded the branch missing, and says so on the PR', async () => {
+      mockResolveSupersessionCause.mockResolvedValueOnce('missing');
+      const res = await postRetryPr('diverged');
+      expect(res.status).toBe(200);
+      expect(openedPrs()).toHaveLength(1);
+      expect(mockResolveSupersessionCause).toHaveBeenCalledWith('w-9');
+      const body = JSON.parse(openedPrs()[0][2].body).body as string;
+      expect(body).toContain("PR #70's branch was missing on the runner and the heads diverged");
+      expect(body).not.toContain('resume failed');
+      expect(mockCloseAncestorRetryPrs).toHaveBeenCalledTimes(1);
+    });
+
+    it('REGRESSION ("resume failed; new branch" with no recorded failure): refuses a diverged head and opens no PR', async () => {
+      mockResolveSupersessionCause.mockResolvedValueOnce('unknown');
+      const res = await postRetryPr('diverged');
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.subjectPr.number).toBe(70);
+      expect(body.hint).toContain(`git rebase origin/${SUBJECT_BRANCH}`);
+      expect(openedPrs()).toHaveLength(0);
+      expect(mockCloseAncestorRetryPrs).not.toHaveBeenCalled();
+    });
   });
 });

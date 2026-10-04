@@ -3,10 +3,13 @@ import { tasks, missions, missionNotes, workspaces, workers } from '@buildd/core
 import { eq, and, sql, inArray, like, lt, isNotNull, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
+import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
-import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { kickDispatch, wakeTask } from '@/lib/dispatch-authority';
+import { enqueueReadyDependents } from '@buildd/core/dispatch-dependents';
+import { depsGate } from '@/app/api/workers/claim/deps-gate';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
 
@@ -138,6 +141,10 @@ export async function resolveCompletedTask(
     where: eq(tasks.id, completedTaskId),
     columns: { mode: true, missionId: true, status: true, context: true },
   });
+
+  if (completedTaskFull?.status === 'completed') {
+    await supersedeRetriesOfMergedTask(completedTaskId, _workspaceId);
+  }
 
   if (completedTaskFull?.mode === 'planning') {
     if (completedTaskFull.status === 'failed') {
@@ -286,6 +293,23 @@ export async function resolveCompletedTask(
     maybeRetriggerMission(completedTaskFull.missionId, completedTaskId).catch((err) =>
       console.error(`[mission-loop] execution task completion retrigger failed:`, err)
     );
+
+    // The mission-PR opener otherwise only fires on a task PR merging into the
+    // integration branch (the GitHub webhook) — a task that reaches terminal
+    // state WITHOUT a PR merge (cancelled, or completed with
+    // outputRequirement: 'none') produces no such event. Until now the only
+    // thing that could still open the PR for that mission was the weekly
+    // reconciliation sweep (pr-reconcile.ts sweepMissionIntegrationPrs), and
+    // its own staleness clock advances on every check regardless of outcome —
+    // so a mission already marked "not ready" right before its last blocker
+    // was cancelled could sit unopened for up to MISSION_PR_SWEEP_WINDOW_MS.
+    // `maybeOpenMissionIntegrationPr` is a cheap no-op for a mission that
+    // isn't opted into an integration branch or isn't actually done yet, so
+    // firing it on every terminal event here is safe.
+    const missionId = completedTaskFull.missionId;
+    maybeOpenMissionIntegrationPr(missionId, { assumeCompletedTaskIds: [completedTaskId] })
+      .then((opened) => noteMissionPrOpenFailure(missionId, opened))
+      .catch((err) => console.error(`[mission-pr] open attempt after task terminal failed:`, err));
   }
 
   // Check if any tasks have this task in their dependsOn list
@@ -304,6 +328,33 @@ export async function resolveCompletedTask(
  * Fires a CHILDREN_COMPLETED Pusher event for dashboard visibility.
  * If the parent is a planning task, auto-creates an aggregation child task.
  */
+/**
+ * Called for a completed task. If its own PR merged it has delivered: any retry of it still
+ * open (CI fix, review fix, conflict retry) has nothing left to do. Routed
+ * through the supersession reconciler as a `parent_done` event. Only on a
+ * merge — a completed task with an open PR still legitimately has fixes
+ * running against it. Never throws.
+ */
+async function supersedeRetriesOfMergedTask(taskId: string, workspaceId: string): Promise<void> {
+  try {
+    const merged = await db.query.workers.findFirst({
+      where: and(eq(workers.taskId, taskId), isNotNull(workers.mergedAt)),
+      columns: { prNumber: true },
+    });
+    if (!merged) return;
+    const { reconcileSubjectEvent } = await import('@/lib/supersession');
+    await reconcileSubjectEvent({
+      kind: 'parent_done',
+      workspaceId,
+      parentTaskId: taskId,
+      prNumber: merged.prNumber ?? null,
+      door: 'resolveCompletedTask',
+    });
+  } catch (err) {
+    console.error(`[task-deps] retry supersession failed for task ${taskId}:`, err);
+  }
+}
+
 async function checkChildrenCompleted(
   parentTaskId: string
 ): Promise<void> {
@@ -437,7 +488,7 @@ async function maybeCreateAggregationTask(
   // Either only when it resolves in this workspace (role-routing §1 row 9, §3.1).
   const roleSlug = await pickEffectiveRole(parent.workspaceId, [parent.roleSlug, 'organizer']);
 
-  await db.insert(tasks).values({
+  const [aggregator] = await db.insert(tasks).values({
     workspaceId: parent.workspaceId,
     title: `Aggregate results: ${parent.title}`,
     description: 'Synthesize the results from all completed sub-tasks into a final deliverable.',
@@ -454,13 +505,21 @@ async function maybeCreateAggregationTask(
       parentTaskId,
       childTasks: childSummaries,
     },
-  });
+  }).returning({ id: tasks.id });
+  // The trigger made the wake durable with the insert; this kicks delivery.
+  if (aggregator) await wakeTask(aggregator.id, 'task.created');
 }
 
 /**
  * Check if completing a task unblocks any tasks that depend on it via `dependsOn`.
  * For each dependent task, verify all its dependencies are in terminal state,
- * then fire a TASK_UNBLOCKED Pusher event and dispatch the task so runners are woken up.
+ * then fire a TASK_UNBLOCKED Pusher event (dashboard) and wake it (dispatch outbox).
+ *
+ * The wake is not decided here: a dependent stays `pending` throughout, so the
+ * outbox trigger never sees it become runnable, and deciding in JS would leave
+ * a read-then-write gap. enqueueReadyDependents selects the ready dependents
+ * and writes their intents in one statement, using the same rule as below. It
+ * runs after the live PR refresh so a merge that refresh discovers counts.
  */
 export async function checkDependsOnResolved(
   completedTaskId: string
@@ -472,14 +531,6 @@ export async function checkDependsOnResolved(
       id: tasks.id,
       dependsOn: tasks.dependsOn,
       workspaceId: tasks.workspaceId,
-      title: tasks.title,
-      description: tasks.description,
-      mode: tasks.mode,
-      priority: tasks.priority,
-      missionId: tasks.missionId,
-      backend: tasks.backend,
-      roleSlug: tasks.roleSlug,
-      runnerPreference: tasks.runnerPreference,
     })
     .from(tasks)
     .where(
@@ -554,55 +605,68 @@ export async function checkDependsOnResolved(
   const MAX_LIVE_CHECKS = 5;
   const openPrTaskIds = Array.from(latestOpenPrWorkerMap.keys());
   if (openPrTaskIds.length > 0) {
-    const uniqueWsIds = [...new Set(
-      openPrTaskIds.map(id => depTaskWorkspaceMap.get(id)).filter((id): id is string => !!id)
-    )];
-    if (uniqueWsIds.length > 0) {
-      const wsRecords = await db.query.workspaces.findMany({
-        where: inArray(workspaces.id, uniqueWsIds),
-        columns: { id: true },
-        with: { githubInstallation: { columns: { installationId: true } } },
-      });
-      const wsInstallMap = new Map(
-        wsRecords.map(ws => [ws.id, ws.githubInstallation?.installationId ?? null])
-      );
-
-      // Group taskIds by prNumber so we can dedup and propagate the result to all.
-      const prNumberToTaskIds = new Map<number, string[]>();
-      for (const taskId of openPrTaskIds) {
-        const worker = latestOpenPrWorkerMap.get(taskId);
-        if (!worker?.prNumber) continue;
-        if (!prNumberToTaskIds.has(worker.prNumber)) {
-          prNumberToTaskIds.set(worker.prNumber, []);
-        }
-        prNumberToTaskIds.get(worker.prNumber)!.push(taskId);
-      }
-
-      const uniquePrEntries = Array.from(prNumberToTaskIds.entries()).slice(0, MAX_LIVE_CHECKS);
-
-      await Promise.all(uniquePrEntries.map(async ([, taskIds]) => {
-        const representativeId = taskIds[0];
-        const worker = latestOpenPrWorkerMap.get(representativeId);
-        if (!worker?.prNumber || !worker?.prUrl) return;
-        const wsId = depTaskWorkspaceMap.get(representativeId);
-        const installationId = wsId ? wsInstallMap.get(wsId) : null;
-        if (!installationId) return;
-
-        const refreshed = await refreshWorkerMergeStateIfStale(
-          { id: worker.id, prNumber: worker.prNumber, prUrl: worker.prUrl },
-          installationId,
+    try {
+      const uniqueWsIds = [...new Set(
+        openPrTaskIds.map(id => depTaskWorkspaceMap.get(id)).filter((id): id is string => !!id)
+      )];
+      if (uniqueWsIds.length > 0) {
+        const wsRecords = await db.query.workspaces.findMany({
+          where: inArray(workspaces.id, uniqueWsIds),
+          columns: { id: true },
+          with: { githubInstallation: { columns: { installationId: true } } },
+        });
+        const wsInstallMap = new Map(
+          wsRecords.map(ws => [ws.id, ws.githubInstallation?.installationId ?? null])
         );
-        if (refreshed) {
-          for (const taskId of taskIds) {
-            openPrMap.set(taskId, false);
+
+        // Group taskIds by prNumber so we can dedup and propagate the result to all.
+        const prNumberToTaskIds = new Map<number, string[]>();
+        for (const taskId of openPrTaskIds) {
+          const worker = latestOpenPrWorkerMap.get(taskId);
+          if (!worker?.prNumber) continue;
+          if (!prNumberToTaskIds.has(worker.prNumber)) {
+            prNumberToTaskIds.set(worker.prNumber, []);
           }
+          prNumberToTaskIds.get(worker.prNumber)!.push(taskId);
         }
-      }));
+
+        const uniquePrEntries = Array.from(prNumberToTaskIds.entries()).slice(0, MAX_LIVE_CHECKS);
+
+        await Promise.all(uniquePrEntries.map(async ([, taskIds]) => {
+          const representativeId = taskIds[0];
+          const worker = latestOpenPrWorkerMap.get(representativeId);
+          if (!worker?.prNumber || !worker?.prUrl) return;
+          const wsId = depTaskWorkspaceMap.get(representativeId);
+          const installationId = wsId ? wsInstallMap.get(wsId) : null;
+          if (!installationId) return;
+
+          const refreshed = await refreshWorkerMergeStateIfStale(
+            { id: worker.id, prNumber: worker.prNumber, prUrl: worker.prUrl },
+            installationId,
+          );
+          if (refreshed) {
+            for (const taskId of taskIds) {
+              openPrMap.set(taskId, false);
+            }
+          }
+        }));
+      }
+    } catch (err) {
+      // A failed refresh only means a missed-webhook merge is not seen yet; the
+      // wake below must still go out for everything already resolved.
+      console.error(`[task-dependencies] live PR refresh failed for ${completedTaskId}:`, err);
     }
   }
 
+  try {
+    const woken = await enqueueReadyDependents(completedTaskId, depsGate());
+    if (woken.length > 0) kickDispatch();
+  } catch (err) {
+    // findPendingTasksWithResolvedDepsAndNoWake (reconciliation) re-finds these.
+    console.error(`[task-dependencies] dependency wake enqueue failed for ${completedTaskId}:`, err);
+  }
+
   // Check each dependent task to see if all its dependencies are resolved
-  const unblockedTasks: typeof dependentTasks = [];
   for (const task of dependentTasks) {
     const deps = task.dependsOn as string[] | null;
     if (!deps || deps.length === 0) continue;
@@ -625,50 +689,7 @@ export async function checkDependsOnResolved(
           resolvedDependency: completedTaskId,
         }
       );
-      unblockedTasks.push(task);
     }
-  }
-
-  if (unblockedTasks.length === 0) return;
-
-  // Wake runners for each newly unblocked task via the full dispatch chain
-  // (Pusher TASK_ASSIGNED + webhook + GitHub Actions).
-  // Batch-fetch workspace info to avoid N+1 queries.
-  const uniqueWorkspaceIds = [...new Set(unblockedTasks.map((t) => t.workspaceId))];
-  const workspaceRecords = await db
-    .select({
-      id: workspaces.id,
-      name: workspaces.name,
-      repo: workspaces.repo,
-      webhookConfig: workspaces.webhookConfig,
-      githubInstallationId: workspaces.githubInstallationId,
-      githubRepoId: workspaces.githubRepoId,
-    })
-    .from(workspaces)
-    .where(inArray(workspaces.id, uniqueWorkspaceIds));
-
-  const workspaceMap = new Map(workspaceRecords.map((w) => [w.id, w]));
-
-  for (const task of unblockedTasks) {
-    const workspace = workspaceMap.get(task.workspaceId);
-    if (!workspace) continue;
-    dispatchUnblockedTask(
-      {
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        workspaceId: task.workspaceId,
-        mode: task.mode ?? undefined,
-        priority: task.priority ?? undefined,
-        missionId: task.missionId,
-        backend: task.backend,
-        roleSlug: task.roleSlug,
-        runnerPreference: task.runnerPreference,
-      },
-      workspace
-    ).catch((err) =>
-      console.error(`[task-dependencies] dispatchUnblockedTask failed for task ${task.id}:`, err)
-    );
   }
 }
 

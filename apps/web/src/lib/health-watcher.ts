@@ -11,7 +11,7 @@ import {
 import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { isPostMergeIntegrationCheck } from '@/lib/release/dispatch';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyTeamOf } from '@/lib/notify';
 import { createHash, randomUUID } from 'crypto';
 import { listProdDeployments, evaluateDeploymentHealth, type DeploymentHealth } from '@/lib/health-watcher-vercel';
@@ -271,10 +271,11 @@ Diagnose the failure, push a fix to \`main\`, and confirm the next deploy goes R
   }
 
   if (inserted) {
-    await dispatchNewTask(
+    await announceTaskCreated(
       { id: inserted.id, title, description, workspaceId: project.workspaceId },
       workspace,
     );
+    await wakeTask(inserted.id, 'task.created');
   }
 
   void notifyTeamOf({ workspaceId: project.workspaceId }, 'needsAttention', {
@@ -496,10 +497,11 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
   }
 
   if (inserted) {
-    await dispatchNewTask(
+    await announceTaskCreated(
       { id: inserted.id, title: `CI failing on #${pr.number}`, description, workspaceId: project.workspaceId },
       workspace,
     );
+    await wakeTask(inserted.id, 'task.created');
   }
 
   void notifyTeamOf({ workspaceId: project.workspaceId }, 'needsAttention', {

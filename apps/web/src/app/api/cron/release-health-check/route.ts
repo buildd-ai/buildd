@@ -64,6 +64,7 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity } from '@/lib/workspace-installation';
 import { findMergedReleasePrContaining, advanceGatedRowForMerge, versionFromReleasePrTitle } from '@/lib/release/gated-merge';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import { checkPromptFallbacks } from '@/lib/prompt-fallback-alert';
 
 export const maxDuration = 60;
 
@@ -383,9 +384,16 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     if (outcome === 'healed') healed++;
   }
 
+  // Post-deploy prompt health: seeded prompt ids that would run their public
+  // default (lib/prompt-fallback-alert.ts). Production only, pages once per set.
+  const promptCheck = await checkPromptFallbacks();
+  const promptFallbacks = promptCheck.status === 'falling_back' ? promptCheck.fallbacks.length : 0;
+
   console.log(
     JSON.stringify({
       event: 'release_health_check',
+      promptCheck: promptCheck.status,
+      promptFallbacks,
       candidates: candidates.length,
       probed,
       degraded,
@@ -431,6 +439,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       pendingExternalSuperseded,
       healableDegraded: healableDegraded.length,
       healed,
+      promptCheck: promptCheck.status,
+      promptFallbacks,
     },
   });
 
@@ -451,6 +461,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     pendingExternalSuperseded,
     healableDegraded: healableDegraded.length,
     healed,
+    promptCheck,
   });
 }
 

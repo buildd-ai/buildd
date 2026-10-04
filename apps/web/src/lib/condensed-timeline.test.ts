@@ -1,5 +1,5 @@
 import { describe, it, expect, spyOn } from 'bun:test';
-import { groupTimelineTasks, groupChainUnits, identifyChains, gateChipCollapsed, deriveBandKey, deriveBandLabel, deriveDayBands } from './condensed-timeline';
+import { buildMissionAdjacency, groupTimelineTasks, groupChainUnits, identifyChains, gateChipCollapsed, deriveBandKey, deriveBandLabel, deriveDayBands } from './condensed-timeline';
 import type { CondensedTask } from './condensed-timeline';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -763,5 +763,54 @@ describe('groupChainUnits', () => {
     expect(chain.head.id).toBe('t1');
     expect(chain.tail).toHaveLength(0);
     expect(chain.shape).toBe('standalone');
+  });
+});
+
+// ─── buildMissionAdjacency — the one dependsOn walk (strip spec §6) ─────────
+
+describe('buildMissionAdjacency', () => {
+  const t = (id: string, dependsOn: string[] | null, status = 'pending', workers: Array<{ prUrl: string | null; mergedAt: string | null; prLifecycleStatus?: string | null }> = []) =>
+    ({ id, status, dependsOn, workers });
+
+  it('tags each on-set edge with the claim gate, and keeps dependents in input order', () => {
+    const adj = buildMissionAdjacency([
+      t('a', null, 'completed', [{ prUrl: 'u', mergedAt: null }]), // open PR: holds
+      t('b', null, 'completed', [{ prUrl: 'u', mergedAt: '2026-01-01' }]),
+      t('c', ['a', 'b', 'a']),
+      t('d', ['a']),
+    ]);
+    expect(adj.blockersOf.get('c')).toEqual([{ id: 'a', satisfied: false }, { id: 'b', satisfied: true }]);
+    expect(adj.dependentsOf.get('a')!.map(e => e.id)).toEqual(['c', 'd']);
+  });
+
+  it('levels are the longest path; components group connected work', () => {
+    const adj = buildMissionAdjacency([t('a', null), t('x', null), t('b', ['a']), t('c', ['a', 'b']), t('y', ['x'])]);
+    expect(['a', 'b', 'c', 'x', 'y'].map(id => adj.level.get(id))).toEqual([1, 2, 3, 1, 2]);
+    expect(adj.component.get('c')).toBe(adj.component.get('a'));
+    expect(adj.component.get('y')).toBe(adj.component.get('x'));
+    expect(adj.component.get('y')).not.toBe(adj.component.get('a'));
+    expect(adj.maxLevel.get(adj.component.get('a')!)).toBe(3);
+  });
+
+  it('off-set: an unsatisfied known dependency is a blocker; an unknown or satisfied one is not', () => {
+    const lookup = (id: string) => ({ z: { status: 'in_progress', workers: [] }, done: { status: 'completed', workers: [] } } as Record<string, { status: string; workers: never[] }>)[id];
+    const adj = buildMissionAdjacency([t('a', ['z', 'done', 'gone'])], { lookup });
+    expect(adj.offSetBlockersOf.get('a')).toEqual(['z']);
+  });
+
+  it('folds raw ids onto their cell', () => {
+    const adj = buildMissionAdjacency([t('row', null), t('b', ['attempt'])], {
+      resolveId: id => (id === 'attempt' ? 'row' : id),
+      lookup: id => ({ status: id === 'attempt' ? 'failed' : 'pending', workers: [] }),
+    });
+    expect(adj.blockersOf.get('b')).toEqual([{ id: 'row', satisfied: false }]);
+  });
+
+  it('cycles terminate: unreleased tasks sit one level past the released part', () => {
+    const adj = buildMissionAdjacency([t('r', null), t('a', ['r', 'b']), t('b', ['a'])]);
+    expect([...adj.cycle].sort()).toEqual(['a', 'b']);
+    expect(adj.level.get('r')).toBe(1);
+    expect(adj.level.get('a')).toBe(2);
+    expect(adj.level.get('b')).toBe(2);
   });
 });

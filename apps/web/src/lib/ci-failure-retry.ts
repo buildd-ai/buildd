@@ -25,12 +25,13 @@
  * nobody was fixing had no record of why.
  */
 
+import { checkDispatch } from '@/lib/supersession';
 import { after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask, summarizePrFixAttempts } from '@/lib/ci-retry';
 import { captureCiJobLogEvidence } from '@/lib/ci-job-log-evidence';
@@ -370,6 +371,27 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     return { kind: 'skipped', reason };
   }
 
+  // Dispatch guard: the supersession table in skip_dispatch mode, so a CI fix
+  // is never filed for work the reconciler would cancel on sight. An adopted
+  // PR's placeholder owner is exempt from the owner-status rules, as above.
+  const supersession = await checkDispatch({
+    kind: 'ci_retry',
+    workspaceId: task.workspaceId,
+    prNumber,
+    parentTaskId: isAdoptedPrTask(task) ? null : task.id,
+    door: surface,
+  });
+  // `open_retry_supersedes_duplicate` reads the same open-attempt set as the
+  // in-flight check below, which also schedules the sweep's look-back — let
+  // that branch report it rather than mislabel it here.
+  if (supersession.verdict === 'skip_dispatch' && supersession.rule !== 'open_retry_supersedes_duplicate') {
+    const reason: CiRetrySkipReason = supersession.rule === 'cancel_supersedes_retry'
+      ? 'owner_stopped'
+      : supersession.rule?.startsWith('close_') ? 'pr_closed' : 'pr_merged';
+    recordSkip(skipCtx, reason, { supersessionRule: supersession.rule });
+    return { kind: 'skipped', reason };
+  }
+
   // Every fix attempt filed for this PR: one in flight means another push
   // is coming, so a retry now would stack on it; the rest are the budget.
   const fixAttempts = await db
@@ -392,7 +414,15 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
         eq(tasks.conflictRetryPrNumber, prNumber),
       ),
     ));
-  const { inFlight, ciRetriesUsed } = summarizePrFixAttempts(fixAttempts, prNumber);
+  const { inFlight: inFlightOnPr, ciRetriesUsed } = summarizePrFixAttempts(fixAttempts, prNumber);
+  // The supersession guard also sees open attempts elsewhere in the retry
+  // family (a sibling fixing a sibling's PR), which this PR-scoped query does
+  // not: that sibling is in flight for this subject too.
+  const familyBlocker = !inFlightOnPr && supersession.rule === 'open_retry_supersedes_duplicate'
+    ? supersession.blockers?.[0] ?? null
+    : null;
+  const inFlight: { id: string; status: string } | null =
+    inFlightOnPr ?? (familyBlocker ? { id: familyBlocker, status: 'open' } : null);
   if (inFlight) {
     console.log(
       `Skipping CI retry for PR #${prNumber} on ${repoFullName}: fix attempt ${inFlight.id} is still ${inFlight.status}`,
@@ -471,7 +501,8 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       recordSkip(skipCtx, 'duplicate', { diagnoseOnly: true });
       return { kind: 'skipped', reason: 'duplicate' };
     }
-    await dispatchNewTask(newDiagnoseTask, workspace);
+    await announceTaskCreated(newDiagnoseTask, workspace);
+    await wakeTask(newDiagnoseTask.id, 'ci.retry');
     console.log(`Created drift-diagnose task ${newDiagnoseTask.id} for PR #${prNumber} on ${repoFullName} (iteration skipped — diagnose only)`);
     await appendPrActivity({
       installationId,
@@ -629,7 +660,8 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
       match: subjectObservation.match,
     });
   }
-  await dispatchNewTask(newTask, workspace);
+  await announceTaskCreated(newTask, workspace);
+  await wakeTask(newTask.id, 'ci.retry');
   console.log(`Created CI retry task ${newTask.id} for failed PR #${prNumber} on ${repoFullName} (iteration ${retryTask.context.iteration})`);
   // ci_job_log evidence (byo-evidence-storage AC-3). After dispatch, and
   // never throws: evidence is diagnostics, the retry is the product.

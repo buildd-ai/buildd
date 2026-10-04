@@ -108,12 +108,33 @@ mock.module('@/lib/path-claim-release', () => ({
 
 // The cold path inserts a Continue: task and must wake runners for it the way
 // every other new task does, or a webhook-only workspace never runs it.
-const mockDispatchNewTask = mock(async (_task: any, _workspace: any, _options?: any) => {});
+const mockAnnounceTaskCreated = mock(async (_task: any, _workspace: any) => {});
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: any) => {});
+// Full export surface: mock.module is process-global.
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  announceTaskCreated: mockAnnounceTaskCreated,
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
 // A worker a cloud runner parked has no container: the answer must wake one.
 const mockDispatchResumedTask = mock(async (_task: any, _workspace: any, _workerId: string) => true);
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+mock.module('@/lib/task-dispatch-delivery', () => ({
   dispatchResumedTask: mockDispatchResumedTask,
+  buildTaskPayload: mock((task: any) => task),
+  buildWebhookPayload: mock(() => ({})),
+  dispatchToWebhook: mock(async () => false),
+  tryGitHubActionsDispatch: mock(async () => false),
+  WEBHOOK_DISPATCH_TIMEOUT_MS: 10_000,
 }));
 
 import { POST } from './route';
@@ -213,8 +234,10 @@ describe('POST /api/workers/[id]/respond', () => {
     mockTriggerEvent.mockClear();
     mockReleaseAndNotify.mockClear();
     mockPreflight.mockClear();
-    mockDispatchNewTask.mockReset();
-    mockDispatchNewTask.mockImplementation(async () => {});
+    mockAnnounceTaskCreated.mockReset();
+    mockAnnounceTaskCreated.mockImplementation(async () => {});
+    mockWakeTask.mockReset();
+    mockWakeTask.mockImplementation(async () => {});
     mockPreflight.mockImplementation(async () => ({ state: 'ok' as const }));
     tasksUpdated.length = 0;
     notesInserted.length = 0;
@@ -1213,13 +1236,16 @@ describe('POST /api/workers/[id]/respond', () => {
 
       expect(res.status).toBe(200);
       expect((await res.json()).path).toBe('cold_continuation');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
-      const [task, ws] = mockDispatchNewTask.mock.calls[0] as any[];
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      const [task, ws] = mockAnnounceTaskCreated.mock.calls[0] as any[];
       expect(task.id).toBe('new-task-1');
       expect(ws).toBe(workspace);
+      expect(mockWakeTask.mock.calls).toEqual([['new-task-1', 'task.created']]);
     });
 
-    it("the continuation keeps the parent's runner preference, and dispatch honours it", async () => {
+    // Delivery reads runnerPreference off the task row, so inheriting it on the
+    // insert is what keeps a webhook restricted to other runners from taking it.
+    it("the continuation keeps the parent's runner preference", async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace, task: { ...baseWorker.task, runnerPreference: 'user' } });
 
@@ -1227,8 +1253,6 @@ describe('POST /api/workers/[id]/respond', () => {
 
       expect(res.status).toBe(200);
       expect((mockInsertValues.mock.calls.at(-1) as any[])[0].runnerPreference).toBe('user');
-      const [, , options] = mockDispatchNewTask.mock.calls[0] as any[];
-      expect(options).toEqual({ runnerPreference: 'user' });
     });
 
     it('does not dispatch anything on the warm resume path', async () => {
@@ -1249,13 +1273,14 @@ describe('POST /api/workers/[id]/respond', () => {
 
       expect(res.status).toBe(200);
       expect((await res.json()).path).toBe('resume');
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('still records the answer when dispatch throws', async () => {
       authorize();
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, workspace });
-      mockDispatchNewTask.mockImplementation(async () => { throw new Error('webhook exploded'); });
+      mockAnnounceTaskCreated.mockImplementation(async () => { throw new Error('pusher exploded'); });
 
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
 
@@ -1263,7 +1288,9 @@ describe('POST /api/workers/[id]/respond', () => {
       const data = await res.json();
       expect(data.path).toBe('cold_continuation');
       expect(data.taskId).toBe('new-task-1');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      // The dashboard event failing must not cost the task its wake.
+      expect(mockWakeTask.mock.calls).toEqual([['new-task-1', 'task.created']]);
     });
 
     it('does not dispatch when the continuation insert fails', async () => {
@@ -1274,7 +1301,8 @@ describe('POST /api/workers/[id]/respond', () => {
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
 
       expect(res.status).toBe(500);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
   });
 

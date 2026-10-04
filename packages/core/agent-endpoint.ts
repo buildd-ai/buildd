@@ -28,6 +28,17 @@
  *
  * The inference key policy does not bind it (§1 "Key policy").
  *
+ * ## Codex
+ *
+ * The same row also routes Codex tasks, when it has an OpenAI-compatible
+ * route: `gateway` (LiteLLM) and `openrouter` both do, `anthropic-compatible`
+ * does not (`AgentEndpointRoute.openAiBaseUrl`). Ranking is the same shape,
+ * against the Codex-side credentials instead (`resolveAgentModelRoute`'s
+ * `backend: 'codex'`, `CODEX_COMPETING_MODEL_PURPOSES`). A runner applies
+ * `openAiBaseUrl` as `OPENAI_BASE_URL` plus the endpoint key as
+ * `OPENAI_API_KEY`; an `anthropic-compatible`-only endpoint fails the Codex
+ * task with a clear message rather than guessing a wire format.
+ *
  * ## Module loading
  *
  * Pure helpers at the top; the DB and decryption are imported lazily in the
@@ -74,6 +85,14 @@ export interface AgentEndpointRoute {
   apiKey: string;
   authHeader: AgentEndpointAuthHeader;
   models: AgentModelMap;
+  /**
+   * The OpenAI-compatible root (no trailing slash, e.g. `…/v1`), when this
+   * endpoint has one — `gateway` (LiteLLM) and `openrouter` both do;
+   * `anthropic-compatible` is Anthropic Messages format only and has none.
+   * This is what a Codex task's `OPENAI_BASE_URL` becomes; its absence is
+   * what tells the runner to fail a Codex task clearly instead of guessing.
+   */
+  openAiBaseUrl?: string;
 }
 
 export type AgentEndpointScope = 'workspace' | 'team';
@@ -174,19 +193,42 @@ export function agentBaseUrlFromGateway(openAiRoot: string): string {
   return normalizeGatewayUrl(openAiRoot).replace(/\/v1$/, '');
 }
 
+/**
+ * The OpenAI-compatible root for a kind that has one, given its Anthropic-side
+ * pieces. `gateway`'s is the gateway's own OpenAI root (already `…/v1`, no
+ * translation needed — LiteLLM speaks both wires off the same base);
+ * `openrouter`'s is its Anthropic-compatible root plus `/v1` (OpenRouter's
+ * native wire is OpenAI chat-completions). `anthropic-compatible` has none: a
+ * self-contained custom proxy mimics only the Anthropic Messages API.
+ */
+function openAiBaseUrlFor(kind: AgentEndpointKind, anthropicBaseUrl: string, gatewayBaseUrl: string | undefined): string | undefined {
+  if (kind === 'gateway') return gatewayBaseUrl;
+  if (kind === 'openrouter') return `${anthropicBaseUrl}/v1`;
+  return undefined;
+}
+
 /** A blob plus (for `kind: gateway`) the gateway it points at, as a route. Null when it routes nothing. */
 export function resolveEndpointFromBlob(blob: AgentEndpointBlob, gateway: LiteLLMGateway | null): AgentEndpointRoute | null {
   if (blob.kind === 'gateway') {
     if (!gateway) return null;
+    const baseUrl = blob.agentBaseUrl ?? agentBaseUrlFromGateway(gateway.baseURL);
     return {
       kind: 'gateway',
-      baseUrl: blob.agentBaseUrl ?? agentBaseUrlFromGateway(gateway.baseURL),
+      baseUrl,
       apiKey: gateway.apiKey,
       authHeader: 'authorization',
       models: blob.models ?? {},
+      openAiBaseUrl: openAiBaseUrlFor('gateway', baseUrl, gateway.baseURL),
     };
   }
-  return { kind: blob.kind, baseUrl: blob.baseUrl, apiKey: blob.apiKey, authHeader: blob.authHeader, models: blob.models ?? {} };
+  return {
+    kind: blob.kind,
+    baseUrl: blob.baseUrl,
+    apiKey: blob.apiKey,
+    authHeader: blob.authHeader,
+    models: blob.models ?? {},
+    openAiBaseUrl: openAiBaseUrlFor(blob.kind, blob.baseUrl, undefined),
+  };
 }
 
 // ── Model naming (§5) ─────────────────────────────────────────────────────────
@@ -221,6 +263,17 @@ export function endpointWinsRanking(endpointScope: AgentEndpointScope, competito
 
 export const COMPETING_MODEL_PURPOSES = ['anthropic_api_key', 'oauth_token', 'claude_credential'] as const;
 
+/**
+ * The Codex-side equivalent: a team/workspace OpenAI key (`openai_api_key`) or
+ * a ChatGPT/OAuth connect (`codex_credential`, api_key or oauth shape — either
+ * is "a credential exists", liveness is the same revoked check as the
+ * Anthropic purposes). Used instead of `COMPETING_MODEL_PURPOSES` when ranking
+ * the endpoint for a Codex task, so a more specific Codex credential still
+ * beats a broader team endpoint — mirroring the Claude path exactly, just
+ * against the credentials a Codex run would actually otherwise use.
+ */
+export const CODEX_COMPETING_MODEL_PURPOSES = ['openai_api_key', 'codex_credential'] as const;
+
 export interface CompetingCredentialRow {
   purpose: string;
   accountId: string | null;
@@ -239,10 +292,11 @@ export interface CompetingCredentialRow {
 export function competingScopes(
   rows: readonly CompetingCredentialRow[],
   ctx: { workspaceId: string; accountId?: string | null },
+  purposes: readonly string[] = COMPETING_MODEL_PURPOSES,
 ): ModelCredentialScope[] {
   const out: ModelCredentialScope[] = [];
   for (const r of rows) {
-    if (!(COMPETING_MODEL_PURPOSES as readonly string[]).includes(r.purpose)) continue;
+    if (!purposes.includes(r.purpose)) continue;
     if (r.healthStatus === 'revoked') continue;
     if (r.purpose === 'claude_credential' && !r.tokenExpiresAt) continue;
     if (r.workspaceId && r.workspaceId !== ctx.workspaceId) continue;
@@ -328,15 +382,24 @@ export type AgentModelDecision =
  * does exactly what it did before endpoints existed. Never throws; a failed
  * competitor lookup is treated as "no competitors" only when the endpoint is
  * the most specific possible scope, and otherwise as a loss for the endpoint,
- * so an error can never move a workspace off its own Anthropic key.
+ * so an error can never move a workspace off its own credential.
+ *
+ * `backend` picks which credentials compete: `claude` (default) ranks against
+ * `COMPETING_MODEL_PURPOSES` (anthropic_api_key / oauth_token /
+ * claude_credential); `codex` ranks against `CODEX_COMPETING_MODEL_PURPOSES`
+ * (openai_api_key / codex_credential) instead — the credentials a Codex run
+ * would otherwise use. The endpoint itself is backend-agnostic (one row for
+ * both); only the competitor set changes.
  */
 export async function resolveAgentModelRoute(opts: {
   teamId: string;
   workspaceId: string;
   accountId?: string | null;
+  backend?: 'claude' | 'codex';
 }): Promise<AgentModelDecision | null> {
   const endpoint = await resolveAgentEndpoint(opts);
   if (!endpoint) return null;
+  const purposes = opts.backend === 'codex' ? CODEX_COMPETING_MODEL_PURPOSES : COMPETING_MODEL_PURPOSES;
   let scopes: ModelCredentialScope[];
   try {
     const { db } = await import('./db');
@@ -345,13 +408,13 @@ export async function resolveAgentModelRoute(opts: {
     const { teamCredentialWhere } = await import('./secrets/team-scope');
     const rows = await db.query.secrets.findMany({
       where: teamCredentialWhere(
-        { teamId: opts.teamId, purpose: COMPETING_MODEL_PURPOSES },
+        { teamId: opts.teamId, purpose: purposes },
         opts.accountId ? or(isNull(secrets.accountId), eq(secrets.accountId, opts.accountId)) : isNull(secrets.accountId),
         or(isNull(secrets.workspaceId), eq(secrets.workspaceId, opts.workspaceId)),
       ),
       columns: { purpose: true, accountId: true, workspaceId: true, healthStatus: true, tokenExpiresAt: true },
     });
-    scopes = competingScopes(rows ?? [], opts);
+    scopes = competingScopes(rows ?? [], opts, purposes);
   } catch (e) {
     console.warn('[agent-endpoint] competitor lookup failed:', e);
     scopes = endpoint.scope === 'workspace' ? [] : ['workspace'];
@@ -359,6 +422,19 @@ export async function resolveAgentModelRoute(opts: {
   if (endpointWinsRanking(endpoint.scope, scopes)) return { winner: 'endpoint', endpoint };
   const beatenBy = scopes.reduce<ModelCredentialScope>((m, s) => (RANK[s] > RANK[m] ? s : m), 'team');
   return { winner: 'anthropic', endpoint, beatenBy };
+}
+
+/**
+ * Cheap existence check for the claim capability gate and backend-failover's
+ * "is Codex configured" question (mirrors `hasCodexCredential` /
+ * `hasOpenAiApiKey`): does an endpoint resolve for this scope AND does it have
+ * an OpenAI-compatible route? Not the ranking — `resolveAgentModelRoute`
+ * decides whether it actually wins against a more specific Codex credential
+ * once a worker is claiming. This only answers "could Codex run at all here".
+ */
+export async function hasOpenAiCompatibleAgentEndpoint(opts: { teamId: string; workspaceId?: string | null }): Promise<boolean> {
+  const endpoint = await resolveAgentEndpoint(opts);
+  return !!endpoint?.openAiBaseUrl;
 }
 
 // ── Verify (§4) ───────────────────────────────────────────────────────────────

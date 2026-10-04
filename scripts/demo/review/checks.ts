@@ -14,9 +14,12 @@ export type Finding = { clip?: string; t?: number; severity: Severity; check: st
 export type Word = { text: string; x: number; y: number; w: number; h: number; conf: number; line: number };
 
 /** The width the site shows a clip at (site-landing-v2: beats in a 700px column, 360 on a phone; heroes and the film full-bleed). */
+/** The films (played once, full-bleed): the voiced cut and the silent captioned one. */
+export const FILMS = ['full', 'captioned'];
+
 export function displayWidth(name: string): number {
   const mobile = name.endsWith('-mobile');
-  if (name === 'full') return 1280;
+  if (FILMS.includes(name)) return 1280;
   if (name.startsWith('hero')) return mobile ? 360 : 1280;
   return mobile ? 360 : 700;
 }
@@ -29,7 +32,7 @@ export type ClipMeta = { folded: boolean; loop: boolean; crossfades: number[] };
  * encoded t = cut t - fade and the seam is itself a crossfade.
  */
 export function clipMeta(name: string, cut: { loop: boolean; shots: Array<{ start: number; dur: number }> }, fade: number): ClipMeta {
-  const folded = !name.startsWith('hero') && name !== 'full';
+  const folded = !name.startsWith('hero') && !FILMS.includes(name);
   const mids = cut.shots.slice(1).map((s) => s.start + fade / 2 - (folded ? fade : 0));
   // A folded beat's seam is a transition too: the last `fade` of the encoded clip.
   if (folded) mids.push(cut.shots.reduce((x, s) => x + s.dur, 0) - fade / 2);
@@ -101,6 +104,107 @@ export function contrastFloor(s: { mean: number; rms: number }, _theme: 'dark' |
   if (s.rms < CONTRAST.high) return { severity: 'high', check: 'contrast', issue: `${what}: reads as a flat panel` };
   if (s.rms < CONTRAST.medium) return { severity: 'medium', check: 'contrast', issue: `${what}: low contrast at page size` };
   return null;
+}
+
+/**
+ * A large empty region between content: the frame cut into a 16-column grid of
+ * square-ish blocks; a block is flat when its luma barely varies. A flat block
+ * counts when its own column has content both above and below it (it sits in
+ * the layout, not in a margin the crop left), whatever it connects to at the
+ * sides. More than `share` of the frame counted that way reads as a hole.
+ */
+export const GAP = { share: 0.25, flatRms: 3 };
+export function emptyGap(gray: Uint8Array, width: number, height: number, share = GAP.share): Finding | null {
+  const cols = 16, bw = width / cols, rows = Math.max(1, Math.round(height / bw)), bh = height / rows;
+  const flat: boolean[][] = [];
+  for (let r = 0; r < rows; r++) {
+    flat.push([]);
+    for (let c = 0; c < cols; c++) {
+      let sum = 0, sq = 0, n = 0;
+      for (let y = Math.floor(r * bh); y < Math.floor((r + 1) * bh); y++) for (let x = Math.floor(c * bw); x < Math.floor((c + 1) * bw); x++) {
+        const v = gray[y * width + x]; sum += v; sq += v * v; n++;
+      }
+      const mean = sum / n;
+      flat[r].push(Math.sqrt(Math.max(0, sq / n - mean * mean)) < GAP.flatRms);
+    }
+  }
+  let held = 0;
+  for (let c = 0; c < cols; c++) {
+    const content = flat.map((row, r) => (!row[c] ? r : -1)).filter((r) => r >= 0);
+    if (content.length < 2) continue;
+    for (let r = content[0] + 1; r < content[content.length - 1]; r++) if (flat[r][c]) held++;
+  }
+  const worst = held / (rows * cols);
+  return worst > share ? { severity: 'high', check: 'empty-gap', issue: `an empty region covers ${Math.round(worst * 100)}% of the frame between content` } : null;
+}
+
+/** A title card: some word set at display size (32px or more at page size), read with confidence. Its plain ground is the design. */
+export function isTypeCard(words: Word[], sourceWidth: number, displayWidth: number): boolean {
+  const k = displayWidth / sourceWidth;
+  return words.some((w) => w.conf >= 80 && (w.text.match(/[A-Za-z]/g) ?? []).length >= 3 && fontPx(w) * k >= 32);
+}
+
+/**
+ * Flicker: an element that re-appears, lit or shown, then dimmed or hidden,
+ * then lit or shown again, within `windowSec`. Read from a coarse grid of
+ * block averages over time (`frames[f][b]`, 8-bit luma at `fps`): a block's
+ * change of more than `delta` is a transition; three alternating transitions
+ * in the window is a re-appearance. One pulse (on, then off) is not flicker,
+ * and a frame where over a third of the blocks change at once is a cut or a
+ * dip, not an element. Each state has to hold `minHoldSec`, so a moving edge
+ * (a frame or two dark as it passes) is not counted.
+ */
+export const FLICKER = { delta: 18, windowSec: 2, globalShare: 0.34, minHoldSec: 0.3 };
+export function flicker(frames: Uint8Array[], fps: number, o = FLICKER): Finding[] {
+  if (frames.length < 3) return [];
+  const blocks = frames[0].length;
+  const steps: Array<Array<{ f: number; sign: number }>> = Array.from({ length: blocks }, () => []);
+  for (let f = 1; f < frames.length; f++) {
+    const moved: Array<{ b: number; sign: number }> = [];
+    for (let b = 0; b < blocks; b++) {
+      const d = frames[f][b] - frames[f - 1][b];
+      if (Math.abs(d) > o.delta) moved.push({ b, sign: Math.sign(d) });
+    }
+    if (moved.length > blocks * o.globalShare) continue;
+    for (const m of moved) {
+      const s = steps[m.b];
+      // Consecutive frames of the same fade are one transition.
+      if (s.length && s[s.length - 1].sign === m.sign && f - s[s.length - 1].f <= 3) { s[s.length - 1].f = f; continue; }
+      s.push({ f, sign: m.sign });
+    }
+  }
+  const hits: number[] = [];
+  for (const s of steps) for (let i = 0; i + 2 < s.length; i++) {
+    const [a, b, c] = [s[i], s[i + 1], s[i + 2]];
+    // Each state must hold (minHoldSec): a moving edge passing a block is a frame or two of change, not an element toggling.
+    const held = (b.f - a.f) / fps >= o.minHoldSec && (c.f - b.f) / fps >= o.minHoldSec;
+    if (held && a.sign !== b.sign && b.sign !== c.sign && (c.f - a.f) / fps <= o.windowSec) { hits.push(a.f / fps); break; }
+  }
+  if (!hits.length) return [];
+  const t = Math.min(...hits);
+  return [{ t: +t.toFixed(2), severity: 'high', check: 'flicker', issue: `${hits.length} region(s) re-appear within ${o.windowSec}s (lit or shown, then gone, then back), first at ${t.toFixed(1)}s` }];
+}
+
+/**
+ * Sparse: the frame's content (its non-flat blocks) fits in a box under
+ * `maxW` of its width and `maxH` of its height, so the clip reads as an empty
+ * panel with one thin thing in it (the 16:9 hero's lone row: three quarters
+ * of the width but a third of the height). emptyGap cannot see this: nothing
+ * sits above or below the row.
+ */
+export const SPARSE = { maxW: 0.8, maxH: 0.35, flatRms: 3 };
+export function sparseFrame(gray: Uint8Array, width: number, height: number): Finding | null {
+  const cols = 16, bw = width / cols, rows = Math.max(1, Math.round(height / bw)), bh = height / rows;
+  let x0 = cols, x1 = -1, y0 = rows, y1 = -1;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    let sum = 0, sq = 0, n = 0;
+    for (let y = Math.floor(r * bh); y < Math.floor((r + 1) * bh); y++) for (let x = Math.floor(c * bw); x < Math.floor((c + 1) * bw); x++) { const v = gray[y * width + x]; sum += v; sq += v * v; n++; }
+    const mean = sum / n;
+    if (Math.sqrt(Math.max(0, sq / n - mean * mean)) >= SPARSE.flatRms) { x0 = Math.min(x0, c); x1 = Math.max(x1, c); y0 = Math.min(y0, r); y1 = Math.max(y1, r); }
+  }
+  if (x1 < 0) return null; // an empty frame is the contrast floor's to judge
+  const w = (x1 - x0 + 1) / cols, h = (y1 - y0 + 1) / rows;
+  return w < SPARSE.maxW && h < SPARSE.maxH ? { severity: 'high', check: 'sparse', issue: `all the content sits in ${Math.round(w * 100)}% × ${Math.round(h * 100)}% of the frame: an empty panel with one small thing in it` } : null;
 }
 
 /** A clip that does not loop (the film) fades to black over its last second, by design. */
@@ -311,7 +415,8 @@ export function numberContradictions(frames: Array<{ t: number; text: string }>)
       if (!/^\d+$/.test(tok)) return;
       const n = +tok;
       const fwd = toks.slice(i + 1, i + 4);
-      if (fwd[0] && /^[A-Za-z]/.test(fwd[0]) && fwd[0] !== fwd[0].toUpperCase()) add(key(fwd), n);
+      // A count's noun is lowercase ("3 tasks", "1 decision"); a capitalized word after a number is a label ("Iteration 1 Condition").
+      if (fwd[0] && /^[a-z]/.test(fwd[0])) add(key(fwd), n);
       // A stat label is the run of caps words right before the number ("YOUR ANSWERS 2"), nothing in between.
       const back: string[] = [];
       for (let j = i - 1; j >= Math.max(0, i - 3) && /^[A-Z][A-Z']+$/.test(toks[j]); j--) back.unshift(toks[j]);

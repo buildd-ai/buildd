@@ -99,18 +99,22 @@ describe('recordOrchestrationDecision', () => {
 describe('recordOrchestrationTouchLabel', () => {
   const label = { taskId: TASK, workspaceId: WS, workerId: WORKER, workerStatus: 'completed', paths: ['a.ts', 'a.ts', 'b.ts'], prNumber: 7, headSha: 'h1', baseRef: 'dev' };
 
-  it('writes nothing for a task no decision ever looked at', async () => {
+  it('writes touches for work tasks without any decision row', async () => {
+    fake.selectRows = [{ id: TASK }];
+    expect(await src.recordOrchestrationTouchLabel(label)).toBe(true);
+    expect(fake.selects[0].table).toBe('tasks');
+    const where = render(fake.selects[0].where);
+    expect(where.sql).toContain('"tasks"."task_class" = $3');
+    expect(where.params).toEqual([TASK, WS, 'work']);
+  });
+
+  it('skips non-work or missing tasks', async () => {
     fake.selectRows = [];
     expect(await src.recordOrchestrationTouchLabel(label)).toBe(false);
     expect(fake.inserted).toHaveLength(0);
-    const where = render(fake.selects[0].where);
-    expect(fake.selects[0].table).toBe('orchestration_decisions');
-    expect(where.sql).toContain('"orchestration_decisions"."task_id" = $1');
-    expect(where.sql).toContain('"orchestration_decisions"."workspace_id" = $2');
-    expect(where.params).toEqual([TASK, WS]);
   });
 
-  it('writes one deduped label per worker session for a decided task', async () => {
+  it('writes one deduped label per worker session for a work task', async () => {
     fake.selectRows = [{ id: 'd1' }];
     expect(await src.recordOrchestrationTouchLabel(label)).toBe(true);
     expect(fake.inserted).toHaveLength(1);
@@ -120,10 +124,10 @@ describe('recordOrchestrationTouchLabel', () => {
     expect(ins.target).toBeDefined();
   });
 
-  it('records an empty observation as an explicit empty label (a session that edited nothing)', async () => {
+  it('skips a session without observed touches', async () => {
     fake.selectRows = [{ id: 'd1' }];
-    expect(await src.recordOrchestrationTouchLabel({ ...label, paths: [] })).toBe(true);
-    expect(fake.inserted[0].values.touchedPaths).toEqual([]);
+    expect(await src.recordOrchestrationTouchLabel({ ...label, paths: [] })).toBe(false);
+    expect(fake.inserted).toHaveLength(0);
   });
 
   it('never throws on a failed read or write', async () => {

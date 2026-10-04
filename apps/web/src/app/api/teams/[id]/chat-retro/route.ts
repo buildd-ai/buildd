@@ -15,6 +15,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
 import { getRequestPrincipal } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
+import { keyLevelHas, roleHas } from '@/lib/permissions';
 import { applyChatRetroPatch, chatRetroGloballyEnabled } from '@/lib/chat-retro/settings';
 import { deleteTeamLessons, listRecentLessons, readTeamSettings, writeTeamSettings } from '@/lib/chat-retro/store';
 
@@ -27,7 +28,7 @@ async function requireTeamAdmin(req: NextRequest, teamId: string): Promise<NextR
   if (!principal) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   if (principal.kind === 'api_key') {
     if (principal.account.teamId !== teamId) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-    if (principal.account.level !== 'admin') {
+    if (!keyLevelHas(principal.account.level, 'manage_chat_retro')) {
       return NextResponse.json({ error: 'Chat retro settings need an admin-level API key' }, { status: 403 });
     }
     return null;
@@ -37,7 +38,7 @@ async function requireTeamAdmin(req: NextRequest, teamId: string): Promise<NextR
     columns: { role: true },
   });
   if (!membership) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-  if (membership.role !== 'owner' && membership.role !== 'admin') {
+  if (!roleHas(membership.role, 'manage_chat_retro')) {
     return NextResponse.json({ error: 'Only a team owner or admin can see or change chat retro settings' }, { status: 403 });
   }
   return null;

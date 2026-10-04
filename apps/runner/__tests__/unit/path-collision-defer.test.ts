@@ -28,7 +28,12 @@ const BLOCKER = 'bbbbbbbb-1111-2222-3333-444444444444';
 const GIT = '-c user.email=t@example.com -c user.name=t -c commit.gpgsign=false';
 
 function sh(cwd: string, cmd: string) {
-  return execSync(cmd, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+  // env must be passed explicitly: Bun's execSync snapshots process.env at
+  // process startup and does not observe later mutations (unlike Node's),
+  // so the beforeAll identity wipe below would otherwise never reach the
+  // spawned git and this fixture would silently leak the host's real
+  // ~/.gitconfig identity into every test.
+  return execSync(cmd, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
 }
 
 let tmp: string;

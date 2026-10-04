@@ -18,6 +18,7 @@ import { appendPrActivity, taskActivityUrl } from './pr-activity-comment';
 export interface ClaimedTaskShape {
   id: string;
   workspaceId: string;
+  title?: string | null;
   taskClass?: string | null;
   reviewerRetryPrNumber?: number | null;
   ciRetryPrNumber?: number | null;
@@ -69,6 +70,7 @@ export async function announceFixClaimed(task: ClaimedTaskShape): Promise<void> 
         iteration: fix.iteration,
         maxIterations: fix.maxIterations,
         taskUrl: taskActivityUrl(task.id),
+        taskTitle: task.title ?? null,
       },
       // A PR buildd never announced on stays comment-free.
       onlyIfPresent: true,

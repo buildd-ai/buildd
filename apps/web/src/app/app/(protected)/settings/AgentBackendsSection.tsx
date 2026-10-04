@@ -134,7 +134,7 @@ function StrandedChip({ stat }: { stat?: BackendStrandStat | null }) {
   return <StatusChip tone="err">Stranding {stat.strandedPending}</StatusChip>;
 }
 
-type RowKey = 'claude' | 'codex' | 'routing';
+type RowKey = 'claude' | 'codex' | 'openai_key' | 'routing';
 
 interface Workspace {
   id: string;
@@ -315,6 +315,19 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         onOpen={() => setOpen('codex')}
         scopeControl={scopeControl}
       />
+      {/* A plain OpenAI API key is the simpler alternative to connecting ChatGPT
+          above — same purpose (Codex agent tasks), stored like the Anthropic key. */}
+      <OpenAiApiKeyCard
+        teamId={teamId}
+        scope={scope}
+        workspaceId={scope === 'workspace' ? workspaceId : null}
+        teamTargets={teamTargets}
+        strand={strandFor('codex')}
+        onCredentialChange={refreshStrand}
+        open={open === 'openai_key'}
+        onToggle={() => toggle('openai_key')}
+        scopeControl={scopeControl}
+      />
       {/* Team provider routing toggle (reversible mask over the resolution chain) */}
       <ProviderRoutingToggle
         teamId={teamId}
@@ -430,7 +443,7 @@ function ProviderRoutingToggle({
       setMsg({
         type: 'success',
         text: off.length
-          ? `${off.map(backendLabel).join(' & ')} disabled. Those jobs now run on ${next.map(backendLabel).join(' & ')}. Re-enable any time; per-workspace settings are unchanged.`
+          ? `${off.map(backendLabel).join(' & ')} disabled. Jobs run on ${next.map(backendLabel).join(' & ')}.`
           : 'Both providers enabled (default routing).',
       });
     } catch (e) {
@@ -614,9 +627,9 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       if (data.revoked) {
         // Reads OK but a worker run reported the OAuth session revoked. GET /v1/models
         // can't detect that, so don't show a green pass — direct the user to re-auth.
-        setMsg({ type: 'error', text: 'The token reads OK, but a worker run reported it revoked (logged out or signed in elsewhere). Run `claude setup-token` again and paste the new token.' });
+        setMsg({ type: 'error', text: 'Revoked: a worker run was logged out. Run `claude setup-token` and paste the new token.' });
       } else if (data.verified) {
-        setMsg({ type: 'success', text: 'Credential verified against the Anthropic API.' });
+        setMsg({ type: 'success', text: 'Verified.' });
       } else {
         setMsg({ type: 'error', text: `Verification failed: ${data.error ?? 'invalid credential'}` });
       }
@@ -675,7 +688,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       <div>
         <h3 className="text-sm font-medium text-text-primary">Setup token / API key</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          Instead of one-tap connect, paste an OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
+          An OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
           or an Anthropic API key (pay-per-token).
         </p>
       </div>
@@ -749,6 +762,177 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
     </div>
+  );
+}
+
+// ── OpenAI API key (Codex agent tasks) ──────────────────────────────────────────
+//
+// The simpler alternative to connecting ChatGPT in the Codex card above: one
+// raw API key, stored exactly like the Anthropic key (`openai_api_key`
+// purpose, see docs/credentials-architecture.md). Injected into Codex-backend
+// tasks the same way `codex_credential` is, so either one makes Codex runnable.
+
+function OpenAiApiKeyCard({
+  teamId, scope, workspaceId, teamTargets, strand, onCredentialChange, open, onToggle, scopeControl,
+}: {
+  teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[]; strand?: BackendStrandStat | null;
+  onCredentialChange?: () => void;
+} & Omit<RowProps, 'onOpen'>) {
+  const [secrets, setSecrets] = useState<SecretMeta[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [value, setValue] = useState('');
+  const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [replaceOpen, setReplaceOpen] = useState(false);
+
+  const allTeams = scope === 'all_teams';
+
+  const load = useCallback(async () => {
+    if (!teamId || scope === 'all_teams') { setSecrets([]); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/secrets?teamId=${teamId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSecrets((data.secrets ?? []) as SecretMeta[]);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [teamId, scope]);
+
+  useEffect(() => {
+    if (!open) return;
+    setReplaceOpen(false);
+    setValue('');
+    void load();
+  }, [load, open]);
+
+  const matching = secrets.filter(
+    (s) => s.purpose === 'openai_api_key' && (scope === 'workspace' ? s.workspaceId === workspaceId : s.workspaceId === null),
+  );
+
+  async function save() {
+    setBusy(true);
+    setMsg(null);
+    const cleanValue = sanitizeToken(value);
+    try {
+      if (allTeams) {
+        const results = await Promise.all(
+          teamTargets.map((t) =>
+            fetch('/api/secrets', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ value: cleanValue, purpose: 'openai_api_key', teamId: t.teamId }),
+            }).then((r) => r.ok).catch(() => false),
+          ),
+        );
+        const ok = results.filter(Boolean).length;
+        setValue('');
+        setMsg({ type: ok > 0 ? 'success' : 'error', text: `OpenAI API key saved for ${ok} of ${teamTargets.length} teams.` });
+        onCredentialChange?.();
+        return;
+      }
+      const res = await fetch('/api/secrets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          value: cleanValue,
+          purpose: 'openai_api_key',
+          teamId,
+          ...(scope === 'workspace' && workspaceId ? { workspaceId } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Failed to save');
+      setValue('');
+      setReplaceOpen(false);
+      setMsg({ type: 'success', text: 'OpenAI API key saved.' });
+      await load();
+      onCredentialChange?.();
+    } catch (e) {
+      setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(id: string) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch(`/api/secrets?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      setMsg({ type: 'success', text: 'Key removed.' });
+      setReplaceOpen(false);
+      await load();
+      onCredentialChange?.();
+    } catch {
+      setMsg({ type: 'error', text: 'Failed to remove key' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const inputForm = (
+    <div className="space-y-2">
+      <input
+        type="password"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="sk-… (OpenAI API key)"
+        className="w-full h-10 px-3 bg-surface font-mono text-xs"
+      />
+      <div className="flex items-center gap-3">
+        <button onClick={save} disabled={busy || !value.trim()} className="btn btn-primary">
+          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace' : 'Save key'}
+        </button>
+        {replaceOpen && (
+          <button onClick={() => { setReplaceOpen(false); setValue(''); }} className="btn btn-quiet">Cancel</button>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <ConnectionRow
+      testId="openai-key-row"
+      title="OpenAI API key"
+      chip={matching.length > 0 ? <StatusChip tone="ok">Connected</StatusChip> : <StatusChip tone="idle">Not connected</StatusChip>}
+      meta="For Codex tasks, instead of a ChatGPT sign-in."
+      open={open}
+      onToggle={onToggle}
+    >
+      {scopeControl}
+      <StrandedWorkNotice stat={strand} />
+      {loading ? (
+        <div className="text-sm text-text-tertiary">Loading…</div>
+      ) : matching.length > 0 ? (
+        <div className="space-y-3">
+          <div className="inset-panel space-y-1 text-xs text-text-secondary">
+            <div>Scope: {matching[0].workspaceId ? 'this workspace' : 'all workspaces'}</div>
+            {matching[0].createdAt && <div>Connected: {new Date(matching[0].createdAt).toLocaleString()}</div>}
+          </div>
+          <CredActionRow>
+            {!replaceOpen && (
+              <CredAction onClick={() => { setReplaceOpen(true); setValue(''); setMsg(null); }}>Replace</CredAction>
+            )}
+            {matching.map((s) => (
+              <CredAction key={s.id} onClick={() => revoke(s.id)} disabled={busy} tone="danger">Revoke</CredAction>
+            ))}
+          </CredActionRow>
+          {replaceOpen && inputForm}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {allTeams && (
+            <span className="text-xs text-text-muted">Applies the same key to all {teamTargets.length} teams you manage.</span>
+          )}
+          {inputForm}
+        </div>
+      )}
+      {msg && <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>}
+    </ConnectionRow>
   );
 }
 
@@ -836,7 +1020,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
         setMsg({ type: 'success', text: `Claude connected via OAuth for ${data.teams} of ${data.totalTeams} teams.` });
       } else {
         setStatus(data);
-        setMsg({ type: 'success', text: 'Claude connected via OAuth (managed refresh enabled).' });
+        setMsg({ type: 'success', text: 'Claude connected.' });
       }
     } catch {
       setMsg({ type: 'error', text: 'Failed to exchange code' });
@@ -914,7 +1098,7 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       setStatus(data);
       setPasteValue('');
       setPasteOpen(false);
-      setMsg({ type: 'success', text: 'Claude account connected (managed refresh enabled).' });
+      setMsg({ type: 'success', text: 'Claude account connected.' });
     } catch (e) {
       setPasteError(e instanceof Error ? e.message : 'Failed to connect');
     } finally {
@@ -1056,8 +1240,8 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
                 {allTeams
                   ? `Approve once → applied to all ${teamTargets.length} teams`
                   : fallbackConnected
-                    ? 'Replaces the setup token with a one-tap login. Approve in the browser, then paste a short code.'
-                    : 'Approve in the browser, then paste a short code. No file needed.'}
+                    ? 'Replaces the setup token. Approve in the browser, then paste the code.'
+                    : 'Approve in the browser, then paste the code.'}
               </p>
             </div>
           )}
@@ -1205,7 +1389,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
           if (token.cancelled) return;
           setDevice(null);
           setStatus(data);
-          setMsg({ type: 'success', text: 'Codex connected via device login. buildd now owns this session.' });
+          setMsg({ type: 'success', text: 'Codex connected.' });
           onCredentialChange?.();
           return;
         }
@@ -1450,7 +1634,7 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
                 className="btn btn-primary">
                 Sign in with device code
               </button>
-              <p className="text-xs text-text-muted">Recommended. Nothing to paste, nothing to go stale.</p>
+              <p className="text-xs text-text-muted">Recommended.</p>
             </div>
           ))}
           <CodexPasteForm value={pasteValue} onChange={setPasteValue} error={pasteError} busy={busy} onConnect={connect} allTeamsCount={allTeams ? teamTargets.length : undefined} />
@@ -1508,10 +1692,10 @@ function DeviceLoginPanel({ userCode, verificationUri, onCancel }: { userCode: s
       </div>
       <div className="flex items-center gap-2 text-xs text-text-muted">
         <span className="w-2 h-2 bg-accent animate-pulse" />
-        Waiting for approval… buildd connects once you approve.
+        Waiting for approval…
       </div>
       <p className="text-[11px] text-text-muted">
-        Turn on device-code login in ChatGPT → Settings → Security first. Signing in here logs this account out of Codex on other devices.
+        Requires device-code login (ChatGPT → Settings → Security). Signs this account out of Codex elsewhere.
       </p>
     </div>
   );

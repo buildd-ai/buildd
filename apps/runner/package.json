@@ -1,6 +1,6 @@
 {
   "name": "@buildd/runner",
-  "version": "0.265.1",
+  "version": "0.273.0",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
@@ -8,6 +8,7 @@
     "build:css": "tailwindcss -i ui/input.css -o ui/styles.css --minify",
     "prestart": "tailwindcss -i ui/input.css -o ui/styles.css --minify",
     "start": "bun src/index.ts",
+    "browser:install": "playwright install chromium",
     "test": "bun test __tests__/unit",
     "test:unit": "bun test __tests__/unit",
     "test:integration": "bun test __tests__/integration.test.ts",
@@ -26,7 +27,7 @@
   "devDependencies": {
     "@tailwindcss/cli": "^4.0.0",
     "@types/bun": "^1.3.9",
-    "playwright": "^1.52.0",
+    "playwright": "1.61.1",
     "tailwindcss": "^4.0.0"
   },
   "license": "Apache-2.0"

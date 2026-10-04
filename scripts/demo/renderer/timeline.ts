@@ -31,7 +31,8 @@ export type SpotKey = {
  * rect's top-left) so the cover matches what is behind; 'dim' is the
  * spotlight's dim colour; anything else is a CSS colour.
  */
-export type Mask = { rect: Rect; from?: number; until?: number; wipe?: number; fill?: string; sample?: { x: number; y: number } };
+/** `max` caps the cover (default 1): 0.8 leaves what is under it as a 20% ghost. */
+export type Mask = { rect: Rect; from?: number; until?: number; wipe?: number; fill?: string; sample?: { x: number; y: number }; max?: number };
 
 /** An accent underline under a phrase, on from `from` to `to`. */
 export type Mark = { rect: Rect; from: number; to: number };
@@ -126,6 +127,12 @@ export type Cut = {
    */
   dip?: boolean;
   captions?: boolean;
+  /** Spoken lines (tts.ts), each a WAV placed at `at` seconds; the cut's clicks duck under them. */
+  voice?: Array<{ at: number; file: string; seconds: number }>;
+  /** Cap the encoded mp4 (re-encoded down if larger). */
+  maxBytes?: number;
+  /** A soft band of the ground behind captions, so dimmed UI never shows through under a caption's words. */
+  captionScrim?: boolean;
   theme?: 'dark' | 'light';
   /** Caption chip font size in px (default 32). */
   captionSize?: number;
@@ -335,6 +342,11 @@ export function spotAt(keys: SpotKey[] | undefined, local: number, move = SPOT_M
 
 /** A mask's cover at `local`: how opaque, and how much of its width is still covered (a wipe eats it from the left). */
 export function maskAt(m: Mask, local: number, dur = Infinity): { opacity: number; left: number } {
+  const r = maskCover(m, local, dur);
+  return m.max === undefined ? r : { ...r, opacity: r.opacity * m.max };
+}
+
+function maskCover(m: Mask, local: number, dur: number): { opacity: number; left: number } {
   const from = m.from ?? -Infinity;
   const until = m.until ?? dur;
   if (local < from) return { opacity: 0, left: 1 };

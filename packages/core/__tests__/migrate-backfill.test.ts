@@ -327,6 +327,11 @@ describe('assertion coverage over the real migration corpus', () => {
     // rule cap under concurrent saves). DbShape has no triggers or functions.
     // 11: *_backfill_host_runner is a pure data fix (UPDATE accounts); its
     // column comes from the generated migration before it.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(11);
+    // 12: *_task_dispatch_outbox_trigger is a function + trigger (durable
+    // dispatch intent on every transition into pending); same reason as 10.
+    // 13: *_task_dispatch_trigger_hints replaces that trigger's function.
+    // 14: *_dispatch_transport_default is a lone ALTER COLUMN ... SET DEFAULT.
+    // DbShape has no column defaults; same reason as 9.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(14);
   });
 });
