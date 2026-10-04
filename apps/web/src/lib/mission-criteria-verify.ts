@@ -4,7 +4,7 @@ import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
@@ -328,10 +328,11 @@ export async function dispatchCommandCriterionTask(opts: {
 
   if (!task) return { ok: false, reason: 'Command criterion task insert returned no row' };
 
-  await dispatchNewTask(
+  await announceTaskCreated(
     { id: task.id, title: `${VERIFY_TASK_TITLE_PREFIX} ${shortCommand(command)}`, description: null, workspaceId: mission.workspaceId, mode: 'execution', priority: 2, missionId },
     workspace as any,
   ).catch(e => console.error(`[criteria-verify] dispatch failed for task ${task.id}:`, e));
+  await wakeTask(task.id, 'task.created');
 
   console.log(`[criteria-verify] mission ${missionId} criterion ${criterionIndex}: dispatched ${task.id} for \`${command}\``);
   return { ok: true, taskId: task.id };

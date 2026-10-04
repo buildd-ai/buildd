@@ -211,7 +211,7 @@ describe('readPacingConfig', () => {
 
 // Learned pressure is a forecast of the 5h wall, and that forecast is not
 // reliable enough to hold work back on. Its only permitted output is a lower
-// per-seat concurrency: never below one session, never on low confidence, and
+// per-seat concurrency: retaining half the slots, never on low confidence, and
 // back to the full limit once the window has reset (pressure falls with it).
 describe('oauthParallelismCap', () => {
   const learned = (n: number) =>
@@ -238,12 +238,12 @@ describe('oauthParallelismCap', () => {
   });
 
   test('narrows concurrency as the window fills', () => {
-    // 75% of the learned window → halfway between the full limit and one.
-    expect(oauthParallelismCap({ pressure: pressureAt(150), baseMax: 5 })).toBe(3);
+    // 75% of the learned window → halfway between the full limit and the advisory floor.
+    expect(oauthParallelismCap({ pressure: pressureAt(150), baseMax: 5 })).toBe(4);
   });
 
-  test('never goes below one session, even past the learned wall', () => {
-    expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 5 })).toBe(1);
+  test('retains half the slots, even past the learned wall', () => {
+    expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 5 })).toBe(3);
     // A one-session limit has nothing to narrow — never reads as zero.
     expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 1 })).toBeNull();
   });
@@ -254,7 +254,42 @@ describe('oauthParallelismCap', () => {
   });
 
   test('restores the full limit once a reset empties the window', () => {
-    expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 5 })).toBe(1);
+    expect(oauthParallelismCap({ pressure: pressureAt(10_000), baseMax: 5 })).toBe(3);
     expect(oauthParallelismCap({ pressure: pressureAt(0), baseMax: 5 })).toBeNull();
   });
+});
+
+test('a saturated ten-slot forecast retains half the seat', () => {
+  const capacity = learnOauthCapacity(Array.from({length: 5}, () => episode()));
+  const pressure = oauthBudgetPressure({capacity, usage: {workerCount: 0, turns: 9999, tokens: 0, weightedTurns: 0, weightedTokens: 0}});
+  expect(oauthParallelismCap({pressure, baseMax: 10})).toBe(5);
+});
+
+test('contradictory episode sizes do not earn good confidence from count alone', () => {
+  const capacity = learnOauthCapacity([10, 10, 1000, 1000, 1000].map(turns => episode({turns})));
+  expect(capacity.confidence).toBe('low');
+});
+
+test('an expired window observation is unknown, never saturated', () => {
+  const capacity = learnOauthCapacity(Array.from({length: 5}, () => episode()));
+  const pressure = oauthBudgetPressure({capacity, usage: {workerCount: 99, turns: 9999, tokens: 0, weightedTurns: 0, weightedTokens: 0}, now: AT(0), windowStartedAt: AT(6)});
+  expect(pressure.pct).toBe(0);
+  expect(pressure.limiter).toBeNull();
+  expect(oauthParallelismCap({pressure, baseMax: 10})).toBeNull();
+});
+
+test('a sparsely reported metric cannot inherit confidence from worker counts', () => {
+  const capacity = learnOauthCapacity([1, 1, 1, 0, 0].map(turns => episode({turns})));
+  expect(capacity.confidence).toBe('low');
+});
+
+test('a prior-window forecast observation is unknown even when current counters are large', () => {
+  const capacity = learnOauthCapacity(Array.from({length: 5}, () => episode()));
+  const pressure = oauthBudgetPressure({
+    capacity, usage: {workerCount: 99, turns: 9999, tokens: 0, weightedTurns: 0, weightedTokens: 0},
+    now: AT(0), observedAt: AT(6), windowStartedAt: AT(1),
+  });
+  expect(pressure.confidence).toBe('none');
+  expect(pressure.pct).toBe(0);
+  expect(oauthParallelismCap({pressure, baseMax: 10})).toBeNull();
 });

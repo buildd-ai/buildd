@@ -27,7 +27,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { gatherReadinessInput } from '@/lib/workspace-readiness-io';
 import { resolveCreatorContext } from '@/lib/task-service';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 
 const GITHUB_HANDLE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const MAX_MIRRORS = 2;
@@ -212,7 +212,8 @@ export async function POST(
     .returning();
 
   try {
-    await dispatchNewTask(task, workspace);
+    await announceTaskCreated(task, workspace);
+    await wakeTask(task.id, 'task.created');
   } catch (err) {
     console.warn(`[onboarding-spec] Task ${task.id} created but dispatch failed:`, err);
   }

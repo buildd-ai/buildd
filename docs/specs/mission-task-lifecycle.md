@@ -265,6 +265,20 @@ an enum) to allow extension without migrations.
   still refuses. GIVEN the same shape via `create_pr`'s `prUrl` parameter
   instead (registering an externally-created PR), completion succeeds too,
   unrelated to this fallback.
+- AC-3k: GIVEN completion with effective `auto` or `pr_required`, an ordinary
+  work task of kind engineering, writing or design (or with a concrete manifest),
+  no commits, changed files, dirty worktree or observed session touches, and no
+  registered, auto-detected or referenced PR, deliverable artifact, verified merge
+  or explicit `discardEdits`, WHEN the summary has fallback provenance, the fallback
+  tail separator, no terminal punctuation, or forward-looking narration without a
+  past-tense outcome sentence THEN completion is refused with `silent_completion`.
+  The rejected payload is preserved and the worker fails. The task requeues once
+  using `context.silentCompletionRetryCount`, whether mission-linked or standalone;
+  `failureContext` marks the prior summary unauthored. A recurrence permanently
+  fails the task and posts a warning. Reviewer and bookkeeping tasks are exempt;
+  `artifact_required` and `none` retain their existing contracts. A punctuated
+  authored outcome with no edits remains valid. Reaper completion checks the same
+  predicate against its independently verified deliverable evidence.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`
@@ -395,6 +409,13 @@ task has been held by one for longer than the stall threshold, since "transient"
 stops being an excuse at that point. `advisory_manifest` is the case that
 matters — its blocking peer may be parked in `waiting_input`, holding the slot
 until a human answers, which never self-clears in practice.
+
+A workspace whose `gitConfig.claimPlanner` is `apply` claims in the batch
+planner's order instead (`apps/web/src/app/api/workers/claim/claim-plan-input.ts`).
+A task the plan orders behind a blocker reports the soft deferral
+`ordered_behind` in place of `path_overlap` / `advisory_manifest`, written once
+per (task, blocker) pair, so repeated polls add no rows. The default `off` MUST
+leave the claim exactly as described above. Explicit `taskId` claims never plan.
 
 The watchdog reports two reasons that are NOT `gateReason` values and never will
 be, ordered below every gate `/start` can name (so `/start`'s 422 ordering is

@@ -11,7 +11,7 @@
 
 import { OPEN_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
-import { tasks, workers, missionNotes, artifacts, taskSubjectReports } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, taskSubjectReports } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
@@ -26,12 +26,8 @@ import {
   findUncoveredRiskPaths,
   buildPolicyClassPaths,
 } from './workspace-policy';
-import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { inheritPhaseFromParent } from './mission-phase';
 import { DEFAULT_REVIEW_CONFIDENCE_THRESHOLD } from './reviewer-output';
-import { appendPrActivity } from './pr-activity-comment';
-import { triggerEvent, channels, events } from './pusher';
-import { releaseAndNotify } from './path-claim-release';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
 import {
@@ -465,6 +461,21 @@ export async function createReviewerTask(
     installationId,
     repoFullName,
   } = params;
+
+  // Dispatch guard: never create a reviewer for a PR the supersession table
+  // would cancel it on (merged, or closed without merging).
+  const { checkDispatch } = await import('./supersession');
+  const dispatch = await checkDispatch({
+    kind: 'reviewer',
+    workspaceId,
+    prNumber,
+    parentTaskId: originalTaskId,
+    door: 'createReviewerTask',
+  });
+  if (dispatch.verdict === 'skip_dispatch') {
+    console.log(`[reviewer] Not creating a reviewer for PR #${prNumber}: ${dispatch.rule}`);
+    return null;
+  }
 
   // The reviewer task's subject IS this PR at this commit, asserted by the
   // machinery rather than scraped from prose — so `source: 'system'`, which is
@@ -1461,7 +1472,14 @@ Use your outputSchema to return:
 `.trim();
 }
 
-// ── Human-merge supersession ──────────────────────────────────────────────────
+// ── Supersession (legacy entry points) ──────────────────────────────────────
+//
+// Both helpers below are now thin wrappers over the supersession reconciler
+// (`lib/supersession.ts`): each runs exactly its one rule from the table, so a
+// caller that still uses them gets the same CAS, the same ledger row and the
+// same activity entry as every other door — and racing the reconciler on the
+// same event yields one cancellation, not two. New code should call
+// `reconcileSubjectEvent` directly.
 
 export interface SupersedeReviewerOnMergeParams {
   originalTaskId: string;
@@ -1471,113 +1489,33 @@ export interface SupersedeReviewerOnMergeParams {
 }
 
 /**
- * Cancel a still-pending or still-running reviewer task after a human merges
- * its PR directly. Without this, a reviewer that hasn't started yet gets
- * claimed later and reviews a PR that's already merged — wasted work, and a
- * verdict that can no longer affect anything.
- *
- * Best-effort: never throws. A failure here must not roll back the merge that
- * already succeeded on GitHub.
+ * Cancel a still-pending or still-running reviewer task after its PR merged —
+ * rule `merge_supersedes_review`. Best-effort: never throws.
  */
 export async function supersedeReviewerTaskOnMerge(
   params: SupersedeReviewerOnMergeParams,
 ): Promise<{ superseded: boolean; reviewerTaskId: string | null }> {
   const { originalTaskId, installationId, repoFullName, prNumber } = params;
-
   try {
-    const reviewerTask = await db.query.tasks.findFirst({
-      where: and(
-        eq(tasks.parentTaskId, originalTaskId),
-        eq(tasks.category, 'review'),
-        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      ),
-      columns: { id: true, missionId: true, workspaceId: true },
-      orderBy: [desc(tasks.createdAt)],
-      with: {
-        workers: {
-          where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-          columns: { id: true, status: true },
-          limit: 1,
-        },
-      },
+    const original = await db.query.tasks.findFirst({
+      where: eq(tasks.id, originalTaskId),
+      columns: { workspaceId: true },
     });
-
-    if (!reviewerTask) return { superseded: false, reviewerTaskId: null };
-
-    const liveWorker = (reviewerTask as any).workers?.[0];
-    if (liveWorker) {
-      // CAS-guarded — a reviewer completing at the same instant should win
-      // its own lease rather than being clobbered here.
-      await db
-        .update(workers)
-        .set({
-          status: 'failed',
-          error: 'Superseded — PR merged before review completed',
-          exitCause: 'condition_unmet',
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(workers.id, liveWorker.id), eq(workers.status, liveWorker.status)));
-    }
-
-    const [cancelled] = await db
-      .update(tasks)
-      .set({ status: 'cancelled', updatedAt: new Date() })
-      .where(and(
-        eq(tasks.id, reviewerTask.id),
-        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-      ))
-      .returning({ id: tasks.id });
-
-    if (!cancelled) return { superseded: false, reviewerTaskId: null };
-
-    // This cancellation happens here, not through PATCH /api/tasks/[id], so it
-    // must release the reviewer task's own path claims itself — nothing landed
-    // from a cancelled review, so 'abandoned' is always correct. Without this,
-    // a reviewer that had claimed paths (e.g. via an observed-touch lease while
-    // applying a recommendation) strands them forever once its PR merges out
-    // from under it.
-    await releaseAndNotify(reviewerTask.id, 'abandoned');
-
-    // Marking the worker failed does not stop a session that is already
-    // running — it keeps spending budget until its next API call. Push the
-    // same abort a task cancel sends, and broadcast the cancel so dashboards
-    // and runners see it without polling. Best-effort: the rows are written.
-    const push = (send: () => Promise<unknown>) =>
-      Promise.resolve().then(send).catch((err) =>
-        console.warn(`[reviewer] supersede push failed for reviewer task ${reviewerTask.id}:`, err));
-    await Promise.all([
-      push(() => triggerEvent(channels.workspace(reviewerTask.workspaceId), events.TASK_UPDATED, {
-        task: { id: reviewerTask.id, status: 'cancelled', workspaceId: reviewerTask.workspaceId, missionId: reviewerTask.missionId },
-      })),
-      liveWorker
-        ? push(() => triggerEvent(channels.worker(liveWorker.id), events.WORKER_COMMAND, {
-            action: 'abort', reason: 'pr_merged', timestamp: Date.now(),
-          }))
-        : Promise.resolve(),
-    ]);
-
-    if (reviewerTask.missionId) {
-      await db.insert(missionNotes).values({
-        missionId: reviewerTask.missionId,
-        taskId: originalTaskId,
-        authorType: 'system',
-        type: 'reviewer_superseded',
-        title: `PR #${prNumber}: review cancelled — PR merged before review completed`,
-        body: 'This PR was merged while the agent review was still pending or running. The review task was cancelled so it does not run against an already-merged PR.',
-        status: 'open',
-      });
-    }
-
-    await appendPrActivity({
-      installationId,
-      repoFullName,
-      prNumber,
-      entry: { kind: 'review_superseded_by_merge' },
-      workspaceId: reviewerTask.workspaceId,
-    }).catch(() => {});
-
-    return { superseded: true, reviewerTaskId: reviewerTask.id };
+    if (!original?.workspaceId) return { superseded: false, reviewerTaskId: null };
+    const { reconcileSubjectEvent } = await import('./supersession');
+    const result = await reconcileSubjectEvent(
+      {
+        kind: 'merged',
+        workspaceId: original.workspaceId,
+        prNumber,
+        originalTaskId,
+        door: 'supersedeReviewerTaskOnMerge',
+        pr: { installationId, repoFullName },
+      },
+      { rules: ['merge_supersedes_review'] },
+    );
+    const first = result.cancelled[0]?.taskId ?? null;
+    return { superseded: first !== null, reviewerTaskId: first };
   } catch (err) {
     console.error(`[reviewer] supersedeReviewerTaskOnMerge failed for PR #${prNumber}:`, err);
     return { superseded: false, reviewerTaskId: null };
@@ -1587,114 +1525,35 @@ export async function supersedeReviewerTaskOnMerge(
 export interface SupersedeFixTaskOnApprovalParams {
   originalTaskId: string;
   workspaceId: string;
-  /** Limit cleanup to a just-inserted stale attempt. Approval sweeps omit this. */
-  fixTaskId?: string;
-  reason?: 'pr_approved' | 'newer_review';
   installationId: number;
   repoFullName: string;
   prNumber: number;
 }
 
 /**
- * Cancel a still-queued or still-running review-fix (`[builder · after review
- * #N]`) task once a terminal `approve` verdict lands for its PR. Without this,
- * a fix dispatched off an earlier changes-requested verdict can still start
- * and push a commit after the PR was already approved, forcing a stale
- * re-review — see task d57ba617. Mirrors `supersedeReviewerTaskOnMerge`'s
- * cancel-and-abort shape, scoped to the builder attempt task instead of the
- * reviewer task. Also supports cancelling one just-inserted attempt when a
- * newer round supersedes its triggering verdict before dispatch.
- *
- * Best-effort: never throws. A failure here must not roll back the approve
- * processing that triggered it.
+ * Cancel every still-queued or still-running review fix for a PR once an
+ * approve lands — rule `approve_supersedes_fix`. Best-effort: never throws.
  */
 export async function supersedeFixTaskOnApproval(
   params: SupersedeFixTaskOnApprovalParams,
 ): Promise<{ superseded: boolean; fixTaskId: string | null }> {
-  const { originalTaskId, workspaceId, fixTaskId, installationId, repoFullName, prNumber, reason = 'pr_approved' } = params;
-
+  const { originalTaskId, workspaceId, installationId, repoFullName, prNumber } = params;
   try {
-    const fixTasks = await db.query.tasks.findMany({
-      where: and(
-        eq(tasks.workspaceId, workspaceId),
-        ...(fixTaskId ? [eq(tasks.id, fixTaskId)] : []),
-        eq(tasks.taskClass, 'attempt'),
-        eq(tasks.reviewerRetryPrNumber, prNumber),
-        inArray(tasks.status, [...OPEN_TASK_STATUSES]),
-      ),
-      columns: { id: true, missionId: true, workspaceId: true },
-      orderBy: [desc(tasks.createdAt)],
-    });
-
-    let firstCancelledId: string | null = null;
-    for (const fixTask of fixTasks) {
-      // Win the task CAS before reading workers: claims after cancellation fail
-      // their pending-status CAS, and a claim that already won is read below.
-      const [cancelled] = await db
-        .update(tasks)
-        .set({ status: 'cancelled', updatedAt: new Date() })
-        .where(and(
-          eq(tasks.id, fixTask.id),
-          inArray(tasks.status, [...OPEN_TASK_STATUSES]),
-        ))
-        .returning({ id: tasks.id });
-
-      if (!cancelled) continue;
-      firstCancelledId ??= fixTask.id;
-
-      const liveWorkers = await db.query.workers.findMany({
-        where: and(eq(workers.taskId, fixTask.id), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
-        columns: { id: true, status: true },
-      });
-      for (const liveWorker of liveWorkers) {
-        await db.update(workers).set({
-          status: 'failed',
-          error: 'Superseded — newer review made this fix obsolete',
-          exitCause: 'condition_unmet',
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        }).where(and(eq(workers.id, liveWorker.id), eq(workers.status, liveWorker.status)));
-      }
-
-      // Not a cancellation through PATCH /api/tasks/[id] — release path claims
-      // ourselves. Nothing landed from a cancelled fix, so 'abandoned' is
-      // always correct.
-      await releaseAndNotify(fixTask.id, 'abandoned');
-
-      const push = (send: () => Promise<unknown>) =>
-        Promise.resolve().then(send).catch((err) =>
-          console.warn(`[reviewer] supersede-on-approval push failed for fix task ${fixTask.id}:`, err));
-      await Promise.all([
-        push(() => triggerEvent(channels.workspace(fixTask.workspaceId), events.TASK_UPDATED, {
-          task: { id: fixTask.id, status: 'cancelled', workspaceId: fixTask.workspaceId, missionId: fixTask.missionId },
-        })),
-        ...liveWorkers.map(liveWorker =>
-          push(() => triggerEvent(channels.worker(liveWorker.id), events.WORKER_COMMAND, {
-            action: 'abort', reason, timestamp: Date.now(),
-          }))),
-      ]);
-
-      if (fixTask.missionId) {
-        await db.insert(missionNotes).values({
-          missionId: fixTask.missionId,
-          taskId: originalTaskId,
-          authorType: 'system',
-          type: 'reviewer_superseded',
-          title: `PR #${prNumber}: fix cancelled — ${reason === 'pr_approved' ? 'reviewer approved first' : 'newer review superseded verdict'}`,
-          body: 'A fix dispatched from an earlier changes-requested verdict was cancelled because a newer review superseded it.',
-          status: 'open',
-        });
-      }
-
-      if (reason === 'pr_approved') await appendPrActivity({
-        installationId,
-        repoFullName,
+    const { reconcileSubjectEvent } = await import('./supersession');
+    const result = await reconcileSubjectEvent(
+      {
+        kind: 'verdict',
+        verdict: 'approve',
+        workspaceId,
         prNumber,
-        entry: { kind: 'fix_superseded_by_approval' },
-        workspaceId: fixTask.workspaceId,
-      }).catch(() => {});
-    }
-    return { superseded: firstCancelledId !== null, fixTaskId: firstCancelledId };
+        originalTaskId,
+        door: 'supersedeFixTaskOnApproval',
+        pr: { installationId, repoFullName },
+      },
+      { rules: ['approve_supersedes_fix'] },
+    );
+    const first = result.cancelled[0]?.taskId ?? null;
+    return { superseded: first !== null, fixTaskId: first };
   } catch (err) {
     console.error(`[reviewer] supersedeFixTaskOnApproval failed for PR #${prNumber}:`, err);
     return { superseded: false, fixTaskId: null };

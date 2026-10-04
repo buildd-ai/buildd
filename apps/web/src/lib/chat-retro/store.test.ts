@@ -25,8 +25,26 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mock(async () => {}),
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
+
 const { PgDialect } = await import('drizzle-orm/pg-core');
-const { clusterWhere, deleteTeamLessons, priorFilingWhere, filedTodayWhere, listRecentLessons, optedInTeamsWhere, pendingConversationsWhere, teamLessonsWhere, writeTeamSettings } = await import('./store');
+const { clusterWhere, deleteTeamLessons, insertProposalTask, priorFilingWhere, filedTodayWhere, listRecentLessons, optedInTeamsWhere, pendingConversationsWhere, teamLessonsWhere, writeTeamSettings } = await import('./store');
 const dialect = new PgDialect();
 const render = (w: unknown) => dialect.sqlToQuery(w as any);
 
@@ -110,5 +128,26 @@ describe('proposal dedupe: a prior filing is matched in the same workspace by or
     expect(q.sql).not.toContain('sig-abc');
     expect(q.params).toContain(WS);
     expect(q.params).toContain('sig-abc');
+  });
+});
+
+describe('a filed proposal is work for a worker', () => {
+  const cluster = { workspaceId: 'ws-1', signature: 'sig', sessions: 3, lessonIds: ['l1'] } as never;
+
+  it('wakes the task it filed', async () => {
+    mockWakeTask.mockClear();
+    const { db } = await import('@buildd/core/db');
+    const orig = db.insert;
+    (db as any).insert = () => ({ values: () => ({ returning: async () => [{ id: 'a' }] }) });
+    const id = await insertProposalTask({ cluster, title: 'T', description: 'D' }).finally(() => { (db as any).insert = orig; });
+    expect(id).toBe('a');
+    expect(mockWakeTask).toHaveBeenCalledWith('a', 'task.created');
+  });
+
+  it('files and wakes nothing without a target workspace', async () => {
+    mockWakeTask.mockClear();
+    const id = await insertProposalTask({ cluster: { ...(cluster as object), workspaceId: null } as never, title: 'T', description: 'D' });
+    expect(id).toBeNull();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 });

@@ -28,6 +28,16 @@ export const TASK_TOKEN_PERMISSIONS: Readonly<Record<string, PermissionLevel>> =
   metadata: 'read',
 };
 
+/**
+ * What a repository_dispatch POST needs: contents write (GitHub REST docs for
+ * "Create a repository dispatch event"; not verified against a live App
+ * here). Used for the Dispatch transport's GitHub Actions grant.
+ */
+export const REPOSITORY_DISPATCH_PERMISSIONS: Readonly<Record<string, PermissionLevel>> = {
+  contents: 'write',
+  metadata: 'read',
+};
+
 const RANK: Record<string, number> = { read: 1, write: 2, admin: 3 };
 
 /**
@@ -57,12 +67,18 @@ export interface ScopedInstallationToken {
 }
 
 export async function mintRepoScopedInstallationToken(
-  params: { installationId: number; repoId: number; installedPermissions?: Record<string, string> | null },
+  params: {
+    installationId: number;
+    repoId: number;
+    installedPermissions?: Record<string, string> | null;
+    /** What to ask for, narrowed to what is installed. Defaults to a task run's set. */
+    wanted?: Readonly<Record<string, PermissionLevel>>;
+  },
   deps: { appJwt?: () => string; fetch?: typeof fetch } = {},
 ): Promise<ScopedInstallationToken> {
   const appJwt = (deps.appJwt ?? generateAppJWT)();
   const doFetch = deps.fetch ?? fetch;
-  const permissions = scopedTokenPermissions(params.installedPermissions);
+  const permissions = scopedTokenPermissions(params.installedPermissions, params.wanted);
   const res = await doFetch(`https://api.github.com/app/installations/${params.installationId}/access_tokens`, {
     method: 'POST',
     headers: {

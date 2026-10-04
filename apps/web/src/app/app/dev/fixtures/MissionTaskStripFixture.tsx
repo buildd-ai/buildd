@@ -14,6 +14,7 @@ import MissionBoard from '@/app/app/(protected)/missions/[id]/MissionBoard';
 import MissionSituationBlock from '@/components/missions/MissionSituationBlock';
 import type { MissionSituation } from '@/lib/mission-state-view';
 import {
+  dagSelection,
   missionTaskStripFixture,
   missionTaskStripLinks,
   parseMissionTaskStripVariant,
@@ -39,11 +40,17 @@ function localSituation(taskId: string): MissionSituation {
 
 export default function MissionTaskStripFixture() {
   // Built after mount: the board's clocks read the real now, so server and client render alike.
-  const [state, setState] = useState<{ variant: MissionTaskStripVariant; fixture: Fixture } | null>(null);
+  const [state, setState] = useState<{ variant: MissionTaskStripVariant; fixture: Fixture; select: string | null } | null>(null);
   useEffect(() => {
-    const variant = parseMissionTaskStripVariant(new URLSearchParams(window.location.search));
-    setState({ variant, fixture: missionTaskStripFixture(variant, Date.now()) });
+    const q = new URLSearchParams(window.location.search);
+    const variant = parseMissionTaskStripVariant(q);
+    setState({ variant, fixture: missionTaskStripFixture(variant, Date.now()), select: dagSelection(variant, q) });
   }, []);
+  // `&select=`: open on that cell, the way a tap would (the strip owns its selection).
+  useEffect(() => {
+    if (!state?.select) return;
+    document.querySelector<HTMLButtonElement>(`[data-testid="landed-strip-cell"][data-task-ref="${state.select}"]`)?.click();
+  }, [state]);
   if (!state) return <div className="min-h-screen bg-surface-1" />;
   const { variant, fixture } = state;
   const openTask = variant === 'mid-open' ? stripFixtureId(9) : null;

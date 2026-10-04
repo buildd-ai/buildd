@@ -95,16 +95,33 @@ describe('gateway reference → agent base', () => {
     const gw = { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gw' };
     expect(resolveEndpointFromBlob({ kind: 'gateway' }, gw)).toEqual({
       kind: 'gateway', baseUrl: 'https://litellm.example.com', apiKey: 'sk-gw', authHeader: 'authorization', models: {},
+      // The OpenAI-compatible root for Codex is the gateway's own root, unaffected by the Anthropic-side derivation above.
+      openAiBaseUrl: 'https://litellm.example.com/v1',
     });
     expect(resolveEndpointFromBlob({ kind: 'gateway', agentBaseUrl: 'https://litellm.example.com/anthropic' }, gw)?.baseUrl)
       .toBe('https://litellm.example.com/anthropic');
+    expect(resolveEndpointFromBlob({ kind: 'gateway', agentBaseUrl: 'https://litellm.example.com/anthropic' }, gw)?.openAiBaseUrl)
+      .toBe('https://litellm.example.com/v1');
     // A reference with no gateway to point at routes nothing.
     expect(resolveEndpointFromBlob({ kind: 'gateway' }, null)).toBeNull();
   });
 
   it('a self-contained blob ignores the gateway', () => {
     const r = resolveEndpointFromBlob({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or', authHeader: 'authorization' }, { baseURL: 'https://litellm.example.com/v1', apiKey: 'sk-gw' });
-    expect(r).toEqual({ kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or', authHeader: 'authorization', models: {} });
+    expect(r).toEqual({
+      kind: 'openrouter', baseUrl: OPENROUTER_AGENT_BASE_URL, apiKey: 'sk-or', authHeader: 'authorization', models: {},
+      openAiBaseUrl: `${OPENROUTER_AGENT_BASE_URL}/v1`,
+    });
+  });
+
+  it('anthropic-compatible has no OpenAI-compatible route: openAiBaseUrl is absent', () => {
+    const r = resolveEndpointFromBlob({ kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: 'sk-agent', authHeader: 'authorization' }, null);
+    expect(r?.openAiBaseUrl).toBeUndefined();
+  });
+
+  it('openrouter\'s OpenAI-compatible root is its Anthropic-compatible root plus /v1', () => {
+    const r = resolveEndpointFromBlob({ kind: 'openrouter', baseUrl: 'https://openrouter.ai/api', apiKey: 'sk-or', authHeader: 'authorization' }, null);
+    expect(r?.openAiBaseUrl).toBe('https://openrouter.ai/api/v1');
   });
 });
 

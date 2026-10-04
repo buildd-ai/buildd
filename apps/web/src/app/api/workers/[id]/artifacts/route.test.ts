@@ -25,9 +25,16 @@ const mockWorkersUpdate = mock(() => ({
   })),
 }));
 const mockTriggerEvent = mock(() => Promise.resolve());
+const mockShouldNotifyOnArtifact = mock(async () => false);
+const mockNotifyArtifactReady = mock(async () => {});
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
+}));
+
+mock.module('@/lib/artifact-notify', () => ({
+  shouldNotifyOnArtifact: mockShouldNotifyOnArtifact,
+  notifyArtifactReady: mockNotifyArtifactReady,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -558,5 +565,161 @@ describe('POST /api/workers/[id]/artifacts', () => {
     const res = await POST(req, { params: mockParams });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/workers/[id]/artifacts — notification dedup', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockArtifactsFindFirst.mockReset();
+    mockArtifactsInsert.mockReset();
+    mockArtifactsUpdate.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTriggerEvent.mockReset();
+    mockShouldNotifyOnArtifact.mockReset();
+    mockNotifyArtifactReady.mockReset();
+
+    // Set up standard mocks
+    mockArtifactsFindFirst.mockResolvedValue(null);
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' });
+    mockArtifactsInsert.mockReturnValue({
+      values: mock((vals: any) => ({
+        returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token', type: 'content', title: 'Test', ...vals }]),
+      })),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+    mockShouldNotifyOnArtifact.mockResolvedValue(true);
+  });
+
+  it('does not notify on upsert when content and title are unchanged', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: WORKER_ID,
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+
+    const existing = {
+      id: 'artifact-1',
+      content: 'Same content',
+      title: 'Same title',
+      shareToken: 'test-token',
+    };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [existing]),
+        })),
+      })),
+    });
+
+    // Re-upsert with same content and title
+    const req = createMockPostRequest(
+      {
+        type: 'content',
+        title: 'Same title',
+        content: 'Same content',
+        key: 'my-artifact',
+      },
+      'bld_test',
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // shouldNotifyOnArtifact should have been called
+    expect(mockShouldNotifyOnArtifact).toHaveBeenCalled();
+    // But notifyArtifactReady should NOT be called because content/title unchanged
+    expect(mockNotifyArtifactReady).not.toHaveBeenCalled();
+  });
+
+  it('notifies on upsert when content changed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: WORKER_ID,
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+
+    const existing = {
+      id: 'artifact-1',
+      content: 'Old content',
+      title: 'Same title',
+      shareToken: 'test-token',
+    };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...existing, content: 'New content' }]),
+        })),
+      })),
+    });
+
+    const req = createMockPostRequest(
+      {
+        type: 'content',
+        title: 'Same title',
+        content: 'New content',
+        key: 'my-artifact',
+      },
+      'bld_test',
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies on upsert when title changed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: WORKER_ID,
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+    });
+
+    const existing = {
+      id: 'artifact-1',
+      content: 'Same content',
+      title: 'Old title',
+      shareToken: 'test-token',
+    };
+    mockArtifactsFindFirst.mockResolvedValue(existing);
+
+    mockArtifactsUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...existing, title: 'New title' }]),
+        })),
+      })),
+    });
+
+    const req = createMockPostRequest(
+      {
+        type: 'content',
+        title: 'New title',
+        content: 'Same content',
+        key: 'my-artifact',
+      },
+      'bld_test',
+    );
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockNotifyArtifactReady).toHaveBeenCalledTimes(1);
   });
 });

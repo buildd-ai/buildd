@@ -1003,6 +1003,63 @@ describe('mission_unverifiable', () => {
     });
     expect(reported(key, s)).toEqual(['m-book']);
   });
+
+  it('does not report a mission with only planning/organizer tasks and no work tasks yet', () => {
+    // A mission with only planning/organizer/bookkeeping tasks has never crossed
+    // the work boundary. It is in no_deliverables state, not verification limbo.
+    const s = snapshot({
+      missions: [mission({ id: 'm-planning', status: 'active', hasGoalCriteria: true, criteriaOverallVerdict: null })],
+      tasks: [
+        task({
+          id: 't-org',
+          missionId: 'm-planning',
+          status: 'completed',
+          taskClass: 'organizer',
+          updatedAt: ago(10 * HOUR),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a pre-work mission with no goal criteria and only bookkeeping tasks', () => {
+    const s = snapshot({
+      missions: [mission({ id: 'm-nowork', status: 'active', hasGoalCriteria: false })],
+      tasks: [
+        task({
+          id: 't-book',
+          missionId: 'm-nowork',
+          status: 'completed',
+          taskClass: 'bookkeeping',
+          updatedAt: ago(10 * HOUR),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('preserves violation for mission with terminal work task and undecided criteria', () => {
+    // This is the core case: mission did cross the work boundary (has a work task)
+    // but now all deliverable work is done and criteria have no verdict. This is
+    // the true verification limbo.
+    const s = snapshot({
+      missions: [mission({ id: 'm-done-work', status: 'active', hasGoalCriteria: true, criteriaOverallVerdict: null })],
+      tasks: [
+        task({ id: 't-work', missionId: 'm-done-work', status: 'completed', taskClass: 'work', updatedAt: ago(10 * HOUR) }),
+      ],
+    });
+    expect(reported(key, s)).toEqual(['m-done-work']);
+  });
+
+  it('does not report mission with work task that reached a decided verdict', () => {
+    const s = snapshot({
+      missions: [mission({ id: 'm-decided', status: 'active', hasGoalCriteria: true, criteriaOverallVerdict: 'fail' })],
+      tasks: [
+        task({ id: 't-work', missionId: 'm-decided', status: 'completed', taskClass: 'work', updatedAt: ago(10 * HOUR) }),
+      ],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
 });
 
 // ── 12. stale_criteria_escalation ───────────────────────────────────────────

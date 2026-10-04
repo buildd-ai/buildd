@@ -29,7 +29,7 @@ const mockWorkspaceRepoMatches = mock((repoFullName: string) => ({
   type: 'workspaceRepoMatches',
   repoFullName,
 }));
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockInstallationsFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkspacesFindMany = mock(() => [] as any);
@@ -122,8 +122,22 @@ mock.module('@/lib/notify', () => ({
   },
 }));
 
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 const mockCaptureCiJobLogEvidence = mock((_input: any) => Promise.resolve({ status: 'stored' }));
@@ -449,13 +463,20 @@ mock.module('@/lib/merge-policy', () => ({
 
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }));
 const mockPreflightEscalationCheck = mock(() => ({ shouldEscalate: false as const }));
-const mockSupersedeReviewerTaskOnMerge = mock(() =>
-  Promise.resolve({ superseded: false, reviewerTaskId: null as string | null }),
-);
 mock.module('@/lib/reviewer', () => ({
   createReviewerTask: mockCreateReviewerTask,
   preflightEscalationCheck: mockPreflightEscalationCheck,
-  supersedeReviewerTaskOnMerge: mockSupersedeReviewerTaskOnMerge,
+}));
+
+// The rules and the cancellation are unit-tested in lib/supersession*.test.ts;
+// here the mock pins which subject event the close handler fires.
+const mockReconcileSubjectEvent = mock((..._args: any[]) =>
+  Promise.resolve({ cancelled: [], lostRace: [], decisions: [] }),
+);
+const mockCheckDispatch = mock((..._args: any[]) => Promise.resolve({ verdict: 'keep', rule: null } as any));
+mock.module('@/lib/supersession', () => ({
+  reconcileSubjectEvent: mockReconcileSubjectEvent,
+  checkDispatch: mockCheckDispatch,
 }));
 
 // Gate ledger — captured so the merge telemetry can be asserted. The slug
@@ -662,7 +683,8 @@ function resetAll() {
   mockWorkerOwnsPr.mockClear();
   mockWorkerOwnsPrUrl.mockClear();
   mockWorkspaceRepoMatches.mockClear();
-  mockDispatchNewTask.mockReset();
+  mockAnnounceTaskCreated.mockReset();
+  mockWakeTask.mockClear();
   mockCaptureCiJobLogEvidence.mockClear();
   mockInstallationsFindFirst.mockReset();
   mockWorkspacesFindFirst.mockReset();
@@ -694,10 +716,7 @@ function resetAll() {
   mockCreateReviewerTask.mockReset();
   mockListWorkspaceRoles.mockReset();
   mockListWorkspaceRoles.mockImplementation(() => Promise.resolve(DEFAULT_ROLES as any[]));
-  mockSupersedeReviewerTaskOnMerge.mockReset();
-  mockSupersedeReviewerTaskOnMerge.mockImplementation(() =>
-    Promise.resolve({ superseded: false, reviewerTaskId: null }),
-  );
+  mockReconcileSubjectEvent.mockClear();
   mockFireGateEvent.mockClear();
   mockScheduleCiRedLook.mockClear();
   mockPreflightEscalationCheck.mockReset();
@@ -743,7 +762,7 @@ function resetAll() {
 
   // Defaults
   mockVerifyWebhookSignature.mockReturnValue(Promise.resolve(true));
-  mockDispatchNewTask.mockReturnValue(Promise.resolve());
+  mockAnnounceTaskCreated.mockReturnValue(Promise.resolve());
   mockInstallationsFindFirst.mockReturnValue(null);
   mockWorkspacesFindFirst.mockReturnValue(null);
   mockWorkspacesFindMany.mockReturnValue([]);
@@ -935,7 +954,8 @@ describe('POST /api/github/webhook', () => {
     expect(insertCalls[0].values.status).toBe('pending');
     expect(insertCalls[0].values.creationSource).toBe('github');
     expect(insertCalls[0].conflict).toBe('nothing');
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 
   it('handles issues opened without buildd label - no task created', async () => {
@@ -1219,7 +1239,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('creates and dispatches a CI fix task when CI fails on a worker PR', async () => {
@@ -1238,7 +1259,8 @@ describe('POST /api/github/webhook', () => {
       expect((inserted.context as any).iteration).toBe(1);
       expect((inserted.context as any).baseBranch).toBe('buildd/abc12345-fix');
       expect(insertCalls[0].conflict).toBe('nothing');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask.mock.calls).toEqual([['task-1', 'ci.retry']]);
     });
 
     // byo-evidence-storage AC-3: the failed job's log is captured as evidence
@@ -1246,7 +1268,7 @@ describe('POST /api/github/webhook', () => {
     it('captures ci_job_log evidence for the retry task after dispatching it', async () => {
       withFailedWorkerPr();
       const order: string[] = [];
-      mockDispatchNewTask.mockImplementation(() => { order.push('dispatch'); return Promise.resolve(); });
+      mockAnnounceTaskCreated.mockImplementation(() => { order.push('dispatch'); return Promise.resolve(); });
       mockCaptureCiJobLogEvidence.mockImplementationOnce(() => { order.push('evidence'); return Promise.resolve({ status: 'stored' }); });
 
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
@@ -1316,7 +1338,8 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(1);
       expect(insertCalls[0].conflict).toBe('nothing');
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('dedupes a rebase storm — a second failure on a DIFFERENT head SHA for the same PR does not fan out while the first retry is still unclaimed', async () => {
@@ -1343,7 +1366,8 @@ describe('POST /api/github/webhook', () => {
       expect(attempted.ciRetryPrNumber).toBe(42); // the key the pending-retry index dedupes on
       expect(attempted.ciRetryHeadSha).toBe('def456'); // genuinely a new SHA, not a literal duplicate delivery
       expect(insertCalls[0].conflict).toBe('nothing');
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('skips CI retry for draft PRs', async () => {
@@ -1354,7 +1378,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('fails the task and notifies the mission when retries are exhausted', async () => {
@@ -1407,7 +1432,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
       // exhausted/disabled path marks the task failed
       expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
     });
@@ -1430,7 +1456,8 @@ describe('POST /api/github/webhook', () => {
       // Provenance fields recorded
       expect((inserted.context as any).foreign_head_sha).toBe(true);
       expect((inserted.context as any).foreignCommitAuthor).toBe('maxjacu');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
     });
 
     it('worker-authored SHA (regression guard): attempt counter increments normally', async () => {
@@ -1450,8 +1477,9 @@ describe('POST /api/github/webhook', () => {
       for (let i = 0; i < 3; i++) {
         insertCalls = [];
         updateCalls = [];
-        mockDispatchNewTask.mockReset();
-        mockDispatchNewTask.mockReturnValue(Promise.resolve());
+        mockAnnounceTaskCreated.mockReset();
+        mockWakeTask.mockReset();
+        mockAnnounceTaskCreated.mockReturnValue(Promise.resolve());
 
         // Each fire uses a new SHA so dedup doesn't block it
         const payload = makeCheckSuitePayload({ check_suite: { head_sha: `foreign-sha-${i}` } });
@@ -1537,7 +1565,8 @@ describe('POST /api/github/webhook', () => {
       // Counts against the budget: an agent-authored push burns attempt 1.
       expect((inserted.context as any).iteration).toBe(1);
       expect((inserted.context as any).maxIterations).toBe(3);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
       expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
     });
 
@@ -1573,7 +1602,8 @@ describe('POST /api/github/webhook', () => {
       await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
       expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(true);
     });
 
@@ -1590,7 +1620,8 @@ describe('POST /api/github/webhook', () => {
 
         expect(res.status).toBe(200);
         expect(insertCalls.length).toBe(0);
-        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        expect(mockWakeTask).not.toHaveBeenCalled();
         expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
       });
     }
@@ -1606,7 +1637,8 @@ describe('POST /api/github/webhook', () => {
       await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     for (const prState of ['merged', 'closed'] as const) {
@@ -1617,7 +1649,8 @@ describe('POST /api/github/webhook', () => {
 
         expect(res.status).toBe(200);
         expect(insertCalls.length).toBe(0);
-        expect(mockDispatchNewTask).not.toHaveBeenCalled();
+        expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+        expect(mockWakeTask).not.toHaveBeenCalled();
         expect(updateCalls.some(c => c.table === schemaMock.tasks && (c.setValues as any).status === 'failed')).toBe(false);
       });
     }
@@ -1629,7 +1662,8 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('skips retry for cancelled task (AC-5)', async () => {
@@ -1638,7 +1672,8 @@ describe('POST /api/github/webhook', () => {
       const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
 
       expect(res.status).toBe(200);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     // Every "no CI retry" return writes a ledger row with a stable reason code,
@@ -1657,7 +1692,8 @@ describe('POST /api/github/webhook', () => {
       it('dispatching a retry writes no skip row', async () => {
         withFailedWorkerPr();
         await fail();
-        expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+        expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+        expect(mockWakeTask).toHaveBeenCalledTimes(1);
         expect(skipEvents()).toEqual([]);
       });
 
@@ -1721,6 +1757,18 @@ describe('POST /api/github/webhook', () => {
         expect(e.detail.inFlightTaskId).toBe('rf1');
         expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
         expect(mockScheduleCiRedLook.mock.calls[0][0]).toEqual({ workspaceId: 'ws1', prNumber: 42 });
+      });
+
+      it('a fix in flight elsewhere in the retry family (a sibling on a sibling PR) → fix_in_flight, names it, files nothing', async () => {
+        withFailedWorkerPr({ status: 'completed', fixAttempts: [] });
+        mockCheckDispatch.mockResolvedValueOnce({
+          verdict: 'skip_dispatch', rule: 'open_retry_supersedes_duplicate', blockers: ['sibling-fix'],
+        });
+        await fail();
+        expect(insertCalls.length).toBe(0);
+        const [e] = skipEvents();
+        expect(e.detail.skipReason).toBe('fix_in_flight');
+        expect(e.detail.inFlightTaskId).toBe('sibling-fix');
       });
 
       it('a CI retry already filed for this exact head → head_already_retried, before fetching logs', async () => {
@@ -1895,7 +1943,8 @@ describe('POST /api/github/webhook', () => {
       const retryInsert = insertCalls[2].values;
       expect(retryInsert.title).toBe('[builder · after CI #1] PR #42: Release v1.2.3');
       expect(retryInsert.parentTaskId).toBe('adopted-t1');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
     });
 
     it('does not adopt twice — a second failure on the same (already-adopted) PR just retries normally', async () => {
@@ -1935,7 +1984,8 @@ describe('POST /api/github/webhook', () => {
       // Only the retry task insert — no adoption task/worker rows created again.
       expect(insertCalls.length).toBe(1);
       expect(insertCalls[0].values.title).toBe('[builder · after CI #2] PR #42: Release v1.2.3');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
     });
 
     it('does not adopt a fork PR', async () => {
@@ -1945,7 +1995,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     // Renovate/Dependabot own their branch: one commit from buildd and the bot
@@ -1960,7 +2011,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
       const pushes = mockGithubApi.mock.calls.filter(
         ([, , init]: any[]) => init?.method && init.method !== 'GET',
       );
@@ -1977,7 +2029,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(3);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
     });
 
     it('records the PR author type on adoption', async () => {
@@ -2011,7 +2064,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
       const gate = mockFireGateEvent.mock.calls.map(([e]: any[]) => e)
         .find((e: any) => e.gate === 'dependency_bot_pr');
       expect(gate).toMatchObject({ outcome: 'rejected', taskId: 'adopted-t1', detail: { stage: 'ci_fix' } });
@@ -2025,7 +2079,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(0);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
   });
 
@@ -2072,7 +2127,8 @@ describe('POST /api/github/webhook', () => {
       expect(inserted.title).not.toContain('[CI Retry');
       expect(inserted.outputRequirement).toBe('artifact_required');
       expect(inserted.parentTaskId).toBe('t1');
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledTimes(1);
     });
 
     // role-routing §1 row 8: the diagnose insert dropped the owner's role.
@@ -4071,7 +4127,8 @@ describe('POST /api/github/webhook', () => {
       await POST(createWebhookRequest('pull_request', makePROpenedPayload()));
 
       expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
       // Still handled: the PR is under review, so no auto-merge.
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
@@ -4112,7 +4169,8 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
       // The PR still needs review — holding it is the safe side.
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
@@ -4216,7 +4274,8 @@ describe('POST /api/github/webhook', () => {
         baseRef: 'dev',
         priorVerdict: { headSha: OLD_SHA, verdict: 'request-changes' },
       });
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
 
     it('re-dispatches after an escalated verdict too', async () => {
@@ -5685,28 +5744,30 @@ describe('pull_request merged — effects that belong to the merge, not the tran
       .map(c => c[0])
       .filter((e: any) => e?.detail?.event === 'merged_over_verdict' || e?.detail?.event === 'merged_unreviewed');
 
-  it('supersedes a still-live reviewer when the PR merges on GitHub', async () => {
+  it('fires a merged supersession event when the PR merges on GitHub', async () => {
     mockWorkersFindFirst.mockReturnValue(taskPrWorker());
 
     await POST(createWebhookRequest('pull_request', taskPrPayload()));
 
-    expect(mockSupersedeReviewerTaskOnMerge).toHaveBeenCalledTimes(1);
-    expect(mockSupersedeReviewerTaskOnMerge.mock.calls[0][0]).toMatchObject({
+    expect(mockReconcileSubjectEvent).toHaveBeenCalledTimes(1);
+    expect(mockReconcileSubjectEvent.mock.calls[0][0]).toMatchObject({
+      kind: 'merged',
+      workspaceId: 'ws1',
       originalTaskId: 't-task',
-      installationId: 5000,
-      repoFullName: 'test-org/test-repo',
       prNumber: 77,
+      pr: { installationId: 5000, repoFullName: 'test-org/test-repo' },
     });
   });
 
-  it('does not supersede on a PR closed without merging', async () => {
+  it('fires a closed event — not a merged one — on a PR closed without merging', async () => {
     mockWorkersFindFirst.mockReturnValue(taskPrWorker());
 
     await POST(createWebhookRequest('pull_request', mergedPrPayload({
       pull_request: { merged: false, head: { ref: 'buildd/abc12345-fix', sha: 'sha-77' } },
     })));
 
-    expect(mockSupersedeReviewerTaskOnMerge).not.toHaveBeenCalled();
+    expect(mockReconcileSubjectEvent).toHaveBeenCalledTimes(1);
+    expect(mockReconcileSubjectEvent.mock.calls[0][0]).toMatchObject({ kind: 'closed', prNumber: 77 });
   });
 
   it('records merged_over_verdict when the PR merges over a request-changes verdict', async () => {
@@ -5739,7 +5800,7 @@ describe('pull_request merged — effects that belong to the merge, not the tran
     // The verdict is read before the reviewer is superseded — cancelling it
     // first would erase the state being measured.
     expect(mockReadPrReviewStatus.mock.invocationCallOrder[0])
-      .toBeLessThan(mockSupersedeReviewerTaskOnMerge.mock.invocationCallOrder[0]);
+      .toBeLessThan(mockReconcileSubjectEvent.mock.invocationCallOrder[0]);
   });
 
   it('records nothing for a PR no review was requested for', async () => {

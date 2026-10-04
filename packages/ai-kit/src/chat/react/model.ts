@@ -44,11 +44,72 @@ export function thinkingSteps(parts: readonly ChatPart[], streaming: boolean): S
   }
   if (!seenActive && !steps.some(s => s.state === 'pending')) {
     const label = steps.length === 0 && !textAfterSteps
-      ? 'Reading your question'
-      : textAfterSteps ? 'Writing the answer' : 'Thinking it through';
-    steps.push({ id: 'kit-tail', label, state: 'active' });
+      ? THINKING_TAIL.reading
+      : textAfterSteps ? THINKING_TAIL.writing : THINKING_TAIL.thinking;
+    steps.push({ id: THINKING_TAIL_ID, label, state: 'active' });
   }
   return steps;
+}
+
+/** The tail row `thinkingSteps` adds while nothing is active (0.17.0). */
+export const THINKING_TAIL_ID = 'kit-tail';
+export const THINKING_TAIL = { reading: 'Reading your question', thinking: 'Thinking it through', writing: 'Writing the answer' } as const;
+
+/**
+ * A step's weight (0.17.0): the server's `weight`, else `key` for a step
+ * waiting on the person and `routine` for anything else.
+ */
+export function stepWeight(s: StepData): 'key' | 'routine' {
+  return s.weight ?? (s.state === 'pending' ? 'key' : 'routine');
+}
+
+/** The step the live line shows (0.17.0): the active one, else the latest waiting on the person. */
+export function liveStep(steps: readonly StepData[]): StepData | null {
+  return lastOf(steps, s => s.state === 'active') ?? lastOf(steps, s => s.state === 'pending');
+}
+
+function lastOf(steps: readonly StepData[], ok: (s: StepData) => boolean): StepData | null {
+  for (let i = steps.length - 1; i >= 0; i--) if (ok(steps[i])) return steps[i];
+  return null;
+}
+
+/**
+ * The one step pinned under the live line (0.17.0): the latest key step that
+ * is not the live one. Reads, counted runs and thinking never pin.
+ */
+export function pinnedStep(steps: readonly StepData[]): StepData | null {
+  const live = liveStep(steps);
+  return lastOf(steps, s => s !== live && s.state !== 'active' && stepWeight(s) === 'key');
+}
+
+/** One row of the unfolded list (0.17.0): a step, or two or more routine steps in a row folded together. */
+export type StepGroup =
+  | { kind: 'step'; step: StepData }
+  | { kind: 'routine'; id: string; steps: StepData[] };
+
+/**
+ * The unfolded list (0.17.0): the turn's steps in order, each run of two or
+ * more consecutive routine steps folded into one group, and the active step
+ * (if any) last.
+ */
+export function stepGroups(steps: readonly StepData[]): StepGroup[] {
+  const live = lastOf(steps, s => s.state === 'active');
+  const out: StepGroup[] = [];
+  let run: StepData[] = [];
+  const flush = () => {
+    if (run.length === 1) out.push({ kind: 'step', step: run[0] });
+    else if (run.length > 1) out.push({ kind: 'routine', id: run[0].id, steps: run });
+    run = [];
+  };
+  for (const s of steps) {
+    if (s === live) continue;
+    if (stepWeight(s) === 'routine' && s.state !== 'pending') { run.push(s); continue; }
+    flush();
+    out.push({ kind: 'step', step: s });
+  }
+  flush();
+  if (live) out.push({ kind: 'step', step: live });
+  return out;
 }
 
 /** A tool part that is, or was, an approval card. */

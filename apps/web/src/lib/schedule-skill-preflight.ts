@@ -30,6 +30,7 @@ import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, tasks, workspaces, workspaceSkills } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, like, notInArray, or, sql } from 'drizzle-orm';
+import { wakeTask } from '@/lib/dispatch-authority';
 
 /** Why a required slug cannot be delivered by a claim in this workspace. */
 export type MissingSkillReason = 'not_registered' | 'team_level_only' | 'not_on_every_claim_account';
@@ -168,7 +169,7 @@ export async function fileMissingSkillFriction(input: {
   if (existing) return 'exists';
 
   const slugs = input.missingSlugs.join(', ');
-  await db
+  const [filed] = await db
     .insert(tasks)
     .values({
       workspaceId: input.workspaceId,
@@ -201,5 +202,7 @@ export async function fileMissingSkillFriction(input: {
       },
     })
     .returning({ id: tasks.id });
+  // Pending work like any other new task, so it gets the same wake.
+  if (filed) await wakeTask(filed.id, 'task.created');
   return 'created';
 }

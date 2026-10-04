@@ -46,6 +46,8 @@ mock.module('../db/client', () => ({
           orderBy: () => ({
             limit: async () => (latestRow ? [latestRow] : []),
           }),
+          // recordDeferralOnce looks up any matching row, unordered.
+          limit: async () => (latestRow ? [latestRow] : []),
         }),
       }),
     }),
@@ -59,7 +61,7 @@ mock.module('../db/client', () => ({
   },
 }));
 
-const { recordGateEvent, recordOrCoalesceDeferral, recordOrCoalesceRepeat, GATE_SLUGS } = await import('../gate-events');
+const { recordGateEvent, recordOrCoalesceDeferral, recordOrCoalesceRepeat, recordDeferralOnce, GATE_SLUGS } = await import('../gate-events');
 const { PgDialect } = await import('drizzle-orm/pg-core');
 const renderWhere = () => new PgDialect().sqlToQuery(lastWhere as any);
 
@@ -305,5 +307,50 @@ describe('recordOrCoalesceRepeat', () => {
     insertShouldThrow = true;
     const id = await recordOrCoalesceRepeat(base, { key: { accountId: ACCOUNT }, windowMs: HOUR });
     expect(id).toBeNull();
+  });
+});
+
+describe('recordDeferralOnce', () => {
+  const input = {
+    gate: 'claim_loop_deferral',
+    surface: 'POST /api/workers/claim',
+    outcome: 'deferred' as const,
+    reason: 'ordered_behind',
+    workspaceId: WS,
+    taskId: TASK,
+    detail: { edge: 'path_overlap' },
+  };
+
+  it('inserts one row carrying the key when the pair has none yet', async () => {
+    const id = await recordDeferralOnce(input, { blockedBy: 'blocker-1' });
+    expect(id).toBe('row-1');
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].detail).toMatchObject({ edge: 'path_overlap', blockedBy: 'blocker-1' });
+    expect(typeof inserted[0].detail?.firstDeferredAt).toBe('string');
+  });
+
+  it('writes nothing at all when the same (task, key) row already exists', async () => {
+    latestRow = { id: 'existing', reason: 'ordered_behind', outcome: 'deferred', detail: { blockedBy: 'blocker-1' } };
+    const id = await recordDeferralOnce(input, { blockedBy: 'blocker-1' });
+    expect(id).toBe('existing');
+    expect(inserted).toHaveLength(0);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('scopes the lookup to the task, gate, outcome, reason and a jsonb containment on the key', async () => {
+    await recordDeferralOnce(input, { blockedBy: 'blocker-1' });
+    const { sql, params } = renderWhere();
+    expect(sql).toContain('"task_id"');
+    expect(sql).toContain('"gate"');
+    expect(sql).toContain('"outcome"');
+    expect(sql).toContain('"reason"');
+    expect(sql).toContain('@>');
+    expect(params).toContain(JSON.stringify({ blockedBy: 'blocker-1' }));
+  });
+
+  it('writes nothing without a task to key on', async () => {
+    const id = await recordDeferralOnce({ ...input, taskId: null }, { blockedBy: 'b' });
+    expect(id).toBeNull();
+    expect(inserted).toHaveLength(0);
   });
 });

@@ -16,7 +16,8 @@ const mockInsertValues = mock((vals: any) => {
 });
 const mockInsert = mock(() => ({ values: mockInsertValues }));
 
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock((..._a: unknown[]) => Promise.resolve());
+const mockWakeTask = mock((..._a: unknown[]) => Promise.resolve());
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -51,8 +52,21 @@ mock.module('drizzle-orm', () => ({
 }));
 
 // Keep real path-overlap for meaningful overlap tests
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// Full export surface: mock.module is process-global.
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  announceTaskCreated: mockAnnounceTaskCreated,
+  kickDispatch: mock(() => {}),
+  enqueueTaskDispatch: mock(async () => {}),
+  drainDispatchOutbox: mock(async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 })),
+  deliverTaskDispatch: mock(async () => 'pusher'),
+  routeForCause: mock(() => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false })),
+  webhookWants: mock(() => false),
+  primaryCause: mock((_c: unknown, fallback: unknown) => fallback),
+  reseedDispatchTimer: mock(async () => {}),
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
 }));
 
 // The behind-only refresh (GitHub update-branch + failure classification +
@@ -417,7 +431,8 @@ describe('dispatchConflictRetry', () => {
     mockInsertValues.mockReset();
     mockInsertOnConflict.mockReset();
     mockInsertReturning.mockReset();
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
 
     mockWorkspaceFindFirst.mockResolvedValue(MOCK_WORKSPACE);
     mockTaskFindFirst.mockResolvedValue(MOCK_TASK);
@@ -431,7 +446,7 @@ describe('dispatchConflictRetry', () => {
     });
     mockInsertOnConflict.mockReturnValue({ returning: mockInsertReturning });
     mockInsertReturning.mockResolvedValue([{ id: 'new-task-id', ...capturedInsertValues }]);
-    mockDispatchNewTask.mockResolvedValue(undefined);
+    mockAnnounceTaskCreated.mockResolvedValue(undefined);
     mockLiveConflictRetryProbe.mockReset();
     mockLiveConflictRetryProbe.mockResolvedValue(null);
   });
@@ -448,7 +463,7 @@ describe('dispatchConflictRetry', () => {
     expect(result.inFlightTaskId).toBe('live-retry');
     expect(result.exhausted).toBeUndefined();
     expect(mockInsert).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('scopes the in-flight probe to this workspace, this PR and live statuses', async () => {
@@ -490,7 +505,7 @@ describe('dispatchConflictRetry', () => {
       missionId: 'mission-1',
     });
     expect(mockInsert).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   describe('behind-only refresh failures (conflict-aware-orchestration §4)', () => {
@@ -517,7 +532,7 @@ describe('dispatchConflictRetry', () => {
       // Never mistaken for the conflict-iteration cap, which escalates as a conflict.
       expect(result.exhausted).toBeUndefined();
       expect(mockInsert).not.toHaveBeenCalled();
-      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('a verified textual conflict falls through to the existing conflict agent', async () => {
@@ -525,6 +540,8 @@ describe('dispatchConflictRetry', () => {
       const result = await dispatchConflictRetry(behind);
       expect(result.dispatched).toBe(true);
       expect(capturedInsertValues.context.failureContext.errorType).toBe('merge_conflict');
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask.mock.calls).toEqual([['new-task-id', 'conflict.retry']]);
     });
 
     it('a verified same-symbol edit dispatches a semantic conflict review carrying the evidence', async () => {
@@ -563,7 +580,7 @@ describe('dispatchConflictRetry', () => {
     expect(result).toEqual({ dispatched: false, dependencyBot: true });
     expect(mockUpdateBehindPrBranch).not.toHaveBeenCalled();
     expect(mockInsert).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
     expect(mockFireGateEvent.mock.calls[0][0]).toMatchObject({
       gate: 'dependency_bot_pr',
       outcome: 'rejected',
@@ -785,6 +802,26 @@ describe('dispatchConflictRetry', () => {
 
     expect(result.dispatched).toBe(true);
     expect(capturedInsertValues.dependsOn).toEqual(['overlapping-sibling']);
+  });
+
+  it('does not depend on a task that is already downstream of the original task, directly or transitively, but still depends on an unrelated overlapping task', async () => {
+    const pathManifest = ['apps/web/src/lib'];
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, pathManifest });
+    mockTaskFindMany.mockResolvedValue([
+      { id: 'task-id', pathManifest, dependsOn: [] },
+      // S: overlaps and already depends directly on the original task.
+      { id: 'downstream-direct', pathManifest: ['apps/web/src/lib/foo.ts'], dependsOn: ['task-id'] },
+      // S2: overlaps and depends on the original task transitively, through X.
+      { id: 'downstream-transitive', pathManifest: ['apps/web/src/lib/bar.ts'], dependsOn: ['intermediate'] },
+      { id: 'intermediate', pathManifest: null, dependsOn: ['task-id'] },
+      // U: overlaps but has no relationship to the original task.
+      { id: 'unrelated-overlap', pathManifest: ['apps/web/src/lib/baz.ts'], dependsOn: [] },
+    ]);
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.dependsOn).toEqual(['unrelated-overlap']);
   });
 
   it('returns dispatched=false when workspace is not found', async () => {
