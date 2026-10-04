@@ -5,7 +5,7 @@ import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
 import { findBlockingPr, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
 import { normalizeRepoFullName } from '@/lib/repo-scope';
-import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated as _announceTaskCreated, wakeTask as _wakeTask } from '@/lib/dispatch-authority';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
 import {
@@ -252,7 +252,8 @@ export interface RunMissionOptions {
 /** Overridable deps for testing without mock.module pollution */
 export interface RunMissionDeps {
   buildMissionContext?: typeof _buildMissionContext;
-  dispatchNewTask?: typeof _dispatchNewTask;
+  announceTaskCreated?: typeof _announceTaskCreated;
+  wakeTask?: typeof _wakeTask;
   getOrCreateCoordinationWorkspace?: typeof _getOrCreateCoordinationWorkspace;
   getMissionSpendUsd?: (missionId: string) => Promise<number>;
   exhaustMissionBudget?: (missionId: string, title: string, spendUsd: number, budgetUsd: number) => Promise<void>;
@@ -276,7 +277,8 @@ export async function runMission(
   deps?: RunMissionDeps,
 ): Promise<RunMissionResult> {
   const buildMissionContext = deps?.buildMissionContext ?? _buildMissionContext;
-  const dispatchNewTask = deps?.dispatchNewTask ?? _dispatchNewTask;
+  const announceTaskCreated = deps?.announceTaskCreated ?? _announceTaskCreated;
+  const wakeTask = deps?.wakeTask ?? _wakeTask;
   const getOrCreateCoordinationWorkspace = deps?.getOrCreateCoordinationWorkspace ?? _getOrCreateCoordinationWorkspace;
   const getMissionSpendUsd = deps?.getMissionSpendUsd ?? _getMissionSpendUsd;
   const exhaustMissionBudget = deps?.exhaustMissionBudget ?? _exhaustMissionBudget;
@@ -722,7 +724,8 @@ export async function runMission(
   }
 
   if (workspace) {
-    await dispatchNewTask(task, workspace);
+    await announceTaskCreated(task, workspace);
+    await wakeTask(task.id, 'task.created');
   }
 
   // Announce the cycle on the mission channel. The cron path (mission-loop.ts)

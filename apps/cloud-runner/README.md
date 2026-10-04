@@ -79,12 +79,12 @@ The report is `PATCH /api/workers/<id>` with `status: failed` and
 for a session its process lost. buildd treats it as an infrastructure failure:
 the task goes back to `pending` on the infra-retry budget (backoff 5, 15, 30
 minutes, counted in `context.infraRetryCount`), and after the last attempt the
-task fails as `infra_stalled`. With `task.scheduled` in the webhook's events
-(the deploy script sets it), buildd sends the requeue at once with the backoff's
-end as `notBefore` and the agent starts the retry then. Without it, the
-deferred-dispatch sweep sends `task.retry` on its first run after the backoff
-passes; it rides the hourly `pr-reconcile` cron, so a retry can wait up to an
-hour beyond its backoff. The sweep runs either way, as the backstop. Only a `crashed` outcome is reported;
+task fails as `infra_stalled`. The requeue's durable wake is scheduled for the
+end of the backoff. With `task.scheduled` in the webhook's events (the deploy
+script sets it), buildd also sends an advance notice at once with that time as
+`notBefore`, and the agent starts the retry then. Either way the `dispatch-drain`
+tick delivers the wake when due, as `task.retry` to a webhook that lists that
+event: the backstop. Only a `crashed` outcome is reported;
 the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
 
 **Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the

@@ -1,6 +1,6 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
@@ -53,7 +53,9 @@ import {
   bypassFlagCondition,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
-import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
+import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
+import { withDispatchHint } from '@buildd/core/dispatch-outbox';
+import { kickDispatch } from '@/lib/dispatch-authority';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { depsGate } from './deps-gate';
 import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-rate-limit';
@@ -1138,6 +1140,17 @@ export async function POST(req: NextRequest) {
   // `diagnostics.blockedByPr` (no runner reads it yet; it is there for callers
   // that want to name the PR an idle runner is waiting on).
   let firstBlockingPr: { prNumber: number | null; prUrl: string | null } | null = null;
+  // path_overlap deferrals to register as waiters on their blocker, written
+  // once after the response (scheduleClaimDeferralWaiters). Without the row a
+  // blocker's release has nobody to wake, and the deferred task waits out the
+  // runner's fallback poll.
+  const deferralWaiters = new Map<string, ClaimDeferralWaiter[]>();
+  const noteDeferralWaiter = (workspaceId: string, waitingTaskId: string, blockingTaskId: string | null | undefined, blockedPaths: string[]) => {
+    if (!blockingTaskId || blockingTaskId === waitingTaskId) return;
+    const list = deferralWaiters.get(workspaceId) ?? [];
+    for (const blockedPath of blockedPaths) list.push({ waitingTaskId, blockingTaskId, blockedPath });
+    if (list.length > 0) deferralWaiters.set(workspaceId, list);
+  };
 
   // Per-workspace concurrency cap enforced within this batch. The SQL guard above
   // filtered candidates against *existing* active workers, but a single batch could
@@ -1528,10 +1541,10 @@ export async function POST(req: NextRequest) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
         const blockedByPr = { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null };
         firstBlockingPr ??= blockedByPr;
+        const blockingEntry = filterOpenPrTasks.find(
+          t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
+        );
         if (task.id === taskId && !forced) {
-          const blockingEntry = filterOpenPrTasks.find(
-            t => (t.prNumber ?? null) === blockedByPr.prNumber && (t.prUrl ?? null) === blockedByPr.prUrl,
-          );
           const overlapPaths = intersectPaths(taskManifest, blockingEntry?.pathManifest ?? []);
           const prLabel = blockedByPr.prNumber ? `#${blockedByPr.prNumber}` : (blockedByPr.prUrl ?? 'an open PR');
           explicitTaskExclusion = {
@@ -1539,7 +1552,12 @@ export async function POST(req: NextRequest) {
             detail: `Its files overlap open PR ${prLabel}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for it to merge, or rebase onto it.`,
           };
         }
-        if (bypassOrDefer('path_overlap', blockedByPr)) continue;
+        if (bypassOrDefer('path_overlap', blockedByPr)) {
+          // The blocker's own manifest paths, which its terminal release wakes.
+          noteDeferralWaiter(task.workspaceId, task.id, blockingEntry?.taskId,
+            intersectPaths(blockingEntry?.pathManifest ?? [], taskManifest));
+          continue;
+        }
       }
 
       // Path-overlap backstop (layer 2): also check active path_claims rows.
@@ -1573,6 +1591,11 @@ export async function POST(req: NextRequest) {
               // prNumber/prUrl: null so a coalesced row does not keep naming a
               // PR from an earlier layer-1 deferral as the current blocker.
               blockedByActiveClaim = bypassOrDefer('path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
+              // The holder's lease paths, so a narrowing that gives one back
+              // wakes this task too (narrow matches waiters by exact path).
+              if (blockedByActiveClaim) {
+                noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
+              }
               break;
             }
           }
@@ -2323,10 +2346,13 @@ export async function POST(req: NextRequest) {
       }
 
       // Roll back only our still-assigned claim; never resurrect a cancelled task.
-      await db
+      // Suppressed for the dispatch trigger: this undoes our own claim, it is
+      // not new runnable state, and a wake here would loop claim → refuse →
+      // rollback → wake across every runner.
+      await withDispatchHint({ suppress: 'claim_rollback' }, db
         .update(tasks)
         .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id)));
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',
@@ -2379,6 +2405,7 @@ export async function POST(req: NextRequest) {
   // Hold/start shadow decisions run after the response is sent (after()).
   // Registering them is synchronous; nothing here is awaited.
   scheduleClaimHoldShadow(holdStart);
+  scheduleClaimDeferralWaiters(deferralWaiters);
 
   if (claimedWorkers.length === 0) {
     // When the account's OAuth budget is exhausted, every non-tenant Claude task
@@ -2682,4 +2709,31 @@ export async function POST(req: NextRequest) {
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
   }, undefined, { route: req.nextUrl.pathname });
+}
+
+/**
+ * Write the request's path_overlap waiters after the response: one locked
+ * statement per workspace (registerClaimDeferralWaiters), which also wakes at
+ * once any task whose blocker let go since this request read it. Off the hot
+ * path, but not silent: a failure is logged, and the deferred task is still
+ * re-registered by its next claim pass and swept by path-claims maintenance.
+ */
+function scheduleClaimDeferralWaiters(byWorkspace: Map<string, ClaimDeferralWaiter[]>): void {
+  if (byWorkspace.size === 0) return;
+  const run = () => Promise.all([...byWorkspace].map(([workspaceId, entries]) =>
+    registerClaimDeferralWaiters(workspaceId, entries).catch(err => {
+      console.error(`[claim] registering claim-deferral waiters failed for workspace ${workspaceId}:`, err);
+      return { registered: 0, woken: [] as string[] };
+    }),
+  )).then(results => {
+    // A blocker that let go since this request read it was woken in the same
+    // statement; deliver that wake now rather than at the next unrelated kick.
+    if (results.some(r => r.woken.length > 0)) kickDispatch();
+  });
+  try {
+    after(run);
+  } catch {
+    // Outside a request scope (scripts, tests): run now, detached.
+    void run();
+  }
 }

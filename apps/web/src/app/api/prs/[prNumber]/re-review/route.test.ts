@@ -9,7 +9,7 @@ const mockResolvePolicy = mock(() => ({ tier: 'agent-review' as const }));
 const mockListWorkspaceRoles = mock(() => Promise.resolve([{ slug: 'reviewer', isRole: true }]));
 const mockPickReviewerRole = mock(() => ({ role: 'reviewer', source: 'default' as const }));
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'review-task-1' }) as any);
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'updated' } as any));
 const mockSupersedeAncestorEscalations = mock(() => Promise.resolve());
 const mockResolveReReviewPlan = mock(() => Promise.resolve({ kind: 'full' as const }));
@@ -20,7 +20,23 @@ mock.module('@/lib/merge-policy', () => ({ resolvePolicy: mockResolvePolicy }));
 mock.module('@/lib/pr-review-request', () => ({ listWorkspaceRoles: mockListWorkspaceRoles }));
 mock.module('@/lib/pr-review-status', () => ({ pickReviewerRole: mockPickReviewerRole }));
 mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewerTask }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
 mock.module('@/lib/pr-re-review', () => ({ resolveReReviewPlan: mockResolveReReviewPlan }));
@@ -98,7 +114,8 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     mockPickReviewerRole.mockReturnValue({ role: 'reviewer', source: 'default' as const });
     mockCreateReviewerTask.mockReset();
     mockCreateReviewerTask.mockResolvedValue({ id: 'review-task-1' });
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockAppendPrActivity.mockReset();
     mockSupersedeAncestorEscalations.mockReset();
     mockResolveReReviewPlan.mockReset();
@@ -160,7 +177,8 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     expect(created.headSha).toBe('abc123');
     expect(created.reviewerRole).toBe('reviewer');
 
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
     expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
   });
@@ -174,7 +192,8 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ ok: true, dispatched: false, reviewTaskId: 'review-task-1' });
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
     expect(mockAppendPrActivity).not.toHaveBeenCalled();
     // Still closes a stale escalation note even when a live review already owns the PR.
     expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
@@ -242,7 +261,8 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     const body = await res.json();
     expect(body).toEqual({ ok: true, alreadyRequested: true, reviewTaskId: 'live-review-1' });
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
-    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    expect(mockAnnounceTaskCreated).not.toHaveBeenCalled();
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 
   it('returns 400 when the workspace has no reviewer role available', async () => {

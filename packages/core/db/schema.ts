@@ -4435,6 +4435,50 @@ export const pathClaimWaitersRelations = relations(pathClaimWaiters, ({ one }) =
 export type PathClaimWaiter = typeof pathClaimWaiters.$inferSelect;
 export type NewPathClaimWaiter = typeof pathClaimWaiters.$inferInsert;
 
+// Durable dispatch intent: "something changed that may make this task
+// runnable — re-evaluate it". Not a scheduler: the claim route stays the only
+// authority on whether the task runs, and the task row stays the truth. A row
+// is written atomically with the mutation that caused it (the tasks trigger
+// for transitions into `pending`, a CTE/batch for the rest — see
+// packages/core/dispatch-outbox.ts), then delivered at-least-once by the
+// dispatch consumer (apps/web/src/lib/dispatch-authority.ts).
+export const taskDispatchOutbox = pgTable('task_dispatch_outbox', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // DispatchIntent: what kind of delivery this is (work_execution,
+  // human_action, notification, incident, external_work). Selects the adapter
+  // chain; durable dispatch does not imply autonomous execution. The trigger
+  // writes the default.
+  intent: text('intent').default('work_execution').notNull(),
+  // DispatchCause (packages/core/dispatch-outbox.ts). A coalesced row keeps
+  // the first cause; later ones are appended to `causes`.
+  cause: text('cause').notNull(),
+  causes: jsonb('causes').$type<string[]>().default([]).notNull(),
+  notBefore: timestamp('not_before', { withTimezone: true }).defaultNow().notNull(),
+  // Pending rows coalesce on (task_id, dedupe_key). 'now' for an immediate
+  // wake; a scheduled wake keys on its due time so it is not folded into an
+  // earlier immediate one.
+  dedupeKey: text('dedupe_key').default('now').notNull(),
+  status: text('status').default('pending').notNull().$type<'pending' | 'delivering' | 'delivered' | 'failed'>(),
+  attemptCount: integer('attempt_count').default(0).notNull(),
+  lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  // How it was delivered ('webhook' | 'pusher' | 'skipped:<why>'), or the error.
+  deliveredVia: text('delivered_via'),
+  lastError: text('last_error'),
+  // Delivery hints that are not task state, e.g. { targetLocalUiUrl }.
+  metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pendingDedupeIdx: uniqueIndex('task_dispatch_outbox_pending_dedupe_idx').on(t.taskId, t.dedupeKey).where(sql`${t.status} = 'pending'`),
+  dueIdx: index('task_dispatch_outbox_due_idx').on(t.notBefore).where(sql`${t.status} IN ('pending', 'delivering')`),
+  taskIdx: index('task_dispatch_outbox_task_idx').on(t.taskId, t.createdAt),
+}));
+
+export type TaskDispatchOutboxRow = typeof taskDispatchOutbox.$inferSelect;
+
 // Releases — one row per deployment/release event for a workspace.
 export const releases = pgTable('releases', {
   id: uuid('id').primaryKey().defaultRandom(),

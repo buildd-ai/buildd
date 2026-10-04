@@ -14,6 +14,7 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { FORCE_CLAIM_CONTEXT_KEY } from '@/lib/force-claim';
 import { runnerWorkerOnly } from '@/lib/interactive-worker-liveness';
 import { RUNNER_STALE_CUTOFF_MS } from '@buildd/shared';
+import { wakeTask } from '@/lib/dispatch-authority';
 
 // Cap consecutive cleanup-driven retries. Without this, a task that keeps
 // erroring (stuck-detector aborts, heartbeat expiries, etc.) bounces back to
@@ -89,6 +90,7 @@ async function resetOrFailTask(taskId: string, now: Date, reason: string) {
       context: sql`COALESCE(${tasks.context}, '{}'::jsonb) - ${FORCE_CLAIM_CONTEXT_KEY}`,
     })
     .where(eq(tasks.id, taskId));
+  await wakeTask(taskId, 'task.requeued');
   return 'pending' as const;
 }
 

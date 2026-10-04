@@ -406,6 +406,52 @@ jobs:
             --form-string "url_title=View release PR" \
             https://api.pushover.net/1/messages.json || true
 
+  # Real-SQL architecture suite (apps/web/tests/db): the dispatch authority's
+  # invariants live in a trigger and CTEs that a mocked `db` cannot observe.
+  # Postgres + the neon-http proxy the app's driver speaks, migrated from
+  # scratch, so this also proves every migration applies to an empty database.
+  db-architecture:
+    name: DB architecture (real Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: demo
+          POSTGRES_PASSWORD: demo
+          POSTGRES_DB: buildd_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U demo -d buildd_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      neon-proxy:
+        image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+        env:
+          PG_CONNECTION_STRING: postgres://demo:demo@postgres:5432/buildd_test
+        ports: ["4444:4444"]
+    env:
+      DATABASE_URL: postgres://demo:demo@localhost:5432/buildd_test
+      NEON_LOCAL_FETCH_ENDPOINT: http://127.0.0.1:4444/sql
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install
+      - name: Wait for neon-http proxy
+        run: |
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null -X POST http://127.0.0.1:4444/sql \
+              -H 'Neon-Connection-String: postgres://demo:demo@localhost:5432/buildd_test' \
+              -H 'Content-Type: application/json' -d '{"query":"select 1","params":[]}' && exit 0
+            sleep 2
+          done
+          echo "neon proxy never answered" && exit 1
+      - name: Migrate
+        run: cd packages/core && bun db:migrate
+      - name: Run DB architecture tests
+        run: bun run test:db
+
   # Detect which areas changed to skip expensive integration/E2E when unnecessary
   changes:
     runs-on: ubuntu-latest

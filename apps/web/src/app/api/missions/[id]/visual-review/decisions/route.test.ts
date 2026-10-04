@@ -26,8 +26,24 @@ mock.module('@/lib/visual-review-load', () => ({
   loadVisualReview: mockLoad,
   toHumanShotReview: (r: any) => ({ ...r, createdAt: String(r.createdAt), supersededAt: null }),
 }));
-const mockDispatch = mock(async (..._a: any[]) => {});
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatch }));
+const mockAnnounce = mock(async (..._a: any[]) => {});
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounce,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 const mockEnsureAudit = mock(async (_p: any) => {});
 mock.module('@/lib/mission-surface-audit', () => ({ ensureMissionSurfaceAudit: mockEnsureAudit, detachFixFromPendingAudit: async () => ({ action: 'none' }) }));
 mock.module('@/lib/task-cancel', () => ({ applyTaskCancelSideEffects: async () => {}, applyTaskReopenSideEffects: async () => {} }));
@@ -79,7 +95,7 @@ beforeEach(() => {
   inScope = [SHOT_M, SHOT_D];
   missionRow = { id: MISSION, teamId: 'team-a', workspaceId: WS };
   model = build('ok');
-  for (const m of [mockGetCurrentUser, mockResolveTeamIds, mockVerifyWorkspaceAccess, mockLoad, mockDispatch, mockEnsureAudit]) m.mockClear();
+  for (const m of [mockGetCurrentUser, mockResolveTeamIds, mockVerifyWorkspaceAccess, mockLoad, mockAnnounce, mockEnsureAudit]) m.mockClear();
   mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'reviewer@example.com', name: 'Reviewer' });
   mockResolveTeamIds.mockResolvedValue(['team-a']);
   mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-a', role: 'member' });

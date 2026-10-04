@@ -169,6 +169,8 @@
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
     "./path-claim": "./path-claim.ts",
+    "./dispatch-outbox": "./dispatch-outbox.ts",
+    "./dispatch-dependents": "./dispatch-dependents.ts",
     "./path-claim-ttl": "./path-claim-ttl.ts",
     "./surface-audit": "./surface-audit.ts",
     "./visual-qa-routes": "./visual-qa-routes.ts",

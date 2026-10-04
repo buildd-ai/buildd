@@ -72,6 +72,7 @@ import {
 } from '@/lib/mission-invariants';
 import { resolveCriteriaEscalation, type CriteriaEscalationExitReason } from '@/lib/criteria-escalation';
 import { systemActor } from '@/lib/mission-feed';
+import { wakeTask } from '@/lib/dispatch-authority';
 
 export const maxDuration = 60;
 
@@ -172,7 +173,10 @@ async function fileViolation(
     })
     .returning({ id: tasks.id });
 
-  return { ...base, taskId: inserted?.[0]?.id ?? null, outcome: 'created' };
+  // Filed for an agent to pick up, so it gets the same wake as any new task.
+  const taskId = inserted?.[0]?.id ?? null;
+  if (taskId) await wakeTask(taskId, 'task.created');
+  return { ...base, taskId, outcome: 'created' };
 }
 
 interface Reconciliation {

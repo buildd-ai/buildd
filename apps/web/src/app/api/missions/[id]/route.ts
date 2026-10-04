@@ -1,8 +1,8 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, initiatives, workspaces } from '@buildd/core/db/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { missions, tasks, taskSchedules, initiatives } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -26,12 +26,12 @@ import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabe
 import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { criteriaFingerprint } from '@/lib/criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError, UNCLAIMED_TASK_STATUSES } from '@buildd/shared';
+import { findRemovedPathFieldInMergePolicy, removedPolicyPathFieldError } from '@buildd/shared';
 import { isUuid } from '@/lib/uuid';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { withGoalQualityAdvisory } from '@/lib/goal-criteria-quality-shadow';
 import { workspaceOpenToCaller } from '@/lib/open-workspaces';
-import { dispatchUnblockedTask } from '@/lib/task-dispatch';
+import { wakeTasks } from '@/lib/dispatch-authority';
 import { continueOnRunnerBlockedReason } from '@/lib/local-strand';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
 import {
@@ -737,51 +737,27 @@ export async function PATCH(
       .where(eq(missions.id, id))
       .returning();
 
-    // When executor changes from 'local' to 'runner', re-dispatch pending/assigned
-    // tasks so runners can claim them. Tasks created under executor='local' are
-    // blocked from runner claims by the missionNotLocal() gate — they need an
-    // explicit dispatch via TASK_ASSIGNED when the executor changes.
-    if (executor === 'runner' && existing.executor === 'local' && updated && existing.workspaceId) {
+    // A mission change that lifts a claim gate leaves its tasks `pending`, so
+    // the outbox trigger sees nothing; wake them here or they wait for a poll.
+    //  - executor local → runner: the missionNotLocal() gate stops refusing them.
+    //  - armed (held → not held): the held gate stops refusing them.
+    //  - budget raised (budget_exhausted → active): the mission budget gate lifts.
+    // The claim route re-checks everything, so a wake for a task still gated
+    // for another reason is deferred there, not run.
+    const released = !!updated && (
+      (executor === 'runner' && existing.executor === 'local') ||
+      (existing.isHeld === true && updated.isHeld === false)
+    );
+    const budgetLifted = !!updated && existing.status === 'budget_exhausted' && updated.status === 'active';
+    if (released || budgetLifted) {
       try {
-        const ws = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, existing.workspaceId),
-          columns: { id: true, name: true, repo: true },
-        }).catch(() => null);
-
-        const missionTasks = await db.query.tasks.findMany({
-          where: and(
-            eq(tasks.missionId, id),
-            inArray(tasks.status, UNCLAIMED_TASK_STATUSES),
-          ),
-          columns: {
-            id: true,
-            title: true,
-            description: true,
-            workspaceId: true,
-            mode: true,
-            priority: true,
-            missionId: true,
-            backend: true,
-          },
-        }).catch(() => []);
-
-        for (const task of missionTasks) {
-          await dispatchUnblockedTask(
-            {
-              id: task.id,
-              title: task.title,
-              description: task.description,
-              workspaceId: task.workspaceId,
-              mode: task.mode,
-              priority: task.priority,
-              missionId: task.missionId,
-              backend: task.backend,
-            },
-            ws || { id: existing.workspaceId },
-          ).catch(e => console.error(`[missions/patch] Failed to dispatch task ${task.id}:`, e));
-        }
+        const pending = await db.query.tasks.findMany({
+          where: and(eq(tasks.missionId, id), eq(tasks.status, 'pending')),
+          columns: { id: true },
+        });
+        await wakeTasks(pending.map(t => t.id), released ? 'mission.released' : 'budget.available');
       } catch (e) {
-        console.error(`[missions/patch] Failed to re-dispatch tasks after executor change:`, e);
+        console.error(`[missions/patch] Failed to wake tasks after mission release:`, e);
       }
     }
 

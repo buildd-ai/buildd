@@ -68,7 +68,7 @@ mock.module('@/lib/mission-integration-branch', () => ({
 // Mocks for the mission-integration-branch auto-review feature
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }) as any);
 const mockFindLiveReviewerTaskForHead = mock(() => Promise.resolve(null) as any);
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve());
 const mockPickReviewerRole = mock(() => ({ role: 'reviewer', source: 'policy' as const }) as any);
 const mockListWorkspaceRoles = mock(() => Promise.resolve([{ slug: 'reviewer', isRole: true }]) as any);
@@ -174,8 +174,22 @@ mock.module('@/lib/reviewer', () => ({
 }));
 
 // Mock task-dispatch — dispatching the reviewer task once created
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 // Mock pr-activity-comment — sticky "reviewing" comment on the PR
@@ -271,8 +285,9 @@ describe('POST /api/github/pr', () => {
     mockCreateReviewerTask.mockResolvedValue({ id: 'reviewer-task-1' });
     mockFindLiveReviewerTaskForHead.mockReset();
     mockFindLiveReviewerTaskForHead.mockResolvedValue(null);
-    mockDispatchNewTask.mockReset();
-    mockDispatchNewTask.mockResolvedValue(undefined);
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
+    mockAnnounceTaskCreated.mockResolvedValue(undefined);
     mockAppendPrActivity.mockReset();
     mockAppendPrActivity.mockResolvedValue(undefined);
     mockPickReviewerRole.mockReset();
@@ -2531,7 +2546,8 @@ describe('POST /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).toHaveBeenCalled();
-      expect(mockDispatchNewTask).toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
       const createArgs = mockCreateReviewerTask.mock.calls[0][0];
       expect(createArgs.prNumber).toBe(42);
       expect(createArgs.headSha).toBe('headsha');
@@ -2563,7 +2579,8 @@ describe('POST /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
-      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
 
     it('Rule K2-19: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
@@ -2721,7 +2738,8 @@ describe('POST /api/github/pr', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateReviewerTask).toHaveBeenCalled();
-      expect(mockDispatchNewTask).toHaveBeenCalled();
+      expect(mockAnnounceTaskCreated).toHaveBeenCalled();
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
     });
   });
 });

@@ -2,7 +2,7 @@
 title: Webhook Dataflow
 status: active
 owner: max
-last_verified: 2026-09-03
+last_verified: 2026-10-03
 summary: The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 domain: integrations
 surfaces: [apps/web/src/lib/pusher.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/task-dependencies.ts, apps/web/src/lib/notify.ts]
@@ -111,36 +111,62 @@ An optional `PUSHER_CHANNEL_PREFIX` env var isolates events per environment
 ## Webhook Dispatch (External Runners)
 
 **Capability statement**: When a workspace has `webhookConfig.enabled = true`,
-the buildd server MUST POST new task data to the configured `webhookConfig.url`
-immediately after task creation so external runners (e.g. OpenClaw) can claim
-without polling.
+the buildd server MUST POST a wake to `webhookConfig.url` whenever a task may
+have become runnable, so external runners (e.g. OpenClaw, the Cloudflare
+dispatcher) can claim without polling. Every task wake flows through the
+dispatch authority (task-dispatch-authority): the state change writes a durable
+outbox row and `deliverTaskDispatch` sends it. No route POSTs a task wake
+directly.
 
 **Invariants**:
-- Webhook dispatch is best-effort — a failed HTTP POST MUST NOT prevent the
-  task from being created.
-- The webhook endpoint receives the task payload with `Authorization: Bearer
-  {webhookConfig.token}`.
+- Webhook dispatch is best-effort and happens after the write commits. A failed
+  HTTP POST MUST NOT fail the task write. It falls back to the Pusher
+  `TASK_ASSIGNED` broadcast, and the outbox row is retried only if that fails too.
+- The webhook endpoint receives the payload with `Authorization: Bearer
+  {webhookConfig.token}` and a 10-second timeout (`WEBHOOK_DISPATCH_TIMEOUT_MS`).
+- `webhookConfig.events` is an opt-in. A config without it receives only the
+  causes it received before the outbox existed. A config with it receives
+  exactly the listed events (`task.created`, `task.unblocked`, `task.retry`,
+  `task.resume`). The per-cause mapping is in task-dispatch-authority.
 - `webhookConfig.runnerPreference` optionally filters: only tasks whose
-  `runnerPreference` matches are dispatched.
+  `runnerPreference` matches are dispatched (one legacy exception, documented
+  in task-dispatch-authority).
+- Held tasks, tasks in held or local-executor missions, and tasks whose
+  `start_at` is in the future are never sent to the webhook.
 - `webhookConfig` is stored as JSONB on `workspaces.webhookConfig`.
 - `webhookConfig.events` is an opt-in list (`task.created`, `task.unblocked`,
   `task.retry`, `task.resume`, `task.scheduled`). Without it a webhook gets
   only new and unblocked tasks; retries, plan children and deferred-start
   re-dispatches reach it only when it lists the event.
-- `task.scheduled`: a task deferred to a future `startAt` no more than 24 h
-  ahead is sent to a webhook that lists `task.scheduled` at once, as
-  `event: 'task.scheduled'` with `notBefore` (ISO, the task's `startAt`), in
-  place of the event it would otherwise wait for. The consumer starts it at
-  `notBefore`. A webhook without the opt-in is unchanged. The deferred-dispatch
-  sweep still dispatches the task (`task.retry`) once `startAt` passes, as the
-  backstop; the consumer treats that as a no-op when the run is live.
+- `task.scheduled`: a future work wake (a deferred `startAt`, a retry backoff)
+  due no more than 24 h ahead gets an advance notice, once per due time, to a
+  webhook that lists `task.scheduled`: `event: 'task.scheduled'` with
+  `notBefore` (ISO, the wake's due time). The consumer starts it at
+  `notBefore`. A webhook without the opt-in is unchanged. The dispatch
+  authority still delivers the wake itself when it is due, as the backstop;
+  the consumer treats that as a no-op when the run is live. Sent by
+  `sendScheduledNotices` whenever future wakes are published to the timer.
+
+**Payload** (`buildWebhookPayload`): the original chat-shaped fields `message`,
+`sessionKey` and `name` come first, unchanged. Then the structured fields
+`event`, `taskId`, `workspaceId`, `missionId`, `backend` and `roleSlug`. Added
+by the dispatch authority:
+- `cause`: the dispatch cause that produced the wake (e.g.
+  `dependency.satisfied`), from a closed vocabulary that only grows.
+- `dispatchId`: the outbox row that carried it. Delivery is at-least-once, so a
+  consumer can dedupe on it.
+
+Neither field grants anything: the consumer still claims through
+`POST /api/workers/claim`, which decides. `task.resume` wakes carry `workerId`
+instead, and do not use the outbox.
 
 **Acceptance criteria**:
 - AC-5: GIVEN a workspace with `webhookConfig.enabled = true` WHEN a task is
-  created THEN an HTTP POST is sent to `webhookConfig.url` with the task data
-  and `Authorization: Bearer {token}` header.
+  created THEN an HTTP POST is sent to `webhookConfig.url` with the task data,
+  `cause` and `dispatchId`, and an `Authorization: Bearer {token}` header.
 - AC-6: GIVEN the webhook endpoint returns a non-2xx status WHEN a task is
-  created THEN the task creation still succeeds (best-effort).
+  created THEN the task creation still succeeds and runners are woken over
+  Pusher.
 - AC-7: GIVEN `webhookConfig.runnerPreference = 'service'` and a task with
   `runnerPreference = 'user'` WHEN the task is created THEN NO webhook dispatch
   occurs for that task.
@@ -148,14 +174,15 @@ without polling.
   defers a task to a `startAt` 5 minutes ahead THEN the webhook receives
   `event: 'task.scheduled'` with `notBefore` = that `startAt` immediately, and
   no `task:assigned` broadcast is sent. GIVEN the same retry on a webhook
-  without `task.scheduled` THEN nothing is sent to the webhook until the sweep
-  finds the task due.
+  without `task.scheduled` THEN nothing is sent to the webhook until the wake
+  is due.
 
 **Code surface**:
-- Webhook dispatch: `apps/web/src/app/api/tasks/route.ts` (POST handler)
-- Dispatch chain and event opt-in (`task.scheduled` included):
-  `apps/web/src/lib/task-dispatch.ts`; deferred-start backstop:
-  `apps/web/src/lib/deferred-dispatch-sweep.ts`
+- Delivery: `apps/web/src/lib/dispatch-authority.ts` (`deliverTaskDispatch`,
+  `sendScheduledNotices`) and `apps/web/src/lib/dispatch-adapters.ts`
+  (`webhookWants`, `offerScheduledNotice` for the opt-in `task.scheduled`)
+- Payload and POST: `apps/web/src/lib/task-dispatch-delivery.ts`
+  (`buildWebhookPayload`, `dispatchToWebhook`)
 - Schema: `packages/core/db/schema.ts` — `WorkspaceWebhookConfig`,
   `workspaces.webhookConfig`
 
