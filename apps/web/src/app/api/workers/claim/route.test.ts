@@ -295,6 +295,10 @@ mock.module('./claim-plan-store', () => ({
   loadPlannerSignals: mockLoadPlannerSignals,
   fireOrderedBehind: mockFireOrderedBehind,
   fireClaimPlanRecord: mockFireClaimPlanRecord,
+  effectiveBackendOf: (tasks: ReadonlyArray<{ backend?: unknown }>) => {
+    const backends = new Set(tasks.map(t => (t.backend === 'codex' ? 'codex' : 'claude')));
+    return backends.size <= 1 ? ([...backends][0] ?? 'claude') : 'mixed';
+  },
   ORDERED_BEHIND_REASON: 'ordered_behind',
   CLAIM_PLAN_REASON: 'claim_plan',
 }));

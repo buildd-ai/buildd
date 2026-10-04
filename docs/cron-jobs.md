@@ -25,6 +25,16 @@ token, and contains only aggregate verdicts, group identities, counts, metrics
 and reasons. Replay rows, confusion example identifiers, paths, task titles,
 task content and promotion drafts are excluded.
 
+The same run also adds a §6 scheduling-metrics section (knowledge-base:
+buildd/design/jev-scheduling.md §6) to each workspace's artifact: per ISO
+week, claim-loop deferrals per claimed task, stranded tasks, time-to-merge,
+conflict tasks per merged PR, the unsafe co-schedule and idle-capacity
+guardrails (the latter split by effective backend — Codex's one-worker-per-
+workspace limit is reported distinctly from Claude's broader concurrency,
+never as interchangeable idle slots), and, for weeks the claim planner ran in
+`record` mode, how often its plan would have diverged from what actually
+happened. Counts and rates only, grouped by week — never paths, titles or ids.
+
 A group with verdict `eligible_for_gated` receives an advisory note naming the
 group, attached to the workspace's latest task and its mission when present.
 The note identity is stable per workspace and group, so repeated runs do not

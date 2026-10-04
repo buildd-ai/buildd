@@ -138,6 +138,14 @@ const PLAN_RECORD_MAX_IDS = 25;
  * Record a plan beside the picks the claim actually made. Identical (plan,
  * picks) pairs within the window collapse into one row whose `detail.count`
  * climbs, so a quiet queue polled every few seconds is one row an hour.
+ *
+ * `capacity` and `backend` exist for the §6 scheduling-metrics readout
+ * (knowledge-base: buildd/design/jev-scheduling.md §6): "idle capacity while
+ * claimable work existed" needs capacity, not just the candidate count, to
+ * tell "nothing more to pick" apart from "capacity went unused"; the
+ * provider-capacity split needs to know which backend(s) the plan's
+ * candidates ran on. `backend` is `'mixed'` when the candidates did not all
+ * share one effective backend — see `effectiveBackendOf`.
  */
 export function fireClaimPlanRecord(input: {
   mode: Exclude<ClaimPlannerMode, 'off'>;
@@ -145,6 +153,8 @@ export function fireClaimPlanRecord(input: {
   plan: ClaimPlan;
   actualPicks: string[];
   candidateCount: number;
+  capacity: number;
+  backend: 'claude' | 'codex' | 'mixed';
 }): void {
   const planned = input.plan.picks.map(p => p.id);
   const actual = [...input.actualPicks];
@@ -166,6 +176,8 @@ export function fireClaimPlanRecord(input: {
         orderedBehindCount: input.plan.orientation.length,
         candidateCount: input.candidateCount,
         underPressure: input.plan.underPressure,
+        capacity: input.capacity,
+        backend: input.backend,
       },
     },
     {
@@ -173,6 +185,12 @@ export function fireClaimPlanRecord(input: {
       windowMs: PLAN_RECORD_WINDOW_MS,
     },
   ).catch(() => {});
+}
+
+/** `'mixed'` when the candidates a plan was built over did not all share one effective backend. */
+export function effectiveBackendOf(tasks: ReadonlyArray<{ backend?: unknown }>): 'claude' | 'codex' | 'mixed' {
+  const backends = new Set(tasks.map(t => (t.backend === 'codex' ? 'codex' : 'claude')));
+  return backends.size <= 1 ? ([...backends][0] as 'claude' | undefined ?? 'claude') : 'mixed';
 }
 
 /** Short stable hash (FNV-1a) — the key only has to tell plans apart, not be reversible. */

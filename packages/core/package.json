@@ -116,6 +116,7 @@
     "./orchestration-promotion": "./orchestration-promotion.ts",
     "./orchestration-readout": "./orchestration-readout.ts",
     "./orchestration-readout-source": "./orchestration-readout-source.ts",
+    "./scheduling-metrics": "./scheduling-metrics.ts",
     "./orchestration-overlap-decision": "./orchestration-overlap-decision.ts",
     "./orchestration-overlap-source": "./orchestration-overlap-source.ts",
     "./task-size-bucket-decision": "./task-size-bucket-decision.ts",

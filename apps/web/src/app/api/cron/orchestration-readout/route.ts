@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { artifacts, missionNotes, tasks, teams, workspaces } from '@buildd/core/db/schema';
-import { loadClaimReadoutInput, loadManifestReadoutInput } from '@buildd/core/orchestration-readout-source';
+import { loadClaimReadoutInput, loadManifestReadoutInput, loadSchedulingMetricsInput } from '@buildd/core/orchestration-readout-source';
 import { buildOrchestrationReadout, type GroupReadout, type OrchestrationReadout } from '@buildd/core/orchestration-readout';
+import { buildSchedulingMetricsReadout, type WeekReadoutRow } from '@buildd/core/scheduling-metrics';
 import { arrayOverlaps, desc, eq } from 'drizzle-orm';
 import { withCronRun } from '@/lib/cron-run';
 import { channels, events, triggerEvent } from '@/lib/pusher';
@@ -33,12 +34,15 @@ function aggregateGroup(g: GroupReadout) {
   };
 }
 
-function aggregateReadout(readout: OrchestrationReadout) {
+function aggregateReadout(readout: OrchestrationReadout, schedulingWeeks: WeekReadoutRow[]) {
   return {
     capabilities: readout.capabilities.map(c => ({
       capability: c.capability, verdict: c.verdict, reasons: c.reasons,
       groups: c.groups.map(aggregateGroup),
     })),
+    // §6 scheduling metrics (knowledge-base: buildd/design/jev-scheduling.md
+    // §6): counts and rates per ISO week only — never paths, titles or ids.
+    schedulingMetrics: { weeks: schedulingWeeks },
   };
 }
 
@@ -63,9 +67,12 @@ export async function GET(req: NextRequest) {
     for (const { workspaceId } of optedIn) {
       try {
         const window = { workspaceId, since, until };
-        const [claim, manifest] = await Promise.all([loadClaimReadoutInput(window), loadManifestReadoutInput(window)]);
+        const [claim, manifest, schedulingRows] = await Promise.all([
+          loadClaimReadoutInput(window), loadManifestReadoutInput(window), loadSchedulingMetricsInput(window),
+        ]);
         const readout = await buildOrchestrationReadout({ claim, manifest, window: { since, until }, plan: { laterFrom, salt: workspaceId } });
-        const content = JSON.stringify(aggregateReadout(readout));
+        const schedulingWeeks = buildSchedulingMetricsReadout(schedulingRows).workspaces[0]?.weeks ?? [];
+        const content = JSON.stringify(aggregateReadout(readout, schedulingWeeks));
         await db.insert(artifacts).values({
           workspaceId, key: KEY, type: 'analysis', title: 'Conflict-aware orchestration readout', content,
           visibility: 'private', shareToken: null,
