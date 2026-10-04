@@ -660,3 +660,97 @@ describe('a fired watch', () => {
     }
   });
 });
+
+// Task b4f273ac: prose written early in a long turn shows at once; the final
+// answer replaces it in place, and a finished turn shows only the final answer.
+describe("a turn's answer: live, then replaced in place", () => {
+  const frames = fixtures.revisedFrames();
+  const show = async (f: { messages: Msgs | ReturnType<typeof fixtures.revisedFrames>[number]['messages']; status: 'streaming' | 'ready' }) => {
+    const views = fixtures.fixtureViews('split');
+    const source = { load: async (r: { kind: string; id: string }) => views[`${r.kind}:${r.id}`] ?? { title: r.id } };
+    await act(async () => {
+      root.render(
+        <ObjectStoreProvider source={source}>
+          <ChatActionsProvider value={DEFAULT_CHAT_ACTIONS}>
+            <ChatFeed messages={f.messages as Msgs} agent={fixtures.ORGANIZER} status={f.status} />
+          </ChatActionsProvider>
+        </ObjectStoreProvider>,
+      );
+    });
+  };
+  /** The turn's answer regions (one assistant turn in these frames). */
+  const regions = () => qa('[data-role="assistant"] [data-testid="kit-answer"]');
+
+  it('the early prose shows while the turn works, as the answer (not a thinking row)', async () => {
+    await show(frames[1]);
+    expect(regions()).toHaveLength(1);
+    expect(regions()[0].textContent).toContain(fixtures.REVISED_EARLY);
+    expect(regions()[0].dataset.answer).toBe('live');
+    expect(regions()[0].querySelector('[data-testid="feed-text"]')).not.toBeNull();
+    // The live line still says what the tools are doing, apart from the answer.
+    expect(q('[data-testid="kit-thinking-live"]')).not.toBeNull();
+  });
+
+  it('the final answer replaces the early prose in the same node; one region from start to settle', async () => {
+    await show(frames[0]);
+    const node = regions()[0];
+    expect(node.textContent).toContain(fixtures.REVISED_EARLY.slice(0, 20));
+    for (const f of frames.slice(1)) {
+      await show(f);
+      expect(regions()).toHaveLength(1);
+      expect(regions()[0]).toBe(node);
+      expect(qa('[data-role="assistant"] [data-testid="feed-text"]')).toHaveLength(1);
+    }
+    expect(node.dataset.answer).toBe('settled');
+    expect(node.textContent).toContain(fixtures.REVISED_FINAL);
+  });
+
+  it('the contradicted hypothesis is gone once the turn settles, even with the turn unfolded', async () => {
+    await show(frames[3]);
+    expect(container.textContent).not.toContain(fixtures.REVISED_EARLY);
+    await unfold();
+    expect(container.textContent).not.toContain(fixtures.REVISED_EARLY);
+    expect(q('[data-testid="kit-thinking-summary"]')?.textContent).toContain('Did');
+  });
+
+  it('a reload hydrates straight into the final answer', async () => {
+    // Stored parts carry no streaming state.
+    const stored = frames[3].messages.map(m => ({ ...m, parts: m.parts.map(p => (p.type === 'text' ? { type: 'text', text: (p as { text: string }).text } : p)) }));
+    await show({ messages: stored as Msgs, status: 'ready' });
+    expect(regions().map(r => r.textContent?.trim())).toEqual([fixtures.REVISED_FINAL]);
+    expect(container.textContent).not.toContain(fixtures.REVISED_EARLY);
+  });
+
+  it('an interrupted turn keeps the useful prose it had, never a blank or a cut-off stub', async () => {
+    const [ask, turn] = frames[1].messages;
+    const cut = { ...turn, parts: [...turn.parts, { type: 'step-start' }, { type: 'text', text: 'I chec', state: 'streaming' }, { type: 'data-turn-error', data: { code: 'aborted', message: 'Stopped.' } }] };
+    await show({ messages: [ask, cut] as Msgs, status: 'ready' });
+    expect(regions()).toHaveLength(1);
+    expect(regions()[0].textContent).toContain(fixtures.REVISED_EARLY);
+    expect(container.textContent).not.toContain('I chec');
+    expect(q('[data-turn-error]')?.textContent).toBe('Stopped.');
+  });
+
+  it('an approval continuation settles on the prose after the decision, the card kept', async () => {
+    const messages = fixtures.chatFixture('propose').messages;
+    await show({ messages, status: 'ready' });
+    const turn = messages.at(-1)!;
+    const asking = regions().at(-1)!;
+    const card = q('[data-testid="approval-card"]') ?? q('[data-testid="kit-approval"]');
+    expect(card).not.toBeNull();
+    const resumed = [...messages.slice(0, -1), {
+      ...turn,
+      parts: [
+        ...turn.parts.map(p => ((p as { approval?: { id: string } }).approval
+          ? { ...p, state: 'output-available', approval: { id: (p as { approval: { id: string } }).approval.id, approved: true }, output: { summary: 'mission filed', data: {}, objects: [fixtures.missionRef] } }
+          : p)),
+        { type: 'step-start' },
+        { type: 'text', text: 'Filed it. Planning starts now; I will post here when the first tasks are out.' },
+      ],
+    }];
+    await show({ messages: resumed as Msgs, status: 'ready' });
+    expect(regions().at(-1)).toBe(asking);
+    expect(regions().at(-1)!.textContent).toContain('Filed it.');
+    expect(qa('[data-role="assistant"]').at(-1)!.querySelectorAll('[data-testid="kit-answer"]')).toHaveLength(1);
+  });
+});

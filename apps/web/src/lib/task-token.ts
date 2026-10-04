@@ -14,9 +14,12 @@ import { TOKEN_PRESETS, type TokenScope } from '@buildd/core/token-scopes';
  * `authenticateApiKey` never accepts a task token, so every route refuses it
  * unless it opts in through `authenticateTaskScopedCaller`
  * (lib/task-token-auth.ts) and checks the scope. Those routes are the task's
- * own claim, a read of its own task, its own worker's read, PATCH, heartbeat,
- * MCP, artifacts, PR, park/re-attach and session-upload calls, and a read of
- * its task's workspace config, and that workspace's memory. The set is pinned by
+ * own claim, a read of its own task and an edit of its descriptive fields;
+ * filing and listing tasks in its own workspace; its own worker's read, PATCH,
+ * heartbeat, MCP, artifacts, park/re-attach and session-upload calls;
+ * opening, closing, merging and requesting review of its own PR (merge still
+ * subject to the merge policy); reading PRs and reviews in its task's
+ * workspace; and a read of that workspace's config and memory. The set is pinned by
  * task-token-routes.test.ts.
  *
  * The token also carries the task's workspace (so routes can confine it to

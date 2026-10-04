@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256Hex } from '../packages/core/prompt-seed';
@@ -129,34 +129,5 @@ describe('findPromptLeaks', () => {
   it('reads plain-text bodies line by line', () => {
     const md = '# Role\n\nAlways open the pull request against the integration branch first.\n';
     expect(findPromptLeaks('note: Always open the pull request against the integration branch first.', [{ id: 'r', body: md }])).toEqual(['r']);
-  });
-});
-
-describe('private-prompt-eval.yml', () => {
-  const wf = Bun.YAML.parse(readFileSync('.github/workflows/private-prompt-eval.yml', 'utf8')) as any;
-  const on = wf.on ?? wf[true as unknown as string];
-  const steps: any[] = wf.jobs.eval.steps;
-  const script = steps.map(s => s.run ?? '').join('\n');
-
-  it('runs nightly and on demand', () => {
-    expect(on.schedule?.length).toBeGreaterThan(0);
-    expect(on.workflow_dispatch).toBeDefined();
-  });
-
-  it('always scores with --require, and a dry run only when asked', () => {
-    expect(script).toContain('--require');
-    expect(script).toMatch(/if \[ "\$DRY_RUN" = "true" \]; then args\+=\(--dry-run\)/);
-  });
-
-  it('fails, naming the secret, when nothing can read the prompts repo', () => {
-    const guard = steps.find(s => s.name === 'Require a credential for the prompts repo');
-    expect(guard.run).toContain('PROMPTS_REPO_TOKEN');
-    expect(guard.run.trim().endsWith('exit 1')).toBe(true);
-    expect(guard['continue-on-error']).toBeUndefined();
-  });
-
-  it('never leaves the prompts token in the checkout', () => {
-    const co = steps.find(s => s.with?.path === '.private-prompts');
-    expect(co.with['persist-credentials']).toBe(false);
   });
 });

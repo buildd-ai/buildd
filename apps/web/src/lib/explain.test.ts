@@ -57,6 +57,10 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+let latestWake: Row | null = null;
+const mockLatestDispatchForTask = mock(async (_id: string) => latestWake);
+mock.module('@buildd/core/dispatch-outbox', () => ({ latestDispatchForTask: mockLatestDispatchForTask }));
+
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   tasks: { id: 'id', missionId: 'missionId', parentTaskId: 'parentTaskId', workspaceId: 'workspaceId', status: 'status' },
@@ -426,6 +430,37 @@ describe('explainTask', () => {
     expect(answer.situation.headline).not.toMatch(/stall|failed/i);
     expect(answer.situation.nextAction ?? '').toContain(retryAt.toISOString());
     expect(answer.situation.nextAction ?? '').not.toMatch(/retry the task/i);
+  });
+
+  it('a pending task whose latest wake failed says so in because[], with the outbox id', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    latestWake = { id: 'outbox-9', status: 'failed', cause: 'task.created', transport: 'dispatch', attempt_count: 5, not_before: new Date(Date.now() - 3600_000).toISOString(), last_error: 'http_500' };
+    try {
+      const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+      const wake = answer.because.find(l => l.refs.outboxId === 'outbox-9');
+      expect(wake?.claim).toContain('failed after 5 attempts');
+      // Before the closing conclusion, and numbered in order.
+      expect(answer.because[answer.because.length - 1].refs.outboxId).toBeUndefined();
+      expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
+    } finally {
+      latestWake = null;
+    }
+  });
+
+  it('a task that is not pending never reads its wake', async () => {
+    taskRows = [task({ id: 'task-1', status: 'completed' })];
+    mockLatestDispatchForTask.mockClear();
+    await explainTask('task-1', ACTOR);
+    expect(mockLatestDispatchForTask).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable wake leaves the chain as it was', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    mockLatestDispatchForTask.mockImplementationOnce(async () => { throw new Error('db'); });
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.because.some(l => l.refs.outboxId)).toBe(false);
   });
 
   it('a held local mission is not read as local (held wins)', async () => {

@@ -298,14 +298,44 @@ upd AS (
     AND (p.event <> 'attempted'
       OR p.max_attempt > o.attempt_count
       OR (p.last_at IS NOT NULL AND (o.last_attempt_at IS NULL OR p.last_at > o.last_attempt_at)))
-  RETURNING 1
+  RETURNING o.id, o.workspace_id, o.status, o.last_error
 )
-SELECT count(*) AS n FROM upd`;
+SELECT count(*) AS n,
+  COALESCE(jsonb_agg(jsonb_build_object('id', u.id, 'workspaceId', u.workspace_id, 'error', u.last_error))
+    FILTER (WHERE u.status = 'failed'), '[]'::jsonb) AS failed
+FROM upd u`;
+}
+
+/** A row a receipt batch moved to `failed`: Dispatch gave up on it. Only rows this batch moved, so a resend reports none. */
+export interface FailedReceiptRow {
+  id: string;
+  workspaceId: string;
+  error: string | null;
+}
+
+export interface AppliedReceipts {
+  applied: number;
+  failed: FailedReceiptRow[];
+}
+
+/** Parse the one row applyReceiptsSql returns. */
+export function parseAppliedReceipts(r: Record<string, unknown> | undefined): AppliedReceipts {
+  if (!r) return { applied: 0, failed: [] };
+  const raw = typeof r.failed === 'string' ? JSON.parse(r.failed) : r.failed;
+  const failed = (Array.isArray(raw) ? raw : [])
+    .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object' && typeof (f as { id?: unknown }).id === 'string')
+    .map(f => ({ id: String(f.id), workspaceId: String(f.workspaceId), error: typeof f.error === 'string' ? f.error : null }));
+  return { applied: Number(r.n ?? 0), failed };
+}
+
+/** applyReceipts, plus which rows the batch moved to `failed` (for the receipts route's alert). */
+export async function applyReceiptsDetailed(receipts: readonly Receipt[]): Promise<AppliedReceipts> {
+  if (receipts.length === 0) return { applied: 0, failed: [] };
+  return parseAppliedReceipts(rowsOf(await db.execute(applyReceiptsSql(receipts)))[0]);
 }
 
 export async function applyReceipts(receipts: readonly Receipt[]): Promise<number> {
-  if (receipts.length === 0) return 0;
-  return Number(rowsOf(await db.execute(applyReceiptsSql(receipts)))[0]?.n ?? 0);
+  return (await applyReceiptsDetailed(receipts)).applied;
 }
 
 // ── Orphan reconcile (the hourly floor) ───────────────────────────────────

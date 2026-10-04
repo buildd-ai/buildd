@@ -10,7 +10,7 @@ mock.module('@buildd/core/db', () => ({
 mock.module('@buildd/core/db/schema', () => ({ accounts: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 
-import { authenticateTaskScopedCaller, taskScopeAllowsTask, taskScopeAllowsWorker, taskScopeAllowsWorkspace } from './task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsTask, taskScopeAllowsWorker, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from './task-token-auth';
 import { mintTaskToken } from './task-token';
 
 const savedSecret = process.env.AUTH_SECRET;
@@ -133,5 +133,29 @@ describe('task scope checks', () => {
   it('does not restrict an account key', () => {
     expect(taskScopeAllowsTask({}, 'anything')).toBe(true);
     expect(taskScopeAllowsWorker({}, { taskId: null })).toBe(true);
+  });
+});
+
+describe('taskScopeAllowsWorkerPr', () => {
+  const scoped = { id: 'acct-1', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const own = { taskId: 'task-1', accountId: 'acct-1', prNumber: 42 };
+
+  it('allows any caller that is not a task token', () => {
+    expect(taskScopeAllowsWorkerPr({ id: 'acct-1' }, { taskId: 'task-9', prNumber: 1 }, 7)).toBe(true);
+  });
+  it('allows its own task’s PR', () => {
+    expect(taskScopeAllowsWorkerPr(scoped, own, 42)).toBe(true);
+  });
+  it('refuses another PR number on its own worker', () => {
+    expect(taskScopeAllowsWorkerPr(scoped, own, 7)).toBe(false);
+  });
+  it('refuses another task’s worker', () => {
+    expect(taskScopeAllowsWorkerPr(scoped, { ...own, taskId: 'task-2' }, 42)).toBe(false);
+  });
+  it('refuses a worker claimed by another account', () => {
+    expect(taskScopeAllowsWorkerPr(scoped, { ...own, accountId: 'acct-2' }, 42)).toBe(false);
+  });
+  it('refuses a worker with no PR recorded', () => {
+    expect(taskScopeAllowsWorkerPr(scoped, { ...own, prNumber: null }, 42)).toBe(false);
   });
 });

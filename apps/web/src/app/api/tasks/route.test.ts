@@ -344,6 +344,22 @@ describe('GET /api/tasks', () => {
     expect(data.tasks[0].id).toBe('task-1');
   });
 
+  it('lists only its own workspace for a per-task token', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    // Reachable by the minting account: ws-1 (linked) and ws-2 (open); the token's task is in ws-3.
+    mockAccountsFindFirst.mockResolvedValue({
+      id: 'account-123', apiKey: 'bld_xxx', taskScope: { taskId: 't-1', workspaceId: 'ws-3', expiresAt: Date.now() + 60_000 },
+    });
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true, canCreate: false }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-2' }]);
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1', workspace: { id: 'ws-1' } }]);
+
+    const response = await GET(createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }));
+    expect(response.status).toBe(200);
+    expect((await response.json()).tasks).toEqual([]);
+    expect(mockTasksFindMany).not.toHaveBeenCalled();
+  });
+
   it('returns tasks for session auth (owned workspaces)', async () => {
     const mockTasks = [
       { id: 'task-1', title: 'Task 1', workspaceId: 'ws-1', workspace: { id: 'ws-1' } },
@@ -520,6 +536,32 @@ describe('POST /api/tasks', () => {
     }));
     expect(response.status).toBe(200);
     expect((await response.json()).id).toBe('task-ci');
+  });
+
+  describe('per-task token', () => {
+    const scoped = { id: 'account-run', level: 'worker', teamId: 'team-1', taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+    const created = { id: 'task-follow-up', workspaceId: 'ws-1', title: 'Follow-up', status: 'pending' };
+
+    it('files a follow-up in its own workspace when none is named', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Follow-up' },
+      }));
+      expect(response.status).toBe(200);
+      expect(mockAutoResolveAccountWorkspace).not.toHaveBeenCalled();
+    });
+
+    it('refuses another workspace, before inserting', async () => {
+      mockAccountsFindFirst.mockResolvedValue(scoped);
+      const response = await POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Elsewhere' },
+      }));
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace');
+      expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects analytics readers before inserting a task', async () => {
