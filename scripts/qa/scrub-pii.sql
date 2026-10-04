@@ -249,6 +249,8 @@ DELETE FROM orchestration_overlap_answers;
 -- Model decision ledger: reasons can be prose and human overrides free-form.
 DELETE FROM decision_outcomes;
 DELETE FROM decision_challenger_runs;
+DELETE FROM prompt_eval_results;
+DELETE FROM prompt_eval_runs;
 DELETE FROM decision_records;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;

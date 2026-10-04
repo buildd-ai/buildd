@@ -3524,3 +3524,47 @@ export interface WorkspaceReadinessReport {
   /** The git tree response was truncated. */
   truncated: boolean;
 }
+
+/** One benchmark set's scores in a prompt eval run. Never carries prompt text. */
+export interface PromptEvalResultSummary {
+  benchmarkSet: string;
+  promptId: string;
+  promptSource: 'private' | 'public default';
+  /** Row version; null for a public default. */
+  promptRowVersion: number | null;
+  /** First 12 hex of the sha256 of the text scored. */
+  promptHash: string;
+  promptVersion: string;
+  model: string | null;
+  status: 'scored' | 'dry_run' | 'no_cases';
+  cases: number;
+  accuracy: number | null;
+  baselineAccuracy: number | null;
+  coverageAt90: number | null;
+  accuracyAt90: number | null;
+  errors: number;
+  notRun: number;
+  costUsd: number | null;
+}
+
+/** One run in `GET /api/admin/prompt-evals`. */
+export interface PromptEvalRunSummary {
+  id: string;
+  teamId: string | null;
+  trigger: 'push' | 'cron' | 'manual';
+  status: 'running' | 'passed' | 'failed' | 'refused' | 'skipped';
+  promptsRef: string | null;
+  evalModel: string | null;
+  /** The model the team's live decisions use. */
+  prodModel: string | null;
+  modelMismatch: boolean;
+  /** Present when `modelMismatch`: the scores do not predict production behaviour. */
+  modelMismatchNote?: string;
+  dryRun: boolean;
+  loadedPrompts: number | null;
+  costUsd: number | null;
+  problems: string[] | null;
+  startedAt: string;
+  finishedAt: string | null;
+  results: PromptEvalResultSummary[];
+}
