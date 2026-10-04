@@ -20,14 +20,15 @@
  * HTTP goes through `curl` (the image has it, and it trusts the egress CA via
  * CURL_CA_BUNDLE, set by buildd-once).
  */
-import { spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from 'fs';
+import { spawn, spawnSync } from 'child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, relative } from 'path';
 import {
   emitMetric,
   emitPhase,
   emitRepoSource,
+  emitWarmUploadSkipped,
   type RepoFallbackReason,
   type RunMetric,
 } from './phase-lines';
@@ -52,10 +53,35 @@ export const WARM_FETCH_REFRESH_BYTES = 64 * 1024 * 1024;
 export const WARM_DISK_FRACTION = 0.25;
 /** Single-part R2 uploads top out near 5 GiB; stay under it. */
 export const WARM_MAX_UPLOAD_BYTES = 4 * 1024 ** 3;
+/**
+ * The largest warm bundle (or cache tarball) this container uploads, unless
+ * the Worker sets BUILDD_WARM_MAX_BUNDLE_BYTES. Measured before anything is
+ * bundled, and enforced again on the bytes as they stream. A repo past it is
+ * cloned every time instead: on a small instance, bundling gigabytes costs
+ * more (minutes of CPU, memory the agent needs) than the clone it saves.
+ */
+export const WARM_DEFAULT_MAX_BUNDLE_BYTES = 1024 ** 3;
+export const WARM_MAX_BUNDLE_ENV = 'BUILDD_WARM_MAX_BUNDLE_BYTES';
+/**
+ * One multipart part. Every part but the last is exactly this size (R2
+ * requires equal non-final parts, of at least 5 MiB); it is also the most of
+ * an upload this process holds in memory at once.
+ */
+export const WARM_PART_BYTES = 32 * 1024 * 1024;
+/** The header that names a multipart upload to the snapshot route. */
+export const UPLOAD_ID_HEADER = 'x-buildd-upload-id';
+
+/** The cap from the Worker's env, or the default for a value that is not a positive integer. */
+export function warmMaxBundleBytes(env: Record<string, string | undefined>): number {
+  const raw = env[WARM_MAX_BUNDLE_ENV]?.trim() ?? '';
+  const n = /^\d{1,16}$/.test(raw) ? Number(raw) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : WARM_DEFAULT_MAX_BUNDLE_BYTES;
+}
 
 const GIT_TIMEOUT_MS = 10 * 60 * 1000;
 const TRANSFER_TIMEOUT_S = 30 * 60;
 const CONTROL_TIMEOUT_S = 30;
+const PART_TIMEOUT_S = 5 * 60;
 
 /** Never copied into the cache tarball, at any depth. */
 const CACHE_EXCLUDED_NAMES = /^(\.npmrc|\.yarnrc(\.yml)?|\.netrc|bunfig\.toml|\.env(\..*)?)$/;
@@ -77,9 +103,15 @@ export interface SnapshotTransport {
   getJson(path: string): { status: number; body: unknown };
   download(path: string, file: string): { status: number; bytes: number };
   upload(path: string, file: string): { status: number; body: unknown };
-  post(path: string, body?: unknown): { status: number; body: unknown };
-  /** DELETE (park bundles). */
-  remove?(path: string): { status: number };
+  /** PUT bytes held in memory (one multipart part), with a known length. */
+  putBytes(path: string, data: Uint8Array, headers?: Record<string, string>): { status: number; body: unknown };
+  post(path: string, body?: unknown, headers?: Record<string, string>): { status: number; body: unknown };
+  /** DELETE (park bundles, an aborted multipart upload). */
+  remove?(path: string, headers?: Record<string, string>): { status: number };
+}
+
+function headerArgs(headers?: Record<string, string>): string[] {
+  return Object.entries(headers ?? {}).flatMap(([k, v]) => ['-H', `${k}: ${v}`]);
 }
 
 function parseJson(text: string): unknown {
@@ -95,7 +127,7 @@ function splitStatus(out: string): { status: number; text: string } {
 
 export function curlTransport(baseUrl: string): SnapshotTransport {
   const base = baseUrl.replace(/\/+$/, '');
-  const curl = (args: string[], input?: string) => {
+  const curl = (args: string[], input?: string | Uint8Array) => {
     const r = spawnSync('curl', ['-s', ...args], { encoding: 'utf-8', input, maxBuffer: 16 * 1024 * 1024 });
     return r.status === null ? '' : r.stdout ?? '';
   };
@@ -119,13 +151,23 @@ export function curlTransport(baseUrl: string): SnapshotTransport {
       ]));
       return { status, body: parseJson(text) };
     },
-    remove(path) {
-      const { status } = splitStatus(curl(['--max-time', String(CONTROL_TIMEOUT_S), '-X', 'DELETE', '-w', '\n%{http_code}', `${base}${path}`]));
+    putBytes(path, data, headers) {
+      // `--data-binary @-` reads stdin to the end first, so the request
+      // carries a Content-Length (the Worker needs one to stream it to R2).
+      const { status, text } = splitStatus(curl([
+        '--max-time', String(PART_TIMEOUT_S), '-X', 'PUT', '--data-binary', '@-',
+        '-H', 'content-type: application/octet-stream', '-H', 'Expect:', ...headerArgs(headers),
+        '-w', '\n%{http_code}', `${base}${path}`,
+      ], data));
+      return { status, body: parseJson(text) };
+    },
+    remove(path, headers) {
+      const { status } = splitStatus(curl(['--max-time', String(CONTROL_TIMEOUT_S), '-X', 'DELETE', ...headerArgs(headers), '-w', '\n%{http_code}', `${base}${path}`]));
       return { status };
     },
-    post(path, body) {
+    post(path, body, headers) {
       const { status, text } = splitStatus(curl([
-        '--max-time', String(CONTROL_TIMEOUT_S), '-X', 'POST', '-H', 'content-type: application/json',
+        '--max-time', String(CONTROL_TIMEOUT_S), '-X', 'POST', '-H', 'content-type: application/json', ...headerArgs(headers),
         '--data-binary', '@-', '-w', '\n%{http_code}', `${base}${path}`,
       ], JSON.stringify(body ?? {})));
       return { status, body: parseJson(text) };
@@ -191,8 +233,9 @@ export function assertSnapshotSafe(clonePath: string): void {
  * rather than with tar's --exclude, whose matching differs between GNU tar
  * and bsdtar.
  */
-export function createCacheTarball(cacheDir: string, outFile: string): boolean {
-  if (!existsSync(cacheDir)) return false;
+/** The cache's file list for `tar -T`, written to `listPath`; null when there is nothing to tar. */
+export function writeCacheFileList(cacheDir: string, listPath: string): string | null {
+  if (!existsSync(cacheDir)) return null;
   const files: string[] = [];
   const walk = (dir: string) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -203,9 +246,15 @@ export function createCacheTarball(cacheDir: string, outFile: string): boolean {
     }
   };
   walk(cacheDir);
-  if (files.length === 0) return false;
-  const list = `${outFile}.list`;
-  writeFileSync(list, `${files.join('\n')}\n`);
+  if (files.length === 0) return null;
+  mkdirSync(dirname(listPath), { recursive: true });
+  writeFileSync(listPath, `${files.join('\n')}\n`);
+  return listPath;
+}
+
+export function createCacheTarball(cacheDir: string, outFile: string): boolean {
+  const list = writeCacheFileList(cacheDir, `${outFile}.list`);
+  if (!list) return false;
   try {
     const r = spawnSync('tar', ['-cf', outFile, '-C', cacheDir, '-T', list], { stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS });
     return r.status === 0;
@@ -256,6 +305,12 @@ export interface WarmRepoDeps {
   retryAfter?(remoteUrl: string): number | null;
   /** Where phase / metric / source lines go (phase-lines.ts). */
   lineOpts?: { env?: Record<string, string | undefined>; log?: (line: string) => void };
+  /** Largest bundle (and cache tarball) uploaded; WARM_DEFAULT_MAX_BUNDLE_BYTES when absent. */
+  maxBundleBytes?: number;
+  /** Multipart part size; WARM_PART_BYTES when absent. */
+  partBytes?: number;
+  /** The clone's size as the cap sees it before bundling; objectBytes when absent. */
+  measureRepoBytes?(clonePath: string): number;
 }
 
 export interface CloneHooks {
@@ -331,22 +386,142 @@ function gitStdin(cwd: string, args: string[], input: string): void {
   if (r.status !== 0) throw new Error(`git ${args[0]} failed: ${gitFailureText(r)}`);
 }
 
-/** `git bundle create --remotes`, plus the shallow boundary when the clone is shallow. */
-export function bundleRemotes(clonePath: string, bundle: string): void {
+/**
+ * Write the clone's shallow boundary as SHALLOW_REF_PREFIX refs (none for a
+ * full clone). Returns the extra `git bundle create` arguments that carry them
+ * and a cleanup that deletes them again; call it in a `finally`.
+ */
+export function stageShallowBoundary(clonePath: string): { args: string[]; cleanup(): void } {
   const shallow = gitOut(clonePath, ['rev-parse', '--is-shallow-repository']) === 'true';
   const boundary = shallow && existsSync(shallowPath(clonePath))
     ? readFileSync(shallowPath(clonePath), 'utf-8').split('\n').map(l => l.trim()).filter(l => OID_RE.test(l))
     : [];
-  if (boundary.length === 0) {
-    run(clonePath, ['bundle', 'create', '-q', bundle, '--remotes']);
-    return;
-  }
+  if (boundary.length === 0) return { args: [], cleanup: () => {} };
   const refs = boundary.map(id => `${SHALLOW_REF_PREFIX}${id}`);
+  const cleanup = () => {
+    spawnSync('git', ['update-ref', '--stdin'], { cwd: clonePath, input: refs.map(r => `delete ${r}\n`).join(''), stdio: ['pipe', 'ignore', 'ignore'], timeout: 30_000 });
+  };
   try {
     gitStdin(clonePath, ['update-ref', '--stdin'], boundary.map((id, i) => `create ${refs[i]} ${id}\n`).join(''));
-    run(clonePath, ['bundle', 'create', '-q', bundle, '--remotes', `--glob=${SHALLOW_REF_PREFIX}*`]);
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+  return { args: [`--glob=${SHALLOW_REF_PREFIX}*`], cleanup };
+}
+
+/**
+ * Config for the `git bundle` pack: one delta thread, bounded window memory.
+ * git sizes its thread pool from the host's CPUs, which in a container can be
+ * many more than the instance's share; each thread holds its own delta window.
+ */
+const BUNDLE_PACK_CONFIG = ['-c', 'pack.threads=1', '-c', 'pack.windowMemory=128m', '-c', 'pack.deltaCacheSize=64m'];
+
+/** The `git` argv that writes the warm bundle (remote refs + shallow boundary) to stdout. */
+export function bundleToStdoutArgs(boundaryArgs: string[]): string[] {
+  return [...BUNDLE_PACK_CONFIG, 'bundle', 'create', '-q', '-', '--remotes', ...boundaryArgs];
+}
+
+/** `git bundle create --remotes` to a file, plus the shallow boundary when the clone is shallow. */
+export function bundleRemotes(clonePath: string, bundle: string): void {
+  const staged = stageShallowBoundary(clonePath);
+  try {
+    run(clonePath, [...BUNDLE_PACK_CONFIG, 'bundle', 'create', '-q', bundle, '--remotes', ...staged.args]);
   } finally {
-    spawnSync('git', ['update-ref', '--stdin'], { cwd: clonePath, input: refs.map(r => `delete ${r}\n`).join(''), stdio: ['pipe', 'ignore', 'ignore'], timeout: 30_000 });
+    staged.cleanup();
+  }
+}
+
+// ── Streamed multipart upload ─────────────────────────────────────────────────
+
+export type StreamUploadResult =
+  | { ok: true; bytes: number }
+  | { ok: false; reason: 'too_large' | 'failed'; detail: string };
+
+/**
+ * Run `command` and upload its stdout to `<path>` as a multipart upload
+ * (snapshots.ts in apps/cloud-runner): `POST <path>/multipart` → uploadId,
+ * `PUT <path>/multipart/<n>` per part, `POST <path>/multipart/complete`.
+ * Every part but the last is exactly `partBytes`, and no more than one part
+ * is held in memory: the producer waits on its pipe while a part uploads.
+ * Past `maxBytes` the producer is killed and the upload aborted, as on any
+ * failure. Never throws.
+ */
+export async function streamToMultipart(o: {
+  command: string;
+  args: string[];
+  cwd?: string;
+  transport: Pick<SnapshotTransport, 'post' | 'putBytes' | 'remove'>;
+  path: string;
+  partBytes: number;
+  maxBytes: number;
+  timeoutMs?: number;
+}): Promise<StreamUploadResult> {
+  const created = o.transport.post(`${o.path}/multipart`, {});
+  const uploadId = (created.body as { uploadId?: unknown } | null)?.uploadId;
+  if (created.status !== 201 || typeof uploadId !== 'string' || !uploadId) {
+    return { ok: false, reason: 'failed', detail: `multipart create answered ${created.status || 'nothing'}` };
+  }
+  const headers = { [UPLOAD_ID_HEADER]: uploadId };
+  const abort = () => { try { o.transport.remove?.(`${o.path}/multipart`, headers); } catch { /* the bucket's lifecycle rule expires it */ } };
+
+  const child = spawn(o.command, o.args, { cwd: o.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr!.on('data', (d: Buffer) => { stderr = (stderr + d.toString('utf-8')).slice(-8000); });
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => {
+    child.on('error', (error) => resolve({ code: null, signal: null, error }));
+    child.on('close', (code, signal) => resolve({ code, signal }));
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), o.timeoutMs ?? TRANSFER_TIMEOUT_S * 1000);
+  const parts: Array<{ partNumber: number; etag: string }> = [];
+  let pending: Buffer[] = [];
+  let pendingBytes = 0;
+  let total = 0;
+  const fail = (reason: 'too_large' | 'failed', detail: string): StreamUploadResult => {
+    child.kill('SIGKILL');
+    abort();
+    return { ok: false, reason, detail };
+  };
+  const sendPart = (data: Buffer): string | null => {
+    const n = parts.length + 1;
+    const r = o.transport.putBytes(`${o.path}/multipart/${n}`, data, headers);
+    const etag = (r.body as { etag?: unknown } | null)?.etag;
+    if (r.status !== 201 || typeof etag !== 'string') return `part ${n} answered ${r.status || 'nothing'}`;
+    parts.push({ partNumber: n, etag });
+    return null;
+  };
+  try {
+    for await (const chunk of child.stdout! as AsyncIterable<Buffer>) {
+      total += chunk.length;
+      if (total > o.maxBytes) return fail('too_large', `over ${o.maxBytes} bytes`);
+      pending.push(chunk);
+      pendingBytes += chunk.length;
+      while (pendingBytes >= o.partBytes) {
+        const all = pending.length === 1 ? pending[0]! : Buffer.concat(pending, pendingBytes);
+        const err = sendPart(all.subarray(0, o.partBytes));
+        if (err) return fail('failed', err);
+        const rest = all.subarray(o.partBytes);
+        pending = rest.length > 0 ? [Buffer.from(rest)] : [];
+        pendingBytes = rest.length;
+      }
+    }
+    const end = await exited;
+    if (end.error || end.code !== 0) {
+      const why = stderr.split('\n').map(l => l.trim()).filter(Boolean).slice(-4).join('; ') || end.error?.message || (end.signal ? `killed by ${end.signal}` : `exit ${end.code}`);
+      return fail('failed', `${o.command} failed: ${why.slice(0, 500)}`);
+    }
+    if (total === 0) return fail('failed', `${o.command} wrote nothing`);
+    if (pendingBytes > 0) {
+      const err = sendPart(pending.length === 1 ? pending[0]! : Buffer.concat(pending, pendingBytes));
+      if (err) return fail('failed', err);
+    }
+    const done = o.transport.post(`${o.path}/multipart/complete`, { parts }, headers);
+    if (done.status !== 201) return fail('failed', `multipart complete answered ${done.status || 'nothing'}`);
+    return { ok: true, bytes: total };
+  } catch (err) {
+    return fail('failed', err instanceof Error ? err.message : String(err));
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -424,7 +599,11 @@ export class WarmRepoSession {
       // its connectivity check on the first missing parent.
       writeShallowBoundary(clonePath, bundle);
       run(clonePath, ['fetch', '-q', '--no-tags', bundle, '+refs/remotes/origin/*:refs/remotes/origin/*']);
-      run(clonePath, ['remote', 'add', 'origin', cloneUrl]);
+      // `-t`: as narrow as the cloud clone (git-clone.ts). With the default
+      // wildcard refspec, the fetch below would bring every branch on origin,
+      // each down to its root in a shallow repo; other branches come in on
+      // demand (ensureRemoteBranch).
+      run(clonePath, ['remote', 'add', '-t', manifest.defaultBranch, 'origin', cloneUrl]);
       const head = `refs/remotes/origin/${manifest.defaultBranch}`;
       run(clonePath, ['rev-parse', '--verify', '-q', head]);
       run(clonePath, ['symbolic-ref', 'refs/remotes/origin/HEAD', head]);
@@ -486,15 +665,20 @@ export class WarmRepoSession {
   }
 
   /** Best effort; never throws. Call once, after the run's outcome is known. */
-  refresh(end: RunEnd): void {
+  async refresh(end: RunEnd): Promise<void> {
     try {
-      this.refreshOrThrow(end);
+      await this.refreshOrThrow(end);
     } catch (err) {
       this.d.log(`[warm] snapshot upload skipped: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  private refreshOrThrow(end: RunEnd): void {
+  private skipTooLarge(why: string): void {
+    emitWarmUploadSkipped('too_large', this.d.lineOpts);
+    this.d.log(`[warm] snapshot upload skipped: ${why}; this workspace clones instead`);
+  }
+
+  private async refreshOrThrow(end: RunEnd): Promise<void> {
     const clonePath = this.clonePath;
     if (!this.result || !clonePath || !existsSync(join(clonePath, '.git'))) return;
     const decision = decideWarmRefresh(this.result, end);
@@ -505,6 +689,18 @@ export class WarmRepoSession {
       || gitOut(clonePath, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (!BRANCH_RE.test(defaultBranch) || defaultBranch === 'HEAD') throw new Error('no default branch to record');
 
+    // Measure before bundling: on a repo of gigabytes the bundle itself is
+    // minutes of CPU and a large pack-objects working set on a small
+    // instance. The clone's object store is what a `--remotes` bundle of it
+    // holds (or a little more), so it stands in for the bundle's size.
+    const cap = this.d.maxBundleBytes ?? WARM_DEFAULT_MAX_BUNDLE_BYTES;
+    const measured = (this.d.measureRepoBytes ?? objectBytes)(clonePath);
+    this.metric('warm_repo_bytes', measured);
+    if (measured > cap) {
+      this.skipTooLarge(`the repo is ${measured} bytes, over the ${cap}-byte warm snapshot cap`);
+      return;
+    }
+
     const begin = this.d.transport.post('/warm/begin');
     if (begin.status === 409) { this.d.log('[warm] another refresh of this workspace is in flight'); return; }
     const generation = (begin.body as { generation?: unknown } | null)?.generation;
@@ -512,32 +708,48 @@ export class WarmRepoSession {
       throw new Error(`begin answered ${begin.status || 'nothing'}`);
     }
 
+    const maxBytes = Math.min(cap, WARM_MAX_UPLOAD_BYTES);
+    const partBytes = this.d.partBytes ?? WARM_PART_BYTES;
     mkdirSync(this.d.tmpDir, { recursive: true });
-    const bundle = join(this.d.tmpDir, `upload-${generation}.bundle`);
-    const tarball = join(this.d.tmpDir, `upload-${generation}.tar`);
     emitPhase('warm_upload_start', this.d.lineOpts);
     let uploaded = 0;
     try {
       // Remote-tracking refs only: local task branches may hold unpushed work.
-      // A shallow clone also names its boundary (SHALLOW_REF_PREFIX).
-      bundleRemotes(clonePath, bundle);
-      const repoSize = statSync(bundle).size;
-      if (repoSize > WARM_MAX_UPLOAD_BYTES) throw new Error(`bundle is ${repoSize} bytes, over the upload limit`);
-      const up = this.d.transport.upload(`/warm/${generation}/repo`, bundle);
-      if (up.status !== 201) throw new Error(`bundle upload answered ${up.status || 'nothing'}`);
-      uploaded += repoSize;
-      if (createCacheTarball(this.d.cacheDir, tarball)) {
-        const size = statSync(tarball).size;
-        if (size <= WARM_MAX_UPLOAD_BYTES && this.d.transport.upload(`/warm/${generation}/cache`, tarball).status === 201) {
-          uploaded += size;
+      // A shallow clone also names its boundary (SHALLOW_REF_PREFIX). Streamed
+      // from `git bundle create -` into the upload: no second copy of the
+      // object store on disk, and at most one part in memory.
+      const staged = stageShallowBoundary(clonePath);
+      let repo: StreamUploadResult;
+      try {
+        repo = await streamToMultipart({
+          command: 'git', args: bundleToStdoutArgs(staged.args), cwd: clonePath,
+          transport: this.d.transport, path: `/warm/${generation}/repo`, partBytes, maxBytes,
+        });
+      } finally {
+        staged.cleanup();
+      }
+      if (!repo.ok) {
+        if (repo.reason === 'too_large') { this.skipTooLarge(`the bundle grew past ${maxBytes} bytes while streaming`); return; }
+        throw new Error(`bundle upload failed: ${repo.detail}`);
+      }
+      uploaded += repo.bytes;
+      const list = writeCacheFileList(this.d.cacheDir, join(this.d.tmpDir, `upload-${generation}.list`));
+      if (list) {
+        try {
+          const cache = await streamToMultipart({
+            command: 'tar', args: ['-cf', '-', '-C', this.d.cacheDir, '-T', list], transport: this.d.transport,
+            path: `/warm/${generation}/cache`, partBytes, maxBytes,
+          });
+          if (cache.ok) uploaded += cache.bytes;
+          else this.d.log(`[warm] bun cache not uploaded: ${cache.detail}`);
+        } finally {
+          rmSync(list, { force: true });
         }
       }
       const commit = this.d.transport.post(`/warm/${generation}/commit`, { defaultBranch });
       if (commit.status !== 201) throw new Error(`commit answered ${commit.status || 'nothing'}`);
       this.d.log(`[warm] ${decision === 'seed' ? 'seeded' : 'refreshed'} generation ${generation} (${uploaded} bytes)`);
     } finally {
-      rmSync(bundle, { force: true });
-      rmSync(tarball, { force: true });
       emitPhase('warm_upload_end', this.d.lineOpts);
       this.metric('warm_upload_bytes', uploaded);
     }
@@ -551,6 +763,7 @@ export function createWarmRepoSession(env: Record<string, string | undefined>, t
     cacheDir: bunCacheDir(env),
     tmpDir,
     freeBytes: freeBytesOf,
+    maxBundleBytes: warmMaxBundleBytes(env),
     now: Date.now,
     log: (m) => console.log(m),
   });

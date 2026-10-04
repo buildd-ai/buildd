@@ -84,10 +84,12 @@ in `.buildd/env.yaml`, which runs in the provision gate). The warm pairs
 bracket the warm-repo restore, the `git fetch` after it, and the upload of a
 new snapshot generation (see Warm repos below). Alongside them:
 `BUILDD_METRIC=<name> <integer>` (`clone_bytes`, `restore_bytes`,
-`fetch_bytes`, `cache_bytes`, `snapshot_age_ms`, `warm_upload_bytes`) and one
-`BUILDD_REPO_SOURCE=warm` or `BUILDD_REPO_SOURCE=clone <reason>` line
-(`disabled`, `no_snapshot`, `unavailable`, `disk`, `restore_failed`). No path
-or URL is printed. `apps/cloud-runner` reads them into its run report.
+`fetch_bytes`, `cache_bytes`, `snapshot_age_ms`, `warm_upload_bytes`,
+`warm_repo_bytes`), one `BUILDD_REPO_SOURCE=warm` or
+`BUILDD_REPO_SOURCE=clone <reason>` line (`disabled`, `no_snapshot`,
+`unavailable`, `disk`, `restore_failed`), and `BUILDD_WARM_UPLOAD=skipped
+too_large` when a warm upload was due but the repo was over the cap (below).
+No path or URL is printed. `apps/cloud-runner` reads them into its run report.
 
 ### Warm repos
 
@@ -95,7 +97,8 @@ With `BUILDD_WARM_REPO=1` and `BUILDD_SNAPSHOT_URL` (both set by the
 `WorkerAgent` when its `WARM_REPOS` var is on), `apps/runner/src/warm-repo.ts`
 restores the workspace's snapshot into the isolated clone path before any
 `git clone`: a `git bundle` of origin's refs, then `origin` set to the real
-URL, the default branch checked out, and a `git fetch origin` to close the
+URL with a fetch refspec for the default branch only (as narrow as the clone,
+below), the default branch checked out, and a `git fetch origin` to close the
 gap; plus the bun install cache. Any failure (no snapshot, store unreachable,
 snapshot larger than a quarter of free disk, corrupt bundle) falls back to the
 normal clone. After the run it uploads a new generation when the workspace had
@@ -106,17 +109,54 @@ the cache tarball leaves out `.npmrc`, `.netrc`, `.yarnrc*`, `bunfig.toml`
 and `.env*` files, and the upload is refused when the clone has any
 `credential.*` or `http.*.extraheader` config or a remote URL with userinfo.
 
+Big repos. Before bundling, the runner measures the clone's object store
+(`BUILDD_METRIC=warm_repo_bytes`) and skips the upload when it is over the cap,
+`BUILDD_WARM_MAX_BUNDLE_BYTES` (set by the `WorkerAgent` from its
+`WARM_MAX_BUNDLE_BYTES` var; default 1 GiB): it prints
+`BUILDD_WARM_UPLOAD=skipped too_large`, takes no lock, and the workspace
+clones every time. Under the cap, nothing is staged on disk or held whole in
+memory: `git bundle create -` (one pack thread, bounded window memory) and
+`tar -cf -` stream straight into an R2 multipart upload through the snapshot
+route, 32 MiB per part, and a stream that outgrows the cap is cut off and the
+upload aborted (also `too_large`).
+
 ### Clone shape and GitHub throttling
 
-In a cloud container (`BUILDD_EXECUTOR=cloud`) the clone is shallow:
-`git clone --depth 50 --no-single-branch` (`apps/runner/src/git-clone.ts`).
-Every branch tip is there, so `origin/<mission or resume branch>` resolves; a
-worktree off `origin/<branch>`, a push of a new branch and the PR stats
-(merge-base against the ref the worktree was cut from) work as on a full
-clone. A warm snapshot of a shallow clone carries its boundary as
-`refs/buildd/shallow/<commit>` refs in the bundle, written back to
-`.git/shallow` on restore; a park bundle whose base the resuming clone lacks
-fetches that commit by id (`--depth=1`). Host runners clone in full, as before.
+In a cloud container (`BUILDD_EXECUTOR=cloud`) the clone is as small as git
+allows: `git clone --depth 1 --single-branch --branch <default branch>`
+(`apps/runner/src/git-clone.ts`; the workspace's `gitConfig.defaultBranch`,
+or the remote HEAD with plain `--single-branch` when it is not known or the
+remote has no such branch). On a repo with thousands of branches and tags,
+every branch at depth 50 is gigabytes and minutes; one branch at depth 1 is
+seconds. The fetch refspec is narrowed to that branch, so a later
+`git fetch origin` brings only it.
+
+Every other `origin/<branch>` the runner needs is fetched on demand, by name,
+at depth 50 (`ensureRemoteBranch`): `git fetch --depth 50 origin
++refs/heads/<branch>:refs/remotes/origin/<branch>`, retried on the clone's
+policy, `missing` at once when the remote has no such branch. The sites:
+`setupWorktree`'s base and resume candidates (a mission integration branch as
+the declared base, a resume branch, the cascade from a missing resume branch
+to the declared base), its stale-local-branch check (`origin/<task branch>`),
+the PR base after setup when it is neither the base nor the default branch,
+the path-claim base refresh (a depth only for a branch not yet there), PR
+stats (`collectGitStats`, the ref the worktree was cut from), and a resumed
+park, which fetches the worker's base refs recorded in the park manifest.
+On a full (host) clone every one of these is a no-op: its `git fetch origin`
+already brought every branch, so a host runner behaves as before.
+
+In a shallow clone, the 50-commit divergence veto on a resume branch only
+applies when the merge base with the default branch is in the clone; without
+it the count runs to the shallow boundary and means nothing, so the branch is
+resumed rather than silently replaced with a fresh one.
+
+A warm snapshot of a shallow clone carries its boundary (the default branch
+at depth 1 and every branch fetched on demand) as `refs/buildd/shallow/<commit>`
+refs in the bundle, written back to `.git/shallow` on restore. A park bundle
+excludes the clone's boundary commits as well as its base, so a boundary it
+reaches becomes a prerequisite rather than a commit without parents; the
+resuming clone fetches any prerequisite it lacks by id (`--depth=1`). Host
+runners clone in full, as before.
 
 A clone that GitHub throttles (HTTP 429, or a 403 that says "rate limit") is
 retried after `Retry-After` (probed through the egress), with exponential
@@ -153,6 +193,7 @@ Everything else stays in the runner process.
 | `BUILDD_ONCE_MAX_WAIT_MS` | no | no | no | Maximum continuous wait for user input before the worker is aborted (exit 1). Default 6h. |
 | `BUILDD_WORKSPACE_ISOLATION_ROOT` | no | no | no | Where the task repo is cloned. Default `<BUILDD_HOME>/once-workspaces`. |
 | `BUILDD_WARM_REPO`, `BUILDD_SNAPSHOT_URL` | no | no | no | Warm repos (above). Set together by the `WorkerAgent` only when its `WARM_REPOS` var is `1`; the URL is the egress-intercepted pseudo-host `https://buildd-snapshots.invalid`. With them the isolated clone is tried before any local checkout. Unset: the runner clones as before. |
+| `BUILDD_WARM_MAX_BUNDLE_BYTES` | no | no | no | Largest warm bundle or cache tarball uploaded (default 1 GiB); over it the upload is skipped (`BUILDD_WARM_UPLOAD=skipped too_large`). Set by the `WorkerAgent` from its `WARM_MAX_BUNDLE_BYTES` var. |
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER` | no | no | no | Same meaning as on a long-lived runner. Pusher only carries mid-run instructions and answers. The 10s sync covers them without it. |
 
 On Cloudflare the model and GitHub credentials are **added at egress**, never
