@@ -25,10 +25,14 @@
   // parseKeyRing format `keyId:secret[,keyId:secret]` (two ids for rotation):
   //   PUBLISH_SECRET   verifies producer -> Dispatch requests (/v1/*)
   //   CALLBACK_SECRET  signs Dispatch -> producer callbacks (resolve, relay, receipts)
-  // BUILDD_SERVER has no default on purpose: set it per deployment
-  // (dashboard, `--var`, or an env block). Without it, or with either ring
-  // empty, every /v1 route answers 503 and no alarm delivers anything.
+  // Without a valid BUILDD_SERVER, or with either ring empty, every /v1 route
+  // answers 503 and no alarm delivers anything (src/config.ts).
   "vars": {
+    // The deployed Worker serves production Buildd. It lives here, not in the
+    // dashboard: `wrangler deploy` replaces dashboard-set vars with this block,
+    // so a dashboard value is wiped on the next deploy. Local `wrangler dev`
+    // overrides it via `.dev.vars` or `--var`.
+    "BUILDD_SERVER": "https://buildd.dev",
     // P1 shadow: these adapter types call resolve and record the decision
     // (`dry-run:<type>:<decision>`) but never POST. Set to "" for real delivery.
     "DRY_RUN_TYPES": "http,github-repository-dispatch"
