@@ -26,6 +26,20 @@
  *   PUT  /warm/<gen>/repo|cache    upload a part (lock holder only, content-length required)
  *   POST /warm/<gen>/commit        {defaultBranch}; publish, prune to two generations, unlock
  *
+ *   A part of unknown length (the runner streams `git bundle create -` and
+ *   `tar -c` straight up, never staging a file or holding the whole thing)
+ *   goes up as an R2 multipart upload, lock holder only, the upload id in the
+ *   x-buildd-upload-id header:
+ *
+ *   POST   /warm/<gen>/repo|cache/multipart           start; 201 {uploadId}
+ *   PUT    /warm/<gen>/repo|cache/multipart/<n>       one part (content-length required); 201 {partNumber, etag}
+ *   POST   /warm/<gen>/repo|cache/multipart/complete  {parts}; 201 {bytes}, or 413 (deleted) over the cap
+ *   DELETE /warm/<gen>/repo|cache/multipart           abort
+ *
+ *   Every body is piped to R2 through a FixedLengthStream; nothing is read
+ *   into Worker memory. The cap (WARM_MAX_BUNDLE_BYTES, default 1 GiB) is
+ *   enforced on a single PUT's length and on a completed multipart object.
+ *
  * Park bundles (resumable runs; `park/` at 2 days as the lifecycle backstop):
  *
  *   park/<workspaceId>/<workerId>/bundle.tar       branch, uncommitted work, transcript, worker record
@@ -45,6 +59,13 @@ export const WARM_GENERATIONS_KEPT = 2;
 export const WARM_LOCK_TTL_MS = 30 * 60 * 1000;
 /** Single-part R2 put limit is about 5 GiB. */
 export const MAX_SNAPSHOT_BYTES = 5 * 1000 ** 3;
+/** One multipart part (R2: 5 MiB to 5 GiB; the runner sends 32 MiB). */
+export const MAX_PART_BYTES = 512 * 1024 ** 2;
+/** R2's part-number range. */
+export const MAX_PART_NUMBER = 10_000;
+/** The header naming a multipart upload (warm-repo.ts UPLOAD_ID_HEADER). */
+export const UPLOAD_ID_HEADER = 'x-buildd-upload-id';
+const UPLOAD_ID_RE = /^[\x21-\x7e]{1,1024}$/;
 
 // ── Bucket port (the slice of R2Bucket used here) ─────────────────────────────
 
@@ -72,6 +93,19 @@ export interface BucketPort {
   put(key: string, value: ReadableStream | string, options?: BucketPutOptions): Promise<BucketObjectLike | null>;
   delete(keys: string | string[]): Promise<void>;
   list(options: { prefix: string; cursor?: string }): Promise<{ objects: BucketObjectLike[]; truncated: boolean; cursor?: string }>;
+  createMultipartUpload(key: string, options?: { httpMetadata?: { contentType?: string } }): Promise<{ uploadId: string }>;
+  resumeMultipartUpload(key: string, uploadId: string): MultipartUploadLike;
+}
+
+export interface UploadedPartLike {
+  partNumber: number;
+  etag: string;
+}
+
+export interface MultipartUploadLike {
+  uploadPart(partNumber: number, value: ReadableStream | string): Promise<UploadedPartLike>;
+  complete(parts: UploadedPartLike[]): Promise<BucketObjectLike>;
+  abort(): Promise<void>;
 }
 
 // ── Keys ──────────────────────────────────────────────────────────────────────
@@ -126,6 +160,10 @@ export type SnapshotRoute =
   | { op: 'warm_get'; generation: string; part: WarmPart }
   | { op: 'warm_put'; generation: string; part: WarmPart }
   | { op: 'warm_commit'; generation: string }
+  | { op: 'warm_mp_create'; generation: string; part: WarmPart }
+  | { op: 'warm_mp_part'; generation: string; part: WarmPart; partNumber: number }
+  | { op: 'warm_mp_complete'; generation: string; part: WarmPart }
+  | { op: 'warm_mp_abort'; generation: string; part: WarmPart }
   | { op: 'park_put' }
   | { op: 'park_get' }
   | { op: 'park_delete' };
@@ -151,6 +189,20 @@ export function parseSnapshotRoute(method: string, pathname: string): SnapshotRo
   }
   const commit = /^\/warm\/(\d{16})\/commit$/.exec(pathname);
   if (commit && m === 'POST') return { op: 'warm_commit', generation: commit[1]! };
+  const mp = /^\/warm\/(\d{16})\/(repo|cache)\/multipart(?:\/(complete|[1-9]\d{0,4}))?$/.exec(pathname);
+  if (mp) {
+    const generation = mp[1]!;
+    const p = mp[2] as WarmPart;
+    const tail = mp[3];
+    if (tail === undefined) {
+      if (m === 'POST') return { op: 'warm_mp_create', generation, part: p };
+      if (m === 'DELETE') return { op: 'warm_mp_abort', generation, part: p };
+      return null;
+    }
+    if (tail === 'complete') return m === 'POST' ? { op: 'warm_mp_complete', generation, part: p } : null;
+    const partNumber = Number(tail);
+    return m === 'PUT' && partNumber <= MAX_PART_NUMBER ? { op: 'warm_mp_part', generation, part: p, partNumber } : null;
+  }
   return null;
 }
 
@@ -263,6 +315,32 @@ export class SnapshotStore {
     return put ? put.size : null;
   }
 
+  // Multipart: a part streamed from `git bundle create -` (or `tar -c`) has no
+  // length until it ends, and an R2 put needs one. Each multipart part does
+  // have one. The key is still the scope's; the upload id only names which
+  // upload of that key, and R2 refuses one that is not.
+
+  async createPartUpload(workspaceId: string, generation: string, part: WarmPart): Promise<string> {
+    const r = await this.bucket.createMultipartUpload(warmKey(workspaceId, generation, part), { httpMetadata: { contentType: 'application/octet-stream' } });
+    return r.uploadId;
+  }
+
+  async uploadPartChunk(workspaceId: string, generation: string, part: WarmPart, uploadId: string, partNumber: number, body: ReadableStream): Promise<UploadedPartLike> {
+    return this.bucket.resumeMultipartUpload(warmKey(workspaceId, generation, part), uploadId).uploadPart(partNumber, body);
+  }
+
+  async completePartUpload(workspaceId: string, generation: string, part: WarmPart, uploadId: string, parts: UploadedPartLike[]): Promise<BucketObjectLike> {
+    return this.bucket.resumeMultipartUpload(warmKey(workspaceId, generation, part), uploadId).complete(parts);
+  }
+
+  async abortPartUpload(workspaceId: string, generation: string, part: WarmPart, uploadId: string): Promise<void> {
+    await this.bucket.resumeMultipartUpload(warmKey(workspaceId, generation, part), uploadId).abort();
+  }
+
+  async deletePart(workspaceId: string, generation: string, part: WarmPart): Promise<void> {
+    await this.bucket.delete(warmKey(workspaceId, generation, part));
+  }
+
   async putPark(workspaceId: string, workerId: string, body: ReadableStream): Promise<number | null> {
     const put = await this.bucket.put(parkKey(workspaceId, workerId), body, { httpMetadata: { contentType: 'application/octet-stream' } });
     return put ? put.size : null;
@@ -317,6 +395,27 @@ export interface SnapshotHandlerOptions {
    * `body.pipeThrough(new FixedLengthStream(n))`). Identity when absent.
    */
   fixedLength?(body: ReadableStream, length: number): ReadableStream;
+  /**
+   * Largest warm part (repo bundle or cache tarball) accepted, whole: a single
+   * PUT past it is refused, a multipart one is deleted on completion. The
+   * runner skips the upload before this (WARM_MAX_BUNDLE_BYTES); this is the
+   * Worker's own word on it. MAX_SNAPSHOT_BYTES when absent.
+   */
+  maxPartBytes?: number;
+}
+
+/** `[{ partNumber, etag }]` from a complete request, or null when malformed. */
+function parseParts(v: unknown): UploadedPartLike[] | null {
+  const parts = (v as { parts?: unknown } | null)?.parts;
+  if (!Array.isArray(parts) || parts.length === 0 || parts.length > MAX_PART_NUMBER) return null;
+  const out: UploadedPartLike[] = [];
+  for (const p of parts) {
+    const { partNumber, etag } = (p ?? {}) as { partNumber?: unknown; etag?: unknown };
+    if (typeof partNumber !== 'number' || !Number.isInteger(partNumber) || partNumber < 1 || partNumber > MAX_PART_NUMBER) return null;
+    if (typeof etag !== 'string' || etag.length === 0 || etag.length > 1024) return null;
+    out.push({ partNumber, etag });
+  }
+  return out;
 }
 
 /**
@@ -338,6 +437,7 @@ export async function handleSnapshotRequest(
   if (!scope || !SCOPE_ID_RE.test(scope.workspaceId)) return json({ error: 'unavailable' }, 503);
   const ws = scope.workspaceId;
   if (isPark && (!scope.workerId || !SCOPE_ID_RE.test(scope.workerId))) return json({ error: 'unavailable' }, 503);
+  const maxPart = opts.maxPartBytes ?? MAX_SNAPSHOT_BYTES;
 
   switch (route.op) {
     case 'park_put': {
@@ -371,10 +471,64 @@ export async function handleSnapshotRequest(
       const r = await store.begin(ws);
       return r.ok ? json({ generation: r.generation }, 201) : json({ error: 'busy' }, 409);
     }
+    case 'warm_mp_create': {
+      if (!(await store.holdsLock(ws, route.generation))) return json({ error: 'not_lock_holder' }, 409);
+      return json({ uploadId: await store.createPartUpload(ws, route.generation, route.part) }, 201);
+    }
+    case 'warm_mp_part': {
+      const uploadId = request.headers.get(UPLOAD_ID_HEADER) ?? '';
+      if (!UPLOAD_ID_RE.test(uploadId)) return json({ error: 'upload_id_required' }, 400);
+      const len = Number(request.headers.get('content-length'));
+      if (!request.headers.has('content-length') || !Number.isSafeInteger(len) || len < 0) return json({ error: 'length_required' }, 411);
+      if (len > MAX_PART_BYTES || len > maxPart) return json({ error: 'too_large' }, 413);
+      if (!request.body) return json({ error: 'empty' }, 400);
+      if (!(await store.holdsLock(ws, route.generation))) return json({ error: 'not_lock_holder' }, 409);
+      const body = opts.fixedLength ? opts.fixedLength(request.body, len) : request.body;
+      try {
+        return json(await store.uploadPartChunk(ws, route.generation, route.part, uploadId, route.partNumber, body), 201);
+      } catch {
+        // R2 refuses an upload id that is not this key's (or no longer open).
+        return json({ error: 'upload_failed' }, 400);
+      }
+    }
+    case 'warm_mp_complete': {
+      const uploadId = request.headers.get(UPLOAD_ID_HEADER) ?? '';
+      if (!UPLOAD_ID_RE.test(uploadId)) return json({ error: 'upload_id_required' }, 400);
+      let parts: UploadedPartLike[] | null;
+      try {
+        parts = parseParts(await request.json());
+      } catch {
+        return json({ error: 'invalid_json' }, 400);
+      }
+      if (!parts) return json({ error: 'invalid_parts' }, 400);
+      if (!(await store.holdsLock(ws, route.generation))) return json({ error: 'not_lock_holder' }, 409);
+      let obj: BucketObjectLike;
+      try {
+        obj = await store.completePartUpload(ws, route.generation, route.part, uploadId, parts);
+      } catch {
+        return json({ error: 'complete_failed' }, 400);
+      }
+      if (obj.size > maxPart) {
+        await store.deletePart(ws, route.generation, route.part);
+        return json({ error: 'too_large' }, 413);
+      }
+      return json({ bytes: obj.size }, 201);
+    }
+    case 'warm_mp_abort': {
+      const uploadId = request.headers.get(UPLOAD_ID_HEADER) ?? '';
+      if (!UPLOAD_ID_RE.test(uploadId)) return json({ error: 'upload_id_required' }, 400);
+      if (!(await store.holdsLock(ws, route.generation))) return json({ error: 'not_lock_holder' }, 409);
+      try {
+        await store.abortPartUpload(ws, route.generation, route.part, uploadId);
+      } catch {
+        // Already gone; the bucket's lifecycle rule is the backstop either way.
+      }
+      return json({ ok: true });
+    }
     case 'warm_put': {
       const len = Number(request.headers.get('content-length'));
       if (!request.headers.has('content-length') || !Number.isSafeInteger(len) || len < 0) return json({ error: 'length_required' }, 411);
-      if (len > MAX_SNAPSHOT_BYTES) return json({ error: 'too_large' }, 413);
+      if (len > MAX_SNAPSHOT_BYTES || len > maxPart) return json({ error: 'too_large' }, 413);
       if (!request.body) return json({ error: 'empty' }, 400);
       if (!(await store.holdsLock(ws, route.generation))) return json({ error: 'not_lock_holder' }, 409);
       const body = opts.fixedLength ? opts.fixedLength(request.body, len) : request.body;
