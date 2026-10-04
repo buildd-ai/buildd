@@ -7,6 +7,7 @@ import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamsWithDetails, resolveActiveTeamId, type UserTeam } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
+import { roleHas } from '@/lib/permission-registry';
 
 export interface SettingsWorkspace {
   id: string;
@@ -50,7 +51,7 @@ export const loadSettingsContext = cache(async (): Promise<SettingsContext> => {
   const currentTeamId = await resolveActiveTeamId(user.id, teamCookie).catch(() => null);
   const currentTeam = teams.find((t) => t.id === currentTeamId) ?? null;
   const isTeamAdmin = !!currentTeam && (
-    currentTeam.role === 'owner' || currentTeam.role === 'admin' || currentTeam.slug === `personal-${user.id}`
+    roleHas(currentTeam.role, 'manage_team_settings') || currentTeam.slug === `personal-${user.id}`
   );
 
   const rows = wsIds.length > 0

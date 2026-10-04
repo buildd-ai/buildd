@@ -8,6 +8,7 @@ import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { roleHas } from '@/lib/permission-registry';
 import { RepoLinkCard } from './config/RepoLinkCard';
 
 export default async function WorkspaceDetailPage({
@@ -153,7 +154,7 @@ export default async function WorkspaceDetailPage({
         </div>
 
         {/* No repo means workers have nothing to work in; linking one is an admin write. */}
-        {!workspace.repo && (access.role === 'owner' || access.role === 'admin') && (
+        {!workspace.repo && roleHas(access.role, 'manage_workspace_settings') && (
           <RepoLinkCard workspaceId={workspace.id} />
         )}
 
