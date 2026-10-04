@@ -28,8 +28,8 @@ const PAD = 14;
 export const V7_LINES = [
   "Coding agents are fast. But they'll tell you they're done when they aren't.",
   'With buildd, you start by writing down what done means.',
-  'Then the agents get to work on your own machine, a few tasks at a time. If they need a decision from you, it comes to your phone.',
-  "When an agent says it's finished, buildd runs your checks. Here, the table still didn't fit, so the work went back. On the second try, it passed.",
+  'Then the agents get to work, a few tasks at a time. Small calls get decided on the spot. Anything risky, like a migration or a secret, comes to your phone.',
+  "When an agent says it's finished, buildd checks. Tests run, and buildd's own review agents read the change and look at the screens. Here, the table still didn't fit, so the work went back. On the second try, it passed.",
   'Done means the checks pass.',
 ];
 export const V7_VOICE = { voice: 'af_heart', speed: 1.0 };
@@ -54,11 +54,19 @@ function typed(frames: Array<{ src: string; width: number; height: number; at: n
 
 const motion = (id: string, dur: number, m: Motion): Shot => ({ id, layout: 'motion', dur, images: [], motion: m });
 
-/** The chapters' shots, before timing: [hook], [ch1...], [ch2...], [ch3...], [recap]. */
-export function v7Chapters(s: Stills): Shot[][] {
-  const look: Look = { frame: FRAME, dim: DIM, reserve: captionReserve(), tight: 1, minPx: 0, theme: 'dark', beat: false };
+export const FILM_LOOK: Look = { frame: FRAME, dim: DIM, reserve: captionReserve(), tight: 1, minPx: 0, theme: 'dark', beat: false };
+/** A site clip's look (as v6's beats): 1280x720 or 720x900, a light dim, readable floors. */
+export function stepLook(o: { mobile?: boolean; theme?: 'dark' | 'light' } = {}): Look {
+  return o.mobile
+    ? { frame: { width: 720, height: 900 }, dim: 0.35, reserve: 0, tight: 0.35, minPx: 1.5, theme: o.theme ?? 'dark', beat: true }
+    : { frame: { width: 1280, height: 720 }, dim: 0.35, reserve: 0, tight: 0.35, minPx: 1.4, theme: o.theme ?? 'dark', beat: true };
+}
+
+/** The chapters' shots, before timing: [opening], [what done means], [agents work], [buildd checks], [end]. */
+export function v7Chapters(s: Stills, look: Look = FILM_LOOK): Shot[][] {
   const f = (step: string, rect: Rect, padding: number, t = 0, viewport: 'desktop' | 'phone' = 'desktop'): CamKey => aim(look, s.img(step, viewport), rect, padding, t);
-  const key = (t: number, rects: Rect[], dim = DIM) => ({ at: t, rects, dim, padPx: PAD });
+  const DIMV = look.dim;
+  const key = (t: number, rects: Rect[], dim = DIMV) => ({ at: t, rects, dim, padPx: PAD });
 
   // Opening, quiet and abstract: an agent says it's done, and a question mark appears.
   const open = motion('open', 4.6, { kind: 'doubt', label: '', agent: 'agent', task: 'invoices · rows as cards', from: -0.6, doneAt: 0.9, doubtAt: 2.4 });
@@ -74,7 +82,7 @@ export function v7Chapters(s: Stills): Shot[][] {
   const draft: Shot = {
     id: 'draft', layout: 'screen', dur: 2.6, images: [s.img(T)],
     // Held still: one light on the whole card, no tap, nothing moving but a slow push.
-    spot: [key(0, [card], DIM * 0.6)],
+    spot: [key(0, [card], DIMV * 0.6)],
     camera: [f(T, card, 1.08, 0), f(T, card, 1.05, 1)],
   };
 
@@ -96,7 +104,7 @@ export function v7Chapters(s: Stills): Shot[][] {
   const qRect = { x: all.x, y: all.y - lift, w: all.w, h: all.h + lift };
   const phone = s.img(Q, 'phone');
   // The question card framed wide enough to read at 1280 (a 390px phone at 2.3 output px per CSS px).
-  const beatLook: Look = { ...look, beat: true, minPx: 2.3, reserve: 0 };
+  const beatLook: Look = { ...look, beat: true, reserve: 0, minPx: look.frame.width < 1000 ? 1.8 : look.beat ? 1.6 : 2.3 };
   const question: Shot = {
     id: 'question', layout: 'screen', dur: 4.6,
     images: [phone, { ...s.img('s05b-answered', 'phone', 3.0), fade: 0 }],
@@ -105,6 +113,11 @@ export function v7Chapters(s: Stills): Shot[][] {
     camera: [aim(beatLook, phone, qRect, 1.12, 0), aim(beatLook, phone, qRect, 1.08, 1)],
     taps: [press(2.1, opts[0])], controls: [opts[0]],
   };
+
+  // Small calls get decided on the spot: abstract (no product UI shows a decided question). Two routine
+  // questions tick to "decided"; the third lifts toward the phone, and the real phone question follows.
+  const decided = motion('decided', 4.4, { kind: 'decided', label: '', chips: ['Stack rows as cards?', 'Keep the column order?', 'Hide the empty Tax column on phones?'],
+    from: -0.2, stagger: 0.35, tickAt: [1.3, 1.9], liftAt: 2.7 });
 
   // 3. buildd checks: red (attempt 1 said done, the check said no), attempt 2, green, before/after, Looks right.
   const chip = (step: string) => s.box(step, '[data-loop-status]');
@@ -142,7 +155,7 @@ export function v7Chapters(s: Stills): Shot[][] {
     id: 'looks', layout: 'screen', dur: 3.0,
     // Held on the deck: after the tap it moves to "Nothing to review", which reads as nothing happening.
     images: [s.img('s09-deck')],
-    spot: [key(0.2, [deck], DIM * 0.8), { ...key(1.0, [btn], DIM * 0.8), cross: true }],
+    spot: [key(0.2, [deck], DIMV * 0.8), { ...key(1.0, [btn], DIMV * 0.8), cross: true }],
     camera: [f('s09-deck', deck, 1.04, 0), f('s09-deck', deck, 1.03, 1)],
     taps: [press(1.6, btn)], controls: [btn],
     // The phone screenshot in the deck is a picture of a page (demo:review exempts its text).
@@ -151,7 +164,9 @@ export function v7Chapters(s: Stills): Shot[][] {
 
   const end = motion('end', 4.2, { kind: 'recap', label: '', titles: [], from: 0, stagger: 0, line: 'Done means the checks pass.', lineAt: 0.1, url: 'buildd.dev' });
 
-  return [[open], [checks, draft], [fleet, question], [red, retry, green, ba, looks], [end]];
+  void retry;
+  // The checks: attempt 1 sent back; tests and review (the attempt-2 history, the deck's Looks right); then before/after.
+  return [[open], [checks, draft], [fleet, decided, question], [red, green, looks, ba], [end]];
 }
 
 /**
@@ -194,8 +209,8 @@ export const sentences = (line: string) => line.match(/[^.!?]+[.!?]+/g)!.map((x)
  */
 export function v7Captioned(s: Stills, spoken: Spoken): Cut {
   const chapters = v7Chapters(s);
-  // The phone question fills the frame's height, so no caption can sit clear of it: its sentence goes on the shot before.
-  const NO_CAPTION = new Set(['question']);
+  // The phone question and the review deck fill the frame, so no caption sits clear of them: their sentences go on the neighbours.
+  const NO_CAPTION = new Set(['question', 'looks']);
   chapters.slice(0, -1).forEach((ch, i) => {
     const ss = sentences(V7_LINES[i]);
     const shots = ch.filter((x) => !NO_CAPTION.has(x.id));
@@ -222,4 +237,26 @@ function keyStills(shots: Shot[]): Record<string, number> {
     if (at) out[name] = at;
   }
   return out;
+}
+
+// ── site clips: three steps and a hero, from the same shots ────────────────
+
+export const STEPS = ['step1', 'step2', 'step3'] as const;
+const STEP_SHOTS: Record<(typeof STEPS)[number], string[]> = { step1: ['checks'], step2: ['decided', 'question'], step3: ['green', 'beforeAfter', 'looks'] };
+
+/** One silent, caption-free loop per homepage step (folded at encode like v6's beats). */
+export function v7Steps(s: Stills, o: { mobile?: boolean; theme?: 'dark' | 'light' } = {}): Cut[] {
+  const look = stepLook(o);
+  const all = v7Chapters(s, look).flat();
+  return STEPS.map((step) => ({
+    name: `beat-${step}${o.mobile ? '-mobile' : ''}`, ...look.frame, fps: FRAME.fps, fade: V7_FADE, captions: false, theme: look.theme, dip: true,
+    shots: STEP_SHOTS[step].map((id) => ({ ...all.find((x) => x.id === id)!, caption: undefined, chime: undefined })),
+  }));
+}
+
+/** The hero: the quiet opening (an agent says done; a question mark), reset at its end so the loop has no seam. */
+export function v7Hero(_s: Stills, theme: 'dark' | 'light' = 'dark', o: { mobile?: boolean } = {}): Cut {
+  const frame = o.mobile ? { width: 720, height: 900, fps: FRAME.fps } : FRAME;
+  const m: Motion = { kind: 'doubt', label: '', agent: 'agent', task: 'invoices · rows as cards', from: -0.6, doneAt: 1.5, doubtAt: 3.5, resetAt: 8.6, resetDur: 1.2 };
+  return { name: o.mobile ? 'hero-mobile' : 'hero', ...frame, fade: V7_FADE, loop: true, captions: false, theme, poster: 5, shots: [motion('open', 9.8, m)] };
 }

@@ -2,9 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import type { Stills } from './cuts';
 import { V7_LINES, timeToVoice, v7Captioned, v7Chapters, v7Film } from './cuts-v7';
 import { captionCollisions } from './cuts-v6';
-import { v7SiteFiles } from './render';
+import { v7SiteFiles, v72SiteFiles } from './render';
 import { cutDuration, shotStarts, soundCues, type Rect } from './timeline';
-import { checksIn, doubtAt } from './motion-model';
+import { checksIn, decidedAt, doubtAt } from './motion-model';
 
 const R = (x: number, y: number, w: number, h: number): Rect => ({ x, y, w, h });
 const BOXES: Record<string, Rect[]> = {
@@ -38,7 +38,7 @@ const spoken = [3.73, 3.06, 6.61, 8.43, 1.65].map((seconds, i) => ({ file: `/tmp
 describe('v7 chapters', () => {
   const ch = v7Chapters(fake);
   test('opening, what done means, agents work, the checks, the end: no chapter cards, no recap of titles', () => {
-    expect(ch.map((c) => c.map((x) => x.id))).toEqual([['open'], ['checks', 'draft'], ['fleet', 'question'], ['red', 'attempt2', 'green', 'beforeAfter', 'looks'], ['end']]);
+    expect(ch.map((c) => c.map((x) => x.id))).toEqual([['open'], ['checks', 'draft'], ['fleet', 'decided', 'question'], ['red', 'green', 'looks', 'beforeAfter'], ['end']]);
     expect(ch.flat().some((x) => x.motion?.kind === 'chapter')).toBe(false);
     expect((ch[4][0].motion as any).titles).toEqual([]);
     expect((ch[4][0].motion as any).line).toBe('Done means the checks pass.');
@@ -124,4 +124,47 @@ describe('v7.1 motion: nothing appears twice', () => {
     rising((t) => { const v = doubtAt(m, t); return [v.row, v.done, v.doubt]; });
     expect(doubtAt(m, 1.5).doubt).toBe(0);
   });
+});
+
+describe('v7.2 motion', () => {
+  const rising = (f: (t: number) => number[], to = 6) => { let prev = f(0); for (let t = 0.02; t < to; t += 0.02) { const now = f(t); now.forEach((v, i) => expect(v).toBeGreaterThanOrEqual(prev[i] - 1e-9)); prev = now; } };
+  test('decided: the chips appear once, the first two tick once, the third lifts once; nothing goes back', () => {
+    const m = { kind: 'decided' as const, label: '', chips: ['a?', 'b?', 'c?'], from: 0.1, stagger: 0.35, tickAt: [1.2, 1.7], liftAt: 2.4 };
+    rising((t) => { const v = decidedAt(m, t); return [...v.chips, ...v.ticks, v.lift, v.phone]; });
+    const end = decidedAt(m, 4);
+    expect(end.ticks).toEqual([1, 1]);
+    expect(end.lift).toBe(1);
+  });
+  test('doubt with a reset loops seamlessly: its last frame is its first', () => {
+    const m = { kind: 'doubt' as const, label: '', agent: 'agent', task: 't', from: -0.6, doneAt: 1.5, doubtAt: 3.5, resetAt: 8.6, resetDur: 1.2 };
+    expect(doubtAt(m, 9.8)).toEqual(doubtAt(m, 0));
+    expect(doubtAt(m, 5).doubt).toBe(1);
+  });
+});
+
+describe('v7.2 site clips', () => {
+  const { v7Steps, v7Hero } = require('./cuts-v7');
+  const LOOKS = [{}, { mobile: true }, { theme: 'light' }, { mobile: true, theme: 'light' }];
+  test('three steps per look, named beat-step1..3[-mobile], silent, caption-free, folded loops', () => {
+    for (const o of LOOKS) {
+      const cuts = v7Steps(fake, o);
+      expect(cuts.map((c: any) => c.name)).toEqual(['step1', 'step2', 'step3'].map((x) => `beat-${x}${(o as any).mobile ? '-mobile' : ''}`));
+      for (const c of cuts) { expect(c.captions).toBe(false); expect(c.loop).toBeFalsy(); for (const sh of c.shots) { expect(sh.caption).toBeUndefined(); expect(sh.chime).toBeUndefined(); } }
+      expect(cuts.map((c: any) => c.shots.map((s: any) => s.id))).toEqual([['checks'], ['decided', 'question'], ['green', 'beforeAfter', 'looks']]);
+    }
+  });
+  test('the hero: the quiet opening, one shot, 8-12s, a seamless loop', () => {
+    for (const h of [v7Hero(fake), v7Hero(fake, 'light', { mobile: true })]) {
+      expect(h.loop).toBe(true);
+      expect(cutDuration(h)).toBeGreaterThanOrEqual(8);
+      expect(cutDuration(h)).toBeLessThanOrEqual(12);
+      expect(h.shots.map((s: any) => s.motion.kind)).toEqual(['doubt']);
+    }
+  });
+});
+
+test('v72SiteFiles: v6/site names for the three steps and the hero in four looks, plus the voiced film', () => {
+  const names = v72SiteFiles().map(([, to]) => to).sort();
+  const clips = ['step1', 'step2', 'step3', 'hero'].flatMap((b) => [b, `${b}-mobile`, `${b}-light`, `${b}-light-mobile`]);
+  expect(names).toEqual([...clips.flatMap((b) => [`${b}.webm`, `${b}.mp4`, `${b}-poster.jpg`]), 'full.mp4', 'full-poster.jpg'].sort());
 });

@@ -8,7 +8,7 @@ story: ../stories/invoice-phone.json
 name: demo-v7
 viewport: { width: 1440, height: 810, scale: 2 }
 viewports: { phone: { width: 390, height: 844, scale: 3 } }
-themes: [dark]
+themes: [dark, light]
 hide: [canvas-ask]
 highlight:
   - chat-composer

@@ -342,7 +342,8 @@ function pose(cut: Cut, b: Built, local: number, opacity: number): Regions {
   const regions: Regions = { target: lit.dim > 0 ? lit.rects.map(px) : [], artifacts: (shot.artifacts ?? []).map(px) };
   const last = !cut.loop && b === built[built.length - 1];
   const caps = captionsAt(shot, local, last ? cut.fade + 60 : cut.fade);
-  if (b.scrim) b.scrim.style.opacity = String(Math.max(0, ...captionsAt(shot, local, !cut.loop && b === built[built.length - 1] ? cut.fade + 60 : cut.fade).map((c) => c?.opacity ?? 0)));
+  // On for the whole captioned shot (fading with its layer): a scrim that faded in with the caption let dimmed UI show through mid-fade.
+  if (b.scrim) b.scrim.style.opacity = '1';
   b.chips.forEach((c, i) => {
     const cap = caps[i];
     (c.lastChild as HTMLElement).textContent = cap?.text ?? '';
