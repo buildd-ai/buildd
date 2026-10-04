@@ -19,7 +19,7 @@ describe('enqueueReadyDependentsSql', () => {
   const { sql, params } = new PgDialect().sqlToQuery(enqueueReadyDependentsSql(PARENT, GATE));
 
   it('binds the parent id instead of inlining it', () => {
-    expect(params).toEqual([PARENT]);
+    expect(params).toEqual([PARENT, 'dependency.satisfied', 'dependency.satisfied']);
     expect(sql).not.toContain(PARENT);
     expect(sql).toContain('jsonb_build_array($1::text)');
   });
@@ -28,8 +28,7 @@ describe('enqueueReadyDependentsSql', () => {
     expect(sql.match(/-- dispatch_dependents:enqueue_ready/g)).toHaveLength(1);
     expect(sql).toContain("tasks.status = 'pending'");
     expect(sql).toContain('INSERT INTO task_dispatch_outbox');
-    expect(sql).toContain("'dependency.satisfied'");
-    expect(sql).toContain('FROM ready s JOIN tasks t');
+    expect(sql).toContain('FROM "ready" s JOIN tasks t');
     expect(sql.trim().endsWith('SELECT task_id FROM wake')).toBe(true);
   });
 

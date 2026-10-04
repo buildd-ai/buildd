@@ -274,11 +274,17 @@ mock.module('drizzle-orm', () => ({
       const vals: any[] = [];
       values.forEach((v, i) => {
         if (v && v.type === 'raw') out[out.length - 1] += v.text + strings[i + 1];
+        else if (v && v.type === 'sql') {
+          // A nested fragment (the spliced outbox CTE): inline its text, keep its params.
+          out[out.length - 1] += v.strings[0];
+          v.strings.slice(1).forEach((str: string, k: number) => { vals.push(v.values[k]); out.push(str); });
+          out[out.length - 1] += strings[i + 1];
+        }
         else { vals.push(v); out.push(strings[i + 1]); }
       });
       return { type: 'sql', strings: out, values: vals };
     },
-    { raw: (text: string) => ({ type: 'raw', text }) },
+    { raw: (text: string) => ({ type: 'raw', text }), identifier: (name: string) => ({ type: 'raw', text: `"${name}"` }) },
   ),
 }));
 
@@ -848,8 +854,9 @@ describe('ownership SQL', () => {
     for (const tag of ['narrow', 'release_rows', 'release']) {
       const t = log.find(s => s.tag === tag)!.text.replace(/\s+/g, ' ');
       expect(t).toContain('INSERT INTO task_dispatch_outbox');
-      expect(t).toContain("FROM woken s JOIN tasks t ON t.id = s.waiting_task_id WHERE t.status = 'pending'");
-      expect(t).toContain("'path_claim.released'");
+      expect(t).toContain("FROM \"woken\" s JOIN tasks t ON t.id = s.waiting_task_id WHERE t.status = 'pending'");
+      // The cause is a bound parameter now, not text spliced into the statement.
+      expect(t).toContain('jsonb_build_array($?::text)');
     }
   });
 
