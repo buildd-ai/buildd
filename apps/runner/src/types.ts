@@ -29,6 +29,11 @@ export interface WaitingFor {
   context?: string;
   recommended?: { label: string; reason?: string };
   where?: { taskTitle?: string; branch?: string; file?: string };
+  /** Set only to `'hold'` — Jev held this question rather than asking outright (question-gate.ts). */
+  disposition?: 'hold';
+  holdReason?: string;
+  /** ISO timestamp; see question-gate.ts `HOLD_RESURFACE_MS`. */
+  resurfaceAt?: string;
   toolUseId?: string;  // The SDK tool_use block id — needed for parent_tool_use_id in responses
   // Permission-specific fields (when type === 'permission')
   toolName?: string;           // The tool requesting permission
@@ -200,9 +205,29 @@ export interface LocalWorker {
   prCreated?: boolean;
   // PR URL captured from a successful create_pr result, when parseable.
   prUrl?: string;
-  // Set once the runner has spent its single "nothing delivered" nudge turn on
-  // this worker, so a later resumed session can never earn a second one.
-  noDeliverableNudged?: boolean;
+  /**
+   * How many end-of-session pushes (session-end-classification.ts) this
+   * worker has received across any resumed turns. Capped at
+   * SESSION_END_MAX_PUSHES; once reached the session is parked instead of
+   * pushed or failed, with the reason recorded and visible — see
+   * `sessionEndPushes` and `parkSessionEnd`. Replaces the old one-shot
+   * `noDeliverableNudged` boolean with a counted bound.
+   */
+  sessionEndPushCount?: number;
+  /** One entry per push given under `sessionEndPushCount`, for reconstructing the sequence afterward. */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
+  /**
+   * The most recent tool call the runner itself denied (a PreToolUse hook
+   * deny), used by session-end-classification.ts to tell "the agent backed
+   * off after a runner refusal it could route around" from a genuine stop.
+   * Overwritten on every denial; only meaningful when it matches the LAST
+   * recorded tool call (see `lastToolWasDeniedByRunner`).
+   */
+  lastToolDenial?: { toolUseId?: string; kind: string; runnerAttributed: boolean; ts: number };
   output: string[];  // Recent output lines
   toolCalls: ToolCall[];  // Track tool calls for post-execution summary
   messages: ChatMessage[];  // Unified chronological timeline
@@ -327,7 +352,7 @@ export interface LocalWorker {
    * AskUserQuestion goes through POST /api/workers/[id]/question-check before
    * it is parked (apps/runner/src/question-gate.ts).
    */
-  questionGate?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; maxPushbacks: number };
+  questionGate?: { maxPushbacks: number };
   /** Questions the gate sent back to the agent in this worker. */
   questionPushbacks?: number;
   /** Last file the agent edited or wrote, for the question brief's `where`. */
@@ -569,6 +594,18 @@ export interface ResultMeta {
    * same as every other field in this local copy.
    */
   closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
+  /**
+   * Every end-of-session push this worker received (session-end-classification.ts)
+   * before its eventual terminal outcome — label, when, and the exact text sent.
+   * Lets "pushes per session and how often a push led to delivery" be queried
+   * directly from already-recorded completions instead of new telemetry infra.
+   * Mirrors packages/core/db/schema.ts's ResultMeta — kept in sync manually.
+   */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
 }
 
 // Loop exit condition (spec §1)

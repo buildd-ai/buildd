@@ -1,5 +1,5 @@
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType } from './types';
+import type { LocalWorker, Milestone, LocalUIConfig, BuilddTask, WorkerCommand, ChatMessage, TeamState, Checkpoint, SubagentTask, CheckpointEventType, WaitingFor } from './types';
 import { createBackend, ClaudeBackend, inferSandboxMode } from './backends/index.js';
 import { CheckpointEvent, CHECKPOINT_LABELS } from './types';
 import { BuilddClient } from './buildd';
@@ -99,9 +99,9 @@ import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { resolvePathClaimMode, describeEnforcement, resolvePrBaseRef, type PathCollision } from './path-claim-enforcement';
 import { runCheckpointSweep, deferOnPathCollision, CHECKPOINT_FETCH_DEADLINE_MS, CHECKPOINT_SYNC_DEADLINE_MS } from './path-collision-defer';
-import { HUMAN_UI_DENIAL } from './runner-denial';
+import { HUMAN_UI_DENIAL, RUNNER_DENIAL_MARKER } from './runner-denial';
 import { scanToolResult, scanBashResult, clearWorkerThrottle } from './error-trace-scanner';
-import { detectCreatedPr, shouldFailForMissingPr } from './pr-detection';
+import { detectCreatedPr, prRequiredUnmet } from './pr-detection';
 import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
@@ -132,7 +132,19 @@ import {
 import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, cbmBootstrapGuidanceState, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist, applyCbmWithholding, withoutCbmConnectors } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 import { asksAQuestion } from './ask-user-question.js';
-import { questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import { holdTagged, questionFromToolInput, questionHeader, questionPayload, worktreeRelative } from './question-gate.js';
+import type { QuestionGateReply } from '@buildd/core/question-gate';
+import { QUESTION_GATE_RUNNER_TIMEOUT_MS } from '@buildd/core/question-gate';
+import {
+  classifySessionEnd,
+  genuinelyBlockedQuestionInput,
+  GENUINELY_BLOCKED_FAIL_OPTION,
+  GENUINELY_BLOCKED_RETRY_OPTION,
+  isBackgroundJobOutstanding,
+  lastToolWasDeniedByRunner,
+  SESSION_END_PUSH_TEXT,
+  type SessionEndLabel,
+} from './session-end-classification.js';
 import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -301,15 +313,13 @@ const CLOSING_TURN_INSTRUCTION =
   'Output Requirement section. Do no other work — no new investigation, no ' +
   'additional edits.';
 
-// The one extra turn given to a pr_required session that ended naturally with
-// no PR, no commits and no way to open one (see startSession's
-// shouldFailForMissingPr branch). Unlike CLOSING_TURN_INSTRUCTION it does not
-// assume work was delivered: it names both ways out of the dead end, and the
-// blocked way out (AskUserQuestion) parks the task instead of failing it.
-const NO_DELIVERABLE_NUDGE =
-  'Your session is about to end with nothing delivered. Write your deliverable ' +
-  '(PR or artifact) now, or call complete_task. If you are genuinely blocked, ' +
-  'use AskUserQuestion.';
+// How many end-of-session pushes (session-end-classification.ts) one worker
+// may receive across any resumed turns before the runner parks it instead of
+// pushing or failing again. Replaces PR #3143's one-shot
+// `noDeliverableNudged` boolean with a counted bound — safe to check even
+// from within an already-resumed push turn (isClosingTurn=true), since the
+// counter itself is the recursion guard, not the flag.
+const SESSION_END_MAX_PUSHES = 2;
 
 /**
  * SDK maxTurns for a closing turn. The SDK counts model round trips, and
@@ -800,7 +810,7 @@ export class WorkerManager {
       emit: (event) => this.emit(event),
       pendingPermissionRequests: this.pendingPermissionRequests,
       onPathCollision: (worker, collision) => this.handlePathCollision(worker, collision),
-      parkQuestion: (worker, toolInput, toolUseId) => this.parkQuestion(worker, toolInput, toolUseId),
+      parkQuestion: (worker, toolInput, toolUseId, gateReply) => this.parkQuestion(worker, toolInput, toolUseId, gateReply),
     });
     this.recoveryManager = new RecoveryManager({
       workers: this.workers,
@@ -2776,12 +2786,12 @@ export class WorkerManager {
    * session abort. Called from handleMessage, or for a gated worker from the
    * PreToolUse hook once the question gate let the question through.
    */
-  async parkQuestion(worker: LocalWorker, input: Record<string, unknown>, toolUseId?: string): Promise<void> {
+  async parkQuestion(worker: LocalWorker, input: Record<string, unknown>, toolUseId?: string, gateReply?: QuestionGateReply): Promise<void> {
     const questions = input.questions as Array<{ question: string; header?: string }> | undefined;
     const firstQuestion = questions?.[0];
     const questionText = firstQuestion?.question || 'Awaiting input';
     console.log(`[Worker ${worker.id}] AskUserQuestion detected — toolUseId=${toolUseId}, question="${questionText.slice(0, 60)}"`);
-    const question = questionFromToolInput(worker, input, toolUseId);
+    const question = holdTagged(questionFromToolInput(worker, input, toolUseId), gateReply);
     worker.waitingFor = question;
     worker.currentAction = questionHeader(input) || 'Question';
     this.addMilestone(worker, { type: 'status', label: `Question: ${questionHeader(input) || 'Awaiting input'}`, ts: Date.now() });
@@ -2864,6 +2874,122 @@ export class WorkerManager {
     });
     this.emit({ type: 'worker_update', worker });
     storeSaveWorker(worker);
+  }
+
+  /**
+   * Give a session ending without delivering one more bounded turn, with
+   * label-specific text (session-end-classification.ts) instead of PR
+   * #3143's one generic nudge. Records the push (label, text, timestamp) on
+   * the worker BEFORE resuming, so the sequence is reconstructable even if
+   * the resumed turn itself throws or never reaches a completion PATCH.
+   */
+  private async pushSessionEnd(
+    worker: LocalWorker,
+    cwd: string,
+    task: BuilddTask,
+    label: SessionEndLabel,
+    text: string,
+    resumeId: string,
+    carriedStructuredOutput?: Record<string, unknown>,
+  ): Promise<void> {
+    worker.sessionEndPushCount = (worker.sessionEndPushCount ?? 0) + 1;
+    worker.sessionEndPushes = [...(worker.sessionEndPushes ?? []), { label, at: Date.now(), text }];
+    sessionLog(worker.id, 'info', 'session_end_push', `label=${label} count=${worker.sessionEndPushCount} resume=${resumeId}`, worker.taskId);
+    this.addMilestone(worker, { type: 'status', label: `Session ended with nothing delivered (${label}) — one more turn`, ts: Date.now() });
+    const pushTask: BuilddTask = { ...task, description: text };
+    await this.startSession(worker, cwd, pushTask, resumeId, true, carriedStructuredOutput);
+    // The nested call owns this worker's whole completion lifecycle from
+    // here, exactly as with an ordinary closing turn.
+  }
+
+  /**
+   * Park with the classified reason recorded and visible on the task page —
+   * reusing the same `waitingFor`/`waiting_input` surface a live
+   * `AskUserQuestion` already renders, so no new UI is needed. `disposition`
+   * 'hold' tags it the same way the Jev gate tags a live held question
+   * (parks exactly like 'ask' today; see question-gate.ts HOLD_RESURFACE_MS).
+   */
+  private async parkSessionEnd(
+    worker: LocalWorker,
+    label: SessionEndLabel,
+    disposition: 'ask' | 'hold',
+    note: string,
+  ): Promise<void> {
+    sessionLog(worker.id, 'info', 'session_end_park', `label=${label} disposition=${disposition}`, worker.taskId);
+    const question: WaitingFor = {
+      type: 'question',
+      prompt: 'This session ended without delivering anything, and nothing here decided it for you.',
+      context: `Classified as: ${label}. ${note}`.trim(),
+      ...(disposition === 'hold' ? { disposition: 'hold' as const, holdReason: note } : {}),
+    };
+    worker.waitingFor = question;
+    worker.status = 'waiting';
+    worker.currentAction = 'Needs a person';
+    worker.hasNewActivity = true;
+    this.addMilestone(worker, { type: 'status', label: `Parked — ${label}`, ts: Date.now() });
+    await this.buildd.updateWorker(worker.id, {
+      status: 'waiting_input',
+      currentAction: worker.currentAction,
+      milestones: worker.milestones,
+      waitingFor: questionPayload(question) as any,
+    }).catch(() => {});
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+  }
+
+  /**
+   * Route a `genuinely_blocked` session end through the same Jev decide/
+   * hold/ask question gate a live `AskUserQuestion` goes through
+   * (`@buildd/core/question-gate`, `POST /api/workers/[id]/question-check`) —
+   * there is no live question here (the agent never called
+   * `AskUserQuestion`), so this asks on the agent's behalf whether to retry,
+   * fail, or hand it to a person. Only a `decide` on one of the two offered
+   * options ever avoids a human-facing park; every other reply (`hold`,
+   * `ask`, a hard rail, or any failure) fails open to one — never throws.
+   */
+  private async routeGenuinelyBlocked(
+    worker: LocalWorker,
+    task: BuilddTask,
+  ): Promise<
+    | { action: 'retry' | 'fail'; text: string }
+    | { action: 'park'; disposition: 'ask' | 'hold'; text: string }
+  > {
+    const diagnosis = (worker.lastAssistantMessage || '').trim().slice(0, 300);
+    const input = genuinelyBlockedQuestionInput(diagnosis || undefined);
+    const question = questionFromToolInput(worker, input);
+    let reply: QuestionGateReply;
+    try {
+      reply = await this.buildd.checkQuestion(
+        worker.id,
+        { question: questionPayload(question), priorPushbacks: 0 },
+        QUESTION_GATE_RUNNER_TIMEOUT_MS,
+      );
+    } catch {
+      return { action: 'park', disposition: 'ask', text: 'Could not reach the decision gate for this; a person should look at it.' };
+    }
+    sessionLog(worker.id, 'info', 'genuinely_blocked_gate', `verdict=${reply.verdict} outcome=${reply.outcome}`, task.id);
+
+    if (reply.verdict === 'decide' && reply.decision) {
+      if (reply.decision.label === GENUINELY_BLOCKED_RETRY_OPTION) {
+        return {
+          action: 'retry',
+          text: reply.reason || 'Jev decided you should take one more shot at this. Deliver now, or call complete_task.',
+        };
+      }
+      if (reply.decision.label === GENUINELY_BLOCKED_FAIL_OPTION) {
+        return { action: 'fail', text: reply.reason || '' };
+      }
+    }
+    // Any other reply (hard rail, ask, hold, max_pushbacks, sensitive, off,
+    // error, or a `decide` on neither offered option) fails open to a
+    // human-facing park — the only gate reply this mechanism ever treats as
+    // "apply the decision without a person" is an actual `decide` on one of
+    // the two options above.
+    return {
+      action: 'park',
+      disposition: reply.disposition === 'hold' ? 'hold' : 'ask',
+      text: reply.reason || (reply.disposition === 'hold' ? 'Held — it did not look urgent enough to interrupt someone right now.' : 'Nothing here decided it, so a person should.'),
+    };
   }
 
   /**
@@ -4877,51 +5003,83 @@ export class WorkerManager {
         });
         this.emit({ type: 'worker_update', worker });
         storeSaveWorker(worker);
-      } else if (shouldFailForMissingPr({
-        outputRequirement: task.outputRequirement,
-        prCreated: worker.prCreated,
-        commitCount: worker.commits.length,
-      })) {
-        // pr_required, but the session produced NO confirmed PR and NO commits —
-        // there is nothing to open a PR from (e.g. a blocked environment where the
-        // agent could not run shell commands). Attempting completion would only
-        // earn the server's generic "requires a pull request" 400, whose text
-        // buries the agent's real explanation. Fail with the agent's own report so
-        // the failure is truthful. (When commits exist we fall through to the
-        // server, which can still auto-detect a PR opened via `gh pr create`.)
-        sessionLog(worker.id, 'warn', 'output_requirement_unmet', 'pr_required (no commits)', worker.taskId);
+      } else if (prRequiredUnmet({ outputRequirement: task.outputRequirement, prCreated: worker.prCreated })) {
+        // pr_required, but the session produced no runner-confirmed PR. Does
+        // NOT require zero commits — the mission's own motivating case (dozens
+        // of commits, no PR, a session that just stopped mid-wait) has real
+        // commits, and classifying it is the whole point. Attempting
+        // completion with nothing resolved would only earn the server's
+        // generic "requires a pull request" 400, whose text buries the
+        // agent's real explanation.
+        const commitCountAtEntry = worker.commits.length;
+        sessionLog(worker.id, 'warn', 'output_requirement_unmet', `pr_required (commits=${commitCountAtEntry})`, worker.taskId);
 
-        // One last nudge before giving up. The session ended by its own choice
-        // (it paused to wait, stopped after a denied tool, asked in prose), so
-        // the failure below throws away real work the agent may still be able
-        // to hand over — or park properly with AskUserQuestion. Everything that
-        // is not a voluntary end never reaches this branch (auth, budget and
+        // Classify why, then push, route or park — before giving up. The
+        // session ended by its own choice (it paused to wait, stopped after a
+        // denied tool, asked in prose), so failing outright throws away real
+        // work the agent may still be able to hand over. Everything that is
+        // not a voluntary end never reaches this branch (auth, budget and
         // rate-limit exits, aborts, needs_input parks and waiting workers all
         // returned above or went through the catch block).
         //
-        // Bounded: never from a closing/nudge turn itself, and never twice for
-        // one worker even across separately resumed sessions.
-        if (!isClosingTurn && !worker.noDeliverableNudged) {
+        // Bounded by SESSION_END_MAX_PUSHES (a counter), not by `isClosingTurn`
+        // (a flag) — the counter is itself the recursion guard, so this check
+        // runs even from within an already-pushed turn, up to the cap.
+        const pushesSoFar = worker.sessionEndPushCount ?? 0;
+        if (pushesSoFar < SESSION_END_MAX_PUSHES) {
           const remote = await this.remoteSessionState(worker);
           const resumeId = isCodexTask ? worker.codexThreadId : worker.sessionId;
           if (!remote.workerTerminal && !remote.taskCancelled && resumeId) {
-            worker.noDeliverableNudged = true;
-            sessionLog(worker.id, 'info', 'no_deliverable_nudge', `resume=${resumeId}`, worker.taskId);
-            this.addMilestone(worker, { type: 'status', label: 'Session ended with nothing delivered — giving one last turn', ts: Date.now() });
-            const nudgeTask: BuilddTask = { ...task, description: NO_DELIVERABLE_NUDGE };
-            delegatedToClosingTurn = true;
-            await this.startSession(worker, cwd, nudgeTask, resumeId, true, structuredOutput);
-            // The nested call owns this worker's whole completion lifecycle
-            // from here, exactly as with a closing turn.
-            return;
+            const label = classifySessionEnd({
+              alreadyTerminalOnServer: false, // remote.workerTerminal is false here
+              hasProgress: worker.commits.length > 0,
+              backgroundJobOutstanding: isBackgroundJobOutstanding(worker),
+              lastToolDeniedByRunner: lastToolWasDeniedByRunner(worker),
+            });
+
+            if (label === 'genuinely_blocked') {
+              const routed = await this.routeGenuinelyBlocked(worker, task);
+              if (routed.action === 'park') {
+                await this.parkSessionEnd(worker, label, routed.disposition, routed.text);
+                return;
+              }
+              if (routed.action === 'retry') {
+                delegatedToClosingTurn = true;
+                await this.pushSessionEnd(worker, cwd, task, label, routed.text, resumeId, structuredOutput);
+                return;
+              }
+              // routed.action === 'fail' falls through to the standard failure below.
+            } else {
+              delegatedToClosingTurn = true;
+              await this.pushSessionEnd(worker, cwd, task, label, SESSION_END_PUSH_TEXT[label], resumeId, structuredOutput);
+              return;
+            }
           }
+        } else {
+          // Cap reached: park with the classified reason recorded and visible,
+          // rather than failing outright — the task may still be salvageable
+          // by a person even though the runner is out of pushes to give it.
+          const lastLabel: SessionEndLabel = worker.sessionEndPushes?.[worker.sessionEndPushes.length - 1]?.label ?? 'genuinely_blocked';
+          await this.parkSessionEnd(
+            worker, lastLabel, 'ask',
+            `This session used its ${SESSION_END_MAX_PUSHES} pushes (${(worker.sessionEndPushes ?? []).map(p => p.label).join(', ')}) and still has nothing delivered.`,
+          );
+          return;
         }
 
+        // Nothing pushed or parked above (not resumable, the push cap was
+        // already spent in a way that fell through, or Jev decided this
+        // should simply fail) — fail truthfully. A non-zero commit count
+        // used to fall through to the server's own auto-detect-by-branch
+        // lookup instead of failing locally; that case now gets a real
+        // chance to resolve itself via a push first (above), so reaching
+        // here with commits means that chance didn't change anything either.
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const diagnosis = (worker.lastAssistantMessage || '').trim();
+        const commitClause = commitCountAtEntry === 0 ? ' and no commits were made' : '';
         const errMsg = diagnosis
-          ? `No PR was created and no commits were made. Agent's final report:\n\n${diagnosis}`
-          : 'No PR was created and no commits were made before the session ended (pr_required).';
+          ? `No PR was created${commitClause}. Agent's final report:\n\n${diagnosis}`
+          : `No PR was created${commitClause} before the session ended (pr_required).`;
         worker.status = 'error';
         worker.error = errMsg;
         worker.currentAction = 'No deliverable produced';
@@ -4935,6 +5093,7 @@ export class WorkerManager {
             closingTurnOutcome: isClosingTurn
               ? (closingTurnFailure ? `declined:${closingTurnFailure}` as const : 'declined' as const)
               : 'skipped:no_deliverable' as const,
+            ...(worker.sessionEndPushes?.length ? { sessionEndPushes: worker.sessionEndPushes } : {}),
           },
         });
         this.emit({ type: 'worker_update', worker });
@@ -5126,13 +5285,33 @@ export class WorkerManager {
           }
         }
 
-        // Re-read AFTER the three blocks above. All three can assign a
-        // brand-new object to worker.resultMeta (the SDK never emitted a
-        // result message, e.g. the provision-failure path), and the
-        // completion PATCH used to spread a const captured before them — so
-        // on exactly the path whose comment promises the metrics "travel
-        // with the completion payload", the cbm/toolCounts objects were
-        // built and then silently dropped.
+        // A completion that followed one or more session-end-classification.ts
+        // pushes — "pushes per session and how often a push led to delivery"
+        // needs this on the SUCCESS path too, not just the failure path (see
+        // the hard-failure resultMeta below), or a push that worked would be
+        // invisible to that query.
+        if (worker.sessionEndPushes?.length) {
+          if (worker.resultMeta) {
+            worker.resultMeta.sessionEndPushes = worker.sessionEndPushes;
+          } else {
+            worker.resultMeta = {
+              stopReason: null,
+              durationMs: 0,
+              durationApiMs: 0,
+              numTurns: 0,
+              modelUsage: {},
+              sessionEndPushes: worker.sessionEndPushes,
+            };
+          }
+        }
+
+        // Re-read AFTER the blocks above. Each one can assign a brand-new
+        // object to worker.resultMeta (the SDK never emitted a result
+        // message, e.g. the provision-failure path), and the completion PATCH
+        // used to spread a const captured before them — so on exactly the
+        // path whose comment promises the metrics "travel with the
+        // completion payload", the cbm/toolCounts objects were built and
+        // then silently dropped.
         const resultMeta = worker.resultMeta || undefined;
 
         // Loop-until-verified: run verification command and collect evidence (spec §2).
@@ -6204,6 +6383,18 @@ export class WorkerManager {
               ? `Tool not run (${nonExecKind}): "${feedback.slice(0, 80)}"`
               : `Tool not run: ${nonExecKind}`;
             this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+            // Recorded for session-end-classification.ts: a session that ends
+            // right after a runner-attributed denial (PR #3146's runnerDenial,
+            // not a person) is "asking_permission_it_has", not genuinely
+            // blocked — the denial text itself already says to carry on.
+            // Overwritten on every non-execution; only meaningful when it
+            // matches the LAST recorded tool call (lastToolWasDeniedByRunner).
+            worker.lastToolDenial = {
+              ...(toolUseId ? { toolUseId } : {}),
+              kind: nonExecKind,
+              runnerAttributed: typeof feedback === 'string' && feedback.includes(RUNNER_DENIAL_MARKER),
+              ts: Date.now(),
+            };
             console.log(
               `[Worker ${worker.id}] tool non-execution: kind=${nonExecKind} ` +
               `tool=${nonExecSource ?? '?'}` +

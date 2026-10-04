@@ -504,6 +504,14 @@ export interface WorkspaceGitConfig {
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
 
+  // The 'Jev keeps agents moving' question gate (docs/design/human-question-gate.md,
+  // packages/core/question-gate.ts): Jev decides, holds or asks on every agent
+  // question, and the brief-quality pushback runs unconditionally. Absent / true
+  // = ON (default). Set to false — the one emergency kill switch — to revert to
+  // exactly pre-mission behaviour: every question reaches a person unchanged,
+  // with no pushback and no decide/hold.
+  jevQuestionGate?: boolean;
+
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and
@@ -901,6 +909,19 @@ export interface ResultMeta {
    * which keeps that path byte-identical to before this field existed.
    */
   closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
+  /**
+   * Every end-of-session push the runner gave this worker (classifying why a
+   * session was ending without delivering, then sending label-specific text —
+   * see apps/runner/src/session-end-classification.ts) before its eventual
+   * terminal outcome: which label, when, and the exact text sent. Lets
+   * "pushes per session and how often a push led to delivery" be answered
+   * directly from completed-task result rows, without new telemetry infra.
+   */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
 }
 
 export const workspaces = pgTable('workspaces', {

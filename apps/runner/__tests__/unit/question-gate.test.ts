@@ -11,7 +11,7 @@
  */
 import { describe, expect, mock, test } from 'bun:test';
 import { HookFactory } from '../../src/hook-factory';
-import { questionFromToolInput, questionPayload, runQuestionGate, worktreeRelative } from '../../src/question-gate';
+import { holdTagged, questionFromToolInput, questionPayload, runQuestionGate, worktreeRelative } from '../../src/question-gate';
 import { buildPromptWithComposition } from '../../src/prompt-builder';
 import { RUNNER_DENIAL_MARKER } from '../../src/runner-denial';
 import type { LocalWorker } from '../../src/types';
@@ -26,7 +26,7 @@ function makeWorker(overrides: Partial<LocalWorker> = {}): LocalWorker {
   } as LocalWorker;
 }
 
-const GATE = { experimentId: 'e', policyVersion: 1, arm: 'treatment' as const, maxPushbacks: 2 };
+const GATE = { maxPushbacks: 2 };
 
 const BARE = { questions: [{ question: 'Should isWeekend use local time or UTC?', header: 'Timezone', options: [{ label: 'local time' }, { label: 'UTC' }] }] };
 const BRIEFED = {
@@ -41,10 +41,12 @@ const BRIEFED = {
 };
 
 const PUSHBACK = { verdict: 'pushback' as const, outcome: 'pushback' as const, reason: 'Not sent: a reader with no context could not decide this question. Add: x. Then ask again.', version: 'v', latencyMs: 3 };
-const SEND = { verdict: 'send' as const, outcome: 'actionable' as const, version: 'v', latencyMs: 3 };
+const SEND = { verdict: 'send' as const, outcome: 'asked' as const, disposition: 'ask' as const, version: 'v', latencyMs: 3 };
+const DECIDE = { verdict: 'decide' as const, outcome: 'decided' as const, disposition: 'decide' as const, reason: 'UTC. (Decided automatically and recorded on the task — can be corrected from the task page if it turns out wrong.)', decision: { optionIndex: 1, label: 'UTC', confidence: 0.9 }, version: 'v', latencyMs: 3 };
+const HELD = { verdict: 'send' as const, outcome: 'held' as const, disposition: 'hold' as const, holdReason: "Held — it didn't look urgent enough to interrupt someone right now.", resurfaceAt: '2026-01-01T00:15:00.000Z', version: 'v', latencyMs: 3 };
 
 function factory(checkQuestion: (...a: any[]) => Promise<any>) {
-  const parked: Array<{ input: unknown; toolUseId?: string }> = [];
+  const parked: Array<{ input: unknown; toolUseId?: string; gateReply?: unknown }> = [];
   const check = mock(checkQuestion);
   const f = new HookFactory({
     config: {},
@@ -52,7 +54,7 @@ function factory(checkQuestion: (...a: any[]) => Promise<any>) {
     addMilestone: () => {},
     emit: () => {},
     pendingPermissionRequests: new Map(),
-    parkQuestion: async (_w, input, toolUseId) => { parked.push({ input, toolUseId }); },
+    parkQuestion: async (_w, input, toolUseId, gateReply) => { parked.push({ input, toolUseId, gateReply }); },
   });
   return { f, parked, check };
 }
@@ -113,7 +115,7 @@ describe('PreToolUse: gated AskUserQuestion', () => {
     expect((await ask(hook, BARE, 'toolu_1')).hookSpecificOutput.permissionDecision).toBe('deny');
     const second = await ask(hook, BRIEFED, 'toolu_2');
     expect(second.hookSpecificOutput.permissionDecision).toBe('allow');
-    expect(parked).toEqual([{ input: BRIEFED, toolUseId: 'toolu_2' }]);
+    expect(parked).toEqual([{ input: BRIEFED, toolUseId: 'toolu_2', gateReply: SEND }]);
   });
 
   test('after maxPushbacks the question is sent as-is, even if the server says push back', async () => {
@@ -139,12 +141,31 @@ describe('PreToolUse: gated AskUserQuestion', () => {
     }
   });
 
-  test('ungated (experiment off): no gate call, and the hook does not park (handleMessage does)', async () => {
+  test('ungated (kill switch off or no feature): no gate call, and the hook does not park (handleMessage does)', async () => {
     const { f, parked, check } = factory(async () => PUSHBACK);
     const r = await ask(f.createPermissionHook(makeWorker(), { inputPolicy: 'allow' }), BARE);
     expect(r.hookSpecificOutput.permissionDecision).toBe('allow');
     expect(check).not.toHaveBeenCalled();
     expect(parked).toEqual([]);
+  });
+
+  test('decided: the answer is the tool-call denial reason, nothing is parked, no pushback counted', async () => {
+    const { f, parked, check } = factory(async () => DECIDE);
+    const w = makeWorker({ questionGate: GATE });
+    const r = await ask(f.createPermissionHook(w, { inputPolicy: 'allow' }), BARE);
+    expect(r.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(r.hookSpecificOutput.permissionDecisionReason).toContain('Decided automatically');
+    expect(parked).toEqual([]);
+    expect(w.questionPushbacks ?? 0).toBe(0);
+    expect(check.mock.calls[0][1]).toMatchObject({ priorPushbacks: 0 });
+  });
+
+  test('held: parked like ask, with the hold tag passed through to parkQuestion', async () => {
+    const { f, parked } = factory(async () => HELD);
+    const w = makeWorker({ questionGate: GATE });
+    const r = await ask(f.createPermissionHook(w, { inputPolicy: 'allow' }), BARE);
+    expect(r.hookSpecificOutput.permissionDecision).toBe('allow');
+    expect(parked).toEqual([{ input: BARE, toolUseId: 'toolu_1', gateReply: HELD }]);
   });
 });
 
@@ -153,6 +174,30 @@ describe('runQuestionGate', () => {
     const w = makeWorker({ questionGate: GATE });
     const r = await runQuestionGate(w, questionFromToolInput(w, BARE), { checkQuestion: async () => ({ ...PUSHBACK, reason: undefined }) });
     expect(r.action).toBe('send');
+  });
+
+  test('a decide verdict without a reason is sent (parked), not answered', async () => {
+    const w = makeWorker({ questionGate: GATE });
+    const r = await runQuestionGate(w, questionFromToolInput(w, BARE), { checkQuestion: async () => ({ ...DECIDE, reason: undefined }) });
+    expect(r.action).toBe('send');
+  });
+
+  test('a decide verdict with a reason answers, and does not touch the pushback count', async () => {
+    const w = makeWorker({ questionGate: GATE });
+    const r = await runQuestionGate(w, questionFromToolInput(w, BARE), { checkQuestion: async () => DECIDE });
+    expect(r).toMatchObject({ action: 'answer', reason: DECIDE.reason });
+    expect(w.questionPushbacks ?? 0).toBe(0);
+  });
+});
+
+describe('holdTagged', () => {
+  test('tags a `hold` reply onto the parked question; anything else passes it through unchanged', () => {
+    const w = makeWorker();
+    const q = questionFromToolInput(w, BARE);
+    expect(holdTagged(q, HELD)).toMatchObject({ disposition: 'hold', holdReason: HELD.holdReason, resurfaceAt: HELD.resurfaceAt });
+    expect(holdTagged(q, SEND)).toBe(q);
+    expect(holdTagged(q, null)).toBe(q);
+    expect(holdTagged(q, undefined)).toBe(q);
   });
 });
 
