@@ -28,6 +28,17 @@
         "wrangler": "4.147.0",
       },
     },
+    "apps/dispatch": {
+      "name": "@buildd/dispatch",
+      "version": "0.0.0",
+      "dependencies": {
+        "@buildd/dispatch-contract": "workspace:*",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "5.20261002.1",
+        "wrangler": "4.147.0",
+      },
+    },
     "apps/responder": {
       "name": "@buildd/responder",
       "version": "0.0.0",
@@ -347,6 +358,8 @@
     "@buildd/cloud-runner": ["@buildd/cloud-runner@workspace:apps/cloud-runner"],
 
     "@buildd/core": ["@buildd/core@workspace:packages/core"],
+
+    "@buildd/dispatch": ["@buildd/dispatch@workspace:apps/dispatch"],
 
     "@buildd/dispatch-contract": ["@buildd/dispatch-contract@workspace:packages/dispatch-contract"],
 
