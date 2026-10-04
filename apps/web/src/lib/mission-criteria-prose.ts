@@ -4,7 +4,7 @@ import { missions, tasks, workspaces, secrets } from '@buildd/core/db/schema';
 import { eq, and, or, desc, sql } from 'drizzle-orm';
 import { recalculateOverall, criterionFingerprint } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState, GoalCriterion } from '@buildd/shared';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 
 /**
@@ -400,10 +400,11 @@ async function dispatchProseEvalTask(opts: {
 
   if (!task) return { ok: false, reason: 'Prose verification task insert returned no row' };
 
-  await dispatchNewTask(
+  await announceTaskCreated(
     { id: task.id, title, description: null, workspaceId: mission.workspaceId, mode: 'execution', priority: 2, missionId: mission.id },
     workspace as any,
   ).catch(e => console.error(`[criteria-prose] dispatch failed for task ${task.id}:`, e));
+  await wakeTask(task.id, 'task.created');
 
   console.log(`[criteria-prose] mission ${mission.id} criterion ${criterionIndex}: dispatched ${task.id}`);
   return { ok: true, taskId: task.id };

@@ -27,7 +27,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveOpenWorkerForUser } from '@/lib/pr-resolve';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { applyRecommendationTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -246,7 +246,8 @@ export async function POST(
     where: eq(workspaces.id, worker.workspaceId),
   });
   if (workspace) {
-    await dispatchNewTask(applyTask, workspace);
+    await announceTaskCreated(applyTask, workspace);
+    await wakeTask(applyTask.id, 'task.created');
   }
 
   // Close the loop: an open reviewer_escalated note is an unconditional

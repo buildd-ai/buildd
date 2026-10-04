@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 // ── Module mocks (must be before import) ────────────────────────────────────
 const insertedValues: any[] = [];
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -18,7 +18,23 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 
 // Roles effective for the workspace (role-routing §1 row 9, §3.1).
 let effectiveRoles = new Set<string>();
@@ -50,7 +66,8 @@ beforeEach(() => {
   insertedValues.length = 0;
   pickRoleCalls.length = 0;
   effectiveRoles = new Set();
-  mockDispatchNewTask.mockClear();
+  mockAnnounceTaskCreated.mockClear();
+  mockWakeTask.mockClear();
 });
 
 describe('fileExperimentCleanupTask — role (role-routing §1 row 9)', () => {
@@ -67,6 +84,7 @@ describe('fileExperimentCleanupTask — role (role-routing §1 row 9)', () => {
     effectiveRoles = new Set(['writer']);
     await fileExperimentCleanupTask({ workspaceId: 'ws-1', spec: SPEC });
     expect(insertedValues[0].roleSlug).toBeNull();
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounceTaskCreated.mock.calls[0] as any[])[0].id, 'task.created');
   });
 });

@@ -32,7 +32,7 @@ import {
   isAutoResolveMergeConflictsEnabled,
 } from '@/lib/conflict-retry';
 import { policyValue } from '@/lib/policy-overrides';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import {
   WORKSPACE_INSTALLATION_WITH,
@@ -410,7 +410,8 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           continue;
         }
 
-        await dispatchNewTask(newTask, workspace);
+        await announceTaskCreated(newTask, workspace);
+        await wakeTask(newTask.id, 'task.created');
         result.sparked++;
         console.log(
           `[dead-zone-sweep] sparked task ${newTask.id} for PR #${worker.prNumber}@${headSha.slice(0, 7)} (iteration ${retryTask.context.conflictIteration}/${retryTask.context.maxConflictIterations})`,

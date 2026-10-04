@@ -17,6 +17,7 @@ import type { RetroMessage, RetroWindowInput } from './skeleton';
 import { RETRO_IDLE_MIN, RETRO_MAX_WINDOW_MESSAGES } from './skeleton';
 import type { ChatRetroSettings } from './settings';
 import { readChatRetroSettings } from './settings';
+import { wakeTask } from '@/lib/dispatch-authority';
 
 /** Lessons are kept this long, then pruned by the same cron. */
 export const RETRO_RETENTION_DAYS = 90;
@@ -257,6 +258,8 @@ export async function insertProposalTask(args: { cluster: Cluster; title: string
       chatRetroLessonIds: cluster.lessonIds.slice(0, PROPOSAL_MAX_REFS),
     },
   }).returning({ id: tasks.id });
+  // Written for a worker to pick up, so it gets the same wake as any new task.
+  if (row?.id) await wakeTask(row.id, 'task.created');
   return row?.id ?? null;
 }
 

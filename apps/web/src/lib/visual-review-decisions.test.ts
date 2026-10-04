@@ -23,8 +23,24 @@ mock.module('@/lib/visual-review-load', () => ({
   loadVisualReview: mockLoad,
   toHumanShotReview: (r: any) => ({ ...r, createdAt: String(r.createdAt), supersededAt: r.supersededAt ? String(r.supersededAt) : null }),
 }));
-const mockDispatch = mock(async (..._a: any[]) => {});
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatch }));
+const mockAnnounce = mock(async (..._a: any[]) => {});
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounce,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 const mockEnsureAudit = mock(async (_p: any) => {});
 const mockDetach = mock(async (_p: any) => ({ action: 'none' }));
 mock.module('@/lib/mission-surface-audit', () => ({ ensureMissionSurfaceAudit: mockEnsureAudit, detachFixFromPendingAudit: mockDetach }));
@@ -112,7 +128,7 @@ beforeEach(() => {
   fixStatus = 'in_progress';
   openFixRows = [];
   insertError = null;
-  for (const m of [mockLoad, mockDispatch, mockEnsureAudit, mockDetach, mockCancelFx, mockReopenFx, mockFeed, mockTrigger]) m.mockClear();
+  for (const m of [mockLoad, mockAnnounce, mockWakeTask, mockEnsureAudit, mockDetach, mockCancelFx, mockReopenFx, mockFeed, mockTrigger]) m.mockClear();
 });
 
 const req = (artifactIds: string[], decision: 'looks_right' | 'needs_fix', expected: Record<string, 'ok' | 'issue' | 'unsure'>, note?: string) =>
@@ -326,7 +342,8 @@ describe('applyDecision', () => {
     expect(fix.description).toContain('a-m');
     expect(fix.description).toContain('a-d');
     expect(fix.context.surfaceFix.origin).toBe('human');
-    expect(mockDispatch).toHaveBeenCalledTimes(1);
+    expect(mockAnnounce).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounce.mock.calls[0] as any[])[0].id, 'task.created');
     expect(mockEnsureAudit).toHaveBeenCalledTimes(1);
     expect(mockEnsureAudit.mock.calls[0][0]).toMatchObject({ origin: 'human', missionId: MISSION.id, createdTask: { id: 'fix-new', taskClass: 'work' } });
     // The fix id goes on the review rows, never into artifacts.metadata.qa.
@@ -829,6 +846,7 @@ describe('undoDecision', () => {
     expect(q.params).toEqual(expect.arrayContaining(['fix-h', 'cancelled']));
     expect(q.sql).toContain('"tasks"."claimed_by" is null');
     expect(mockReopenFx).toHaveBeenCalledTimes(1);
+    expect(mockWakeTask).toHaveBeenCalledWith('fix-h', 'task.requeued');
     expect(mockEnsureAudit).toHaveBeenCalledWith(expect.objectContaining({ origin: 'human', createdTask: expect.objectContaining({ id: 'fix-h' }) }));
     expect((out.body as any).reopenedFixTaskId).toBe('fix-h');
   });
@@ -839,5 +857,6 @@ describe('undoDecision', () => {
     const out = await run();
     expect(out.status).toBe(409);
     expect(calls.some(c => c.op === 'update')).toBe(false);
+    expect(mockWakeTask).not.toHaveBeenCalled();
   });
 });

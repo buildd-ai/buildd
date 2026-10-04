@@ -54,7 +54,7 @@ import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import { loadVisualReview, toHumanShotReview } from '@/lib/visual-review-load';
 import { isUuid } from '@/lib/uuid';
 import { missionVisualShotsWhere } from '@/lib/visual-review-query';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { detachFixFromPendingAudit, ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { postMissionFeedEvent } from '@/lib/mission-feed';
@@ -379,8 +379,9 @@ async function fileHumanSurfaceFix(opts: {
     },
   }).returning() as Array<{ id: string; title: string; description: string | null; workspaceId: string; missionId: string | null; taskClass: string; pathManifest: string[] | null }>;
 
-  await dispatchNewTask(task, workspace as Parameters<typeof dispatchNewTask>[1], {})
+  await announceTaskCreated(task, workspace as Parameters<typeof announceTaskCreated>[1])
     .catch(err => console.error('[visual-review] fix dispatch failed:', err));
+  await wakeTask(task.id, 'task.created');
   await ensureMissionSurfaceAudit({
     missionId: mission.id,
     workspaceId: workspace.id,
@@ -829,6 +830,8 @@ export async function undoDecision(input: {
       return { status: 409, body: { error: 'fix_started', fixTaskId: f.fixTaskId } };
     }
     reopenedFixTaskIds.push(f.fixTaskId);
+    // Pending again: the trigger made the wake durable; this labels and kicks it.
+    await wakeTask(f.fixTaskId, 'task.requeued');
     const fix = await db.query.tasks.findFirst({
       where: eq(tasks.id, f.fixTaskId),
       columns: { id: true, title: true, workspaceId: true, taskClass: true, pathManifest: true },

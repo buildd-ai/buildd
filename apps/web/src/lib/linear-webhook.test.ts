@@ -138,13 +138,16 @@ describe('handleLinearIssueEvent — label (create + idempotency)', () => {
     const db = makeDb({ insertReturning: [{ id: 'task-new' }] });
     const findLink = mock(async () => null);
     const linkExternal = mock(async () => ({ builddEntityId: 'task-new', builddEntityType: 'task' }) as any);
+    const wakeTask = mock(async () => {});
     const res = await handleLinearIssueEvent(
       db,
       ctx,
       { kind: 'label', issueId: 'uuid-1', issueUrl: 'https://linear.app/x', title: 'T' },
-      { findLink, linkExternal },
+      { findLink, linkExternal, wakeTask },
     );
     expect(res).toEqual({ action: 'created', taskId: 'task-new' });
+    // A labelled issue is work for a runner: woken, not left for a poll.
+    expect(wakeTask).toHaveBeenCalledWith('task-new', 'task.created');
     expect(db.calls.insert.values).toMatchObject({
       workspaceId: 'ws-1',
       title: 'T',
@@ -178,14 +181,17 @@ describe('handleLinearIssueEvent — label (create + idempotency)', () => {
     const db = makeDb({ insertReturning: [{ id: 'task-loser' }] });
     const findLink = mock(async () => null); // both deliveries pass the pre-check
     const linkExternal = mock(async () => ({ builddEntityId: 'task-winner', builddEntityType: 'task' }) as any);
+    const wakeTask = mock(async () => {});
     const res = await handleLinearIssueEvent(
       db,
       ctx,
       { kind: 'label', issueId: 'uuid-1', issueUrl: null, title: 'T' },
-      { findLink, linkExternal },
+      { findLink, linkExternal, wakeTask },
     );
     expect(res).toEqual({ action: 'exists', taskId: 'task-winner' });
     expect(db.calls.delete).not.toBeNull();
+    // The winner's delivery woke its own task; the deleted loser gets nothing.
+    expect(wakeTask).not.toHaveBeenCalled();
   });
 });
 
