@@ -438,6 +438,13 @@ mock.module('@/lib/mission-release', () => ({
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
 }));
 
+// Default: the integration branch is always usable. Only the multi-repo
+// escape-hatch tests override this to `usable: false`.
+const mockEnsureIntegrationBaseForTaskPr = mock(() => Promise.resolve({ usable: true, recreated: false } as any));
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
+}));
+
 // Phase 2: reviewer outcome mocks
 const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve({ merged: false }));
 const mockEscalateReviewerExhaustion = mock(() => Promise.resolve());
@@ -4555,6 +4562,22 @@ describe('PATCH /api/workers/[id]', () => {
         expect(data.error).toContain(INTEGRATION_BRANCH);
         expect(data.error).toContain('#42');
         expect(data.hint).toContain(INTEGRATION_BRANCH);
+      });
+
+      it("adopts a trunk-based PR when the integration branch is unusable for this task's own repo", async () => {
+        // A multi-repo mission (mission a955fed9): the integration branch
+        // lives in the mission's home repo, not necessarily this task's own
+        // repo. `ensureIntegrationBaseForTaskPr` reporting `usable: false`
+        // for THIS task must not leave completion hard-refusing the only
+        // base that can actually exist here.
+        completingWorker({ missionId: 'mission-1', taskClass: 'work', title: 'Do thing', context: null });
+        optedInMission();
+        detectedPr('dev');
+        mockEnsureIntegrationBaseForTaskPr.mockResolvedValueOnce({ usable: false, recreated: false, detail: 'no_repo' });
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(200);
       });
 
       it('refuses when the auto-detected PR reports no base ref', async () => {
