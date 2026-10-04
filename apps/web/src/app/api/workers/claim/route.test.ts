@@ -8369,6 +8369,36 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(data.diagnostics.taskExclusion.code).toBe('advisory_manifest');
   });
 
+  // Friction 2ccccd12: a local-executor mission's own explicit claims aren't
+  // an unsupervised force claim — the interactive session IS the executor,
+  // same predicate as the role-gate (LX) and rate-limit exemptions above.
+  it('local executor: an explicit interactive claim is not deferred by scope-undeclared serialization, no force needed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', pathManifest: null })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-L', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    expect(data.workers).toHaveLength(1);
+  });
+
+  // The same task, same peer, but a runner poll (no interactive session) is
+  // still deferred — the exemption is scoped to the explicit interactive
+  // claim, not to the mission being local.
+  it('local executor: a runner poll is still deferred by scope-undeclared serialization', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', pathManifest: null })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-L', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    expect(data.workers).toHaveLength(0);
+  });
+
   // M1: the audit records who forced it and exactly which gates it lifted.
   it('force audit: context and gate ledger name the user and the gates actually bypassed', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account('admin'));
