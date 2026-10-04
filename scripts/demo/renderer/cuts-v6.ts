@@ -166,6 +166,16 @@ function v6aShots(s: Stills, o: Look = FILM): Shot[] {
     spot: [key(0, specSlots(false, 4)), key(DIM, specSlots(true, 0)), ...REVEAL.map((t, i) => key(t, specSlots(false, i + 1)))],
     camera: [at(f(SPEC, specFrame, 1.12), 0), at(f(SPEC, specFrame, 1.08), 1)],
   };
+  if (o.beat && o.frame.height > o.frame.width) {
+    // On a phone the list box (with its empty right side) at the floor left the row labels ~7px at 360 wide
+    // (demo:review). Frame the rows' text itself, as large as fits, from the checkboxes in.
+    const text = union(rowRects.map((_, i) => union([line(ROWS[i][0]), line(ROWS[i][1])])));
+    const rowsText = { x: specList.x, y: rowRects[0].y, w: text.x + text.w - specList.x, h: rowRects[3].y + rowRects[3].h - rowRects[0].y };
+    const img = s.img(SPEC);
+    // aim() keeps a 0.012 margin each side when it has to anchor a crop, so fit with that margin in.
+    const fits = o.frame.width / ((rowsText.w + 0.026) * (img.width / 2));
+    criteria.camera = [aim({ ...o, minPx: Math.max(1.8, Math.min(2.2, fits)) }, img, rowsText, 1.04, 0), aim({ ...o, minPx: Math.max(1.8, Math.min(2.2, fits)) }, img, rowsText, 1.03, 1)];
+  }
 
   const composerEdit = s.box('s03b-spec-edit', 'chat-composer');
   const t2 = typed(s.typing('s03b-spec-edit'), 0.6, 3.4);

@@ -241,6 +241,11 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
           expect(m.until).toBeCloseTo(keys[2 + i].at, 5);
         }
       });
+      test(`${look.name}: on a phone the rows read: the crop frames their text at 1.8 output px per CSS px or more`, () => {
+        if (look.frame[0] > 1000) return;
+        const css = crit.images[0].width / 2;
+        for (const k of crit.camera!) expect((look.frame[0] / css) * k.zoom).toBeGreaterThanOrEqual(1.8 - 1e-6);
+      });
       test(`${look.name}: the first encoded frame, the poster and the loop seam all show the full list lit`, () => {
         const allLit = (t: number) => lit(crit.spot!.filter((k) => k.at <= t).pop()!) === 4 && crit.masks!.every((m) => maskAt(m, t, crit.dur).opacity === 0);
         expect(allLit(spec.fade)).toBe(true); // the folded loop starts at cut t = fade
