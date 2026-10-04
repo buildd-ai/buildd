@@ -29,7 +29,7 @@ import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-dia
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { policyValue } from '@/lib/policy-overrides';
 import { LIVE_TASK_STATUSES } from '@/lib/task-presentation';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { inheritAttemptIdentity } from '@/lib/attempt-identity';
 import { appendPrActivity, taskActivityUrl } from '@/lib/pr-activity-comment';
 import { dependencyBotPushRefusal, isDependencyBotAuthor } from '@/lib/dependency-bot-pr';
@@ -193,7 +193,8 @@ export async function POST(
       .returning();
 
     if (newDiagnoseTask) {
-      await dispatchNewTask(newDiagnoseTask, workspace);
+      await announceTaskCreated(newDiagnoseTask, workspace);
+      await wakeTask(newDiagnoseTask.id, 'ci.retry');
       await appendPrActivity({
         installationId,
         repoFullName,
@@ -272,7 +273,8 @@ export async function POST(
     .returning();
 
   if (newTask) {
-    await dispatchNewTask(newTask, workspace);
+    await announceTaskCreated(newTask, workspace);
+    await wakeTask(newTask.id, 'ci.retry');
     await appendPrActivity({
       installationId,
       repoFullName,

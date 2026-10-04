@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, inArray, gt, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { dispatchRetriedTask } from '@/lib/task-dispatch';
+import { wakeTask } from '@/lib/dispatch-authority';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -211,18 +211,13 @@ export async function POST(
         .where(eq(tasks.id, taskId));
     }
 
-    // Wake runners: the workspace webhook when one is configured (a push
-    // runner never sees the Pusher broadcast), else TASK_ASSIGNED to any
-    // connected runner (no targetLocalUiUrl = any worker can claim). The
-    // payload is the same minimal shape as every other nudge (10KB limit).
-    await dispatchRetriedTask(
-      {
-        ...task,
-        ...(switchedBackend && { backend: requestedBackend }),
-        ...(liftPause && { startAt: null }),
-      },
-      task.workspace ?? {},
-    );
+    // Wake runners. Delivery picks the consumer (webhook, else a broadcast any
+    // runner can claim from). A deferral the reassign did not lift keys the
+    // wake onto its start time instead of spending an immediate no-op one.
+    const deferredTo = !liftPause && task.startAt && new Date(task.startAt).getTime() > Date.now()
+      ? new Date(task.startAt)
+      : undefined;
+    await wakeTask(taskId, 'task.reassigned', deferredTo ? { notBefore: deferredTo } : {});
 
     // Check for online workers to give feedback on pickup likelihood.
     // "Demonstrably up" window: a runner silent longer than this is not one to
