@@ -3524,3 +3524,67 @@ export interface WorkspaceReadinessReport {
   /** The git tree response was truncated. */
   truncated: boolean;
 }
+
+// ── Failure Pattern Sentinel: durable incidents ─────────────────────────────
+// One row per stable systemic-failure pattern (`failure_incidents`), written by
+// `apps/web/src/lib/failure-incident-store.ts` from the candidates the pure
+// rules in `apps/web/src/lib/failure-pattern-sentinel.ts` produce. The raw
+// events stay where they already live (workers / worker_terminal_records /
+// gate_events); an incident only carries bounded refs back to them.
+
+/** Ordered: low < medium < high < critical. */
+export type FailureIncidentSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export type FailureIncidentStatus = 'open' | 'acknowledged' | 'resolved';
+
+/** The deterministic rule that raised an incident. Renaming one forks its history. */
+export type FailureIncidentRule =
+  | 'retry_fork'
+  | 'lineage_multi_pr'
+  | 'repeated_failure'
+  | 'stranded_gate'
+  | 'path_overlap_stall'
+  | 'provider_attribution_mismatch'
+  | 'failure_rate_spike'
+  | 'output_unmet_boundary';
+
+/** A pointer at an existing row — never a copy of it. */
+export interface FailureIncidentEvidenceRef {
+  kind: 'task' | 'worker' | 'gate_event' | 'pr' | 'terminal_record';
+  /** Row id, or the PR number as a string for `kind: 'pr'`. */
+  id: string;
+  /** ISO timestamp of the underlying event; drives the occurrence watermark. */
+  at: string;
+  note?: string;
+}
+
+/** Bounded (newest kept) sets of what the incident touched. */
+export interface FailureIncidentAffectedRefs {
+  taskIds: string[];
+  workerIds: string[];
+  prNumbers: number[];
+}
+
+export interface FailureIncident {
+  id: string;
+  workspaceId: string | null;
+  signature: string;
+  detectorVersion: string;
+  rule: FailureIncidentRule;
+  reasonCode: string;
+  title: string;
+  severity: FailureIncidentSeverity;
+  status: FailureIncidentStatus;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  occurrenceCount: number;
+  recurrenceCount: number;
+  affectedRefs: FailureIncidentAffectedRefs;
+  evidenceRefs: FailureIncidentEvidenceRef[];
+  impact: Record<string, number>;
+  lastAlertedAt: string | null;
+  lastAlertSeverity: FailureIncidentSeverity | null;
+  linkedFixTaskId: string | null;
+  acknowledgedAt: string | null;
+  resolvedAt: string | null;
+}

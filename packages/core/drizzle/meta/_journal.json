@@ -1625,6 +1625,13 @@
       "when": 1791138728926,
       "tag": "0237_real_fallen_one",
       "breakpoints": true
+    },
+    {
+      "idx": 238,
+      "version": "7",
+      "when": 1791147505045,
+      "tag": "0238_lucky_dagger",
+      "breakpoints": true
     }
   ]
 }
