@@ -19,11 +19,13 @@ import { TOKEN_PRESETS, type TokenScope } from '@buildd/core/token-scopes';
  * heartbeat, MCP, artifacts, park/re-attach and session-upload calls;
  * opening, closing, merging and requesting review of its own PR (merge still
  * subject to the merge policy); reading PRs and reviews in its task's
- * workspace; a read of that workspace's config and memory; and the
- * diagnostic reads in that workspace (error traces of its tasks, its
- * account's workers and the workspace rollup, failure analytics narrowed to
- * it, explain, and run evidence). The budget forecast is not among them: it
- * is team-wide by nature. The set is pinned by task-token-routes.test.ts.
+ * workspace; a read of that workspace's config and memory; the diagnostic
+ * reads in that workspace (error traces of its tasks, its account's workers
+ * and the workspace rollup, failure analytics narrowed to it, explain, and run
+ * evidence); its usage and coordination stats and spec discrepancies (narrowed
+ * to that one workspace, never team-wide); and listing or reading team-visible
+ * experiments (no readouts, no changes). The budget forecast is not among
+ * them: it is team-wide by nature. The set is pinned by task-token-routes.test.ts.
  *
  * The token also carries the task's workspace (so routes can confine it to
  * that workspace without another lookup) and a binding to the minting key:

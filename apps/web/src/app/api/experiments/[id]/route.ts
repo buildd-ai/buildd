@@ -10,9 +10,14 @@
  *        and, for model_routing, 409s if another one is already running on
  *        the team. Changing fraction or config after the first start bumps
  *        policyVersion (see planExperimentPatch).
+ *
+ * A per-task token may GET a team-visible experiment on its own task's
+ * workspace's team; PATCH is refused to it outright.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { resolveExperimentViewer } from '@/lib/experiment-access';
+import { bearerOf, resolveExperimentViewer, taskTokenExperimentViewer, type ViewerResult } from '@/lib/experiment-access';
+import { isTaskToken } from '@/lib/task-token';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { canViewExperiment, isExperimentAdmin, planExperimentPatch, toExperimentDTO } from '@/lib/experiments';
 import { applyExperimentUpdate, findOtherRunning, getTeamExperiment } from '@/lib/experiments-store';
 
@@ -21,7 +26,19 @@ const notFound = () => NextResponse.json({ error: 'Experiment not found' }, { st
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
+  const workspaceParam = req.nextUrl.searchParams.get('workspaceId');
+  const bearer = bearerOf(req);
+  let who: ViewerResult;
+  if (isTaskToken(bearer)) {
+    const account = await authenticateTaskScopedCaller(bearer, req);
+    if (!account?.taskScope) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (workspaceParam && !taskScopeAllowsWorkspace(account, workspaceParam)) {
+      return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+    }
+    who = await taskTokenExperimentViewer(account.taskScope.workspaceId, account.id);
+  } else {
+    who = await resolveExperimentViewer(req, workspaceParam);
+  }
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   if (!UUID_RE.test(id)) return notFound();
 
@@ -31,6 +48,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (isTaskToken(bearerOf(req))) {
+    return NextResponse.json({ error: 'A task token cannot change experiments' }, { status: 403 });
+  }
   const { id } = await params;
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });

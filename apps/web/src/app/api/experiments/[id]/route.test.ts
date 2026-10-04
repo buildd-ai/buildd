@@ -13,7 +13,23 @@ const mockGet = mock(async (_teamId: string, _id: string) => null as any);
 const mockFindOtherRunning = mock(async (..._a: any[]) => null as any);
 const mockApply = mock(async (..._a: any[]) => null as any);
 
-mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: mockResolveViewer }));
+// A real per-task token, verified by the real authenticateTaskScopedCaller.
+process.env.AUTH_SECRET ||= 'test-task-token-secret';
+const { mintTaskToken } = await import('@/lib/task-token');
+const KEY_HASH = 'key-hash';
+const taskToken = () =>
+  mintTaskToken({ accountId: 'acct-1', taskId: 'task-own', workspaceId: 'ws-own', keyHash: KEY_HASH })!.token;
+const mockAccountFind = mock(async () => ({ id: 'acct-1', apiKey: KEY_HASH, teamId: TEAM, level: 'admin', scopes: null, workspaceIds: null, expiresAt: null }));
+mock.module('@buildd/core/db', () => ({ db: { query: { accounts: { findFirst: mockAccountFind } } } }));
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mock(async () => null as any) }));
+const mockTaskViewer = mock(async (_workspaceId: string, accountId: string) =>
+  ({ ok: true, viewer: { teamId: TEAM, role: 'member', userId: null, accountId } }) as any);
+
+mock.module('@/lib/experiment-access', () => ({
+  resolveExperimentViewer: mockResolveViewer,
+  taskTokenExperimentViewer: mockTaskViewer,
+  bearerOf: (req: NextRequest) => req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null,
+}));
 mock.module('@/lib/experiments-store', () => ({
   getTeamExperiment: mockGet,
   findOtherRunning: mockFindOtherRunning,
@@ -236,5 +252,46 @@ describe('PATCH /api/experiments/[id] — policyVersion', () => {
     as('admin');
     const body = await (await patch({ treatmentFraction: 0.3 })).json();
     expect(body.experiment.policyVersion).toBe(1);
+  });
+});
+
+// A per-task token reads a team-visible experiment on its own task's
+// workspace's team, and changes none.
+describe('/api/experiments/[id] — per-task token', () => {
+  const bearer = (qs = '', init: Record<string, unknown> = {}) =>
+    new NextRequest(`http://localhost/api/experiments/${ID}${qs}`, { ...init, headers: { authorization: `Bearer ${taskToken()}`, 'Content-Type': 'application/json' } });
+
+  beforeEach(() => {
+    mockTaskViewer.mockClear();
+    mockResolveViewer.mockClear();
+  });
+
+  it('reads a team-visible experiment through its own workspace', async () => {
+    stored = row({ visibility: 'team' });
+    const res = await GET(bearer(), ctx());
+    expect(res.status).toBe(200);
+    expect(mockTaskViewer).toHaveBeenCalledWith('ws-own', 'acct-1');
+    expect(mockResolveViewer).not.toHaveBeenCalled();
+  });
+
+  it('does not see an admins-only experiment', async () => {
+    stored = row({ visibility: 'admins' });
+    expect((await GET(bearer(), ctx())).status).toBe(404);
+  });
+
+  it('404s another workspace, before resolving any team', async () => {
+    stored = row({ visibility: 'team' });
+    const res = await GET(bearer('?workspaceId=ws-other'), ctx());
+    expect(res.status).toBe(404);
+    expect(mockTaskViewer).not.toHaveBeenCalled();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it.each([{ status: 'running' }, { status: 'paused' }, { title: 'x' }])('403s PATCH %o, and writes nothing', async (body) => {
+    stored = row({ visibility: 'team' });
+    const res = await PATCH(bearer('', { method: 'PATCH', body: JSON.stringify(body) }), ctx());
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token cannot change experiments');
+    expect(mockApply).not.toHaveBeenCalled();
   });
 });

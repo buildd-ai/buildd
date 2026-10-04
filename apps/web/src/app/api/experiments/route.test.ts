@@ -10,7 +10,24 @@ const mockResolveViewer = mock(async () => viewer);
 const mockList = mock(async (_teamId: string) => [] as any[]);
 const mockInsert = mock(async (..._args: any[]) => ({}) as any);
 
-mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: mockResolveViewer }));
+// A real per-task token, verified by the real authenticateTaskScopedCaller.
+process.env.AUTH_SECRET ||= 'test-task-token-secret';
+const { mintTaskToken } = await import('@/lib/task-token');
+const KEY_HASH = 'key-hash';
+const taskToken = (workspaceId = 'ws-own') =>
+  mintTaskToken({ accountId: 'acct-1', taskId: 'task-own', workspaceId, keyHash: KEY_HASH })!.token;
+const mockAccountFind = mock(async () => ({ id: 'acct-1', apiKey: KEY_HASH, teamId: TEAM, level: 'admin', scopes: null, workspaceIds: null, expiresAt: null }));
+const mockAuthenticateApiKey = mock(async () => null as any);
+mock.module('@buildd/core/db', () => ({ db: { query: { accounts: { findFirst: mockAccountFind } } } }));
+mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
+const mockTaskViewer = mock(async (_workspaceId: string, accountId: string) =>
+  ({ ok: true, viewer: { teamId: TEAM, role: 'member', userId: null, accountId } }) as any);
+
+mock.module('@/lib/experiment-access', () => ({
+  resolveExperimentViewer: mockResolveViewer,
+  taskTokenExperimentViewer: mockTaskViewer,
+  bearerOf: (req: NextRequest) => req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null,
+}));
 mock.module('@/lib/experiments-store', () => ({
   listTeamExperiments: mockList,
   insertExperiment: mockInsert,
@@ -149,5 +166,67 @@ describe('POST /api/experiments', () => {
     as('admin');
     mockInsert.mockResolvedValue('duplicate_key');
     expect((await post(VALID)).status).toBe(409);
+  });
+});
+
+// A per-task token lists team-visible experiments on its own task's
+// workspace's team, without the team-wide enrolment health, and creates none.
+describe('/api/experiments — per-task token', () => {
+  const bearer = (path: string, token: string, init: Record<string, unknown> = {}) =>
+    new NextRequest(`http://localhost${path}`, { ...init, headers: { authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
+
+  beforeEach(() => {
+    mockTaskViewer.mockClear();
+    mockHealth.mockReset();
+    mockHealth.mockResolvedValue([{ code: 'no_recent_assignments', severity: 'critical', detail: 'team-wide' }]);
+    mockList.mockResolvedValue([
+      row({ id: 'a', key: 'hidden', visibility: 'admins', status: 'running' }),
+      row({ id: 'b', key: 'shared', visibility: 'team', status: 'running' }),
+    ]);
+  });
+
+  it('lists team-visible experiments through its own workspace, without enrolment health', async () => {
+    const res = await GET(bearer('/api/experiments', taskToken()));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.experiments.map((e: any) => e.key)).toEqual(['shared']);
+    expect(body.canManage).toBe(false);
+    expect(body.health).toEqual({});
+    expect(mockHealth).not.toHaveBeenCalled();
+    expect(mockTaskViewer).toHaveBeenCalledWith('ws-own', 'acct-1');
+    expect(mockResolveViewer).not.toHaveBeenCalled();
+  });
+
+  it('accepts its own workspace named explicitly', async () => {
+    const res = await GET(bearer('/api/experiments?workspaceId=ws-own', taskToken()));
+    expect(res.status).toBe(200);
+  });
+
+  it('404s another workspace, before resolving any team', async () => {
+    const res = await GET(bearer('/api/experiments?workspaceId=ws-other', taskToken()));
+    expect(res.status).toBe(404);
+    expect(mockTaskViewer).not.toHaveBeenCalled();
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it('401s a forged task token', async () => {
+    const res = await GET(bearer('/api/experiments', `${taskToken()}x`));
+    expect(res.status).toBe(401);
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it('403s create, and writes nothing', async () => {
+    const res = await POST(bearer('/api/experiments', taskToken(), { method: 'POST', body: JSON.stringify({ key: 'k', title: 't' }) }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token cannot create experiments');
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('an account key still resolves through resolveExperimentViewer, health included', async () => {
+    as('admin');
+    const body = await (await GET(bearer('/api/experiments', 'bld_test'))).json();
+    expect(mockResolveViewer).toHaveBeenCalled();
+    expect(mockTaskViewer).not.toHaveBeenCalled();
+    expect(Object.keys(body.health).sort()).toEqual(['a', 'b']);
   });
 });
