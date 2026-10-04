@@ -16,12 +16,16 @@ export interface DispatcherEnv {
   DISPATCH_TOKEN?: string;
   BUILDD_SERVER?: string;
   BUILDD_API_KEY?: string;
+  /** `1` enables POST /tasks/:id/kill, for recovery testing. Off by default. */
+  ALLOW_DEBUG_KILL?: string;
 }
 
 /** The RPC surface of a WorkerAgent stub that the Worker calls. */
 export interface AgentHandle {
   dispatch(request?: DispatchRequest): Promise<DispatchResult>;
   getRunState(): Promise<RunState>;
+  /** Destroy the task's container, as an OOM kill or platform stop would. */
+  killContainer(): Promise<{ killed: boolean }>;
 }
 
 export type GetAgent = (taskId: string) => Promise<AgentHandle>;
@@ -67,7 +71,9 @@ export async function handleRequest(request: Request, env: DispatcherEnv, getAge
   const url = new URL(request.url);
   const isDispatch = url.pathname === '/dispatch';
   const taskMatch = /^\/tasks\/([^/]+)$/.exec(url.pathname);
-  if (!isDispatch && !taskMatch) return json({ error: 'not_found' }, 404);
+  // Debug only: absent (404) unless the operator opted in with ALLOW_DEBUG_KILL=1.
+  const killMatch = env.ALLOW_DEBUG_KILL === '1' ? /^\/tasks\/([^/]+)\/kill$/.exec(url.pathname) : null;
+  if (!isDispatch && !taskMatch && !killMatch) return json({ error: 'not_found' }, 404);
 
   const missing = missingConfig(env);
   if (missing.length > 0) {
@@ -103,6 +109,19 @@ export async function handleRequest(request: Request, env: DispatcherEnv, getAge
     // 202 for a duplicate too: buildd treats a non-2xx as "webhook failed" and
     // falls back to Pusher, which would let a polling runner race this one.
     return json({ taskId, ...result }, 202);
+  }
+
+  if (killMatch) {
+    if (request.method !== 'POST') return json({ error: 'method_not_allowed' }, 405);
+    let killId: string;
+    try {
+      killId = decodeURIComponent(killMatch[1]!);
+    } catch {
+      return json({ error: 'invalid_task_id' }, 400);
+    }
+    if (!isValidTaskId(killId)) return json({ error: 'invalid_task_id' }, 400);
+    const agent = await getAgent(killId);
+    return json({ taskId: killId, ...(await agent.killContainer()) }, 200);
   }
 
   if (request.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);

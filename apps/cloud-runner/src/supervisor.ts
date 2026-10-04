@@ -510,6 +510,14 @@ export class TaskSupervisor {
     const body = {
       status: 'failed',
       error: `Cloud runner: the container ended without the runner reporting (exit code ${r.code ?? 'none'}, attempt ${state.attempt})${detail}`.slice(0, 1000),
+      // Only a `crashed` outcome reaches here (crashReportAction): the runner
+      // process or its container died without reporting. That is the same fact
+      // the runner's own boot reconciliation reports for a session its process
+      // lost, so it carries the same structured flag. buildd then books it as
+      // infra_failure and requeues it on the infra-retry budget (backoff,
+      // infraRetryCount, infra_stalled at the cap) instead of failing the task.
+      // The agent's own exits (failed, refused, usage, parked) never send this.
+      crashReconciled: true,
     };
     try {
       const res = await this.d.fetch(`${server.replace(/\/+$/, '')}/api/workers/${encodeURIComponent(state.workerId!)}`, {

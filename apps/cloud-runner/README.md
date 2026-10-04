@@ -63,6 +63,17 @@ reads it from the exec'd process's output and stores it. A crash before that
 line has no worker to mark (the claim never finished, or finished just before
 the crash); server-side stale detection covers that case.
 
+The report is `PATCH /api/workers/<id>` with `status: failed` and
+`crashReconciled: true`, the flag the runner's own boot reconciliation sends
+for a session its process lost. buildd treats it as an infrastructure failure:
+the task goes back to `pending` on the infra-retry budget (backoff 5, 15, 30
+minutes, counted in `context.infraRetryCount`), the deferred-dispatch sweep
+sends `task.retry` to the webhook on its first run after the backoff passes
+(it rides the hourly `pr-reconcile` cron, so a retry can wait up to an hour
+beyond its backoff), and after the last
+attempt the task fails as `infra_stalled`. Only a `crashed` outcome is reported;
+the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
+
 **Restarts.** If the Durable Object is evicted mid-run (deploy, limits), the
 exec'd process cannot be re-attached. On the next start the agent finds the
 run marked live, destroys the container, and records `crashed` (and reports
@@ -82,6 +93,7 @@ it as above).
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
+| `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
 

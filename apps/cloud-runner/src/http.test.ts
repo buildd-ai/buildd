@@ -9,7 +9,7 @@ const TASK_ID = '0f1e2d3c-aaaa-bbbb-cccc-000011112222';
 
 /** A stub namespace: one fake agent per name, recording calls. */
 function stubAgents() {
-  const byName = new Map<string, { dispatches: number; state: RunState; requests: unknown[] }>();
+  const byName = new Map<string, { dispatches: number; state: RunState; requests: unknown[]; kills?: number }>();
   const lookups: string[] = [];
   const get = async (name: string): Promise<AgentHandle> => {
     lookups.push(name);
@@ -25,6 +25,7 @@ function stubAgents() {
         return { accepted: true, attempt: agent.state.attempt };
       },
       async getRunState() { return agent.state; },
+      async killContainer() { agent.kills = (agent.kills ?? 0) + 1; return { killed: agent.state.status === 'running' }; },
     };
   };
   return { get, byName, lookups };
@@ -168,5 +169,41 @@ describe('GET /tasks/:taskId', () => {
     const agents = stubAgents();
     const res = await handleRequest(new Request('https://d.example/', { headers: { Authorization: `Bearer ${TOKEN}` } }), ENV, agents.get);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /tasks/:id/kill (debug; recovery testing on a real account)', () => {
+  const kill = (auth: string | null = `Bearer ${TOKEN}`, method = 'POST', id = TASK_ID) =>
+    new Request(`https://d.example/tasks/${id}/kill`, { method, headers: auth ? { Authorization: auth } : {} });
+  const ON = { ...ENV, ALLOW_DEBUG_KILL: '1' };
+
+  test('off unless ALLOW_DEBUG_KILL=1: 404, and no agent is touched', async () => {
+    const agents = stubAgents();
+    for (const env of [ENV, { ...ENV, ALLOW_DEBUG_KILL: 'true' }, { ...ENV, ALLOW_DEBUG_KILL: '0' }]) {
+      expect((await handleRequest(kill(), env, agents.get)).status).toBe(404);
+    }
+    expect(agents.lookups).toHaveLength(0);
+  });
+
+  test('needs the dispatch token', async () => {
+    const agents = stubAgents();
+    expect((await handleRequest(kill(null), ON, agents.get)).status).toBe(401);
+    expect((await handleRequest(kill('Bearer nope'), ON, agents.get)).status).toBe(401);
+    expect(agents.lookups).toHaveLength(0);
+  });
+
+  test('POST only, valid task id only', async () => {
+    const agents = stubAgents();
+    expect((await handleRequest(kill(undefined, 'GET'), ON, agents.get)).status).toBe(405);
+    expect((await handleRequest(kill(undefined, 'POST', '..%2Fx'), ON, agents.get)).status).toBe(400);
+  });
+
+  test("destroys the task's container and says whether a run was live", async () => {
+    const agents = stubAgents();
+    await handleRequest(post(payload), ON, agents.get);
+    const res = await handleRequest(kill(), ON, agents.get);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ taskId: TASK_ID, killed: true });
+    expect(agents.byName.get(TASK_ID)!.kills).toBe(1);
   });
 });

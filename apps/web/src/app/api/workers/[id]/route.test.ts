@@ -11332,6 +11332,97 @@ describe('PATCH /api/workers/[id]', () => {
         const failedWorker = workerSetCalls.find((u: any) => u.exitCause);
         expect(failedWorker.exitCause).toBe('budget_limited');
       });
+
+      // The cloud runner's supervisor (apps/cloud-runner/src/supervisor.ts)
+      // reports a container that died under the runner with the same flag. It
+      // used to send a bare {failed, error}, which booked code_failure and left
+      // a non-mission task failed with no retry.
+      describe('cloud runner container crash', () => {
+        const cloudCrashBody = {
+          status: 'failed',
+          error: 'Cloud runner: the container ended without the runner reporting (exit code none, attempt 1): container failed: lost',
+          crashReconciled: true,
+        };
+        const send = (body: Record<string, unknown>) => PATCH(createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body,
+        }), { params: mockParams });
+
+        it('requeues with the first infra backoff and counts the attempt', async () => {
+          mockDispatchRetriedTask.mockClear();
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          const webhookConfig = { url: 'https://hooks.example.test/dispatch', token: 'tok', enabled: true, events: ['task.retry'] };
+          mockTasksFindFirst.mockResolvedValue({
+            id: 'task-1', title: 'Cloud task', status: 'in_progress', workspaceId: 'ws-1', missionId: null,
+            outputRequirement: 'none', context: {}, startAt: null,
+            workspace: { id: 'ws-1', name: 'ws', teamId: 'team-1', webhookConfig },
+          });
+          const before = Date.now();
+          const res = await send(cloudCrashBody);
+
+          expect(res.status).toBe(200);
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue).toBeDefined();
+          expect(requeue.context.infraRetryCount).toBe(1);
+          expect(requeue.claimedBy).toBeNull();
+          const delayMs = (requeue.startAt as Date).getTime() - before;
+          expect(delayMs).toBeGreaterThanOrEqual(5 * 60_000 - 1_000);
+          expect(delayMs).toBeLessThanOrEqual(5 * 60_000 + 5_000);
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('infra_failure');
+          // The wake-up goes through the retry dispatcher (webhook `task.retry`
+          // first); with a future startAt it defers to the deferred-dispatch
+          // sweep, which sends the same event once the backoff has passed.
+          expect(mockDispatchRetriedTask).toHaveBeenCalledTimes(1);
+          const [task, workspace] = mockDispatchRetriedTask.mock.calls[0] as any[];
+          expect(task).toMatchObject({ id: 'task-1', workspaceId: 'ws-1' });
+          expect(workspace.webhookConfig).toEqual(webhookConfig);
+        });
+
+        it('backs off further on the next consecutive crash', async () => {
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 1 });
+          const before = Date.now();
+          await send(cloudCrashBody);
+
+          const requeue = taskSetCalls.find((c: any) => c.status === 'pending');
+          expect(requeue.context.infraRetryCount).toBe(2);
+          const delayMs = (requeue.startAt as Date).getTime() - before;
+          expect(delayMs).toBeGreaterThanOrEqual(15 * 60_000 - 1_000);
+          expect(delayMs).toBeLessThanOrEqual(15 * 60_000 + 5_000);
+        });
+
+        it('ends infra_stalled at the cap instead of requeueing again', async () => {
+          mockDispatchRetriedTask.mockClear();
+          const { taskSetCalls } = setupCrashReconcile({ infraRetryCount: 3 });
+          await send(cloudCrashBody);
+
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+          expect(failing.result.errorType).toBe('infra_stalled');
+          expect(mockDispatchRetriedTask).not.toHaveBeenCalled();
+        });
+
+        it("the agent's own failure (no flag) still fails the task as before", async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          await send({ status: 'failed', error: 'Agent exited with code 1' });
+
+          expect(taskSetCalls.some((c: any) => c.status === 'pending')).toBe(false);
+          const failing = taskSetCalls.find((c: any) => c.status === 'failed');
+          expect(failing).toBeDefined();
+          expect(failing.context?.infraRetryCount).toBeUndefined();
+          expect(workerSetCalls.find((u: any) => u.exitCause).exitCause).toBe('code_failure');
+        });
+
+        it('a caller from another account cannot use the flag to requeue the task', async () => {
+          const { taskSetCalls, workerSetCalls } = setupCrashReconcile({});
+          mockAuthenticateApiKey.mockResolvedValue({ id: 'account-2' });
+          const res = await send(cloudCrashBody);
+
+          expect(res.status).toBe(403);
+          expect(taskSetCalls).toHaveLength(0);
+          expect(workerSetCalls).toHaveLength(0);
+        });
+      });
     });
 
     // A catalog model the runner's CLI is too old for dies on a deterministic
