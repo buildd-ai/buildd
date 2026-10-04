@@ -470,6 +470,10 @@ export interface LocalWorker {
   // session ends — without this, a task instructed to invoke a skill has the
   // instruction but not the skill.
   skillBundles?: SkillBundle[];
+  // True once this process holds the task's role/skill payload (set at claim,
+  // or by rehydratePromptBundles). Never persisted: a worker restored from disk
+  // lacks it, which is how a resume knows to re-fetch (session-prompt-bundles.ts).
+  promptBundlesLoaded?: boolean;
   // Degraded connectors (advisory mode) — connectors that are unavailable but
   // task was allowed to proceed. Injected into system prompt in startSession.
   degradedConnectors?: Array<{ id: string; name: string; failureMode: string }>;

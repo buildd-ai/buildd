@@ -27,6 +27,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
+  'apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts',
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',
   'apps/web/src/app/api/workers/[id]/route.ts',
   'apps/web/src/app/api/workers/[id]/session-upload-url/route.ts',

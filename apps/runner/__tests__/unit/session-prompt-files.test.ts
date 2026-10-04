@@ -309,7 +309,11 @@ const workersSrc = await Bun.file(join(import.meta.dir, '../../src/workers.ts'))
 
 describe('workers.ts wiring', () => {
   test('skills are written into the session cwd, never the user skills dir', () => {
-    expect(workersSrc).toContain('syncSkillToLocal(bundle, { sessionCwd: cwd, workerId: worker.id })');
+    // startSession writes through writeSessionPromptFiles (fresh and resumed alike).
+    expect(workersSrc).toContain('writeSessionPromptFiles(worker, cwd,');
+    const bundlesSrc = readFileSync(join(import.meta.dir, '../../src/session-prompt-bundles.ts'), 'utf-8');
+    expect(bundlesSrc).toContain('syncSkillToLocal(bundle, { sessionCwd: cwd, workerId: worker.id })');
+    expect(bundlesSrc).not.toContain("'.claude', 'skills'");
     expect(workersSrc).not.toContain("'.claude', 'skills'");
   });
 

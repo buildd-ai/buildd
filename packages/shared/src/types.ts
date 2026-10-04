@@ -1593,6 +1593,18 @@ export interface PendingCredentialRefresh {
   expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
 }
 
+/**
+ * GET /api/workers/[id]/prompt-bundles — the claim response's role and skill
+ * payload, resolved again for a session resumed by a runner that no longer
+ * holds it (restart, park → reattach). Each field is absent when the task has
+ * nothing of that kind.
+ */
+export interface WorkerPromptBundlesResponse {
+  skillBundles?: SkillBundle[];
+  roleConfig?: RoleConfig;
+  roleInstructions?: RoleInstructions;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
