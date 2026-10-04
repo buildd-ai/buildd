@@ -23,7 +23,7 @@ describe('formatVisualReview', () => {
     expect(text).toMatch(/round 2/);
     expect(text).toMatch(/agent: unsure/);
     expect(text).toMatch(/you: looks right \(agreed\)/);
-    expect(text).toMatch(/fix: .*in progress.*#2/);
+    expect(text).toMatch(/fix: .*PR open, not merged.*#2/);
     expect(text).toMatch(/not reviewed yet/);
   });
 

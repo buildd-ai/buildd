@@ -34,6 +34,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { mintRepoScopedInstallationToken } from '@/lib/github-scoped-token';
+import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -78,10 +79,10 @@ export async function POST(req: NextRequest) {
     columns: { id: true, workspaceId: true },
     with: {
       workspace: {
-        columns: { id: true, teamId: true, accessMode: true, webhookConfig: true, githubRepoId: true },
+        columns: { id: true, teamId: true, accessMode: true, webhookConfig: true, githubRepoId: true, gitConfig: true, releaseConfig: true },
         with: {
           githubRepo: {
-            columns: { id: true, repoId: true, owner: true, name: true, fullName: true },
+            columns: { id: true, repoId: true, owner: true, name: true, fullName: true, defaultBranch: true },
             with: {
               installation: { columns: { installationId: true, suspendedAt: true, permissions: true } },
             },
@@ -137,6 +138,13 @@ export async function POST(req: NextRequest) {
       repoId: repo.repoId,
       installedPermissions: repo.installation.permissions,
     });
+    // Branches the cloud egress merge guard (apps/cloud-runner/src/outbound.ts
+    // pushedProtectedBranch) must refuse a direct `git push` to: the same set
+    // protectedBaseBranches() gives the auto-merge bound, plus the repo's own
+    // GitHub default branch (protectedBaseBranches omits it on purpose — see
+    // its docstring — but a raw push bypasses buildd's merge policy entirely,
+    // so this check is stricter than that one).
+    const protectedBranches = [...new Set([...protectedBaseBranches({ gitConfig: ws.gitConfig, releaseConfig: ws.releaseConfig }), repo.defaultBranch].filter((b): b is string => typeof b === 'string' && b.length > 0))];
     return NextResponse.json({
       token: minted.token,
       expiresAt: minted.expiresAt.toISOString(),
@@ -145,6 +153,7 @@ export async function POST(req: NextRequest) {
       // comes from here, authenticated by the dispatch token, so neither the
       // container nor the webhook body chooses it.
       workspaceId: ws.id,
+      protectedBranches,
     }, { headers: NO_STORE });
   } catch (err) {
     console.error(`[github-token] mint failed for task ${taskId}:`, err instanceof Error ? err.message : String(err));

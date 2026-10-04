@@ -21,7 +21,7 @@ import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { eq, and, or, sql, inArray, isNotNull } from 'drizzle-orm';
 import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path-overlap';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notifyTeamOf } from '@/lib/notify';
 import { githubApi } from '@/lib/github';
@@ -494,7 +494,7 @@ export async function dispatchConflictRetry(
 ): Promise<DispatchConflictRetryResult> {
   const { workerId, taskId, prNumber, headSha, repoFullName, workspaceId, migrationCollision } = params;
 
-  // Fetch workspace (needed for autoResolveMergeConflicts flag + dispatchNewTask)
+  // Fetch workspace (needed for autoResolveMergeConflicts flag + announceTaskCreated)
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     with: { githubInstallation: true },
@@ -800,7 +800,8 @@ export async function dispatchConflictRetry(
     return { dispatched: false };
   }
 
-  await dispatchNewTask(newTask, workspace);
+  await announceTaskCreated(newTask, workspace);
+  await wakeTask(newTask.id, 'conflict.retry');
   console.log(
     `[conflict-retry] dispatched task ${newTask.id} for PR #${prNumber}@${headSha.slice(0, 7)} (iteration ${retryTask.context.conflictIteration}/${retryTask.context.maxConflictIterations})`,
   );

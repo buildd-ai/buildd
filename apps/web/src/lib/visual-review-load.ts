@@ -14,6 +14,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import type { HumanShotReview, VisualQaVerdict, VisualQaViewport, VisualReviewModel } from '@buildd/shared';
 import { SURFACE_AUDIT_ROUND_CAP_NOTE_TITLE } from '@buildd/core/surface-audit';
+import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { captureTrunk, resolveVisualQaCaptureRef } from '@buildd/core/visual-qa-capture-ref';
 import { loadBrowserRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { auditRequiredRoutes } from '@/lib/visual-qa-required-routes';
@@ -123,6 +124,7 @@ export async function loadVisualReview(
   const captureRef = refRow
     ? resolveVisualQaCaptureRef({ mission: refRow, trunk: captureTrunk(refRow.gitConfig) }).ref
     : null;
+  const missionIntegrationBranch = refRow ? missionIntegrationBase(refRow) : null;
 
   const workersByTask = new Map<string, WorkerRow[]>();
   for (const w of workerRows) {
@@ -155,6 +157,7 @@ export async function loadVisualReview(
       (t.dependsOn ?? []).map(d => (byId.get(d) as TaskRow | undefined)?.pathManifest ?? null),
     ),
     captureRef,
+    missionIntegrationBranch,
     now,
   });
 }

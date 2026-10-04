@@ -55,6 +55,21 @@ describe('listMcpTools — token level gating', () => {
     }
   });
 
+  it('check_path_claim declares release (and its reason/expectedRevision companions) in its input schema', () => {
+    // Regression: the description has always promised "With release=true, gives
+    // the paths back instead", and the handler has always read args.release /
+    // args.reason / args.expectedRevision — but the schema only declared
+    // `paths`, so a client that validates arguments against the published
+    // schema drops `release` before it reaches the server, silently re-claiming
+    // instead of releasing.
+    const [tool] = tools({ accountLevel: 'worker', isSensitive: false, surface: 'groups' }).filter(t => t.name === 'check_path_claim') as Array<{
+      inputSchema: { properties: Record<string, unknown> };
+    }>;
+    expect(Object.keys(tool.inputSchema.properties)).toEqual(
+      expect.arrayContaining(['paths', 'release', 'reason', 'expectedRevision'])
+    );
+  });
+
   it('narrows the advertised action list to the caller level', () => {
     const trigger = actionsForLevel('trigger');
     const worker = actionsForLevel('worker');

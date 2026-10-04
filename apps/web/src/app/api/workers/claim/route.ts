@@ -1,6 +1,6 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { withoutDispatchToken } from '@/lib/workspace-dispatch-token';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
@@ -19,6 +19,8 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential } from '@/lib/codex-credential';
+import { hasOpenAiApiKey } from '@/lib/openai-credential';
+import { hasOpenAiCompatibleAgentEndpoint } from '@buildd/core/agent-endpoint';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
 import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
 import {
@@ -53,7 +55,9 @@ import {
   bypassFlagCondition,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
-import { getActiveClaimsByWorkspace, registerWaiter } from '@buildd/core/path-claim';
+import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
+import { withDispatchHint } from '@buildd/core/dispatch-outbox';
+import { kickDispatch } from '@/lib/dispatch-authority';
 import { isExpiredParkedHolder } from '@buildd/core/path-claim-ttl';
 import { depsGate } from './deps-gate';
 import { allowExplicitClaim, EXPLICIT_CLAIM_WINDOW_SEC } from './explicit-claim-rate-limit';
@@ -88,6 +92,8 @@ import {
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
 import { attachAgentEndpoints, runnerSupportsAgentEndpoint } from './agent-endpoint-injection';
+import { attachGitHubCredentialModes } from './github-credential-injection';
+import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
@@ -846,6 +852,10 @@ export async function POST(req: NextRequest) {
 
   const runnerHasCodexBackend = capabilities.includes('backend:codex');
   const runnerHasLocalCodexAuth = capabilities.includes('OPENAI_API_KEY') || capabilities.includes('CODEX_HOME');
+  // A team's agent model endpoint can power Codex too (OpenAI-compatible
+  // kinds only), but only for a runner that will actually apply it — one that
+  // declares AGENT_ENDPOINT_RUNNER_FEATURE, same as the Claude path.
+  const runnerSupportsEndpointForCapabilityCheck = runnerSupportsAgentEndpoint(body.runnerFeatures);
   const serverCredentialTaskIds = new Set<string>();
   if (runnerHasCodexBackend && !runnerHasLocalCodexAuth && process.env.ENCRYPTION_KEY) {
     await Promise.all(claimableTasks.map(async (task) => {
@@ -853,7 +863,9 @@ export async function POST(req: NextRequest) {
       const teamId = (task as any).workspace?.teamId;
       if (!teamId) return;
       try {
-        if (await hasCodexCredential({ teamId, accountId: account.id, workspaceId: task.workspaceId })) {
+        const credScope = { teamId, accountId: account.id, workspaceId: task.workspaceId };
+        const hasEndpoint = runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(credScope);
+        if ((await hasCodexCredential(credScope)) || (await hasOpenAiApiKey(credScope)) || hasEndpoint) {
           serverCredentialTaskIds.add(task.id);
         }
       } catch (err) {
@@ -1153,6 +1165,17 @@ export async function POST(req: NextRequest) {
   // `diagnostics.blockedByPr` (no runner reads it yet; it is there for callers
   // that want to name the PR an idle runner is waiting on).
   let firstBlockingPr: { prNumber: number | null; prUrl: string | null } | null = null;
+  // path_overlap deferrals to register as waiters on their blocker, written
+  // once after the response (scheduleClaimDeferralWaiters). Without the row a
+  // blocker's release has nobody to wake, and the deferred task waits out the
+  // runner's fallback poll.
+  const deferralWaiters = new Map<string, ClaimDeferralWaiter[]>();
+  const noteDeferralWaiter = (workspaceId: string, waitingTaskId: string, blockingTaskId: string | null | undefined, blockedPaths: string[]) => {
+    if (!blockingTaskId || blockingTaskId === waitingTaskId) return;
+    const list = deferralWaiters.get(workspaceId) ?? [];
+    for (const blockedPath of blockedPaths) list.push({ waitingTaskId, blockingTaskId, blockedPath });
+    if (list.length > 0) deferralWaiters.set(workspaceId, list);
+  };
 
   // Per-workspace concurrency cap enforced within this batch. The SQL guard above
   // filtered candidates against *existing* active workers, but a single batch could
@@ -1190,7 +1213,8 @@ export async function POST(req: NextRequest) {
     if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
     let available = false;
     try {
-      available = await hasCodexCredential(scope);
+      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope)) ||
+        (runnerSupportsEndpointForCapabilityCheck && await hasOpenAiCompatibleAgentEndpoint(scope));
     } catch (err) {
       console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
     }
@@ -1635,19 +1659,12 @@ export async function POST(req: NextRequest) {
             detail: `Its files overlap open PR ${prLabel}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for it to merge, or rebase onto it.`,
           };
         }
-        // Register this still-pending task as a waiter on the PR's own task so
-        // it is dispatch-woken (path-claim-release.ts) the moment that task's
-        // terminal signal fires again on merge/close — not just on the claim
-        // loop's own next poll. releaseClaims() wakes every waiter on a
-        // blockingTaskId even when that task already released its claims (e.g.
-        // it completed with the PR still open), so this still fires correctly
-        // even though layer 1 has no active path_claims row to key off.
-        if (!forced && blockingEntry?.taskId) {
-          const overlapPaths = intersectPaths(taskManifest, blockingEntry.pathManifest ?? []);
-          registerWaiter(blockingEntry.taskId, task.id, overlapPaths[0] ?? taskManifest[0], task.workspaceId)
-            .catch(err => console.warn(`[claim] registerWaiter (layer 1) failed for task ${task.id}:`, err));
+        if (bypassOrDefer('path_overlap', blockedByPr)) {
+          // The blocker's own manifest paths, which its terminal release wakes.
+          noteDeferralWaiter(task.workspaceId, task.id, blockingEntry?.taskId,
+            intersectPaths(blockingEntry?.pathManifest ?? [], taskManifest));
+          continue;
         }
-        if (bypassOrDefer('path_overlap', blockedByPr)) continue;
       }
 
       // Path-overlap backstop (layer 2): also check active path_claims rows.
@@ -1678,17 +1695,14 @@ export async function POST(req: NextRequest) {
                   detail: `Its files overlap an active claim held by task ${claimingTaskId}${overlapPaths.length ? ` (${overlapPaths.join(', ')})` : ''}. Wait for that task to finish, or rebase onto its work.`,
                 };
               }
-              // Register this still-pending task as a waiter on the claim
-              // holder so releasing it dispatch-wakes this task immediately
-              // (path-claim-release.ts) instead of leaving it to the claim
-              // loop's own next poll.
-              if (!forced) {
-                registerWaiter(claimingTaskId, task.id, overlapPaths[0] ?? concreteManifest[0], task.workspaceId)
-                  .catch(err => console.warn(`[claim] registerWaiter (layer 2) failed for task ${task.id}:`, err));
-              }
               // prNumber/prUrl: null so a coalesced row does not keep naming a
               // PR from an earlier layer-1 deferral as the current blocker.
               blockedByActiveClaim = bypassOrDefer('path_overlap', { blockingTaskId: claimingTaskId, prNumber: null, prUrl: null });
+              // The holder's lease paths, so a narrowing that gives one back
+              // wakes this task too (narrow matches waiters by exact path).
+              if (blockedByActiveClaim) {
+                noteDeferralWaiter(task.workspaceId, task.id, claimingTaskId, intersectPaths(concreteClaimed, concreteManifest));
+              }
               break;
             }
           }
@@ -2442,10 +2456,13 @@ export async function POST(req: NextRequest) {
       }
 
       // Roll back only our still-assigned claim; never resurrect a cancelled task.
-      await db
+      // Suppressed for the dispatch trigger: this undoes our own claim, it is
+      // not new runnable state, and a wake here would loop claim → refuse →
+      // rollback → wake across every runner.
+      await withDispatchHint({ suppress: 'claim_rollback' }, db
         .update(tasks)
         .set({ claimedBy: null, claimedAt: null, expiresAt: null, status: 'pending' })
-        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id)));
+        .where(and(eq(tasks.id, task.id), eq(tasks.status, 'assigned'), eq(tasks.claimedBy, account.id))));
       if (task.id === taskId) {
         explicitTaskExclusion = {
           code: 'account_cap',
@@ -2524,10 +2541,9 @@ export async function POST(req: NextRequest) {
         const own = ((waiting as any).pathManifest as string[] | null) ?? [];
         const theirs = blocker?.paths ?? (((applyTaskById.get(blockerTaskId) as any)?.pathManifest as string[] | null) ?? []);
         const path = intersectPaths(own, theirs)[0] ?? own[0];
-        if (path) {
-          registerWaiter(blockerTaskId, waiting.id, path, waiting.workspaceId)
-            .catch(err => console.warn(`[claim] registerWaiter (planner) failed for task ${waiting.id}:`, err));
-        }
+        // Same durable waiter as a path_overlap deferral: registered after the
+        // response (scheduleClaimDeferralWaiters), woken through the outbox.
+        if (path) noteDeferralWaiter(waiting.workspaceId, waiting.id, blockerTaskId, [path]);
       }
     }
     fireClaimPlanRecord({
@@ -2556,6 +2572,7 @@ export async function POST(req: NextRequest) {
   // Hold/start shadow decisions run after the response is sent (after()).
   // Registering them is synchronous; nothing here is awaited.
   scheduleClaimHoldShadow(holdStart);
+  scheduleClaimDeferralWaiters(deferralWaiters);
 
   if (claimedWorkers.length === 0) {
     // When the account's OAuth budget is exhausted, every non-tenant Claude task
@@ -2792,16 +2809,27 @@ export async function POST(req: NextRequest) {
   // makes the omission hold even if a new attach forgets the check.
   //
   // The team's agent model endpoint is ranked against the Anthropic key, the
-  // seat and the Claude credential first (./agent-endpoint-injection): where
-  // it wins, it is the only model credential attached, so the blocks below
-  // skip the Anthropic ones for those workers.
+  // seat and the Claude credential (Codex: the OpenAI key and codex_credential
+  // instead) first (./agent-endpoint-injection): where it wins, it is the only
+  // model credential attached, so the blocks below skip the backend-matching
+  // ones for those workers.
   const endpointWorkers: ReadonlySet<string> = cloudExecutor
     ? new Set()
     : await attachAgentEndpoints(claimedWorkers, filteredTasks, account.id, {
         llmProviderOverride: body.llmProviderOverride === true,
+        codexBaseUrlOverride: body.codexBaseUrlOverride === true,
         runnerSupportsEndpoint: runnerSupportsAgentEndpoint(body.runnerFeatures),
       });
   if (!cloudExecutor) await attachServerManagedSecrets(claimedWorkers, account.id, endpointWorkers);
+
+  // Which GitHub credentials the agent gets: a mode marker only, gated on the
+  // rollout stage and the runner declaring the feature. See ./github-credential-injection.
+  if (!cloudExecutor) {
+    attachGitHubCredentialModes(claimedWorkers, {
+      rollout: parseAgentGitHubRollout(process.env[AGENT_GITHUB_TOKEN_ROLLOUT_ENV]),
+      runnerFeatures: body.runnerFeatures,
+    });
+  }
 
   // Inject active MCP connectors — resolution rules (role connectorRefs ∩ workspace
   // enablement ∩ team visibility, and owner-team credential keying) live in
@@ -2817,7 +2845,7 @@ export async function POST(req: NextRequest) {
   // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
   // read-only (refresh is runner-side). See ./credential-injection.
   if (!cloudExecutor) {
-    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
+    await attachCodexCredentials(claimedWorkers, filteredTasks, account.id, endpointWorkers);
     await attachClaudeCredentials(claimedWorkers, filteredTasks, endpointWorkers);
     await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks, endpointWorkers);
   } else {
@@ -2859,4 +2887,31 @@ export async function POST(req: NextRequest) {
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
   }, undefined, { route: req.nextUrl.pathname });
+}
+
+/**
+ * Write the request's path_overlap waiters after the response: one locked
+ * statement per workspace (registerClaimDeferralWaiters), which also wakes at
+ * once any task whose blocker let go since this request read it. Off the hot
+ * path, but not silent: a failure is logged, and the deferred task is still
+ * re-registered by its next claim pass and swept by path-claims maintenance.
+ */
+function scheduleClaimDeferralWaiters(byWorkspace: Map<string, ClaimDeferralWaiter[]>): void {
+  if (byWorkspace.size === 0) return;
+  const run = () => Promise.all([...byWorkspace].map(([workspaceId, entries]) =>
+    registerClaimDeferralWaiters(workspaceId, entries).catch(err => {
+      console.error(`[claim] registering claim-deferral waiters failed for workspace ${workspaceId}:`, err);
+      return { registered: 0, woken: [] as string[] };
+    }),
+  )).then(results => {
+    // A blocker that let go since this request read it was woken in the same
+    // statement; deliver that wake now rather than at the next unrelated kick.
+    if (results.some(r => r.woken.length > 0)) kickDispatch();
+  });
+  try {
+    after(run);
+  } catch {
+    // Outside a request scope (scripts, tests): run now, detached.
+    void run();
+  }
 }

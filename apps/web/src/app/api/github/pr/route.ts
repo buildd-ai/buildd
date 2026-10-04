@@ -45,7 +45,7 @@ import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { landPr, resolveLandingMode, type LandingOutcome } from '@/lib/pr-landing';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { stampTaskKindIfAbsent } from '@/lib/task-kind';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
@@ -144,7 +144,7 @@ async function requestIntegrationBranchReview(params: {
     });
 
     if (reviewerTask?.id && !reviewerTask.deduplicated) {
-      await dispatchNewTask(
+      await announceTaskCreated(
         {
           id: reviewerTask.id,
           title: `Review PR #${params.prNumber}: ${params.task.title}`,
@@ -156,6 +156,7 @@ async function requestIntegrationBranchReview(params: {
         },
         params.workspace as never,
       );
+      await wakeTask(reviewerTask.id, 'task.created');
 
       await appendPrActivity({
         installationId: params.installationId,

@@ -1,0 +1,20 @@
+{
+  "name": "@buildd/dispatch",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Dispatch transport Worker: durable per-scope queue, timers, retry and delivery for producer envelopes. Transport only; the producer stays the authority.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "type-check": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@buildd/dispatch-contract": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261002.1",
+    "wrangler": "4.147.0"
+  },
+  "license": "FSL-1.1-ALv2"
+}

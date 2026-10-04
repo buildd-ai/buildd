@@ -5,7 +5,7 @@ import { githubInstallations, githubRepos, tasks, workers, workspaces, missions,
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
 import {
@@ -316,7 +316,8 @@ async function createTaskFromIssue(
     .returning();
 
   if (newTask) {
-    await dispatchNewTask(newTask, workspace);
+    await announceTaskCreated(newTask, workspace);
+    await wakeTask(newTask.id, 'task.created');
   }
 }
 
@@ -1974,7 +1975,7 @@ async function maybeDispatchReviewer(
     // A deduplicated result is another producer's reviewer: it was dispatched
     // and announced by whoever created it.
     if (reviewerTask && !reviewerTask.deduplicated) {
-      // dispatchNewTask needs more than just the id — pass the reviewer task details
+      // The announcement needs more than just the id — pass the reviewer task details
       // we know from the params rather than re-querying the DB.
       const reviewerTaskFull = {
         id: reviewerTask.id,
@@ -1985,7 +1986,8 @@ async function maybeDispatchReviewer(
         backend: originalTask.backend,
         roleSlug: reviewerRole,
       };
-      await dispatchNewTask(reviewerTaskFull, workspace);
+      await announceTaskCreated(reviewerTaskFull, workspace);
+      await wakeTask(reviewerTaskFull.id, 'task.created');
       console.log(`[reviewer] Dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName}`);
       // Tell the PR (not just the dashboard) that an agent has this.
       await appendPrActivity({
@@ -2164,7 +2166,8 @@ async function maybeReDispatchReviewer(
       backend: originalTask.backend,
       roleSlug: reviewerRole,
     };
-    await dispatchNewTask(reviewerTaskFull, workspace);
+    await announceTaskCreated(reviewerTaskFull, workspace);
+    await wakeTask(reviewerTaskFull.id, 'task.created');
     console.log(`[reviewer] Re-dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName} (was ${status.state} at ${priorHeadSha.slice(0, 7)})`);
     await appendPrActivity({
       installationId,

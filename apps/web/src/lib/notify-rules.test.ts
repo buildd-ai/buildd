@@ -95,6 +95,7 @@ describe('DEFAULT_NOTIFICATION_PREFERENCES', () => {
   it('defaults every event on (preserves prior behaviour, now muteable)', () => {
     expect(DEFAULT_NOTIFICATION_PREFERENCES).toEqual({
       taskClaimed: true,
+      artifactReady: false,
       taskCompleted: true,
       taskFailed: true,
       credentialExpired: true,

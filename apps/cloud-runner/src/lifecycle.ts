@@ -69,6 +69,13 @@ export interface RunState {
   resumed?: boolean;
   /** When the parked attempt this one resumes ended (agent clock), for the report's gap time. */
   parkedAt?: number;
+  /**
+   * A pending `task.scheduled` wake (epoch ms): the agent starts a run then.
+   * Cleared when it fires or when any dispatch starts a run first.
+   */
+  scheduledFor?: number;
+  /** The Agents SDK schedule id of that wake; a fire with any other id is stale. */
+  scheduleId?: string;
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };
@@ -82,6 +89,8 @@ export type DispatchDecision =
 export interface DispatchRequest {
   /** `task.resume`: continue this parked worker instead of claiming. */
   resumeWorkerId?: string;
+  /** A `task.scheduled` wake: the time it was scheduled for (epoch ms), for the run report. */
+  scheduledFor?: number;
 }
 
 /**

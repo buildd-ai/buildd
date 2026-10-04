@@ -44,7 +44,7 @@ const audits: VisualReviewAuditTask[] = [
 function model(over: Partial<VisualReviewModel> = {}): VisualReviewModel {
   const cells = [
     cell(SHOT1, 'mobile', 'unsure', 'Header may overlap.'),
-    { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.'), current: { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.').current, fixTask: { id: FIX, title: '[surface fix] x', status: 'in_progress', prUrl: null, prNumber: 12, mergedAt: null, origin: 'auditor' as const } } },
+    { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.'), current: { ...cell(SHOT2, 'desktop', 'issue', 'Two headings.').current, fixTask: { id: FIX, title: '[surface fix] x', status: 'in_progress', prUrl: null, prNumber: 12, mergedAt: null, mergedInto: null, origin: 'auditor' as const } } },
   ];
   return {
     missionId: 'mission-1',

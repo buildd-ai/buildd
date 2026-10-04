@@ -4,6 +4,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
+import { wakeTask } from '@/lib/dispatch-authority';
 
 export interface TaskRef {
   id: string;
@@ -27,13 +28,17 @@ export async function emitTaskUpdated(task: TaskRef & { status: string }): Promi
 
 /**
  * After a cancelled task is written back to `pending` outside the task PATCH
- * (e.g. its GitHub issue was reopened): broadcast the change and reopen its
- * mission if that mission had already completed — the same reopen the PATCH
- * route runs. Lazily imports mission-loop so callers that never reopen don't
- * pull in its dependency graph. Never throws.
+ * (e.g. its GitHub issue was reopened): broadcast the change, wake it, and
+ * reopen its mission if that mission had already completed — the same reopen
+ * the PATCH route runs. The status write already made the wake durable (outbox
+ * trigger); the wake labels it and kicks delivery. Lazily imports mission-loop
+ * so callers that never reopen don't pull in its dependency graph. Never throws.
  */
 export async function applyTaskReopenSideEffects(task: TaskRef, reason: string): Promise<void> {
   await emitTaskUpdated({ ...task, status: 'pending' });
+  await wakeTask(task.id, 'task.requeued').catch((err) =>
+    console.error(`[task-cancel] wake failed for reopened task ${task.id}:`, err),
+  );
   if (!task.missionId) return;
   try {
     const [{ reopenCompletedMission }, { systemActor }] = await Promise.all([

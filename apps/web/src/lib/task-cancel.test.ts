@@ -26,6 +26,23 @@ mock.module('@/lib/mission-feed', () => ({
   systemActor: (label: string) => ({ kind: 'system', id: null, label }),
 }));
 
+const mockWakeTask = mock(async (_id: string, _cause: string) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  wakeTask: mockWakeTask,
+  wakeTasks: async () => {},
+  announceTaskCreated: async () => {},
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped:test',
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  primaryCause: (_c: readonly string[], fallback: string) => fallback,
+  reseedDispatchTimer: async () => {},
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+}));
+
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects, emitTaskUpdated } from './task-cancel';
 
 const TASK = { id: 'task-1', workspaceId: 'ws-1', missionId: null };
@@ -102,6 +119,23 @@ describe('applyTaskReopenSideEffects', () => {
     mockTriggerEvent.mockResolvedValue(undefined);
     mockReopenCompletedMission.mockReset();
     mockReopenCompletedMission.mockResolvedValue({ reopened: true });
+    mockWakeTask.mockReset();
+    mockWakeTask.mockResolvedValue(undefined);
+  });
+
+  // Reopened tasks used to sit until a runner polled: TASK_UPDATED is a
+  // dashboard event, not a wake.
+  it('wakes the reopened task as task.requeued, with or without a mission', async () => {
+    await applyTaskReopenSideEffects(TASK, 'github issue reopened');
+    expect(mockWakeTask).toHaveBeenCalledWith('task-1', 'task.requeued');
+    await applyTaskReopenSideEffects({ ...TASK, missionId: 'm-1' }, 'github issue reopened');
+    expect(mockWakeTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed wake does not stop the mission reopen', async () => {
+    mockWakeTask.mockRejectedValue(new Error('db blip'));
+    await applyTaskReopenSideEffects({ ...TASK, missionId: 'm-1' }, 'x');
+    expect(mockReopenCompletedMission).toHaveBeenCalled();
   });
 
   it('emits TASK_UPDATED pending and reopens the mission', async () => {

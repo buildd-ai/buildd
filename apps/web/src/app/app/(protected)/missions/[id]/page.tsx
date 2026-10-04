@@ -1319,6 +1319,8 @@ export default async function MissionDetailPage({
     criteriaState: goalCriteriaStateFull?.criteria ?? [],
     artifacts: allArtifacts.map(a => ({ key: a.key ?? null, type: a.type ?? null })),
     humanTouches: humanSteeringNotes.map(n => new Date(n.createdAt).getTime()),
+    // Another mission's dependency is judged by the claim gate, not dropped.
+    externalDeps: [...foreignDeps.values()],
   });
   // The lede answers "what changed for me?" in place of the D3 text; every
   // other header variant sits above it.

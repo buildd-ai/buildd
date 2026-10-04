@@ -198,6 +198,12 @@ export function classifyReportedFailure(input: {
    */
   crashReconciled?: boolean;
   /**
+   * The runner could not clone the workspace repo because GitHub throttled it
+   * (HTTP 429 or a secondary rate limit) after the runner's own bounded
+   * retries. Nothing ran; a later attempt, after a backoff, can succeed. Infra.
+   */
+  githubThrottled?: boolean;
+  /**
    * The session died on the CLI's model version gate (see
    * isUnrecognizedModelError): the runner cannot serve the model the task was
    * routed to. Infra — a fresh claim routes around it — so it rides the
@@ -214,6 +220,7 @@ export function classifyReportedFailure(input: {
   if (input.budgetLimited) return 'budget_limited';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
   if (input.crashReconciled) return 'infra_failure';
+  if (input.githubThrottled) return 'infra_failure';
   if (input.unrecognizedModel) return 'infra_failure';
   // Steering-delivery crashes are infra failures — the CLI rejected a malformed
   // invocation, not a code defect. Must not consume a retry attempt.

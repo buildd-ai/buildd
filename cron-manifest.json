@@ -150,6 +150,20 @@
       "method": "GET"
     },
     {
+      "$comment": "Dispatch timer (apps/web/src/app/api/cron/dispatch-drain): fires durable wakes that are due in the future \u2014 a deferred startAt, a delivery retry's backoff \u2014 at their due minute. Redis-only when idle: reads buildd:due:dispatch (published from the outbox by every kick and drain) and returns without touching Postgres, and without writing a cron_runs row, unless an intent is due; so every minute costs Redis reads and no Neon wake while nothing is scheduled (knowledge-base: buildd/design/cron-wake-windows.md). When something is due it is the wake that was going to happen anyway. Every minute because this is the timer primitive: a startAt fires within a minute of its time instead of at the next hourly reconcile. Until it moves to a Cloudflare Durable Object alarm. Fail-open: with Redis unconfigured or erroring the gate proceeds to the DB.",
+      "title": "Buildd: Dispatch Drain (gated)",
+      "path": "/api/cron/dispatch-drain?gate=due",
+      "schedule": "* * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Dispatch repair floor for the SAME route: drains anything a kick or the gated tick missed, re-seeds the due-queue from the outbox so a lost publish costs at most an hour, backfills scheduled wakes for tasks deferred before the outbox existed, and reports overdue/stuck/failed intents. Reconciliation only \u2014 normal dispatch never waits for it. At :10, inside the wake window the hourly PR merge-state sweep already opens, where the startAt sweep it replaces used to run, so it adds no Neon wake.",
+      "title": "Buildd: Dispatch Drain Floor",
+      "path": "/api/cron/dispatch-drain",
+      "schedule": "10 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Heals workers whose PR merged on GitHub but whose row still says otherwise \u2014 a missed pull_request webhook delivery starves every dependent task until this corrects it, so the cadence has to be within the working hour, not the working day. Merge-state only: the dead-zone sweep (which spawns conflict-resolution tasks) stays on the daily job below. The sweep is capped and rate-limited per run, so a backlog drains across runs. Offset off :00 to stay clear of the schedules tick, but only by 10 minutes: Neon autosuspends after ~5 idle minutes, so a far-away offset opens a second wake window every hour for no benefit. Routes here cap at 60s. Also carries the Option A' mission-PR sweep, which is the only trigger for a mission's integration PR that does not need a merge event at all \u2014 the webhook opens it when the last task PR merges, and a mission can reach completeness with no such event (last deliverable needs no PR, or every deliverable was cancelled). The completion gate refuses a mission whose PR is missing, so that cannot wait for the daily job. Bounded to opted-in missions inside a recency window.",
       "title": "Buildd: PR Merge-State Sweep",
       "path": "/api/cron/pr-reconcile?scope=merge-state",

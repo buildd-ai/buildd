@@ -78,8 +78,8 @@ describe('planDeploy: first deploy', () => {
     expect(hook).toMatchObject({ config: { url: DISPATCH, token: GEN, enabled: true } });
     // Opts into every dispatch event: without `events`, buildd sends a webhook
     // only new and unblocked tasks, and a push-only runner never sees a retry.
-    expect(hook).toMatchObject({ config: { events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume'] } });
-    expect([...DISPATCH_EVENTS]).toEqual(['task.created', 'task.unblocked', 'task.retry', 'task.resume']);
+    expect(hook).toMatchObject({ config: { events: ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'] } });
+    expect([...DISPATCH_EVENTS]).toEqual(['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled']);
     const tok = p.steps.find((s) => s.kind === 'put_secret' && s.name === 'DISPATCH_TOKEN');
     expect(tok).toMatchObject({ value: GEN });
   });

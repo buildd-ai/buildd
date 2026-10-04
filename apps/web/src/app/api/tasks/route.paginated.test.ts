@@ -4,6 +4,12 @@
  * the existing route.test.ts that mocks db.query only.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 // The gate ledger shares the `db` handle with the route, so an unstubbed
 // `recordGateEvent` shows up as an extra `db.insert` in the table-agnostic
 // mocks below. Stubbed here because this file asserts route BEHAVIOUR; the
@@ -112,7 +118,23 @@ mock.module('@/lib/team-access', () => ({
 mock.module('@/lib/task-service', () => ({
   resolveCreatorContext: mock(() => Promise.resolve({ createdByAccountId: null, createdByWorkerId: null, creationSource: 'api', parentTaskId: null })),
 }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mock(() => Promise.resolve()) }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mock(() => Promise.resolve()),
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 // Workspace reach is covered by lib/workspace-access.test.ts and route.test.ts;
 // the list here is whatever the session user's workspace ids are.
 mock.module('@/lib/workspace-access', () => ({

@@ -113,16 +113,19 @@ describe('ChatThread slots (0.9.0)', () => {
     expect($('[data-message-id="a1"] .kit-msg-foot')).toBeNull();
   });
 
-  it('steps and thinkingTitle replace the checklist, also while the first chunk is awaited', async () => {
+  it('steps and thinkingName replace the checklist, also while the first chunk is awaited', async () => {
     const calls: Array<[string, boolean]> = [];
     const steps = (m: { id: string; parts: unknown[] }, streaming: boolean) => {
       calls.push([m.id, streaming]);
       return streaming ? [{ id: 's1', label: `Reading ${m.parts.length} parts`, state: 'active' as const }] : [];
     };
-    await render(h(kit.ChatThread, { messages: messages.slice(0, 1), status: 'submitted', steps, thinkingTitle: h('span', { className: 'who' }, 'buildd thinking') }));
+    await render(h(kit.ChatThread, { messages: messages.slice(0, 1), status: 'submitted', steps, thinkingName: 'buildd is working' }));
     expect(calls).toEqual([['kit-pending', true]]);
-    expect($('[data-testid="kit-thread"] > .kit-msg:last-child .kit-step')!.textContent).toContain('Reading 0 parts');
-    expect($('[data-testid="kit-thread"] > .kit-msg:last-child summary .who')!.textContent).toBe('buildd thinking');
+    const line = $('[data-testid="kit-thread"] > .kit-msg:last-child [data-testid="kit-thinking-live"]')!;
+    expect(line.textContent).toContain('Reading 0 parts');
+    expect(line.getAttribute('aria-label')).toBe('buildd is working: Reading 0 parts');
+    // No header line any more.
+    expect($('[data-testid="kit-thread"] > .kit-msg:last-child summary')).toBeNull();
     calls.length = 0;
     await render(h(kit.ChatThread, { messages: messages.slice(0, 2), status: 'ready', steps }));
     // Not streaming: the app returns none, so there is no panel at all.

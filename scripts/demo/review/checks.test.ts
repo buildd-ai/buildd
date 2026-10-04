@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   clipMeta, collisions, confidenceCollapse, contrastFloor, displayWidth, exitCode, legibility, lumaStats,
-  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, type Word,
+  numberContradictions, parseBlack, parseFreeze, parseTsv, sampleTimes, seamCheck, stackedLabels, textOverShape, litWords, fontPx, inFadeOut, applyAccepted, emptyGap, type Word,
 } from './checks';
 
 const W = (text: string, x: number, y: number, w: number, h: number, conf = 90, line = 1): Word => ({ text, x, y, w, h, conf, line });
@@ -94,6 +94,32 @@ test('inFadeOut: the last second of a clip that does not loop is its fade-out', 
   expect(inFadeOut(56.5, 56.8, false)).toBe(true);
   expect(inFadeOut(50, 56.8, false)).toBe(false);
   expect(inFadeOut(8.9, 9, true)).toBe(false);
+});
+
+describe('emptyGap: a big flat hole between content (the spec list before its rows arrived)', () => {
+  const W0 = 160, H0 = 90;
+  const frame = (fill: (x: number, y: number) => number) => { const g = new Uint8Array(W0 * H0); for (let y = 0; y < H0; y++) for (let x = 0; x < W0; x++) g[y * W0 + x] = fill(x, y); return g; };
+  const text = (x: number, y: number) => ((x * 7 + y * 3) % 5 === 0 ? 220 : 20); // busy, like rows of text
+  test('content above and below a flat middle covering ~40% of the frame is flagged', () => {
+    const g = frame((x, y) => (y < 25 || y > 65 ? text(x, y) : 20));
+    const f = emptyGap(g, W0, H0);
+    expect(f).not.toBeNull();
+    expect(f!.severity).toBe('high');
+  });
+  test('the same frame with the middle filled passes', () => {
+    expect(emptyGap(frame(text), W0, H0)).toBeNull();
+  });
+  test('an empty margin at the bottom edge is a crop, not a gap', () => {
+    expect(emptyGap(frame((x, y) => (y < 40 ? text(x, y) : 20)), W0, H0)).toBeNull();
+  });
+  test('a gap that runs out to a side margin (and around to the bottom) still counts: only its columns matter', () => {
+    // Content top and bottom on the left 70%; the right 30% is empty top to bottom (a margin); the middle of the left is empty.
+    const g = frame((x, y) => (x > 112 ? 20 : y < 20 || y > 70 ? text(x, y) : 20));
+    expect(emptyGap(g, W0, H0)).not.toBeNull();
+  });
+  test('a small flat area between content passes', () => {
+    expect(emptyGap(frame((x, y) => (y < 40 || y > 50 ? text(x, y) : 20)), W0, H0)).toBeNull();
+  });
 });
 
 describe('seamCheck', () => {
