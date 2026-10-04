@@ -64,6 +64,7 @@ import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } f
 import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
+import { guardClaimedRetry } from '@/lib/supersession';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
@@ -1085,6 +1086,7 @@ export async function POST(req: NextRequest) {
     budget_paused: 0,
     routing_paused: 0,
     duplicate_worker: 0,
+    sibling_retry_open: 0,
     runner_capability: 0,
     codex_single_flight: 0,
     oauth_parallelism: 0,
@@ -1465,6 +1467,16 @@ export async function POST(req: NextRequest) {
     if (!subjectStillLive(task)) {
       console.log(`[claim] task ${task.id} ${forced ? 'force-claimed past' : 'skipped:'} subject PR reconciled (dead)`);
       if (bypassOrDefer('subject_dead')) continue;
+    }
+
+    // One open retry per subject: a fix attempt whose retry family already has
+    // another open attempt (an older one, or a newer one already running) is
+    // cancelled here, never started beside it — two live siblings is how one
+    // lineage forked into two PRs. Not forceable: the cancel is the decision.
+    if ((task as any).taskClass === 'attempt' && (await guardClaimedRetry(task as any))) {
+      console.log(`[claim] task ${task.id} cancelled: another fix attempt in its retry family is open`);
+      deferTask(task, 'sibling_retry_open');
+      continue;
     }
 
     // Allow tasks to declare a longer timeout via context.timeoutMinutes (max 240 min / 4 hours)

@@ -459,9 +459,10 @@ mock.module('@/lib/reviewer', () => ({
 const mockReconcileSubjectEvent = mock((..._args: any[]) =>
   Promise.resolve({ cancelled: [], lostRace: [], decisions: [] }),
 );
+const mockCheckDispatch = mock((..._args: any[]) => Promise.resolve({ verdict: 'keep', rule: null } as any));
 mock.module('@/lib/supersession', () => ({
   reconcileSubjectEvent: mockReconcileSubjectEvent,
-  checkDispatch: mock(() => Promise.resolve({ verdict: 'keep', rule: null })),
+  checkDispatch: mockCheckDispatch,
 }));
 
 // Gate ledger — captured so the merge telemetry can be asserted. The slug
@@ -1724,6 +1725,18 @@ describe('POST /api/github/webhook', () => {
         expect(e.detail.inFlightTaskId).toBe('rf1');
         expect(mockScheduleCiRedLook).toHaveBeenCalledTimes(1);
         expect(mockScheduleCiRedLook.mock.calls[0][0]).toEqual({ workspaceId: 'ws1', prNumber: 42 });
+      });
+
+      it('a fix in flight elsewhere in the retry family (a sibling on a sibling PR) → fix_in_flight, names it, files nothing', async () => {
+        withFailedWorkerPr({ status: 'completed', fixAttempts: [] });
+        mockCheckDispatch.mockResolvedValueOnce({
+          verdict: 'skip_dispatch', rule: 'open_retry_supersedes_duplicate', blockers: ['sibling-fix'],
+        });
+        await fail();
+        expect(insertCalls.length).toBe(0);
+        const [e] = skipEvents();
+        expect(e.detail.skipReason).toBe('fix_in_flight');
+        expect(e.detail.inFlightTaskId).toBe('sibling-fix');
       });
 
       it('a CI retry already filed for this exact head → head_already_retried, before fetching logs', async () => {

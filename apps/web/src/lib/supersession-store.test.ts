@@ -8,11 +8,12 @@ let updateReturning: any[] = [];
 const updates: Array<{ set: any; where: any }> = [];
 const inserts: any[] = [];
 
+const tasksFindMany = mock(async (_args?: any) => taskRows.shift() ?? []);
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: {
-        findMany: mock(async () => taskRows.shift() ?? []),
+        findMany: tasksFindMany,
         findFirst: mock(async () => (taskRows.shift() ?? [])[0] ?? null),
       },
       workers: {
@@ -79,6 +80,12 @@ mock.module('./pusher', () => ({
   events: { TASK_UPDATED: 'task:updated', WORKER_COMMAND: 'worker:command' },
 }));
 
+const familyCalls: string[] = [];
+let familyIds: string[] = [];
+mock.module('./retry-pr-supersession', () => ({
+  collectRetryFamily: mock(async (id: string) => { familyCalls.push(id); return { rootId: 'orig', taskIds: familyIds }; }),
+}));
+
 import { loadOpenRetryIds, subjectHasLiveSuccessor, supersessionStore } from './supersession-store';
 import { SUPERSESSION_RULES, type SupersessionCandidate, type SubjectEvent } from './supersession';
 
@@ -106,6 +113,8 @@ beforeEach(() => {
   activity.length = 0;
   released.length = 0;
   pushes.length = 0;
+  familyCalls.length = 0;
+  familyIds = [];
 });
 
 describe('subjectHasLiveSuccessor (the liveness half of the old subject sweep)', () => {
@@ -145,6 +154,63 @@ describe('loadOpenRetryIds (the one-open-retry-per-PR fact)', () => {
     taskRows = [rows, rows];
     expect(await loadOpenRetryIds('ws-1', 42, 'a')).toEqual([]);
     expect(await loadOpenRetryIds('ws-1', 42, 'b')).toEqual(['a']);
+  });
+
+  const findManyWhere = () => (tasksFindMany.mock.calls.at(-1) as any[])[0].where;
+
+  it('family: also loads open attempts by id from the retry family, whatever PR they are bound to', async () => {
+    taskRows = [[{ id: 'sibling-fix-for-other-pr', createdAt: at(1), status: 'in_progress', category: null }]];
+    expect(await loadOpenRetryIds('ws-1', 42, null, { familyTaskIds: ['orig', 'sibling-fix-for-other-pr'] }))
+      .toEqual(['sibling-fix-for-other-pr']);
+    const scope = findManyWhere().args[3];
+    expect(scope.op).toBe('or');
+    expect(scope.args[1]).toEqual({ op: 'inArray', a: 'tasks.id', b: ['orig', 'sibling-fix-for-other-pr'] });
+  });
+
+  it('without a family the scope is the PR binding alone (unchanged)', async () => {
+    taskRows = [[]];
+    await loadOpenRetryIds('ws-1', 42, null);
+    expect(findManyWhere().args[3].args.map((a: any) => a.a)).toEqual([
+      'tasks.reviewerRetryPrNumber', 'tasks.ciRetryPrNumber', 'tasks.conflictRetryPrNumber',
+    ]);
+  });
+
+  it('a reviewer task is an attempt but never a blocker', async () => {
+    taskRows = [[{ id: 'reviewer', createdAt: at(1), status: 'in_progress', category: 'review' }]];
+    expect(await loadOpenRetryIds('ws-1', 42, null, { familyTaskIds: ['reviewer'] })).toEqual([]);
+  });
+
+  it('claim mode counts a newer sibling that already started', async () => {
+    const rows = [{ id: 'self', createdAt: at(1), status: 'pending' }, { id: 'newer', createdAt: at(2), status: 'in_progress' }];
+    taskRows = [rows, rows];
+    expect(await loadOpenRetryIds('ws-1', 42, 'self')).toEqual([]);
+    expect(await loadOpenRetryIds('ws-1', 42, 'self', { startedAlwaysCounts: true })).toEqual(['newer']);
+  });
+});
+
+describe('loadDispatchFacts — the retry family feeds the open-retry fact', () => {
+  it('reads the family of the proposal parent and passes claim mode through', async () => {
+    familyIds = ['orig', 'sib'];
+    taskRows = [
+      [{ id: 'sib', createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 2)), status: 'in_progress', category: null },
+       { id: 'self', createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 1)), status: 'pending', category: null }],
+      [], // parent lookup
+    ];
+    workerRows = [[]];
+    const facts = await supersessionStore.loadDispatchFacts({
+      kind: 'ci_retry', workspaceId: 'ws-1', prNumber: 42, parentTaskId: 'orig', door: 't', selfTaskId: 'self', mode: 'claim',
+    });
+    expect(familyCalls).toEqual(['orig']);
+    expect(facts.openRetryIds).toEqual(['sib']);
+  });
+
+  it('a family read failure falls back to the per-PR set instead of failing the dispatch', async () => {
+    const mod: any = await import('./retry-pr-supersession');
+    mod.collectRetryFamily.mockImplementationOnce(async () => { throw new Error('db down'); });
+    taskRows = [[{ id: 'bound', createdAt: new Date(0), status: 'pending', category: null }], []];
+    workerRows = [[]];
+    const facts = await supersessionStore.loadDispatchFacts({ kind: 'ci_retry', workspaceId: 'ws-1', prNumber: 42, parentTaskId: 'orig', door: 't' });
+    expect(facts.openRetryIds).toEqual(['bound']);
   });
 });
 

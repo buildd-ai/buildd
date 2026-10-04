@@ -26,6 +26,7 @@ import {
   type SupersessionCandidate,
   type SupersessionRule,
   type SupersessionStore,
+  selectOpenRetryBlockers,
 } from './supersession';
 
 const DEAD_LIFECYCLE = new Set(['closed', 'merged']);
@@ -171,39 +172,54 @@ function verdictOf(result: unknown): ReviewVerdict | null {
 
 /**
  * Open fix attempts bound to a PR through a retry key, from any parent — the
- * same set the CI-retry door counts as "in flight". With `selfTaskId` (the
- * post-insert guard) only attempts ordered before it count, so of two racing
- * inserts exactly one survives: the older, ties broken by id.
+ * same set the CI-retry door counts as "in flight" — plus, when
+ * `familyTaskIds` is given, every open fix attempt in the proposal's retry
+ * family (collectRetryFamily), whichever PR it is bound to. A sibling bound to
+ * a sibling's PR is the same subject forked; it blocks too.
+ *
+ * With `selfTaskId` (the post-insert guard, or a claim) only attempts ordered
+ * before it count, so of two racing inserts exactly one survives: the older,
+ * ties broken by id. `startedAlwaysCounts` (claim) also counts a NEWER sibling
+ * that already has a worker: it holds the branch, so the older one must not
+ * start a second lineage beside it.
+ *
+ * Reviewer tasks are attempts too, but never push; they are not blockers.
  */
 export async function loadOpenRetryIds(
   workspaceId: string,
   prNumber: number,
   selfTaskId: string | null,
+  opts: { familyTaskIds?: readonly string[]; startedAlwaysCounts?: boolean } = {},
 ): Promise<string[]> {
+  const family = (opts.familyTaskIds ?? []).filter(Boolean);
+  const bound = or(
+    eq(tasks.reviewerRetryPrNumber, prNumber),
+    eq(tasks.ciRetryPrNumber, prNumber),
+    eq(tasks.conflictRetryPrNumber, prNumber),
+  )!;
   const rows = await db.query.tasks.findMany({
     where: and(
       eq(tasks.workspaceId, workspaceId),
       eq(tasks.taskClass, 'attempt'),
       inArray(tasks.status, [...OPEN_STATUSES]),
-      or(
-        eq(tasks.reviewerRetryPrNumber, prNumber),
-        eq(tasks.ciRetryPrNumber, prNumber),
-        eq(tasks.conflictRetryPrNumber, prNumber),
-      ),
+      family.length > 0 ? or(bound, inArray(tasks.id, [...family]))! : bound,
     ),
-    columns: { id: true, createdAt: true },
+    columns: { id: true, createdAt: true, status: true, category: true },
   });
-  const self = selfTaskId ? rows.find(r => r.id === selfTaskId) : undefined;
-  return rows
-    .filter(r => r.id !== selfTaskId)
-    .filter(r => !self || precedes(r, self))
-    .map(r => r.id);
+  return selectOpenRetryBlockers(rows, selfTaskId, { startedAlwaysCounts: opts.startedAlwaysCounts });
 }
 
-function precedes(a: { id: string; createdAt: Date | null }, b: { id: string; createdAt: Date | null }): boolean {
-  const ta = a.createdAt?.getTime() ?? 0;
-  const tb = b.createdAt?.getTime() ?? 0;
-  return ta !== tb ? ta < tb : a.id < b.id;
+/** The retry family of a proposal's parent; empty when it cannot be read. */
+async function familyOf(parentTaskId: string | null | undefined): Promise<string[]> {
+  if (!parentTaskId) return [];
+  try {
+    const { collectRetryFamily } = await import('./retry-pr-supersession');
+    return (await collectRetryFamily(parentTaskId)).taskIds;
+  } catch (err) {
+    // Fall back to the PR-bound set alone: the per-PR rule still holds.
+    console.warn(`[supersession] could not read the retry family of ${parentTaskId}:`, err);
+    return [];
+  }
 }
 
 async function loadDispatchFacts(p: DispatchProposal): Promise<DispatchFacts> {
@@ -222,7 +238,10 @@ async function loadDispatchFacts(p: DispatchProposal): Promise<DispatchFacts> {
         : prWorker.prLifecycleStatus === 'closed' ? 'closed' : 'open';
 
     if (p.kind !== 'reviewer') {
-      facts.openRetryIds = await loadOpenRetryIds(p.workspaceId, p.prNumber, p.selfTaskId ?? null);
+      facts.openRetryIds = await loadOpenRetryIds(p.workspaceId, p.prNumber, p.selfTaskId ?? null, {
+        familyTaskIds: await familyOf(p.parentTaskId),
+        startedAlwaysCounts: p.mode === 'claim',
+      });
     }
 
     if (p.kind === 'fix') {
