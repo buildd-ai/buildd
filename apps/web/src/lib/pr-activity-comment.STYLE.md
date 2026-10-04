@@ -8,10 +8,10 @@ deciding whether to step in, so every rule below comes down to two things:
 ## Shape
 
 ```
-**buildd** · <glyph> **<Headline>** · <status tail> · [task](…)
+**buildd** · <glyph> **<Headline>** · <status tail> · [Open in Buildd](…)
 
 - `0m` Reviewing
-- `+9m` Changes requested · fix 1 of 3 queued · [task](…)
+- `+9m` Changes requested · fix 1 of 3 queued · [Open in Buildd](…)
   <details><summary>Reviewer feedback</summary> … </details>
 - `+14m` Fixing · fix 1 of 3
 
@@ -55,6 +55,12 @@ Rules:
   checks and approved are not motion.
 - **Always give the iteration** ("fix 1 of 3") when there is one, and link the
   task that is doing the work.
+- **Name the task in the header when its title is known** — `Waiting for fix
+  task: <title>` (or `Fixing: <title>` once claimed) replaces the generic "Fix
+  N of M queued" headline, so a reader sees which task, not just a count. The
+  row text and the link label are unaffected; only the header changes, since
+  the row budget below has no room for a title. Entries with no `taskTitle`
+  keep the existing headline — this is additive, not a second format.
 
 ## Status vocabulary
 

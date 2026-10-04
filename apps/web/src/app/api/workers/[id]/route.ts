@@ -5336,6 +5336,7 @@ async function handleReviewerOutcomeIfNeeded(
             maxIterations,
             note: output.feedback ?? output.summary ?? null,
             taskUrl: taskActivityUrl(retryTask.id),
+            taskTitle: retryTask.title,
           },
           workspaceId,
         });

@@ -54,6 +54,47 @@ describe('PrCard primary action on red CI', () => {
   });
 });
 
+// Regression: the task page showed "Waiting on your merge" + "Review & merge"
+// on a PR whose reviewer had requested changes and a fix was already queued —
+// a merge the review-verdict gate was always going to refuse. The PR card
+// must name the live fix task instead, on both the compact and outcome views.
+describe('PrCard open fix attempt', () => {
+  const openAttempt = { taskId: 'fix-1', title: '[reviewer retry #1] Fix flaky date parsing', status: 'pending', iteration: 1, maxIterations: 3, claimed: false };
+
+  it('names the queued fix and drops the merge CTA on the compact card', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', openAttempt });
+    expect(html).not.toContain('Review &amp; merge');
+    expect(html).toContain('View PR');
+    expect(html).toContain('Fix 1 of 3');
+    expect(html).toContain('queued');
+    expect(html).toContain('[reviewer retry #1] Fix flaky date parsing');
+    expect(html).toContain('href="/app/tasks/fix-1"');
+  });
+
+  it('says "in progress" once a worker claims it', () => {
+    const html = render({ prLifecycleStatus: 'pr_open', openAttempt: { ...openAttempt, claimed: true } });
+    expect(html).toContain('in progress');
+    expect(html).not.toContain('queued');
+  });
+
+  it('the outcome card names the fix too, and drops its primary action', () => {
+    const html = render({
+      prLifecycleStatus: 'pr_open',
+      openAttempt,
+      outcome: outcome([{ add: 10, rem: 1, files: 1 }]),
+    });
+    expect(html).not.toContain('Review &amp; merge');
+    expect(html).toContain('Fix 1 of 3');
+    expect(html).toContain('[reviewer retry #1] Fix flaky date parsing');
+  });
+
+  it('never shows on a merged PR', () => {
+    const html = render({ prLifecycleStatus: 'merged', openAttempt });
+    expect(html).not.toContain('Fix 1 of 3');
+    expect(html).toContain('View PR');
+  });
+});
+
 // Regression: the diff bar laid out attempt 1's green and red, then attempt
 // 2's, as one strip with the labels spread under it, so attempt 2's label sat
 // under attempt 1's red removed-lines segment and red read as "attempt 2".
