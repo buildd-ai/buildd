@@ -33,7 +33,8 @@ mock.module('@/app/api/workers/claim/held-gate', () => ({
 
 const mockMarkDue = mock(async (..._args: unknown[]) => {});
 const mockReseedDue = mock(async (..._args: unknown[]) => {});
-mock.module('@/lib/redis', () => ({ markDue: mockMarkDue, reseedDue: mockReseedDue }));
+const mockClearDue = mock(async (_job: string, _members: string | string[]) => {});
+mock.module('@/lib/redis', () => ({ markDue: mockMarkDue, reseedDue: mockReseedDue, clearDue: mockClearDue }));
 
 /** Task rows the delivery loader can see, keyed by id. */
 const taskRows = new Map<string, Record<string, unknown>>();
@@ -693,6 +694,28 @@ describe('drainDispatchOutbox', () => {
 });
 
 // ── kickDispatch / wakeTask ────────────────────────────────────────────────
+
+describe('lost-kick marker', () => {
+  it('a wake publishes a near-future due marker and the kick that drains clears it', async () => {
+    seed();
+    mockMarkDue.mockClear(); mockClearDue.mockClear();
+    const before = Date.now();
+    await wakeTask(TASK.id, 'ci.retry');
+    const call = mockMarkDue.mock.calls.find(c => String(c[1]).startsWith('kick:'))!;
+    expect(call[0]).toBe('dispatch');
+    expect(Number(call[2])).toBeGreaterThanOrEqual(before + 30_000);
+    for (let i = 0; i < 5 && mockClearDue.mock.calls.length === 0; i++) await flush();
+    expect(mockClearDue).toHaveBeenCalledWith('dispatch', call[1]);
+  });
+
+  it('a kick whose drain fails leaves the marker for the gated tick', async () => {
+    mockMarkDue.mockClear(); mockClearDue.mockClear();
+    mockClaimDue.mockImplementationOnce(async () => { throw new Error('db down'); });
+    await wakeTask(TASK.id, 'ci.retry');
+    for (let i = 0; i < 5; i++) await flush();
+    expect(mockClearDue).not.toHaveBeenCalled();
+  });
+});
 
 describe('kickDispatch', () => {
   it('outside a request scope it drains now, detached', async () => {

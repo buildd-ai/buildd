@@ -37,7 +37,7 @@ import {
   type EnqueueDispatchInput,
 } from '@buildd/core/dispatch-outbox';
 import { channels, events, triggerEvent } from '@/lib/pusher';
-import { markDue, reseedDue } from '@/lib/redis';
+import { clearDue, markDue, reseedDue } from '@/lib/redis';
 import { buildTaskPayload, type DispatchTask, type DispatchWorkspace } from '@/lib/task-dispatch-delivery';
 import { ADAPTER_CHAINS, type DispatchAdapter, type DispatchContext } from '@/lib/dispatch-adapters';
 
@@ -89,8 +89,17 @@ export function primaryCause(causes: readonly string[], fallback: DispatchCause)
  */
 export async function enqueueTaskDispatch(input: EnqueueDispatchInput): Promise<void> {
   await db.execute(enqueueDispatchSql(input));
-  kickDispatch();
+  // The kick runs after the response; if the function dies first, nothing
+  // else knows an immediate wake is waiting except the hourly floor. A due
+  // marker a little in the future lets the gated minute tick find it; a kick
+  // that drains clears its own marker, so the happy path costs no tick.
+  const marker = `kick:${input.taskId}:${Date.now()}`;
+  await markDue(DISPATCH_DUE_QUEUE, marker, Date.now() + KICK_GRACE_MS);
+  kickDispatch(marker);
 }
+
+/** How long a kick has to drain before the gated tick treats it as lost. */
+export const KICK_GRACE_MS = 30_000;
 
 /**
  * The wake for a mutation that has already committed: record why (coalescing
@@ -158,8 +167,9 @@ export async function announceTaskCreated(task: DispatchTask, workspace: Dispatc
  * Never throws and never blocks the caller: the intent is already durable, so
  * a kick that fails costs latency (the next tick), not the wake.
  */
-export function kickDispatch(): void {
+export function kickDispatch(marker?: string): void {
   const run = () => drainDispatchOutbox()
+    .then(() => (marker ? clearDue(DISPATCH_DUE_QUEUE, marker) : undefined))
     .then(() => scheduleTimer())
     .catch(err => console.error('[dispatch] kick drain failed:', err));
   try {

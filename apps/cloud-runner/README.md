@@ -67,10 +67,9 @@ The report is `PATCH /api/workers/<id>` with `status: failed` and
 `crashReconciled: true`, the flag the runner's own boot reconciliation sends
 for a session its process lost. buildd treats it as an infrastructure failure:
 the task goes back to `pending` on the infra-retry budget (backoff 5, 15, 30
-minutes, counted in `context.infraRetryCount`), the deferred-dispatch sweep
-sends `task.retry` to the webhook on its first run after the backoff passes
-(it rides the hourly `pr-reconcile` cron, so a retry can wait up to an hour
-beyond its backoff), and after the last
+minutes, counted in `context.infraRetryCount`), the requeue's durable wake is
+scheduled for the end of the backoff and the `dispatch-drain` tick delivers it
+then as `task.retry` (to a webhook that lists that event), and after the last
 attempt the task fails as `infra_stalled`. Only a `crashed` outcome is reported;
 the runner's own exits (1 failed, 3 refused, 4 parked, 64 usage) are not.
 
