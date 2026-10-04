@@ -32,6 +32,7 @@ import {
   TERMINAL_STATES,
   type IntentDetail,
   type IntentState,
+  type IntentSummary,
   type IntentsLookupResponse,
   type ScopeCounts,
   type TargetActivity,
@@ -590,19 +591,55 @@ export class ScopeEngine {
 
   // ── inspection and control ──────────────────────────────────────────────
 
+  /**
+   * Which ids this scope knows. A terminal intent also says what its terminal
+   * receipt said (`via` for delivered/skipped, `why` for failed/expired) and
+   * when it closed, so the producer's repair floor can project a receipt it
+   * lost without asking twice.
+   */
   lookup(ids: string[]): IntentsLookupResponse {
+    const marks = ids.map(() => '?').join(',');
     const known = ids.length === 0 ? [] : this.rows<IntentRow>(
-      `SELECT id, state, attempt, merged_into FROM intents WHERE id IN (${ids.map(() => '?').join(',')})`,
+      `SELECT id, envelope, state, attempt, merged_into, last_error, closed_at FROM intents WHERE id IN (${marks})`,
       ...ids,
+    );
+    const closedIds = known.filter(r => r.state === 'delivered' || r.state === 'skipped').map(r => r.id);
+    const outcomes = closedIds.length === 0 ? [] : this.rows<{ intent_id: string; attempt: number; target: string; outcome: string; detail: string | null }>(
+      `SELECT intent_id, attempt, target, outcome, detail FROM attempts
+       WHERE intent_id IN (${closedIds.map(() => '?').join(',')}) AND outcome IN ('delivered', 'skipped') ORDER BY seq`,
+      ...closedIds,
     );
     const byId = new Map(known.map(r => [r.id, r]));
     return {
       known: ids.filter(id => byId.has(id)).map(id => {
         const r = byId.get(id)!;
-        return { id, state: r.state, attempt: r.attempt, ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
+        const s: IntentSummary = { id, state: r.state, attempt: r.attempt, ...(r.merged_into ? { mergedInto: r.merged_into } : {}) };
+        if (!(TERMINAL_STATES as readonly string[]).includes(r.state)) return s;
+        if (r.closed_at !== null) s.closedAt = iso(r.closed_at);
+        if (r.state === 'delivered' || r.state === 'skipped') {
+          s.via = this.closingVia(r, outcomes.filter(o => o.intent_id === id));
+        } else if (r.state === 'failed' && r.last_error) {
+          s.why = r.last_error;
+        } else if (r.state === 'expired') {
+          s.why = 'expires_at';
+        }
+        return s;
       }),
       unknown: ids.filter(id => !byId.has(id)),
     };
+  }
+
+  /**
+   * The `via` of a delivered/skipped intent's terminal receipt: the first
+   * `first`-mode step of the closing attempt that delivered or skipped (an
+   * `also` step runs after it and never changes the state). None means every
+   * `first` step declined, which closes as `skipped:all_declined`.
+   */
+  private closingVia(r: IntentRow, outcomes: { attempt: number; target: string; outcome: string; detail: string | null }[]): string {
+    const firstTargets = new Set((JSON.parse(r.envelope) as DispatchEnvelope).target.steps.filter(s => s.mode === 'first').map(s => s.target));
+    const closing = outcomes.find(o => o.attempt === r.attempt && firstTargets.has(o.target));
+    if (closing?.detail) return closing.detail;
+    return r.state === 'skipped' ? 'skipped:all_declined' : 'dispatch';
   }
 
   detail(id: string): IntentDetail | null {
