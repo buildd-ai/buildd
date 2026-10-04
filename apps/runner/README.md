@@ -101,6 +101,12 @@ that, so each call the agent makes carries its own run's identity. Task tokens
 are worker level: a runner on an admin key no longer gives its agents
 admin-only buildd actions.
 
+Orchestration sessions are the exception and keep the runner key: tasks with
+the `organizer` role, `planning` mode, or a heartbeat check-in
+(`context.heartbeat`). They need admin-level actions (`manage_missions`,
+`approve_plan`, ...). The runner logs one `[agent-task-token] …
+reason=orchestration-role` line for them.
+
 If the mint fails (old server, key without the runner scopes, no signing
 secret on the server, network) the session starts anyway on the runner key and
 the runner logs one `[agent-task-token]` warning with the reason.

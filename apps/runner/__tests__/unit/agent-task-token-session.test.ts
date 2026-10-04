@@ -196,7 +196,7 @@ function okMint(token: string) {
   return async (taskId: string) => ({ token, taskId, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
 }
 
-function makeTask(workerId: string, backend?: 'codex') {
+function makeTask(workerId: string, backend?: 'codex', taskExtra: Record<string, unknown> = {}) {
   return {
     id: `task-${workerId}`,
     title: 'Agent token task',
@@ -208,16 +208,17 @@ function makeTask(workerId: string, backend?: 'codex') {
     // No PR/artifact obligation, so the run is one session (no closing turn).
     outputRequirement: 'none',
     ...(backend ? { backend } : {}),
+    ...taskExtra,
   };
 }
 
-async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: string, backend?: 'codex') {
+async function runTask(manager: InstanceType<typeof WorkerManager>, workerId: string, backend?: 'codex', taskExtra: Record<string, unknown> = {}) {
   mockMessages = [
     { type: 'system', subtype: 'init', session_id: `sess-${workerId}` },
     { type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }] } },
     { type: 'result', subtype: 'success', session_id: `sess-${workerId}` },
   ];
-  const task = makeTask(workerId, backend);
+  const task = makeTask(workerId, backend, taskExtra);
   mockClaimTask.mockImplementation(async () => ({ workers: [{
     id: workerId,
     branch: `buildd/${workerId}`,
@@ -364,5 +365,36 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     expect(resumed.options.mcpServers.buildd.headers.Authorization).toBe(`Bearer ${TOKEN_B}`);
     expectTokenNowhere(TOKEN_A);
     expectTokenNowhere(TOKEN_B);
+  });
+
+  // Orchestration sessions use admin-level MCP actions a worker-level task
+  // token does not carry, so they keep the runner key.
+  const orchestration: Array<[string, Record<string, unknown>]> = [
+    ['organizer role', { roleSlug: 'organizer' }],
+    ['planning mode', { mode: 'planning' }],
+    ['heartbeat check-in', { context: { heartbeat: true } }],
+  ];
+  for (const [name, extra] of orchestration) {
+    test(`${name} → no mint, the runner key, one info line`, async () => {
+      await runTask(manager, `w-tt-orch-${name.replace(/\W+/g, '')}`, undefined, extra);
+      expect(lastQueryOpts).not.toBeNull();
+      expect(mintCalls).toHaveLength(0);
+      expect(builddAuthHeader()).toBe(`Bearer ${RUNNER_KEY}`);
+      expect(logged.filter(l => l.includes('[agent-task-token]') && l.includes('reason=orchestration-role')).length).toBeGreaterThan(0);
+      expect(logged.filter(l => l.includes('could not mint'))).toHaveLength(0);
+      expect(sessionLogs.some(l => l.includes('source=runner-key reason=orchestration-role'))).toBe(true);
+    });
+  }
+
+  test('organizer on Codex → BUILDD_MCP_BEARER_TOKEN is the runner key', async () => {
+    await runTask(manager, 'w-tt-orch-codex', 'codex', { roleSlug: 'organizer' });
+    expect(mintCalls).toHaveLength(0);
+    expect(backendRuns.find(r => r.backend === 'codex')!.env?.BUILDD_MCP_BEARER_TOKEN).toBe(RUNNER_KEY);
+  });
+
+  test('builder role (execution mode) → the task token', async () => {
+    await runTask(manager, 'w-tt-builder', undefined, { roleSlug: 'builder', mode: 'execution' });
+    expect(mintCalls.length).toBeGreaterThan(0);
+    expect(builddAuthHeader()).toBe(`Bearer ${TOKEN_A}`);
   });
 });

@@ -35,6 +35,23 @@ export function agentTaskTokenEnabled(env: Record<string, string | undefined> = 
   return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
 }
 
+/**
+ * Orchestration tasks keep the runner key for the agent's buildd MCP: they use
+ * admin-level actions (manage_missions, approve_plan/reject_plan, ...) and a
+ * task token is worker level, so on an admin-key runner a token would break
+ * them. Signals, all present on the claimed task:
+ *  - roleSlug 'organizer' (the default mission orchestrator role);
+ *  - mode 'planning' (planning tasks feed approve_plan/reject_plan);
+ *  - context.heartbeat (an organizer check-in; mission-run can swap its role
+ *    away from 'organizer', see prompt-builder.ts heartbeat-protocol).
+ */
+export function isOrchestrationTask(task: { roleSlug?: string | null; mode?: string | null; context?: unknown } | null | undefined): boolean {
+  if (!task) return false;
+  if (task.roleSlug === 'organizer') return true;
+  if (task.mode === 'planning') return true;
+  return (task.context as { heartbeat?: unknown } | null | undefined)?.heartbeat === true;
+}
+
 export interface ParsedTaskToken {
   token: string;
   expiresAt: number;
@@ -61,7 +78,7 @@ export type MintTaskTokenFn = (taskId: string, ttlMs: number, signal: AbortSigna
 
 export type AgentBuilddAuth =
   | { source: 'task-token'; token: string; expiresAt: number }
-  | { source: 'runner-key'; token: string; reason: 'disabled' | 'runner-key-is-task-token' | 'mint-failed'; detail?: string };
+  | { source: 'runner-key'; token: string; reason: 'disabled' | 'runner-key-is-task-token' | 'orchestration-role' | 'mint-failed'; detail?: string };
 
 /** Short, secret-free reason for a mint failure. */
 export function describeMintFailure(err: unknown): string {
@@ -88,6 +105,9 @@ export async function resolveAgentBuilddAuth(opts: {
   runnerKey: string;
   taskId: string;
   mint: MintTaskTokenFn | undefined;
+  /** isOrchestrationTask(task): keep the runner key, no mint, one info line. */
+  orchestration?: boolean;
+  info?: (line: string) => void;
   env?: Record<string, string | undefined>;
   warn?: (line: string) => void;
   timeoutMs?: number;
@@ -95,6 +115,7 @@ export async function resolveAgentBuilddAuth(opts: {
 }): Promise<AgentBuilddAuth> {
   const { runnerKey, taskId } = opts;
   const warn = opts.warn ?? ((l: string) => console.warn(l));
+  const info = opts.info ?? ((l: string) => console.log(l));
   const now = opts.now ?? Date.now;
 
   if (!agentTaskTokenEnabled(opts.env)) {
@@ -104,6 +125,11 @@ export async function resolveAgentBuilddAuth(opts: {
   // another one, and it is already the run's own identity.
   if (runnerKey?.startsWith(TASK_TOKEN_PREFIX)) {
     return { source: 'runner-key', token: runnerKey, reason: 'runner-key-is-task-token' };
+  }
+
+  if (opts.orchestration) {
+    info(`[agent-task-token] task ${(taskId ?? '').slice(0, 8)}: orchestration task (organizer role, planning mode or heartbeat); the agent's buildd MCP calls use the runner key (source=runner-key reason=orchestration-role).`);
+    return { source: 'runner-key', token: runnerKey, reason: 'orchestration-role' };
   }
 
   let detail: string;

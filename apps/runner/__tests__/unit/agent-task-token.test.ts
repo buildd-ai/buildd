@@ -7,6 +7,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import {
   AGENT_TASK_TOKEN_TTL_MS,
   agentTaskTokenEnabled,
+  isOrchestrationTask,
   parseAgentTaskTokenResponse,
   resolveAgentBuilddAuth,
 } from '../../src/agent-task-token';
@@ -178,5 +179,38 @@ describe('BuilddClient.mintTaskToken', () => {
     let status: unknown;
     try { await client.mintTaskToken(TASK, 1000); } catch (e) { status = (e as any).status; }
     expect(status).toBe(503);
+  });
+});
+
+describe('isOrchestrationTask', () => {
+  test.each([
+    ['organizer role', { roleSlug: 'organizer' }, true],
+    ['planning mode', { mode: 'planning' }, true],
+    ['heartbeat check-in on another role', { roleSlug: 'builder', context: { heartbeat: true } }, true],
+    ['builder', { roleSlug: 'builder', mode: 'execution' }, false],
+    ['researcher', { roleSlug: 'researcher' }, false],
+    ['no role', {}, false],
+    ['heartbeat flag not true', { context: { heartbeat: 'yes' } }, false],
+  ])('%s → %p', (_n, task, expected) => {
+    expect(isOrchestrationTask(task as any)).toBe(expected);
+  });
+});
+
+describe('resolveAgentBuilddAuth for an orchestration task', () => {
+  test('runner key, no mint, one info line with the reason, no warning', async () => {
+    let called = 0;
+    const infos: string[] = [];
+    const warns: string[] = [];
+    const auth = await resolveAgentBuilddAuth({
+      runnerKey: KEY, taskId: TASK, env: {}, orchestration: true,
+      info: l => infos.push(l), warn: l => warns.push(l),
+      mint: async () => { called++; return okBody(); },
+    });
+    expect(auth).toMatchObject({ source: 'runner-key', token: KEY, reason: 'orchestration-role' });
+    expect(called).toBe(0);
+    expect(warns).toEqual([]);
+    expect(infos).toHaveLength(1);
+    expect(infos[0]).toContain('source=runner-key reason=orchestration-role');
+    expect(infos[0]).not.toContain(KEY);
   });
 });
