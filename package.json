@@ -13,6 +13,7 @@
     "test": "bun run scripts/run-unit-tests.ts",
     "test:affected": "bash scripts/affected-tests.sh",
     "test:all": "bun run scripts/run-unit-tests.ts",
+    "test:db": "bun run scripts/run-db-tests.ts",
     "test:integration": "bun test --env-file tests/.env.test apps/web/tests/integration/ apps/runner/__tests__/integration*",
     "test:e2e": "bun test --env-file tests/.env.test tests/e2e/",
     "test:cleanup": "BUILDD_TEST_SERVER=${BUILDD_TEST_SERVER:-http://localhost:3000} bun run tests/cleanup.ts",
