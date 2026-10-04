@@ -9,7 +9,7 @@
  * (`@buildd/core/prompts`).
  */
 
-import { resolvePrompt } from '@buildd/core/prompts';
+import { registerPrompt, resolvePrompt, validateTextPrompt } from '@buildd/core/prompts';
 
 export const CHAT_INSTRUCTIONS_PROMPT_ID = 'buildd.chat_instructions';
 
@@ -29,6 +29,13 @@ How you work:
 - For a mission's screenshots, call get_visual_review. Lead with the issues and the unsure screens, by route. The card shows the images and the user decides there; you never see a screenshot, so never claim to have looked at one.
 - You can't run code, read the repository or open PRs. Say so and offer to file a mission instead.
 - Be brief. Plain sentences; short lists only when they help.`;
+
+registerPrompt({
+  id: CHAT_INSTRUCTIONS_PROMPT_ID,
+  format: 'text',
+  publicDefault: CHAT_INSTRUCTIONS,
+  validate: validateTextPrompt,
+});
 
 /** The chat system prompt in effect: the active prompts row, else `CHAT_INSTRUCTIONS`. */
 export function chatInstructions(): string {

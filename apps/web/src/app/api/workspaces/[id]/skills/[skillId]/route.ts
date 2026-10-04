@@ -8,6 +8,7 @@ import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { bodyReadRefused, noteBodyReads } from '@/lib/body-read-monitor';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig, deleteRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
@@ -91,6 +92,12 @@ export async function GET(
 
         if (!skill) {
             return NextResponse.json({ error: 'Skill not found' }, { status: 404 });
+        }
+
+        // Bulk-read guard (lib/body-read-monitor.ts): token callers only.
+        if (auth.type === 'api') {
+            const verdict = await noteBodyReads(auth.account.id, [skill.id], 'skill_get');
+            if (!verdict.allowed) return bodyReadRefused();
         }
 
         return NextResponse.json({ skill });

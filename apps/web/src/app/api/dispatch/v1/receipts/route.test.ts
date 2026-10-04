@@ -4,6 +4,9 @@ import { signRequest } from '@buildd/dispatch-contract';
 const realHandoff = await import('@buildd/core/dispatch-handoff');
 const mockApply = mock(async (r: unknown[]) => r.length);
 mock.module('@buildd/core/dispatch-handoff', () => ({ ...realHandoff, applyReceipts: mockApply }));
+// The per-key callback rate limit counts in Redis; null = Redis unavailable (fails open).
+let windowCount: number | null = null;
+mock.module('@/lib/redis', () => ({ incrWindow: async () => windowCount }));
 
 const { POST } = await import('./route');
 
@@ -11,7 +14,7 @@ const PATH = '/api/dispatch/v1/receipts';
 const A = '33333333-3333-4333-8333-333333333333';
 const AT = '2026-10-03T12:00:00.000Z';
 let saved: string | undefined;
-beforeEach(() => { saved = process.env.DISPATCH_CALLBACK_SECRET; process.env.DISPATCH_CALLBACK_SECRET = 'k1:cb-secret'; mockApply.mockClear(); });
+beforeEach(() => { saved = process.env.DISPATCH_CALLBACK_SECRET; process.env.DISPATCH_CALLBACK_SECRET = 'k1:cb-secret'; mockApply.mockClear(); windowCount = null; });
 afterEach(() => { if (saved === undefined) delete process.env.DISPATCH_CALLBACK_SECRET; else process.env.DISPATCH_CALLBACK_SECRET = saved; });
 
 async function signed(payload: unknown, secret = 'cb-secret') {
@@ -39,6 +42,21 @@ describe('POST /api/dispatch/v1/receipts', () => {
     expect(await res.json()).toEqual({ applied: 1 });
     expect(mockApply).toHaveBeenCalledTimes(1);
     expect(mockApply.mock.calls[0][0]).toEqual([{ id: A, attempt: 1, event: 'delivered', via: 'webhook', at: AT }]);
+  });
+
+  it('over the per-key rate limit: 429 with Retry-After and nothing projected (the Worker keeps them queued and retries)', async () => {
+    windowCount = 101;
+    const res = await POST(await signed({ receipts: [{ id: A, attempt: 1, event: 'delivered', via: 'webhook', at: AT }] }));
+    expect(res.status).toBe(429);
+    expect(Number(res.headers.get('Retry-After'))).toBeGreaterThanOrEqual(1);
+    expect(mockApply).not.toHaveBeenCalled();
+    windowCount = 100;
+    expect((await POST(await signed({ receipts: [] }))).status).toBe(200);
+  });
+
+  it('with Redis unavailable the limit fails open', async () => {
+    windowCount = null;
+    expect((await POST(await signed({ receipts: [] }))).status).toBe(200);
   });
 
   it('400 without a receipts array, 413 over the batch bound', async () => {

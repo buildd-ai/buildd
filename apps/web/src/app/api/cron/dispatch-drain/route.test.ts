@@ -44,6 +44,10 @@ mock.module('@/lib/dispatch-authority', () => ({
 const publishPendingDispatches = mock(async (_o: unknown) => ({ status: 'unconfigured' }) as Record<string, unknown>);
 mock.module('@/lib/dispatch-transport', () => ({ publishPendingDispatches }));
 
+const ZERO = { checked: 0, republished: 0, projected: 0, fellBack: 0, left: 0, workerErrors: 0 };
+const reconcileOrphans = mock(async () => ({ ...ZERO }) as Record<string, number>);
+mock.module('@/lib/dispatch-reconcile', () => ({ reconcileOrphans }));
+
 let health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0 };
 const backfillStartAtWakes = mock(async () => 0);
 const settleDispatchTimer = mock(async (_ms: number) => {});
@@ -71,7 +75,7 @@ beforeEach(() => {
   dueCount = 0;
   drainResults = [];
   health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0 };
-  for (const m of [publishPendingDispatches, drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
+  for (const m of [publishPendingDispatches, reconcileOrphans, drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
 });
 
 describe('GET /api/cron/dispatch-drain', () => {
@@ -155,6 +159,32 @@ describe('GET /api/cron/dispatch-drain', () => {
     dueCount = 1;
     await call('?gate=due');
     expect(publishPendingDispatches).not.toHaveBeenCalled();
+  });
+
+  it('floor tick reconciles orphans after the publish and before the drain, so a fallen-back row is delivered this tick', async () => {
+    drainResults = [batch(2)];
+    reconcileOrphans.mockResolvedValueOnce({ checked: 5, republished: 1, projected: 1, fellBack: 2, left: 1, workerErrors: 1 });
+    const body = await (await call()).json();
+    expect(reconcileOrphans).toHaveBeenCalledTimes(1);
+    expect(publishPendingDispatches.mock.invocationCallOrder[0]).toBeLessThan(reconcileOrphans.mock.invocationCallOrder[0]);
+    expect(reconcileOrphans.mock.invocationCallOrder[0]).toBeLessThan(drainDispatchOutbox.mock.invocationCallOrder[0]);
+    expect(body.repair.reconciled).toEqual({ checked: 5, republished: 1, projected: 1, fellBack: 2, left: 1, workerErrors: 1 });
+    // Re-publishes, projected receipts and fallbacks are changes; Worker errors are errors.
+    expect(reports[0]).toMatchObject({ changed: 2 + 1 + 1 + 2, errors: 1 });
+    reconcileOrphans.mockClear();
+    dueCount = 1;
+    await call('?gate=due');
+    expect(reconcileOrphans).not.toHaveBeenCalled();
+  });
+
+  it('a reconcile that throws is isolated: the drain still runs', async () => {
+    drainResults = [batch(1)];
+    reconcileOrphans.mockRejectedValueOnce(new Error('candidate read failed'));
+    const res = await call();
+    const body = await res.json();
+    expect(body.drain.delivered).toBe(1);
+    expect(body.repair.reconciled).toEqual({ error: 'candidate read failed' });
+    expect(reports[0].errors).toBe(1);
   });
 
   it('a failing repair pass does not lose the drain', async () => {
