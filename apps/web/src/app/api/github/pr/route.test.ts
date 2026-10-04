@@ -6052,3 +6052,75 @@ describe('create_pr — retry supersession', () => {
     });
   });
 });
+
+// A per-task token (cloud container, and self-hosted agents once they carry
+// one) may close, merge and request review only for the PR its own run
+// opened, and read PRs only in its own workspace.
+describe('per-task token on close / merge / get', () => {
+  const SCOPED = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const ownWorker = (o: Record<string, unknown> = {}) => ({
+    id: 'w-own', accountId: 'account-1', taskId: 'task-own', workspaceId: 'ws-1', prNumber: 42, name: 'w',
+    workspace: { ...WORKSPACE_OK, id: 'ws-1' }, ...o,
+  });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ number: 42, state: 'closed', html_url: 'https://github.com/owner/repo/pull/42' });
+    mockWorkersFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGetTeamWorkspaceIds.mockReset();
+    mockMergePullRequest.mockClear();
+  });
+
+  const githubWrites = () => mockGithubApi.mock.calls.filter((c: any[]) => (c[2] as { method?: string } | undefined)?.method);
+
+  it('closes its own PR', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 42 } }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses to close another PR through its own worker, before calling GitHub', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 7 } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token may close only its own PR');
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses to close another task’s PR on the same team', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-other', taskId: 'task-other', prNumber: 7 }));
+    const res = await PATCH(createPatchRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-other', prNumber: 7 } }));
+    expect(res.status).toBe(403);
+    expect(githubWrites()).toEqual([]);
+  });
+
+  it('refuses to merge another task’s PR, before the merge policy runs', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-other', taskId: 'task-other', prNumber: 7 }));
+    const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-other', prNumber: 7 } }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('A task token may merge only its own PR');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('lets its own PR through to the merge policy', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker());
+    const res = await PUT(createPutRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { workerId: 'w-own', prNumber: 42 } }));
+    expect((await res.json()).error).not.toBe('A task token may merge only its own PR');
+  });
+
+  it('reads a PR in its own workspace', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-sibling', taskId: 'task-sibling', prNumber: 9 }));
+    const res = await GET(createGetRequest('w-sibling', 9));
+    expect(res.status).not.toBe(404);
+  });
+
+  it('cannot read a PR in another workspace of the team', async () => {
+    mockWorkersFindFirst.mockResolvedValue(ownWorker({ id: 'w-x', taskId: 'task-x', workspaceId: 'ws-2', workspace: { ...WORKSPACE_OK, id: 'ws-2' } }));
+    const res = await GET(createGetRequest('w-x', 9));
+    expect(res.status).toBe(404);
+  });
+});
