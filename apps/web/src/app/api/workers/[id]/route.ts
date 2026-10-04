@@ -75,6 +75,7 @@ import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
 import { scheduleMemoryUseLabels, shouldLabelMemoryUses } from '@/lib/memory-decisions';
+import { scheduleFailurePatternSentinel } from '@/lib/failure-pattern-sentinel-trigger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -4192,6 +4193,10 @@ export async function PATCH(
       shipped: workerHasPR,
       summaryProvenance: body.summarySource === 'agent' || body.summarySource === 'fallback' ? body.summarySource : null,
     });
+    // Bounded, deferred — never waits on and never fails this response. See
+    // failure-pattern-sweep.ts for why duplicate coverage with the 30-minute
+    // cron backstop is safe (the incident store's own upsert is idempotent).
+    scheduleFailurePatternSentinel(worker.workspaceId);
   }
 
   // Memory use labels (Jev, knowledge-base: buildd/design/memory-done-right.md): did the final
