@@ -2074,6 +2074,12 @@ export async function PATCH(
   // it is infra, and it rides the infra retry budget below rather than the
   // task's retry count — which is 0 for a non-mission task.
   const isCrashReconciled = status === 'failed' && crashReconciled === true;
+  // The runner's clone of the workspace repo was throttled by GitHub (429 or a
+  // secondary rate limit) after its own bounded retries (apps/runner/src/
+  // git-clone.ts). Nothing ran; rides the infra retry budget below, with its
+  // backoff, so the next attempt lands after GitHub's window instead of the
+  // task failing outright.
+  const isGithubThrottled = status === 'failed' && body.githubThrottled === true;
   // The CLI's model version gate: this runner cannot serve the model the task
   // was routed to. A deterministic 400 before the first turn, so it is infra
   // and rides the infra retry budget below; the claim route's capability gate
@@ -2095,6 +2101,7 @@ export async function PATCH(
     updates.exitCause = classifyReportedFailure({
       taskCancelled: taskCancelledUnderSession,
       crashReconciled: isCrashReconciled,
+      githubThrottled: isGithubThrottled,
       unrecognizedModel: isUnrecognizedModel,
       needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
@@ -2847,8 +2854,9 @@ export async function PATCH(
         // to the ordinary retry budget. A crash-reconciled restart rides it for
         // the same reason: without it, one runner self-update permanently
         // failed every in-flight non-mission task. A model version-gate 400
-        // rides it too: bounded, backed off, and uncharged.
-        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
+        // rides it too: bounded, backed off, and uncharged. So does a clone GitHub
+        // throttled: the backoff is the point, GitHub needs time.
+        if ((isSteeringDelivery || isNonGateRefusal || isCrashReconciled || isGithubThrottled || (isUnrecognizedModel && !isModelIdRejected)) && !isBudgetReset && taskForRetry?.status !== 'cancelled') {
           const infraRetryCount = (taskCtxForRetry.infraRetryCount as number) || 0;
           if (infraRetryCount < MAX_INFRA_RETRIES_PATCH) {
             shouldAutoRetry = true;
