@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFil
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { aim, beatLook, RULE_MIN_PX, askButtonShots, BEATS, beatLoopSeconds, captionCollisions, fanoutEscapes, v6aBeats, v6aFilm, v6aHero, v6xFilm, v6xHero } from './cuts-v6';
-import { TAP_LIFE, layersAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
+import { TAP_LIFE, layersAt, maskAt, tapAt, shotStarts as shotStartsOf, placeScreen, burstPose, captionBox, captionPlace, cutDuration, keepClear, overlap, soundCues, type Rect } from './timeline';
 import { lowEnergyShare, synthesize } from './audio';
 import { fleetRows, motionCues, splitAt, typedChars, verifyAt } from './motion-model';
 
@@ -35,7 +35,14 @@ const fake: Stills = {
   boxes: (_s, target) => BOXES[target] ?? [R(0.3, 0.3, 0.4, 0.2)],
   box: (s, target, index = 0, vp) => fake.boxes(s, target, vp)[index] ?? R(0.3, 0.3, 0.4, 0.2),
   boxAttrs: () => Array.from({ length: 8 }, (_, i) => ({ rect: R(0.18, 0.3 + i * 0.02, 0.2, 0.02), status: [1, 4].includes(i) ? 'idle' : 'running' })),
-  text: () => ({ rects: [R(0.3, 0.3, 0.17, 0.01)], block: R(0.3, 0.29, 0.44, 0.06) }),
+  // s02b-spec: the ask line above the Done-when list, then each row's two lines inside it (label, then check).
+  text: (step, phrase) => {
+    if (step !== 's02b-spec') return { rects: [R(0.3, 0.3, 0.17, 0.01)], block: R(0.3, 0.29, 0.44, 0.06) };
+    const order = ["invoices in the customer's currency", 'pnpm test --filter web -- invoice-currency', 'public API backward compatible', 'pnpm test --filter api -- contract-v2', 'a EUR invoice pays end to end', 'e2e-eur-invoice', 'rounding rule written down', 'fx-rounding-decision'];
+    const i = order.indexOf(phrase);
+    const r = i < 0 ? R(0.25, 0.58, 0.3, 0.012) : R(0.26, 0.622 + i * 0.012, 0.2, 0.01);
+    return { rects: [r], block: r };
+  },
   file: (path) => ({ src: `/shots/${path}`, at: 0, width: 780, height: 2110 }),
 };
 
@@ -91,7 +98,7 @@ describe('v6a', () => {
     const ids = film.shots.map((x) => x.id);
     expect(ids.slice(0, 5)).toEqual(['ask', 'reads', 'criteria', 'edit', 'confirm']);
     const criteria = film.shots.find((x) => x.id === 'criteria')!;
-    expect(criteria.spot!.some((k) => k.rects.includes(BOXES['approval-draft-criteria'][0]))).toBe(true);
+    expect(criteria.images[0].src).toContain('s02b-spec');
     const edit = film.shots.find((x) => x.id === 'edit')!;
     expect(edit.images.length).toBeGreaterThan(2);
     expect(edit.images[0].src).toContain('s03b-spec-edit-type-');
@@ -203,15 +210,53 @@ describe('v6a beats (one short loop per feature, for the site)', () => {
       for (const k of cs) expect(lit.w * k.zoom).toBeLessThanOrEqual(1 + 1e-6);
     }
   });
-  test('the spec poster is a frame with the criteria list lit, not the typing', () => {
+  describe('spec: the change is the criteria arriving, and nothing is pressed', () => {
+    const lit = (k: { rects: { w: number; h: number }[] }) => k.rects.filter((r) => r.w > 0 && r.h > 0).length;
     for (const look of LOOKS) {
       const spec = look.beats.find((c) => c.name.startsWith('beat-spec'))!;
       const crit = spec.shots[0];
-      expect(crit.id).toBe('criteria');
-      const lit = crit.spot!.find((k) => k.rects.includes(BOXES['approval-draft-criteria'][0]))!;
-      const next = crit.spot!.find((k) => k.at > lit.at)!;
-      expect(spec.poster).toBeGreaterThan(lit.at + 0.4);
-      expect(spec.poster).toBeLessThan(next.at);
+      test(`${look.name}: no tap, no lit control, and no lit rect touches Edit or Confirm`, () => {
+        for (const sh of spec.shots) {
+          expect(sh.taps ?? []).toEqual([]);
+          expect(sh.controls ?? []).toEqual([]);
+          const buttons = [BOXES['kit-approval-edit'][0], BOXES['kit-approval-confirm'][0]];
+          for (const k of sh.spot ?? []) for (const r of k.rects) if (r.w > 0) for (const b of buttons) {
+            const ix = Math.min(r.x + r.w, b.x + b.w) - Math.max(r.x, b.x), iy = Math.min(r.y + r.h, b.y + b.h) - Math.max(r.y, b.y);
+            expect(ix > 0 && iy > 0).toBe(false);
+          }
+        }
+      });
+      test(`${look.name}: opens on the full list lit, dims the rows to ghosts, lights the ask line, then the rows one at a time`, () => {
+        expect(spec.shots.map((x) => x.id)).toEqual(['criteria']);
+        const keys = crit.spot!;
+        expect(lit(keys[0])).toBe(4); // the full list
+        expect(lit(keys[1])).toBe(1); // the ask line alone
+        expect(keys.slice(2).map(lit)).toEqual([1, 2, 3, 4]);
+        for (let i = 1; i < keys.length; i++) expect(keys[i].at).toBeGreaterThan(keys[i - 1].at);
+        // Rows are ghosts (never fully hidden) from the dim until each lights.
+        for (const [i, m] of crit.masks!.entries()) {
+          expect(m.max).toBeGreaterThan(0.5);
+          expect(m.max).toBeLessThanOrEqual(0.85);
+          expect(m.from).toBeCloseTo(keys[1].at, 5);
+          expect(m.until).toBeCloseTo(keys[2 + i].at, 5);
+        }
+      });
+      test(`${look.name}: on a phone the rows read: the crop frames their text at 1.8 output px per CSS px or more`, () => {
+        if (look.frame[0] > 1000) return;
+        const css = crit.images[0].width / 2;
+        for (const k of crit.camera!) expect((look.frame[0] / css) * k.zoom).toBeGreaterThanOrEqual(1.8 - 1e-6);
+      });
+      test(`${look.name}: the first encoded frame, the poster and the loop seam all show the full list lit`, () => {
+        const allLit = (t: number) => lit(crit.spot!.filter((k) => k.at <= t).pop()!) === 4 && crit.masks!.every((m) => maskAt(m, t, crit.dur).opacity === 0);
+        expect(allLit(spec.fade)).toBe(true); // the folded loop starts at cut t = fade
+        expect(allLit(spec.poster!)).toBe(true);
+        expect(allLit(crit.dur)).toBe(true); // the seam blends the end into the start: both full
+        expect(allLit(0)).toBe(true);
+        // The full list shows ~1.5s per loop or more: after the last row lands, plus the opening hold.
+        const keys = crit.spot!;
+        // (The cut runs one fade past the shot, holding its last frame; render.ts folds that tail onto the start.)
+        expect((cutDuration(spec) - (keys[keys.length - 1].at + 0.4)) + (keys[1].at - spec.fade)).toBeGreaterThanOrEqual(1.4);
+      });
     }
   });
   test('done holds the goal band, large enough to read at page size, from the first frame to the last (so the loop has no seam)', () => {
@@ -351,6 +396,11 @@ describe('verifyAt', () => {
 test('v6x hero comes in both themes', () => {
   expect(v6xHero(fake).theme).toBe('dark');
   expect(v6xHero(fake, 'light').theme).toBe('light');
+});
+
+test('spec fails loudly when a row\'s words were found outside the Done-when list (e.g. in a chat message above it)', () => {
+  const stray: Stills = { ...fake, text: (step, phrase) => (step === 's02b-spec' && phrase === 'public API backward compatible' ? { rects: [R(0.5, 0.3, 0.2, 0.01)], block: R(0.5, 0.3, 0.2, 0.01) } : fake.text(step, phrase)) };
+  expect(() => v6aBeats(stray)).toThrow(/not inside the Done-when list/);
 });
 
 test('a tap on a control outlines the control instead of stamping a square over its label', () => {

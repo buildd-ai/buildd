@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 
 interface WebhookSourceConfig {
@@ -161,7 +161,8 @@ export async function POST(req: NextRequest) {
           .returning();
 
         if (newTask) {
-          await dispatchNewTask(newTask, workspace);
+          await announceTaskCreated(newTask, workspace);
+          await wakeTask(newTask.id, 'task.created');
         }
 
         return NextResponse.json({ ok: true, taskId: newTask?.id || null });
@@ -177,10 +178,13 @@ export async function POST(req: NextRequest) {
       }
 
       case 'issue.reopened': {
-        await db
+        const reopened = await db
           .update(tasks)
           .set({ status: 'pending', updatedAt: new Date() })
-          .where(and(eq(tasks.externalId, externalId), eq(tasks.workspaceId, workspace.id)));
+          .where(and(eq(tasks.externalId, externalId), eq(tasks.workspaceId, workspace.id)))
+          .returning({ id: tasks.id });
+        // The trigger made the wake durable; this labels it and kicks delivery.
+        for (const t of reopened) await wakeTask(t.id, 'task.requeued');
 
         return NextResponse.json({ ok: true });
       }

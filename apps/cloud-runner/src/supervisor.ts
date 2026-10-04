@@ -7,8 +7,12 @@
  * so Bun tests drive it with fakes. worker-agent.ts wires the real ones.
  *
  * Safety bounds (docs/design/cloudflare-sandbox-runner.md):
- *  - `dispatch()` is the only way a run starts. Nothing here schedules,
- *    polls or re-dispatches. A retry is buildd firing a new webhook.
+ *  - `dispatch()` is the only way a run starts. Nothing here polls or
+ *    re-dispatches. A retry is buildd firing a new webhook. The one deferred
+ *    start is buildd's too: a `task.scheduled` webhook asks for a single
+ *    one-shot wake at the task's startAt (scheduleDispatch); when it fires it
+ *    goes through `dispatch()` like any webhook, and a later `task.scheduled`
+ *    replaces it rather than adding a second.
  *  - At most one live run: `decideDispatch` ignores a dispatch while a run is
  *    starting or running, and the check-and-set happens before any await.
  *  - One container per agent, fresh per attempt: a leftover container is
@@ -111,15 +115,44 @@ export interface SupervisorDeps {
    * gets only this token; the runner key in `config` stays with the agent.
    */
   mintTaskToken(): Promise<string>;
+  /** The Agents SDK schedule API (Agent#schedule / #cancelSchedule), one-shot only. */
+  scheduler: SchedulerPort;
   fetch: typeof fetch;
   now(): number;
   sleep(ms: number): Promise<void>;
   log(message: string): void;
 }
 
+/** What a scheduled-dispatch alarm is created with and fires with. */
+export interface ScheduledDispatchPayload {
+  /** Epoch ms the wake is for: the task's startAt. */
+  notBefore: number;
+}
+
+/**
+ * The slice of the Agents SDK schedule API the supervisor uses. worker-agent.ts
+ * wires it to `this.schedule(new Date(at), 'runScheduledDispatch', payload)`
+ * and `this.cancelSchedule(id)`; tests fake it.
+ */
+export interface SchedulerPort {
+  /** Create a one-shot that calls back with `payload` at `at` (epoch ms). Returns its id. */
+  scheduleAt(at: number, payload: ScheduledDispatchPayload): Promise<string>;
+  cancel(id: string): Promise<void>;
+}
+
 export type DispatchResult =
   | { accepted: true; attempt: number }
   | { accepted: false; reason: 'already_live' | 'not_parked'; attempt: number; status: RunState['status'] };
+
+/** Answer to a `task.scheduled` dispatch. A notBefore already past is dispatched at once. */
+export type ScheduleDispatchResult =
+  | { scheduled: true; scheduledFor: number; replaced: boolean }
+  | ({ scheduled: false } & DispatchResult);
+
+/** What a scheduled-dispatch alarm did when it fired. */
+export type ScheduledFireResult =
+  | ({ fired: true } & DispatchResult)
+  | { fired: false; reason: 'superseded' };
 
 const READY_POLL_MS = 250;
 const OUTPUT_DRAIN_MS = 5_000;
@@ -170,6 +203,10 @@ export class TaskSupervisor {
       return { accepted: false, reason: decision.reason, attempt: state.attempt, status: state.status };
     }
     const resume = decision.resumeWorkerId;
+    // Starting a run consumes a pending scheduled wake: the fresh state below
+    // drops it, so a fire that still arrives finds no matching id and is a
+    // no-op; cancel the alarm too, best effort.
+    if (state.scheduleId) this.cancelSchedule(state.scheduleId);
     // Check-and-set with no await in between: a second dispatch arriving
     // while this one is still starting sees `starting` and is ignored.
     const history = [...(state.reportHistory ?? []), ...(state.report ? [state.report] : [])].slice(-REPORT_HISTORY_MAX);
@@ -179,7 +216,7 @@ export class TaskSupervisor {
       status: 'starting',
       startedAt: this.d.now(),
       outputTail: [],
-      timings: {},
+      timings: request.scheduledFor !== undefined ? { scheduledFor: request.scheduledFor } : {},
       ...(history.length ? { reportHistory: history } : {}),
       // A resume continues the parked worker: its id is known up front (for
       // the snapshot scope and a crash report), and no claim line will come.
@@ -195,6 +232,54 @@ export class TaskSupervisor {
     this.live = run;
     this.d.waitUntil(run);
     return { accepted: true, attempt: decision.attempt };
+  }
+
+  /**
+   * `task.scheduled`: start a run at `notBefore` (epoch ms) instead of now.
+   * Stores one pending wake in state (shown by GET /tasks/:id) and one
+   * one-shot alarm; a later call replaces both (last write wins). A live run
+   * does not block this: the crash path requeues while the crashed run is
+   * still finishing, and the wake fires after it has. A `notBefore` already
+   * past is a dispatch now. Bounds on how far ahead are the caller's (http.ts).
+   */
+  async scheduleDispatch(notBefore: number): Promise<ScheduleDispatchResult> {
+    const previous = this.d.getState().scheduleId;
+    if (notBefore <= this.d.now()) {
+      if (previous) {
+        this.patch({ scheduledFor: undefined, scheduleId: undefined });
+        this.cancelSchedule(previous);
+      }
+      return { scheduled: false, ...this.dispatch({ scheduledFor: notBefore }) };
+    }
+    const id = await this.d.scheduler.scheduleAt(notBefore, { notBefore });
+    // Re-read after the await: whatever happened meanwhile, this wake is the latest.
+    const replaced = this.d.getState().scheduleId;
+    this.patch({ scheduledFor: notBefore, scheduleId: id });
+    if (replaced && replaced !== id) this.cancelSchedule(replaced);
+    this.d.log(`[cloud-runner] task ${this.d.taskId}: dispatch scheduled for ${new Date(notBefore).toISOString()}${replaced ? ' (replacing the earlier one)' : ''}`);
+    return { scheduled: true, scheduledFor: notBefore, replaced: !!previous || !!replaced };
+  }
+
+  /**
+   * The scheduled wake fired. Only the latest one counts: an id that is not
+   * the pending one (replaced, or consumed by a dispatch that started a run
+   * first) does nothing. Otherwise the wake is cleared and handed to
+   * `dispatch()`, which ignores it while a run is live.
+   */
+  fireScheduledDispatch(payload: ScheduledDispatchPayload, scheduleId: string | undefined): ScheduledFireResult {
+    const state = this.d.getState();
+    if (!scheduleId || state.scheduleId !== scheduleId) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: stale scheduled dispatch ${scheduleId ?? '(no id)'} ignored`);
+      return { fired: false, reason: 'superseded' };
+    }
+    const scheduledFor = state.scheduledFor ?? payload.notBefore;
+    this.patch({ scheduledFor: undefined, scheduleId: undefined });
+    return { fired: true, ...this.dispatch({ scheduledFor }) };
+  }
+
+  private cancelSchedule(id: string): void {
+    this.d.waitUntil(this.d.scheduler.cancel(id).catch(err =>
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: cancelling schedule ${id} failed: ${describe(err)}`)));
   }
 
   /**
@@ -510,6 +595,14 @@ export class TaskSupervisor {
     const body = {
       status: 'failed',
       error: `Cloud runner: the container ended without the runner reporting (exit code ${r.code ?? 'none'}, attempt ${state.attempt})${detail}`.slice(0, 1000),
+      // Only a `crashed` outcome reaches here (crashReportAction): the runner
+      // process or its container died without reporting. That is the same fact
+      // the runner's own boot reconciliation reports for a session its process
+      // lost, so it carries the same structured flag. buildd then books it as
+      // infra_failure and requeues it on the infra-retry budget (backoff,
+      // infraRetryCount, infra_stalled at the cap) instead of failing the task.
+      // The agent's own exits (failed, refused, usage, parked) never send this.
+      crashReconciled: true,
     };
     try {
       const res = await this.d.fetch(`${server.replace(/\/+$/, '')}/api/workers/${encodeURIComponent(state.workerId!)}`, {

@@ -2,7 +2,7 @@
 
 /**
  * Agent chat states in isolation, from fictional fixtures — no database, no
- * model call. `?state=propose|confirmed|split|question|answered|shipped|streaming|denied|empty|watch|visual`
+ * model call. `?state=propose|confirmed|split|question|answered|shipped|starting|streaming|streaming-long|denied|empty|watch|visual`
  * (`&review=1` with `visual` opens the review deck: the sheet on a phone, the pane on desktop)
  * (`&mood=calm|needs` for the empty canvas's mood)
  * and `&aside=member|operator`, `&setup=no_key&admin=1`,
@@ -10,7 +10,8 @@
  * tier switch, on fixture rows and prices), `&pane=closed`, `&about=mission` (opened from
  * "Ask about this mission": the mission pinned in the canvas), `&focus=question` (the
  * question's sheet or pane, e.g. with `answered`), `&feedback=1` (the thumbs,
- * one turn already voted down), `?steer=1` (steering a running agent).
+ * one turn already voted down), `?steer=1` (steering a running agent),
+ * `&settled=1` (a streaming state's turn as it lands: folded, ready).
  * Confirm, Discard and the question options work against the fixture.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -115,7 +116,11 @@ export default function DevChatPage() {
     ? { needsYou: [{ title: 'Round per line, or only the total?' }], live: 2 }
     : moodParam === 'calm' ? { needsYou: [], live: 0 } : null;
 
-  const fixture = useMemo(() => chatFixture(state), [state]);
+  const settled = params?.get('settled') === '1';
+  const fixture = useMemo(() => {
+    const f = chatFixture(state);
+    return settled ? { ...f, status: 'ready' as const } : f;
+  }, [state, settled]);
   const [messages, setMessages] = useState<ChatMessage[]>(fixture.messages);
   useEffect(() => setMessages(fixture.messages), [fixture]);
   const views = useMemo(() => fixtureViews(state), [state]);

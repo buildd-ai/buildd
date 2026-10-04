@@ -243,7 +243,7 @@ export function listMcpTools({ accountLevel, isSensitive, surface = 'legacy', sc
     tools.push({
       name: "check_path_claim",
       description: surface === 'groups'
-        ? 'Claim paths discovered mid-task (worker context required). Unclaimed paths extend pathManifest atomically. A conflict returns blockingTaskId: report blocked to add a dependency. deadlock=true includes the cycle and recovery guidance: cancel/retry, escalate to the blocking owner, or serialize the mission. Do not edit blocked paths.'
+        ? 'Claim paths mid-task. Conflict returns blockingTaskId; report blocked. deadlock=true adds cycle+recovery. release=true gives paths back.'
         : `Mid-task path-claim check. Call this when you discover you need to touch a file outside your declared pathManifest.
 
 If the path is unclaimed by any active sibling task, your task's pathManifest is atomically extended and you can proceed.
@@ -263,7 +263,19 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           paths: {
             type: "array" as const,
             items: { type: "string" as const },
-            description: "Non-empty paths or directory prefixes to claim.",
+            description: "Paths/dirs to claim, or release if release=true.",
+          },
+          release: {
+            type: "boolean" as const,
+            description: "If true, release instead of claim.",
+          },
+          reason: {
+            type: "string" as const,
+            description: "Release note.",
+          },
+          expectedRevision: {
+            type: "number" as const,
+            description: "CAS token.",
           },
         },
         required: ["paths"],

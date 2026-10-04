@@ -12,7 +12,9 @@
  *
  *  - the collided path joins the task's effective `pathManifest`, so the claim
  *    route's active-lease backstop defers the task until the holder's lease is
- *    released (terminal release already wakes it — no agent waits);
+ *    released. The requeue's own wake finds it deferred; it is woken again
+ *    only through the waiter the claim route registers for that deferral
+ *    (registerClaimDeferralWaiters), which the holder's release wakes;
  *  - the collision is recorded on `path_declaration.collision`, next to the
  *    original declaration snapshot (taken here if no earlier write took one),
  *    so conformance and audit see why scope grew;

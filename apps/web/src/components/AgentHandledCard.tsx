@@ -15,6 +15,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
     ? gate.label
     : item.chip === 'AUTO_MERGE' ? (item.escalationReason ?? 'Auto-merges when CI passes') : 'Agent working';
   const fixTaskId = gate?.kind === 'fixing' ? gate.taskId : null;
+  const fixTaskTitle = gate?.kind === 'fixing' ? gate.taskTitle : null;
   const spinning = gate?.kind === 'fixing';
 
   return (
@@ -39,7 +40,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
       <div className="flex items-center gap-3 mt-0.5 flex-wrap">
         {fixTaskId && (
           <Link href={actionCardTaskLink(item, { taskId: fixTaskId, page: true })} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] font-medium text-accent-text hover:underline">
-            View fix attempt
+            {fixTaskTitle ?? 'View fix attempt'}
           </Link>
         )}
         {item.prUrl && (

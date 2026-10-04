@@ -1384,6 +1384,12 @@ export interface ClaimTasksInput {
    * only, never the provider's values.
    */
   llmProviderOverride?: boolean;
+  /**
+   * True when this runner's machine already has `OPENAI_BASE_URL` set, which
+   * beats the team's agent model endpoint for a Codex task the same way
+   * `llmProviderOverride` beats it for Claude. A boolean only, never the URL.
+   */
+  codexBaseUrlOverride?: boolean;
 }
 
 /** The agent model endpoint as a claim delivers it (packages/core/agent-endpoint.ts). */
@@ -1396,6 +1402,14 @@ export interface ClaimModelEndpoint {
   authHeader: 'authorization' | 'x-api-key';
   /** Native model id → proxy alias (gateway / anthropic-compatible only). */
   models: Record<string, string>;
+  /**
+   * The OpenAI-compatible root (e.g. `…/v1`), present only for `gateway` and
+   * `openrouter`. A Codex task's `OPENAI_BASE_URL` + `authToken` as
+   * `OPENAI_API_KEY`. Absent (including for `anthropic-compatible`, which has
+   * no OpenAI-format route) means a Codex task given this endpoint must fail
+   * clearly rather than guess a wire format.
+   */
+  openAiBaseUrl?: string;
 }
 
 export type ClaimDiagnosticReason =
@@ -1497,6 +1511,17 @@ export interface ClaimDiagnostics {
     routing_paused?: number;
     /** Task already had a live worker when the atomic insert ran (dup guard). */
     duplicate_worker?: number;
+    /**
+     * Retry attempt cancelled instead of claimed: another fix attempt in its
+     * retry family is already open (one open retry per subject).
+     */
+    sibling_retry_open?: number;
+    /**
+     * Claim planner in `apply` mode ordered this task behind a picked, in-flight
+     * or open-PR node it would collide with. Replaces the per-poll
+     * path_overlap / advisory_manifest deferral for that task.
+     */
+    ordered_behind?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
@@ -1628,6 +1653,15 @@ export interface ClaimTasksResponse {
      * bypassed.
      */
     modelEndpointIgnored?: boolean;
+    /**
+     * Which GitHub credentials the agent gets (@buildd/core/agent-github-credentials).
+     * `scoped`: the runner strips inherited GitHub tokens and host git/gh
+     * credentials and fetches a task-scoped token from
+     * POST /api/runner/agent-github-token. `runner`: the workspace opted out.
+     * Absent: unchanged behaviour. A marker, not a credential; sent only to a
+     * runner that declares the `scoped_github_token` feature, never on a cloud claim.
+     */
+    githubCredentials?: { mode: 'scoped' | 'runner' };
     /** Credentials expiring within 2 hours, scoped to THIS task's workspace team.
      *  Kept per-worker because the runner also reads the claude_credential secretId
      *  off it to wire the worker to the broker at spawn time, and because a claim
@@ -2176,6 +2210,12 @@ export interface VisualReviewFixTask {
   prUrl: string | null;
   prNumber: number | null;
   mergedAt: string | null;
+  /**
+   * Where a merged PR landed. `null` unless `mergedAt` is set: `'trunk'` for an
+   * ordinary merge, `'mission_branch'` when the mission uses an integration
+   * branch and this PR based on it — merged there, but not yet shipped to trunk.
+   */
+  mergedInto: 'trunk' | 'mission_branch' | null;
   /** Who filed it: the auditor (`qa.fixTaskId`) or a human decision (the review row). */
   origin: 'auditor' | 'human';
 }
@@ -2191,8 +2231,39 @@ export interface VisualReviewCellEntry {
   review: HumanShotReview | null;
 }
 
-/** A thumbnail's human-review marker: hollow, solid, strike. */
-export type VisualReviewMarker = 'awaiting' | 'confirmed' | 'disputed' | 'waived';
+/**
+ * A thumbnail's human-review marker: hollow, solid, strike. `fix_merged`: the
+ * cell's fix merged and no screenshot was taken since, so there is nothing to
+ * decide (never hollow).
+ */
+export type VisualReviewMarker = 'awaiting' | 'confirmed' | 'disputed' | 'waived' | 'fix_merged';
+
+/**
+ * Where a cell stands once a fix for it merged. The question is no longer
+ * "is this a bug?" but "did the fix work?".
+ * - `awaiting_capture`: no screenshot since the merge. Settled: no buttons,
+ *   not in the queue, not counted as to review.
+ * - `check`: the current screenshot was taken after the merge. Before/after,
+ *   with Fixed (looks right) and Still broken (needs fix, files a new fix).
+ */
+export type VisualReviewFixCheckState = 'awaiting_capture' | 'check';
+
+/**
+ * Where a cell stands for the review deck (`standingOf`). `to_review`: waits
+ * on a human decision, so it is in `VisualReviewModel.queue`. `fine`: the
+ * agent or a person found it right. `fixing`: a fix is open, merged and not
+ * yet re-shot, or a person asked for one.
+ */
+export type VisualReviewStanding = 'to_review' | 'fine' | 'fixing';
+
+export interface VisualReviewFixCheck {
+  state: VisualReviewFixCheckState;
+  /** The merged fix. */
+  fix: VisualReviewFixTask;
+  /** The screenshot the fix was filed against: the "before". */
+  beforeShotId: string;
+  beforeRound: number;
+}
 
 /** One route × viewport × variant, across rounds. */
 export interface VisualReviewCell {
@@ -2208,8 +2279,16 @@ export interface VisualReviewCell {
   /** The active human decision if there is one (looks right = ok, needs fix = issue), else the agent's verdict. */
   effectiveVerdict: VisualQaVerdict;
   marker: VisualReviewMarker;
-  /** An unsure cell nobody has decided: the only kind that needs a human. */
+  /** An unsure cell nobody has decided: the only kind that puts the audit in `needs_you`. */
   needsHuman: boolean;
+  /**
+   * Set once a fix for this cell merged and the current screenshot has no
+   * unmerged fix of its own (`fixCheckOf`). Absent or null: the usual
+   * Looks right / Needs fix apply.
+   */
+  fixCheck?: VisualReviewFixCheck | null;
+  /** Server-derived (`standingOf`). Absent only on a model built before the field existed. */
+  standing?: VisualReviewStanding;
 }
 
 export interface VisualReviewSummary {
@@ -2227,6 +2306,12 @@ export interface VisualReviewSummary {
   unreviewed: number;
   /** Current unsure cells without an active review (`needsHuman`). */
   awaitingHuman: number;
+  /** Cells awaiting a human decision: the length of `VisualReviewModel.queue`. */
+  toReview?: number;
+  /** Cells whose fix merged with a new screenshot nobody has checked yet (`fixCheck.state` `check`, no review). */
+  fixChecks?: number;
+  /** Cells whose fix merged with no screenshot since (`fixCheck.state` `awaiting_capture`): settled, not to review. */
+  awaitingCapture?: number;
   confirmed: number;
   disputed: number;
   waived: number;
@@ -2286,7 +2371,11 @@ export interface VisualReviewModel {
   /** For `needs_you`: why, and for a question the parked worker and its prompt. Null in every other phase. */
   needsYou: VisualReviewNeedsYou | null;
   cells: VisualReviewCell[];
-  /** Cell keys in review order: unsure, issue, ok, then already reviewed. */
+  /**
+   * Keys of the cells awaiting a human decision (`standing` `to_review`), in
+   * review order: unsure, fix checks, then issue. Decided, fine and settled
+   * cells are never in it.
+   */
   queue: string[];
   summary: VisualReviewSummary;
   fixTasks: VisualReviewFixTask[];
@@ -2331,8 +2420,38 @@ export interface VisualReviewDecisionResponse {
   guidanceTaskIds: string[];
   /** Why each fix in `guidanceTaskIds` got a note instead of a cancel, for an honest toast. */
   annotated: VisualReviewAnnotation[];
+  /** What the decision did, for the confirmation (`decisionOutcome`). Absent from an older server. */
+  outcome?: VisualReviewOutcome;
   model: VisualReviewModel;
 }
+
+/**
+ * What a decision did, as the server applied it
+ * (docs/design/visual-qa-human-review.md, "The deck queue"):
+ * - `fix_filed`: a new fix was filed; a re-check round opens or extends.
+ * - `fix_added`: the route's open human fix was reused.
+ * - `fix_kept` / `fix_kept_no_recheck`: agreed with an issue whose fix is
+ *   open; the second when the last automatic round already ran.
+ * - `fix_noted`: a note went to the open fix.
+ * - `fix_done`: the fix had completed; recorded only.
+ * - `fix_cancelled`: a pending, unclaimed fix was cancelled.
+ * - `fix_started`: the fix had started, so it got a note instead.
+ * - `fix_still_linked`: another screen still links the fix, so it stays open.
+ * - `not_a_bug`, `marked_fixed`, `marked_fine`: recorded only.
+ */
+export type VisualReviewOutcome =
+  | 'fix_filed'
+  | 'fix_added'
+  | 'fix_kept'
+  | 'fix_kept_no_recheck'
+  | 'fix_noted'
+  | 'fix_done'
+  | 'fix_cancelled'
+  | 'fix_started'
+  | 'fix_still_linked'
+  | 'not_a_bug'
+  | 'marked_fixed'
+  | 'marked_fine';
 
 /**
  * `started`: a looks-right could not cancel the fix because it had started.
@@ -3259,7 +3378,13 @@ export interface ManifestCoverageCounts {
   /** Fraction in [0, 1]; null for an empty population. */
   concreteShare: number | null;
 }
+export interface CoordinationDecisionCapability {
+  workspaceId: string;
+  capability: string;
+  status: 'enabled' | 'capability_disabled';
+}
 export interface ManifestCoverageStats extends CoordinationMetricFilters, ManifestCoverageCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   groups: Array<ManifestCoverageCounts & { workspaceId: string; missionId: string | null; kind: string | null }>;
 }
 export interface PathClaimCallCounts {
@@ -3269,6 +3394,7 @@ export interface PathClaimCallCounts {
   rejected: number;
 }
 export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCallCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   calls: number;
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
@@ -3276,6 +3402,55 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+}
+/**
+ * Aggregate counts over the orchestration decision ledger
+ * (`orchestration_decisions`, `orchestration_manifest_predictions`) — the
+ * DB-free answer to "is this decision shadow collecting evidence?".
+ * Served by `GET /api/stats/coordination?metric=orchestrationDecisions`.
+ */
+export interface OrchestrationDecisionCounts {
+  total: number;
+  applied: number;
+  suggested: number;
+  fallback: number;
+  /** Rows whose task has an `orchestration_touch_labels` row (an outcome label). */
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  capability: string;
+  decisionId: string;
+  fingerprint: string;
+  candidatePolicyVersion: string;
+  experimentArm: string;
+  mode: string;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+export interface OrchestrationPredictionCounts {
+  total: number;
+  complete: number;
+  unknownScope: number;
+  allApplied: number;
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
+  decisionCapabilities: CoordinationDecisionCapability[];
+  decisions: OrchestrationDecisionCounts & {
+    firstAt: string | null;
+    lastAt: string | null;
+    byGroup: OrchestrationDecisionGroup[];
+    /** `day` is a UTC calendar date (YYYY-MM-DD). */
+    byDay: Array<OrchestrationDecisionCounts & { day: string; capability: string }>;
+    byReason: Array<{ capability: string; status: string; reason: string | null; total: number }>;
+  };
+  manifestPredictions: OrchestrationPredictionCounts & {
+    byDay: Array<OrchestrationPredictionCounts & { day: string }>;
+    byStopReason: Array<{ stopReason: string; total: number }>;
+  };
+  coverage: { note: string };
 }
 
 // ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
@@ -3319,6 +3494,12 @@ export interface WorkspaceOnboardingConfig {
  * only through `resolveScoutExtension` (packages/core/scout-capabilities.ts).
  */
 export interface WorkspaceQualityScoutConfig {
+  /**
+   * `off` (default when absent): no runs. `shadow`: run and record, never file.
+   * `propose`: apply the deduped follow-up policy. No blocking mode exists.
+   * Read only through `resolveScoutMode` (packages/core/quality-scout/ledger.ts).
+   */
+  mode?: 'off' | 'shadow' | 'propose';
   /** Overrides the detected test command as Scout's verification command. */
   verificationCommand?: string;
   /** Where probes may run. `ephemeral: true` is the only thing that permits writes. */

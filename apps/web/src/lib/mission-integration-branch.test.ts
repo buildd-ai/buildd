@@ -537,3 +537,80 @@ describe('a mission with no workspace whose tasks live in a repo-linked one', ()
     expect(gateEvents[0].detail.branch).not.toBe(gateEvents[1].detail.branch);
   });
 });
+
+// ── Regression: a mission whose tasks span MORE than one repo ───────────────
+//
+// Mission a955fed9: tasks in two workspaces (buildd + infrastructure), mission
+// `workspaceId` set to buildd (its home repo). `resolveMissionRepoWorkspaceId`
+// prefers `missionWorkspaceId` unconditionally, so a task claimed from the
+// infrastructure workspace had its integration branch checked (and found
+// "present") against buildd's repo — the wrong one. `create_pr` then derived a
+// base that is real in buildd but absent in infrastructure, GitHub refused it,
+// and the explicit-base retry was refused too because nothing had told the
+// caller the branch was unusable for THIS task's repo. The fix: a task-supplied
+// workspace hint names the repo its own PR needs the branch in, and wins over
+// the mission's single "home repo" — mission-level callers that have no task to
+// ask (runMission, the mission-PR opener) never pass a hint, so they keep
+// resolving to the mission's own workspace exactly as before.
+
+describe('a mission whose tasks span more than one repo', () => {
+  beforeEach(() => {
+    mockMissionsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubApi.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    noteInserts.length = 0;
+    gateEvents.length = 0;
+    noteInsertThrows = false;
+  });
+
+  it("ensures the branch in the TASK's own repo, not the mission's home repo, when they differ", async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      workingBranch: BRANCH,
+      integrationBranchEnabled: true,
+      workspaceId: 'ws-home',
+    });
+    // Only the task's own workspace resolves to a real, repo-linked workspace —
+    // if the ensurer looks up 'ws-home' instead, this returns null and the call
+    // dead-ends on 'no_repo' even though the task's own repo is perfectly usable.
+    mockWorkspacesFindFirst.mockImplementation((async (args: any) => {
+      if (args?.where?.value === 'ws-task') {
+        return { githubRepoId: 'repo-task', githubInstallationId: 'inst-task', gitConfig: {} };
+      }
+      return null;
+    }) as any);
+    mockGithubReposFindFirst.mockResolvedValue({
+      fullName: REPO_FULL_NAME,
+      defaultBranch: 'trunk-branch',
+      installation: { installationId: 4242 },
+    });
+    createPathWith({ resolves: { ref: `refs/heads/${BRANCH}` } });
+
+    const got = await ensureIntegrationBaseForTaskPr({
+      missionId: 'm-1',
+      integrationBase: BRANCH,
+      taskTitle: 'infra slice',
+      workspaceId: 'ws-task',
+      taskId: 't-1',
+      workerId: 'w-1',
+    });
+
+    expect(got).toEqual({ usable: true, recreated: true });
+    expect((mockWorkspacesFindFirst.mock.calls[0] as any[])[0].where.value).toBe('ws-task');
+  });
+
+  it("mission-level callers with no task hint still resolve the mission's own home repo", async () => {
+    withOptedInMission();
+    mockGithubApi.mockResolvedValue({ object: { sha: 'b'.repeat(40) } });
+
+    // No `workspaceId` opt at all — the shape `runMission` calls with.
+    expect(await ensureMissionIntegrationBranch('m-1')).toEqual({
+      ok: true,
+      branch: BRANCH,
+      created: false,
+    });
+    expect((mockWorkspacesFindFirst.mock.calls[0] as any[])[0].where.value).toBe('ws-1');
+  });
+});

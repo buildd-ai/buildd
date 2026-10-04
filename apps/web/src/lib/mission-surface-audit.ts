@@ -16,7 +16,7 @@ import {
   type SurfaceAuditTrigger,
 } from '@buildd/core/surface-audit';
 import { VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { visualQaRequiredRoutes } from '@/lib/visual-qa-required-routes';
 import { evaluateSurfaceAuditGate, loadSurfaceAuditGateTasks } from '@/lib/mission-surface-audit-gate';
 import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
@@ -167,9 +167,10 @@ export async function ensureMissionSurfaceAudit(params: EnsureSurfaceAuditParams
   }).returning();
 
   if (auditTask) {
-    await dispatchNewTask(auditTask, targetWorkspace, {}).catch(err =>
+    await announceTaskCreated(auditTask, targetWorkspace).catch(err =>
       console.error('[mission-surface-audit] dispatch failed:', err),
     );
+    await wakeTask(auditTask.id, 'task.created');
   }
 }
 
@@ -234,9 +235,10 @@ export async function requestMissionSurfaceAudit(missionId: string): Promise<Req
     roleSlug: VISUAL_AUDITOR_ROLE_SLUG,
   }).returning();
 
-  await dispatchNewTask(auditTask, targetWorkspace, {}).catch(err =>
+  await announceTaskCreated(auditTask, targetWorkspace).catch(err =>
     console.error('[mission-surface-audit] dispatch failed:', err),
   );
+  await wakeTask(auditTask.id, 'task.created');
   return { ok: true, created: true, taskId: auditTask.id, status: auditTask.status };
 }
 
@@ -362,9 +364,10 @@ async function followUpSurfaceFix(opts: {
   }).returning();
 
   if (auditTask) {
-    await dispatchNewTask(auditTask, targetWorkspace, {}).catch(err =>
+    await announceTaskCreated(auditTask, targetWorkspace).catch(err =>
       console.error('[mission-surface-audit] dispatch failed:', err),
     );
+    await wakeTask(auditTask.id, 'task.created');
   }
 }
 

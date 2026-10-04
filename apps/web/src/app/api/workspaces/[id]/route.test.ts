@@ -647,6 +647,29 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // GitHub credentials opt-out for self-hosted agents (docs/runner-github-credentials.md).
+  it('accepts gitConfig.agentGitHubCredentials runner, and null to clear', async () => {
+    for (const value of ['runner', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { agentGitHubCredentials: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, agentGitHubCredentials: value });
+    }
+  });
+
+  it('rejects any other gitConfig.agentGitHubCredentials value (returns 400)', async () => {
+    for (const value of ['operator', 'scoped', true]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { agentGitHubCredentials: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/agentGitHubCredentials/);
+    }
+  });
+
   it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
@@ -900,7 +923,7 @@ describe('PATCH /api/workspaces/[id] — webhookConfig', () => {
   });
 
   it('accepts an events opt-in', async () => {
-    const events = ['task.created', 'task.unblocked', 'task.retry', 'task.resume'];
+    const events = ['task.created', 'task.unblocked', 'task.retry', 'task.resume', 'task.scheduled'];
     const res = await patch({ webhookConfig: { url: 'https://r.example/d', token: 't', enabled: true, events } });
     expect(res.status).toBe(200);
     expect(capturedUpdates.webhookConfig).toMatchObject({ events });

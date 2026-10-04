@@ -1,5 +1,5 @@
 /**
- * Proxy route for workspace memory — forwards to memory service.
+ * Workspace memory: reads and writes the team memory pool (the memories table).
  *
  * GET  /api/workspaces/:id/memory  → list/search memories (scoped by workspace repo as project)
  * POST /api/workspaces/:id/memory  → save a memory (mirrored into the recall index)
@@ -157,7 +157,7 @@ export async function GET(
       total: searchData.total,
     });
   } catch (err) {
-    console.error('Memory service error:', err);
+    console.error('Memory route error:', err);
     return NextResponse.json({ error: 'Memory operation failed' }, { status: 500 });
   }
 }
@@ -208,7 +208,7 @@ export async function POST(
       observation: data.memory,
     }, { status: 201 });
   } catch (err) {
-    console.error('Memory service error:', err);
+    console.error('Memory route error:', err);
     return NextResponse.json({ error: 'Failed to save memory' }, { status: 500 });
   }
 }

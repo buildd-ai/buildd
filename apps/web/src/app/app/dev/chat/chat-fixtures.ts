@@ -238,8 +238,8 @@ function explore(): ChatMessage[] {
   ];
 }
 
-export type ChatFixtureState = 'empty' | 'streaming' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual';
-export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'streaming', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual'];
+export type ChatFixtureState = 'empty' | 'starting' | 'streaming' | 'streaming-long' | 'propose' | 'confirmed' | 'split' | 'question' | 'answered' | 'shipped' | 'running' | 'denied' | 'capped' | 'rows' | 'rows-full' | 'rows-done' | 'watch' | 'visual';
+export const CHAT_FIXTURE_STATES: ChatFixtureState[] = ['empty', 'starting', 'streaming', 'streaming-long', 'propose', 'confirmed', 'split', 'question', 'answered', 'shipped', 'running', 'denied', 'capped', 'rows', 'rows-full', 'rows-done', 'watch', 'visual'];
 
 /** A visual review moment as mission-events.ts posts it: the same words and data. */
 const visualEvent = (id: string, min: number, moment: VisualReviewMoment, model: VisualReviewModel, extra: { fixes?: number; routes?: string[] } = {}): ChatMessage => ({
@@ -280,6 +280,35 @@ export function chatFixture(state: ChatFixtureState): { messages: ChatMessage[];
   switch (state) {
     case 'empty':
       return { messages: [], title: null, status: 'ready' };
+    case 'starting':
+      // Sent, nothing streamed yet: the live line is the square alone.
+      return { title: null, status: 'submitted', messages: [user('m1', 'Why is the checkout task stuck?', 1)] };
+    case 'streaming-long':
+      // A long turn mid-flight: reads, a failure, a filed mission, a change
+      // waiting on the person, and one call still running.
+      return {
+        title: null, status: 'streaming',
+        messages: [
+          user('m1', 'Why is the checkout task stuck, and what should we do about it?', 1),
+          withScope(agent('m2', 1, withSteps([
+            call('list_tasks', { workspace: 'billing-web', status: 'in_progress' }, { summary: '4 in progress', data: [], objects: [] }),
+            call('get_task', { taskId: 'task-fx' }, { data: {}, objects: [] }),
+            call('get_task', { taskId: 'task-checkout' }, { data: {}, objects: [] }),
+            call('explain', { taskId: 'task-checkout' }, { summary: 'waiting on a question', data: {}, objects: [] }),
+            call('get_pr', { prNumber: 412 }, undefined, { state: 'output-error', errorText: 'Not found' }),
+            call('read_evidence', { taskId: 'task-checkout' }, { data: {}, objects: [] }),
+            call('get_error_traces', { taskId: 'task-checkout' }, { data: {}, objects: [] }),
+            call('recall', { query: 'checkout rounding' }, { data: [], objects: [] }),
+            call('manage_missions', { action: 'list', workspace: 'billing-web' }, { data: [], objects: [] }),
+            call('manage_missions', MISSION_DRAFT, { summary: 'mission filed, plan-first', data: { id: MISSION_ID }, objects: [missionRef] }, { approval: { id: 'approval-long-1', approved: true } }),
+            call('list_prs', { workspace: 'billing-web' }, { data: [], objects: [] }),
+            call('get_failure_analytics', { window: '7d' }, { data: {}, objects: [] }),
+            call('create_task', { title: 'Answer the rounding question', missionId: MISSION_ID }, undefined, { state: 'approval-responded', approval: { id: 'approval-long-2', approved: true } }),
+            call('get_budget_forecast', {}, { data: {}, objects: [] }),
+            call('query_events', { taskId: 'task-checkout' }, undefined, { state: 'input-available' }),
+          ]))),
+        ],
+      };
     case 'streaming':
       return {
         title: null, status: 'streaming',

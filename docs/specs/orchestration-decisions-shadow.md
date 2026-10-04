@@ -2,7 +2,7 @@
 title: Orchestration Decisions (Shadow and Promotion Guard)
 status: active
 owner: max
-last_verified: 2026-10-01
+last_verified: 2026-10-03
 summary: Creation-manifest and claim hold/start decisions MUST only record suggestions unless a committed readout promotion grants a cohort, and MUST fall back to the deterministic rule on every failure.
 domain: tasks
 surfaces: [packages/core/orchestration-decision.ts, packages/core/orchestration-promotion.ts, packages/core/orchestration-readout.ts, apps/web/src/app/api/workers/claim/hold-start-shadow.ts]
@@ -60,6 +60,15 @@ This contract describes **shadow-only** behaviour. As shipped, no promotion is
 recorded, so every applying fraction resolves to zero and both decisions are
 record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md` "Rollout status".
 
+**Relationship to the 2026-10-03 owner decision retiring shadow-first as the
+default decision-call rollout** (`knowledge-base: buildd/design/decision-calls.md`
+Point 2b, "Staying evidence-gated"): that decision does not flip this one live.
+A wrong gated START can produce a real merge collision, so this stays the one
+decision in the table that requires a committed, evidence-backed promotion —
+not a leftover shadow phase nobody got around to graduating, a deliberate
+exception for a decision whose correct confidence threshold cannot be chosen
+responsibly without first measuring it on decisions that already happened.
+
 **Invariants**:
 
 - Every orchestration decision goes through `runOrchestrationDecision`: one
@@ -102,6 +111,17 @@ record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md`
   `eligible_for_gated` verdict. With too few labelled rows in any of train,
   held-out or the later window the verdict is `insufficient_n` and the
   threshold is null. A held claim decision is censored, never a safe start.
+- Creation-manifest candidates are tree-pinned when the server can read the
+  repository tree at the task's base commit (`getServerTreeCandidateAdapter`,
+  cached per commit, ranked by the workspace code corpus): every candidate
+  exists at that commit and coverage is `tree_pinned`. Unknown scope then
+  means candidate truncation or a path the task text names that the tree
+  lacks. A failed tree or corpus read degrades to `neighbour_diff_only`.
+- Each manifest group's verdict carries two eligibilities. Lease eligibility
+  is the gated-application verdict above and still refuses unknown scope.
+  Ordering eligibility grades the predicted set on whole-set precision/recall
+  against the regex and neighbour-union baselines, reporting unknown scope as
+  a covariate; it applies nothing.
 
 **Acceptance criteria**:
 
@@ -155,6 +175,11 @@ record-only. See `knowledge-base: buildd/design/conflict-aware-orchestration.md`
   `splitWorkUnits`, `replayDecisionEval`, `calibrateAndJudge`; loader
   `packages/core/orchestration-readout-source.ts`; operator command
   `scripts/orchestration-readout.ts`.
+- `apps/web/src/lib/orchestration-decision-stats-query.ts`:
+  `fetchOrchestrationDecisionStats`, the DB-free evidence count (rows by
+  decision group / UTC day / fallback reason, labelled vs unlabelled, opt-in
+  state) behind MCP `get_decision_stats`. The readout script
+  needs `DATABASE_URL`; this does not.
 - Data model: `orchestration_decisions`, `orchestration_touch_labels`,
   `orchestration_manifest_predictions` in `packages/core/db/schema.ts`.
 

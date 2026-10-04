@@ -54,8 +54,8 @@ describe('audit why columns', () => {
     expect(sql).not.toMatch(/"result"(,| from)/);
   });
 
-  it('reads the worker error for audits', () => {
+  it('reads the worker error and base ref for audits', () => {
     const { sql } = visualReviewWorkersQuery(qb(), MISSION).toSQL();
-    expect(sql).toMatch(/"merged_at", "error" from "workers"/);
+    expect(sql).toMatch(/"merged_at", "pr_base_ref", "error" from "workers"/);
   });
 });

@@ -1,4 +1,10 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// The trigger-hint batch needs a real driver; here it runs the write as-is and
+// records the hint (behaviour against Postgres: apps/web/tests/db/dispatch-outbox.test.ts).
+const realDispatchOutbox = await import('@buildd/core/dispatch-outbox');
+const mockWithDispatchHint = mock(async (_hint: unknown, write: PromiseLike<unknown>) => await write);
+mock.module('@buildd/core/dispatch-outbox', () => ({ ...realDispatchOutbox, withDispatchHint: mockWithDispatchHint }));
 // The gate ledger shares the `db` handle with the route, so an unstubbed
 // `recordGateEvent` shows up as an extra `db.insert` in the table-agnostic
 // mocks below. Stubbed here because this file asserts route BEHAVIOUR; the
@@ -48,7 +54,7 @@ const mockResolveCreatorContext = mock(() =>
 );
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
-const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAnnounceTaskCreated = mock(() => Promise.resolve());
 const mockFindIntakeWarnings = mock(() => Promise.resolve([] as any[]));
 mock.module('@buildd/core/spec-discrepancy-intake', () => ({
   findIntakeWarnings: mockFindIntakeWarnings,
@@ -127,8 +133,22 @@ mock.module('@/lib/task-service', () => ({
 }));
 
 // Mock task-dispatch
-mock.module('@/lib/task-dispatch', () => ({
-  dispatchNewTask: mockDispatchNewTask,
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounceTaskCreated,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
 }));
 
 // Mock workspace-resolver
@@ -444,7 +464,8 @@ describe('POST /api/tasks', () => {
     mockTriggerEvent.mockReset();
     mockResolveCreatorContext.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
-    mockDispatchNewTask.mockReset();
+    mockAnnounceTaskCreated.mockReset();
+    mockWakeTask.mockReset();
     mockMissionsFindFirst.mockReset();
     // Mission links are team-scoped; default to a mission in the test workspace's team.
     mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
@@ -1021,14 +1042,14 @@ describe('POST /api/tasks', () => {
 
     expect(response.status).toBe(200);
 
-    // dispatchNewTask should be called with the task, workspace, and options
-    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
-    expect(mockDispatchNewTask.mock.calls[0][0]).toEqual(createdTask);
-    expect(mockDispatchNewTask.mock.calls[0][2]).toEqual(
-      expect.objectContaining({
-        assignToLocalUiUrl: 'http://localhost:3456',
-      })
-    );
+    // Announced to the dashboard, and woken with the local runner as the target
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledTimes(1);
+    expect(mockAnnounceTaskCreated.mock.calls[0][0]).toEqual(createdTask);
+    expect(mockWakeTask).toHaveBeenCalledWith(createdTask.id, 'task.created', {
+      targetLocalUiUrl: 'http://localhost:3456',
+    });
+    // The target rides the insert's own transaction (no untargeted broadcast window).
+    expect(mockWithDispatchHint).toHaveBeenCalledWith({ metadata: { targetLocalUiUrl: 'http://localhost:3456' } }, expect.anything());
   });
 
   it('dispatches task on successful creation', async () => {
@@ -1052,11 +1073,11 @@ describe('POST /api/tasks', () => {
     });
     await POST(request);
 
-    expect(mockDispatchNewTask).toHaveBeenCalledWith(
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledWith(
       createdTask,
       expect.objectContaining({ id: 'ws-1' }),
-      expect.any(Object)
     );
+    expect(mockWakeTask).toHaveBeenCalledWith('task-123', 'task.created', { targetLocalUiUrl: undefined });
   });
 
   it('sets createdByAccountId from resolveCreatorContext', async () => {
@@ -1212,7 +1233,7 @@ describe('POST /api/tasks', () => {
     expect(capturedValues.parentTaskId).toBe('parent-task-1');
   });
 
-  it('passes workspace with webhook config to dispatchNewTask', async () => {
+  it('passes workspace with webhook config to the creation announcement', async () => {
     const createdTask = {
       id: 'task-123',
       workspaceId: 'ws-1',
@@ -1247,12 +1268,8 @@ describe('POST /api/tasks', () => {
     });
     await POST(request);
 
-    // dispatchNewTask receives the workspace with webhook config
-    expect(mockDispatchNewTask).toHaveBeenCalledWith(
-      createdTask,
-      workspace,
-      expect.any(Object)
-    );
+    // The announcement carries the workspace with webhook config
+    expect(mockAnnounceTaskCreated).toHaveBeenCalledWith(createdTask, workspace);
   });
 
   it('creates task with project field set', async () => {
@@ -3060,22 +3077,21 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(200);
       expect(captured().pathManifest).toEqual(['**']);
       expect(mockScheduleCreationManifestShadow).toHaveBeenCalledTimes(1);
-      const [input, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
-      expect(input).toMatchObject({
-        taskId: captured().id,
-        teamId: 'team-1',
+      // The inserted row goes to the one post-insert hook, which decides eligibility.
+      const [row, ctx, schedule] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row).toMatchObject({
+        id: captured().id,
         workspaceId: 'ws-1',
         missionId: 'mission-1',
-        accountId: 'account-123',
         title: 'Build feature X',
         description: 'Do it',
-        callerManifest: ['**'],
+        pathManifest: ['**'],
       });
-      expect(input.createdAt instanceof Date).toBe(true);
+      expect(ctx).toEqual({ teamId: 'team-1', accountId: 'account-123' });
       expect(typeof schedule).toBe('function');
     });
 
-    it('explicit caller manifests win: no prediction is scheduled', async () => {
+    it('an explicit caller manifest reaches the hook as stored (the hook declines it: caller manifests win)', async () => {
       missionPathManifestSetup();
       mockTasksFindMany.mockResolvedValue([]);
       const response = await POST(createMockRequest({
@@ -3084,7 +3100,8 @@ describe('POST /api/tasks', () => {
         body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/feature.ts'] },
       }));
       expect(response.status).toBe(200);
-      expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
+      const [row] = mockScheduleCreationManifestShadow.mock.calls[0] as any[];
+      expect(row.pathManifest).toEqual(['apps/web/src/lib/feature.ts']);
     });
 
     it('shadow leaves the manifest_required rejection byte-for-byte unchanged and schedules nothing', async () => {

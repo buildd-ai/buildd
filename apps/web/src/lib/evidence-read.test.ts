@@ -156,7 +156,9 @@ describe('readEvidenceText', () => {
   it('a 10 MB object read by tail is capped at 64 KB with truncated=true', async () => {
     const body = Buffer.from(lines(100_000, i => `${String(i).padStart(8, '0')} ${'x'.repeat(91)}`));
     expect(body.length).toBeGreaterThan(10_000_000);
-    const r = await readEvidenceText(chunks(body), opts('tail=10000'));
+    // This test is about the byte cap, not the scan time budget: a fixed clock keeps it
+    // deterministic under host CPU contention instead of racing SCAN_TIME_BUDGET_MS.
+    const r = await readEvidenceText(chunks(body), opts('tail=10000'), { now: () => 0 });
     expect(Buffer.byteLength(r.text)).toBeLessThanOrEqual(EVIDENCE_READ_CAP_BYTES);
     expect(r.truncated).toBe(true);
     expect(r.toLine).toBe(100_000);
@@ -185,11 +187,15 @@ describe('readEvidenceText', () => {
 
   it('the worst accepted pattern over 4 KB lines finishes within a time bound', async () => {
     // One unbounded quantifier that never matches: quadratic in the grep window per line.
+    // readEvidenceText self-truncates at SCAN_TIME_BUDGET_MS (5s, checked every grepped
+    // line), so that bounds the real worst case; the 8s cap here just adds headroom above
+    // that for host CPU contention instead of racing a tight margin over it (see pattern
+    // 6b16d393 / task 9eddd36d for the same class of flake on a stricter bound).
     const body = Buffer.from(lines(500, () => ' '.repeat(4096)));
     for (const p of ['\\s*x', '.*x', ' +x']) {
       const t0 = performance.now();
       const r = await readEvidenceText(chunks(body), opts(`grep=${encodeURIComponent(p)}`));
-      expect(performance.now() - t0).toBeLessThan(3_000);
+      expect(performance.now() - t0).toBeLessThan(8_000);
       expect(r.text).toBe('');
     }
   });

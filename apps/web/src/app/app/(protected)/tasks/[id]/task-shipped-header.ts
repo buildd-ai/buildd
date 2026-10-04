@@ -87,6 +87,15 @@ export interface TaskShippedPr {
   merged: boolean;
 }
 
+/** The same shape `loadOpenAttempt` (lib/explain.ts) returns — not re-derived here. */
+export interface TaskShippedOpenAttempt {
+  taskId: string;
+  title: string;
+  iteration: number | null;
+  maxIterations: number | null;
+  claimed: boolean;
+}
+
 export interface TaskShippedView {
   eyebrow: string;
   chips: ShippedChip[];
@@ -115,6 +124,8 @@ export interface BuildTaskShippedViewInput {
   summary: string | null | undefined;
   summarySource: string | null | undefined;
   pr: TaskShippedPr | null;
+  /** The canonical open-fix-attempt fact (lib/explain.ts's loadOpenAttempt) — not re-derived here. */
+  openAttempt?: TaskShippedOpenAttempt | null;
   heroShots: ShippedHeroShot[];
   /** Error traces matched on this task's run. */
   errorTraceCount: number;
@@ -131,7 +142,16 @@ const CHECKS_WORDS: Partial<Record<PrDisplayState, string>> = {
   open: 'Checks not reported',
 };
 
-function prChipsAndAction(pr: TaskShippedPr): { chip: ShippedChip | null; action: ShippedAction | null; meta: string | null } {
+/** `"Fix 1 of 3"` / `"Fix"` — same vocabulary as the Home action queue and the mission timeline. */
+function openAttemptName(a: TaskShippedOpenAttempt): string {
+  if (a.iteration == null) return 'Fix';
+  return a.maxIterations != null ? `Fix ${a.iteration} of ${a.maxIterations}` : `Fix ${a.iteration}`;
+}
+
+function prChipsAndAction(
+  pr: TaskShippedPr,
+  openAttempt: TaskShippedOpenAttempt | null,
+): { chip: ShippedChip | null; action: ShippedAction | null; meta: string | null } {
   const state = derivePrDisplayState(pr.lifecycle, pr.merged ? true : null);
   const meta = CHECKS_WORDS[state] ? `${CHECKS_WORDS[state]} · PR #${pr.number}` : null;
   switch (state) {
@@ -141,24 +161,45 @@ function prChipsAndAction(pr: TaskShippedPr): { chip: ShippedChip | null; action
     case 'unresolvable':
       return { chip: { label: 'PR closed', tone: 'muted' }, action: null, meta: null };
     case 'ci_failed':
-      return {
-        chip: { label: 'Checks failing', tone: 'error' },
-        action: { label: 'View failing checks', href: `${pr.url.replace(/\/+$/, '')}/checks`, tone: 'danger' },
-        meta,
-      };
+      // A fix is already open — its own push replaces this CI state, so
+      // "View failing checks" would send the owner to read a build that is
+      // about to be superseded. Falls through to the open-attempt branch below.
+      if (!openAttempt) {
+        return {
+          chip: { label: 'Checks failing', tone: 'error' },
+          action: { label: 'View failing checks', href: `${pr.url.replace(/\/+$/, '')}/checks`, tone: 'danger' },
+          meta,
+        };
+      }
+      break;
     case 'conflict':
-      return {
-        chip: { label: 'Merge conflict', tone: 'warning' },
-        action: { label: 'Resolve on GitHub', href: pr.url, tone: 'primary' },
-        meta,
-      };
-    default:
-      return {
-        chip: { label: 'Waiting on your merge', tone: 'warning' },
-        action: { label: 'Review & merge', href: pr.url, tone: 'primary' },
-        meta,
-      };
+      if (!openAttempt) {
+        return {
+          chip: { label: 'Merge conflict', tone: 'warning' },
+          action: { label: 'Resolve on GitHub', href: pr.url, tone: 'primary' },
+          meta,
+        };
+      }
+      break;
   }
+  if (openAttempt) {
+    // A fix attempt is already open — the branch is about to change, so the
+    // honest CTA names the live fix task instead of inviting a merge the
+    // review-verdict gate (lib/review-verdict-gate.ts) is already going to
+    // refuse. Mirrors the Home action queue's FIXING_REVIEW chip and the task
+    // page's PrCard (mission-state-view.ts rule 6½).
+    const name = openAttemptName(openAttempt);
+    return {
+      chip: { label: `${name} ${openAttempt.claimed ? 'in progress' : 'queued'}`, tone: 'warning' },
+      action: { label: `View ${name.toLowerCase()}`, href: `/app/tasks/${openAttempt.taskId}`, tone: 'primary' },
+      meta,
+    };
+  }
+  return {
+    chip: { label: 'Waiting on your merge', tone: 'warning' },
+    action: { label: 'Review & merge', href: pr.url, tone: 'primary' },
+    meta,
+  };
 }
 
 /**
@@ -175,7 +216,7 @@ export function buildTaskShippedView(input: BuildTaskShippedViewInput): TaskShip
   let actionMeta: string | null = null;
   let mergedLine: TaskShippedView['mergedLine'] = null;
   if (input.pr) {
-    const pr = prChipsAndAction({ ...input.pr, merged });
+    const pr = prChipsAndAction({ ...input.pr, merged }, input.openAttempt ?? null);
     if (pr.chip) chips.push(pr.chip);
     action = pr.action;
     actionMeta = pr.meta;

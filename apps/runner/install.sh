@@ -107,18 +107,21 @@ bun install
 # Bake headless Chromium into the runner at install time.
 # This lets agents do visual self-verification without per-task downloads.
 # The runner advertises a 'browser' capability once the binary is confirmed present.
-echo -e "${GREEN}Installing headless Chromium (Playwright)...${NC}"
-if bunx playwright install --with-deps chromium 2>&1; then
+# Always through the repo's pinned Playwright (`bun run browser:install`), never a
+# bare `bunx playwright`: that resolves whatever version is cached globally, and
+# `playwright install` from another version deletes the pinned version's Chromium.
+echo -e "${GREEN}Installing headless Chromium (pinned Playwright)...${NC}"
+if bun run browser:install --with-deps 2>&1; then
   echo -e "${GREEN}Headless Chromium installed successfully${NC}"
 else
   echo -e "${YELLOW}--with-deps failed (may need root for system libs). Trying without...${NC}"
-  if bunx playwright install chromium 2>&1; then
+  if bun run browser:install 2>&1; then
     echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
     echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
   else
     echo -e "${YELLOW}Warning: Headless Chromium could not be installed.${NC}"
     echo -e "${YELLOW}  Browser capability will not be advertised. To fix:${NC}"
-    echo -e "${YELLOW}  bunx playwright install --with-deps chromium${NC}"
+    echo -e "${YELLOW}  cd $INSTALL_DIR/apps/runner && bun run browser:install --with-deps${NC}"
   fi
 fi
 

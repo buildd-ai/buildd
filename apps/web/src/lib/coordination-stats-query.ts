@@ -1,17 +1,41 @@
-import type { CoordinationStats } from '@buildd/shared';
+import type { CoordinationDecisionCapability, CoordinationStats } from '@buildd/shared';
 import { db } from '@buildd/core/db';
-import { tasks, gateEvents } from '@buildd/core/db/schema';
+import { tasks, gateEvents, workspaces } from '@buildd/core/db/schema';
 import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { GATE_SLUGS } from '@buildd/core/gate-slugs';
+import { OPT_IN_CAPABILITIES } from '@buildd/core/inference-policy';
 import { manifestCounts } from './coordination-stats';
+
+export type CoordinationWindow = '24h' | '7d' | '30d';
+
+export function coordinationFilters(input: { workspaceIds: string[]; missionId?: string; window: CoordinationWindow }, now = new Date()) {
+  const windowStart = new Date(now.getTime() - ({ '24h': 1, '7d': 7, '30d': 30 }[input.window]) * 86400000);
+  return { window: input.window, windowStart: windowStart.toISOString(), workspaceIds: input.workspaceIds, missionId: input.missionId ?? null };
+}
+
+/** Per-workspace opt-in state of each orchestration decision shadow (`teams.enabledDecisionShadows`). */
+export async function fetchDecisionCapabilities(workspaceIds: string[]): Promise<CoordinationDecisionCapability[]> {
+  const workspaceRows = workspaceIds.length ? await db.query.workspaces.findMany({
+    where: inArray(workspaces.id, workspaceIds),
+    columns: { id: true },
+    with: { team: { columns: { enabledDecisionShadows: true } } },
+  }) : [];
+  return workspaceRows.flatMap(workspace =>
+    OPT_IN_CAPABILITIES.filter(capability => capability.startsWith('orchestration_')).map(capability => ({
+      workspaceId: workspace.id,
+      capability,
+      status: workspace.team.enabledDecisionShadows?.includes(capability) ? 'enabled' as const : 'capability_disabled' as const,
+    })),
+  );
+}
 
 /** Aggregates in Postgres: reports are never silently clipped by a row limit. */
 export async function fetchCoordinationStats(input: {
-  workspaceIds: string[]; missionId?: string; window: '24h' | '7d' | '30d';
+  workspaceIds: string[]; missionId?: string; window: CoordinationWindow;
 }): Promise<CoordinationStats> {
-  const now = new Date();
-  const windowStart = new Date(now.getTime() - ({ '24h': 1, '7d': 7, '30d': 30 }[input.window]) * 86400000);
-  const filters = { window: input.window, windowStart: windowStart.toISOString(), workspaceIds: input.workspaceIds, missionId: input.missionId ?? null };
+  const filters = coordinationFilters(input);
+  const windowStart = new Date(filters.windowStart);
+  const decisionCapabilities = await fetchDecisionCapabilities(input.workspaceIds);
   const manifestRows = input.workspaceIds.length ? await db.select({
     workspaceId: tasks.workspaceId, missionId: tasks.missionId, kind: tasks.kind,
     total: sql<number>`count(*)::int`,
@@ -40,9 +64,9 @@ export async function fetchCoordinationStats(input: {
     deadlock: sum.deadlock + Number(row.deadlock), rejected: sum.rejected + Number(row.rejected),
   }), { claimed: 0, blocked: 0, deadlock: 0, rejected: 0 });
   return {
-    manifestCoverage: { ...filters, ...manifestCounts(manifestRows), groups: manifestRows.map(row => ({ ...row, ...manifestCounts([row]) })) },
+    manifestCoverage: { ...filters, decisionCapabilities, ...manifestCounts(manifestRows), groups: manifestRows.map(row => ({ ...row, ...manifestCounts([row]) })) },
     pathClaims: {
-      ...filters, ...sums, calls: sums.claimed + sums.blocked + sums.deadlock + sums.rejected,
+      ...filters, decisionCapabilities, ...sums, calls: sums.claimed + sums.blocked + sums.deadlock + sums.rejected,
       bySurface: callRows,
       coverage: { completeHistoricalCalls: false, note: 'Successful calls are recorded from instrumentation rollout; earlier ledger history contains refusals only. Invalid or unauthorized requests are excluded.' },
     },

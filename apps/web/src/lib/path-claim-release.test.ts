@@ -18,6 +18,7 @@ const mockEnqueue = mock(async () => true);
 const mockRearm = mock(async () => {});
 const mockWorkersFindMany = mock(async () => [] as any[]);
 const mockTasksFindFirst = mock(async () => null as any);
+const mockKickDispatch = mock(() => {});
 
 mock.module('@buildd/core/path-claim', () => ({
   releaseClaims: mockReleaseClaims,
@@ -36,6 +37,23 @@ mock.module('@buildd/core/worker-messages', () => ({
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
+}));
+// The wake itself is an outbox row the core release statement wrote; this
+// module only kicks delivery. Full surface: mock.module is process-global.
+mock.module('@/lib/dispatch-authority', () => ({
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  primaryCause: (_c: string[], f: string) => f,
+  routeForCause: () => ({}),
+  webhookWants: () => false,
+  enqueueTaskDispatch: async () => {},
+  wakeTask: async () => {},
+  wakeTasks: async () => {},
+  announceTaskCreated: async () => {},
+  kickDispatch: mockKickDispatch,
+  reseedDispatchTimer: async () => {},
+  drainDispatchOutbox: async () => ({}),
+  deliverTaskDispatch: async () => 'skipped',
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -65,6 +83,7 @@ beforeEach(() => {
   mockTriggerEvent.mockClear();
   mockEnqueue.mockClear();
   mockRearm.mockClear();
+  mockKickDispatch.mockClear();
   mockEnqueue.mockImplementation(async () => true);
   mockWorkersFindMany.mockReset();
   mockWorkersFindMany.mockResolvedValue([]);
@@ -217,6 +236,33 @@ describe('releaseAndNotify', () => {
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
     const [, msg] = mockEnqueue.mock.calls[0] as any[];
     expect(msg.body.paths).toEqual(['a.ts']);
+  });
+});
+
+describe('dispatch kick', () => {
+  it('kicks outbox delivery when a release woke any waiter', async () => {
+    mockReleaseClaims.mockResolvedValue({
+      workspaceId: WS,
+      releasedPaths: ['a.ts'],
+      notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'a.ts' }],
+    });
+    await releaseAndNotify(HOLDER, 'merged');
+    expect(mockKickDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('kicks for a narrowing that freed a waiter', async () => {
+    await deliverPathReleased(HOLDER, {
+      workspaceId: WS, releasedPaths: ['a.ts'], notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'a.ts' }],
+    }, 'narrowed');
+    expect(mockKickDispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not kick when nobody was waiting', async () => {
+    mockReleaseClaims.mockResolvedValue({ workspaceId: WS, releasedPaths: ['a.ts'], notifiedWaiters: [], waiters: [] });
+    await releaseAndNotify(HOLDER, 'merged');
+    expect(mockKickDispatch).not.toHaveBeenCalled();
   });
 });
 

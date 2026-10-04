@@ -1003,13 +1003,22 @@ export default async function HomePage({
             }
             // ───────────────────────────────────────────────────────────────────
 
-            // ── CI fix-attempt detection ────────────────────────────────────────
+            // ── CI / reviewer-retry fix-attempt detection ───────────────────────
             // A red PR is only waiting on the human once no [CI Retry] agent is
-            // left working on it (lib/ci-retry.ts). Attempts chain parent→child,
-            // so they are matched on context.prNumber rather than parentTaskId.
+            // left working on it (lib/ci-retry.ts), and a PR with an outstanding
+            // request-changes verdict is only waiting on the human to merge once
+            // no reviewer-retry fix is queued or running for it (mirrors
+            // mission-state-view.ts rule 6½ / explain.ts's openAttempt). Both
+            // kinds of attempt chain parent→child, so they are matched on
+            // context.prNumber rather than parentTaskId; `reviewerRetryPrNumber`
+            // (set only on a fix dispatched from a reviewer's request-changes
+            // verdict — see handleReviewerOutcomeIfNeeded) tells the two apart.
             const ciAttemptMap = new Map<string, {
               liveTaskId: string | null;
               liveIteration: number | null;
+              liveKind: 'ci' | 'review';
+              liveClaimed: boolean;
+              liveTaskTitle: string | null;
               attemptsConsumed: number;
               recommendation: string | null;
             }>();
@@ -1027,7 +1036,17 @@ export default async function HomePage({
                       sql`, `,
                     )})`,
                   ),
-                  columns: { id: true, workspaceId: true, status: true, context: true, result: true },
+                  columns: {
+                    id: true, workspaceId: true, status: true, context: true, result: true,
+                    title: true, reviewerRetryPrNumber: true,
+                  },
+                  with: {
+                    workers: {
+                      where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+                      columns: { id: true },
+                      limit: 1,
+                    },
+                  },
                   orderBy: [desc(tasks.createdAt)],
                 });
                 for (const t of attemptTasks) {
@@ -1036,7 +1055,8 @@ export default async function HomePage({
                   if (!Number.isFinite(prNumber)) continue;
                   const key = `${t.workspaceId}:${prNumber}`;
                   const entry = ciAttemptMap.get(key) ?? {
-                    liveTaskId: null, liveIteration: null, attemptsConsumed: 0, recommendation: null,
+                    liveTaskId: null, liveIteration: null, liveKind: 'ci' as const, liveClaimed: false,
+                    liveTaskTitle: null, attemptsConsumed: 0, recommendation: null,
                   };
                   const iteration = typeof ctx.iteration === 'number' ? ctx.iteration : null;
                   if ((LIVE_TASK_STATUSES as readonly string[]).includes(t.status)) {
@@ -1044,6 +1064,9 @@ export default async function HomePage({
                     if (!entry.liveTaskId) {
                       entry.liveTaskId = t.id;
                       entry.liveIteration = iteration;
+                      entry.liveKind = t.reviewerRetryPrNumber != null ? 'review' : 'ci';
+                      entry.liveClaimed = (t as any).workers?.length > 0;
+                      entry.liveTaskTitle = t.title;
                     }
                   } else {
                     // context.iteration is the retry budget counter — foreign-push
@@ -1202,6 +1225,9 @@ export default async function HomePage({
                   attemptsConsumed: ciAttempts?.attemptsConsumed ?? 0,
                   recommendation: ciAttempts?.recommendation
                     ?? ((w.task as any)?.result?.nextSuggestion ?? null),
+                  liveFixKind: ciAttempts?.liveKind,
+                  liveFixClaimed: ciAttempts?.liveClaimed ?? null,
+                  liveFixTaskTitle: ciAttempts?.liveTaskTitle ?? null,
                 });
                 return {
                   workerId: w.id,

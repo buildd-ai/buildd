@@ -10,7 +10,7 @@ const mockGather = mock((_ws: any) => Promise.resolve(null as any));
 const mockResolveCreator = mock((_p: any) =>
   Promise.resolve({ createdByAccountId: 'acct-1', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null }),
 );
-const mockDispatch = mock((_task: any, _ws: any) => Promise.resolve());
+const mockAnnounce = mock((_task: any, _ws: any) => Promise.resolve());
 let inserted: any[] = [];
 const mockInsert = mock((_table: any) => ({
   values: (vals: any) => {
@@ -27,7 +27,23 @@ mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKe
 mock.module('@/lib/team-access', () => ({ verifyWorkspaceAccess: mockVerifyWorkspaceAccess }));
 mock.module('@/lib/workspace-readiness-io', () => ({ gatherReadinessInput: mockGather }));
 mock.module('@/lib/task-service', () => ({ resolveCreatorContext: mockResolveCreator }));
-mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatch }));
+// The dispatch authority's full surface: mock.module is process-global.
+const mockWakeTask = mock(async (_taskId: string, _cause: string, _opts?: unknown) => {});
+mock.module('@/lib/dispatch-authority', () => ({
+  announceTaskCreated: mockAnnounce,
+  wakeTask: mockWakeTask,
+  wakeTasks: mock(async () => {}),
+  kickDispatch: () => {},
+  enqueueTaskDispatch: async () => {},
+  drainDispatchOutbox: async () => ({ claimed: 0, delivered: 0, skipped: 0, failed: 0 }),
+  deliverTaskDispatch: async () => 'pusher',
+  routeForCause: () => ({ event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false }),
+  webhookWants: () => false,
+  primaryCause: (_causes: string[], fallback: string) => fallback,
+  DISPATCH_DUE_QUEUE: 'dispatch',
+  DRAIN_BATCH: 25,
+  reseedDispatchTimer: async () => {},
+}));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: { workspaces: { findFirst: mockWorkspacesFindFirst }, tasks: { findFirst: mockTasksFindFirst } },
@@ -107,7 +123,7 @@ describe('POST /api/workspaces/[id]/onboarding/spec', () => {
   beforeEach(() => {
     for (const m of [
       mockGetCurrentUser, mockAuthenticateApiKey, mockVerifyWorkspaceAccess, mockWorkspacesFindFirst,
-      mockTasksFindFirst, mockGather, mockResolveCreator, mockDispatch, mockInsert, mockOtherWrite,
+      mockTasksFindFirst, mockGather, mockResolveCreator, mockAnnounce, mockInsert, mockOtherWrite,
     ]) m.mockReset();
     inserted = [];
     mockOtherWrite.mockImplementation(() => {
@@ -120,7 +136,7 @@ describe('POST /api/workspaces/[id]/onboarding/spec', () => {
       },
     }));
     mockResolveCreator.mockResolvedValue({ createdByAccountId: 'acct-1', createdByWorkerId: null, creationSource: 'dashboard', parentTaskId: null });
-    mockDispatch.mockResolvedValue(undefined);
+    mockAnnounce.mockResolvedValue(undefined);
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
@@ -210,7 +226,8 @@ describe('POST /api/workspaces/[id]/onboarding/spec', () => {
       expect(body.markdown).toContain('owner: acme');
       expect(body.task).toBeUndefined();
       expect(inserted).toEqual([]);
-      expect(mockDispatch).not.toHaveBeenCalled();
+      expect(mockAnnounce).not.toHaveBeenCalled();
+      expect(mockWakeTask).not.toHaveBeenCalled();
     });
 
     it('an explicit dryRun: true wins over confirm: true', async () => {
@@ -279,7 +296,8 @@ describe('POST /api/workspaces/[id]/onboarding/spec', () => {
 
       expect(inserted).toHaveLength(1);
       expect(mockInsert).toHaveBeenCalledTimes(1);
-      expect(mockDispatch).toHaveBeenCalledTimes(1);
+      expect(mockAnnounce).toHaveBeenCalledTimes(1);
+      expect(mockWakeTask).toHaveBeenCalledWith((mockAnnounce.mock.calls[0] as any[])[0].id, 'task.created');
       expect(body.task).toMatchObject({ id: 'task-spec', baseBranch: 'trunk' });
       expect(body.dryRun).toBe(false);
       expect(body.markdown).toContain('status: draft');
@@ -336,7 +354,7 @@ describe('POST /api/workspaces/[id]/onboarding/spec', () => {
     });
 
     it('a failed dispatch does not lose the created task', async () => {
-      mockDispatch.mockRejectedValue(new Error('pusher down'));
+      mockAnnounce.mockRejectedValue(new Error('pusher down'));
       const res = await post({ answers: answers(), confirm: true });
       expect(res.status).toBe(201);
       expect(inserted).toHaveLength(1);

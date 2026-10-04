@@ -19,16 +19,13 @@ import {
   isShipCommand,
   describeHolder,
   MAX_PENDING_PATHS,
+  PATH_CLAIM_HOOK_DEADLINE_MS,
   type PathCollision,
   type CollisionSource,
 } from './path-claim-enforcement.js';
 
-/**
- * Hard ceiling on how long the path-claim hook holds an edit. The client's own
- * request timeout is 200ms; this bounds the hook even if a request ignores its
- * abort signal, so a hung coordination service can never freeze a session.
- */
-export const PATH_CLAIM_HOOK_DEADLINE_MS = 300;
+/** Re-exported: the hook's backstop deadline lives beside the request timeout it must exceed. */
+export { PATH_CLAIM_HOOK_DEADLINE_MS };
 
 /**
  * Deny-reason parts once a checkpoint collision is recorded, spread into
@@ -111,10 +108,10 @@ export class HookFactory {
    * holder denies the edit and names the blocking task and path. After a
    * recorded checkpoint collision every further edit is refused.
    *
-   * FAIL-OPEN in both modes (non-negotiable): the call is bounded by
-   * PATH_CLAIM_HOOK_DEADLINE_MS; a timeout, network error or 5xx lets the edit
-   * proceed, queues the path in worker.pendingPaths and records degraded
-   * enforcement. Queued paths flush in their OWN request alongside the edit's,
+   * FAIL-OPEN in both modes (non-negotiable): the request is bounded by
+   * PATH_CLAIM_TIMEOUT_MS (backstopped by PATH_CLAIM_HOOK_DEADLINE_MS); a
+   * timeout, network error or 5xx lets the edit proceed, queues the path in
+   * worker.pendingPaths and records degraded enforcement. Queued paths flush in their OWN request alongside the edit's,
    * so a held queued path can never deny an unrelated free edit, and only the
    * paths the server actually answered for leave the queue. A queued path the
    * server now reports held was already written: in enforce mode that is a
@@ -235,7 +232,11 @@ export class HookFactory {
     }
   }
 
-  /** claimPaths, bounded by the hook's own deadline even if the client ignores its abort signal. */
+  /**
+   * claimPaths, backstopped by the hook's deadline in case the client ignores
+   * its abort signal. The backstop sits above the request timeout, so a slow
+   * answer still inside PATH_CLAIM_TIMEOUT_MS is always consumed.
+   */
   private async claimWithinDeadline(taskId: string, paths: string[]): Promise<PathClaimResponse> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<PathClaimResponse>(resolve => {

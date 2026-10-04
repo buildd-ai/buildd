@@ -9,7 +9,7 @@ import { db } from '@buildd/core/db';
 import { missions, tasks } from '@buildd/core/db/schema';
 import { eq, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { dispatchNewTask } from '@/lib/task-dispatch';
+import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 import { workspaces } from '@buildd/core/db/schema';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
@@ -264,7 +264,8 @@ export async function spawnEvaluationTask(
     where: eq(workspaces.id, workspaceId),
   });
   if (workspace) {
-    await dispatchNewTask(evalTask, workspace);
+    await announceTaskCreated(evalTask, workspace);
+    await wakeTask(evalTask.id, 'task.created');
   }
 
   return evalTask.id;
