@@ -31,6 +31,7 @@ import { TERMINAL_WORKER_STATUSES } from '@buildd/shared';
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 import { isStorageConfigured, objectExists } from './storage';
 import { sessionArtifactKey } from './session-artifact-keys';
+import { WORKSPACE_NOT_OFF } from './post-session-mode-sql';
 import type { PostSessionRunStore, PostSessionWorkerRef } from './post-session-run';
 
 /** Reviewer rounds read per PR. A loop longer than this is itself the signal. */
@@ -308,8 +309,7 @@ export const postSessionRunStore: PostSessionRunStore = {
         isNotNull(workers.taskId),
         or(isNull(workers.exitCause), ne(workers.exitCause, 'never_started')),
         gte(workers.completedAt, since),
-        // Mirrors resolvePostSessionQualityMode: only an explicit 'off' opts out.
-        sql`coalesce(${workspaces.gitConfig}->'postSessionQuality'->>'mode', '') <> 'off'`,
+        WORKSPACE_NOT_OFF,
         sql`NOT EXISTS (
           SELECT 1 FROM post_session_runs r
           WHERE r.worker_id = ${workers.id}
@@ -373,9 +373,22 @@ export const postSessionRunStore: PostSessionRunStore = {
     const rows = await db
       .select({ id: postSessionRuns.id })
       .from(postSessionRuns)
-      .where(and(eq(postSessionRuns.policyVersion, policyVersion), eq(postSessionRuns.state, 'collected')))
+      .innerJoin(workspaces, eq(workspaces.id, postSessionRuns.workspaceId))
+      .where(and(
+        eq(postSessionRuns.policyVersion, policyVersion),
+        eq(postSessionRuns.state, 'collected'),
+        // A workspace switched off after collection is not triaged: off means no decision calls.
+        WORKSPACE_NOT_OFF,
+      ))
       .orderBy(asc(postSessionRuns.updatedAt))
       .limit(limit);
     return rows.map(r => r.id);
+  },
+
+  async recordTriageFailure(runId, error, now) {
+    await db
+      .update(postSessionRuns)
+      .set({ errorStage: 'triage', lastError: error, failedAt: now, updatedAt: now })
+      .where(and(eq(postSessionRuns.id, runId), eq(postSessionRuns.state, 'collected')));
   },
 };

@@ -86,7 +86,10 @@ function sourceFor(w: PostSessionWorkerRef): StageASource {
  * `failed` under the attempt cap or from a stale `collecting`, writes fenced on
  * (state='collecting', attempts).
  */
-function fakeStore(workers: PostSessionWorkerRef[], opts: { failSource?: (n: number) => boolean } = {}) {
+function fakeStore(workers: PostSessionWorkerRef[], opts: {
+  failSource?: (n: number) => boolean;
+  source?: (w: PostSessionWorkerRef) => Partial<StageASource>;
+} = {}) {
   const rows = new Map<string, FakeRow>();
   const byId = new Map(workers.map(w => [w.id, w]));
   let sourceCalls = 0;
@@ -95,7 +98,9 @@ function fakeStore(workers: PostSessionWorkerRef[], opts: { failSource?: (n: num
   // method by design; this records an attempt if one is ever added.
   const foreignWrites: string[] = [];
 
-  const store: PostSessionRunStore & { rows: Map<string, FakeRow>; sourceCalls: () => number; foreignWrites: string[] } = {
+  const triageFailures: Array<{ runId: string; error: string }> = [];
+  const store: PostSessionRunStore & { rows: Map<string, FakeRow>; sourceCalls: () => number; foreignWrites: string[]; triageFailures: typeof triageFailures } = {
+    triageFailures,
     rows,
     foreignWrites,
     sourceCalls: () => sourceCalls,
@@ -127,7 +132,8 @@ function fakeStore(workers: PostSessionWorkerRef[], opts: { failSource?: (n: num
       // Yield so concurrent processors genuinely interleave.
       await new Promise(r => setTimeout(r, 1));
       if (opts.failSource?.(sourceCalls)) throw new Error('reviews query timed out');
-      return sourceFor(byId.get(w.id)!);
+      const ref = byId.get(w.id)!;
+      return { ...sourceFor(ref), ...opts.source?.(ref) };
     },
     async completeRun(runId, attempt, { facts, transcriptAvailability, now }) {
       const row = [...rows.values()].find(r => r.id === runId);
@@ -166,6 +172,9 @@ function fakeStore(workers: PostSessionWorkerRef[], opts: { failSource?: (n: num
         .filter(r => r.policyVersion === policyVersion && r.state === 'collected')
         .slice(0, limit)
         .map(r => r.id);
+    },
+    async recordTriageFailure(runId, error) {
+      triageFailures.push({ runId, error });
     },
   };
   return store;
@@ -360,5 +369,56 @@ describe('sweepPostSessionRuns — Stage B triage', () => {
     store.listUntriaged = async () => { throw new Error('db down'); };
     const res = await sweepPostSessionRuns({ store, now: NOW, triage });
     expect(res).toMatchObject({ collected: 1, triaged: 0, triageErrors: 1 });
+  });
+
+  it('counts hard-triggered runs and the decision cost of the triage stage', async () => {
+    const store = fakeStore([worker({ id: 'a' }), worker({ id: 'loop' })], {
+      source: w => (w.id === 'loop' ? { ciFixAttempts: 4 } : {}),
+    });
+    const decide = (async (params: any) => {
+      params.onUsage?.({ usage: { inputTokens: 100, outputTokens: 4, costUsd: 0.0002 } });
+      return skipDecide();
+    }) as any;
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage: { decide, recordReceipts: async () => {} } });
+    expect(res).toMatchObject({ triaged: 2, selected: 1, hardTriggered: 1 });
+    expect(res.triageCost).toEqual({ calls: 2, usd: 0.0004, inputTokens: 200, outputTokens: 8 });
+  });
+
+  it('records a triage stage failure and moves on to the next run', async () => {
+    const store = fakeStore([worker({ id: 'a' }), worker({ id: 'b' })]);
+    const recordTriage = store.recordTriage.bind(store);
+    let n = 0;
+    store.recordTriage = async (...args) => {
+      if (++n === 1) throw new Error('write timeout');
+      return recordTriage(...args);
+    };
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage });
+    expect(res).toMatchObject({ triaged: 1, triageErrors: 1 });
+    expect(store.triageFailures).toEqual([{ runId: 'run-1', error: 'write timeout' }]);
+  });
+});
+
+describe('sweepPostSessionRuns — terminal shapes and bounds', () => {
+  it('covers success, failure and abort shapes from persisted worker state', async () => {
+    const store = fakeStore([
+      worker({ id: 'ok', status: 'completed' }),
+      worker({ id: 'failed', status: 'failed', exitCause: 'error' }),
+      worker({ id: 'aborted', status: 'failed', exitCause: 'aborted' }),
+      worker({ id: 'superseded', status: 'superseded' }),
+    ]);
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage });
+    expect(res).toMatchObject({ candidates: 4, collected: 4, triaged: 4 });
+    expect([...store.rows.values()].map(r => r.facts?.outcome.workerStatus).sort())
+      .toEqual(['completed', 'failed', 'failed', 'superseded']);
+  });
+
+  it('stops starting new work once the time budget is spent, and says how much it deferred', async () => {
+    const store = fakeStore([worker({ id: 'a' }), worker({ id: 'b' }), worker({ id: 'c' })]);
+    let budget = 2;
+    const res = await sweepPostSessionRuns({ store, now: NOW, triage, shouldContinue: () => budget-- > 0 });
+    expect(res).toMatchObject({ candidates: 3, collected: 2, deferred: 1, triaged: 0, triageDeferred: 2 });
+    // The next sweep picks up where this one stopped.
+    const next = await sweepPostSessionRuns({ store, now: NOW, triage });
+    expect(next).toMatchObject({ candidates: 1, collected: 1, triaged: 3, deferred: 0, triageDeferred: 0 });
   });
 });

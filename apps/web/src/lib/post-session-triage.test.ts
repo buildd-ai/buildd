@@ -40,8 +40,9 @@ function facts(over: Partial<StageASource> & { worker?: Partial<StageASource['wo
   });
 }
 
-function fakeStore(input: Partial<PostSessionTriageInput> | null, opts: { fence?: boolean; throwOnLoad?: boolean } = {}) {
+function fakeStore(input: Partial<PostSessionTriageInput> | null, opts: { fence?: boolean; throwOnLoad?: boolean; throwOnRecord?: boolean } = {}) {
   const recorded: Array<{ runId: string; outcome: TriageOutcome; now: Date }> = [];
+  const failures: Array<{ runId: string; error: string }> = [];
   let state = input?.state ?? 'collected';
   const store: PostSessionTriageStore = {
     async loadTriageInput(runId) {
@@ -52,6 +53,7 @@ function fakeStore(input: Partial<PostSessionTriageInput> | null, opts: { fence?
       } as PostSessionTriageInput;
     },
     async recordTriage(runId, outcome, now) {
+      if (opts.throwOnRecord) throw new Error('write timeout');
       if (opts.fence || state !== 'collected') return false;
       recorded.push({ runId, outcome, now });
       state = outcome.finalDecision === 'analyse' ? 'triaged' : 'skipped';
@@ -60,8 +62,11 @@ function fakeStore(input: Partial<PostSessionTriageInput> | null, opts: { fence?
     async listUntriaged() {
       return state === 'collected' ? ['run-1'] : [];
     },
+    async recordTriageFailure(runId, error) {
+      failures.push({ runId, error });
+    },
   };
-  return { store, recorded, get state() { return state; } };
+  return { store, recorded, failures, get state() { return state; } };
 }
 
 function okDecide(choice: { decision: string; focus: string; reasonCode: string; confidence?: number }) {
@@ -95,7 +100,9 @@ describe('triagePostSessionRun', () => {
     const res = await triagePostSessionRun('run-1', {
       store: s.store, decide, now: NOW, recordReceipts: async r => { receipts.push(...r); },
     });
-    expect(res).toMatchObject({ status: 'triaged', finalDecision: 'analyse', rule: 'triage', triageStatus: 'ok' });
+    expect(res).toMatchObject({ status: 'triaged', finalDecision: 'analyse', rule: 'triage', triageStatus: 'ok', hardTriggered: false });
+    // Stage cost comes from the decision receipts, for the sweep readout.
+    expect(res).toMatchObject({ cost: { calls: 1, usd: 0.00004 } });
     expect(s.recorded).toHaveLength(1);
     const o = s.recorded[0].outcome;
     expect(o.triage).toMatchObject({ status: 'ok', decision: 'analyse', focus: 'retrieval', reasonCode: 'retrieval_gap', confidence: 0.77 });
@@ -120,7 +127,8 @@ describe('triagePostSessionRun', () => {
   it('a hard trigger overrides a model skip and is recorded', async () => {
     const s = fakeStore({ facts: facts({ reviews: [{ status: 'completed', verdict: 'escalate', confidence: 0.9 }] }) });
     const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
-    await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    expect(res).toMatchObject({ status: 'triaged', hardTriggered: true });
     expect(s.recorded[0].outcome).toMatchObject({
       finalDecision: 'analyse', rule: 'hard_trigger', hardTriggered: true, hardTriggerReasons: ['reviewer_escalated'],
     });
@@ -156,8 +164,10 @@ describe('triagePostSessionRun', () => {
   it('a sensitive workspace never calls the model', async () => {
     const s = fakeStore({ dataClass: 'sensitive' });
     const { decide, calls } = okDecide({ decision: 'analyse', focus: 'general', reasonCode: 'routine_success' });
-    await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
     expect(calls).toHaveLength(0);
+    // No call, no cost.
+    expect(res).toMatchObject({ cost: { calls: 0, usd: null } });
     expect(s.recorded[0].outcome.triage).toMatchObject({ status: 'unavailable' });
     expect(s.recorded[0].outcome.triage.provenance?.error).toBe('sensitive');
   });
@@ -193,5 +203,20 @@ describe('triagePostSessionRun', () => {
     expect((await triagePostSessionRun('run-1', { store: fakeStore(null).store, decide: failDecide('x'), now: NOW })).status).toBe('missing');
     const res = await triagePostSessionRun('run-1', { store: fakeStore({}, { throwOnLoad: true }).store, decide: failDecide('x'), now: NOW });
     expect(res).toMatchObject({ status: 'error' });
+  });
+
+  it('a store error after the decision is recorded on the run, not swallowed', async () => {
+    const s = fakeStore({}, { throwOnRecord: true });
+    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
+    const res = await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW });
+    expect(res).toMatchObject({ status: 'error', error: 'write timeout' });
+    expect(s.failures).toEqual([{ runId: 'run-1', error: 'write timeout' }]);
+  });
+
+  it('a failing failure-recorder never turns into a throw', async () => {
+    const s = fakeStore({}, { throwOnRecord: true });
+    s.store.recordTriageFailure = async () => { throw new Error('still down'); };
+    const { decide } = okDecide({ decision: 'skip', focus: 'general', reasonCode: 'routine_success' });
+    expect((await triagePostSessionRun('run-1', { store: s.store, decide, now: NOW })).status).toBe('error');
   });
 });
