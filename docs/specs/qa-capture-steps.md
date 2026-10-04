@@ -132,4 +132,6 @@ committing step MUST NOT run against a preview.
 
 - Stubbing network responses to fake a server state. A state the data can't produce (a real
   provider failure) stays `unsure`, with a `[surface fix]` task asking for a `?state=` fixture.
+  Existing fixtures: `/app/settings/team?state=multi-member` (dev server only) adds a synthetic
+  second member so Remove and the role select are reachable; it never writes.
 - Video or multi-frame capture of a state (the storyboard's `record` / `type` stay its own).
