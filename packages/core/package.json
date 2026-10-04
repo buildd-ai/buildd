@@ -59,6 +59,7 @@
     "./cbm-injection-decision": "./cbm-injection-decision.ts",
     "./question-brief": "./question-brief.ts",
     "./question-gate": "./question-gate.ts",
+    "./question-gate-decision": "./question-gate-decision.ts",
     "./question-gate-source": "./question-gate-source.ts",
     "./secrets": "./secrets/index.ts",
     "./secrets/team-scope": "./secrets/team-scope.ts",

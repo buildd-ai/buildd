@@ -3,21 +3,23 @@ import { expectDecisionPinned } from '@builddai/ai-kit/decide';
 import {
   DEFAULT_QUESTION_GATE_MAX_PUSHBACKS,
   DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,
-  OPTION_SLOTS,
-  QUESTION_DECIDE_DECISION,
-  QUESTION_DECIDE_QUESTIONS,
-  QUESTION_GATE_DECISION,
-  QUESTION_GATE_QUESTIONS,
-  buildQuestionGateState,
   defaultQuestionGateConfig,
   detectHardRail,
   fingerprintOf,
   gateQuestion,
   parseQuestionGateConfig,
   parseQuestionGateRequest,
-  readQuestionDecideRun,
   resolveDecideOutcome,
 } from '../question-gate';
+import {
+  OPTION_SLOTS,
+  QUESTION_DECIDE_DECISION,
+  QUESTION_DECIDE_QUESTIONS,
+  QUESTION_GATE_DECISION,
+  QUESTION_GATE_QUESTIONS,
+  buildQuestionGateState,
+  readQuestionDecideRun,
+} from '../question-gate-decision';
 
 describe('definitions', () => {
   it('stage 1 is pinned: change a definition, the gate or the model, and bump the prompt version', () => {

@@ -25,16 +25,11 @@ import {
   DEFAULT_QUESTION_GATE_MAX_PUSHBACKS,
   DEFAULT_QUESTION_GATE_MIN_CONFIDENCE,
   HOLD_RESURFACE_MS,
-  QUESTION_DECIDE_DECISION,
   QUESTION_DECIDE_DECISION_TIMEOUT_MS,
-  QUESTION_GATE_DECISION,
   QUESTION_GATE_DECISION_TIMEOUT_MS,
-  buildQuestionGateState,
   detectHardRail,
   fingerprintOf,
   gateQuestion,
-  readQuestionDecideRun,
-  readQuestionGateRun,
   resolveDecideOutcome,
   type HardRailInput,
   type QuestionDecideAnswer,
@@ -42,6 +37,13 @@ import {
   type QuestionGateReply,
   type QuestionGateRequest,
 } from '@buildd/core/question-gate';
+import {
+  QUESTION_DECIDE_DECISION,
+  QUESTION_GATE_DECISION,
+  buildQuestionGateState,
+  readQuestionDecideRun,
+  readQuestionGateRun,
+} from '@buildd/core/question-gate-decision';
 import { briefedQuestionText, optionLabels, questionDecideAnswerText, questionPushbackText } from '@buildd/core/question-brief';
 import type { DecisionAccess, DecisionReceipt } from '@buildd/core/decision-client';
 import type { DecisionLedgerInput } from '@buildd/core/decision-ledger';
