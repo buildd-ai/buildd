@@ -92,23 +92,23 @@ export default function MaxConcurrentWorkersEditor({
         }}
         autoFocus
         disabled={saving}
-        className="w-16 px-2 py-0.5 bg-surface-3 border border-card-border text-[12px] text-text-primary focus:outline-none focus:border-accent/40 disabled:opacity-50"
+        className="w-16 px-2 py-0.5 bg-surface-3 border border-card-border text-meta text-text-primary focus:outline-none focus:border-accent/40 disabled:opacity-50"
       />
       <button
         onClick={handleSave}
         disabled={saving}
-        className="px-2 py-0.5 text-[11px] font-medium bg-accent text-white hover:bg-accent/80 transition-colors disabled:opacity-50"
+        className="px-2 py-0.5 text-chip font-medium bg-accent text-white hover:bg-accent/80 transition-colors disabled:opacity-50"
       >
         {saving ? '…' : '✓'}
       </button>
       <button
         onClick={handleCancel}
         disabled={saving}
-        className="px-2 py-0.5 text-[11px] font-medium bg-surface-3 border border-card-border text-text-secondary hover:bg-surface-4 transition-colors disabled:opacity-50"
+        className="px-2 py-0.5 text-chip font-medium bg-surface-3 border border-card-border text-text-secondary hover:bg-surface-4 transition-colors disabled:opacity-50"
       >
         ✕
       </button>
-      {error && <span className="text-[11px] text-status-error ml-1">{error}</span>}
+      {error && <span className="text-chip text-status-error ml-1">{error}</span>}
     </div>
   );
 }
