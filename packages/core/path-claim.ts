@@ -212,7 +212,7 @@ export async function findStaleClaimHolderTaskIds(): Promise<string[]> {
       where: and(
         inArray(workers.taskId, waiterOnly),
         isNull(workers.mergedAt),
-        inArray(workers.status, [...OPEN_PR_WORKER_STATUSES]),
+        inArray(workers.status, [...OPEN_PR_WORKER_STATUSES] as typeof LIVE_WORKER_STATUSES[number][]),
       ),
       columns: { taskId: true, prUrl: true, prLifecycleStatus: true },
     });
