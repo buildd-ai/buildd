@@ -19,6 +19,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
 import { hasCodexCredential } from '@/lib/codex-credential';
+import { hasOpenAiApiKey } from '@/lib/openai-credential';
 import { resolveEffectiveModel } from '@buildd/core/model-router';
 import { pickRoleRowForTask, resolveClaimModelInputs, type RoleModelRow } from '@buildd/core/role-model-routing';
 import {
@@ -844,7 +845,8 @@ export async function POST(req: NextRequest) {
       const teamId = (task as any).workspace?.teamId;
       if (!teamId) return;
       try {
-        if (await hasCodexCredential({ teamId, accountId: account.id, workspaceId: task.workspaceId })) {
+        const credScope = { teamId, accountId: account.id, workspaceId: task.workspaceId };
+        if ((await hasCodexCredential(credScope)) || (await hasOpenAiApiKey(credScope))) {
           serverCredentialTaskIds.add(task.id);
         }
       } catch (err) {
@@ -1190,7 +1192,7 @@ export async function POST(req: NextRequest) {
     if (codexAvailability.has(wsId)) return codexAvailability.get(wsId)!;
     let available = false;
     try {
-      available = await hasCodexCredential(scope);
+      available = (await hasCodexCredential(scope)) || (await hasOpenAiApiKey(scope));
     } catch (err) {
       console.warn(`[claim] Codex credential check failed for workspace ${wsId}:`, err);
     }

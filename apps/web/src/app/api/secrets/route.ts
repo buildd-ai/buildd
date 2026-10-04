@@ -10,7 +10,7 @@ import { isTaskToken } from '@/lib/task-token';
 import { CLOUDFLARE_PURPOSE, parseCloudflareCredential } from '@/lib/cloudflare-credential-shared';
 
 /** Backend-auth purposes whose (re)store should recover auth-failed tasks. */
-const CLAUDE_CREDENTIAL_PURPOSES = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential']);
+const CLAUDE_CREDENTIAL_PURPOSES = new Set(['oauth_token', 'anthropic_api_key', 'claude_credential', 'openai_api_key']);
 
 /**
  * Purposes whose value is a raw credential string (not a JSON blob). Values pasted
@@ -23,6 +23,12 @@ const CLAUDE_CREDENTIAL_PURPOSES = new Set(['oauth_token', 'anthropic_api_key', 
 const RAW_STRING_PURPOSES = new Set([
   'anthropic_api_key',
   'oauth_token',
+  // A plain OpenAI API key for Codex agent tasks (distinct from `codex_credential`,
+  // the ChatGPT OAuth/multi-field connect flow). Mirrors `anthropic_api_key`: a
+  // single raw string, stored the same way, for teams/workspaces that just want
+  // to paste a key rather than connect an account. See
+  // docs/credentials-architecture.md.
+  'openai_api_key',
   'webhook_token',
   'custom',
   'mcp_credential',
@@ -50,6 +56,9 @@ const TEAM_WIDE_BY_DEFAULT = new Set(['mcp_credential', 'decision_key', 'inferen
 const REQUIRED_PREFIXES: Record<string, string> = {
   oauth_token: 'sk-ant-oat',
   anthropic_api_key: 'sk-ant-api',
+  // Loose on purpose: OpenAI keys come in several live shapes (`sk-...`,
+  // `sk-proj-...`, `sk-svcacct-...`), unlike Anthropic's single fixed prefix.
+  openai_api_key: 'sk-',
 };
 
 /**
@@ -164,7 +173,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'value and purpose are required' }, { status: 400 });
   }
 
-  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
+  const validPurposes = ['anthropic_api_key', 'oauth_token', 'claude_credential', 'openai_api_key', 'webhook_token', 'custom', 'mcp_credential', 'vercel_token', 'inference_key', 'decision_key', 'role_env_secret', CLOUDFLARE_PURPOSE];
   if (!validPurposes.includes(purpose)) {
     return NextResponse.json({ error: `Invalid purpose. Must be one of: ${validPurposes.join(', ')}` }, { status: 400 });
   }

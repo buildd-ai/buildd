@@ -37,7 +37,7 @@ implementation. If you find yourself writing `pgTable('..._credentials', ...)`, 
 | `teamId` | Required. The owning team. |
 | `accountId` | Nullable. `NULL` = applies to all accounts in the team. |
 | `workspaceId` | Nullable. `NULL` = applies to all workspaces in the team. |
-| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
+| `purpose` | Discriminator: `anthropic_api_key`, `oauth_token`, `codex_credential`, `openai_api_key`, `mcp_credential`, `webhook_token`, `vercel_token`, `cloudflare_token`, `pushover`, `notify_webhook`, `pushover_personal`, `inference_key`, `decision_key`, `agent_endpoint`, `custom`. |
 | `userId` | Nullable. A person's own key: `PERSONAL_SECRET_PURPOSES` in `packages/core/secrets/team-scope.ts` (`inference_key`, and `pushover_personal`, a person's Pushover user key for away-alerts; see `apps/web/src/lib/personal-pushover.ts`). `NULL` = not personal. A personal purpose is never read as a team credential, and an away-alert never falls back to the team's `pushover` row. See "API-token model keys". |
 | `label` | Optional. For `mcp_credential` it is the env-var name. |
 | `encryptedValue` | AES-256-GCM ciphertext. For multi-field credentials, encrypt a JSON blob (see Codex below). |
@@ -211,6 +211,49 @@ one route that returns a stored value: `bld_` admin API keys only, own team
 only, `no-store`, for `apps/cloud-runner/scripts/deploy.ts`. The token is never
 sent to a runner.
 
+## OpenAI API key for Codex agent tasks (`openai_api_key`)
+
+`purpose = 'openai_api_key'`, a plain raw string, scoped team/account/workspace
+exactly like `anthropic_api_key`. This is **not** the same credential as
+`inference_key` (label `openai`), and **not** the same purpose as
+`codex_credential` — both already existed, and this backend reuses neither:
+
+- **Why not reuse `inference_key`/`openai`?** That row serves chat and decision
+  calls only (`resolveInferenceKey` in `packages/core/inference-keys.ts`), with
+  its own precedence (caller → account → workspace → team, plus a personal
+  `userId` dimension — see "API-token model keys" above). Routing it into
+  Codex subprocess auth too would mean either a second, divergent resolver
+  reading the same purpose for a different consumer, or bending its
+  chat-oriented precedence to fit agent-task scoping. A credential that
+  authenticates a CLI subprocess is not the same thing as a key that pays for
+  one inference call, even though both happen to be OpenAI keys.
+- **Why not just extend `codex_credential`?** `codex_credential` already
+  accepts a plain API key as one of its two credential shapes (the other being
+  the ChatGPT OAuth blob) — see "Multi-field credentials (Codex)" above. But
+  storing it means going through the Codex OAuth-connect UI/route family
+  (`/api/workspaces/[id]/codex-credential/*`, a JSON blob with its own
+  normalization), which is overkill for a team that just wants to paste a key
+  the way they already do for Anthropic. `openai_api_key` is that simpler path
+  through the generic `/api/secrets` route, with the same `RAW_STRING_PURPOSES`
+  quote-stripping and `REQUIRED_PREFIXES` sanity check as `anthropic_api_key`.
+
+**Resolution order:** `attachCodexCredentials` (claim route) tries
+`resolveCodexCredential` (`codex_credential`) first — an existing ChatGPT
+connect, OAuth or legacy API-key blob, wins if present — and falls back to
+`resolveOpenAiApiKey` (`openai_api_key`) only when nothing resolves there.
+Either one is synthesized into the exact same `codexCredential: { credentialType:
+'api_key', apiKey }` wire shape the runner already materializes into
+`auth.json` (`writeCodexApiKeyToHome` in `apps/runner/src/codex-auth.ts`) — so
+the runner needed **no changes** to accept it. `hasCodexCredential` (capability
+gating, budget failover, dashboard readiness) is likewise paired with
+`hasOpenAiApiKey` at every call site (`apps/web/src/app/api/workers/claim/route.ts`,
+`apps/web/src/lib/backend-failover.ts`): either credential is enough to make
+Codex configured for a team/workspace. See `apps/web/src/lib/openai-credential.ts`.
+
+**Cloud-runner support is out of scope** — `attachCodexCredentials` only feeds
+the self-hosted-runner claim path; `apps/cloud-runner` has no Codex execution
+today.
+
 ## Adding a new backend (checklist)
 
 1. Add a `purpose` value to `SecretPurpose` in `packages/core/secrets/types.ts` **and** the
@@ -230,6 +273,7 @@ sent to a runner.
 - Schema: `packages/core/db/schema.ts` (`secrets`)
 - Provider: `packages/core/secrets/` (`postgres-provider.ts`, `types.ts`)
 - Codex helper (blob + refresh): `apps/web/src/lib/codex-credential.ts`
-- Claim-time resolution: `apps/web/src/app/api/workers/claim/route.ts`
+- OpenAI API key helper (plain key, no refresh): `apps/web/src/lib/openai-credential.ts`
+- Claim-time resolution: `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/workers/claim/credential-injection.ts`
 - Refresh cron: `apps/web/src/app/api/cron/codex-token-refresh/route.ts`
 - Settings UI: `apps/web/src/app/app/(protected)/settings/` (Agent Backends section)

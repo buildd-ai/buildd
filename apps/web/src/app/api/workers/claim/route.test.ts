@@ -100,6 +100,12 @@ mock.module('@/lib/codex-credential', () => ({
   hasCodexCredential: mockHasCodexCredential,
 }));
 
+const mockHasOpenAiApiKey = mock(() => Promise.resolve(false));
+mock.module('@/lib/openai-credential', () => ({
+  hasOpenAiApiKey: mockHasOpenAiApiKey,
+  resolveOpenAiApiKey: mock(() => Promise.resolve(null as any)),
+}));
+
 const mockLoadOauthEpisodes = mock(() => Promise.resolve([] as any[]));
 const mockMeasureOauthWindow = mock(() => Promise.resolve({
   windowStartedAt: new Date(),
@@ -421,6 +427,8 @@ describe('POST /api/workers/claim', () => {
     mockHasCodexCredential.mockReset();
     mockGetCodexCredential.mockResolvedValue(null);
     mockHasCodexCredential.mockResolvedValue(false);
+    mockHasOpenAiApiKey.mockReset();
+    mockHasOpenAiApiKey.mockResolvedValue(false);
     mockTeamsFindFirst.mockReset();
     mockTeamsFindFirst.mockResolvedValue(null); // default: enabledBackends null => all enabled
 
@@ -1026,6 +1034,27 @@ describe('POST /api/workers/claim', () => {
       expect(mockAnnounceFixClaimed).toHaveBeenCalledWith(expect.objectContaining({ id: 'task-1' }));
     });
 
+    // A plain team/workspace OpenAI API key (purpose `openai_api_key`) is the
+    // simpler sibling of `codex_credential` — either one must be enough to
+    // flip a budget-blocked task onto Codex.
+    it('routes a budget-blocked Claude task to Codex when the workspace has only an OpenAI API key', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingClaudeTask()]);
+      mockHasCodexCredential.mockResolvedValue(false); // no ChatGPT/OAuth connect
+      mockHasOpenAiApiKey.mockResolvedValue(true);      // but a stored OpenAI key
+      mockGetCodexCredential.mockResolvedValue(null);
+      setupClaim();
+
+      const req = createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'test-runner' } });
+      const res = await POST(req);
+
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].task.backend).toBe('codex');
+    });
+
     it('skips a budget-blocked Claude task when the workspace has no Codex credential', async () => {
       mockAuthenticateApiKey.mockResolvedValue(exhaustedOauthAccount());
       mockWorkersFindMany.mockResolvedValue([]);
@@ -1457,6 +1486,64 @@ describe('POST /api/workers/claim', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.workers.length).toBe(1);
+  });
+
+  // The capability filter must accept a team's plain OpenAI API key
+  // (`openai_api_key`) the same as a `codex_credential` ChatGPT connect — a
+  // runner with no local Codex auth still gets the task.
+  it('claims a codex task on a runner with no local Codex auth when the team has only an OpenAI API key', async () => {
+    const origKey = process.env.ENCRYPTION_KEY;
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    try {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        maxConcurrentWorkers: 3,
+        type: 'user',
+        authType: 'api',
+      });
+
+      mockWorkersFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([
+        {
+          id: 'task-1',
+          workspaceId: 'ws-1',
+          title: 'Codex task',
+          backend: 'codex',
+          requiredCapabilities: [],
+          workspace: { id: 'ws-1', gitConfig: null, teamId: 'team-1' },
+        },
+      ]);
+      mockHasCodexCredential.mockResolvedValue(false); // no ChatGPT/OAuth connect
+      mockHasOpenAiApiKey.mockResolvedValue(true);      // but a stored OpenAI key
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          runner: 'test-runner',
+          environment: {
+            tools: [],
+            // backend:codex only — no CODEX_HOME / OPENAI_API_KEY local auth.
+            envKeys: ['backend:codex'],
+            mcp: [],
+            labels: { type: 'local', os: 'darwin', arch: 'arm64', hostname: 'test' },
+            scannedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+    } finally {
+      if (origKey === undefined) delete process.env.ENCRYPTION_KEY;
+      else process.env.ENCRYPTION_KEY = origKey;
+    }
   });
 
   it('never returns the workspace dispatch token in a claimed task', async () => {
