@@ -294,7 +294,7 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /(?<!\\)\bAuthorization\s*:\s*(?:Bearer|Basic|Token)\s+[A-Za-z0-9][^\s,;"'\\]*/gi, replacement: 'Authorization: [REDACTED:authorization]' },
   { pattern: /(?<!\\)\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, replacement: '[REDACTED:jwt]' },
   { pattern: /(?<!\\)\bsk-[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED:token]' },
-  { pattern: /(?<!\\)\b(?:bld|dsp|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
+  { pattern: /(?<!\\)\b(?:bld|dsp|gh[pousr]|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
   { pattern: /(?<!\\)\b(?:[a-fA-F0-9]{48,})\b/g, replacement: '[REDACTED:credential]' },
   // Full base64/base64url alphabet, including `-`/`_` — and `/`, which makes a
   // branch *path* one candidate run: `mission/<slug>-<missionId8>-w<workerId8>`
