@@ -10,6 +10,7 @@ import {
   normalizeProviderKeys,
   toKeyStatus,
   chatKeySummary,
+  chatKeysInUse,
   keyHealthTone,
 } from './provider-keys-client';
 
@@ -184,6 +185,37 @@ describe('chatKeySummary', () => {
   it("'own': never the team key", () => {
     expect(chatKeySummary({ keyPolicy: 'own', providers: [card('openrouter', 'healthy', null)] })).toEqual({ kind: 'needs_own' });
     expect(chatKeySummary({ keyPolicy: 'own', providers: [card('anthropic', null, 'healthy')] })).toEqual({ kind: 'own', provider: 'anthropic' });
+  });
+});
+
+describe('chatKeysInUse', () => {
+  const card = (provider: string, team: string | null, mine: string | null) => ({
+    provider, membersWithOwnKey: null,
+    team: team ? toKeyStatus(masked({ provider, health: team }) as never) : null,
+    mine: mine ? toKeyStatus(masked({ provider, scope: 'user', health: mine }) as never) : null,
+  }) as never;
+
+  it('lists every usable team key, not just the first in display order', () => {
+    expect(chatKeysInUse({ keyPolicy: 'team', providers: [card('openrouter', null, null), card('anthropic', 'healthy', null), card('openai', 'unknown', null)] }))
+      .toEqual({ kind: 'keys', keys: [{ provider: 'anthropic', whose: 'team' }, { provider: 'openai', whose: 'team' }] });
+  });
+
+  it('a single non-OpenRouter key is enough to report', () => {
+    expect(chatKeysInUse({ keyPolicy: 'team', providers: [card('openai', 'healthy', null)] }))
+      .toEqual({ kind: 'keys', keys: [{ provider: 'openai', whose: 'team' }] });
+  });
+
+  it('skips rejected keys', () => {
+    expect(chatKeysInUse({ keyPolicy: 'team', providers: [card('anthropic', 'revoked', null)] })).toEqual({ kind: 'none' });
+  });
+
+  it("'team' ignores own keys; 'team_or_own' resolves per provider; 'own' never falls back", () => {
+    expect(chatKeysInUse({ keyPolicy: 'team', providers: [card('anthropic', null, 'healthy')] })).toEqual({ kind: 'none' });
+    expect(chatKeysInUse({ keyPolicy: 'team_or_own', providers: [card('anthropic', 'healthy', 'healthy'), card('openai', 'healthy', null)] }))
+      .toEqual({ kind: 'keys', keys: [{ provider: 'anthropic', whose: 'own' }, { provider: 'openai', whose: 'team' }] });
+    expect(chatKeysInUse({ keyPolicy: 'own', providers: [card('anthropic', 'healthy', null)] })).toEqual({ kind: 'needs_own' });
+    expect(chatKeysInUse({ keyPolicy: 'own', providers: [card('openai', 'healthy', 'healthy')] }))
+      .toEqual({ kind: 'keys', keys: [{ provider: 'openai', whose: 'own' }] });
   });
 });
 
