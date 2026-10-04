@@ -385,8 +385,7 @@ export default function ConnectionsClient({
         <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <div className="card p-10 text-center">
-          <p className="text-text-muted text-sm mb-3">No connectors yet.</p>
-          <p className="text-text-muted text-xs mb-4">Add a remote MCP server to give your agents its tools.</p>
+          <p className="text-text-muted text-sm mb-4">No connectors.</p>
           <button
             onClick={() => setShowAddModal(true)}
             className="btn"
@@ -551,8 +550,7 @@ export default function ConnectionsClient({
               Sharing · {sharingConnector.name}
             </h2>
             <p className="text-xs text-text-muted mb-4">
-              Grantee teams use this connector with your team&apos;s credential. They can
-              enable it per workspace and opt roles in. They can&apos;t edit or reconnect it.
+              Shared teams use your team&apos;s credential. They can enable it per workspace, not edit or reconnect it.
             </p>
 
             {shareError && (

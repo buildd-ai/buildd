@@ -18,7 +18,6 @@ export default async function ModelProvidersPage() {
   return (
     <SettingsPage
       title="Model providers"
-      description="OpenRouter reaches every model tier with one key."
     >
       {currentTeam ? (
         <ModelProvidersClient

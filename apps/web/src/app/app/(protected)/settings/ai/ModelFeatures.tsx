@@ -145,7 +145,6 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
 
       <section aria-labelledby="ai-decisions-h">
         <h2 id="ai-decisions-h" className="section-label mb-3">Decision features</h2>
-        <p className="text-body text-text-secondary mb-3">Choose which optional decisions run for your team. Each feature has its own switch.</p>
         <div className="card divide-y divide-border-default">
           {OPT_IN_CAPABILITIES.map(capability => {
             const descriptor = INFERENCE_CAPABILITIES[capability];
