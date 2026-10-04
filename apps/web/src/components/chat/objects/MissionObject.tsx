@@ -50,7 +50,7 @@ export function missionCardRows(model: MissionBoardModel, max = 6): { rows: Boar
 export function missionCountsLine(model: MissionBoardModel): string {
   const running = Object.values(model.tasks).filter(t => t.status === 'running').length;
   const bits = [`${model.landed.done} of ${model.landed.total} landed`];
-  if (model.landed.total === 0) bits[0] = model.planning ? 'planning' : 'no tasks yet';
+  if (model.landed.total === 0) bits[0] = model.planning ? 'planning' : 'no tasks';
   if (running > 0) bits.push(`${running} running`);
   if (model.needsYou.length > 0) bits.push(`${model.needsYou.length} need${model.needsYou.length === 1 ? 's' : ''} you`);
   return bits.join(' · ');

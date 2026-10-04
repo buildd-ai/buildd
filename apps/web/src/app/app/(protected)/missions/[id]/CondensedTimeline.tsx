@@ -821,7 +821,7 @@ function TimelineView({
   if (!hasSections) {
     return (
       <>
-        <p className="text-[13px] text-text-muted italic mb-6">No tasks yet</p>
+        <p className="text-[13px] text-text-muted italic mb-6">No tasks</p>
         <BookkeepingFooter tasks={bookkeepingTasks} />
       </>
     );

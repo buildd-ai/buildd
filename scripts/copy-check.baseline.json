@@ -1,63 +1,10 @@
 {
-  "empty-yet": {
-    "apps/web/src/app/app/(protected)/artifacts/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/chat/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/health/ExperimentsSection.tsx": 1,
-    "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 2,
-    "apps/web/src/app/app/(protected)/health/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/health/usage/UsageClient.tsx": 3,
-    "apps/web/src/app/app/(protected)/health/usage/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/home/HomeMissions.tsx": 1,
-    "apps/web/src/app/app/(protected)/home/ReleaseWidget.tsx": 2,
-    "apps/web/src/app/app/(protected)/initiatives/[id]/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/initiatives/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionBoard.tsx": 2,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionLanes.tsx": 2,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionRecordsSheet.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionReviewSummary.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionVerifiedPill.tsx": 3,
-    "apps/web/src/app/app/(protected)/missions/[id]/MissionVisualReviewSetting.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/[id]/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/missions/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/schedules/SchedulesUnified.tsx": 1,
-    "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx": 1,
-    "apps/web/src/app/app/(protected)/team/TeamGrid.tsx": 1,
-    "apps/web/src/app/app/(protected)/team/[slug]/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/team/page.tsx": 1,
-    "apps/web/src/app/app/(protected)/workspaces/WorkspaceList.tsx": 1,
-    "apps/web/src/app/app/(protected)/workspaces/[id]/config/KnowledgeHealthSection.tsx": 2,
-    "apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx": 2,
-    "apps/web/src/app/app/(protected)/workspaces/[id]/config/RepoLinkCard.tsx": 1,
-    "apps/web/src/app/app/(protected)/workspaces/[id]/memory/ObservationList.tsx": 1,
-    "apps/web/src/app/app/(protected)/workspaces/[id]/schedules/ScheduleList.tsx": 1,
-    "apps/web/src/app/app/(protected)/workspaces/[id]/skills/SkillList.tsx": 1,
-    "apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx": 1,
-    "apps/web/src/app/app/device/page.tsx": 1,
-    "apps/web/src/components/ArtifactList.tsx": 1,
-    "apps/web/src/components/MissionReleaseFooter.tsx": 1,
-    "apps/web/src/components/ModelPicker.tsx": 1,
-    "apps/web/src/components/chat/ChatDock.tsx": 1,
-    "apps/web/src/components/chat/ChatSetupCard.tsx": 1,
-    "apps/web/src/components/chat/mission-sheet.ts": 3,
-    "apps/web/src/components/chat/objects/MissionObject.tsx": 1,
-    "apps/web/src/components/missions/MissionListCards.tsx": 1,
-    "apps/web/src/components/visual-review/VisualReviewTray.tsx": 1
-  },
+  "empty-yet": {},
   "of-your-own": {},
   "self-description": {},
-  "reassurance": {
-    "apps/web/src/app/app/(protected)/missions/[id]/HeartbeatTimeline.tsx": 1
-  },
+  "reassurance": {},
   "justification": {},
-  "needs-you": {
-    "apps/web/src/components/chat/canvas-empty.ts": 4
-  },
+  "needs-you": {},
   "exclamation": {},
-  "long-copy": {
-    "apps/web/src/app/app/(protected)/health/HealthClient.tsx": 4,
-    "apps/web/src/app/app/(protected)/health/usage/UsageClient.tsx": 3,
-    "apps/web/src/app/app/(protected)/missions/[id]/HeartbeatChecklistEditor.tsx": 1
-  }
+  "long-copy": {}
 }

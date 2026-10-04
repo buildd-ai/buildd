@@ -291,9 +291,9 @@ export default async function MissionsPage({
 
       {missionsList.length === 0 ? (
         <div className="card p-8 text-center">
-          <p className="text-sm text-text-secondary mb-1">No missions yet.</p>
+          <p className="text-sm text-text-secondary mb-1">No missions.</p>
           <p className="text-xs text-text-muted">
-            Create a mission to organize your agents around a goal.
+            A mission is a goal your agents work toward.
           </p>
         </div>
       ) : (

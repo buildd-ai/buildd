@@ -54,7 +54,7 @@ describe('ExperimentsSection — visibility', () => {
     const html = render({ canManage: true, items: [] });
     expect(html).toContain('data-testid="health-section-experiments"');
     expect(html).toContain('data-testid="experiment-create-open"');
-    expect(html).toContain('No experiments yet');
+    expect(html).toContain('No experiments.');
   });
 });
 
