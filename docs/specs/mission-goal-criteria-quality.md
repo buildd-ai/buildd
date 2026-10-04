@@ -302,9 +302,9 @@ Modelled exactly on `mission_strand_choice`
 (`apps/web/src/lib/strand-choice-decision.ts`, `docs/design/decision-calls.md`):
 
 - A new `opt_in` capability, `mission_goal_quality`, in `INFERENCE_CAPABILITIES`
-  (`packages/core/inference-policy.ts`), off by default (a team turns it on by
-  listing it in `teams.enabledDecisionShadows`), so a team that has not
-  opted in makes no call and writes no `warned` row.
+  (`packages/core/inference-policy.ts`), on when the team lists it in
+  `teams.enabledDecisionShadows` (a new team starts with every opt-in listed),
+  so a team that has turned it off makes no call and writes no `warned` row.
 - **Shadow**: the result is logged as one `DECISION_SHADOW_LOG_PREFIX`
   (`[decision-shadow]`) line — mission short id, per-criterion labels and
   confidences, fingerprints, latency, tokens, cost; no criterion text — and the

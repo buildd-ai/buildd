@@ -8645,14 +8645,21 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   /** The response echoes each task's workspace.gitConfig; drop it so only behaviour is compared. */
   const withoutGitConfig = (r: { status: number; data: any }) => JSON.parse(JSON.stringify(r), (k, v) => (k === 'gitConfig' ? undefined : v));
 
-  it('off: absent and explicit \'off\' give deep-equal responses and touch no planner I/O', async () => {
-    const absent = await claim(overlappingTrio(null));
+  it('off: an explicit \'off\' touches no planner I/O', async () => {
     const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
-    expect(withoutGitConfig(off)).toEqual(withoutGitConfig(absent));
     // The legacy walk does not see in-batch overlap: all three are claimed.
-    expect(pickedIds(absent.data)).toEqual(['a', 'b', 'c']);
+    expect(pickedIds(off.data)).toEqual(['a', 'b', 'c']);
     expect(mockLoadPlannerSignals).not.toHaveBeenCalled();
     expect(mockFireClaimPlanRecord).not.toHaveBeenCalled();
+    expect(mockFireOrderedBehind).not.toHaveBeenCalled();
+  });
+
+  it('absent: no mode set records, with the same response as an explicit \'off\'', async () => {
+    const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
+    const absent = await claim(overlappingTrio(null));
+    expect(withoutGitConfig(absent)).toEqual(withoutGitConfig(off));
+    expect(mockFireClaimPlanRecord).toHaveBeenCalledTimes(1);
+    expect(mockFireClaimPlanRecord.mock.calls[0][0].mode).toBe('record');
     expect(mockFireOrderedBehind).not.toHaveBeenCalled();
   });
 
@@ -8667,7 +8674,7 @@ describe('claim planner (gitConfig.claimPlanner)', () => {
   });
 
   it('record: same picks as off, and the plan is recorded beside them', async () => {
-    const off = await claim(overlappingTrio(null));
+    const off = await claim(overlappingTrio({ claimPlanner: 'off' }));
     const record = await claim(overlappingTrio({ claimPlanner: 'record' }));
     expect(pickedIds(record.data)).toEqual(pickedIds(off.data));
     expect(mockLoadPlannerSignals).toHaveBeenCalledTimes(1);
