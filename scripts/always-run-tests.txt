@@ -74,6 +74,10 @@ scripts/status-literal-ratchet.test.ts
 # Greps every tracked source for task:assigned senders and imports of the
 # deleted pre-outbox dispatch module.
 scripts/dispatch-authority-guard.test.ts
+# Enumerates every tracked source file in apps/web/src, packages/core, and
+# packages/shared to ensure team role permission decisions are centralized in
+# the permissions module and not hardcoded scattered across routes.
+scripts/team-permission-guard.test.ts
 # Scans packages/dispatch-contract and apps/dispatch for imports of Buildd core,
 # its schema or a database driver: the Dispatch side must stay producer-agnostic.
 packages/dispatch-contract/src/no-producer-imports.test.ts
