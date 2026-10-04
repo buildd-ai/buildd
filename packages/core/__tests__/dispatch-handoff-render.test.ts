@@ -8,6 +8,12 @@ import {
   ackHandoffSql,
   ackMergedSql,
   applyReceiptsSql,
+  fallBackToInAppSql,
+  selectForRepublishSql,
+  selectOrphanCandidatesSql,
+  terminalReceiptFor,
+  ORPHAN_CEILING_MS,
+  ORPHAN_MIN_AGE_MS,
   inDispatchCustody,
   isProjectableReceipt,
   selectForPublishSql,
@@ -86,5 +92,35 @@ describe('inDispatchCustody', () => {
     expect(inDispatchCustody({ status: 'pending', handedOffAt: new Date() })).toBe(true);
     expect(inDispatchCustody({ status: 'pending', handedOffAt: null })).toBe(false);
     expect(inDispatchCustody({ status: 'delivered', handedOffAt: new Date() })).toBe(false);
+  });
+});
+
+describe('orphan reconcile builders', () => {
+  test('candidate selection binds one jsonb parameter and reads only handed-off dispatch rows', () => {
+    const { sql, params } = render(selectOrphanCandidatesSql({ limit: 9 }));
+    expect(params).toHaveLength(1);
+    expect(JSON.parse(String(params[0]))).toMatchObject({ minAgeMs: ORPHAN_MIN_AGE_MS, ceilingMs: ORPHAN_CEILING_MS, limit: 9 });
+    expect(sql).toContain("o.status = 'handed_off' AND o.transport = 'dispatch'");
+    expect(sql).not.toContain('FOR UPDATE');
+  });
+
+  test('re-publish selection and the fallback flip drop non-uuids and guard on handed_off', () => {
+    for (const q of [selectForRepublishSql([A, 'nope', B]), fallBackToInAppSql([A, 'nope', B])]) {
+      const { sql, params } = render(q);
+      expect(JSON.parse(String(params[0]))).toEqual([A, B]);
+      expect(sql).toContain("o.status = 'handed_off'");
+    }
+    const flip = render(fallBackToInAppSql([A])).sql;
+    expect(flip).toContain("status = 'pending', transport = 'in_app', handed_off_at = NULL");
+  });
+
+  test('terminalReceiptFor maps each terminal state and refuses open or unprojectable ones', () => {
+    expect(terminalReceiptFor({ id: A, state: 'skipped', attempt: 1, via: 'skipped:held', closedAt: AT }, AT))
+      .toEqual({ id: A, attempt: 1, event: 'delivered', via: 'skipped:held', at: AT });
+    expect(terminalReceiptFor({ id: A, state: 'expired', attempt: 0, why: 'expires_at' }, AT))
+      .toEqual({ id: A, attempt: 0, event: 'expired', why: 'expires_at', at: AT });
+    expect(terminalReceiptFor({ id: A, state: 'queued', attempt: 0 }, AT)).toBeNull();
+    expect(terminalReceiptFor({ id: A, state: 'merged', attempt: 0 }, AT)).toBeNull();
+    expect(terminalReceiptFor({ id: 'nope', state: 'delivered', attempt: 1 }, AT)).toBeNull();
   });
 });

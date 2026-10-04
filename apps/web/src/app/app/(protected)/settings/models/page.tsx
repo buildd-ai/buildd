@@ -5,6 +5,7 @@ import { getUserTeamsWithDetails, resolveActiveTeamId } from '@/lib/team-access'
 import ModelTiersClient from './ModelTiersClient';
 import ChatTierPolicySection from './ChatTierPolicySection';
 import LegacyAnchorRedirect from '../_components/LegacyAnchorRedirect';
+import { roleHas } from '@/lib/permission-registry';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +26,7 @@ export default async function ModelTiersPage() {
     getUserTeamsWithDetails(user.id).catch(() => []),
   ]);
   const team = teams.find((t) => t.id === teamId) ?? null;
-  const isAdmin = team?.role === 'owner' || team?.role === 'admin' || team?.slug === `personal-${user.id}`;
+  const isAdmin = roleHas(team?.role, 'manage_model_tiers') || team?.slug === `personal-${user.id}`;
 
   return (
     <main className="min-h-screen pt-14 px-4 pb-24 md:p-8 md:pb-8">

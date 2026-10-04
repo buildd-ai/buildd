@@ -9,6 +9,14 @@
  *   phone   a phone with one question and two options; one is tapped
  *   screens two screenshot frames, each stamped with a check
  *   done    "Done." and one line of what was verified
+ *   title   v7: big lines of type, one after another (the hook)
+ *   chapter v7: a chapter card: its number and its title
+ *   recap   v7: the chapter titles stacked, then one closing line and the URL
+ *   beforeAfter v7: two phone screenshots side by side; the before is marked
+ *           broken, then the after is checked
+ *   doubt   v7.1 opening: one agent row; "Done ✓" lands, then a small question mark
+ *   decided v7.2: question chips; the routine ones tick to "decided", the last lifts toward a phone
+ *   checks  v7.1: "Done when" and its checks set large, each appearing once and staying
  *   verify  the hero: a short list of checks and the agents' bars. Each agent
  *           fills its bar ("I'm done"), then its check ticks (buildd checks);
  *           after the last, one "Done.". It resets to its first frame by the
@@ -23,6 +31,13 @@ export type Motion =
   | { kind: 'phone'; label: string; question: string; options: [string, string]; tapAt: number }
   | { kind: 'screens'; label: string; images: [{ src: string; width: number; height: number }, { src: string; width: number; height: number }]; checks: [number, number] }
   | { kind: 'done'; label: string; title: string; sub: string; from: number }
+  | { kind: 'title'; label: string; lines: string[]; from: number; stagger: number }
+  | { kind: 'chapter'; label: string; index: string; title: string; from: number }
+  | { kind: 'recap'; label: string; titles: string[]; from: number; stagger: number; line: string; lineAt: number; url: string }
+  | { kind: 'beforeAfter'; label: string; before: { src: string; width: number; height: number }; after: { src: string; width: number; height: number }; brokenAt: number; afterAt: number; checkAt: number; view?: number; heightShare?: number }
+  | { kind: 'doubt'; label: string; agent: string; task: string; from: number; doneAt: number; doubtAt: number; resetAt?: number; resetDur?: number }
+  | { kind: 'decided'; label: string; chips: string[]; from: number; stagger: number; tickAt: number[]; liftAt: number }
+  | { kind: 'checks'; label: string; title: string; items: string[]; from: number; stagger: number }
   | { kind: 'verify'; label: string; checks: string[]; colors: string[]; from: number; stagger: number; grow: number; spread: number; lag: number; doneAt: number; resetAt: number; resetDur: number };
 
 function ease(u: number) {
@@ -112,6 +127,49 @@ export function verifyAt(m: Verify, local: number): { bars: number[]; checks: nu
   };
 }
 
+/** Title: each line's opacity, one after another. */
+export function titleIn(m: Extract<Motion, { kind: 'title' }>, local: number): number[] {
+  return m.lines.map((_, i) => ease((local - (m.from + i * m.stagger)) / 0.45));
+}
+
+/** Chapter card: 0..1 as it comes in. */
+export function chapterIn(m: Extract<Motion, { kind: 'chapter' }>, local: number): number {
+  return ease((local - m.from) / 0.4);
+}
+
+/** Recap: each title's opacity, then the closing line's. */
+export function recapAt(m: Extract<Motion, { kind: 'recap' }>, local: number): { titles: number[]; line: number; url: number } {
+  return { titles: m.titles.map((_, i) => ease((local - (m.from + i * m.stagger)) / 0.4)), line: ease((local - m.lineAt) / 0.5), url: ease((local - (m.lineAt + 0.8)) / 0.5) };
+}
+
+/** Before/after: the broken mark on the before, the after sliding in, then its check. */
+export function beforeAfterAt(m: Extract<Motion, { kind: 'beforeAfter' }>, local: number): { broken: number; after: number; check: number } {
+  return { broken: ease((local - m.brokenAt) / 0.3), after: ease((local - m.afterAt) / 0.5), check: ease((local - m.checkAt) / 0.25) };
+}
+
+/** Opening: the row, its "Done ✓", then the doubt, each 0..1 and never going back. */
+export function doubtAt(m: Extract<Motion, { kind: 'doubt' }>, local: number): { row: number; done: number; doubt: number } {
+  // With a reset (the hero loop), Done and the question mark fade back out by the end, so the last frame is the first.
+  const keep = m.resetAt === undefined ? 1 : 1 - ease((local - m.resetAt) / (m.resetDur ?? 1));
+  const q = (x: number) => +x.toFixed(6);
+  return { row: q(ease((local - m.from) / 0.5)), done: q(ease((local - m.doneAt) / 0.3) * keep), doubt: q(ease((local - m.doubtAt) / 0.35) * keep) };
+}
+
+/** Decided: each chip appears once; the routine ones tick once; the last lifts once toward the phone outline. */
+export function decidedAt(m: Extract<Motion, { kind: 'decided' }>, local: number): { chips: number[]; ticks: number[]; lift: number; phone: number } {
+  return {
+    chips: m.chips.map((_, i) => ease((local - (m.from + i * m.stagger)) / 0.4)),
+    ticks: m.tickAt.map((t) => ease((local - t) / 0.3)),
+    lift: ease((local - m.liftAt) / 0.7),
+    phone: ease((local - (m.liftAt - 0.3)) / 0.4),
+  };
+}
+
+/** Checks: the title, then each item once; opacity only rises. */
+export function checksIn(m: Extract<Motion, { kind: 'checks' }>, local: number): { title: number; items: number[] } {
+  return { title: ease((local - m.from) / 0.4), items: m.items.map((_, i) => ease((local - (m.from + 0.5 + i * m.stagger)) / 0.45)) };
+}
+
 /** The sounds a motion beat makes, in seconds into its shot. */
 export function motionCues(m: Motion): Array<{ type: 'key' | 'tap' | 'pluck' | 'chime'; at: number; note?: number }> {
   switch (m.kind) {
@@ -131,6 +189,14 @@ export function motionCues(m: Motion): Array<{ type: 'key' | 'tap' | 'pluck' | '
     case 'phone': return [{ type: 'tap', at: m.tapAt }];
     case 'screens': return m.checks.map((at) => ({ type: 'tap' as const, at }));
     case 'done': return [{ type: 'chime', at: m.from + 0.2 }];
+    case 'title': return [];
+    case 'doubt': return [];
+    case 'decided': return [];
+    case 'checks': return [];
+    case 'chapter': return [];
+    case 'recap': return [];
+    // One soft click as the after lands, and the gentle tone is the green check's (cuts-v7 puts it on the check).
+    case 'beforeAfter': return [{ type: 'tap', at: m.afterAt }];
     case 'verify': return [...m.checks.map((_, i) => ({ type: 'pluck' as const, at: verifyTick(m, i), note: i })), { type: 'chime' as const, at: m.doneAt + 0.2 }];
   }
 }

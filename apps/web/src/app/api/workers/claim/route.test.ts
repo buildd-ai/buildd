@@ -166,6 +166,11 @@ mock.module('@buildd/core/db', () => ({
     delete: (table: any) => ({ where: mock(() => Promise.resolve()) }),
     select: mockDbSelect,
     execute: mockDbExecute,
+    // The worker-claim advisory lock + insert run as one neon-http batch
+    // (same protocol as packages/core/path-claim.ts). Statements are already
+    // `db.execute(...)` calls by the time they reach here, so this just
+    // awaits them together and hands back their results in order.
+    batch: (statements: any[]) => Promise.all(statements),
   },
 }));
 
@@ -7676,7 +7681,9 @@ describe('claim insert — atomic duplicate-worker guard', () => {
     await POST(req);
 
     expect(mockDbExecute).toHaveBeenCalled();
-    const insertSql = (mockDbExecute.mock.calls[0][0] as any).strings.join('?');
+    const insertCall = mockDbExecute.mock.calls.find(([q]: any) => q.strings?.join(' ').includes('INSERT INTO'));
+    expect(insertCall).toBeDefined();
+    const insertSql = (insertCall![0] as any).strings.join('?');
     expect(insertSql).toContain('INSERT INTO');
     // The guard must live in the same statement as the insert — a pre-read is
     // exactly the TOCTOU that produced the duplicate rows.
@@ -8367,6 +8374,36 @@ describe('explicit taskId claims (organizer workflow)', () => {
     const data = await (await claim({ runner: 'mcp', forceOverride: true })).json();
     expect(data.workers).toHaveLength(0);
     expect(data.diagnostics.taskExclusion.code).toBe('advisory_manifest');
+  });
+
+  // Friction 2ccccd12: a local-executor mission's own explicit claims aren't
+  // an unsupervised force claim — the interactive session IS the executor,
+  // same predicate as the role-gate (LX) and rate-limit exemptions above.
+  it('local executor: an explicit interactive claim is not deferred by scope-undeclared serialization, no force needed', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', pathManifest: null })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-L', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    expect(data.workers).toHaveLength(1);
+  });
+
+  // The same task, same peer, but a runner poll (no interactive session) is
+  // still deferred — the exemption is scoped to the explicit interactive
+  // claim, not to the mission being local.
+  it('local executor: a runner poll is still deferred by scope-undeclared serialization', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(account());
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-L' });
+    mockTasksFindMany.mockResolvedValueOnce([task({ missionId: 'mission-L', pathManifest: null })]);
+    mockMissionsFindMany.mockResolvedValue([{ id: 'mission-L', status: 'active', maxConcurrentTasks: null, pacingMode: 'eager', pacingMaxPerHour: null, lastTaskStartedAt: null }]);
+    mockDbSelect.mockReturnValue(makeSelectChain([{ missionId: 'mission-L', taskId: 'peer', pathManifest: null, category: null, context: {} }]));
+
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    expect(data.workers).toHaveLength(0);
   });
 
   // M1: the audit records who forced it and exactly which gates it lifted.

@@ -237,6 +237,10 @@ DELETE FROM notification_deliveries;
 DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
+-- Post-session quality ledgers: findings carry analyser prose, runs carry
+-- collection error text.
+DELETE FROM post_session_findings;
+DELETE FROM post_session_runs;
 -- Orchestration decision ledger: touch labels carry file paths.
 DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;

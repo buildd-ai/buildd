@@ -488,6 +488,17 @@ hold:
   an unmerged PR for the owner (`ownerUnmergedPrs`, read by the card and by
   `explain` alike). A green PR with nobody on it is still the owner's merge,
   and that merge is the action the card offers.
+- **LX-10**: the per-mission advisory-manifest serialization (soft deferral
+  `advisory_manifest`, above) is also exempted for the same `localMissionClaim`
+  predicate as LX-2's role-gate exemption: a verified interactive session's
+  explicit `claim_task {taskId}` against a task whose mission has
+  `executor: 'local'`. The person driving that session is the one choosing
+  what to claim next, in its own isolated worktree, so the one-slot mutex that
+  guards against two *unsupervised* scope-undeclared claimants buys nothing
+  there. This is narrower than force: a plain admin `claim_task force: true`
+  on a non-local mission still does **not** lift this gate (deliberate — see
+  the force-claim comment block in `claim/route.ts`), and a runner poll or
+  unverified caller against a local mission's task is still deferred by it.
 
 Use `executor: 'local'` for work someone runs locally. `startMode: 'held'` is a
 pause: it also blocks the interactive claim, so it was never a fit for that.

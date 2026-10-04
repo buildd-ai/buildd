@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.272.0",
+  "version": "0.273.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -214,6 +214,10 @@
     "./derived-metric": "./derived-metric.ts",
     "./error-signature": "./error-signature.ts",
     "./role-outcomes-feed": "./role-outcomes-feed.ts",
+    "./post-session-quality": "./post-session-quality.ts",
+    "./post-session-triage": "./post-session-triage.ts",
+    "./post-session-findings": "./post-session-findings.ts",
+    "./verification-check": "./verification-check.ts",
     "./gate-events": "./gate-events.ts",
     "./gate-slugs": "./gate-slugs.ts",
     "./gate-friction-signature": "./gate-friction-signature.ts",
@@ -225,7 +229,10 @@
     "./runtime-snapshot": "./runtime-snapshot.ts",
     "./prompts": "./prompts.ts",
     "./prompts-source": "./prompts-source.ts",
-    "./prompted-decision": "./prompted-decision.ts"
+    "./prompted-decision": "./prompted-decision.ts",
+    "./prompt-catalog": "./prompt-catalog.ts",
+    "./prompt-seed": "./prompt-seed.ts",
+    "./prompt-seed-source": "./prompt-seed-source.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.280",

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { useConfirm } from '@/components/useConfirm';
+import { roleHas } from '@/lib/permission-registry';
 
 interface TeamMember {
   userId: string;
@@ -250,7 +251,7 @@ export default function TeamDetailClient({
             >
               Edit
             </button>
-            {currentUserRole === 'owner' && !isPersonal && (
+            {roleHas(currentUserRole, 'delete_team') && !isPersonal && (
               <button
                 onClick={handleDelete}
                 disabled={deleting}
@@ -294,7 +295,7 @@ export default function TeamDetailClient({
                 </div>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
-                {canManage && currentUserRole === 'owner' && member.userId !== currentUserId ? (
+                {canManage && roleHas(currentUserRole, 'assign_team_owner') && member.userId !== currentUserId ? (
                   <Select
                     value={member.role}
                     onChange={(v) => handleRoleChange(member.userId, v)}

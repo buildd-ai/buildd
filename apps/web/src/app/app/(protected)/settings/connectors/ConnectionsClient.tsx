@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import AddConnectionModal from './AddConnectionModal';
 import { Select } from '@/components/ui/Select';
+import { roleHas } from '@/lib/permission-registry';
 
 interface Connector {
   id: string;
@@ -355,7 +356,7 @@ export default function ConnectionsClient({
   // ownership moves only to a team the actor is owner/admin of).
   const sharedTeamIds = new Set(shares.map(s => s.sharedWithTeamId));
   const shareableTeams = teams.filter(t => t.id !== ownerTeamId && !sharedTeamIds.has(t.id));
-  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && t.role !== 'member');
+  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && roleHas(t.role, 'manage_connectors'));
 
   return (
     <div className={embedded ? '' : 'px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl'}>

@@ -11,7 +11,10 @@ import {
   RECEIPT_RETRY_MS,
   RETENTION_MS,
 } from './engine';
-import { SCOPE_KEY, T0, envelope, harness } from './test-support';
+import { createAdapters } from './adapters';
+import { ScopeEngine } from './engine';
+import { createProducerClient } from './producer';
+import { SCOPE_KEY, T0, envelope, harness, sqliteStore } from './test-support';
 
 const WEBHOOK = 'buildd:ws:ws-test:webhook';
 const WAKE = 'buildd:ws:ws-test:runner-wake';
@@ -399,6 +402,34 @@ describe('receipts', () => {
   });
 });
 
+describe('receipts against a rate-limiting producer', () => {
+  test('a 429 from the receipts callback keeps every receipt queued; the next flush after the retry delay sends them', async () => {
+    let now = T0;
+    let status = 429;
+    const posts: string[] = [];
+    const fetchFn = async (url: string, init: RequestInit) => {
+      posts.push(url);
+      if (url.endsWith('/receipts')) return new Response(status === 200 ? '{"applied":0}' : '{"error":"rate_limited"}', { status, headers: { 'Retry-After': '1' } });
+      return Response.json({ delivered: true, via: 'pusher', outcome: 'delivered' });
+    };
+    const producer = createProducerClient({ server: 'https://producer.example', ring: { c1: 's' }, fetch: fetchFn, nowSeconds: () => Math.floor(now / 1000) });
+    const store = sqliteStore();
+    const alarm = { at: null as number | null, set(at: number) { this.at = at; }, clear() { this.at = null; } };
+    const engine = new ScopeEngine({ store, now: () => now, alarm, adapters: createAdapters({ fetch: fetchFn, producer, now: () => now }), producer, dryRunTypes: new Set() });
+    await engine.publish(SCOPE_KEY, Array.from({ length: RECEIPT_FLUSH_COUNT }, () => envelope()));
+    await engine.runAlarm();
+    const queued = () => (store.db.query('SELECT COUNT(*) AS n FROM receipts').get() as { n: number }).n;
+    expect(posts.filter(u => u.endsWith('/receipts'))).toHaveLength(1);
+    expect(queued()).toBe(RECEIPT_FLUSH_COUNT);
+    expect(alarm.at).toBe(T0 + RECEIPT_RETRY_MS);
+
+    status = 200;
+    now = alarm.at!;
+    await engine.runAlarm();
+    expect(queued()).toBe(0);
+  });
+});
+
 describe('grants and dry-run', () => {
   const SENTINEL = 'grant-sentinel-7f3a9c';
 
@@ -462,9 +493,63 @@ describe('inspection', () => {
     const b = envelope({ dedupeKey: 'k' });
     await h.engine.publish(SCOPE_KEY, [a, b]);
     expect(h.engine.lookup(['nope', b.id, a.id])).toEqual({
-      known: [{ id: b.id, state: 'merged', attempt: 0, mergedInto: a.id }, { id: a.id, state: 'queued', attempt: 0 }],
+      known: [{ id: b.id, state: 'merged', attempt: 0, mergedInto: a.id, closedAt: iso(T0) }, { id: a.id, state: 'queued', attempt: 0 }],
       unknown: ['nope'],
     });
+  });
+
+  // The repair floor projects a lost terminal receipt from the lookup, so a
+  // terminal summary must say what that receipt said.
+  const terminalReceipt = (h: ReturnType<typeof harness>, id: string) =>
+    h.pendingReceipts().find(r => r.id === id && r.event !== 'attempted')!;
+
+  test('a delivered intent reports the first step that delivered, not an also step', async () => {
+    const h = harness();
+    h.producer.resolveAnswer = { decision: 'deliver', payload: {}, grant: { url: 'https://gh.example/repos/o/r/dispatches', headers: {} } };
+    const e = envelope({ target: { steps: [{ target: WAKE, mode: 'first' }, { target: GHA, mode: 'also' }] } });
+    await h.engine.publish(SCOPE_KEY, [e]);
+    h.clock.advance(5_000);
+    await h.runToAlarm();
+    const [s] = h.engine.lookup([e.id]).known;
+    expect(s).toEqual({ id: e.id, state: 'delivered', attempt: 1, via: 'relay:pusher', closedAt: iso(T0 + 5_000) });
+    expect(s!.via).toBe(terminalReceipt(h, e.id).via!);
+  });
+
+  test('skipped intents report the receipt via: skipped:<why>, and skipped:all_declined', async () => {
+    const h = harness();
+    h.producer.resolveAnswer = { decision: 'skip', why: 'held' };
+    const skip = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first', resolve: true }, { target: WAKE, mode: 'first' }] } });
+    await h.engine.publish(SCOPE_KEY, [skip]);
+    await h.runToAlarm();
+
+    h.producer.resolveAnswer = (req) => (req.target === GHA
+      ? { decision: 'deliver', payload: {}, grant: { url: 'https://gh.example/repos/o/r/dispatches', headers: {} } }
+      : { decision: 'decline', why: 'no_webhook' });
+    h.producer.relayAnswer = { outcome: 'declined', why: 'no_runner' };
+    const none = envelope({ target: { steps: [{ target: WEBHOOK, mode: 'first', resolve: true }, { target: WAKE, mode: 'first' }, { target: GHA, mode: 'also' }] } });
+    await h.engine.publish(SCOPE_KEY, [none]);
+    await h.runNextDue();
+
+    const byId = new Map(h.engine.lookup([skip.id, none.id]).known.map(k => [k.id, k]));
+    expect(byId.get(skip.id)).toMatchObject({ state: 'skipped', via: 'skipped:held' });
+    expect(byId.get(none.id)).toMatchObject({ state: 'skipped', via: 'skipped:all_declined' });
+    expect(byId.get(skip.id)!.via).toBe(terminalReceipt(h, skip.id).via!);
+    expect(byId.get(none.id)!.via).toBe(terminalReceipt(h, none.id).via!);
+  });
+
+  test('failed and expired intents report why; open intents carry no terminal detail', async () => {
+    const h = harness();
+    h.producer.relayAnswer = new Error('relay_http_502');
+    const fail = envelope();
+    const late = envelope({ expiresAt: iso(T0 + 1_000), notBefore: iso(T0 + 2_000) });
+    const open = envelope({ notBefore: iso(T0 + 6 * 3_600_000) });
+    await h.engine.publish(SCOPE_KEY, [fail, late, open]);
+    // One run expires `late`; MAX_DELIVERY_ATTEMPTS runs fail `fail`.
+    for (let i = 0; i <= MAX_DELIVERY_ATTEMPTS; i++) await h.runNextDue();
+    const byId = new Map(h.engine.lookup([fail.id, late.id, open.id]).known.map(k => [k.id, k]));
+    expect(byId.get(fail.id)).toMatchObject({ state: 'failed', attempt: MAX_DELIVERY_ATTEMPTS, why: 'relay_http_502', closedAt: expect.any(String) });
+    expect(byId.get(late.id)).toMatchObject({ state: 'expired', why: 'expires_at', closedAt: expect.any(String) });
+    expect(byId.get(open.id)).toEqual({ id: open.id, state: 'queued', attempt: 0 });
   });
 
   test('detail shows next due and the last error per target', async () => {

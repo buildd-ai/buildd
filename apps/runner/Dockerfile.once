@@ -39,6 +39,21 @@ RUN set -eux; \
     rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${arch}"; \
     gh --version; git --version; rg --version
 
+# Corepack (ships with Node.js, not with bun) manages the exact
+# package-manager version a task repo pins in package.json's
+# `packageManager` field. Without it, a pnpm monorepo's postinstall/husky
+# hooks shell out to a `pnpm` that does not exist in this image and fail
+# with exit 127. `corepack enable` installs pnpm/yarn shims that fetch the
+# pinned (or, absent a pin, corepack's last-known-good) version from the
+# registry on first use — the same npm-registry access an ordinary `pnpm
+# install` already needs through the egress proxy.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends nodejs; \
+    rm -rf /var/lib/apt/lists/*; \
+    corepack enable; \
+    corepack --version
+
 WORKDIR /opt/buildd
 
 # Dependencies first so a source-only change reuses this layer. Every

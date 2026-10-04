@@ -16,9 +16,11 @@
  * with an empty memory grades the same as everyone else. Any read failure, a
  * timeout, or no rows means the code default and no accepted patterns.
  */
+import { resolvePrompt, resolvePromptEntry, resolvedPromptVersion } from '@buildd/core/prompts';
 import { createHash } from 'node:crypto';
 import type { GoalCriterion } from '@buildd/shared';
 import type { MemoryRecord, MemorySearchResult } from '@buildd/core/memory-store';
+import { registerTextPrompt } from '@buildd/core/prompts';
 
 export const GOAL_CRITERIA_RUBRIC_TAG = 'goal-criteria-rubric';
 export const GOAL_CRITERIA_ACCEPTED_TAG = 'goal-criteria-accepted';
@@ -57,9 +59,19 @@ export interface GoalQualityRubric {
   acceptedFingerprints: string[];
 }
 
+/** The prompts-table id whose active row may replace the baseline rubric (`@buildd/core/prompts`). */
+export const GOAL_QUALITY_RUBRIC_PROMPT_ID = 'buildd.goal_quality.rubric';
+
+/**
+ * The code default as this deployment resolves it: an active prompts row's
+ * text (version `base+p<row version>`), else the public baseline (`base`).
+ * Read through getters, so a row change is seen without a restart.
+ */
 export const CODE_RUBRIC: GoalQualityRubric = {
-  text: GOAL_QUALITY_BASELINE_RUBRIC,
-  version: CODE_RUBRIC_VERSION,
+  get text() { return resolvePrompt(GOAL_QUALITY_RUBRIC_PROMPT_ID, GOAL_QUALITY_BASELINE_RUBRIC); },
+  get version() {
+    return resolvedPromptVersion(CODE_RUBRIC_VERSION, resolvePromptEntry(GOAL_QUALITY_RUBRIC_PROMPT_ID, GOAL_QUALITY_BASELINE_RUBRIC));
+  },
   acceptedFingerprints: [],
 };
 
@@ -100,7 +112,7 @@ export function composeGoalQualityRubric(input: {
   const accepted = acceptedRows.map(a => `Accepted in this workspace: ${cut(a.content, RUBRIC_ENTRY_MAX_CHARS)}`);
   const acceptedFingerprints = [...new Set(acceptedRows.map(fingerprintOf).filter((f): f is string => !!f))];
 
-  const base = baselineText ?? GOAL_QUALITY_BASELINE_RUBRIC;
+  const base = baselineText ?? CODE_RUBRIC.text;
   const join = () => [base, ...notes, ...accepted].join(' ');
   while (join().length > RUBRIC_MAX_CHARS && accepted.length > 0) accepted.pop();
   while (join().length > RUBRIC_MAX_CHARS && notes.length > 0) notes.pop();
@@ -214,3 +226,6 @@ export async function loadGoalQualityRubric(
     if (timer) clearTimeout(timer);
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerTextPrompt(GOAL_QUALITY_RUBRIC_PROMPT_ID, GOAL_QUALITY_BASELINE_RUBRIC);
