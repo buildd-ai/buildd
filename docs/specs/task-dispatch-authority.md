@@ -326,8 +326,9 @@ signed callbacks. Wire contract: `@buildd/dispatch-contract`.
   `DISPATCH_CALLBACK_SECRET`. Resolve runs the same decision functions as
   the in-app adapters (`claimabilitySkip`, `webhookEligible`,
   `githubActionsWanted`, `webhookPayloadFor`) and returns
-  `deliver{payload, grant}`, `decline`, `skip` or, for a webhook whose task's
-  `start_at` is still ahead, `reschedule{notBefore}`. A webhook grant is the
+  `deliver{payload, grant}`, `decline` or `skip`. A future `start_at` skips,
+  as in-app does, because the trigger's `start_at:<ms>` row delivers it at
+  that time. A webhook grant is the
   bearer token. A GitHub Actions grant is a repo-scoped installation token
   for `repository_dispatch`. Relay sends the runner wake through
   `sendRunnerWake`: `relay:pusher` when sent, `skipped` when Pusher is
@@ -375,9 +376,8 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   before.
 - AC-27: For every AC-10…AC-18 case, the Dispatch route plus resolve and relay
   reach the same outcome as `deliverTaskDispatch`. The documented
-  differences are a future `start_at` (resolve answers `reschedule`) and
-  GitHub Actions after an eligible webhook's failed POST (in-app fires it,
-  Dispatch does not).
+  difference is GitHub Actions after an eligible webhook's failed POST
+  (in-app fires it, Dispatch does not).
 - AC-28: Callbacks answer 503 with no secret, and 401 on a missing, wrong,
   stale, path-mismatched or body-tampered signature.
 - AC-29: Re-applying a receipt batch is a no-op. Shadow rows and unknown ids
