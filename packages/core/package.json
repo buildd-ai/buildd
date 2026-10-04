@@ -147,6 +147,8 @@
     "./risk-class-detect": "./risk-class-detect.ts",
     "./workspace-readiness": "./workspace-readiness.ts",
     "./scout-capabilities": "./scout-capabilities.ts",
+    "./quality-scout/candidates": "./quality-scout/candidates.ts",
+    "./quality-scout/selector": "./quality-scout/selector.ts",
     "./onboarding-scaffold": "./onboarding-scaffold.ts",
     "./onboarding-spec": "./onboarding-spec.ts",
     "./spec-conformance": "./spec-conformance.ts",
