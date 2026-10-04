@@ -18,6 +18,12 @@ mock.module('@/lib/dead-zone-sweep', () => ({
   sweepDeadZonePrs: mockDeadZone,
 }));
 
+const BRANCH_REFRESH_ZERO = { scanned: 0, merged: 0, conflicts: 0, skipped: 0, errors: 0 };
+const mockBranchRefreshSweep = mock(() => Promise.resolve(BRANCH_REFRESH_ZERO));
+mock.module('@/lib/mission-branch-refresh', () => ({
+  sweepMissionBranchRefresh: mockBranchRefreshSweep,
+}));
+
 const LINEAGE_ZERO = { candidates: 0, closed: 0, stranded: 0, skipped: 0 };
 const mockLineageSweep = mock(() => Promise.resolve(LINEAGE_ZERO));
 mock.module('@/lib/retry-pr-supersession', () => ({
@@ -100,6 +106,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockMissionPrSweep.mockReset();
     mockMissionPrSweep.mockResolvedValue(MISSION_ZERO);
     mockDeadZone.mockReset();
+    mockBranchRefreshSweep.mockReset();
+    mockBranchRefreshSweep.mockResolvedValue(BRANCH_REFRESH_ZERO);
     mockLineageSweep.mockReset();
     mockLineageSweep.mockResolvedValue(LINEAGE_ZERO);
     mockClosedPrSweep.mockReset();

@@ -163,7 +163,8 @@ const SAFE: Record<string, string[]> = {
   // Scopes are a fixed vocabulary; workspace restrictions contain only row references.
   accounts: ['monthly_cost_month', 'budget_alerts_sent', 'scopes', 'workspace_ids'],
   missions: ['status', // MissionStatusValue (@buildd/shared)
-    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint'],
+    'context_artifact_ids', 'last_notified_sha', 'criteria_rearm_fingerprint',
+    'branch_refresh_head_sha'], // a git SHA, same class as last_notified_sha
   initiatives: ['context_artifact_ids'],
   tasks: [
     'status', 'required_capabilities', 'heartbeat_tick_anchor', 'ci_retry_head_sha',

@@ -2242,6 +2242,23 @@ export class WorkerManager {
             }],
           }).catch(() => {});
         }
+        // Stale-base warning: the ref this worktree is cut from has drifted
+        // far behind the default branch. Previously console.warn-only (docs/
+        // design/mission-delivery-arc.md P5) — surfaced the same way as the
+        // fallback warning above so it is visible on the dashboard and to
+        // get_error_traces, not just in runner logs nobody tails.
+        if (setupResult.staleBase) {
+          const { ref, defaultBranch: staleDefault, commitsBehind } = setupResult.staleBase;
+          const label = `Base "${ref}" is ${commitsBehind} commits behind origin/${staleDefault} — risk of merge conflicts or CI failures from unrelated upstream changes`;
+          this.addMilestone(worker, { type: 'status', label, ts: Date.now() });
+          this.buildd.updateWorker(worker.id, {
+            appendErrorTraces: [{
+              pattern: 'worktree_stale_base',
+              excerpt: `${label}. Consider: git fetch origin && git rebase origin/${staleDefault}.`,
+              source: 'git-operations',
+            }],
+          }).catch(() => {});
+        }
         // Dependency install outcome. This used to be unobservable —
         // installWorkspaceDeps returned void — so a worker could run a full
         // budget and report `done` with an empty node_modules and nothing

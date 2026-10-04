@@ -1040,6 +1040,25 @@ export const missions = pgTable('missions', {
   // symmetrically, a mission nothing else ever touches again ages out forever
   // with no re-entry. Null = never attempted.
   prSweepLastCheckedAt: timestamp('pr_sweep_last_checked_at', { withTimezone: true }),
+  // Keeping the integration branch current with dev (docs/design/mission-delivery-arc.md
+  // P5, superseded): the trunk SHA last confirmed merged into (or already an
+  // ancestor of) `workingBranch`. A refresh compares this against trunk's live
+  // head and skips the GitHub call entirely when they already match — the
+  // idempotency half of debouncing a burst of dev merges. Null means never
+  // refreshed (or opted in after the column existed).
+  branchRefreshHeadSha: text('branch_refresh_head_sha'),
+  // Single-flight lease for the refresh itself: a claim sets this to now() +
+  // the lease window, and a second caller racing the same mission (the
+  // concurrency half of debouncing a burst) only proceeds once it is null or
+  // in the past. Always cleared at the end of the attempt that set it.
+  branchRefreshLeaseUntil: timestamp('branch_refresh_lease_until', { withTimezone: true }),
+  // The open conflict-resolution task dispatched after a 409 merging dev into
+  // this mission's integration branch — at most one at a time (mirrors
+  // conflict-retry's one-live-retry-per-PR rule). Non-null and non-terminal
+  // means "stop refreshing this mission until that task finishes"; the next
+  // refresh attempt self-heals the column to null once it observes the task
+  // reached a terminal status.
+  branchRefreshConflictTaskId: uuid('branch_refresh_conflict_task_id'),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
