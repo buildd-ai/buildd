@@ -603,6 +603,9 @@ describe('run report', () => {
       'BUILDD_PHASE=fetch_end 1500',
       'BUILDD_METRIC=fetch_bytes 64',
       'BUILDD_METRIC=snapshot_age_ms 7200000',
+      'BUILDD_PHASE=restore_cache_start 1500',
+      'BUILDD_PHASE=restore_cache_end 1750',
+      'BUILDD_CACHE_SKIPPED=pnpm-store 2100000000 1073741824',
       'BUILDD_REPO_SOURCE=warm',
       'BUILDD_METRIC=bogus 1',
     ]);
@@ -613,9 +616,10 @@ describe('run report', () => {
     const r = h.state.report!;
     expect(r.repo).toEqual({
       source: 'warm', fallbackReason: null, snapshotAgeMs: 7_200_000, warmUploadSkipReason: null,
-      bytes: { clone: null, restore: 5000, fetch: 64, cache: null, upload: null, warmRepo: null },
+      cacheSkipped: { part: 'pnpm-store', bytes: 2_100_000_000, cap: 1_073_741_824 },
+      bytes: { clone: null, restore: 5000, fetch: 64, cache: null, cacheRaw: null, upload: null, warmRepo: null },
     });
-    expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null });
+    expect(r.durationsMs).toMatchObject({ restoreWarm: 400, fetch: 100, clone: null, restoreCache: 250 });
   });
 
   test('a warm upload skipped over the cap is reported with the measured size', async () => {

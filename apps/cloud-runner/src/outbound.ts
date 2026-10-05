@@ -255,6 +255,8 @@ export interface GithubGrant {
   repo: string;
   /** The task's workspace, as buildd knows it. Keys the snapshot store (snapshots.ts). */
   workspaceId?: string;
+  /** The workspace's warm snapshot cap, resolved and bounded by buildd; absent when it sets none. */
+  warmSnapshotMaxBytes?: number;
   /**
    * Branch names a direct `git push` must never target (the workspace trunk,
    * its release branch, and the repo's own GitHub default branch) — computed
@@ -756,6 +758,8 @@ export function parseGithubGrant(body: unknown): GithubGrant {
   const ws = (b as { workspaceId?: unknown } | null)?.workspaceId;
   const grant: GithubGrant = { token, expiresAt, owner, repo };
   if (typeof ws === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(ws)) grant.workspaceId = ws;
+  const cap = (b as { warmSnapshotMaxBytes?: unknown } | null)?.warmSnapshotMaxBytes;
+  if (typeof cap === 'number' && Number.isSafeInteger(cap) && cap > 0) grant.warmSnapshotMaxBytes = cap;
   const rawProtected = (b as { protectedBranches?: unknown } | null)?.protectedBranches;
   if (Array.isArray(rawProtected)) {
     const branches = rawProtected.filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length <= 255).slice(0, 50);
