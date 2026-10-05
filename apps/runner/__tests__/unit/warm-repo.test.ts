@@ -861,6 +861,7 @@ describe('pnpm store skipped for size is refreshed when cap is raised', () => {
     expect(store.manifests).toHaveLength(1); // No refresh
     expect(lines.filter(l => l.startsWith('BUILDD_WARM_REFRESH='))).toEqual([]);
   });
+
 });
 
 describe('the per-workspace cap comes from the Worker (GET /warm/limits)', () => {
