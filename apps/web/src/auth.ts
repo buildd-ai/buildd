@@ -8,7 +8,7 @@ import { planPersonalWorkspaceLinks } from '@/lib/personal-workspace-links-plan'
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
-import { seedDefaultRolesForTeam } from '@/lib/default-roles';
+import { emit } from '@/lib/core-emit';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -159,10 +159,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           role: 'owner',
         });
 
-        // Seed default roles for the new team (fire-and-forget)
-        seedDefaultRolesForTeam(team.id).catch(err =>
-          console.error('Failed to seed default roles for new team:', err)
-        );
+        // The roles module seeds the default roles (fire-and-forget).
+        await emit({ type: 'team.created', teamId: team.id });
 
         const plaintextKey = generateApiKey();
         const [account] = await db.insert(accounts).values({

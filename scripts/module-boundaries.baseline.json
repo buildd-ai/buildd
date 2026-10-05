@@ -155,17 +155,13 @@
     },
     "apps/web/src/app/api/tasks/route.ts": {
       "apps/web/src/lib/change-intent.ts": "missions",
-      "apps/web/src/lib/criteria-escalation.ts": "missions",
-      "apps/web/src/lib/mission-feed.ts": "missions",
       "apps/web/src/lib/mission-integration-branch.ts": "missions",
       "apps/web/src/lib/mission-link-scope.ts": "missions",
-      "apps/web/src/lib/mission-loop.ts": "missions",
       "apps/web/src/lib/mission-surface-audit.ts": "visual-qa",
       "apps/web/src/lib/required-connectors.ts": "connectors",
       "apps/web/src/lib/subject-anchor-observer.ts": "missions",
       "apps/web/src/lib/subject-intake-db.ts": "intake-integrations",
       "apps/web/src/lib/subject-intake.ts": "intake-integrations",
-      "apps/web/src/lib/task-category-decision.ts": "jev-decisions",
       "apps/web/src/lib/task-category.ts": "health-quality",
       "apps/web/src/lib/task-role-apply.ts": "roles-skills",
       "packages/core/friction-manifest.ts": "health-quality",
@@ -181,9 +177,6 @@
       "packages/core/decision-model.ts": "jev-decisions",
       "packages/core/inference-key-policy.ts": "jev-decisions",
       "packages/core/inference-policy.ts": "jev-decisions"
-    },
-    "apps/web/src/app/api/teams/route.ts": {
-      "apps/web/src/lib/default-roles.ts": "roles-skills"
     },
     "apps/web/src/app/api/version/route.ts": {
       "apps/web/src/lib/deploy-identity.ts": "releases"
@@ -309,7 +302,6 @@
       "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/auth.ts": {
-      "apps/web/src/lib/default-roles.ts": "roles-skills",
       "apps/web/src/lib/personal-workspace-links-plan.ts": "notifications"
     },
     "apps/web/src/lib/agent-capabilities/github.ts": {
