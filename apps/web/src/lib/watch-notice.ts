@@ -60,7 +60,7 @@ export function watchNotice(row: WatchNoticeInput): { text: string; watch: ChatW
   const taskId = str(p.taskId) ?? str(ref.id);
   const text = row.eventType === 'task.completed' ? `${who} is done.`
     : row.eventType === 'task.failed' ? `${who} failed.`
-      : `${who} needs your answer.`;
+      : `${who} asked a question.`;
   const href = taskId ? `/app/tasks/${encodeURIComponent(taskId)}` : null;
   return {
     text,
@@ -110,7 +110,7 @@ export function watchEventTypes(kind: SubjectKind, on?: unknown): SubscriptionEv
 const WHEN: Record<SubscriptionEventType, string> = {
   'task.completed': 'it finishes',
   'task.failed': 'it fails',
-  'task.needs_input': 'it needs your answer',
+  'task.needs_input': 'it asked a question',
   'pr.merged': 'it merges',
   'pr.ci_failed': 'CI fails',
 };

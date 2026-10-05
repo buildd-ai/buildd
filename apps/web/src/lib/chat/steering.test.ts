@@ -301,7 +301,7 @@ describe('the owner\'s examples', () => {
 
   it('answering (or re-answering) the waiting question', async () => {
     const { preview } = await proposeAndApprove('answer_question', { taskId: 'rounding', answer: 'Per line.' });
-    expect(approvalHeadline(preview)).toBe('Answer the question on: rounding decision (waiting for your answer)');
+    expect(approvalHeadline(preview)).toBe('Answer the question on: rounding decision (needs input)');
     expect(preview.changes.map(approvalChangeLine)).toEqual(['Round per line or per invoice?: + Per line.']);
     expect(writes).toEqual([`POST respond ${W_ASK.slice(0, 8)}: Per line.`]);
   });

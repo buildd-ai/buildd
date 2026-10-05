@@ -143,7 +143,7 @@ function showToast(task: WaitingTask, router: ReturnType<typeof useRouter>) {
 
   // Show browser notification if permitted
   if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-    const n = new Notification('Task needs your input', {
+    const n = new Notification('Task needs input', {
       // The question, one line of context, the recommended default (question brief).
       body: task.waitingFor?.prompt
         ? questionNotificationText({ ...task.waitingFor, where: { taskTitle: task.title } }).message

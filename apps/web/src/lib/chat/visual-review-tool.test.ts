@@ -24,7 +24,7 @@ describe('formatVisualReview', () => {
     expect(text).toMatch(/agent: unsure/);
     expect(text).toMatch(/you: looks right \(agreed\)/);
     expect(text).toMatch(/fix: .*PR open, not merged.*#2/);
-    expect(text).toMatch(/not reviewed yet/);
+    expect(text).toMatch(/not reviewed/);
   });
 
   it('leads with what needs the human: unsure and issues first, grouped by route', () => {

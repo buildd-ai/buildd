@@ -103,7 +103,7 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
       </div>
       {w.question ? (
         <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[1px] text-status-warning">
-          ? Waiting on you{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}</span>}
+          ? Needs input{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}</span>}
         </div>
       ) : w.progress != null ? (
         <div className="mt-1.5 flex items-center gap-2.5 font-mono text-[11px] text-text-muted">

@@ -29,7 +29,7 @@ export function StateChip({ label, tone, pulse = false }: { label: string; tone:
 /** A mission's chip label → its tone. */
 export function missionTone(stateLabel: string, status: string): Tone {
   const s = `${stateLabel} ${status}`.toLowerCase();
-  if (/need|waiting on you|question|decision/.test(s)) return 'attention';
+  if (/need|question|decision/.test(s)) return 'attention';
   if (/fail|error|blocked|stalled|budget/.test(s)) return 'bad';
   if (/complete|done|shipped|verified/.test(s)) return 'ok';
   if (/held|paused|queued|archived|draft/.test(s)) return 'idle';
