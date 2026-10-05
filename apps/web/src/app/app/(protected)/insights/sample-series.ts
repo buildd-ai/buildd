@@ -7,10 +7,31 @@
  */
 import { buildFlowSeries, bucketMsFor, windowMsFor, type FlowSeries, type FlowWindow, type FlowWorkerRow } from '@/lib/insights-flow';
 
-export function resolveInsightsQaState(raw: string | string[] | undefined, nodeEnv: string | undefined = process.env.NODE_ENV): 'sample' | null {
+export type InsightsQaState = 'sample' | 'empty' | 'not-admin';
+const QA_STATES: readonly InsightsQaState[] = ['sample', 'empty', 'not-admin'];
+
+/**
+ * `sample`: a populated synthetic window. `empty`: a window with no agent work.
+ * `not-admin`: the card a member without view_team_usage sees. All three exist
+ * so the visual audit can reach states the CI QA account's data can't produce.
+ */
+export function resolveInsightsQaState(raw: string | string[] | undefined, nodeEnv: string | undefined = process.env.NODE_ENV): InsightsQaState | null {
   if (nodeEnv !== 'development') return null;
   const value = Array.isArray(raw) ? raw[0] : raw;
-  return value === 'sample' ? 'sample' : null;
+  return (QA_STATES as readonly string[]).includes(value ?? '') ? (value as InsightsQaState) : null;
+}
+
+/** An empty window, through the real fold. */
+export function emptyFlowSeries(window: FlowWindow, now = Date.now()): FlowSeries {
+  return buildFlowSeries({
+    window: { from: now - windowMsFor(window), to: now },
+    bucketMs: bucketMsFor(window),
+    now,
+    workers: [],
+    releases: [],
+    releaseTasks: [],
+    releaseWorkspaceIds: [],
+  });
 }
 
 const H = 3_600_000;

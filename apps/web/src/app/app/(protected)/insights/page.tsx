@@ -7,7 +7,7 @@ import { can } from '@/lib/permissions';
 import { isFlowWindow, type FlowWindow } from '@/lib/insights-flow';
 import { loadFlowSeries, teamWorkspaceIds } from '@/lib/insights-flow-query';
 import { InsightsClient } from './InsightsClient';
-import { resolveInsightsQaState, sampleFlowSeries } from './sample-series';
+import { emptyFlowSeries, resolveInsightsQaState, sampleFlowSeries } from './sample-series';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,7 +41,8 @@ export default async function InsightsPage({
     );
   }
 
-  if (!(await can({ kind: 'user', userId: user.id }, 'view_team_usage', teamId))) {
+  const qaState = resolveInsightsQaState(state);
+  if (qaState === 'not-admin' || !(await can({ kind: 'user', userId: user.id }, 'view_team_usage', teamId))) {
     return (
       <Shell>
         <div className="card p-4" data-testid="insights-not-allowed">
@@ -52,9 +53,11 @@ export default async function InsightsPage({
     );
   }
 
-  const series = resolveInsightsQaState(state) === 'sample'
+  const series = qaState === 'sample'
     ? { ...sampleFlowSeries(window), truncated: false }
-    : await loadFlowSeries(await teamWorkspaceIds(teamId), window);
+    : qaState === 'empty'
+      ? { ...emptyFlowSeries(window), truncated: false }
+      : await loadFlowSeries(await teamWorkspaceIds(teamId), window);
 
   return <InsightsClient series={series} window={window} />;
 }
