@@ -103,13 +103,19 @@ export function adminCapabilityForRoute(pathname: string, method: string): Token
  * exact check. A scoped token must reach the route and hold an explicit admin
  * capability: `capability` when given, else the route's admin-tier scope. The
  * stored level of a scoped token is never consulted.
+ *
+ * Never true for a per-task token (`taskScope` set), whatever its level: an
+ * orchestration task's admin-level token is confined to its own task's
+ * mission, which no route's generic admin gate checks. A route that lets one
+ * through checks `isOrchestrationTaskToken` and that confinement itself.
  */
 export function hasTokenRouteAdminAccess(
-  token: (ScopedToken & { level: string }) | null | undefined,
+  token: (ScopedToken & { level: string; taskScope?: unknown }) | null | undefined,
   request: RouteRequest,
   capability?: TokenScope,
 ): boolean {
   if (!token) return false;
+  if (token.taskScope) return false;
   if (token.scopes == null) return token.level === 'admin';
   if (!canAccessTokenRoute(token, request)) return false;
   const required = capability ?? adminCapabilityForRoute(new URL(request.url).pathname, request.method);

@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from './api-auth';
-import { isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
+import { canMintAdminTaskToken, isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 
 /**
@@ -10,11 +10,18 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
  * use (see lib/task-token.ts for the list and the invariant).
  *
  * Any other key goes through authenticateApiKey unchanged. A task token
- * resolves to its minting account at `worker` level, never flagged as a host
- * runner, carrying `taskScope`. A route that calls this MUST then confine the
- * request to its own task: `taskScopeAllowsTask` / `taskScopeAllowsWorker` /
- * `taskScopeAllowsWorkspace` / `taskScopeAllowsMission` /
- * `taskScopeAllowsInitiative` (enforced by task-token-routes.test.ts).
+ * resolves to its minting account at the token's level (`worker`, or `admin`
+ * for an orchestration task's token), never flagged as a host runner, with
+ * no scopes and no workspace list, carrying `taskScope`. A route that calls
+ * this MUST then confine the request to its own task: `taskScopeAllowsTask` /
+ * `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
+ * `taskScopeAllowsMission` / `taskScopeAllowsInitiative` /
+ * `taskScopeAllowsMissionTask` (enforced by task-token-routes.test.ts).
+ *
+ * Admin level is not a pass to a route's ordinary admin gate:
+ * `hasTokenRouteAdminAccess` is false for any task token. A route that lets
+ * an orchestration token do an admin write checks `isOrchestrationTaskToken`
+ * itself and confines it to its own task's mission.
  *
  * A token stops authenticating when its minting key is regenerated or the
  * account is deleted: the token is bound to the key hash current at mint time.
@@ -49,14 +56,25 @@ export async function authenticateTaskScopedCaller(
   if (missingTaskTokenScopes(account.scopes).length > 0) return null;
   if (!tokenWorkspaceAllowed(account.workspaceIds, claims.workspaceId)) return null;
   if (account.expiresAt && new Date(account.expiresAt).getTime() <= Date.now()) return null;
+  // An admin token stays admin only while its minting key is: demoting the
+  // key ends the admin tokens it minted rather than quietly downgrading them.
+  if (claims.level === 'admin' && !canMintAdminTaskToken(account)) return null;
   return {
     ...account,
     scopes: null,
     workspaceIds: null,
-    level: 'worker',
+    level: claims.level,
     hostRunner: false,
     taskScope: { taskId: claims.taskId, workspaceId: claims.workspaceId, expiresAt: claims.expiresAt },
   };
+}
+
+/**
+ * An orchestration task's admin-level token. The only kind of task token any
+ * admin write may accept, and then only inside its own task's mission.
+ */
+export function isOrchestrationTaskToken(account: { level?: string | null; taskScope?: TaskScope }): boolean {
+  return !!account.taskScope && account.level === 'admin';
 }
 
 /** True unless the caller is a task token for a different task. */
@@ -157,4 +175,22 @@ export async function taskScopeAllowsWorkerId(
     columns: { taskId: true, accountId: true },
   });
   return !!worker && worker.accountId === account.id && taskScopeAllowsWorker(account, worker);
+}
+
+/**
+ * True unless the caller is a task token and `task` is neither its own task
+ * nor, for an orchestration (admin) token, a task on its own task's mission
+ * in its own workspace. For reading and steering sibling tasks: approving or
+ * rejecting their plans, instructing their workers. A worker-level token
+ * reaches only its own task, exactly as `taskScopeAllowsTask`.
+ */
+export async function taskScopeAllowsMissionTask(
+  account: { level?: string | null; taskScope?: TaskScope },
+  task: { id: string; workspaceId: string | null; missionId: string | null },
+): Promise<boolean> {
+  if (!account.taskScope) return true;
+  if (task.id === account.taskScope.taskId) return true;
+  if (!isOrchestrationTaskToken(account)) return false;
+  if (task.workspaceId !== account.taskScope.workspaceId || !task.missionId) return false;
+  return taskScopeAllowsMission(account, task.missionId);
 }
