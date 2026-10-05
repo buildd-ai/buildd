@@ -457,8 +457,18 @@ when `artifactId` + `artifactTitle` are present. This contract is tested in
 ## 4a. Merge policy — who is allowed to end a PR
 
 The single primitive governing every route to a merge. Resolved by `resolvePolicy`
-from, in precedence order: `task.requiresReview` → `mission.mergePolicy` →
-`workspace.gitConfig.mergePolicy` → legacy `gitConfig` auto-merge flags.
+from, in precedence order: `task.requiresReview` → a task PR based on its mission's
+integration branch (forced `auto-threshold`) → `mission.mergePolicy` →
+`mission.requiresReview` → `workspace.gitConfig.mergePolicy` → the default
+(`auto-threshold`).
+
+The legacy `gitConfig` flags `autoMergePR` / `autoMergeOnGreenCI` are **not** part of
+that chain: migration `0113` converted them to a `mergePolicy` and nothing reads them
+since. The dashboard no longer offers an "Auto-merge on green CI" checkbox (it wrote
+`autoMergeOnGreenCI` and changed nothing); "merge on green CI" is the `auto-threshold`
+tier, set on the workspace merge policy page. The config route ignores the flag if a
+client still sends it, and the PR-create response's `autoMergeEnabled` is derived from
+the resolved policy.
 
 | Tier | Who ends the PR |
 |------|-----------------|

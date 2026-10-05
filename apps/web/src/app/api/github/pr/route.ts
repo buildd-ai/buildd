@@ -306,7 +306,9 @@ export async function POST(req: NextRequest) {
     const mission = worker.task?.missionId
       ? await db.query.missions.findFirst({
           where: eq(missions.id, worker.task.missionId),
-          columns: { workingBranch: true, integrationBranchEnabled: true },
+          // Superset of what the base guard needs: the merge-policy columns let
+          // the response's `autoMergeEnabled` come from resolvePolicy below.
+          columns: RESOLVE_POLICY_MISSION_COLUMNS,
         })
       : null;
     // The same guard object every other door uses (completion auto-detect,
@@ -1210,8 +1212,16 @@ export async function POST(req: NextRequest) {
       console.error('[changeIntent] PR conflict detection failed (non-fatal):', err);
     }
 
-    // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
-    const autoMergeEnabled = !!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR);
+    // Auto-merge intent flag: true when the resolved merge policy lets buildd merge
+    // this PR unattended once CI is green (tier auto-threshold; the safety check
+    // still runs). Derived from resolvePolicy — the same chain the merge gate uses —
+    // never from the legacy autoMergeOnGreenCI / autoMergePR flags, which no gate reads.
+    const autoMergeEnabled = resolvePolicy(
+      workspace as never,
+      mission,
+      { requiresReview: worker.task?.requiresReview ?? false },
+      { baseRef: prData.base?.ref ?? null },
+    ).tier === 'auto-threshold';
 
     // Task PRs based on a mission integration branch have no heartbeat loop to
     // notice them sitting open — request a review now rather than leaving them
