@@ -439,7 +439,7 @@ mock.module('@buildd/core/routing-analytics', () => ({
 }));
 
 mock.module('@/lib/mission-release', () => ({
-  fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
+  fireMissionReleaseIfComplete: mock((...args: unknown[]) => { fanout.push(['fireMissionReleaseIfComplete', ...args]); return Promise.resolve(); }),
 }));
 
 // Default: the integration branch is always usable. Only the multi-repo
@@ -15725,6 +15725,7 @@ describe('PATCH /api/workers/[id] — completion fan-out (characterization)', ()
     // The chat post is a lazy import kicked off before the ledger write; its
     // promise settles later, so it is asserted apart from the ordered list.
     expect(names().filter(n => n !== 'postTaskCompletedEvent')).toEqual([
+      'fireMissionReleaseIfComplete',
       'persistTaskEvidence',
       'handleCriteriaVerificationOutcome',
       'handleProseEvalOutcome',
@@ -15814,5 +15815,218 @@ describe('PATCH /api/workers/[id] — completion fan-out (characterization)', ()
     await patch({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Which region?' } });
     expect(names().filter(n => n === 'recordEvent' || n === 'persistTaskEvidence' || n === 'completeMissionIfVerified')).toEqual(['recordEvent']);
     expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.needs_input', taskId: 'task-1', workerId: WORKER_ID, prompt: 'Which region?' }]);
+  });
+});
+
+// ── Characterization: the completion verdicts (loop, evidence, release) ──────
+// Pins, per outcome, the task writes the PATCH makes, whether the release and
+// the mission release run, and what the completion then fans out to. The
+// completion-policy slots move the loop, evidence and release verdicts behind
+// the composition root; this block must stay green across that move.
+describe('PATCH /api/workers/[id] — completion verdicts (characterization)', () => {
+  const taskSets: any[] = [];
+  const names = () => fanout.map(c => c[0]);
+  const call = (name: string) => fanout.find(c => c[0] === name);
+  const LOOP = { exitCondition: { type: 'command', command: 'bun test' }, maxLoops: 5, backoffMinutes: 0 };
+  const evidence = (exitCode: number) => ({ workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode, outcome: exitCode === 0 ? 'ok' : 'failed' });
+
+  function setup(task: Record<string, unknown> = {}) {
+    fanout.length = 0;
+    taskSets.length = 0;
+    criteriaKinds = { verification: false, prose: false, workerEval: false };
+    missionCompletionError = null;
+    labelMemoryUses = false;
+    mockExecuteRelease.mockReset();
+    mockExecuteRelease.mockImplementation(async (...args: unknown[]) => {
+      fanout.push(['executeRelease', ...args]);
+      return { status: 'skipped', message: 'no release config' } as any;
+    });
+    mockNotify.mockClear();
+    mockNotifySubject.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+      branch: 'feature/test', lastCommitSha: 'abc123', milestones: [], pendingInstructions: null, waitingFor: null,
+      prUrl: null, prNumber: null, prLifecycleStatus: null,
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', outputRequirement: 'none', missionId: 'mission-1',
+      title: 'Fix the cursor', subjectPrNumber: null, context: { note: 'kept' }, startAt: null,
+      loopConfig: null, loopIteration: 0, loopState: null,
+      workspace: { id: 'ws-1', name: 'W', teamId: 'team-1' }, ...task,
+    });
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => { taskSets.push(u); return { where: mock(() => Promise.resolve()) }; }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) })),
+    });
+  }
+  const releaseReturns = (outcome: Record<string, unknown>) => mockExecuteRelease.mockImplementation(async (...args: unknown[]) => {
+    fanout.push(['executeRelease', ...args]);
+    return outcome as any;
+  });
+  const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({
+    method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+  }), { params: mockParams });
+  /** The task-row write that carries the outcome (the first one with a status). */
+  const outcomeSet = () => taskSets.find(u => 'status' in u);
+  const releaseSets = () => taskSets.filter(u => 'releaseResult' in u);
+  const pushTitles = () => fanout.filter(c => c[0] === 'notifyTeam').map(c => (c[3] as any).title);
+
+  it('release success: completed, then the release record, then the mission release, then the terminal fan-out', async () => {
+    setup();
+    const outcome = { status: 'completed', message: 'Released to main', releasePrUrl: 'https://example.test/pr/9', releasePrNumber: 9 };
+    releaseReturns(outcome);
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(call('executeRelease')).toEqual(['executeRelease', { taskId: 'task-1', workerId: WORKER_ID, workspaceId: 'ws-1' }]);
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({ releaseResult: outcome, result: { summary: 'Done.', releaseSummary: 'Released to main' } });
+    expect(releaseSets()[0].status).toBeUndefined();
+    expect(call('fireMissionReleaseIfComplete')).toEqual(['fireMissionReleaseIfComplete', 'ws-1', 'mission-1', 'task-1', WORKER_ID]);
+    expect(names().slice(0, 3)).toEqual(['executeRelease', 'fireMissionReleaseIfComplete', 'persistTaskEvidence']);
+    expect(pushTitles()).toEqual(['Task done']);
+    expect(mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed')).toBeUndefined();
+  });
+
+  it('no release configured: the record is still written and the task stays completed', async () => {
+    setup();
+    const outcome = { status: 'not_configured', message: 'Release: no release config' };
+    releaseReturns(outcome);
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({ releaseResult: outcome, result: { releaseSummary: 'Release: no release config' } });
+    expect(releaseSets()[0].status).toBeUndefined();
+    expect(names()).toContain('fireMissionReleaseIfComplete');
+  });
+
+  it('release failure (CI red): the task flips to failed and an attention alert names the PR', async () => {
+    setup();
+    const outcome = { status: 'failed', message: 'CI red', error: 'CI red on main', releasePrUrl: 'https://example.test/pr/9' };
+    releaseReturns(outcome);
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({ status: 'failed', releaseResult: outcome, result: { releaseSummary: 'CI red' } });
+    expect(mockNotifySubject).toHaveBeenCalledWith({ workspaceId: 'ws-1' }, 'needsAttention');
+    const alert = mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed');
+    expect(alert![0]).toEqual({
+      title: 'Release failed', message: 'CI red on main https://example.test/pr/9', priority: 1,
+      url: 'https://example.test/pr/9', urlTitle: 'Open PR',
+    });
+    expect(names()).toContain('fireMissionReleaseIfComplete');
+    // The terminal fan-out still reads the worker's reported status.
+    expect(names()).toContain('persistTaskEvidence');
+    expect(pushTitles()).toEqual(['Task done']);
+  });
+
+  it('release failure with no PR: the alert links the task', async () => {
+    setup();
+    releaseReturns({ status: 'failed', message: 'No PR found' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    const alert = mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed');
+    expect(alert![0]).toEqual({
+      title: 'Release failed', message: 'No PR found', priority: 1,
+      url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task',
+    });
+  });
+
+  it('release pending CI: the task holds as completed with the release PR recorded on its context', async () => {
+    setup();
+    const outcome = { status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' };
+    releaseReturns(outcome);
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(1);
+    expect(releaseSets()[0]).toMatchObject({
+      releaseResult: outcome,
+      result: { releaseSummary: 'Waiting on CI' },
+      context: { note: 'kept', releasePrPending: true, releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' },
+    });
+    expect(releaseSets()[0].status).toBeUndefined();
+    expect(names()).toContain('fireMissionReleaseIfComplete');
+    expect(mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed')).toBeUndefined();
+  });
+
+  it('a throwing release leaves the task completed with no record; the mission release still runs', async () => {
+    setup();
+    mockExecuteRelease.mockImplementation(async () => { fanout.push(['executeRelease']); throw new Error('github down'); });
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(releaseSets()).toHaveLength(0);
+    expect(names().slice(0, 2)).toEqual(['executeRelease', 'fireMissionReleaseIfComplete']);
+  });
+
+  it('a failed report runs no release and no mission release', async () => {
+    setup({ context: { retryCount: 1 } });
+    await patch({ status: 'failed', error: 'Tests failed' });
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).not.toContain('fireMissionReleaseIfComplete');
+  });
+
+  it('loop satisfied: completed with the loop state, then the release', async () => {
+    setup({ missionId: null, loopConfig: LOOP });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent', verificationEvidence: evidence(0) });
+    expect(outcomeSet()).toMatchObject({ status: 'completed', loopState: 'satisfied', loopIteration: 1 });
+    expect(outcomeSet().result.loopHistory[0]).toMatchObject({ iteration: 0, satisfied: true });
+    expect(names()).toContain('executeRelease');
+    expect(names()).not.toContain('fireMissionReleaseIfComplete');
+    expect(pushTitles()).toEqual(['Task done']);
+  });
+
+  it('loop requeue: pending with history and resume branch; no release, no terminal fan-out, a retry push', async () => {
+    setup({ missionId: null, loopConfig: LOOP });
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    const set = outcomeSet();
+    expect(set).toMatchObject({ status: 'pending', loopState: 'condition_unmet', loopIteration: 1, claimedBy: null });
+    expect(set.context).toMatchObject({ note: 'kept', resumeBranch: 'feature/test', lastCommitSha: 'abc123' });
+    expect(set.context.loopHistory[0]).toMatchObject({ iteration: 0, satisfied: false });
+    expect(set.context.failureContext).toBeDefined();
+    expect(set.result).toBeUndefined();
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).not.toContain('persistTaskEvidence');
+    expect(pushTitles()).toEqual(['Task retrying']);
+  });
+
+  it('loop exhausted: failed with the loop error; no release; the terminal fan-out runs', async () => {
+    setup({ missionId: null, loopConfig: { ...LOOP, maxLoops: 1 } });
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    const set = outcomeSet();
+    expect(set).toMatchObject({ status: 'failed', loopState: 'exhausted', loopIteration: 1 });
+    expect(set.result.error).toBe('Loop condition unmet after 1 attempt(s)');
+    expect(set.result.loopHistory).toHaveLength(1);
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).toContain('persistTaskEvidence');
+    // The push still reads the worker's reported status.
+    expect(pushTitles()).toEqual(['Task done']);
+  });
+
+  it('visual audit with full evidence: completed, and nothing to release', async () => {
+    setup({ roleSlug: 'visual-auditor' });
+    mockLoadVisualAuditEvidence.mockReset();
+    mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+    const res = await patch({ status: 'completed', summary: 'Audited.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    expect(outcomeSet().status).toBe('completed');
+    expect(names()).not.toContain('executeRelease');
+    expect(names()).not.toContain('fireMissionReleaseIfComplete');
+  });
+
+  it('visual audit missing evidence: refused with the evidence hint, and no task write', async () => {
+    setup({ roleSlug: 'visual-auditor' });
+    mockLoadVisualAuditEvidence.mockReset();
+    mockLoadVisualAuditEvidence.mockResolvedValue({ ok: false, missing: ['/app × mobile'] } as any);
+    const res = await patch({ status: 'completed', summary: 'Audited.', summarySource: 'agent' });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data).toMatchObject({ hint: 'visual_evidence', gate: 'output_requirement', error: 'Visual audit evidence incomplete. Missing: /app × mobile' });
+    expect(outcomeSet()).toBeUndefined();
+    expect(names()).not.toContain('executeRelease');
+    mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
   });
 });

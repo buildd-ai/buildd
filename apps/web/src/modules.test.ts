@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES } from './modules';
+import { COMPLETION_SLOTS } from './lib/completion-policy';
 import { moduleOf } from '../../../scripts/module-boundaries';
 
 /**
@@ -46,6 +47,11 @@ describe('composition root', () => {
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
     expect(byEvent('pr.merged')).toEqual(['notifications:ledger-pr-merged']);
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed']);
+  });
+
+  it('completion policies: exactly one per core-declared slot, in core\'s order', () => {
+    expect(COMPLETION_SLOTS).toEqual(['evidence', 'loop', 'release']);
+    expect(Object.keys(COMPLETION_POLICIES).sort()).toEqual([...COMPLETION_SLOTS].sort());
   });
 
   it('labels are unique, so a page names exactly one step', () => {
