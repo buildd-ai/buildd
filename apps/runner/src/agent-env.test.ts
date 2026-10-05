@@ -26,6 +26,14 @@ describe('agent env allowlist', () => {
     const env = buildAgentBaseEnv({ HOME: '/home/bun', OPENAI_BASE_URL: 'https://my-proxy.example/v1' }, NO_BROWSER);
     expect(env.OPENAI_BASE_URL).toBe('https://my-proxy.example/v1');
   });
+
+  // run-once.ts defaults this so a pnpm the agent runs itself (or a
+  // postinstall/husky hook) shares the warm-repo dependency cache's store.
+  it('passes npm_config_store_dir through, so the agent\'s own pnpm uses the warmed store', () => {
+    expect(RUNNER_ENV_PASSTHROUGH.has('npm_config_store_dir')).toBe(true);
+    const env = buildAgentBaseEnv({ HOME: '/home/bun', npm_config_store_dir: '/home/bun/.bun/install/cache/pnpm-store' }, NO_BROWSER);
+    expect(env.npm_config_store_dir).toBe('/home/bun/.bun/install/cache/pnpm-store');
+  });
 });
 
 describe('agent env: OpenTelemetry (cloud-runner sets these on the container)', () => {

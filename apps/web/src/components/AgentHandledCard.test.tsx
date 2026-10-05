@@ -22,12 +22,34 @@ describe('AgentHandledCard', () => {
   it('shows the fix attempt and links to it, with no merge affordance', () => {
     const html = renderToStaticMarkup(
       <AgentHandledCard
-        item={item({ ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' } })}
+        item={item({ ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' } })}
       />,
     );
     expect(html).toContain('Fixing CI · attempt 2 of 3');
     expect(html).toContain('/app/tasks/fix-1');
     expect(html).toContain('Health analytics restructure');
+    expect(html).not.toContain('Merge');
+  });
+
+  it('names the actual reviewer-retry fix task, not a generic "view fix attempt"', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard
+        item={item({
+          chip: 'FIXING_REVIEW',
+          ciGate: {
+            kind: 'fixing',
+            label: 'Fix 1 of 3 queued',
+            taskId: 'fix-retry-1',
+            taskTitle: '[reviewer retry #1] Health tab restructure',
+            fixKind: 'review',
+          },
+        })}
+      />,
+    );
+    expect(html).toContain('Fix 1 of 3 queued');
+    expect(html).toContain('/app/tasks/fix-retry-1');
+    expect(html).toContain('[reviewer retry #1] Health tab restructure');
+    expect(html).not.toContain('View fix attempt');
     expect(html).not.toContain('Merge');
   });
 

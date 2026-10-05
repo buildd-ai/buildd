@@ -7,6 +7,7 @@ import { isValidTimezone } from '@buildd/core/timezone';
 import { getTeamTimezoneSetting } from './team-timezone';
 import { isUuid } from './uuid';
 import { accountReachesWorkspace } from './workspace-reach';
+import { teamIdsWithAdminTier, type TeamScopeCaller } from './permissions';
 
 /**
  * Builds the two scope subqueries below without a db handle, so the predicate
@@ -115,56 +116,37 @@ export const verifyAccountWorkspaceAccess = cache(async (
   return accountReachesWorkspace({ teamId: '' }, { teamId: workspace.teamId, accessMode: null }, link, permission);
 });
 
-const ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
+export type { TeamScopeCaller };
 
 /**
  * Team IDs in which the user holds admin or owner. Includes the user's
  * personal team (slug = personal-{userId}), which they own by definition —
  * mirrors the getUserTeamIds fallback for accounts missing a teamMembers row.
  *
- * Cached per-request via React cache().
+ * Prefer `teamIdsWhere(caller, '<permission>')` from permissions.ts.
  */
-export const getUserAdminTeamIds = cache(async (userId: string): Promise<string[]> => {
-  const [memberships, personalTeam] = await Promise.all([
-    db.query.teamMembers.findMany({
-      where: eq(teamMembers.userId, userId),
-      columns: { teamId: true, role: true },
-    }),
-    db.query.teams.findFirst({
-      where: eq(teams.slug, `personal-${userId}`),
-      columns: { id: true },
-    }),
-  ]);
-  const ids = new Set(memberships.filter(m => ADMIN_ROLES.has(m.role)).map(m => m.teamId));
-  if (personalTeam) ids.add(personalTeam.id);
-  return [...ids];
-});
-
-/**
- * The principal behind a request, in the shape the team-scope helpers need.
- * A session resolves to its user; an API key resolves to its account, whose
- * reach is its own team.
- */
-export type TeamScopeCaller =
-  | { kind: 'user'; userId: string }
-  | { kind: 'account'; accountId: string; teamId: string; level: string | null | undefined };
+export async function getUserAdminTeamIds(userId: string): Promise<string[]> {
+  return teamIdsWithAdminTier({ kind: 'user', userId });
+}
 
 /**
  * Teams the caller may perform admin-tier actions in: for a session, teams
  * where the user is admin/owner; for an API key, the key's own team when the
  * key is admin level, otherwise none.
+ *
+ * @deprecated Use `teamIdsWhere(caller, '<permission>')` from permissions.ts.
  */
 export async function getCallerAdminTeamIds(caller: TeamScopeCaller): Promise<string[]> {
-  if (caller.kind === 'account') {
-    return caller.level === 'admin' ? [caller.teamId] : [];
-  }
-  return getUserAdminTeamIds(caller.userId);
+  return teamIdsWithAdminTier(caller);
 }
 
-/** Whether the caller may perform admin-tier actions in `teamId`. */
+/**
+ * Whether the caller may perform admin-tier actions in `teamId`.
+ *
+ * @deprecated Use `can(caller, '<permission>', teamId)` from permissions.ts.
+ */
 export async function canCallerAdminTeam(caller: TeamScopeCaller, teamId: string): Promise<boolean> {
-  const ids = await getCallerAdminTeamIds(caller);
-  return ids.includes(teamId);
+  return (await teamIdsWithAdminTier(caller)).includes(teamId);
 }
 
 /**

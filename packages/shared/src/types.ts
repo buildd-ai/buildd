@@ -877,11 +877,8 @@ export interface QuestionWhere {
   file?: string;
 }
 
-/** Claim-time marker for the question-gate experiment (see ClaimTasksResponse). */
+/** Claim-time capability marker for the question gate (see ClaimTasksResponse). */
 export interface QuestionGateMarker {
-  experimentId: string;
-  policyVersion: number;
-  arm: 'control' | 'treatment';
   /** Pushbacks per worker before a question is sent as-is. */
   maxPushbacks: number;
 }
@@ -1451,6 +1448,8 @@ export type ClaimTaskExclusionCode =
   | 'role_mismatch'
   | 'runner_cooldown'
   | 'workspace_cap'
+  /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
+  | 'workspace_executor'
   | 'path_overlap'
   /** Codex task and this caller can run neither Codex nor its credential. */
   | 'capability_mismatch'
@@ -1511,6 +1510,17 @@ export interface ClaimDiagnostics {
     routing_paused?: number;
     /** Task already had a live worker when the atomic insert ran (dup guard). */
     duplicate_worker?: number;
+    /**
+     * Retry attempt cancelled instead of claimed: another fix attempt in its
+     * retry family is already open (one open retry per subject).
+     */
+    sibling_retry_open?: number;
+    /**
+     * Claim planner in `apply` mode ordered this task behind a picked, in-flight
+     * or open-PR node it would collide with. Replaces the per-poll
+     * path_overlap / advisory_manifest deferral for that task.
+     */
+    ordered_behind?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
@@ -1581,6 +1591,18 @@ export interface PendingCredentialRefresh {
   secretId: string;
   purpose: 'claude_credential' | 'codex_credential';
   expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
+}
+
+/**
+ * GET /api/workers/[id]/prompt-bundles — the claim response's role and skill
+ * payload, resolved again for a session resumed by a runner that no longer
+ * holds it (restart, park → reattach). Each field is absent when the task has
+ * nothing of that kind.
+ */
+export interface WorkerPromptBundlesResponse {
+  skillBundles?: SkillBundle[];
+  roleConfig?: RoleConfig;
+  roleInstructions?: RoleInstructions;
 }
 
 export interface ClaimTasksResponse {
@@ -3367,7 +3389,13 @@ export interface ManifestCoverageCounts {
   /** Fraction in [0, 1]; null for an empty population. */
   concreteShare: number | null;
 }
+export interface CoordinationDecisionCapability {
+  workspaceId: string;
+  capability: string;
+  status: 'enabled' | 'capability_disabled';
+}
 export interface ManifestCoverageStats extends CoordinationMetricFilters, ManifestCoverageCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   groups: Array<ManifestCoverageCounts & { workspaceId: string; missionId: string | null; kind: string | null }>;
 }
 export interface PathClaimCallCounts {
@@ -3377,6 +3405,7 @@ export interface PathClaimCallCounts {
   rejected: number;
 }
 export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCallCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   calls: number;
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
@@ -3384,6 +3413,55 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+}
+/**
+ * Aggregate counts over the orchestration decision ledger
+ * (`orchestration_decisions`, `orchestration_manifest_predictions`) — the
+ * DB-free answer to "is this decision shadow collecting evidence?".
+ * Served by `GET /api/stats/coordination?metric=orchestrationDecisions`.
+ */
+export interface OrchestrationDecisionCounts {
+  total: number;
+  applied: number;
+  suggested: number;
+  fallback: number;
+  /** Rows whose task has an `orchestration_touch_labels` row (an outcome label). */
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  capability: string;
+  decisionId: string;
+  fingerprint: string;
+  candidatePolicyVersion: string;
+  experimentArm: string;
+  mode: string;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+export interface OrchestrationPredictionCounts {
+  total: number;
+  complete: number;
+  unknownScope: number;
+  allApplied: number;
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
+  decisionCapabilities: CoordinationDecisionCapability[];
+  decisions: OrchestrationDecisionCounts & {
+    firstAt: string | null;
+    lastAt: string | null;
+    byGroup: OrchestrationDecisionGroup[];
+    /** `day` is a UTC calendar date (YYYY-MM-DD). */
+    byDay: Array<OrchestrationDecisionCounts & { day: string; capability: string }>;
+    byReason: Array<{ capability: string; status: string; reason: string | null; total: number }>;
+  };
+  manifestPredictions: OrchestrationPredictionCounts & {
+    byDay: Array<OrchestrationPredictionCounts & { day: string }>;
+    byStopReason: Array<{ stopReason: string; total: number }>;
+  };
+  coverage: { note: string };
 }
 
 // ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
@@ -3445,4 +3523,48 @@ export interface WorkspaceReadinessReport {
   skill: 'workspace-onboarding';
   /** The git tree response was truncated. */
   truncated: boolean;
+}
+
+/** One benchmark set's scores in a prompt eval run. Never carries prompt text. */
+export interface PromptEvalResultSummary {
+  benchmarkSet: string;
+  promptId: string;
+  promptSource: 'private' | 'public default';
+  /** Row version; null for a public default. */
+  promptRowVersion: number | null;
+  /** First 12 hex of the sha256 of the text scored. */
+  promptHash: string;
+  promptVersion: string;
+  model: string | null;
+  status: 'scored' | 'dry_run' | 'no_cases';
+  cases: number;
+  accuracy: number | null;
+  baselineAccuracy: number | null;
+  coverageAt90: number | null;
+  accuracyAt90: number | null;
+  errors: number;
+  notRun: number;
+  costUsd: number | null;
+}
+
+/** One run in `GET /api/admin/prompt-evals`. */
+export interface PromptEvalRunSummary {
+  id: string;
+  teamId: string | null;
+  trigger: 'push' | 'cron' | 'manual';
+  status: 'running' | 'passed' | 'failed' | 'refused' | 'skipped';
+  promptsRef: string | null;
+  evalModel: string | null;
+  /** The model the team's live decisions use. */
+  prodModel: string | null;
+  modelMismatch: boolean;
+  /** Present when `modelMismatch`: the scores do not predict production behaviour. */
+  modelMismatchNote?: string;
+  dryRun: boolean;
+  loadedPrompts: number | null;
+  costUsd: number | null;
+  problems: string[] | null;
+  startedAt: string;
+  finishedAt: string | null;
+  results: PromptEvalResultSummary[];
 }

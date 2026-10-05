@@ -132,7 +132,8 @@ jobs:
         run: bun install
 
       - name: Install Playwright + Chromium
-        run: bunx playwright install chromium --with-deps
+        # The repo's pinned Playwright, same as the runner (playwright-pin.ts).
+        run: bun run --cwd apps/runner browser:install --with-deps
 
       # --- Ephemeral Neon branch cloned off PROD ---
       # Copy-on-write off the production branch so the app sees real-shaped data.

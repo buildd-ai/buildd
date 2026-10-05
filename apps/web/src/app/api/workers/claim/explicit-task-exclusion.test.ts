@@ -126,6 +126,7 @@ describe('classifyExplicitTaskExclusion', () => {
       ['role', 'role_mismatch'],
       ['runnerCooldown', 'runner_cooldown'],
       ['workspaceCap', 'workspace_cap'],
+      ['workspaceExecutor', 'workspace_executor'],
     ];
     for (const [gate, code] of cases) {
       expect(classifyExplicitTaskExclusion(probe({ gates: { [gate]: false } }), NOW).code).toBe(code as any);
@@ -138,6 +139,13 @@ describe('classifyExplicitTaskExclusion', () => {
     expect(r.detail).toContain('This mission runs in a local session');
     expect(r.detail).toContain('claim_task {taskId}');
     expect(r.detail).toMatch(/Start with override/);
+  });
+
+  it('a workspace whose work runs elsewhere → workspace_executor, naming the setting and the override', () => {
+    const r = classifyExplicitTaskExclusion(probe({ gates: { workspaceExecutor: false } }), NOW);
+    expect(r.code).toBe('workspace_executor');
+    expect(r.detail).toContain('gitConfig.executor');
+    expect(r.detail).toContain('force: true');
   });
 
   it('a held mission outranks the local executor (held is the pause)', () => {

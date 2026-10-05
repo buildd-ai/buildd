@@ -55,6 +55,7 @@ import {
   parseMetricLine,
   parsePhaseLine,
   parseRepoSourceLine,
+  parseWarmUploadLine,
   recordMetric,
   recordPhase,
   runLabel,
@@ -548,7 +549,12 @@ export class TaskSupervisor {
         return;
       }
       const source = parseRepoSourceLine(line);
-      if (source) this.patchTimings({ repoSource: source });
+      if (source) {
+        this.patchTimings({ repoSource: source });
+        return;
+      }
+      const warmUpload = parseWarmUploadLine(line);
+      if (warmUpload) this.patchTimings({ warmUpload });
     };
     try {
       for (;;) {

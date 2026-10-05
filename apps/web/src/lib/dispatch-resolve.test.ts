@@ -259,13 +259,13 @@ describe('parity: Dispatch transport outcome equals the in-app chain (AC-10…AC
 });
 
 describe('known, intended differences', () => {
-  it('a future startAt: in-app skips; resolve answers reschedule to the start time', async () => {
+  it('a future startAt: resolve skips like in-app (the start_at row delivers it), so the webhook fires once', async () => {
     const startAt = new Date(Date.now() + 3_600_000);
     const c: Case = { name: 'deferred', task: { startAt }, workspace: { webhookConfig: WEBHOOK } };
     expect((await inAppOutcome(c)).closed).toBe('skipped:start_at_future');
     seed(c);
     const res = await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, testDeps(c));
-    expect(res.body).toEqual({ decision: 'reschedule', notBefore: startAt.toISOString() });
+    expect(res.body).toEqual({ decision: 'skip', why: 'start_at_future' });
     // The relayed runner wake skips, as in-app does: the claim would refuse it.
     expect((await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake') }, testDeps(c))).body)
       .toEqual({ outcome: 'skipped', why: 'start_at_future' });

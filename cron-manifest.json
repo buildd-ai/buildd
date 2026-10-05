@@ -3,6 +3,13 @@
   "timezone": "America/New_York",
   "jobs": [
     {
+      "$comment": "Orchestration shadow readout. Daily on the hour, inside the wake window the schedules tick already opens. Grades a trailing 30-day window with the last 7 days held as the later window, only for teams opting in to orchestration_manifest or orchestration_claim. Upserts a private workspace aggregate and posts a deduped eligibility advisory; promotion remains a reviewed, committed policy entry. No opted-in team -> one cheap query.",
+      "title": "Buildd: Orchestration Readout",
+      "path": "/api/cron/orchestration-readout",
+      "schedule": "0 11 * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Mission/task schedule tick. Hourly, on the hour, all 24 hours. Cadence floor is the finest ENABLED task_schedules row: every one is now hourly-or-coarser, so */30 bought nothing and woke Neon 48x/day instead of 24x. Hour field MUST stay `*` even though nightly is otherwise off \u2014 an hour range here is what silently starved every schedule for 12h a night, and an enabled schedule fires at 06:00. Before making this coarser than a row's cadence, check: isOverdue() allows only interval*2 before flagging a schedule late.",
       "title": "Buildd: Schedules Tick",
       "path": "/api/cron/schedules",
@@ -48,6 +55,13 @@
       "$comment": "Serverless fallback for full knowledge-ingest jobs no runner will take (apps/web/src/lib/knowledge-full-ingest-fallback.ts). Takes a queued full job once it is stalled (no runner offered a checkout for an hour) and reads the repo through the GitHub tree/blob API at the job's sha, a bounded slice per tick, resuming from a cursor stored on the job. Hourly at :00, inside the wake window the schedules tick already opens: a full index that lands within hours instead of never is the whole point, minutes buy nothing. Nothing stalled -> one cheap query.",
       "title": "Buildd: Knowledge Ingest Fallback",
       "path": "/api/cron/knowledge-ingest-fallback",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Post-session quality loop (apps/web/src/lib/post-session-loop.ts): collect and triage recently terminal workers, then analyse the selected runs, record findings and apply the action policy per workspace mode (off / shadow / propose, absent = shadow). Out of band: nothing in completion, review, merge or release waits on it. Hourly at :00, inside the wake window the schedules tick already opens: findings are read in aggregate, not within minutes of a session. Each pass is capped by a time budget and per-stage limits; leftovers are reported as deferred and taken next hour. Nothing terminal since the last pass -> a few cheap queries.",
+      "title": "Buildd: Post-Session Quality",
+      "path": "/api/cron/post-session-quality",
       "schedule": "0 * * * *",
       "method": "GET"
     },
@@ -211,6 +225,13 @@
       "path": "/api/cron/memory-digest-guardrail",
       "schedule": "5 9 * * *",
       "method": "POST"
+    },
+    {
+      "$comment": "Prompt eval (apps/web/src/lib/prompt-evals/run.ts): scores the private decision prompts, at the ref the deploy seed reads, against their labelled cases, on the operator team's own decision key. Weekly, Monday at 07:00, on the hour inside the wake window the schedules tick already opens; a push to the prompts repo and the admin route also run it, so a tighter cadence buys nothing. No PROMPTS_REPO -> a skipped no-op with no DB write.",
+      "title": "Buildd: Prompt Evals",
+      "path": "/api/cron/prompt-evals",
+      "schedule": "0 7 * * 1",
+      "method": "GET"
     }
   ]
 }

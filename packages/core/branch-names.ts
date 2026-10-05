@@ -33,9 +33,13 @@ export interface TaskBranchNameInput {
   /** `workspaces.gitConfig`, or null/undefined for repo defaults. */
   gitConfig?: BranchNameGitConfig | null;
   /**
-   * A shared branch all of a mission's tasks push to, read from
-   * `context.headBranch` (seeded from `missions.workingBranch`). When present
-   * it wins outright: the task is not given a branch of its own.
+   * A shared branch this task's worker should push to instead of getting a
+   * generated one, read from `context.headBranch`. Usually seeded from
+   * `missions.workingBranch` for a mission's shared integration branch, but
+   * the field itself is generic: `create_task`'s `headBranch` param writes
+   * the same key directly for a one-off task that must land on an existing
+   * branch. When present it wins outright: the task is not given a branch of
+   * its own.
    */
   sharedHeadBranch?: unknown;
 }

@@ -32,7 +32,7 @@ describe('missionInsight', () => {
   it('everything landed but not complete: disagrees', () => {
     const i = missionInsight(state({ landed: { done: 4, total: 4 }, goal: { passed: 3, total: 3 }, live: 0 }));
     expect(i?.disagrees).toBe(true);
-    expect(i?.text).toBe('Everything landed, but it is not marked complete yet.');
+    expect(i?.text).toBe('Everything landed. Not marked complete.');
   });
 
   it('something waits on the viewer: disagrees (copper), counts it', () => {
@@ -42,7 +42,7 @@ describe('missionInsight', () => {
 
   it('agreeing states: a plain line, no copper square', () => {
     expect(missionInsight(state())).toEqual({ text: '1 agent at work, 1 of 4 landed.', disagrees: false });
-    expect(missionInsight(state({ planning: true, landed: { done: 0, total: 0 } }))).toEqual({ text: 'Still planning. No tasks yet.', disagrees: false });
+    expect(missionInsight(state({ planning: true, landed: { done: 0, total: 0 } }))).toEqual({ text: 'Planning. No tasks.', disagrees: false });
     expect(missionInsight(state({ complete: true, landed: { done: 4, total: 4 }, goal: { passed: 3, total: 3 }, live: 0 })))
       .toEqual({ text: 'Done, and every goal criterion checks out.', disagrees: false });
     expect(missionInsight(state({ live: 0 }))).toEqual({ text: 'Nothing running right now. 1 of 4 landed.', disagrees: false });

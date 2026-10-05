@@ -692,3 +692,42 @@ describe('GET /api/github/pr/review — dashboard session', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('per-task token', () => {
+  const SCOPED = { ...ACCOUNT, level: 'worker', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const owner = (taskId: string) => ({ id: 'w-1', taskId, branch: 'buildd/abc', prUrl: OPEN_PR.html_url, prLifecycleStatus: 'pr_open', mergedAt: null });
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReturnValue(SCOPED);
+  });
+
+  it('requests review of its own task’s PR', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-1'));
+    mockWorkersFindFirst.mockReturnValue({
+      ...owner('task-1'),
+      task: { id: 'task-1', title: 'Original work', description: null, backend: 'claude', missionId: null, pathManifest: null, context: {} },
+    });
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(201);
+  });
+
+  it('refuses review of another task’s PR, without creating a reviewer', async () => {
+    mockFindPrOwningWorker.mockReturnValue(owner('task-2'));
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses review of a PR buildd does not own, rather than adopting it', async () => {
+    const res = await POST(post({ prNumber: 42 }));
+    expect(res.status).toBe(403);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('sees only its own workspace, even when the team has others', async () => {
+    mockGetTeamWorkspaceIds.mockReturnValue(['ws-1', 'ws-2']);
+    mockResolveWorkspace.mockReturnValue({ ...WORKSPACE, id: 'ws-2', name: 'other' });
+    const res = await GET(get('?prNumber=42&workspaceId=other'));
+    expect(res.status).toBe(404);
+  });
+});

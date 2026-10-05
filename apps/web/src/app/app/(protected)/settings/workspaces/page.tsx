@@ -42,7 +42,7 @@ export default async function WorkspacesSettingsPage() {
         </div>
         {rows.length === 0 ? (
           <div className="card p-6 text-center">
-            <p className="text-sm text-text-secondary mb-3">No workspaces yet.</p>
+            <p className="text-sm text-text-secondary mb-3">No workspaces.</p>
             <Link href="/app/workspaces/new" className="btn btn-primary">Create a workspace</Link>
           </div>
         ) : (

@@ -226,6 +226,7 @@ DELETE FROM oauth_codes;
 DELETE FROM oauth_refresh_tokens;
 DELETE FROM oauth_clients;
 DELETE FROM system_cache;
+DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
@@ -236,13 +237,20 @@ DELETE FROM notification_deliveries;
 DELETE FROM subscriptions;
 DELETE FROM action_queue_snoozes;
 DELETE FROM task_area_prediction_events;
+-- Post-session quality ledgers: findings carry analyser prose, runs carry
+-- collection error text.
+DELETE FROM post_session_findings;
+DELETE FROM post_session_runs;
 -- Orchestration decision ledger: touch labels carry file paths.
 DELETE FROM orchestration_manifest_predictions;
 DELETE FROM orchestration_touch_labels;
 DELETE FROM orchestration_decisions;
+DELETE FROM orchestration_overlap_answers;
 -- Model decision ledger: reasons can be prose and human overrides free-form.
 DELETE FROM decision_outcomes;
 DELETE FROM decision_challenger_runs;
+DELETE FROM prompt_eval_results;
+DELETE FROM prompt_eval_runs;
 DELETE FROM decision_records;
 DELETE FROM review_feedback;
 DELETE FROM spec_discrepancies;
@@ -553,6 +561,10 @@ UPDATE surface_reservations SET
   surface = pg_temp.qa_hash('path/', surface),
   repo_full_name = pg_temp.qa_hash('org-1/repo-', repo_full_name),
   base_ref = pg_temp.qa_branch(base_ref);
+
+UPDATE dependency_releases SET
+  base_branch = pg_temp.qa_branch(base_branch),
+  revoked_reason = pg_temp.qa_text(revoked_reason);
 
 UPDATE path_claims SET
   path = pg_temp.qa_hash('path/', path);

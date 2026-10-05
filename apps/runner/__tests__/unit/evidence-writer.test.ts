@@ -498,6 +498,25 @@ describe('secret channel coverage', () => {
     expect(buildWorkerSecretValues(undefined, { mcpSecrets: { A: '' } })).toEqual([]);
   });
 
+  // Prompt text is not a credential, but it must never be echoed into evidence
+  // or a public view: a skill body or role persona the agent cats out (or a
+  // failing command prints) is redacted like one.
+  test('skill bodies and the role persona are redacted from evidence', () => {
+    expect(CLAIM_FIELD_SECRET_CLASSIFICATION.skillBundles).toBe('secret');
+    expect(CLAIM_FIELD_SECRET_CLASSIFICATION.roleInstructions).toBe('secret');
+    const skill = '---\nname: demo\ndescription: d\n---\nPrivate skill body that must not leak.';
+    const values = buildWorkerSecretValues(undefined, {
+      skillBundles: [{ slug: 'demo', content: skill }],
+      roleInstructions: { slug: 'builder', content: 'You are the private persona text.' },
+      roleBundle: { claudeMd: 'Private role CLAUDE.md text.', skills: [{ slug: 'rs', content: 'Private role skill text.' }] },
+    }).map(v => v.value);
+    expect(values).toContain(skill);
+    expect(values).toContain('Private skill body that must not leak.');
+    expect(values).toContain('You are the private persona text.');
+    expect(values).toContain('Private role CLAUDE.md text.');
+    expect(values).toContain('Private role skill text.');
+  });
+
   test('every field of the runner claim payload is classified (a new secret channel fails here)', () => {
     // Parse the claim payload type literal from startFromClaim in workers.ts.
     const src = readFileSync(join(import.meta.dir, '../../src/workers.ts'), 'utf8');
@@ -546,6 +565,8 @@ describe('secret channel coverage', () => {
         roleEnvSecrets: { X: `seed-${field}` },
         codexCredential: { accessToken: `seed-${field}`, expiresAt: null },
         modelEndpoint: { kind: 'gateway', baseUrl: 'https://proxy.example', authToken: `seed-${field}`, authHeader: 'authorization', models: {} },
+        roleInstructions: { slug: 'builder', name: 'Builder', content: `seed-${field}` },
+        skillBundles: [{ slug: 'demo', name: 'Demo', content: `seed-${field}` }],
       };
       const worker = { [field]: seeded[field] ?? `seed-${field}` };
       const values = buildWorkerSecretValues(undefined, worker as any).map(v => v.value);

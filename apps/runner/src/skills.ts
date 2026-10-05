@@ -1,12 +1,29 @@
-import { createHash } from 'crypto';
-import { mkdir, writeFile, readFile, chmod } from 'fs/promises';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
+import { mkdir, writeFile, chmod } from 'fs/promises';
+import { join, dirname, resolve, sep } from 'path';
 import type { SkillBundleFile } from '@buildd/shared';
+import { claimPromptDir, isForeignDir } from './session-prompt-files.js';
+
+export interface SyncSkillTarget {
+  /** The session cwd. The skill lands in `<sessionCwd>/.claude/skills/<slug>/`. */
+  sessionCwd: string;
+  /** Owner recorded in the session manifest; cleanup removes only its own dirs. */
+  workerId: string;
+}
+
+export interface SyncSkillResult {
+  path: string;
+  /** Set when the repo already ships a skill at that path; it is left untouched. */
+  skipped?: 'exists';
+}
 
 /**
- * Write a skill bundle to ~/.claude/skills/<slug>/ for native SDK discovery.
- * Idempotent — skips if hash matches what's already on disk.
+ * Write a skill bundle into the session cwd's `.claude/skills/<slug>/`, where
+ * the SDK discovers it through the `project` setting source.
+ *
+ * Per session, never cached: the directory is recorded in the worker's session
+ * manifest and removed when the session ends (see session-prompt-files.ts). It
+ * is never written to the user's own `~/.claude/skills`. A `.gitignore` of `*`
+ * keeps it out of the agent's commits.
  */
 export async function syncSkillToLocal(bundle: {
   slug: string;
@@ -14,21 +31,20 @@ export async function syncSkillToLocal(bundle: {
   content: string;
   contentHash?: string;
   files?: SkillBundleFile[];
-}): Promise<void> {
-  const skillDir = join(homedir(), '.claude', 'skills', bundle.slug);
-  const hashFile = join(skillDir, '.buildd-hash');
-  const contentHash = bundle.contentHash || createHash('sha256').update(bundle.content).digest('hex');
-
-  // Skip if already up to date
-  try {
-    const currentHash = await readFile(hashFile, 'utf-8');
-    if (currentHash.trim() === contentHash) return;
-  } catch {
-    // Hash file doesn't exist — proceed with sync
+}, target: SyncSkillTarget): Promise<SyncSkillResult> {
+  const skillsRoot = join(target.sessionCwd, '.claude', 'skills');
+  const skillDir = join(skillsRoot, bundle.slug);
+  if (resolve(skillDir) === resolve(skillsRoot) || !resolve(skillDir).startsWith(resolve(skillsRoot) + sep)) {
+    throw new Error(`Invalid skill slug: ${bundle.slug}`);
   }
 
-  // Ensure directory
-  await mkdir(skillDir, { recursive: true });
+  // The repo already carries a skill of this name (tracked content): keep it.
+  // Overwriting would put a modification into the agent's diff.
+  if (isForeignDir(target.workerId, skillDir)) return { path: skillDir, skipped: 'exists' };
+
+  // Record + mark BEFORE the text lands, so a crash mid-write still leaves a
+  // path the next start's sweep removes.
+  claimPromptDir(target.workerId, skillDir);
 
   // Ensure SKILL.md has proper frontmatter for SDK discovery
   const content = ensureFrontmatter(bundle.content, bundle.slug, bundle.name);
@@ -37,7 +53,8 @@ export async function syncSkillToLocal(bundle: {
   // Write supporting files
   if (bundle.files) {
     for (const file of bundle.files) {
-      const filePath = join(skillDir, file.path);
+      const filePath = resolve(skillDir, file.path);
+      if (!filePath.startsWith(resolve(skillDir) + sep)) continue;
       await mkdir(dirname(filePath), { recursive: true });
       const data = file.encoding === 'base64'
         ? Buffer.from(file.content, 'base64')
@@ -49,8 +66,7 @@ export async function syncSkillToLocal(bundle: {
     }
   }
 
-  // Store hash
-  await writeFile(hashFile, contentHash);
+  return { path: skillDir };
 }
 
 /**
@@ -58,7 +74,7 @@ export async function syncSkillToLocal(bundle: {
  * The SDK requires frontmatter for skill discovery.
  * name must match slug for Skill(slug) allowedTools scoping.
  */
-function ensureFrontmatter(content: string, slug: string, displayName: string): string {
+export function ensureFrontmatter(content: string, slug: string, displayName: string): string {
   if (content.startsWith('---')) {
     // Has frontmatter — verify name matches slug
     const endIdx = content.indexOf('---', 3);

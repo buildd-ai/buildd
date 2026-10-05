@@ -39,7 +39,8 @@ export type ExplicitTaskGateName =
   | 'runnerPreference'
   | 'role'
   | 'runnerCooldown'
-  | 'workspaceCap';
+  | 'workspaceCap'
+  | 'workspaceExecutor';
 
 export type ExplicitTaskGates = Partial<Record<ExplicitTaskGateName, SQL>>;
 
@@ -73,6 +74,7 @@ const GATE_ORDER: Array<[ExplicitTaskGateName, ClaimTaskExclusionCode, string]> 
   ['role', 'role_mismatch', 'The task\'s role needs an explicit skill match this caller does not advertise.'],
   ['runnerCooldown', 'runner_cooldown', 'A worker from this runner failed on this task in the last minute; the per-runner cooldown is in effect. Retry in a minute.'],
   ['workspaceCap', 'workspace_cap', `The workspace is at its concurrent-task cap (active workers on its other tasks). ${FORCE_HINT}`],
+  ['workspaceExecutor', 'workspace_executor', `The workspace runs its work on a different executor (cloud or host, set by gitConfig.executor or derived from its cloud dispatch webhook) than this caller. Change it on the workspace config page, or an admin can claim it anyway with claim_task force: true.`],
 ];
 
 function toDate(v: Date | string | null): Date | null {
@@ -226,13 +228,14 @@ export async function diagnoseExplicitTaskExclusion(opts: {
 }
 
 /** Force-claim audit names for the SQL gates a force claim lifts. */
-export type ForcedGateName = 'deps' | 'missionHeld' | 'missionLocal' | 'subject' | 'workspaceCap' | 'startAt';
+export type ForcedGateName = 'deps' | 'missionHeld' | 'missionLocal' | 'subject' | 'workspaceCap' | 'workspaceExecutor' | 'startAt';
 const FORCED_GATE_CODES: Record<ForcedGateName, ClaimTaskExclusionCode> = {
   deps: 'deps_blocked',
   missionHeld: 'mission_held',
   missionLocal: 'mission_local',
   subject: 'subject_dead',
   workspaceCap: 'workspace_cap',
+  workspaceExecutor: 'workspace_executor',
   startAt: 'deferred',
 };
 

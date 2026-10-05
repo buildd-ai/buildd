@@ -35,8 +35,55 @@ function backtickedPaths(doc: string): string[] {
   return [...out].sort();
 }
 
+const GENERATED_BEGIN = '<!-- BEGIN buildd agent instructions (auto-generated; do not edit) -->';
+const GENERATED_END = '<!-- END buildd agent instructions -->';
+
+/** Validate repo prose, excluding only complete blocks owned by the runner. */
+function repositoryOwnedText(doc: string): string {
+  let remaining = doc;
+  let owned = '';
+  while (true) {
+    const begin = remaining.indexOf(GENERATED_BEGIN);
+    if (begin === -1) return owned + remaining;
+    const end = remaining.indexOf(GENERATED_END, begin + GENERATED_BEGIN.length);
+    // Do not silently hide repo text when a delimiter is missing.
+    if (end === -1) return owned + remaining;
+    owned += remaining.slice(0, begin);
+    remaining = remaining.slice(end + GENERATED_END.length);
+  }
+}
+
+describe('repository-owned agent instructions', () => {
+  it('preserves documents without a generated block verbatim', () => {
+    const doc = 'Repository instructions\n`packages/core/missing.ts`\n';
+    expect(repositoryOwnedText(doc)).toBe(doc);
+  });
+
+  it('skips generated examples while retaining paths before and after the block', () => {
+    const before = '`packages/core/missing-before.ts`\n';
+    const after = '\n`packages/core/missing-after.ts`';
+    const generated = `${GENERATED_BEGIN}\nYour role: Builder\n\`packages/core/...\`\n${GENERATED_END}`;
+    const doc = repositoryOwnedText(before + generated + after);
+    expect(doc).toBe(before + after);
+    expect(backtickedPaths(doc)).toEqual([
+      'packages/core/missing-after.ts',
+      'packages/core/missing-before.ts',
+    ]);
+  });
+
+  it('keeps an unterminated block visible to drift checks', () => {
+    const doc = `${GENERATED_BEGIN}\n\`packages/core/missing.ts\``;
+    expect(repositoryOwnedText(doc)).toBe(doc);
+  });
+
+  it('removes multiple complete generated blocks', () => {
+    const block = `${GENERATED_BEGIN}generated${GENERATED_END}`;
+    expect(repositoryOwnedText(`before${block}between${block}after`)).toBe('beforebetweenafter');
+  });
+});
+
 describe('CLAUDE.md', () => {
-  const doc = read('CLAUDE.md');
+  const doc = repositoryOwnedText(read('CLAUDE.md'));
   const files = trackedFiles();
 
   it('every backticked repo path exists (as a tracked file or directory)', () => {

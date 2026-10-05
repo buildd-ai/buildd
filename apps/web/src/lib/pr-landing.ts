@@ -54,7 +54,7 @@ import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 import { checkSurfaceOrder, mergeInSurfaceSlot } from '@/lib/surface-ordering-door';
-import type { LandingAlertInput } from '@/lib/pr-landing-alert';
+import type { ChecksState, LandingAlertInput } from '@/lib/pr-landing-alert';
 import type { StaleApprovalReReviewInput, StaleApprovalReReviewResult } from '@/lib/stale-approval-re-review';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
 import {
@@ -376,7 +376,7 @@ function safeFireGateEvent(input: Parameters<typeof fireGateEvent>[0]): void {
  * and in enforce it parks the PR rather than merging on a half-made decision.
  */
 export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise<LandingOutcome> {
-  const trace: LandingTrace = { headSha: null, title: null };
+  const trace: LandingTrace = { headSha: null, title: null, checks: null, reason: null };
   try {
     const outcome = await decideAndLand(input, deps, trace);
     await raiseAlert(input, outcome, trace, deps);
@@ -417,6 +417,18 @@ export async function landPr(input: LandPrInput, deps: LandPrDeps = {}): Promise
 interface LandingTrace {
   headSha: string | null;
   title: string | null;
+  /** The check-run state the safety rails read on the live head, when they got that far. */
+  checks: ChecksState | null;
+  /** The reason the decision recorded for its outcome. */
+  reason: string | null;
+}
+
+/** One word for a head's check runs: any failure is red, anything unfinished is pending. */
+export function summarizeChecks(runs: CheckRunState[] | undefined): ChecksState | null {
+  if (!runs || runs.length === 0) return null;
+  if (runs.some((r) => r.conclusion === 'failure' || r.conclusion === 'timed_out' || r.conclusion === 'cancelled')) return 'red';
+  if (runs.some((r) => r.status !== 'completed')) return 'pending';
+  return 'green';
 }
 
 /** Enforce only, never throws: a page is a side effect of a landing, not part of it. */
@@ -432,6 +444,9 @@ async function raiseAlert(input: LandPrInput, outcome: LandingOutcome, trace: La
       prTitle: trace.title,
       taskId: input.owner.taskId,
       outcome,
+      checks: trace.checks,
+      outcomeReason: trace.reason,
+      installationId: input.installationId,
     });
   } catch (err) {
     console.warn(`[pr-landing] alert failed for PR #${input.prNumber}:`, errMessage(err));
@@ -469,6 +484,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     };
     if (act) detail.landingOutcome = outcome.kind;
     else detail.shadowOutcome = outcome.kind;
+    trace.reason = reason;
     safeFireGateEvent({
       gate: GATE_SLUGS.PR_LANDING,
       surface: 'pr-landing',
@@ -647,6 +663,7 @@ async function decideAndLand(input: LandPrInput, deps: LandPrDeps, trace: Landin
     }
   }
   if (baseRef === null) baseRef = observed.baseRef ?? null;
+  trace.checks = summarizeChecks(observed.checkRuns);
 
   if (!safety.ok) {
     const reason = safety.reason;

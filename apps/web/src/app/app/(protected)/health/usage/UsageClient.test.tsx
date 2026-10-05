@@ -209,7 +209,7 @@ describe('UsageClient — code navigation vs shell', () => {
     const html = render({ rows: [...rows(6), ...derived] });
     expect(html).toContain('over 8 tasks (7d)');
     expect(html).toContain('over 6 tasks with an exact histogram');
-    expect(html).toContain('Stated over 6 of 8 tasks');
+    expect(html).toContain('Over 6 of 8 tasks');
   });
 
   it('shows no shell delta, and says why', () => {
@@ -307,11 +307,11 @@ describe('UsageClient — buildd action breakdown', () => {
     const html = render({
       actions: actionPanel({ windowStart: new Date('2026-08-01T00:00:00Z') }),
     });
-    expect(html).toContain('not yet recorded');
+    expect(html).toContain('counts are partial');
   });
 
   it('does not warn once the window is entirely inside the captured period', () => {
-    expect(render()).not.toContain('not yet recorded');
+    expect(render()).not.toContain('counts are partial');
   });
 
   it('warns on a pre-capture window even when no events came back', () => {
@@ -321,7 +321,7 @@ describe('UsageClient — buildd action breakdown', () => {
       actions: actionPanel({ rows: [], windowStart: new Date('2026-08-01T00:00:00Z') }),
     });
     expect(html).toContain('No actions recorded in this window');
-    expect(html).toContain('not yet recorded');
+    expect(html).toContain('counts are partial');
   });
 
   it('renders nothing at all when the event stream could not be read', () => {
@@ -425,10 +425,10 @@ describe('UsageClient — the full buildd action list', () => {
     expect(html).toContain('8%');
   });
 
-  it('says "not yet recorded" when an empty window opens before capture', () => {
+  it('says counts are partial when an empty window opens before capture', () => {
     const html = render({ actions: actionPanel({ rows: [], windowStart: new Date('2026-08-01T00:00:00Z') }) });
     expect(html).toContain('data-testid="usage-actions-empty"');
-    expect(html).toContain('not yet recorded');
+    expect(html).toContain('counts are partial');
   });
 });
 

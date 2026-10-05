@@ -16,8 +16,11 @@ import BranchStrategySection from './BranchStrategySection';
 import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
+import ExecutorSection from './ExecutorSection';
+import { isWorkspaceExecutor, resolveWorkspaceExecutor } from '@buildd/shared';
 import { verifyWorkspaceAccess, getUserTeamsWithDetails } from '@/lib/team-access';
 import DeleteWorkspaceButton from '../DeleteWorkspaceButton';
+import { roleHas } from '@/lib/permission-registry';
 
 export default async function WorkspaceConfigPage({
     params,
@@ -46,6 +49,7 @@ export default async function WorkspaceConfigPage({
             accessMode: true,
             releaseConfig: true,
             workTrackerConfig: true,
+            webhookConfig: true,
         },
     });
 
@@ -54,6 +58,10 @@ export default async function WorkspaceConfigPage({
     if (!workspace) {
         notFound();
     }
+
+    // Where its tasks run: the stored value and the one the claim route applies.
+    const storedExecutor = (workspace.gitConfig as { executor?: unknown } | null)?.executor;
+    const executor = resolveWorkspaceExecutor(workspace.gitConfig as { executor?: unknown } | null, workspace.webhookConfig);
 
     return (
         <main className="min-h-screen p-4 md:p-8">
@@ -70,7 +78,7 @@ export default async function WorkspaceConfigPage({
                 </div>
 
                 {/* Every health action is an admin write, so members do not see the card. */}
-                {(access.role === 'owner' || access.role === 'admin') && (
+                {roleHas(access.role, 'manage_workspace_settings') && (
                     <WorkspaceHealthCard
                         workspace={{ id: workspace.id, name: workspace.name, teamId: workspace.teamId }}
                         teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
@@ -86,7 +94,7 @@ export default async function WorkspaceConfigPage({
                 )}
 
                 {/* Scaffold and spec routes are admin writes too. */}
-                {(access.role === 'owner' || access.role === 'admin') && (
+                {roleHas(access.role, 'manage_workspace_settings') && (
                     <ReadinessCard workspaceId={workspace.id} />
                 )}
 
@@ -113,6 +121,13 @@ export default async function WorkspaceConfigPage({
                     workspaceId={workspace.id}
                     effectiveBranchStrategy={resolveBranchStrategy(workspace.gitConfig as WorkspaceGitConfig | null)}
                     defaultBranch={(workspace.gitConfig as WorkspaceGitConfig | null)?.defaultBranch || 'main'}
+                />
+
+                <ExecutorSection
+                    workspaceId={workspace.id}
+                    explicit={isWorkspaceExecutor(storedExecutor) ? storedExecutor : null}
+                    effective={executor.executor}
+                    source={executor.source}
                 />
 
                 <WorkTrackerSection

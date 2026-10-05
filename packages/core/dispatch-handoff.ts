@@ -15,9 +15,9 @@
  * dispatch-outbox.ts); none interpolates into `sql.raw`.
  */
 import { sql, type SQL } from 'drizzle-orm';
-import { RECEIPT_EVENTS, type Receipt } from '@buildd/dispatch-contract';
+import { RECEIPT_EVENTS, isTerminalState, type IntentSummary, type Receipt } from '@buildd/dispatch-contract';
 import { db } from './db';
-import type { DispatchCause, DispatchIntent } from './dispatch-outbox';
+import { DISPATCH_FALLBACK_KEY, FALLEN_BACK_SQL, type DispatchCause, type DispatchIntent } from './dispatch-outbox';
 
 export type WorkspaceDispatchTransport = 'in_app' | 'shadow' | 'dispatch';
 /** The transports that publish. `in_app` (the default) never does. */
@@ -78,6 +78,7 @@ cand AS (
   FROM task_dispatch_outbox o JOIN workspaces w ON w.id = o.workspace_id, clock c
   WHERE o.status = 'pending' AND o.handed_off_at IS NULL AND o.intent = 'work_execution'
     AND w.dispatch_transport IN ('shadow', 'dispatch')
+    AND NOT ${sql.raw(FALLEN_BACK_SQL)}
     AND (o.published_at IS NULL
       OR o.published_at < c.now - ((SELECT a->>'backoffMs' FROM args)::int * interval '1 millisecond'))
   ORDER BY (o.task_id IS NOT DISTINCT FROM (SELECT (a->>'taskId')::uuid FROM args)) DESC, o.created_at
@@ -95,9 +96,8 @@ RETURNING o.id, o.intent, o.workspace_id, o.task_id, o.cause, o.causes, o.not_be
 const causesOf = (v: unknown): DispatchCause[] =>
   (Array.isArray(v) ? v : typeof v === 'string' ? JSON.parse(v) : []) as DispatchCause[];
 
-export async function selectForPublish(opts: { taskId?: string | null; limit?: number } = {}): Promise<PublishableRow[]> {
-  const result = await db.execute(selectForPublishSql(opts));
-  return rowsOf(result).map(r => ({
+const publishableOf = (result: unknown): PublishableRow[] =>
+  rowsOf(result).map(r => ({
     id: String(r.id),
     intent: (r.intent ?? 'work_execution') as DispatchIntent,
     workspaceId: String(r.workspace_id),
@@ -110,6 +110,9 @@ export async function selectForPublish(opts: { taskId?: string | null; limit?: n
     metadata: (r.metadata ?? null) as Record<string, unknown> | null,
     mode: r.mode as PublishingTransport,
   }));
+
+export async function selectForPublish(opts: { taskId?: string | null; limit?: number } = {}): Promise<PublishableRow[]> {
+  return publishableOf(await db.execute(selectForPublishSql(opts)));
 }
 
 // ── Acks ──────────────────────────────────────────────────────────────────
@@ -295,12 +298,199 @@ upd AS (
     AND (p.event <> 'attempted'
       OR p.max_attempt > o.attempt_count
       OR (p.last_at IS NOT NULL AND (o.last_attempt_at IS NULL OR p.last_at > o.last_attempt_at)))
-  RETURNING 1
+  RETURNING o.id, o.workspace_id, o.status, o.last_error
 )
-SELECT count(*) AS n FROM upd`;
+SELECT count(*) AS n,
+  COALESCE(jsonb_agg(jsonb_build_object('id', u.id, 'workspaceId', u.workspace_id, 'error', u.last_error))
+    FILTER (WHERE u.status = 'failed'), '[]'::jsonb) AS failed
+FROM upd u`;
+}
+
+/** A row a receipt batch moved to `failed`: Dispatch gave up on it. Only rows this batch moved, so a resend reports none. */
+export interface FailedReceiptRow {
+  id: string;
+  workspaceId: string;
+  error: string | null;
+}
+
+export interface AppliedReceipts {
+  applied: number;
+  failed: FailedReceiptRow[];
+}
+
+/** Parse the one row applyReceiptsSql returns. */
+export function parseAppliedReceipts(r: Record<string, unknown> | undefined): AppliedReceipts {
+  if (!r) return { applied: 0, failed: [] };
+  const raw = typeof r.failed === 'string' ? JSON.parse(r.failed) : r.failed;
+  const failed = (Array.isArray(raw) ? raw : [])
+    .filter((f): f is Record<string, unknown> => !!f && typeof f === 'object' && typeof (f as { id?: unknown }).id === 'string')
+    .map(f => ({ id: String(f.id), workspaceId: String(f.workspaceId), error: typeof f.error === 'string' ? f.error : null }));
+  return { applied: Number(r.n ?? 0), failed };
+}
+
+/** applyReceipts, plus which rows the batch moved to `failed` (for the receipts route's alert). */
+export async function applyReceiptsDetailed(receipts: readonly Receipt[]): Promise<AppliedReceipts> {
+  if (receipts.length === 0) return { applied: 0, failed: [] };
+  return parseAppliedReceipts(rowsOf(await db.execute(applyReceiptsSql(receipts)))[0]);
 }
 
 export async function applyReceipts(receipts: readonly Receipt[]): Promise<number> {
-  if (receipts.length === 0) return 0;
-  return Number(rowsOf(await db.execute(applyReceiptsSql(receipts)))[0]?.n ?? 0);
+  return (await applyReceiptsDetailed(receipts)).applied;
+}
+
+// ── Orphan reconcile (the hourly floor) ───────────────────────────────────
+//
+// A handed-off row with no terminal receipt well past its due time is an
+// orphan candidate: Dispatch lost it, the receipt was lost, or Dispatch is
+// still retrying. The floor asks Dispatch (GET /v1/intents) and then
+// re-publishes, projects the terminal receipt, leaves it, or takes it back
+// for the in-app drain (lib/dispatch-reconcile.ts decides which).
+
+/** A handed-off row due longer ago than this, still with no terminal receipt, is checked. */
+export const ORPHAN_MIN_AGE_MS = 10 * 60_000;
+/** Past this, a row Dispatch has not closed is taken back for the in-app drain. */
+export const ORPHAN_CEILING_MS = 60 * 60_000;
+/** Rows one floor run checks; a larger backlog continues next hour. */
+export const ORPHAN_SCAN_LIMIT = 500;
+
+export interface OrphanCandidate {
+  id: string;
+  workspaceId: string;
+  notBefore: Date;
+  /** Due longer ago than ORPHAN_CEILING_MS. */
+  pastCeiling: boolean;
+}
+
+/**
+ * Orphan candidates, oldest due first. A plain read: nothing is claimed,
+ * because every action the floor takes afterwards is a guarded UPDATE that
+ * re-checks `status = 'handed_off'`. Only `transport = 'dispatch'` rows: a
+ * shadow row is the in-app drain's and is never `handed_off`.
+ */
+export function selectOrphanCandidatesSql(opts: { minAgeMs?: number; ceilingMs?: number; limit?: number; now?: string | null } = {}): SQL {
+  const args = {
+    minAgeMs: opts.minAgeMs ?? ORPHAN_MIN_AGE_MS,
+    ceilingMs: opts.ceilingMs ?? ORPHAN_CEILING_MS,
+    limit: opts.limit ?? ORPHAN_SCAN_LIMIT,
+    now: opts.now ?? null,
+  };
+  return sql`-- dispatch_handoff:orphan_candidates
+WITH args AS (SELECT ${JSON.stringify(args)}::jsonb AS a),
+clock AS (SELECT COALESCE((a->>'now')::timestamptz, now()) AS now FROM args)
+SELECT o.id, o.workspace_id, o.not_before,
+  o.not_before < c.now - ((SELECT a->>'ceilingMs' FROM args)::int * interval '1 millisecond') AS past_ceiling
+FROM task_dispatch_outbox o, clock c
+WHERE o.status = 'handed_off' AND o.transport = 'dispatch'
+  AND o.not_before < c.now - ((SELECT a->>'minAgeMs' FROM args)::int * interval '1 millisecond')
+ORDER BY o.not_before, o.id
+LIMIT (SELECT (a->>'limit')::int FROM args)`;
+}
+
+export async function selectOrphanCandidates(opts: Parameters<typeof selectOrphanCandidatesSql>[0] = {}): Promise<OrphanCandidate[]> {
+  const result = await db.execute(selectOrphanCandidatesSql(opts));
+  return rowsOf(result).map(r => ({
+    id: String(r.id),
+    workspaceId: String(r.workspace_id),
+    notBefore: new Date(r.not_before as string),
+    pastCeiling: r.past_ceiling === true || r.past_ceiling === 't',
+  }));
+}
+
+/** A handed-off row being re-published; `mode` is the workspace's transport now, which may be `in_app`. */
+export type RepublishRow = Omit<PublishableRow, 'mode'> & { mode: WorkspaceDispatchTransport };
+
+/**
+ * The re-publish selection for handed-off ids Dispatch says it does not know:
+ * the same columns as the publish selection, stamping `published_at`, as one
+ * statement. Only rows still `handed_off` (a receipt or a fallback in the
+ * meantime wins). Publish is idempotent on id, so a duplicate is harmless.
+ * The row stays `handed_off`: Dispatch's accept just restores the copy it
+ * lost, so nothing is acked.
+ */
+export function selectForRepublishSql(ids: readonly string[]): SQL {
+  const input = ids.filter(isUuid);
+  return sql`-- dispatch_handoff:select_for_republish
+WITH ids AS (SELECT DISTINCT (jsonb_array_elements_text(${JSON.stringify(input)}::jsonb))::uuid AS id)
+UPDATE task_dispatch_outbox o
+SET published_at = now(), updated_at = now()
+FROM ids, workspaces w
+WHERE o.id = ids.id AND w.id = o.workspace_id AND o.status = 'handed_off' AND o.transport = 'dispatch'
+RETURNING o.id, o.intent, o.workspace_id, o.task_id, o.cause, o.causes, o.not_before, o.dedupe_key,
+  o.attempt_count, o.metadata, w.dispatch_transport AS mode`;
+}
+
+export async function selectForRepublish(ids: readonly string[]): Promise<RepublishRow[]> {
+  if (ids.length === 0) return [];
+  return publishableOf(await db.execute(selectForRepublishSql(ids))) as RepublishRow[];
+}
+
+/**
+ * Take handed-off rows back for the in-app drain, as one statement: the
+ * design's rollback path. `pending`, `transport = 'in_app'`,
+ * `handed_off_at = NULL`, and the DISPATCH_FALLBACK_KEY mark so the publish
+ * sweep never hands the row back and the publish grace never holds it.
+ * `not_before` is untouched (already past), so the next drain takes it.
+ *
+ * Only from `handed_off`: a receipt that closed the row in the meantime
+ * wins. After the flip a late receipt changes nothing (receipts project only
+ * onto `handed_off` dispatch rows), and a resolve or relay callback from an
+ * attempt Dispatch is still making is refused (the row is out of custody),
+ * so at most an attempt already past its callback duplicates the wake. The
+ * claim route's atomic assignment keeps that to one run.
+ */
+export function fallBackToInAppSql(ids: readonly string[]): SQL {
+  const input = ids.filter(isUuid);
+  return sql`-- dispatch_handoff:fall_back
+WITH ids AS (SELECT DISTINCT (jsonb_array_elements_text(${JSON.stringify(input)}::jsonb))::uuid AS id)
+UPDATE task_dispatch_outbox o
+SET status = 'pending', transport = 'in_app', handed_off_at = NULL,
+    metadata = CASE WHEN jsonb_typeof(o.metadata) = 'object' THEN o.metadata ELSE '{}'::jsonb END
+      || jsonb_build_object(${DISPATCH_FALLBACK_KEY}::text, now()),
+    updated_at = now()
+FROM ids
+WHERE o.id = ids.id AND o.status = 'handed_off'
+RETURNING o.id`;
+}
+
+export async function fallBackToInApp(ids: readonly string[]): Promise<number> {
+  if (ids.filter(isUuid).length === 0) return 0;
+  return rowsOf(await db.execute(fallBackToInAppSql(ids))).length;
+}
+
+/**
+ * The terminal receipt a Dispatch intent summary stands for, so a lost one
+ * is projected by applyReceiptsSql exactly as if it had arrived. Null for an
+ * open intent, or a merged one with no target id. `nowIso` stands in for a
+ * missing `closedAt` (a Worker that predates it).
+ *
+ *   delivered, skipped → delivered (via, as the receipt said)
+ *   failed             → failed (why)
+ *   merged             → merged (into)
+ *   expired            → expired
+ */
+export function terminalReceiptFor(s: IntentSummary, nowIso: string): Receipt | null {
+  if (!isUuid(s.id) || !isTerminalState(s.state)) return null;
+  const at = s.closedAt && !Number.isNaN(Date.parse(s.closedAt)) ? s.closedAt : nowIso;
+  const attempt = Number.isInteger(s.attempt) && s.attempt >= 0 ? s.attempt : 0;
+  const base = { id: s.id, attempt, at };
+  let r: Receipt;
+  switch (s.state) {
+    case 'delivered':
+    case 'skipped':
+      r = { ...base, event: 'delivered', ...(s.via ? { via: s.via } : {}) };
+      break;
+    case 'failed':
+      r = { ...base, event: 'failed', ...(s.why ? { why: s.why } : {}) };
+      break;
+    case 'merged':
+      if (!isUuid(s.mergedInto)) return null;
+      r = { ...base, event: 'merged', into: s.mergedInto };
+      break;
+    case 'expired':
+      r = { ...base, event: 'expired', ...(s.why ? { why: s.why } : {}) };
+      break;
+    default:
+      return null;
+  }
+  return isProjectableReceipt(r) ? r : null;
 }

@@ -223,6 +223,7 @@ const SAFE: Record<string, string[]> = {
   surface_reservations: ['head_sha', 'base_sha'],
   dark_check_alerts: ['check_name'],
   releases: ['head_sha', 'previous_sha', 'version'],
+  dependency_releases: ['reason_code'], // stable machine code naming the matched rule
   release_tasks: ['commit_sha'],
   // exit_cause is NOT safe: normalizeErrorSignature() keeps words from the
   // error text, and the scrub guard caught identifying text surviving there.

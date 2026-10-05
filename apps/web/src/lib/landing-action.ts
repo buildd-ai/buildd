@@ -198,3 +198,4 @@ export function fromMergeRoute(reply: RouteReply): ActionResult {
   if (landing?.kind) return { ok: true, summary: asString(json.error) ?? 'Landing re-ran and is still waiting.', outcome: landing.kind };
   return { ok: false, error: asString(json.error) ?? `The merge could not be attempted (${status}).` };
 }
+

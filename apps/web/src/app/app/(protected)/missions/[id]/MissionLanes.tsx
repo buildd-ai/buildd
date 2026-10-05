@@ -171,7 +171,7 @@ function Strip({ model }: { model: MissionBoardModel }) {
             <LandedMeter model={model} variant="strip" />
           </>
         ) : (
-          <span data-testid="landed-empty" className="font-mono text-[12px] text-text-muted">No tasks yet</span>
+          <span data-testid="landed-empty" className="font-mono text-[12px] text-text-muted">No tasks</span>
         )}
       </div>
       <a href={`#${MISSION_CRITERIA_ANCHOR}`} data-testid="goal-band" className={`${cell} min-w-0 flex-wrap md:border-r hover:bg-card-hover`}>
@@ -227,7 +227,7 @@ function Detail({ bar, model, now }: { bar: MissionLaneBar; model: MissionBoardM
               />
             ))}
           </div>
-          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : 'no milestones yet'}</div>
+          <div className="mt-1.5 truncate font-mono text-[12px] md:text-[11.5px] text-text-secondary">{last ? last.label : 'no milestones'}</div>
         </div>
       </div>
     </section>

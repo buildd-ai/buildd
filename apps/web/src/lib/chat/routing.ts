@@ -9,8 +9,10 @@
  */
 
 import { gateChoice, type ChoiceQuestion, type DecisionAccess, type DecisionError, type DecisionResult, type DecisionUsage, type GateOutcome, type UsageSink, decisionCall } from '@buildd/core/decision-client';
+import { promptedQuestions } from '@buildd/core/prompted-decision';
 import type { ChatTier } from './models';
 import type { ToolGroup } from './registry';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 export const CHAT_ROUTING_QUESTIONS = {
   complexity: {
@@ -73,6 +75,10 @@ export const TITLE_TOPIC_QUESTION = {
     new_topic: 'The message is about a different mission, task, system or goal than the title names.',
   },
 } satisfies ChoiceQuestion<'same_topic' | 'new_topic'>;
+
+/** Prompts-table ids whose active rows may replace the questions above (`@buildd/core/prompted-decision`). */
+export const CHAT_ROUTING_PROMPT_ID = 'buildd.chat_routing';
+export const TITLE_TOPIC_PROMPT_ID = 'buildd.chat_title_topic';
 
 /** Thresholds live next to the questions; retuning one is a reviewed change. */
 export const TIER_MIN_CONFIDENCE = 0.8;
@@ -340,7 +346,7 @@ export async function askTopicQuestion(
       workspaceId: input.workspaceId,
       userId: input.userId,
       state: { turn: { message: input.message.slice(0, 2000), title: input.title } },
-      questions: { topic: TITLE_TOPIC_QUESTION },
+      questions: promptedQuestions(TITLE_TOPIC_PROMPT_ID, { topic: TITLE_TOPIC_QUESTION }, 'public').questions,
       timeoutMs: ROUTING_TIMEOUT_MS,
       ...(input.access ? { access: input.access } : {}),
     });
@@ -392,7 +398,8 @@ export async function routeTurn(
   const now = deps.now ?? (() => Date.now());
   // Asked only when nothing above settled it, and only over a bounded list.
   const ws = input.workspaces && !settled ? workspaceQuestion(workspacesToAsk(input.workspaces)) : null;
-  const { complexity, ...base } = CHAT_ROUTING_QUESTIONS;
+  // The questions in effect: an active prompts row, else the public ones.
+  const { complexity, ...base } = promptedQuestions(CHAT_ROUTING_PROMPT_ID, CHAT_ROUTING_QUESTIONS, 'public').questions;
   const questions: RoutingQuestions = {
     ...(input.tierPinned ? {} : { complexity }),
     ...base,
@@ -472,3 +479,7 @@ function settleWorkspace(
   if (offered(input.previousWorkspaceId)) return { workspaceId: input.previousWorkspaceId!, workspaceSource: 'sticky' };
   return null;
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(TITLE_TOPIC_PROMPT_ID, { topic: TITLE_TOPIC_QUESTION });
+registerPromptedQuestions(CHAT_ROUTING_PROMPT_ID, CHAT_ROUTING_QUESTIONS);

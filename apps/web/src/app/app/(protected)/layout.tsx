@@ -4,6 +4,7 @@ import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
 import TimezoneSync from '@/components/TimezoneSync';
+import AppFreshness from '@/components/AppFreshness';
 import { DisplayTimezoneProvider } from '@/components/DisplayTimezone';
 import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
@@ -138,6 +139,9 @@ export default async function ProtectedLayout({
               </main>
             </div>
           </div>
+
+          {/* Catch up on resume / reconnect / back-nav, and pull-to-refresh on mobile */}
+          <AppFreshness />
 
           {/* Silently keep users.timezone in step with the browser */}
           {user && <TimezoneSync knownTimezone={user.timezone} />}

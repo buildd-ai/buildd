@@ -102,8 +102,8 @@ export default function ModelTiersClient({ teamId, isAdmin }: Props) {
     <div>
       <h1 className="hidden md:block text-xl font-semibold text-text-primary mb-1.5">Model tiers</h1>
       <p className="text-sm text-text-secondary">
-        Agent runs and interactive AI ask for a tier. Pick the model behind each one.{' '}
-        <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link> hold the keys.
+        The model behind each tier. Keys are in{' '}
+        <Link href="/app/settings/providers" className="underline hover:text-text-primary">Model providers</Link>.
       </p>
 
       <div className="mt-5">

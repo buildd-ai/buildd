@@ -8,7 +8,7 @@ domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts, answered-question-resume]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
-verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts]
+verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -160,19 +160,43 @@ path unchanged.
   park. Every question surface renders it, and a question without one renders
   as before. The notification is the question, one line of context and the
   recommended default.
-- **The question gate is an opt-in experiment (`question_gate`), off unless a
-  team runs one.** A runner whose claim carries a `questionGate` marker asks
+- **The question gate runs unconditionally for every workspace**
+  (docs/design/human-question-gate.md), gated only by one workspace kill
+  switch (`WorkspaceGitConfig.jevQuestionGate === false`; absent/true is on).
+  It used to be an opt-in experiment (`question_gate`); that plumbing (claim-time
+  arm draw, control/shadow branch, `experiment_assignments` row) is gone —
+  concluding or never running one now has no effect on the gate's behaviour.
+  A runner whose claim carries a `questionGate` marker (a pure capability
+  marker now — see `apps/web/src/app/api/workers/claim/question-gate.ts`) asks
   `POST /api/workers/[id]/question-check` before parking; handleMessage then
-  leaves parking to the PreToolUse hook. In the treatment arm a confident
-  `needs_context` from the decision model (default threshold 0.7, unmeasured,
-  `config.minConfidence`) is NOT parked or notified: the pushback text is the
-  AskUserQuestion tool result and the agent asks again. At most
-  `config.maxPushbacks` (default 2) per worker, then the question is sent
-  as-is. Control is shadow. Every failure (no experiment, sensitive workspace,
-  no key, gateway decision model, timeout, error) sends the question
-  unchanged. Each check is recorded content-free on the task's
-  `experiment_assignments` row (`eligibility.questionGateChecks`) plus its
-  `ai_usage` receipt.
+  leaves parking to the PreToolUse hook. Two stages:
+  1. **Brief check.** A confident `needs_context` from the decision model
+     (default threshold 0.7, unmeasured, `DEFAULT_QUESTION_GATE_MIN_CONFIDENCE`)
+     is NOT parked or notified: the pushback text is the AskUserQuestion tool
+     result and the agent asks again. At most `DEFAULT_QUESTION_GATE_MAX_PUSHBACKS`
+     (default 2) per worker, then the question proceeds to stage 2 instead of
+     being sent as-is.
+  2. **Decide / hold / ask.** Once the brief clears (or the pushback cap is
+     spent) and no hard rail applies (`packages/core/question-gate.ts`
+     `detectHardRail` — migrations, auth/secrets, CI/deploy config, the
+     workspace's own declared protected paths, and a text heuristic for
+     spending), a second decision (`QUESTION_DECIDE_DECISION`) picks the
+     disposition: `decide` (Jev picks one of the listed options; the answer is
+     the AskUserQuestion tool result, verdict `decide` — nobody is parked or
+     notified), `hold` (parked exactly like `ask` today, tagged
+     `disposition: 'hold'` with a `holdReason` and a bounded `resurfaceAt` —
+     no notification-suppression wiring exists yet, see
+     `HOLD_RESURFACE_MS`'s doc comment), or `ask` (parked and notified,
+     unchanged). Low confidence, an invalid/missing option index, or a
+     question with no options all fail open to `ask`.
+  Every failure at either stage (sensitive workspace, no key, gateway decision
+  model, timeout, transport error) sends the question unchanged. Stage 2's
+  answered calls are recorded as `decision_records` rows
+  (`packages/core/decision-ledger.ts` `recordDecision` — the one ledger every
+  other Jev decision in buildd uses) with a hard rail recorded as
+  `reason: 'rail_blocked:<rail>'`; every provider call at either stage also
+  writes its `ai_usage` receipt. A human can correct a recorded decision via
+  `recordHumanOverride` / `POST /api/decisions/[id]/override`.
 
 **Acceptance criteria**:
 - AC-HITL-1: GIVEN a runner PATCH with `status: 'waiting_input'` and
@@ -217,11 +241,25 @@ path unchanged.
   `Recommended: <label>. <reason>`.
 - AC-HITL-38: GIVEN a gated worker WHEN the gate returns `pushback` and the
   worker has pushbacks left THEN the PreToolUse hook denies AskUserQuestion
-  with the pushback text and nothing is parked; GIVEN the cap is reached, a
-  `send`, or any gate failure THEN the question is parked.
-- AC-HITL-39: GIVEN no running `question_gate` experiment WHEN a question is
-  checked THEN it is sent and nothing is recorded; GIVEN the control arm THEN
-  a confident `needs_context` is recorded as `shadow_needs_context` and sent.
+  with the pushback text and nothing is parked; GIVEN a `decide` verdict THEN
+  the hook denies AskUserQuestion with the answer as the reason, nothing is
+  parked, and the pushback count is untouched; GIVEN any other `send` (the cap
+  reached, `hold`, `ask`, a hard rail, or any gate failure) THEN the question
+  is parked, carrying the `hold` tag when the disposition was `hold`.
+- AC-HITL-39: GIVEN the workspace kill switch (`jevQuestionGate: false`) WHEN
+  a question is checked THEN it is sent and nothing is recorded or called;
+  GIVEN it is unset or true (every workspace, by default) THEN the brief check
+  and decide/hold/ask both run, with no experiment required.
+- AC-HITL-40: GIVEN a task whose pathManifest touches a migration, auth/secrets
+  or CI/deploy path, or the workspace's own declared protected path, or a
+  question whose text reads as a spending decision, WHEN stage 2 runs THEN
+  `decide` is never attempted — the outcome is `hard_rail`, the disposition is
+  `ask`, and a `decision_records` row is written with
+  `reason: 'rail_blocked:<rail>'`, `applied: false`.
+- AC-HITL-41: GIVEN a confident `decide` with a valid option index WHEN stage 2
+  resolves THEN the reply's `verdict` is `decide` (not `send`), `decision`
+  names the chosen option and its confidence, and a `decision_records` row is
+  written `applied: true`, `status: 'applied'`.
 
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/route.ts:450` (persist + redact,

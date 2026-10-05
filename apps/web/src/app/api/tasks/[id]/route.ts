@@ -1,4 +1,5 @@
 import { hasTokenRouteAdminAccess } from '@/lib/token-route-policy';
+import { BACKEND_PINNED_KEY } from '@buildd/core/backend-policy';
 import { isTerminalTaskStatus, canDeleteTask } from '@buildd/shared';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -30,6 +31,7 @@ import { readModelPin, isTaskTier, isAcceptableModelPin } from '@buildd/core/mod
 import { TIERS } from '@buildd/core/model-tier-defaults';
 import { appBaseUrl } from '@/lib/app-url';
 import { loadInlineEvidence } from '@/lib/evidence-inline';
+import { dispatchHistoryForTask } from '@buildd/core/dispatch-outbox';
 
 /**
  * Label the wake for a task just reset to pending — but only when nothing it
@@ -61,7 +63,9 @@ async function wakeIfDependenciesSatisfied(task: typeof tasks.$inferSelect): Pro
 //   include=workers,artifacts — opt-in expansion. `workers` returns all worker
 //     attempts (latest first) with PR refs, summary, error, status, branch,
 //     completedAt. `artifacts` returns artifacts attached to those workers,
-//     each with a shareUrl.
+//     each with a shareUrl. `dispatch` returns the task's dispatch outbox
+//     trail (cause, status, transport, handedOffAt, deliveredVia, attempts,
+//     lastError), oldest first.
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -187,6 +191,7 @@ export async function GET(
     const response: Record<string, unknown> = { ...task, workspace: withoutDispatchToken(task.workspace) };
     if (taskWorkers !== undefined) response.workers = taskWorkers;
     if (taskArtifacts !== undefined) response.artifacts = taskArtifacts;
+    if (include.has('dispatch')) response.dispatch = await dispatchHistoryForTask(id);
     const evidenceObjects = await loadInlineEvidence(task.workspaceId, id, {
       surface: 'get_task',
       // The account decides access above when both are present, so it is the actor.
@@ -202,6 +207,13 @@ export async function GET(
 }
 
 // PATCH /api/tasks/[id] - Update a task
+/**
+ * What a per-task token may change on its own task: what the task says, not
+ * how it runs or ends. Status, mission, dependencies, role, model, hold and
+ * result go through complete_task and the gates behind it, or through a person.
+ */
+const TASK_TOKEN_PATCH_FIELDS = new Set(['title', 'description', 'priority', 'project', 'externalIssueId', 'externalIssueUrl']);
+
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -216,7 +228,9 @@ export async function PATCH(
   const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
-  const apiAccount = await authenticateApiKey(apiKey, req);
+  // A per-task token may edit only its own task, and only its descriptive
+  // fields (TASK_TOKEN_PATCH_FIELDS).
+  const apiAccount = await authenticateTaskScopedCaller(apiKey, req);
 
   if (!user && !apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -234,6 +248,9 @@ export async function PATCH(
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
+    if (apiAccount && !taskScopeAllowsTask(apiAccount, id)) {
+      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    }
 
     // Verify access
     if (user && !apiAccount) {
@@ -245,6 +262,14 @@ export async function PATCH(
     }
 
     const body = await req.json();
+    if (apiAccount?.taskScope && body && typeof body === 'object') {
+      const refused = Object.keys(body).filter(k => !TASK_TOKEN_PATCH_FIELDS.has(k));
+      if (refused.length > 0) {
+        return NextResponse.json({
+          error: `A task token may not change ${refused.join(', ')} on its task. Finish with complete_task; ask a person or an organizer for anything else.`,
+        }, { status: 403 });
+      }
+    }
     const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, tier, model, maxLoops, actorWorkerId, resultSummary, correctedBy, held, heldReason, pathManifest } = body;
 
     // pathManifest is set at creation (POST /api/tasks) and only ever grows from
@@ -283,6 +308,17 @@ export async function PATCH(
         const { budgetExhausted: _paused, budgetResetsAt: _resets, ...restCtx } = taskCtx;
         updateData.startAt = null;
         updateData.context = { ...restCtx, switchedBackendFrom: currentBackend };
+      }
+
+      // An operator naming a different backend has chosen it, so budget failover
+      // must not move it back (BACKEND_PINNED_KEY); clearing to the default
+      // drops the pin. Re-sending the current backend leaves context untouched.
+      const baseCtx = (updateData.context ?? taskCtx) as Record<string, unknown>;
+      if (nextBackend && nextBackend !== currentBackend) {
+        updateData.context = { ...baseCtx, [BACKEND_PINNED_KEY]: true };
+      } else if (!nextBackend && baseCtx[BACKEND_PINNED_KEY] !== undefined) {
+        const { [BACKEND_PINNED_KEY]: _pin, ...unpinned } = baseCtx;
+        updateData.context = unpinned;
       }
     }
     // Model pin for the NEXT claim or retry (never the in-flight session).

@@ -79,7 +79,7 @@ export function UsageClient({ view, wsFilter }: Props) {
             <span
               data-testid="usage-scan-caveat"
               className="text-[11px] text-text-muted text-right"
-              title={`The scan reads the newest ${scan.limit} terminal workers, newest first. Rows older than the cap were not read, so every figure on this page is a floor for the ${window} window, and a complete count only from ${scan.completeSince} onward.`}
+              title={`Newest ${scan.limit} finished workers only. Figures are floors for ${window}; complete from ${scan.completeSince}.`}
             >
               {caveat}
             </span>
@@ -230,7 +230,7 @@ function CodeNavigationPanelView({ view }: { view: UsageDrilldownView }) {
               <p
                 data-testid="usage-code-nav-coverage"
                 className="text-[11px] text-text-muted"
-                title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log and the CBM counters, so their counts are a floor. The ≥ marks those."
+                title="Older tasks are reconstructed from a capped MCP call log and CBM counters. ≥ marks those counts as floors."
               >
                 {coverageLabel(panel.coverage)} tasks measured exactly
               </p>
@@ -296,9 +296,8 @@ function ShellPanelView({ view }: { view: UsageDrilldownView }) {
 
         <BashBucketsView view={view} />
         <p data-testid="usage-shell-no-delta" className="text-[11px] text-text-muted">
-          Stated over {shell.histogramTasks} of {shell.allTasks} tasks. Reconstructed rows can&apos;t
-          contain a shell call, so they&apos;re left out. No delta: older workers age out of the
-          window and change the population, so a cross-window change would measure coverage.
+          Over {shell.histogramTasks} of {shell.allTasks} tasks; reconstructed rows have no shell calls. No
+          delta shown: the population changes between windows.
         </p>
       </div>
     </section>
@@ -588,7 +587,7 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
         {p.actions.length === 0 ? (
           <p data-testid="usage-actions-empty" className="text-[11px] text-text-muted">
             {p.windowPredatesCapture
-              ? 'No actions recorded in this window. It opens before capture began, so that may mean "not yet recorded" rather than "none".'
+              ? 'No actions recorded in this window. It starts before capture began, so counts are partial.'
               : 'No actions recorded in this window.'}
           </p>
         ) : (
@@ -636,8 +635,7 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
               <>
                 {' '}
                 <span className="text-status-warning">
-                  This window opens before that date. A low count here means
-                  &ldquo;not yet recorded&rdquo;.
+                  This window starts before capture, so counts are partial.
                 </span>
               </>
             )}
@@ -648,8 +646,7 @@ function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
             </p>
           )}
           <p className="text-[11px] text-text-muted">
-            No runtime/work split: the classification depends on the task and
-            has no settled contract yet.
+            No runtime/work split.
           </p>
         </div>
       </div>

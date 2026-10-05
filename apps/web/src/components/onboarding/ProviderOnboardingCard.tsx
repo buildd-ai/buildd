@@ -114,7 +114,7 @@ export default function ProviderOnboardingCard({ teamId, hasActionableWork }: { 
         </button>
       </div>
       {shape?.message && <p className={`text-xs ${shape.ok ? 'text-status-warning' : 'text-status-error'}`}>{shape.message}</p>}
-      <p className="text-xs text-text-muted">Goes in as the team key. buildd tests it with {info.label} before saving, and nobody can read it back.</p>
+      <p className="text-xs text-text-muted">Saved as the team key. Tested on save. Encrypted, write-only.</p>
     </li>
   );
 
@@ -149,7 +149,7 @@ export default function ProviderOnboardingCard({ teamId, hasActionableWork }: { 
         <li className="flex flex-col sm:flex-row sm:items-center gap-3 px-5 py-4">
           <span className="flex-1 min-w-0">
             <span className="block text-sm font-semibold text-text-primary">OpenRouter <span className="ml-1 text-[11px] font-semibold uppercase tracking-[1px] text-accent-text">recommended</span></span>
-            <span className="block text-xs text-text-secondary mt-0.5">One key reaches every model. OpenRouter makes it in your account, so there is nothing to paste.</span>
+            <span className="block text-xs text-text-secondary mt-0.5">One key for every model, created in your OpenRouter account.</span>
           </span>
           <ConnectOpenRouterButton scope="team" teamId={teamId} returnTo="/app/home" />
         </li>

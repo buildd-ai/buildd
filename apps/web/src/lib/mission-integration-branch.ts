@@ -115,11 +115,23 @@ export async function ensureMissionIntegrationBranch(
   const branch = missionIntegrationBase(mission);
   if (!branch) return { ok: false, reason: 'no_working_branch' };
 
-  const resolved = await resolveMissionRepoWorkspaceId({
-    missionId,
-    missionWorkspaceId: mission.workspaceId,
-    hintWorkspaceId: opts?.workspaceId,
-  });
+  // A task's own workspace — when the caller knows it — names the repo its
+  // own PR needs the branch in, and it wins outright rather than merely
+  // breaking a tie: `resolveMissionRepoWorkspaceId` treats the mission's
+  // `workspaceId` as the mission's one shared repo, which is wrong for a
+  // mission whose tasks span more than one repo (mission a955fed9 — buildd
+  // and infrastructure tasks under one mission). Checking the mission's home
+  // repo for a branch a DIFFERENT repo's task actually needs reports a false
+  // "it's there" and sends that task's PR at a ref that 404s in its own repo.
+  // Mission-level callers with no single task to ask (runMission, the
+  // mission-PR opener) never pass this hint, so they are unaffected and keep
+  // resolving to the mission's own workspace exactly as before.
+  const resolved = opts?.workspaceId
+    ? { workspaceId: opts.workspaceId }
+    : await resolveMissionRepoWorkspaceId({
+        missionId,
+        missionWorkspaceId: mission.workspaceId,
+      });
   if (!resolved.workspaceId) {
     return { ok: false, reason: 'no_repo', detail: resolved.detail };
   }

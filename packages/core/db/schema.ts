@@ -26,6 +26,7 @@ export const agentBackendEnum = pgEnum('agent_backend', ['claude', 'codex']);
 export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'header', 'oauth', 'assertion']);
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
+import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -81,10 +82,10 @@ export const teams = pgTable('teams', {
   // resolves → server-side, else the runner). See packages/core/inference-policy.ts.
   inferenceFeatureModes: jsonb('inference_feature_modes').$type<import('../inference-policy').FeatureModes | null>(),
   // The `opt_in` decision capabilities this team turned on (e.g.
-  // 'task_role_shadow'). NULL or absent = off; there is no default, so adding
-  // an opt_in capability never switches it on for anyone. See
-  // packages/core/inference-policy.ts.
-  enabledDecisionShadows: text('enabled_decision_shadows').array(),
+  // 'task_role_shadow'). NULL = off. A new team starts with every one
+  // (insert-time default, no DDL); an opt_in capability added later is not
+  // switched on for existing teams. See packages/core/inference-policy.ts.
+  enabledDecisionShadows: text('enabled_decision_shadows').array().$defaultFn(() => [...DEFAULT_ENABLED_DECISION_SHADOWS]),
   // Daily cap on agent-chat spend in USD, reset at midnight in the team's
   // timezone. NULL = DEFAULT_CHAT_DAILY_BUDGET_USD (apps/web/src/lib/chat/limits.ts),
   // never "no cap". Metered from conversation_messages.usage (generative turns
@@ -341,6 +342,16 @@ export interface WorkspaceGitConfig {
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
 
+  // Claim-time batch planner (packages/core/claim-planner.ts) in the claim
+  // route: 'off' = the legacy first-eligible walk, untouched; 'record' (the
+  // default when absent) = plan beside the legacy picks and write both to the gate ledger;
+  // 'apply' = claim in plan order. Read only through resolveClaimPlannerConfig()
+  // (apps/web/src/app/api/workers/claim/claim-plan-input.ts).
+  claimPlanner?: 'off' | 'record' | 'apply';
+  // Planner thresholds. Absent = declared/observed scope only: predictions
+  // are ignored and the no-scope mission mutex stays.
+  claimPlannerThresholds?: { thetaOrder: number; thetaSoft: number; thetaIdle: number } | null;
+
   // Where the visual auditor's pages come from: 'sandbox' (absent = today's
   // in-worker boot), 'vercel-preview', or 'auto'. Read only through
   // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
@@ -493,6 +504,14 @@ export interface WorkspaceGitConfig {
   // the human trigger resolution manually from the escalation card.
   autoResolveMergeConflicts?: boolean;
 
+  // The 'Jev keeps agents moving' question gate (docs/design/human-question-gate.md,
+  // packages/core/question-gate.ts): Jev decides, holds or asks on every agent
+  // question, and the brief-quality pushback runs unconditionally. Absent / true
+  // = ON (default). Set to false — the one emergency kill switch — to revert to
+  // exactly pre-mission behaviour: every question reaches a person unchanged,
+  // with no pushback and no decide/hold.
+  jevQuestionGate?: boolean;
+
   // PR landing function rollout (`apps/web/src/lib/pr-landing.ts`, design:
   // knowledge-base: buildd/design/pr-landing-guarantee.md §K). `off`: the retained per-door merge
   // paths only. `shadow` (absent = shadow): the landing decision is computed and
@@ -531,6 +550,12 @@ export interface WorkspaceGitConfig {
   // Owner decisions the repo cannot tell us (docs/design/workspace-onboarding.md §2).
   // The readiness report itself is recomputed, never stored. Absent ⇒ current behaviour.
   onboarding?: WorkspaceOnboardingConfig;
+
+  // Post-session quality loop (artifact post-session-quality-loop-spec §11).
+  // Read only through `resolvePostSessionQualityMode` — absent or unrecognised
+  // ⇒ 'shadow' (record, never file). 'off' stops new runs; 'propose' applies
+  // the follow-up action policy.
+  postSessionQuality?: import('../post-session-quality').PostSessionQualityConfig;
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
@@ -890,6 +915,19 @@ export interface ResultMeta {
    * which keeps that path byte-identical to before this field existed.
    */
   closingTurnOutcome?: 'authored' | 'declined' | `declined:${string}` | `skipped:${string}`;
+  /**
+   * Every end-of-session push the runner gave this worker (classifying why a
+   * session was ending without delivering, then sending label-specific text —
+   * see apps/runner/src/session-end-classification.ts) before its eventual
+   * terminal outcome: which label, when, and the exact text sent. Lets
+   * "pushes per session and how often a push led to delivery" be answered
+   * directly from completed-task result rows, without new telemetry infra.
+   */
+  sessionEndPushes?: Array<{
+    label: 'waiting_on_background_job' | 'asking_permission_it_has' | 'believes_done_no_deliverable' | 'genuinely_blocked';
+    at: number;
+    text: string;
+  }>;
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -914,11 +952,14 @@ export const workspaces = pgTable('workspaces', {
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
   // Which transport delivers this workspace's dispatch outbox rows.
-  // 'in_app': the Vercel drain (default). 'shadow': also published to the
-  // Dispatch Worker, which records decisions but the in-app drain still
-  // delivers. 'dispatch': handed off; the in-app drain only takes rows the
-  // Worker never acked. knowledge-base buildd/design/cloudflare-dispatch-transport.md.
-  dispatchTransport: text('dispatch_transport').default('in_app').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
+  // 'dispatch' (default): handed off to the Dispatch Worker; the in-app drain
+  // only takes rows the Worker never acked, and nothing is published at all
+  // unless DISPATCH_URL and DISPATCH_PUBLISH_SECRET are set, so a self-hosted
+  // install without the Worker keeps in-app delivery. 'in_app': the Vercel
+  // drain only (the per-workspace kill switch). 'shadow': published and
+  // recorded, in-app still delivers (webhook-less workspaces only while
+  // webhooks are live on the Worker).
+  dispatchTransport: text('dispatch_transport').default('dispatch').notNull().$type<'in_app' | 'shadow' | 'dispatch'>(),
 
   // Max tasks from this workspace that may have an active worker at once. Repo-backed
   // workspaces isolate each task in its own git worktree, so parallel work is safe;
@@ -1536,6 +1577,35 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
   activeClaimIdx: uniqueIndex('task_subject_claims_active_unique')
     .on(t.workspaceId, t.keyType, t.keyHash)
     .where(sql`${t.state} = 'active'`),
+}));
+
+// Early-release ledger — docs/design/early-release.md "Data model". One row per
+// decision to release (or hold) a dependent task before its upstream's PR has
+// merged. Append-only: a reconciler revoking a release stamps revokedAt /
+// revokedReason on the existing row rather than deleting it, so the decision
+// history stays auditable. Every row written here also fires the
+// `early_release` gate event.
+export const dependencyReleases = pgTable('dependency_releases', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  dependentTaskId: uuid('dependent_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  upstreamTaskId: uuid('upstream_task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  // The upstream PR the decision was made against.
+  upstreamPrNumber: integer('upstream_pr_number').notNull(),
+  // start_now: dependent may claim off trunk. start_stacked: claim off the
+  // upstream's branch (baseBranch). wait: keep the dependsOn gate closed.
+  decision: text('decision').notNull().$type<'start_now' | 'wait' | 'start_stacked'>(),
+  // Who decided: a deterministic rule, the decision model, or the fallback when
+  // the model was unavailable or unsure.
+  source: text('source').notNull().$type<'rule' | 'model' | 'fallback'>(),
+  // Stable machine-readable reason, e.g. which rule matched.
+  reasonCode: text('reason_code').notNull(),
+  // Branch the dependent was released onto; set for start_stacked.
+  baseBranch: text('base_branch'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  revokedReason: text('revoked_reason'),
+}, (t) => ({
+  dependentUpstreamIdx: index('dependency_releases_dependent_upstream_idx').on(t.dependentTaskId, t.upstreamTaskId),
 }));
 
 // The discrepancy ledger — docs/design/spec-conformance.md §7. A row is the
@@ -3783,6 +3853,23 @@ export const systemCache = pgTable('system_cache', {
   expiresAt: timestamp('expires_at', { withTimezone: true }),
 });
 
+// Versioned prompt text (packages/core/prompts.ts). An active row replaces the
+// public default compiled into the repo for prompt `id`; with no active row the
+// default runs. Rows are append-only versions; at most one is active per id.
+// `content_hash` is the sha256 hex of `body`; the loader skips a row whose hash
+// does not match. Read in-process by packages/core/prompts-source.ts, never per call.
+export const prompts = pgTable('prompts', {
+  id: text('id').notNull(),
+  version: integer('version').notNull(),
+  contentHash: text('content_hash').notNull(),
+  body: text('body').notNull(),
+  active: boolean('active').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.id, t.version] }),
+  oneActivePerIdIdx: uniqueIndex('prompts_one_active_per_id').on(t.id).where(sql`${t.active}`),
+}));
+
 // Tenant budget exhaustion tracking (Dispatch multi-tenant mode)
 export const tenantBudgets = pgTable('tenant_budgets', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -4967,6 +5054,68 @@ export const decisionChallengerRuns = pgTable('decision_challenger_runs', {
 
 export type DecisionChallengerRun = typeof decisionChallengerRuns.$inferSelect;
 
+// Prompt evals (apps/web/src/lib/prompt-evals/run.ts): the decision benchmark
+// sets scored against the prompt text a deployment runs, or is about to run.
+// One run row per eval, one result row per benchmark set. Content-free like the
+// decision ledger: prompt ids, row versions, content hashes, model ids, counts
+// and rates. Never prompt text, case content or error strings; every result is
+// checked against the loaded prompt bodies before it is written.
+export const promptEvalRuns = pgTable('prompt_eval_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // The team whose key paid for the calls.
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  trigger: text('trigger').notNull().$type<'push' | 'cron' | 'manual'>(),
+  status: text('status').notNull().$type<'running' | 'passed' | 'failed' | 'refused' | 'skipped'>(),
+  // The prompts repo ref scored (a sha for a push; else the configured ref).
+  promptsRef: text('prompts_ref'),
+  // The model that answered the eval, and the model the team's live decisions use.
+  evalModel: text('eval_model'),
+  prodModel: text('prod_model'),
+  // True when they differ: the scores then do not predict production behaviour.
+  modelMismatch: boolean('model_mismatch').notNull().default(false),
+  dryRun: boolean('dry_run').notNull().default(false),
+  loadedPrompts: integer('loaded_prompts'),
+  costUsd: real('cost_usd'),
+  // Why the run failed or was skipped: fixed phrases naming ids and counts, never text.
+  problems: jsonb('problems').$type<string[]>(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+}, (t) => ({
+  startedIdx: index('prompt_eval_runs_started_idx').on(t.startedAt),
+}));
+
+export type PromptEvalRun = typeof promptEvalRuns.$inferSelect;
+
+export const promptEvalResults = pgTable('prompt_eval_results', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').references(() => promptEvalRuns.id, { onDelete: 'cascade' }).notNull(),
+  benchmarkSet: text('benchmark_set').notNull(),
+  promptId: text('prompt_id').notNull(),
+  // 'private' (a prompts-repo row) or 'public default'.
+  promptSource: text('prompt_source').notNull(),
+  // Row version (null for a public default) and the first 12 hex of the text's sha256.
+  promptRowVersion: integer('prompt_row_version'),
+  promptHash: text('prompt_hash').notNull(),
+  // The decision promptVersion naming the text, e.g. `tc1+p3`.
+  promptVersion: text('prompt_version').notNull(),
+  model: text('model'),
+  status: text('status').notNull().$type<'scored' | 'dry_run' | 'no_cases'>(),
+  cases: integer('cases').notNull(),
+  accuracy: real('accuracy'),
+  baselineAccuracy: real('baseline_accuracy'),
+  coverageAt90: real('coverage_at_90'),
+  accuracyAt90: real('accuracy_at_90'),
+  errors: integer('errors').notNull().default(0),
+  notRun: integer('not_run').notNull().default(0),
+  costUsd: real('cost_usd'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  runIdx: index('prompt_eval_results_run_idx').on(t.runId),
+  promptCreatedIdx: index('prompt_eval_results_prompt_created_idx').on(t.promptId, t.createdAt),
+}));
+
+export type PromptEvalResult = typeof promptEvalResults.$inferSelect;
+
 // The final touched-file label for a decided task, one row per worker session,
 // written at terminal worker status BEFORE workers.observed_touches is cleared
 // (apps/web/src/app/api/workers/[id]/route.ts). Only for tasks that have an
@@ -5004,6 +5153,30 @@ export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferI
 // pick's dynamic-definition fingerprint and offered-index map, the selection,
 // truncation/unknown-scope markers, candidate coverage and the same-task
 // baselines. It never feeds tasks.path_manifest or dependsOn.
+/**
+ * A task's expected size (packages/core/task-size-estimate.ts): the median
+ * files/minutes of its completed neighbours, or — with fewer than `k` of
+ * those (jev-scheduling §3's "coarser bucket fallback") — a Jev S/M/L bucket
+ * mapped to representative figures (packages/core/task-size-bucket-decision.ts).
+ */
+export type ExpectedTaskSize =
+  | {
+      files: number;
+      minutes: number;
+      source: 'neighbours';
+      /** Neighbours required. */
+      k: number;
+      /** Neighbours with a size that were used. */
+      n: number;
+    }
+  | {
+      files: number;
+      minutes: number;
+      source: 'jev';
+      bucket: 'S' | 'M' | 'L';
+      confidence: number;
+    };
+
 export const orchestrationManifestPredictions = pgTable('orchestration_manifest_predictions', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
@@ -5033,6 +5206,13 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
   pickCap: integer('pick_cap').notNull(),
   regexPaths: jsonb('regex_paths').$type<string[]>().notNull(),
   neighbourUnionPaths: jsonb('neighbour_union_paths').$type<string[]>().notNull(),
+  // Confidence the selected set is right (jev-scheduling §3): the product of
+  // the pick confidences, recalibrated later by the readout. Null when there
+  // were no picks or any pick carried no confidence.
+  setConfidence: real('set_confidence'),
+  // { files, minutes, source, k, n } from completed neighbours
+  // (task-size-estimate.ts). Null when fewer than k neighbours had a size.
+  expectedSize: jsonb('expected_size').$type<ExpectedTaskSize>(),
   latencyMs: integer('latency_ms').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -5045,3 +5225,145 @@ export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPre
 
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
+
+// Stored Jev "is this overlap real" answers (jev-scheduling.md §5,
+// packages/core/orchestration-overlap-decision.ts): one row per task pair per
+// decision, asked once from the creation-manifest prediction hook for a new
+// task's soft pairs (predicted scope overlapping a sibling's declared or
+// predicted scope). Read by the claim-time planner (`planClaimBatch`'s
+// `overlapAnswers`) keyed by `overlapPairKey(a, b)`; it only ever replaces a
+// SOFT weight there and never creates or removes a hard edge — it is not
+// consulted by, and never writes, `tasks.path_manifest` or `dependsOn`.
+export const orchestrationOverlapAnswers = pgTable('orchestration_overlap_answers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id'),
+  // Order-independent pair identity: `overlapPairKey(taskAId, taskBId)` (packages/core/claim-planner.ts).
+  pairKey: text('pair_key').notNull(),
+  taskAId: uuid('task_a_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  taskBId: uuid('task_b_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  decisionId: text('decision_id').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  answer: text('answer').notNull().$type<'REAL' | 'NOT_REAL'>(),
+  confidence: real('confidence').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // One stored answer per pair per decision; a later ask for the same pair replaces it.
+  pairDecisionIdx: uniqueIndex('orchestration_overlap_answers_pair_decision_idx').on(t.workspaceId, t.pairKey, t.decisionId),
+  workspaceCreatedIdx: index('orchestration_overlap_answers_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type OrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferSelect;
+export type NewOrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferInsert;
+
+/**
+ * Post-session quality loop — one row per (worker attempt, policy version).
+ * Spec: artifact post-session-quality-loop-spec §4–§6, §12.
+ *
+ * The loop is out of band. This table is its ONLY write target for a run: no
+ * stage may update the worker or task it describes, so a failure here can
+ * never make finished work look unfinished.
+ *
+ * Idempotency lives in the unique (worker_id, policy_version) index: the
+ * collector inserts with ON CONFLICT DO NOTHING and retries only a `failed`
+ * (or crashed-`collecting`) row through a compare-and-set on `attempts`, so two
+ * sweeps racing over the same worker produce one row and one collection.
+ *
+ * Stage A writes `facts` (bounded, no free text — see
+ * packages/core/post-session-quality.ts); later stages fill the triage,
+ * hard-trigger and trace-coverage columns on the same row.
+ */
+export const postSessionRuns = pgTable('post_session_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  policyVersion: text('policy_version').notNull(),
+  // The workspace mode in effect when the run was created — a later mode
+  // change must not reinterpret what an old run was allowed to do.
+  mode: text('mode').notNull().$type<import('../post-session-quality').PostSessionQualityMode>(),
+  state: text('state').notNull().default('collecting').$type<import('../post-session-quality').PostSessionRunState>(),
+  // Collection attempts so far. The retry CAS keys on it.
+  attempts: integer('attempts').notNull().default(1),
+  facts: jsonb('facts').$type<import('../post-session-quality').StageAFacts | null>(),
+  factsSchemaVersion: integer('facts_schema_version'),
+  // Stage A metadata: does a transcript object exist. Not coverage.
+  transcriptAvailability: text('transcript_availability').$type<import('../post-session-quality').TranscriptAvailability>(),
+  // §12 coverage truth, written by whoever actually reads the transcript.
+  // NULL = not established yet — never read as 'full'.
+  traceAvailability: text('trace_availability').$type<import('../post-session-quality').TraceAvailability>(),
+  traceSource: text('trace_source'),
+  traceMissing: jsonb('trace_missing').$type<Record<string, unknown> | null>(),
+  // Stage B. NULL until triage ran.
+  triage: jsonb('triage').$type<import('../post-session-quality').PostSessionTriageRecord | null>(),
+  hardTriggered: boolean('hard_triggered'),
+  hardTriggerReasons: jsonb('hard_trigger_reasons').$type<string[] | null>(),
+  // The final routing after hard-trigger override — what actually happened.
+  finalDecision: text('final_decision').$type<import('../post-session-quality').TriageDecision>(),
+  // Failure diagnostics. Bounded at write time; never cleared by a later
+  // success so the history of a retried run stays readable.
+  errorStage: text('error_stage').$type<import('../post-session-quality').PostSessionFailureStage>(),
+  lastError: text('last_error'),
+  failedAt: timestamp('failed_at', { withTimezone: true }),
+  collectedAt: timestamp('collected_at', { withTimezone: true }),
+  triagedAt: timestamp('triaged_at', { withTimezone: true }),
+  analysedAt: timestamp('analysed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workerPolicyIdx: uniqueIndex('post_session_runs_worker_policy_idx').on(t.workerId, t.policyVersion),
+  workspaceCreatedIdx: index('post_session_runs_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  stateUpdatedIdx: index('post_session_runs_state_updated_idx').on(t.state, t.updatedAt),
+  taskIdx: index('post_session_runs_task_idx').on(t.taskId),
+}));
+
+export type PostSessionRun = typeof postSessionRuns.$inferSelect;
+export type NewPostSessionRun = typeof postSessionRuns.$inferInsert;
+
+/**
+ * Post-session finding ledger — one row per (workspace, signature, policy
+ * version), aggregated across every session that exhibited it (spec §8–§9).
+ * Recurrence, highest severity and action state live here so the action
+ * policy can promote a repeated medium finding exactly once; the unique index
+ * is what makes "same incident reprocessed" an upsert rather than a new row.
+ */
+export const postSessionFindings = pgTable('post_session_findings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  policyVersion: text('policy_version').notNull(),
+  signature: text('signature').notNull(),
+  // Broader family key, for "same kind of thing" readouts across signatures.
+  recurrenceKey: text('recurrence_key'),
+  class: text('class').notNull().$type<import('../post-session-quality').FindingClass>(),
+  // Highest severity seen across occurrences.
+  severity: text('severity').notNull().$type<import('../post-session-quality').FindingSeverity>(),
+  // Highest confidence seen across occurrences.
+  confidence: decimal('confidence', { precision: 4, scale: 3 }),
+  title: text('title').notNull(),
+  summary: text('summary'),
+  proposedAction: text('proposed_action').notNull().$type<import('../post-session-quality').FindingProposedAction>(),
+  occurrenceCount: integer('occurrence_count').notNull().default(1),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  // Capped by the writer; occurrenceCount stays exact past the cap.
+  affectedRefs: jsonb('affected_refs').notNull().default([]).$type<import('../post-session-quality').FindingAffectedRef[]>(),
+  evidenceRefs: jsonb('evidence_refs').notNull().default([]).$type<import('../post-session-quality').FindingEvidenceRef[]>(),
+  // Run ids ever folded into this row, capped far above affectedRefs so the
+  // dedup check in aggregateFindingOccurrence survives affectedRefs aging out.
+  seenRunIds: jsonb('seen_run_ids').notNull().default([]).$type<string[]>(),
+  actionState: text('action_state').notNull().default('observed').$type<import('../post-session-quality').FindingActionState>(),
+  actionTaskId: uuid('action_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  actionArtifactId: uuid('action_artifact_id').references(() => artifacts.id, { onDelete: 'set null' }),
+  actionAt: timestamp('action_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceSignaturePolicyIdx: uniqueIndex('post_session_findings_ws_signature_policy_idx').on(t.workspaceId, t.signature, t.policyVersion),
+  workspaceRecurrenceIdx: index('post_session_findings_ws_recurrence_idx').on(t.workspaceId, t.recurrenceKey),
+  actionStateIdx: index('post_session_findings_action_state_idx').on(t.actionState),
+}));
+
+export type PostSessionFinding = typeof postSessionFindings.$inferSelect;
+export type NewPostSessionFinding = typeof postSessionFindings.$inferInsert;

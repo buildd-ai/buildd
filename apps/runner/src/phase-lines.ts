@@ -7,7 +7,8 @@
  * (restore, the post-restore fetch, the snapshot upload; warm-repo.ts).
  * Alongside them: `BUILDD_METRIC=<name> <integer>` for byte counts and ages,
  * and `BUILDD_REPO_SOURCE=warm` or `BUILDD_REPO_SOURCE=clone <reason>` saying
- * how the repo got onto the disk. apps/cloud-runner reads all three into its
+ * how the repo got onto the disk, and `BUILDD_WARM_UPLOAD=skipped <reason>`
+ * when a warm upload was skipped. apps/cloud-runner reads them all into its
  * per-run report (src/run-report.ts parses the same formats; a test there
  * keeps the two in step). Nothing else is printed: no paths, no URLs.
  *
@@ -27,9 +28,22 @@ export type RunPhase = typeof RUN_PHASES[number];
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
-  'park_bytes', 'resume_layer',
+  'park_bytes', 'resume_layer', 'warm_repo_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
+
+/**
+ * `BUILDD_WARM_UPLOAD=skipped <reason>`: the run ended without uploading a
+ * warm snapshot it would otherwise have uploaded. `too_large`: the repo (or
+ * the bundle, as it streamed) was over the cap (warm-repo.ts).
+ */
+export const WARM_UPLOAD_LINE_PREFIX = 'BUILDD_WARM_UPLOAD=';
+export const WARM_UPLOAD_SKIP_REASONS = ['too_large'] as const;
+export type WarmUploadSkipReason = typeof WARM_UPLOAD_SKIP_REASONS[number];
+
+export function formatWarmUploadSkippedLine(reason: WarmUploadSkipReason): string {
+  return `${WARM_UPLOAD_LINE_PREFIX}skipped ${reason}`;
+}
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 /** Why the repo was cloned rather than restored from a warm snapshot. */
@@ -72,6 +86,11 @@ export function emitMetric(name: RunMetric, value: number, opts: EmitOpts = {}):
 export function emitRepoSource(source: RepoSource, reason?: RepoFallbackReason, opts: EmitOpts = {}): void {
   if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
   (opts?.log ?? console.log)(formatRepoSourceLine(source, reason));
+}
+
+export function emitWarmUploadSkipped(reason: WarmUploadSkipReason, opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(formatWarmUploadSkippedLine(reason));
 }
 
 /** Run `fn` between `<step>_start` and `<step>_end`; the end is printed even if it throws. */

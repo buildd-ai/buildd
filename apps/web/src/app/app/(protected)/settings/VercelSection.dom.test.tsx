@@ -35,11 +35,11 @@ describe('VercelSection', () => {
     await mount();
     const intro = [...host.querySelectorAll('p')].find((p) => p.textContent?.includes('vercel.com/account/tokens'));
     expect(intro).not.toBeUndefined();
-    expect(intro!.textContent).toBe('Create a token at vercel.com/account/tokens to get alerts when prod is unhealthy.');
+    expect(intro!.textContent).toBe('Create a token at vercel.com/account/tokens for prod health alerts.');
   });
 
   it('keeps the encryption note near the add-token form', async () => {
     await mount();
-    expect(host.textContent).toContain('Stored encrypted at the team level. Never sent to runners.');
+    expect(host.textContent).toContain('Encrypted, team-wide, never sent to runners.');
   });
 });

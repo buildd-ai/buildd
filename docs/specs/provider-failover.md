@@ -2,7 +2,7 @@
 title: Provider Failover
 status: active
 owner: max
-last_verified: 2026-08-25
+last_verified: 2026-10-04
 summary: When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
 domain: runners
 surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
@@ -24,6 +24,21 @@ assertions:
   - id: backend-policy-test
     type: test_file
     path: packages/core/__tests__/backend-policy.test.ts
+  - id: route-uses-oauth-seat
+    type: symbol
+    name: routeUsesOauthSeat
+    path: apps/web/src/app/api/workers/claim/claude-model-route.ts
+  - id: claude-model-route-test
+    type: test_file
+    path: apps/web/src/app/api/workers/claim/claude-model-route.test.ts
+  - id: is-backend-pinned
+    type: symbol
+    name: isBackendPinned
+    path: packages/core/backend-policy.ts
+  - id: describe-backend-routing
+    type: symbol
+    name: describeBackendRouting
+    path: packages/core/backend-policy.ts
 supersedes: []
 ---
 # Provider Failover
@@ -146,13 +161,109 @@ dispatched onto a provider that is itself walled.
 - AC-10: GIVEN a Claude-walled task AND an active Codex pause WHEN a runner
   claims THEN the task is NOT flipped to Codex.
 
+**Code surface**: see the end of this section.
+
+### Only seat-bound work is walled by the Claude seat
+
+**Invariants**:
+- A Claude wall (the account's OAuth session, a tenant budget, or a `claude`
+  row in `backend_pauses`) blocks, defers or fails over a Claude task ONLY
+  when that task's run would spend the OAuth seat. The claim decides this
+  with ONE predicate, `routeUsesOauthSeat(resolveClaudeModelRoute(…))`
+  (`apps/web/src/app/api/workers/claim/claude-model-route.ts`), computed
+  BEFORE the failover decision and reused by the Codex-wall escape and the
+  OAuth pacing cap.
+- Not seat-bound: a cloud executor (credentials are added at egress, which
+  never carries a seat token); a runner whose own provider wins
+  (`llmProviderOverride`); a team agent model endpoint that wins
+  `resolveAgentModelRoute` for a runner declaring the endpoint feature; a live
+  `anthropic_api_key` visible to the task (metered, and preferred over an
+  OAuth token at the runner). Every doubt — a lookup error, no
+  `ENCRYPTION_KEY`, no team — answers "seat-bound", the prior behaviour.
+- A tenant task is walled by its tenant's budget, as before.
+
+**Acceptance criteria**:
+- AC-14: GIVEN an exhausted Claude seat AND a team agent endpoint that wins
+  the route for a runner declaring the endpoint feature WHEN it claims THEN the
+  task is claimed on Claude, not flipped and not deferred.
+- AC-15: GIVEN an exhausted Claude seat AND a live team `anthropic_api_key`
+  WHEN a runner claims THEN the task is claimed on Claude.
+- AC-16: GIVEN a Claude-pool pause AND a cloud executor claim THEN a Claude
+  task is claimed on Claude.
+
+### A flip to Codex only where Codex auth will exist
+
+**Invariants**:
+- A flip to Codex (budget failover or the provider toggle) and the capability
+  filter for a task stored as Codex use the same predicate,
+  `codexAuthReachesRunner` in the claim route, mirroring the runner's own
+  preflight ("No Codex credential configured"): the caller advertises
+  `backend:codex`; it is not a cloud executor (the claim strips credentials and
+  egress credentials no OpenAI traffic); and it has local Codex auth
+  (`OPENAI_API_KEY` / `CODEX_HOME`) or a server credential that can be
+  delivered (`ENCRYPTION_KEY` set and a `codex_credential`, `openai_api_key` or
+  OpenAI-compatible endpoint the runner applies).
+
+**Acceptance criteria**:
+- AC-17: GIVEN an exhausted Claude seat AND a team Codex credential WHEN the
+  caller does not advertise `backend:codex`, OR `ENCRYPTION_KEY` is unset, THEN
+  the task is deferred, not flipped.
+- AC-18: GIVEN a Claude task with Claude disabled team-wide WHEN a cloud
+  executor claims THEN the task is deferred as `provider_unavailable`.
+- AC-19: GIVEN an exhausted Claude seat, no server Codex credential, AND a
+  runner advertising `backend:codex` with `OPENAI_API_KEY` WHEN it claims THEN
+  the task is flipped to Codex.
+
+### Pinned backends
+
+**Invariants**:
+- A backend named explicitly for the task — `backend` on create (API or
+  `create_task`), or an operator switching it with `update_task` /
+  `PATCH /api/tasks/[id]` — sets `context.backendPinned: true`
+  (`BACKEND_PINNED_KEY`). A backend inherited from a mission, role or
+  workspace default is not pinned; clearing the backend to null unpins.
+- Failover never moves a pinned task, at either site or in either direction:
+  it waits for its own provider's reset (`budget_paused`, with
+  `detail.pinned`). The team provider mask still applies — a disabled provider
+  runs nothing.
+
+**Acceptance criteria**:
+- AC-20: GIVEN a task created with `backend: 'claude'` AND an exhausted Claude
+  seat AND a usable Codex WHEN a runner claims THEN it is deferred, not flipped.
+- AC-21: GIVEN a task pinned to Codex AND a Codex wall WHEN its worker reports
+  or a runner claims THEN it is not moved to Claude.
+
+### Why a task ran on another backend
+
+**Invariants**:
+- A claim that runs a task on a backend other than the stored one stamps
+  `context.backendRouting = { backend, from, reason, at }`
+  (`BACKEND_ROUTING_KEY`; reasons `claude_seat_exhausted`, `claude_disabled`,
+  `codex_disabled`, `codex_rate_limited`), and removes a stale stamp when it
+  runs the stored backend.
+- `describeBackendRouting` is the one reader: `explain` (`backendRouting`),
+  `get_task` (the `Backend:` line) and the task summary render its sentence,
+  e.g. "routed to Codex by budget failover (Claude seat exhausted)".
+
+**Acceptance criteria**:
+- AC-22: GIVEN a claim that flips a task to Codex on the Claude seat wall THEN
+  the claim's context write carries `backendRouting.reason =
+  'claude_seat_exhausted'` AND `explain` for the task reports it.
+
 **Code surface**: `apps/web/src/app/api/workers/claim/route.ts`
 (`teamPauses`, `tryFlipToCodex`, the Codex-wall escape),
 `apps/web/src/app/api/workers/[id]/route.ts` (budget + auth-failure branches),
 `apps/web/src/app/api/workers/[id]/route.test.ts`,
-`apps/web/src/app/api/workers/claim/route.test.ts`.
+`apps/web/src/app/api/workers/claim/route.test.ts`,
+`apps/web/src/app/api/workers/claim/claude-model-route.ts`
+(`resolveClaudeModelRoute`, `routeUsesOauthSeat`),
+`packages/core/backend-policy.ts` (`isBackendPinned`, `describeBackendRouting`),
+`apps/web/src/lib/explain.ts` (`backendRouting`).
 
-**Out of scope**: retry accounting for code failures (`exitCause` taxonomy).
+**Out of scope**: retry accounting for code failures (`exitCause` taxonomy);
+the worker-report route still records a Claude wall from any Claude run, so a
+wall hit on a non-seat route (an endpoint's own budget) is recorded against
+the Claude pool.
 
 ---
 

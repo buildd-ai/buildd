@@ -12,6 +12,7 @@ let ownedTeamRows: Array<{ teamId: string }> = [];
 let seededRows: Array<{ id: string }> = [];
 const capturedUserUpdate: any[] = [];
 const capturedTeamUpdate: any[] = [];
+const capturedOwnedWhere: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -22,7 +23,7 @@ mock.module('@buildd/core/db', () => ({
     },
     select: (_cols: any) => ({
       from: (_t: any) => ({
-        where: (_c: any) => Promise.resolve(ownedTeamRows),
+        where: (c: any) => { capturedOwnedWhere.push(c); return Promise.resolve(ownedTeamRows); },
       }),
     }),
     update: (table: any) => ({
@@ -60,6 +61,7 @@ import {
   getWorkspaceTimezone,
   getViewerTimezone,
   recordUserTimezone,
+  SEEDING_ROLES,
 } from './team-timezone';
 
 beforeEach(() => {
@@ -152,6 +154,20 @@ describe('recordUserTimezone', () => {
     const res = await recordUserTimezone('user-1', 'America/Chicago');
     expect(res?.seededTeamIds).toEqual(['team-1']);
     expect(capturedTeamUpdate[0].timezone).toBe('America/Chicago');
+  });
+
+  it('only roles holding seed_team_timezone seed a team: owners, not admins or members', async () => {
+    expect(SEEDING_ROLES).toEqual(['owner']);
+    capturedOwnedWhere.length = 0;
+    ownedTeamRows = [];
+    await recordUserTimezone('user-1', 'America/Chicago');
+    expect(capturedOwnedWhere[0]).toEqual({
+      type: 'and',
+      args: [
+        { type: 'eq', a: undefined, b: 'user-1' },
+        { type: 'inArray', a: undefined, b: ['owner'] },
+      ],
+    });
   });
 
   it('does not touch teams when the user owns none', async () => {

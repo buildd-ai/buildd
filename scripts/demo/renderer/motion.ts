@@ -4,7 +4,7 @@
  * square corners, 2px rules, hard offset shadows, the orange accent, flat
  * fills; no gradients, no blur. Bundled into the stage.
  */
-import { doneIn, fleetRows, phoneChosen, screenChecks, splitAt, splitHeadline, typedChars, verifyAt, type Motion } from './motion-model';
+import { beforeAfterAt, chapterIn, checksIn, decidedAt, doubtAt, doneIn, fleetRows, phoneChosen, recapAt, screenChecks, splitAt, splitHeadline, titleIn, typedChars, verifyAt, type Motion } from './motion-model';
 
 export type MotionPalette = { bg: string; surface: string; text: string; muted: string; rule: string; shadow: string; track: string };
 
@@ -83,9 +83,206 @@ function buildVerify(m: Extract<Motion, { kind: 'verify' }>, root: HTMLElement, 
   };
 }
 
+/**
+ * v7's type pieces: the hook's big lines, chapter cards, the recap, and the
+ * before/after phone screenshots. Big type, square corners, the accent square.
+ */
+function buildV7(m: Extract<Motion, { kind: 'title' | 'chapter' | 'recap' | 'beforeAfter' | 'doubt' | 'checks' | 'decided' }>, root: HTMLElement, P: MotionPalette, frame: { width: number; height: number }) {
+  const H = frame.height;
+  // Type scales with the frame's width, but a 4:5 phone frame reads as if it were wider, so its type stays large.
+  const W = Math.max(frame.width, Math.round(H * 1.33));
+  const FW = frame.width;
+  const pad = Math.round(FW * 0.083);
+  if (m.kind === 'decided') {
+    // Question chips in plain words: the routine ones tick to "decided"; the last lifts toward a phone outline.
+    const tall = H > FW;
+    const box = el('div', { position: 'absolute', left: `${pad}px`, top: tall ? `${Math.round(H * 0.08)}px` : '50%', transform: tall ? 'none' : 'translateY(-50%)', display: 'flex', flexDirection: 'column', gap: `${Math.round(H * 0.035)}px`,
+      maxWidth: tall ? `${FW - 2 * pad}px` : `${Math.round(FW * 0.62)}px` }, root);
+    const chips = m.chips.map((text, i) => {
+      const chip = el('div', { display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.016)}px`, padding: `${Math.round(W * 0.012)}px ${Math.round(W * 0.018)}px`,
+        fontSize: `${Math.round(W * 0.026)}px`, fontWeight: '600', whiteSpace: tall ? 'normal' : 'nowrap', width: 'fit-content', maxWidth: `${FW - 2 * pad}px`, opacity: '0', ...card(P, 6) }, box);
+      el('span', {}, chip, text);
+      const tick = i < m.tickAt.length ? el('span', { display: 'flex', alignItems: 'center', gap: '10px', fontSize: `${Math.round(W * 0.016)}px`, letterSpacing: '0.14em', color: OK, opacity: '0', whiteSpace: 'nowrap' }, chip) : null;
+      if (tick) { el('span', { width: '12px', height: '12px', background: OK }, tick); el('span', {}, tick, 'DECIDED'); }
+      return { chip, tick };
+    });
+    // The phone outline the last chip lifts toward.
+    const pw = Math.round(H * (tall ? 0.2 : 0.3) * 0.48), ph = Math.round(H * (tall ? 0.2 : 0.3));
+    const phone = el('div', { position: 'absolute', right: tall ? 'auto' : `${pad}px`, left: tall ? `calc(50% - ${Math.round(pw / 2)}px)` : 'auto', top: tall ? 'auto' : '50%', bottom: tall ? `${Math.round(H * 0.06)}px` : 'auto', transform: tall ? 'none' : 'translateY(-50%)', width: `${pw}px`, height: `${ph}px`,
+      border: `3px solid ${P.rule}`, borderRadius: `${Math.round(pw * 0.14)}px`, opacity: '0' }, root);
+    el('div', { position: 'absolute', left: '50%', top: '8px', width: `${Math.round(pw * 0.3)}px`, height: '6px', marginLeft: `-${Math.round(pw * 0.15)}px`, background: P.rule, borderRadius: '3px' }, phone);
+    // The last chip stays where it is: its border turns to the accent and a line grows from it to the
+    // phone outline beside it. Nothing moves across anything, and each element animates once.
+    const last = chips[chips.length - 1].chip;
+    const line = el('div', { position: 'absolute', height: '3px', background: ACCENT, transformOrigin: 'left center', transform: 'scaleX(0)' }, root);
+    let placed = false;
+    return (t: number) => {
+      const v = decidedAt(m, t);
+      v.chips.forEach((o, i) => { chips[i].chip.style.opacity = String(o); chips[i].chip.style.transform = `translateY(${10 * (1 - o)}px)`; });
+      v.ticks.forEach((o, i) => { if (chips[i].tick) chips[i].tick!.style.opacity = String(o); });
+      phone.style.opacity = String(v.phone);
+      last.style.borderColor = v.lift > 0.5 ? ACCENT : P.rule;
+      if (!placed) {
+        // Measure once, after layout: from the last chip's right edge to the phone's left edge, at the chip's middle.
+        const a = last.getBoundingClientRect(), b = phone.getBoundingClientRect(), r = root.getBoundingClientRect();
+        if (a.width && b.width) {
+          const y = tall ? a.bottom - r.top + 4 : a.top - r.top + a.height / 2;
+          const x0 = tall ? a.left - r.left + a.width / 2 : a.right - r.left + 12, x1 = tall ? x0 : b.left - r.left - 12;
+          Object.assign(line.style, tall
+            ? { left: `${x0}px`, top: `${y}px`, width: '3px', height: `${Math.max(0, b.top - r.top - y - 12)}px`, transformOrigin: 'center top' }
+            : { left: `${x0}px`, top: `${y - 1}px`, width: `${Math.max(0, x1 - x0)}px` });
+          placed = true;
+        }
+      }
+      line.style.transform = tall ? `scaleY(${v.lift})` : `scaleX(${v.lift})`;
+    };
+  }
+  if (m.kind === 'doubt') {
+    // One quiet agent row; "Done ✓" lands; then a small question mark beside it. On a 4:5 phone frame it is
+    // sized from the frame's own width and wraps to two centred lines, so the whole row sits inside with margin.
+    const tall = H > FW;
+    const fs = tall ? Math.round(FW * 0.05) : Math.round(W * 0.022);
+    const row = el('div', { position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', display: 'flex', alignItems: 'center',
+      flexWrap: 'wrap', justifyContent: 'center', columnGap: `${Math.round(fs * 0.9)}px`, rowGap: `${Math.round(fs * 0.7)}px`,
+      boxSizing: 'border-box',
+      padding: `${Math.round(fs * 1.6)}px ${Math.round(fs * 1.3)}px`,
+      fontSize: `${fs}px`, whiteSpace: 'nowrap', opacity: '0', ...card(P, 8) }, root);
+    // On a 4:5 frame the agent label takes its own line (three short lines read larger than two long ones).
+    const who = el('span', { display: 'flex', alignItems: 'center', gap: `${Math.round(fs * 0.6)}px`, flexWrap: tall ? 'wrap' : 'nowrap', justifyContent: 'center', rowGap: `${Math.round(fs * 0.4)}px`, flexBasis: tall ? '100%' : 'auto' }, row);
+    const tag = el('span', { display: 'flex', alignItems: 'center', gap: `${Math.round(fs * 0.6)}px`, flexBasis: tall ? '100%' : 'auto', justifyContent: 'center' }, who);
+    el('span', { width: `${Math.round(fs * 0.5)}px`, height: `${Math.round(fs * 0.5)}px`, background: '#0C72CB', flex: '0 0 auto' }, tag);
+    el('span', { color: P.muted }, tag, m.agent);
+    el('span', { fontWeight: '600' }, who, m.task);
+    // Two lines at any size: the agent and its task, then "Done ✓ ?" with the question mark as the focal point.
+    const end = el('span', { display: 'flex', alignItems: 'center', gap: `${Math.round(fs * 0.6)}px`, flexBasis: '100%', justifyContent: 'center' }, row);
+    const done = el('span', { fontWeight: '600', color: OK, opacity: '0' }, end, 'Done ✓');
+    // The question mark is the focal point: larger than the row's type.
+    const q = el('span', { fontWeight: '700', color: ACCENT, fontSize: `${Math.round(fs * 2.4)}px`, lineHeight: '1', opacity: '0' }, end, '?');
+    // Laid out at its natural size, then scaled so the card spans ~70% of a wide frame (88% of a 4:5 one).
+    let scale = 0;
+    return (t: number) => {
+      if (!scale && row.offsetWidth) {
+        scale = ((tall ? 0.88 : 0.7) * FW) / row.offsetWidth;
+        row.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(4)})`;
+      }
+      const v = doubtAt(m, t);
+      row.style.opacity = String(v.row);
+      done.style.opacity = String(v.done);
+      q.style.opacity = String(v.doubt);
+      q.style.transform = `translateY(${-8 * (1 - v.doubt)}px)`;
+    };
+  }
+  if (m.kind === 'checks') {
+    // "Done when" and its checks, set large, in the hero's style: each appears once and stays.
+    const box = el('div', { position: 'absolute', left: `${pad * 1.6}px`, right: `${pad}px`, top: '50%', transform: 'translateY(-50%)' }, root);
+    const head = el('div', { display: 'flex', alignItems: 'center', gap: '16px', fontSize: `${Math.round(W * 0.013)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted, marginBottom: `${Math.round(H * 0.05)}px`, opacity: '0' }, box);
+    el('span', { width: '14px', height: '14px', background: ACCENT }, head);
+    el('span', {}, head, m.title.toUpperCase());
+    const items = m.items.map((text) => {
+      const row = el('div', { display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.02)}px`, fontSize: `${Math.round(W * 0.032)}px`, fontWeight: '600', marginBottom: `${Math.round(H * 0.045)}px`, opacity: '0' }, box);
+      el('span', { width: `${Math.round(W * 0.026)}px`, height: `${Math.round(W * 0.026)}px`, border: `3px solid ${P.rule}`, flex: '0 0 auto' }, row);
+      el('span', {}, row, text);
+      return row;
+    });
+    return (t: number) => {
+      const v = checksIn(m, t);
+      head.style.opacity = String(v.title);
+      v.items.forEach((o, i) => { items[i].style.opacity = String(o); items[i].style.transform = `translateY(${12 * (1 - o)}px)`; });
+    };
+  }
+  if (m.kind === 'title') {
+    const box = el('div', { position: 'absolute', left: `${pad}px`, right: `${pad}px`, top: '50%', transform: 'translateY(-50%)' }, root);
+    const lines = m.lines.map((t, i) => {
+      const row = el('div', { display: 'flex', alignItems: 'center', gap: `${Math.round(W * 0.02)}px`, fontSize: `${Math.round(W * 0.062)}px`, fontWeight: '600', letterSpacing: '-0.02em', lineHeight: '1.15', opacity: '0', color: i === m.lines.length - 1 ? ACCENT : P.text }, box);
+      el('span', {}, row, t);
+      return row;
+    });
+    return (t: number) => titleIn(m, t).forEach((o, i) => { lines[i].style.opacity = String(o); lines[i].style.transform = `translateY(${16 * (1 - o)}px)`; });
+  }
+  if (m.kind === 'chapter') {
+    const box = el('div', { position: 'absolute', left: `${pad}px`, top: '50%', transform: 'translateY(-50%)', opacity: '0' }, root);
+    const idx = el('div', { display: 'flex', alignItems: 'center', gap: '16px', fontSize: `${Math.round(W * 0.013)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted, marginBottom: `${Math.round(H * 0.025)}px` }, box);
+    el('span', { width: '14px', height: '14px', background: ACCENT }, idx);
+    el('span', {}, idx, m.index);
+    el('div', { fontSize: `${Math.round(W * 0.056)}px`, fontWeight: '600', letterSpacing: '-0.02em' }, box, m.title);
+    return (t: number) => { const o = chapterIn(m, t); box.style.opacity = String(o); box.style.transform = `translateY(calc(-50% + ${14 * (1 - o)}px))`; };
+  }
+  if (m.kind === 'recap') {
+    const box = el('div', { position: 'absolute', left: `${pad}px`, right: `${pad}px`, top: '50%', transform: 'translateY(-50%)' }, root);
+    const titles = m.titles.map((t, i) => {
+      const row = el('div', { display: 'flex', alignItems: 'baseline', gap: '22px', fontSize: `${Math.round(W * 0.03)}px`, fontWeight: '500', color: P.muted, marginBottom: `${Math.round(H * 0.012)}px`, opacity: '0' }, box);
+      el('span', { fontSize: `${Math.round(W * 0.012)}px`, letterSpacing: '0.2em', color: ACCENT }, row, String(i + 1).padStart(2, '0'));
+      el('span', {}, row, t);
+      return row;
+    });
+    const line = el('div', { fontSize: `${Math.round(W * (m.titles.length ? 0.047 : 0.06))}px`, fontWeight: '600', letterSpacing: '-0.02em', marginTop: `${Math.round(H * (m.titles.length ? 0.05 : 0))}px`, opacity: '0' }, box, m.line);
+    const url = el('div', { display: 'flex', alignItems: 'center', gap: '16px', fontSize: `${Math.round(W * 0.019)}px`, color: P.muted, marginTop: `${Math.round(H * 0.025)}px`, opacity: '0' }, box);
+    el('span', { width: '14px', height: '14px', background: ACCENT }, url);
+    el('span', {}, url, m.url);
+    return (t: number) => {
+      const r = recapAt(m, t);
+      r.titles.forEach((o, i) => { titles[i].style.opacity = String(o); });
+      line.style.opacity = String(r.line);
+      url.style.opacity = String(r.url);
+    };
+  }
+  // beforeAfter: two phones side by side. `view` shows the top part of each screenshot, so its text reads.
+  const view = m.view ?? 1;
+  const ph = Math.round(H * (m.heightShare ?? 0.8));
+  const gap = Math.round(W * 0.06);
+  // Side by side on a wide frame; on a 4:5 phone frame one phone, the after sliding in over the before.
+  const pw = H > frame.width ? Math.min(Math.round((ph * m.before.width) / (m.before.height * view)), Math.round(frame.width * 0.86))
+    : Math.min(Math.round((ph * m.before.width) / (m.before.height * view)), Math.round((frame.width * 0.9 - gap) / 2));
+  const tallBA = H > FW;
+  const x0 = tallBA ? Math.round((FW - pw) / 2) : Math.round(FW / 2 - pw - gap / 2), x1 = tallBA ? x0 : Math.round(FW / 2 + gap / 2), y = m.heightShare && m.heightShare < 0.8 ? Math.round(H * 0.1) : Math.round((H - ph) / 2 + H * 0.04);
+  const phone = (x: number, img: { src: string }, word: string) => {
+    const fr = el('div', { position: 'absolute', left: `${x}px`, top: `${y}px`, width: `${pw}px`, height: `${ph}px`, overflow: 'hidden', ...card(P, 10) }, root);
+    const im = el('img', { width: '100%', display: 'block' }, fr);
+    im.dataset.src = img.src;
+    const cap = el('div', { position: 'absolute', left: `${x}px`, top: `${y - Math.round(H * 0.075)}px`, display: 'flex', alignItems: 'center', gap: '12px', fontSize: `${Math.round(W * 0.012)}px`, fontWeight: '600', letterSpacing: '0.2em', color: P.muted }, root);
+    const sq = el('span', { width: '14px', height: '14px', background: P.muted }, cap);
+    el('span', {}, cap, word.toUpperCase());
+    return { fr, sq, cap };
+  };
+  const b = phone(x0, m.before, 'Before'), a = phone(x1, m.after, 'After');
+  const stamp = (x: number, color: string, check: boolean) => {
+    const st = el('div', { position: 'absolute', left: `${x + pw - 46}px`, top: `${y - 30}px`, width: '76px', height: '76px', background: color, border: `2px solid ${P.rule}`, boxShadow: `6px 6px 0 0 ${P.shadow}`, opacity: '0' }, root);
+    if (check) el('div', { position: 'absolute', left: '23px', top: '11px', width: '20px', height: '38px', borderRight: '8px solid #ffffff', borderBottom: '8px solid #ffffff', transform: 'rotate(45deg)' }, st);
+    else for (const r of [45, -45]) el('div', { position: 'absolute', left: '34px', top: '14px', width: '8px', height: '48px', background: '#ffffff', transform: `rotate(${r}deg)` }, st);
+    return st;
+  };
+  const xs = stamp(x0, '#d4473a', false), ok = stamp(x1, OK, true);
+  return (t: number) => {
+    const v = beforeAfterAt(m, t);
+    // Stacked (4:5), the after covers the before: its label and mark give way, so nothing prints over anything.
+    // Stacked, the stamp turns from the red X straight to the green check (the X gives way only as the check arrives), never emptying in between.
+    xs.style.opacity = String(tallBA ? v.broken * (1 - v.check) : v.broken);
+    if (tallBA) {
+      // Stacked: BEFORE stays where it is; AFTER appears at the right end of the same line (a label swapping in place read as flicker).
+      a.cap.style.left = 'auto'; a.cap.style.right = `${FW - (x1 + pw)}px`;
+      a.cap.style.opacity = String(v.after);
+    }
+    xs.style.transform = `scale(${1.25 - 0.25 * v.broken})`;
+    b.sq.style.background = v.broken > 0.5 ? '#d4473a' : P.muted;
+    if (tallBA) {
+      // Stacked: the after slides in over the before, opaque (a blend read as overprint, a fade-swap as flicker):
+      // every spot of the frame changes once.
+      a.fr.style.opacity = v.after > 0 ? '1' : '0';
+      a.fr.style.transform = `translateX(${Math.round((1 - v.after) * (FW - x1 + 20))}px)`;
+    } else {
+      a.fr.style.opacity = String(v.after);
+      a.fr.style.transform = `translateX(${30 * (1 - v.after)}px)`;
+    }
+    ok.style.opacity = String(v.check);
+    ok.style.transform = `scale(${1.25 - 0.25 * v.check})`;
+    a.sq.style.background = v.check > 0.5 ? OK : P.muted;
+  };
+}
+
 export function buildMotion(m: Motion, layer: HTMLElement, P: MotionPalette, frame = { width: 1920, height: 1080 }): (local: number) => void {
   const root = el('div', { position: 'absolute', inset: '0', fontFamily: MONO, color: P.text }, layer);
   if (m.kind === 'verify') return buildVerify(m, root, P, frame);
+  if (m.kind === 'title' || m.kind === 'chapter' || m.kind === 'recap' || m.kind === 'beforeAfter' || m.kind === 'doubt' || m.kind === 'checks' || m.kind === 'decided') return buildV7(m, root, P, frame);
   label(root, P, m.label);
 
   if (m.kind === 'type') {

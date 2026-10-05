@@ -125,6 +125,83 @@ describe('buildManifestCandidates', () => {
     expect(set.unknownScope).toBe(true);
   });
 
+  describe('tree-pinned (§1d)', () => {
+    const TREE = {
+      status: 'ok' as const,
+      revision: 'base-sha',
+      paths: ['src/a.ts', 'src/b.ts', 'src/sib.ts', 'src/sub/deep.ts', 'lib/rank.ts', 'lib/other.ts', 'README.md'],
+      ranked: ['lib/rank.ts', 'src/a.ts', 'gone/ranked.ts'],
+    };
+
+    it('unions diff, corpus-ranked and sibling files, drops anything absent at the commit, and records tree_pinned coverage', () => {
+      const set = buildManifestCandidates({
+        cutoff: CUTOFF,
+        neighbours: [{ taskId: 't', score: 0.8, completedAt: BEFORE, paths: ['src/a.ts', 'src/deleted.ts'] }],
+        cbm: UNAVAILABLE,
+        tree: TREE,
+      });
+      // Diff first, then corpus-ranked, then siblings of diff files (same directory only).
+      expect(set.candidates).toEqual(['src/a.ts', 'lib/rank.ts', 'src/b.ts', 'src/sib.ts']);
+      expect(set.sources).toEqual(['diff+corpus', 'corpus', 'sibling', 'sibling']);
+      expect(set.candidates).not.toContain('src/deleted.ts');
+      expect(set.candidates).not.toContain('gone/ranked.ts');
+      expect(set.coverage.source).toBe('tree_pinned');
+      expect(set.coverage.revision).toBe('base-sha');
+      expect(set.coverage.revisionPinned).toBe(true);
+      expect(set.coverage.tree).toBe('ok');
+      expect(set.coverage.droppedAbsent).toBe(2);
+      // Tree-pinned coverage alone no longer forces unknown scope.
+      expect(set.unknownScope).toBe(false);
+    });
+
+    it('a described path the tree lacks (a new file) keeps unknown scope', () => {
+      const set = buildManifestCandidates({
+        cutoff: CUTOFF,
+        neighbours: [{ taskId: 't', score: 0.8, completedAt: BEFORE, paths: ['src/a.ts'] }],
+        cbm: UNAVAILABLE,
+        tree: TREE,
+        namedPaths: ['src/a.ts', 'src/sub', 'src/brand-new.ts'],
+      });
+      expect(set.coverage.namedMissing).toEqual(['src/brand-new.ts']);
+      expect(set.unknownScope).toBe(true);
+    });
+
+    it('a described directory present in the tree is not a new file', () => {
+      const set = buildManifestCandidates({
+        cutoff: CUTOFF, neighbours: [], cbm: UNAVAILABLE, tree: TREE, namedPaths: ['src/sub', 'src', 'README.md'],
+      });
+      expect(set.coverage.namedMissing).toEqual([]);
+      expect(set.unknownScope).toBe(false);
+    });
+
+    it('truncation at the cap still means unknown scope', () => {
+      const many = Array.from({ length: 300 }, (_, i) => `f/${String(i).padStart(3, '0')}.ts`);
+      const set = buildManifestCandidates({
+        cutoff: CUTOFF,
+        neighbours: [{ taskId: 't', score: 1, completedAt: BEFORE, paths: many }],
+        cbm: UNAVAILABLE,
+        tree: { status: 'ok', revision: 'r', paths: many, ranked: [] },
+      });
+      expect(set.candidates).toHaveLength(MANIFEST_MAX_CANDIDATES);
+      expect(set.truncated).toBe(true);
+      expect(set.unknownScope).toBe(true);
+    });
+
+    it('an unavailable tree degrades to neighbour_diff_only with unknown scope', () => {
+      const set = buildManifestCandidates({
+        cutoff: CUTOFF,
+        neighbours: [{ taskId: 't', score: 0.8, completedAt: BEFORE, paths: ['src/a.ts', 'src/deleted.ts'] }],
+        cbm: UNAVAILABLE,
+        tree: { status: 'unavailable', reason: 'no installation' },
+      });
+      expect(set.candidates).toEqual(['src/a.ts', 'src/deleted.ts']);
+      expect(set.coverage.source).toBe('neighbour_diff_only');
+      expect(set.coverage.tree).toBe('unavailable');
+      expect(set.coverage.treeReason).toBe('no installation');
+      expect(set.unknownScope).toBe(true);
+    });
+  });
+
   it('prefers diff evidence over CBM-only paths and marks paths found by both', () => {
     const set = buildManifestCandidates({
       cutoff: CUTOFF,

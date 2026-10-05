@@ -21,6 +21,8 @@
  * bundle always sees the defaults.
  */
 
+import { createRuntimeSnapshot } from '@buildd/core/runtime-snapshot';
+
 /** Public defaults. Every overridable threshold is listed here and only here. */
 export const POLICY_DEFAULTS = {
   /** pr-landing: a refreshed head lands if the base gained at most this many commits since. */
@@ -145,17 +147,17 @@ export function parsePolicyOverrides(raw: unknown, log: Log = defaultLog): Polic
 
 // ── In-process snapshot ────────────────────────────────────────────────────────
 
-let snapshot: PolicyOverrides = EMPTY_POLICY_OVERRIDES;
-let refresher: (() => void) | null = null;
+/** The shared snapshot (`@buildd/core/runtime-snapshot`); `policy-overrides-source.ts` loads it. */
+export const policyOverridesSnapshot = createRuntimeSnapshot<PolicyOverrides>(EMPTY_POLICY_OVERRIDES);
 
 /** Replace the active overrides. Called by the server loader; tests may call it directly. */
 export function installPolicyOverrides(overrides: PolicyOverrides): void {
-  snapshot = overrides;
+  policyOverridesSnapshot.install(overrides);
 }
 
 /** The overrides currently in effect (empty until the server has loaded a record). */
 export function currentPolicyOverrides(): PolicyOverrides {
-  return snapshot;
+  return policyOverridesSnapshot.peek();
 }
 
 /**
@@ -164,17 +166,15 @@ export function currentPolicyOverrides(): PolicyOverrides {
  * loader registers itself and rate-limits the actual reads.
  */
 export function setPolicyRefresher(fn: (() => void) | null): void {
-  refresher = fn;
+  policyOverridesSnapshot.setRefresher(fn);
 }
 
 /** Back to defaults with no refresher. For tests. */
 export function resetPolicyOverrides(): void {
-  snapshot = EMPTY_POLICY_OVERRIDES;
-  refresher = null;
+  policyOverridesSnapshot.reset();
 }
 
 /** THE read path for a threshold: the installed override, else the public default. */
 export function policyValue(key: PolicyKey): number {
-  refresher?.();
-  return snapshot.values[key] ?? POLICY_DEFAULTS[key];
+  return policyOverridesSnapshot.read().values[key] ?? POLICY_DEFAULTS[key];
 }
