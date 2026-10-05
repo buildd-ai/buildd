@@ -38,6 +38,14 @@ const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
 // Single source of truth, shared with the heartbeat payload — see updater.ts.
 const BRANCH = TRACKED_BRANCH;
 
+// --version: print and exit. Deliberately after every static import above, so a
+// zero exit also proves the runner's whole module graph loads (the installer
+// smoke test relies on that).
+if (process.argv.includes('--version') || process.argv[2] === 'version') {
+  console.log(`buildd runner ${PKG_VERSION}`);
+  process.exit(0);
+}
+
 // --doctor: run diagnostics and exit
 if (process.argv.includes('--doctor')) {
   const doctor = await import('./doctor');
