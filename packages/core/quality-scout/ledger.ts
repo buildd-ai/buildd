@@ -54,7 +54,9 @@ import {
   type ScoutProbeFamily,
   type ScoutProbeRecord,
   type ScoutProbeSelection,
+  type ScoutReproducibility,
   type ScoutRun,
+  type ScoutRunMetrics,
   type ScoutRunTotals,
   type ScoutRunTrigger,
   type ScoutSourceSignal,
@@ -306,12 +308,18 @@ const maxConfidence = (a: number | null, b: number | null) => (a === null ? b : 
  * writes. The same run applied twice is a no-op, so a retried write never
  * double-counts. Action state and its task survive a recurrence: the existing
  * follow-up is updated, never re-filed.
+ *
+ * `reproducibility` is what the executor established this run (repeat
+ * attempts, or a deterministic adapter). A known answer replaces the stored
+ * one — an intermittent re-run demotes an earlier `deterministic` — and
+ * `unknown` never erases a known one.
  */
 export function applyScoutFailure(
   existing: ScoutFinding | null,
   run: ScoutRun,
   probe: ScoutProbeRecord,
   now: Date,
+  reproducibility: ScoutReproducibility = 'unknown',
 ): { finding: ScoutFinding | null; change: ScoutFindingChange } {
   const r = probe.result;
   if (!r || r.verdict !== 'fail') return { finding: existing, change: existing ? 'unchanged' : 'ignored' };
@@ -332,7 +340,7 @@ export function applyScoutFailure(
         confidence: r.confidence,
         observed: r.observed,
         evidenceRefs: r.evidenceRefs,
-        reproducibility: 'unknown',
+        reproducibility,
         state: 'open',
         actionState: 'none',
         actionTaskId: null,
@@ -359,6 +367,7 @@ export function applyScoutFailure(
       confidence: maxConfidence(existing.confidence, r.confidence),
       observed: r.observed ?? existing.observed,
       evidenceRefs: r.evidenceRefs.length > 0 ? r.evidenceRefs : existing.evidenceRefs,
+      reproducibility: reproducibility === 'unknown' ? existing.reproducibility : reproducibility,
       state: existing.state === 'dismissed' ? 'dismissed' : 'open',
       occurrenceCount: existing.occurrenceCount + 1,
       regressionCount: existing.regressionCount + (regressed ? 1 : 0),
@@ -402,7 +411,7 @@ const MAX_CAS_ATTEMPTS = 4;
 export async function recordScoutFailure(
   run: ScoutRun,
   probe: ScoutProbeRecord,
-  deps: { store?: ScoutFindingStore; now?: () => Date } = {},
+  deps: { store?: ScoutFindingStore; now?: () => Date; reproducibility?: ScoutReproducibility } = {},
 ): Promise<ScoutFindingChange | 'failed'> {
   const r = probe.result;
   if (!r || r.verdict !== 'fail') return 'ignored';
@@ -411,7 +420,7 @@ export async function recordScoutFailure(
   try {
     for (let i = 0; i < MAX_CAS_ATTEMPTS; i++) {
       const existing = await store.find(run.workspaceId, r.signature);
-      const { finding, change } = applyScoutFailure(existing, run, probe, now());
+      const { finding, change } = applyScoutFailure(existing, run, probe, now(), deps.reproducibility);
       if (!finding || change === 'unchanged') return change;
       const ok = existing ? await store.update(finding, existing.occurrenceCount) : await store.insert(finding);
       if (ok) return change;
@@ -454,6 +463,18 @@ export function scoutFindingRow(f: ScoutFinding) {
     resolvedSha: f.resolvedSha,
     resolvedAt: f.resolvedAt ? new Date(f.resolvedAt) : null,
   };
+}
+
+/**
+ * The columns a recurrence rewrites. `action_state` / `action_task_id` are
+ * left out on purpose: they belong to the follow-up claim, which updates them
+ * without touching `occurrence_count`. Writing them here would let a run that
+ * read the row before the claim reset a filed follow-up to `none` — and the
+ * next run would file a second task for the same defect.
+ */
+export function scoutFindingLedgerSet(f: ScoutFinding) {
+  const { actionState: _state, actionTaskId: _task, ...rest } = scoutFindingRow(f);
+  return rest;
 }
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -503,7 +524,7 @@ export const dbScoutFindingStore: ScoutFindingStore = {
   },
   async update(finding, expectedCount) {
     const rows = await db.update(qualityScoutFindings)
-      .set({ ...scoutFindingRow(finding), updatedAt: new Date() })
+      .set({ ...scoutFindingLedgerSet(finding), updatedAt: new Date() })
       .where(and(
         eq(qualityScoutFindings.workspaceId, finding.workspaceId),
         eq(qualityScoutFindings.signature, finding.signature),
@@ -514,7 +535,7 @@ export const dbScoutFindingStore: ScoutFindingStore = {
   },
 };
 
-export function scoutRunRow(run: ScoutRun, totals?: ScoutRunTotals) {
+export function scoutRunRow(run: ScoutRun, totals?: ScoutRunTotals, metrics?: ScoutRunMetrics) {
   return {
     id: run.id,
     workspaceId: run.workspaceId,
@@ -533,6 +554,7 @@ export function scoutRunRow(run: ScoutRun, totals?: ScoutRunTotals) {
     probesSkipped: totals?.probesSkipped ?? null,
     verdicts: totals?.verdicts ?? null,
     costUsd: totals?.costUsd == null ? null : totals.costUsd.toFixed(4),
+    metrics: metrics ?? null,
     error: run.error,
     startedAt: new Date(run.startedAt),
     completedAt: run.completedAt ? new Date(run.completedAt) : null,
@@ -564,8 +586,8 @@ export function scoutProbeRow(run: ScoutRun, p: ScoutProbeRecord) {
 }
 
 /** Insert or update the run row (start, then again on complete/fail). */
-export async function saveScoutRun(run: ScoutRun, totals?: ScoutRunTotals): Promise<void> {
-  const row = scoutRunRow(run, totals);
+export async function saveScoutRun(run: ScoutRun, totals?: ScoutRunTotals, metrics?: ScoutRunMetrics): Promise<void> {
+  const row = scoutRunRow(run, totals, metrics);
   const { id: _id, workspaceId: _ws, ...rest } = row;
   await db.insert(qualityScoutRuns).values(row).onConflictDoUpdate({ target: qualityScoutRuns.id, set: rest });
 }

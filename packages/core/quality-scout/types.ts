@@ -100,6 +100,55 @@ export interface ScoutRunTotals {
   costUsd: number | null;
 }
 
+/** Stages a run passes through, in order; each is timed and costed in the readout. */
+export const SCOUT_STAGES = ['profile', 'signals', 'generate', 'select', 'execute', 'act'] as const;
+export type ScoutStage = (typeof SCOUT_STAGES)[number];
+
+/** `costUsd` is null when nothing in the stage reported a cost — never a guessed zero. */
+export interface ScoutStageMetric {
+  ms: number;
+  costUsd: number | null;
+}
+
+/** What the action policy did with one finding in one run. */
+export const SCOUT_ACTION_OUTCOMES = ['filed', 'updated', 'proposed', 'aggregated', 'retained', 'suppressed', 'noop', 'failed'] as const;
+export type ScoutActionOutcome = (typeof SCOUT_ACTION_OUTCOMES)[number];
+
+/**
+ * The operational readout of one run (spec §16), written when it ends. Every
+ * count is of this run only; staleness is against the ref's head as read when
+ * the run ended.
+ */
+export interface ScoutRunMetrics {
+  candidatesGenerated: number;
+  /** Generated but cut by the candidate cap. */
+  candidatesTruncated: number;
+  probesSelected: number;
+  /** Selected probes that were actually exercised (a refusal counts: it was judged). */
+  probesRun: number;
+  /** Selected probes the run's time bound cut off; each is `inconclusive`/`not_executed`. */
+  probesNotExecuted: number;
+  decisionsAsked: number;
+  decisionFailures: number;
+  verdicts: ScoutRunTotals['verdicts'];
+  stages: Record<ScoutStage, ScoutStageMetric>;
+  costUsd: number | null;
+  findings: { created: number; recurred: number; regressed: number; resolved: number; writeFailures: number };
+  /** Findings the policy wanted acted on (filed, updated or — in shadow — proposed). */
+  actionable: number;
+  actions: Record<ScoutActionOutcome, number>;
+  /** Follow-ups that were NOT filed because one already covers the finding. */
+  dedupeSuppressed: number;
+  exercised: ScoutCandidate;
+  prior: { runId: string; sha: string } | null;
+  /** The ref's head when the run ended; null when it could not be read. */
+  headSha: string | null;
+  staleness: 'fresh' | 'stale' | 'unknown';
+  /** The run's time bound cut execution short. */
+  deadlineHit: boolean;
+  warnings: string[];
+}
+
 // ── Probe ───────────────────────────────────────────────────────────────────
 
 export const SCOUT_PROBE_FAMILIES = ['state-transition', 'surface', 'contract', 'persistence', 'release'] as const;
