@@ -29,23 +29,49 @@ fi
 INSTALL_DIR="$HOME/.buildd"
 BIN_DIR="$HOME/.local/bin"
 
+# What to install. Defaults to main of the public repo; BUILDD_REF takes a branch
+# or a commit SHA (CI's installer smoke test installs the exact commit under
+# test). A non-main install still self-updates to BUILDD_BRANCH (default main)
+# once the runner is up — set that too to stay on a branch.
+BUILDD_REF="${BUILDD_REF:-main}"
+BUILDD_REPO="${BUILDD_REPO:-buildd-ai/buildd}"
+
+# Everything the runner loads at runtime: the runner, every workspace package it
+# resolves (directly or through @buildd/core), and the root bunfig + preload that
+# stub `server-only` for the plain Bun runtime. A workspace dep missing here makes
+# `bun install` fail with "@buildd/<pkg>@workspace:* failed to resolve", and
+# `set -e` then exits before the launcher is written.
+write_sparse_checkout() {
+  cat > .git/info/sparse-checkout << 'SPARSE'
+apps/runner/
+packages/shared/
+packages/core/
+packages/ai-kit/
+packages/dispatch-contract/
+scripts/stub-server-only.ts
+bunfig.toml
+package.json
+SPARSE
+}
+
+# The plain Bun runtime has no `react-server` condition, so `server-only` throws
+# at module load for anything that transitively imports the DB layer. Bun reads
+# bunfig.toml from the cwd only, so the launcher passes the preload explicitly
+# rather than depending on where `buildd` is run from.
+
 # Clone or update using sparse checkout (only apps/runner)
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing installation..."
   cd "$INSTALL_DIR"
 
   # Update sparse checkout config (in case it changed)
-  cat > .git/info/sparse-checkout << 'SPARSE'
-apps/runner/
-packages/shared/
-package.json
-SPARSE
+  write_sparse_checkout
 
   # Fetch and apply updates (nuke and re-clone if fetch fails — handles corrupted sparse checkouts)
-  if git fetch origin main; then
+  if git fetch origin "$BUILDD_REF"; then
     git checkout -- bun.lock 2>/dev/null || true  # Discard local lockfile changes
     git read-tree -mu HEAD  # Re-apply sparse checkout to get new paths
-    git reset --hard origin/main
+    git reset --hard FETCH_HEAD
   else
     echo -e "${YELLOW}Fetch failed — re-cloning from scratch...${NC}"
     cd "$HOME"
@@ -64,19 +90,18 @@ if [ ! -d "$INSTALL_DIR/.git" ]; then
   mkdir -p "$INSTALL_DIR"
   cd "$INSTALL_DIR"
   git init
-  git remote add origin https://github.com/buildd-ai/buildd.git
+  git remote add origin "https://github.com/${BUILDD_REPO}.git"
   git config core.sparseCheckout true
 
-  # Checkout runner app, shared package, and root package.json (for workspaces)
-  cat > .git/info/sparse-checkout << 'SPARSE'
-apps/runner/
-packages/shared/
-package.json
-SPARSE
+  write_sparse_checkout
 
-  # Fetch and checkout
-  git fetch --depth 1 origin main
-  git checkout main
+  # Fetch and checkout: a branch gets a local branch tracking it, a SHA is detached.
+  git fetch --depth 1 origin "$BUILDD_REF"
+  if git rev-parse -q --verify "refs/remotes/origin/$BUILDD_REF" >/dev/null; then
+    git checkout -B "$BUILDD_REF" "origin/$BUILDD_REF"
+  else
+    git checkout --detach FETCH_HEAD
+  fi
 fi
 
 # Rewrite root package.json to only reference the sparse-checkout workspaces
@@ -88,7 +113,10 @@ cat > "$INSTALL_DIR/package.json" << 'PKGJSON'
   "private": true,
   "workspaces": [
     "apps/runner",
-    "packages/shared"
+    "packages/shared",
+    "packages/core",
+    "packages/ai-kit",
+    "packages/dispatch-contract"
   ]
 }
 PKGJSON
@@ -119,11 +147,25 @@ bun install
 # Always through the repo's pinned Playwright (`bun run browser:install`), never a
 # bare `bunx playwright`: that resolves whatever version is cached globally, and
 # `playwright install` from another version deletes the pinned version's Chromium.
+#
+# `--with-deps` installs system libraries with apt, which means sudo for anyone but
+# root. It is only attempted when that cannot prompt: as root, or with
+# passwordless sudo (announced first). Everyone else gets the browser without
+# system libs plus the one apt line to run themselves. BUILDD_NO_SUDO=1 opts out.
 echo -e "${GREEN}Installing headless Chromium (pinned Playwright)...${NC}"
-if bun run browser:install --with-deps 2>&1; then
+CHROMIUM_WITH_DEPS=0
+if [ "$(uname -s)" = "Linux" ]; then
+  if [ "$(id -u)" -eq 0 ]; then
+    CHROMIUM_WITH_DEPS=1
+  elif [ "${BUILDD_NO_SUDO:-}" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    echo -e "${YELLOW}Using sudo (passwordless) to apt-install Chromium's system libraries. Set BUILDD_NO_SUDO=1 to skip.${NC}"
+    CHROMIUM_WITH_DEPS=1
+  fi
+fi
+if [ "$CHROMIUM_WITH_DEPS" = "1" ] && bun run browser:install --with-deps 2>&1; then
   echo -e "${GREEN}Headless Chromium installed successfully${NC}"
 else
-  echo -e "${YELLOW}--with-deps failed (may need root for system libs). Trying without...${NC}"
+  [ "$CHROMIUM_WITH_DEPS" = "1" ] && echo -e "${YELLOW}--with-deps failed. Trying without...${NC}"
   if bun run browser:install 2>&1; then
     echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
     echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
@@ -155,6 +197,10 @@ cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 # Ensure bun is on PATH (non-interactive shells like Docker CMD, nohup, systemd
 # don't source .bashrc, so bun may not be found after auto-update restart)
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+
+# Stubs `server-only` for the plain Bun runtime. Passed explicitly because Bun
+# reads bunfig.toml from the cwd only, and `buildd` runs from anywhere.
+BUILDD_PRELOAD="$HOME/.buildd/scripts/stub-server-only.ts"
 
 # Auto-detect project roots if not set
 if [ -z "$PROJECTS_ROOT" ]; then
@@ -312,12 +358,12 @@ GLOBALEOF
 
   skill)
     shift
-    exec bun run "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
+    exec bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
     ;;
 
   login)
     shift
-    exec bun run "$HOME/.buildd/apps/runner/src/login.ts" "$@"
+    exec bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/login.ts" "$@"
     ;;
 
   logout)
@@ -361,13 +407,13 @@ GLOBALEOF
 
   service)
     shift
-    exec bun run "$HOME/.buildd/apps/runner/src/service.ts" "$@"
+    exec bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/service.ts" "$@"
     ;;
 esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
 while true; do
-  bun run "$HOME/.buildd/apps/runner/src/index.ts" "$@"
+  bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/index.ts" "$@"
   EXIT_CODE=$?
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
   echo "Restarting after update..."
@@ -462,6 +508,35 @@ cbm_provision() {
     return 0
   fi
 
+  # /opt/buildd/bin is outside HOME. Use it directly when writable (root, or a
+  # prepared image); otherwise sudo only after saying so, and never a password
+  # prompt nobody can answer. Skipping is fine: workers run without the graph.
+  local cbm_dir
+  cbm_dir=$(dirname "$CBM_BINARY_PATH")
+  CBM_SUDO=""
+  if [ "$(id -u)" -ne 0 ] && ! { mkdir -p "$cbm_dir" 2>/dev/null && [ -w "$cbm_dir" ]; }; then
+    if [ "${BUILDD_NO_SUDO:-}" = "1" ] || ! command -v sudo >/dev/null 2>&1; then
+      echo -e "${YELLOW}Skipping codebase-memory-mcp: ${cbm_dir} is not writable and sudo is unavailable or disabled (BUILDD_NO_SUDO=1).${NC}"
+      return 0
+    fi
+    if sudo -n true 2>/dev/null; then
+      echo -e "${YELLOW}Using sudo (passwordless) to install codebase-memory-mcp into ${cbm_dir}. Set BUILDD_NO_SUDO=1 to skip.${NC}"
+    elif [ -t 1 ] && [ -r /dev/tty ]; then
+      echo -e "${YELLOW}codebase-memory-mcp (the code graph tool) installs into ${cbm_dir}, which needs sudo and may ask for your password.${NC}"
+      local cbm_answer=""
+      printf "%s" "Use sudo for it now? The runner works without it. [y/N] "
+      read -r cbm_answer < /dev/tty || cbm_answer=""
+      case "$cbm_answer" in
+        [yY]*) ;;
+        *) echo "Skipped codebase-memory-mcp. Re-run the installer to add it later."; return 0 ;;
+      esac
+    else
+      echo -e "${YELLOW}Skipping codebase-memory-mcp: ${cbm_dir} needs sudo, which would prompt for a password with no terminal to answer.${NC}"
+      return 0
+    fi
+    CBM_SUDO="sudo"
+  fi
+
   local sha_var sha tmp
   sha_var="CBM_SHA256_$(echo "${os}_${arch}" | tr '[:lower:]' '[:upper:]')"
   eval "sha=\$$sha_var"
@@ -495,8 +570,8 @@ cbm_provision() {
     "$CBM_BINARY_PATH" daemon stop >/dev/null 2>&1 || true
   fi
 
-  if ! sudo mkdir -p /opt/buildd/bin; then rm -rf "$tmp"; return 1; fi
-  if ! sudo install -m 0755 "$tmp/codebase-memory-mcp" "$CBM_BINARY_PATH"; then
+  if ! $CBM_SUDO mkdir -p "$(dirname "$CBM_BINARY_PATH")"; then rm -rf "$tmp"; return 1; fi
+  if ! $CBM_SUDO install -m 0755 "$tmp/codebase-memory-mcp" "$CBM_BINARY_PATH"; then
     rm -rf "$tmp"; return 1
   fi
   rm -rf "$tmp"
