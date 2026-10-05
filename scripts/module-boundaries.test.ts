@@ -78,6 +78,20 @@ describe('seams that have shipped stay cut', () => {
     expect(imported.filter(f => movedBehindEmit.includes(f))).toEqual([]);
   });
 
+  test('task and team creation no longer import what their creation sets off', () => {
+    const behindTaskCreated = [
+      'apps/web/src/lib/mission-feed.ts',
+      'apps/web/src/lib/mission-loop.ts',
+      'apps/web/src/lib/criteria-escalation.ts',
+      'apps/web/src/lib/task-category-decision.ts',
+    ];
+    const tasksRoute = Object.keys(current.backend['apps/web/src/app/api/tasks/route.ts'] ?? {});
+    expect(tasksRoute.filter(f => behindTaskCreated.includes(f))).toEqual([]);
+    for (const f of ['apps/web/src/auth.ts', 'apps/web/src/app/api/teams/route.ts']) {
+      expect(Object.keys(current.backend[f] ?? {}), f).not.toContain('apps/web/src/lib/default-roles.ts');
+    }
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);

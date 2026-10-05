@@ -34,7 +34,12 @@ describe('composition root', () => {
     expect(byEvent('task.failed')).toEqual(['notifications:ledger-task-failed', 'notifications:push-task-failed']);
   });
 
+  it('task.created: the category look is scheduled before the mission chain starts', () => {
+    expect(byEvent('task.created')).toEqual(['jev-decisions:task-category-look', 'missions:task-created-mission-feed']);
+  });
+
   it('the rest', () => {
+    expect(byEvent('team.created')).toEqual(['roles-skills:seed-default-roles']);
     expect(byEvent('task.retrying')).toEqual(['notifications:push-task-retrying']);
     expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
