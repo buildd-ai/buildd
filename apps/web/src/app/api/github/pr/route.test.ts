@@ -6291,9 +6291,20 @@ describe('agent run on the runner key — close / merge', () => {
     expect((await close(7)).status).toBe(200);
   });
 
-  it('lets an organizer task close a sibling’s PR', async () => {
-    mockWorkersFindFirst.mockResolvedValue(runWorker({ roleSlug: 'organizer' }));
+  it('lets an organizer task close a PR of another task on its own mission', async () => {
+    mockWorkersFindFirst
+      .mockResolvedValueOnce(runWorker({ roleSlug: 'organizer', missionId: 'mission-1' }))
+      .mockResolvedValueOnce({ id: 'w-sibling', task: { missionId: 'mission-1' } });
     expect((await close(7)).status).toBe(200);
+  });
+
+  it('refuses an organizer task closing another mission’s PR, before calling GitHub', async () => {
+    mockWorkersFindFirst
+      .mockResolvedValueOnce(runWorker({ roleSlug: 'organizer', missionId: 'mission-1' }))
+      .mockResolvedValueOnce({ id: 'w-elsewhere', task: { missionId: 'mission-2' } });
+    const res = await close(7);
+    expect(res.status).toBe(403);
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('refuses to merge a PR its task does not name, before the merge policy runs', async () => {
