@@ -3,8 +3,15 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriterionType } from '@buildd/shared';
-import { validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { criterionLabel } from '@/lib/goal-criterion-label';
+import {
+  isAutomaticCheck,
+  joinCriteriaState,
+  plainCriteriaError,
+  validateCriterionInContext,
+  verificationReadiness,
+  type PlainError,
+} from '@/lib/goal-criteria-panel';
 import Switch from '@/components/ui/Switch';
 import { Select } from '@/components/ui/Select';
 
@@ -16,15 +23,17 @@ interface Props {
   readonly?: boolean;
   /** PR numbers whose CI is currently failing — shown inline on all_prs_merged criterion. */
   failingCiPrNumbers?: number[];
+  /** Distinct PRs the mission has opened — lets the sheet offer the PR check in one tap. */
+  missionPrCount?: number;
 }
 
 const CRITERION_TYPE_LABELS: Record<GoalCriterionType, string> = {
   all_prs_merged: 'All PRs merged',
   no_open_tasks: 'No open tasks',
   artifact_exists: 'Artifact exists',
-  command: 'Command',
+  command: 'Command passes',
   metric: 'Metric',
-  description: 'Description',
+  description: 'Judged by AI',
 };
 
 const VERDICT_CONFIG: Record<CriterionVerdict, { label: string; cls: string; icon: string }> = {
@@ -48,9 +57,30 @@ function formatRelativeTime(isoString: string): string {
 
 /* ── Add / Edit Criterion Form ── */
 
-export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd, onCancel }: {
+/** A refusal in product words, with the validator's raw text behind a disclosure. */
+function PlainErrorMessage({ error, testId }: { error: PlainError; testId?: string }) {
+  return (
+    <div role="alert" data-testid={testId}>
+      <p className="text-[12px] text-status-error leading-snug">{error.text}</p>
+      {error.detail && (
+        <details className="mt-1">
+          <summary className="text-[11px] text-text-muted cursor-pointer">Technical details</summary>
+          <p className="text-[11px] font-mono text-text-muted mt-1 break-words">{error.detail}</p>
+        </details>
+      )}
+    </div>
+  );
+}
+
+export function AddCriterionForm({ initial, siblings = [], submitLabel = 'Add criterion', onAdd, onCancel }: {
   /** Pre-fills the form for editing an existing criterion in place. */
   initial?: GoalCriterion;
+  /**
+   * The other criteria saved alongside this one. The list-level rule (at least
+   * one automatic check) is judged against them — validating the new row alone
+   * refused a written goal even on a mission that already had an automatic check.
+   */
+  siblings?: GoalCriterion[];
   submitLabel?: string;
   onAdd: (c: GoalCriterion) => void;
   onCancel: () => void;
@@ -66,7 +96,7 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
   const [metricUnit, setMetricUnit] = useState(initial?.type === 'metric' ? initial.unit ?? '' : '');
   const [description, setDescription] = useState(initial?.type === 'description' ? initial.description : '');
   const [notMechanizableReason, setNotMechanizableReason] = useState(initial?.type === 'description' ? initial.notMechanizableReason ?? '' : '');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<PlainError | null>(null);
 
   // Build the shape the API would receive; do NOT re-decide whether it is valid.
   // The rules live in the write-boundary validator that POST/PATCH
@@ -107,8 +137,8 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
     // and then `if (c) onAdd(c)` — so an empty command, an unparseable metric
     // threshold, or a too-short reason produced a button that did nothing at
     // all, with no message anywhere. Surface the validator's own words, which
-    // are the words the API's 400 would have used.
-    const message = validateGoalCriteria([candidate]);
+    // are the words the API's 400 would have used, said in product terms.
+    const message = validateCriterionInContext(candidate, siblings);
     if (message) {
       setError(message);
       return;
@@ -132,7 +162,7 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
             { value: 'all_prs_merged', label: 'All PRs merged' },
             { value: 'no_open_tasks', label: 'No open tasks' },
             { value: 'artifact_exists', label: 'Artifact exists' },
-            { value: 'description', label: 'Description', description: 'LLM-graded, last resort' },
+            { value: 'description', label: 'Written goal', description: 'Judged by AI, last resort' },
           ]}
         />
       </div>
@@ -268,25 +298,20 @@ export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd
         </button>
       </div>
 
-      {/* The refusal, in the validator's own words. Without this the button
-          simply did nothing. */}
-      {error && (
-        <p role="alert" className="text-[11px] font-mono text-status-error" data-testid="criterion-error">
-          {error}
-        </p>
-      )}
+      {/* The refusal, in product words. Without this the button simply did nothing. */}
+      {error && <PlainErrorMessage error={error} testId="criterion-error" />}
     </form>
   );
 }
 
 /* ── Main Component ── */
-export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly, failingCiPrNumbers }: Props) {
+export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly, failingCiPrNumbers, missionPrCount = 0 }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [criteria, setCriteria] = useState<GoalCriterion[]>(initialCriteria);
   const [criteriaState, setCriteriaState] = useState<GoalCriteriaState | null>(initialState);
   const [autoVerify, setAutoVerify] = useState<boolean>(initialAutoVerify ?? true);
-  const [runError, setRunError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<PlainError | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [savingCriteria, setSavingCriteria] = useState(false);
@@ -309,12 +334,12 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
     try {
       const res = await fetch(`/api/missions/${missionId}/evaluate`, { method: 'POST' });
       if (res.status === 429) {
-        setRunError('Rate limit: max 6 evaluations per hour.');
+        setRunError({ text: 'Checked too often. Try again within the hour.', detail: null });
         return;
       }
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setRunError(body.error ?? 'Evaluation failed');
+        setRunError(plainCriteriaError(body.error ?? 'Verification failed.'));
         return;
       }
       const data = await res.json();
@@ -323,7 +348,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Could not reach buildd to evaluate criteria.');
+      setRunError({ text: 'Could not reach buildd to verify.', detail: null });
     } finally {
       setIsRunning(false);
     }
@@ -344,13 +369,13 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         // state had already been updated optimistically and router.refresh()
         // reverted it, with no clue that the write was rejected.
         const body = await res.json().catch(() => ({}));
-        setRunError(body.error ?? `Could not save criteria (HTTP ${res.status})`);
+        setRunError(plainCriteriaError(body.error ?? `Could not save criteria (HTTP ${res.status})`));
         setCriteria(criteria);
         return;
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Could not reach buildd to save criteria.');
+      setRunError({ text: 'Could not reach buildd to save criteria.', detail: null });
       setCriteria(criteria);
     } finally {
       setSavingCriteria(false);
@@ -389,10 +414,127 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
   const evaluatedAt = criteriaState?.evaluatedAt ?? null;
   const evaluatedBy = criteriaState?.evaluatedBy ?? null;
 
-  // Build state map: index → criterion state
-  const stateByIndex = new Map(
-    (criteriaState?.criteria ?? []).map(c => [c.index, c])
-  );
+  // Each row's stored verdict, matched by criterion identity — never by slot,
+  // which put an edited or deleted criterion's evidence under its successor.
+  const joinedState = joinCriteriaState(criteria, criteriaState);
+
+  // Preflight: with no automatic check the run cannot reach a verdict, so the
+  // sheet offers the fix in its place rather than running and reporting why not.
+  const readiness = verificationReadiness({ criteria, missionPrCount });
+  const blocked = readiness.kind === 'needs_check' ? readiness : null;
+
+  function handleFixAction() {
+    if (!blocked) return;
+    if (blocked.suggestion) void handleAddCriterion(blocked.suggestion);
+    else setShowAddForm(true);
+  }
+
+  const automatic = criteria.map((c, i) => ({ c, i })).filter(({ c }) => isAutomaticCheck(c));
+  const judged = criteria.map((c, i) => ({ c, i })).filter(({ c }) => !isAutomaticCheck(c));
+  const showGroupHeadings = automatic.length > 0 && judged.length > 0;
+
+  function renderRow({ c, i }: { c: GoalCriterion; i: number }) {
+    const cs = joinedState[i];
+    const verdict: CriterionVerdict = cs?.verdict ?? 'UNVERIFIED';
+    const vc = VERDICT_CONFIG[verdict];
+    const isExpanded = expandedRows.has(i);
+    const label = criterionLabel(c);
+    const typeLabel = CRITERION_TYPE_LABELS[c.type] ?? c.type;
+    const auto = isAutomaticCheck(c);
+    return (
+      <div
+        key={i}
+        data-testid="criterion-row"
+        data-check={auto ? 'automatic' : 'judged'}
+        className="flex items-start gap-3 py-2.5 border-b border-border-default last:border-b-0 cursor-pointer touch-manipulation select-none active:bg-surface-2 transition-colors duration-75 rounded-sm"
+        onClick={() => toggleRow(i)}
+        role="button"
+        aria-expanded={isExpanded}
+        tabIndex={0}
+        onKeyDown={(e) => e.key === 'Enter' && toggleRow(i)}
+      >
+        {/* Verdict badge */}
+        <span className={`shrink-0 mt-0.5 w-5 h-5 flex items-center justify-center border text-[11px] font-bold ${vc.cls}`}>
+          {vc.icon}
+        </span>
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          <span className={`inline-block text-[11px] md:text-[10px] px-1 rounded-sm mb-1 ${auto ? 'font-mono text-text-muted border border-border-default' : 'italic text-text-muted border border-dashed border-border-default'}`}>
+            {typeLabel}
+          </span>
+          <p className={`text-[13px] text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
+            {label}
+          </p>
+          {isExpanded && c.type === 'description' && c.notMechanizableReason && (
+            <p className="text-[11px] text-text-muted mt-1 italic leading-snug">
+              Judged by {c.grader === 'api' ? 'an API call' : c.grader === 'runner' ? 'a runner agent' : 'an API call, or a runner agent when no key is set'} because: {c.notMechanizableReason}
+            </p>
+          )}
+          {/* Inline CI-block annotation for the PR check — derived from live worker state */}
+          {c.type === 'all_prs_merged' && failingCiPrNumbers && failingCiPrNumbers.length > 0 && verdict !== 'pass' && (
+            <p className="text-[11px] text-status-error mt-0.5 leading-snug font-mono">
+              blocked: {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
+              {failingCiPrNumbers.map((n, idx) => (
+                <span key={n}>
+                  {idx > 0 && ', '}
+                  #{n}
+                </span>
+              ))}
+            </p>
+          )}
+          {cs?.evidence ? (
+            <p className={`text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
+              {cs.evidence}
+            </p>
+          ) : !cs && criteriaState ? (
+            <p className="text-[12px] text-text-muted mt-0.5 leading-snug" data-testid="criterion-not-checked">
+              Not checked since this was added or changed.
+            </p>
+          ) : null}
+          {cs?.workerTaskId && (
+            <a
+              href={`/app/tasks/${cs.workerTaskId}`}
+              onClick={(e) => e.stopPropagation()}
+              className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted hover:text-text-primary underline mt-0.5"
+            >
+              verification task {cs.workerTaskId.slice(0, 8)}{cs.evaluatedAt ? ` · ${formatRelativeTime(cs.evaluatedAt)}` : ''}
+            </a>
+          )}
+          {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {cs.evidenceRefs.map((ref, ri) => (
+                <span key={ri} className="text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
+                  {ref.type}: {ref.title ?? ref.id.slice(0, 8)}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Expand chevron + remove button */}
+        <div className="shrink-0 flex items-center gap-2 mt-0.5">
+          {!readonly && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleRemoveCriterion(i); }}
+              disabled={savingCriteria}
+              className="text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-40"
+              title="Remove criterion"
+              aria-label="Remove criterion"
+            >
+              <span aria-hidden="true">✕</span>
+            </button>
+          )}
+          <svg
+            className={`w-3.5 h-3.5 text-text-muted transition-transform duration-150${isExpanded ? ' rotate-180' : ''}`}
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+          >
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </div>
+      </div>
+    );
+  }
+
+  const ctaClass = 'shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors disabled:opacity-50 active:scale-95 touch-manipulation';
 
   return (
     <div className="card p-4">
@@ -400,17 +542,18 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       <div className="flex items-center justify-between mb-3 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <h2 className="section-label">Goal criteria</h2>
-          {overallVerdict && (
+          {overallVerdict && !blocked && (
             <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
               {VERDICT_CONFIG[overallVerdict].icon} {VERDICT_CONFIG[overallVerdict].label}
             </span>
           )}
         </div>
-        {!readonly && criteria.length > 0 && (
+        {!readonly && readiness.kind === 'ready' && (
           <button
             onClick={handleRunVerification}
             disabled={isRunning || isPending}
-            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors disabled:opacity-50 active:scale-95 touch-manipulation"
+            data-testid="run-verification"
+            className={ctaClass}
             title="Evaluate all goal criteria now"
           >
             {isRunning ? (
@@ -432,115 +575,49 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
         )}
       </div>
 
+      {/* Not verifiable: status, one reason, one action — in place of a run
+          that could only fail. */}
+      {blocked && (
+        <div className="mb-3 border-l-2 border-status-warning pl-3 py-1" data-testid="criteria-needs-check">
+          <p className="text-[13px] font-medium text-text-primary leading-snug">{blocked.headline}</p>
+          <p className="text-[12px] text-text-muted leading-snug mt-0.5">{blocked.reason}</p>
+          {!readonly && !showAddForm && (
+            <button
+              type="button"
+              onClick={handleFixAction}
+              disabled={savingCriteria || isPending}
+              data-testid="criteria-fix-action"
+              className={`${ctaClass} mt-2`}
+            >
+              {blocked.actionLabel}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Last run metadata */}
-      {evaluatedAt && (
+      {evaluatedAt && !blocked && (
         <p className="text-[11px] text-text-muted mb-3">
           Last run {formatRelativeTime(evaluatedAt)}{evaluatedBy ? ` · ${evaluatedBy}` : ''}
         </p>
       )}
 
       {runError && (
-        <p className="text-[12px] text-status-error mb-3">{runError}</p>
+        <div className="mb-3">
+          <PlainErrorMessage error={runError} testId="criteria-run-error" />
+        </div>
       )}
 
-      {/* Criteria list */}
+      {/* Criteria list: automatic checks first, AI-judged ones set apart — only
+          the former give the mission a verdict that needs no model. */}
       {criteria.length === 0 ? (
         <p className="text-[13px] text-text-muted mb-3">No criteria. Add one to gate completion on a measurable outcome.</p>
       ) : (
         <div className="space-y-2 mb-3">
-          {criteria.map((c, i) => {
-            const cs = stateByIndex.get(i);
-            const verdict: CriterionVerdict = cs?.verdict ?? 'UNVERIFIED';
-            const vc = VERDICT_CONFIG[verdict];
-            const isExpanded = expandedRows.has(i);
-            const label = criterionLabel(c);
-            const typeLabel = CRITERION_TYPE_LABELS[c.type] ?? c.type;
-            return (
-              <div
-                key={i}
-                className="flex items-start gap-3 py-2.5 border-b border-border-default last:border-b-0 cursor-pointer touch-manipulation select-none active:bg-surface-2 transition-colors duration-75 rounded-sm"
-                onClick={() => toggleRow(i)}
-                role="button"
-                aria-expanded={isExpanded}
-                tabIndex={0}
-                onKeyDown={(e) => e.key === 'Enter' && toggleRow(i)}
-              >
-                {/* Verdict badge */}
-                <span className={`shrink-0 mt-0.5 w-5 h-5 flex items-center justify-center border text-[11px] font-bold ${vc.cls}`}>
-                  {vc.icon}
-                </span>
-                {/* Content */}
-                <div className="flex-1 min-w-0">
-                  <span className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm mb-1">
-                    {typeLabel}
-                  </span>
-                  <p className={`text-[13px] text-text-primary font-medium leading-snug${isExpanded ? '' : ' line-clamp-2'}`}>
-                    {label}
-                  </p>
-                  {isExpanded && c.type === 'description' && c.notMechanizableReason && (
-                    <p className="text-[11px] text-text-muted mt-1 italic leading-snug">
-                      Prose (graded by {c.grader === 'api' ? 'an API call' : c.grader === 'runner' ? 'a runner agent' : 'an API call, or a runner agent when no key is set'}) because: {c.notMechanizableReason}
-                    </p>
-                  )}
-                  {/* Inline CI-block annotation for all_prs_merged — derived from live worker state */}
-                  {c.type === 'all_prs_merged' && failingCiPrNumbers && failingCiPrNumbers.length > 0 && verdict !== 'pass' && (
-                    <p className="text-[11px] text-status-error mt-0.5 leading-snug font-mono">
-                      blocked: {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
-                      {failingCiPrNumbers.map((n, idx) => (
-                        <span key={n}>
-                          {idx > 0 && ', '}
-                          #{n}
-                        </span>
-                      ))}
-                    </p>
-                  )}
-                  {cs?.evidence && (
-                    <p className={`text-[12px] text-text-muted mt-0.5 leading-snug font-mono break-words${isExpanded ? '' : ' line-clamp-1'}`}>
-                      {cs.evidence}
-                    </p>
-                  )}
-                  {cs?.workerTaskId && (
-                    <a
-                      href={`/app/tasks/${cs.workerTaskId}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="inline-block text-[11px] md:text-[10px] font-mono text-text-muted hover:text-text-primary underline mt-0.5"
-                    >
-                      verification task {cs.workerTaskId.slice(0, 8)}{cs.evaluatedAt ? ` · ${formatRelativeTime(cs.evaluatedAt)}` : ''}
-                    </a>
-                  )}
-                  {cs?.evidenceRefs && cs.evidenceRefs.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {cs.evidenceRefs.map((ref, ri) => (
-                        <span key={ri} className="text-[11px] md:text-[10px] font-mono text-text-muted px-1 border border-border-default rounded-sm">
-                          {ref.type}: {ref.title ?? ref.id.slice(0, 8)}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {/* Expand chevron + remove button */}
-                <div className="shrink-0 flex items-center gap-2 mt-0.5">
-                  {!readonly && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleRemoveCriterion(i); }}
-                      disabled={savingCriteria}
-                      className="text-[11px] text-text-muted hover:text-status-error transition-colors disabled:opacity-40"
-                      title="Remove criterion"
-                      aria-label="Remove criterion"
-                    >
-                      <span aria-hidden="true">✕</span>
-                    </button>
-                  )}
-                  <svg
-                    className={`w-3.5 h-3.5 text-text-muted transition-transform duration-150${isExpanded ? ' rotate-180' : ''}`}
-                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </div>
-              </div>
-            );
-          })}
+          {showGroupHeadings && <p className="text-[11px] text-text-muted uppercase tracking-wide">Checked automatically</p>}
+          {automatic.map(renderRow)}
+          {showGroupHeadings && <p className="text-[11px] text-text-muted uppercase tracking-wide pt-2">Judged by AI</p>}
+          {judged.map(renderRow)}
         </div>
       )}
 
@@ -548,6 +625,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       {showAddForm && (
         <div className="mb-3">
           <AddCriterionForm
+            siblings={criteria}
             onAdd={handleAddCriterion}
             onCancel={() => setShowAddForm(false)}
           />

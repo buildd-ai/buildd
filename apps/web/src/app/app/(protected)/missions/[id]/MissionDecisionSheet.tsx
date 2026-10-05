@@ -6,6 +6,7 @@ import Link from 'next/link';
 import type { GoalCriterion } from '@buildd/shared';
 import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
 import { AddCriterionForm } from './MissionGoalCriteria';
+import { plainCriteriaError } from '@/lib/goal-criteria-panel';
 
 export interface SurfaceAuditDecision {
   /** The UI files the mission changed (the completion gate's read), for the collapsed list. */
@@ -146,7 +147,7 @@ export default function MissionDecisionSheet({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setFixError(body.error ?? `Could not save criterion (HTTP ${res.status})`);
+        setFixError(plainCriteriaError(body.error ?? `Could not save criterion (HTTP ${res.status})`).text);
         return;
       }
       // The owner should see the new verdict in this same interaction — the
@@ -394,6 +395,7 @@ export default function MissionDecisionSheet({
             <div className="mt-2">
               <AddCriterionForm
                 initial={failingCriterion}
+                siblings={goalCriteria.filter((_, i) => i !== failingCriterionIndex)}
                 submitLabel="Save & re-run"
                 onAdd={handleFix}
                 onCancel={() => setFixOpen(false)}
