@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import Chip from '@/components/ui/Chip';
 import Eyebrow from '@/components/ui/Eyebrow';
+import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import type { GettingStartedChecklist as Checklist, GettingStartedStepId } from '@/lib/getting-started';
 import { AGENT_CREDENTIAL_HREF } from '@/lib/provider-auth-failure';
@@ -15,24 +16,12 @@ const TITLES: Record<GettingStartedStepId, string> = {
 };
 
 /** Shell lines, one per row, in one inset block. */
-function Commands({ lines }: { lines: string[] }) {
-  return (
-    <div className="mt-2 border border-border-default bg-surface-1 px-3 py-2 font-mono text-meta text-text-secondary overflow-x-auto">
-      {lines.map((l) => (
-        <div key={l} className="whitespace-nowrap">
-          <span aria-hidden="true" className="select-none text-text-muted">$ </span>{l}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function StepBody({ id }: { id: GettingStartedStepId }) {
   if (id === 'runner') {
     return (
       <>
-        <p className="text-body text-text-secondary">Install the CLI on any machine, sign in, then start it.</p>
-        <Commands lines={['curl -fsSL https://buildd.dev/install.sh | bash', 'buildd login', 'buildd']} />
+        <p className="text-body text-text-secondary">Install the CLI on any machine, reload your shell, then start it.</p>
+        <RunnerInstallSteps className="mt-2" />
       </>
     );
   }

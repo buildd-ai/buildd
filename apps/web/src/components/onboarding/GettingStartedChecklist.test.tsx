@@ -12,7 +12,10 @@ describe('GettingStartedChecklist', () => {
     const html = render({ runnerConnected: false, hasAgentCredential: false, hasTask: false });
     expect(html).toContain('Get started · 0 of 3');
     expect(html).toContain('Connect a runner');
-    expect(html).toContain('buildd login');
+    // The one install sequence (lib/runner-install.ts): reload the shell, no `buildd login` step.
+    expect(html).toContain('exec $SHELL');
+    expect(html).not.toContain('buildd login');
+    expect(html).toContain('localhost:8766');
     expect(html).toContain('Add an agent key');
     expect(html).toContain('/app/settings/runners#agent-backends');
     expect(html).toContain('OpenRouter');
@@ -25,7 +28,7 @@ describe('GettingStartedChecklist', () => {
     const html = render({ runnerConnected: true, hasAgentCredential: false, hasTask: true });
     expect(html).toContain('Get started · 2 of 3');
     expect(html).toContain('data-testid="getting-started-runner" data-done="true"');
-    expect(html).not.toContain('buildd login');
+    expect(html).not.toContain('exec $SHELL');
     expect(html).toMatch(/data-testid="getting-started-credential" data-done="false" aria-current="step"/);
     expect(html).toContain('Done');
   });

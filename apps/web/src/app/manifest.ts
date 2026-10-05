@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: 'buildd',
     short_name: 'buildd',
-    description: 'AI Dev Team Orchestration',
+    description: "Agents say they're done. buildd checks.",
     start_url: '/',
     display: 'standalone',
     background_color: '#0a0a0a',
