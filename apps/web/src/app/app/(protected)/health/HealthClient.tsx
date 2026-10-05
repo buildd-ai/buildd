@@ -183,7 +183,39 @@ function humanizeCron(expr: string): string {
   return expr;
 }
 
+/**
+ * Which Health page is rendering. Each route under /app/health shows one
+ * slice of the sections; `all` renders every section (the single-page layout,
+ * kept for tests and as the reference for what each page holds).
+ */
+export type HealthView = 'all' | 'overview' | 'failures' | 'runners' | 'operator';
+
+type HealthBlock =
+  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'dispatch' | 'schedules'
+  | 'failureAnalytics' | 'gates' | 'taskOutcomes' | 'experiments' | 'consumption' | 'cbm'
+  | 'subagentDelegation' | 'errorPatterns';
+
+const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> = {
+  overview: new Set(['problems']),
+  failures: new Set(['failureAnalytics']),
+  runners: new Set(['capacity', 'budget', 'credentials', 'schedules']),
+  operator: new Set([
+    'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'cbm',
+    'subagentDelegation', 'errorPatterns', 'orphanedPrs',
+  ]),
+};
+
+const VIEW_TITLE: Record<HealthView, string> = {
+  all: 'Health',
+  overview: 'Health',
+  failures: 'Failures',
+  runners: 'Runners & capacity',
+  operator: 'Operator',
+};
+
 interface Props {
+  /** Which page is rendering; defaults to every section. */
+  page?: HealthView;
   /** Worker rows whose PR the reconcile sweep gave up on — see OrphanedPrRow. */
   orphanedPrs: OrphanedPrRow[];
   runners: RunnerHeartbeat[];
@@ -255,7 +287,12 @@ export function HealthClient({
   experiments = null,
   dispatchHealth = null,
   now,
+  page = 'all',
 }: Props) {
+  const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
+  // The page window only means something where a TREND section renders.
+  const showsTrend = (['failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'cbm', 'subagentDelegation', 'errorPatterns'] as const).some(show);
+  const showsState = (['capacity', 'budget', 'credentials', 'dispatch', 'schedules'] as const).some(show);
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
@@ -451,14 +488,17 @@ export function HealthClient({
       {/* Header — one window control for the whole page, not one per section. */}
       <div className="mb-6">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="hidden md:block text-2xl font-bold">Health</h1>
-          <div className="flex items-center gap-2 ml-auto">
-            <WindowPicker window={activeWindow} />
-          </div>
+          <h1 className="hidden md:block text-2xl font-bold">{VIEW_TITLE[page]}</h1>
+          {showsTrend && (
+            <div className="flex items-center gap-2 ml-auto">
+              <WindowPicker window={activeWindow} />
+            </div>
+          )}
         </div>
       </div>
 
       {/* 1. Problems now */}
+      {show('problems') && (
       <section data-testid="health-section-problems" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h2 className="section-label">Problems</h2>
@@ -663,22 +703,26 @@ export function HealthClient({
                   +{failureGroups.hiddenFailures} more failure
                   {failureGroups.hiddenFailures === 1 ? '' : 's'} in{' '}
                   {failureGroups.hiddenGroups} other group
-                  {failureGroups.hiddenGroups === 1 ? '' : 's'} · see Worker failures below
+                  {failureGroups.hiddenGroups === 1 ? '' : 's'} · see{' '}
+                  <a href="/app/health/failures" className="underline hover:text-text-primary">Failures</a>
                 </span>
               </div>
             )}
           </div>
         )}
-
-        <OrphanedPrsBlock rows={orphanedPrs} now={now} />
       </section>
+      )}
+
+      {show('orphanedPrs') && <OrphanedPrsBlock rows={orphanedPrs} now={now} />}
 
       {/* 2. State — what is true right now. Every number here renders its own
           freshness (`as of {N}h ago`) from the stat's own timestamp, and never
           the page window: a window does not make a state more true. */}
+      {showsState && (
       <section data-testid="health-section-state" className="mb-6">
-        <h2 className="section-label mb-3">State</h2>
+        {page === 'all' && <h2 className="section-label mb-3">State</h2>}
 
+      {show('capacity') && (
       <div data-testid="health-section-runners" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h3 className="text-xs font-medium text-text-secondary">Capacity</h3>
@@ -829,18 +873,20 @@ export function HealthClient({
         </div>
       </div>
 
-      {budgetForecast && <BudgetForecastSection forecast={budgetForecast} now={now} />}
+      )}
 
-      {credentialHealth.length > 0 && (
+      {show('budget') && budgetForecast && <BudgetForecastSection forecast={budgetForecast} now={now} />}
+
+      {show('credentials') && credentialHealth.length > 0 && (
         <CredentialStateSection credentials={credentialHealth} now={now} />
       )}
 
-      <DispatchSection report={dispatchHealth ?? null} now={now} />
+      {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
 
       {/* Schedules — collapsed by default. Lives under State because what it
           carries is a STATE (enabled, next run) plus two LIFETIME counters
           (total runs, consecutive failures), none of which obey the window. */}
-      {schedules.length > 0 && (
+      {show('schedules') && schedules.length > 0 && (
         <div data-testid="health-section-schedules" className="mb-6">
           <button
             onClick={() => setShowSchedules(p => !p)}
@@ -1036,51 +1082,57 @@ export function HealthClient({
         </div>
       )}
       </section>
+      )}
 
       {/* 3. Trend — only meaningful aggregated over a period. Everything here
           obeys `?window=` and says so; nothing here renders freshness. */}
+      {showsTrend && (
       <section data-testid="health-section-trend" className="mb-6">
-        <div className="flex items-baseline justify-between gap-3 mb-3">
-          <h2 className="section-label">Trend</h2>
-          <span className="text-[11px] text-text-muted">last {activeWindow}</span>
-        </div>
+        {/* On its own page the window picker in the header already names the window. */}
+        {page === 'all' && (
+          <div className="flex items-baseline justify-between gap-3 mb-3">
+            <h2 className="section-label">Trend</h2>
+            <span className="text-[11px] text-text-muted">last {activeWindow}</span>
+          </div>
+        )}
 
         {/* ONE page-level statement of the shared root cause. The per-stat
             em-dashes and tooltips below stay exactly as they were — the collapse
             is of the explanation, not of the markers, which
             docs/design/derived-metric-availability.md requires at each stat. */}
-        {seatAuthConfession && (
+        {show('consumption') && seatAuthConfession && (
           <p data-testid="seat-auth-confession" className="text-[11px] text-text-muted mb-3">
             {seatAuthConfession}
           </p>
         )}
 
-        {failureAnalytics && (
+        {show('failureAnalytics') && failureAnalytics && (
           <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} now={now} />
         )}
 
-        {gateAnalytics && <GatesSection gates={gateAnalytics} window={activeWindow} />}
+        {show('gates') && gateAnalytics && <GatesSection gates={gateAnalytics} window={activeWindow} />}
 
-        {usageStats && usageStats.total > 0 && (
+        {show('taskOutcomes') && usageStats && usageStats.total > 0 && (
           <TaskOutcomesSection stats={usageStats} window={activeWindow} />
         )}
 
-        <ExperimentsSection data={experiments} />
+        {show('experiments') && <ExperimentsSection data={experiments} />}
 
-        {consumption && consumption.totals.tasks > 0 && (
+        {show('consumption') && consumption && consumption.totals.tasks > 0 && (
           <ConsumptionSection stats={consumption} workspaceId={wsFilter} now={now} />
         )}
 
-        {cbm && <CodebaseGraphSection cbm={cbm} window={activeWindow} />}
+        {show('cbm') && cbm && <CodebaseGraphSection cbm={cbm} window={activeWindow} />}
 
-        {subagentDelegation && (
+        {show('subagentDelegation') && subagentDelegation && (
           <SubagentDelegationSection panel={subagentDelegation} window={activeWindow} />
         )}
 
-        {errorPatterns && (
+        {show('errorPatterns') && errorPatterns && (
           <ErrorPatternSection panel={errorPatterns} window={activeWindow} />
         )}
       </section>
+      )}
 
       {/* Delete schedule confirm modal */}
       {scheduleToDelete && (
@@ -1264,7 +1316,7 @@ function ConsumptionSection({
         </a>
         <a
           data-testid="insights-link"
-          href="/app/insights"
+          href="/app/health/insights"
           className="flex items-baseline justify-between gap-3 text-xs text-text-secondary hover:text-text-primary transition-colors"
         >
           <span>How work moves to production, and how much agent time shipped</span>
