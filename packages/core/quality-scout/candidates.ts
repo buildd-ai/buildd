@@ -133,7 +133,8 @@ const MAX_TEXT = 400;
 
 export const SEVERITY_RANK: Record<ScoutSeverity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
-const EVIDENCE: Record<ScoutProbeKind, string[]> = {
+/** Evidence each probe kind requires. The executors (`./executors.ts`) map these keys to what they can supply. */
+export const SCOUT_EVIDENCE_REQUIREMENTS: Readonly<Record<ScoutProbeKind, readonly string[]>> = {
   route_smoke: ['Status and rendered output for each exercised route.'],
   api_contract: ['Request and response for each exercised call, or command output with exit code.'],
   visual: ['Phone- and desktop-width captures of each affected route.'],
@@ -467,7 +468,7 @@ export function generateScoutCandidates(
       supported: executor !== null,
       ...(reason && !executor ? { unsupportedReason: clip(reason, MAX_TEXT) } : {}),
       estimatedCost: executor ? (EXECUTOR_COST[executor.kind] ?? 'low') : 'medium',
-      evidenceRequirements: [...EVIDENCE[probeKind]],
+      evidenceRequirements: [...SCOUT_EVIDENCE_REQUIREMENTS[probeKind]],
     });
   }
 
