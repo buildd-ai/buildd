@@ -27,6 +27,7 @@ import type {
   VisualReviewModel,
   VisualReviewNeedsYou,
   VisualReviewPhase,
+  VisualReviewResolvedElsewhere,
   VisualReviewShot,
   VisualReviewStanding,
   VisualReviewSummary,
@@ -480,7 +481,33 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     || (a.variant ?? '').localeCompare(b.variant ?? '')
     || VIEWPORT_RANK[a.viewport] - VIEWPORT_RANK[b.viewport];
   cells.sort(byPlace);
-  const queue = cells
+
+  // 3b. A cell stuck "awaiting a new screenshot" is resolved when a
+  // different cell — another variant key — captured the same route, viewport
+  // and state after its fix merged: a later round often re-shoots only the
+  // routes it fixed with no title collision, so the recapture lands in a
+  // sibling cell instead of this one's history (the per-round collision that
+  // named the original variant no longer holds). Hidden from
+  // `cells`/`queue`/the summary counts, kept in `resolvedElsewhere` for audit.
+  const placeOf = (c: VisualReviewCell) => `${c.route}\u0000${c.viewport}\u0000${(c.current.shot.qa as { state?: string }).state ?? ''}`;
+  const byCellPlace = new Map<string, VisualReviewCell[]>();
+  for (const c of cells) byCellPlace.set(placeOf(c), [...(byCellPlace.get(placeOf(c)) ?? []), c]);
+  const resolvedElsewhere: VisualReviewResolvedElsewhere[] = [];
+  const resolvedKeys = new Set<string>();
+  for (const c of cells) {
+    const mergedAt = c.fixCheck?.state === 'awaiting_capture' ? c.fixCheck.fix.mergedAt : null;
+    if (!mergedAt) continue;
+    const after = (byCellPlace.get(placeOf(c)) ?? [])
+      .filter(s => s.key !== c.key && ms(s.current.shot.createdAt) > ms(mergedAt))
+      .sort((a, b) => ms(b.current.shot.createdAt) - ms(a.current.shot.createdAt))[0];
+    if (after) {
+      resolvedElsewhere.push({ key: c.key, route: c.route, viewport: c.viewport, variant: c.variant, resolvedBy: after.key });
+      resolvedKeys.add(c.key);
+    }
+  }
+  const liveCells = resolvedKeys.size > 0 ? cells.filter(c => !resolvedKeys.has(c.key)) : cells;
+
+  const queue = liveCells
     .filter(c => c.standing === 'to_review')
     .sort((a, b) => queueRankOf(a) - queueRankOf(b) || byPlace(a, b))
     .map(c => c.key);
@@ -495,20 +522,20 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   // 4. Coverage: the required routes of every audit that shot a current cell.
   let coverage: { required: number; covered: number } | null = null;
   if (requiredRoutesOf) {
-    const owners = new Set(cells.map(c => c.current.shot.auditTaskId).filter((id): id is string => !!id));
+    const owners = new Set(liveCells.map(c => c.current.shot.auditTaskId).filter((id): id is string => !!id));
     const routes = new Set<string>();
     for (const id of owners) {
       const t = byId.get(id);
       if (t) for (const r of requiredRoutesOf(t)) routes.add(r);
     }
-    coverage = requiredCoverage(cells.map(c => c.current.shot as VisualShot), [...routes]);
+    coverage = requiredCoverage(liveCells.map(c => c.current.shot as VisualShot), [...routes]);
   }
 
   // 5. Phase.
   const latest = latestAuditOf(tasks);
   const bootFailed = auditBootFailed(tasks);
   const bootFailure = bootFailed ? bootFailureOf(auditTasks) : null;
-  const awaitingHuman = cells.filter(c => c.needsHuman).length;
+  const awaitingHuman = liveCells.filter(c => c.needsHuman).length;
   const roundCapOpen = input.roundCapOpen === true;
   let phase: VisualReviewPhase;
   let progress: VisualReviewModel['progress'] = null;
@@ -532,7 +559,7 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
   } else if (latest && latestRunning) {
     phase = 'capturing';
     const round = surfaceAuditRound(latest);
-    const captured = cells.filter(c => c.current.round === round && c.current.shot.auditTaskId === latest.id).length;
+    const captured = liveCells.filter(c => c.current.round === round && c.current.shot.auditTaskId === latest.id).length;
     const required = requiredRoutesOf ? requiredRoutesOf(latest) : [];
     progress = { captured, expected: required.length > 0 ? required.length * 2 : null };
   } else if (awaitingHuman > 0 || roundCapOpen) {
@@ -545,36 +572,36 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     if (since == null) phase = 'waiting_deps';
     else if (input.browserRunnerOnline === false && now - since > NO_BROWSER_RUNNER_AFTER_MS) phase = 'no_browser_runner';
     else phase = 'queued';
-  } else if (cells.length > 0 || captureGaps.length > 0) {
+  } else if (liveCells.length > 0 || captureGaps.length > 0) {
     phase = 'reviewed';
   } else {
     phase = 'off';
   }
 
-  const reviewed = cells.filter(c => c.current.review).length;
-  const count = (v: VisualQaVerdict) => cells.filter(c => c.current.agentVerdict === v).length;
-  const effective = (v: VisualQaVerdict) => cells.filter(c => c.effectiveVerdict === v).length;
-  const rel = (r: HumanShotReview['relation']) => cells.filter(c => c.current.review?.relation === r).length;
+  const reviewed = liveCells.filter(c => c.current.review).length;
+  const count = (v: VisualQaVerdict) => liveCells.filter(c => c.current.agentVerdict === v).length;
+  const effective = (v: VisualQaVerdict) => liveCells.filter(c => c.effectiveVerdict === v).length;
+  const rel = (r: HumanShotReview['relation']) => liveCells.filter(c => c.current.review?.relation === r).length;
   const summary: VisualReviewSummary = {
-    shots: cells.length,
+    shots: liveCells.length,
     ok: count('ok'),
     issues: count('issue'),
     unsure: count('unsure'),
     effectiveOk: effective('ok'),
     effectiveIssues: effective('issue'),
     reviewed,
-    unreviewed: cells.length - reviewed,
+    unreviewed: liveCells.length - reviewed,
     awaitingHuman,
     toReview: queue.length,
     // An unsure "after" shot already counts in awaitingHuman.
-    fixChecks: cells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
-    awaitingCapture: cells.filter(awaitingCapture).length,
+    fixChecks: liveCells.filter(c => fixCheckDue(c) && !c.needsHuman).length,
+    awaitingCapture: liveCells.filter(awaitingCapture).length,
     confirmed: rel('agree'),
     disputed: rel('dispute'),
     waived: rel('waive'),
     ...(coverage ? { required: coverage.required, covered: coverage.covered } : {}),
     ...(bootFailed ? { bootFailed: true } : {}),
-    rounds: Math.max(0, ...cells.flatMap(c => c.history.map(h => h.round)), ...(latest ? [surfaceAuditRound(latest)] : [])),
+    rounds: Math.max(0, ...liveCells.flatMap(c => c.history.map(h => h.round)), ...(latest ? [surfaceAuditRound(latest)] : [])),
     openFixes,
     captureGaps: captureGaps.length,
   };
@@ -593,12 +620,13 @@ export function buildVisualReviewModel(input: BuildVisualReviewInput): VisualRev
     bootFailure,
     roundCapOpen,
     needsYou,
-    cells,
+    cells: liveCells,
     queue,
     summary,
     fixTasks,
     superseded,
     captureGaps,
+    resolvedElsewhere,
     generatedAt: new Date(now).toISOString(),
   };
 }
