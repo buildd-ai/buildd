@@ -232,7 +232,13 @@ if (QA_THEME) {
 const page = await context.newPage();
 // Hydration mismatches and other client errors land in the run log, so a shot
 // that looks fine but threw on load (React #418) is still visible.
-page.on('pageerror', (err) => console.warn(`[capture] page error on ${page.url()}: ${err.message}`));
+// Counted per route as well (reset before each navigation) and recorded on the
+// capture, so a consumer can tell "rendered" from "rendered but threw".
+let pageErrors = 0;
+page.on('pageerror', (err) => {
+  pageErrors++;
+  console.warn(`[capture] page error on ${page.url()}: ${err.message}`);
+});
 page.on('console', (msg) => {
   if (msg.type() === 'error') console.warn(`[capture] console error on ${page.url()}: ${msg.text().slice(0, 2000)}`);
 });
@@ -291,6 +297,10 @@ type Capture = {
   path: string;
   url: string;
   finalUrl?: string;
+  /** HTTP status of the navigation's main response; null when none arrived. */
+  status?: number | null;
+  /** Uncaught page errors between navigation and the shot. */
+  pageErrors?: number;
   screenshotFile?: string;
   a11yFile?: string;
   redirected?: boolean;
@@ -337,7 +347,9 @@ for (const route of routes) {
 
   let guard: Awaited<ReturnType<typeof guardWrites>> | null = null;
   try {
+    pageErrors = 0;
     const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+    const navStatus = response?.status() ?? null;
 
     if (IS_PREVIEW) {
       const status = response?.status() ?? null;
@@ -435,6 +447,8 @@ for (const route of routes) {
       path: route.path,
       url,
       finalUrl,
+      status: navStatus,
+      pageErrors,
       screenshotFile,
       a11yFile,
       redirected: finalUrl !== url && !finalUrl.startsWith(url),

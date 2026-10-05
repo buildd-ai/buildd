@@ -381,6 +381,15 @@ describe('UI / surface probes — reuse the Visual Auditor capture', () => {
     expect(exec.needsHuman).toBe(true);
   });
 
+  it('a wall the capture itself classified is honoured even when the fields alone look fine', async () => {
+    const exec = await runScoutProbe(scoutRun(), visualProbe(), uiProfile, {
+      capture: capturePort((routes) => routes.flatMap((r) => [shot(r, 'phone', { status: 401, configError: 'protection_bypass_missing' }), shot(r, 'desktop')])),
+    }, { now });
+    expect(exec.probe.result!.verdict).toBe('unsupported');
+    expect(exec.probe.result!.observed).toContain('protection bypass missing');
+    expect(exec.needsHuman).toBe(true);
+  });
+
   it('a no-UI workspace never reaches capture', async () => {
     const plan = planScoutProbe(probeFor('ui-surface', { family: 'surface', probeKind: 'visual' }), cliProfile);
     expect(plan).toMatchObject({ status: 'refused', disposition: 'unsupported', code: 'capability_unavailable' });

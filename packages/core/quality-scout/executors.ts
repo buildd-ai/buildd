@@ -31,12 +31,45 @@ import type { ScoutProbeKind } from '../decision-kind-scout-probe-selection';
 import type { AssertionResult } from '../spec-conformance';
 import type { ScoutCapability, ScoutCapabilityKind, ScoutCapabilityProfile } from '../scout-capabilities';
 import { captureRefMatch } from '../visual-qa-capture-ref';
-import { classifyPageLoad } from '../visual-qa-page-source';
+import { classifyPageLoad, CONFIG_ERROR_MESSAGES } from '../visual-qa-page-source';
 import type { ReadinessItemId, ReadinessReport } from '../workspace-readiness';
-import type { EvidenceCoverage, VerificationEvidenceRef, VerificationExecutor, VerificationObservation } from '../verification-check';
+import type { CaptureConfigError } from '../visual-qa-page-source';
+import type { EvidenceCoverage, VerificationExecutor, VerificationObservation } from '../verification-check';
+import {
+  COMMAND_EVIDENCE_KEY,
+  judgeCommand as judgeCommandOutput,
+  parseCommandExpectation,
+  unsafeCommandRule,
+  type ScoutCommandExpectation,
+  type ScoutCommandOutput,
+  type ScoutCommandRequest,
+} from './adapters/command';
+import {
+  CONTRACT_EVIDENCE_KEY,
+  isAuthWall,
+  judgeApi as judgeHttpExchange,
+  parseHttpExpectation,
+  READ_ONLY_METHODS,
+  type ScoutHttpExpectation,
+  type ScoutHttpRequest,
+  type ScoutHttpResponse,
+} from './adapters/contract';
+import { evidenceRefs as refs } from './adapters/shared';
 import { SCOUT_EVIDENCE_REQUIREMENTS } from './candidates';
 import { executeScoutProbe } from './ledger';
 import type { ScoutProbeRecord, ScoutReproducibility, ScoutRun } from './types';
+
+// The command and API/contract adapters live in ./adapters; re-exported so
+// callers keep one import path.
+export {
+  parseCommandExpectation,
+  SCOUT_UNSAFE_COMMAND_RULES,
+  unsafeCommandRule,
+  type ScoutCommandExpectation,
+  type ScoutCommandOutput,
+  type ScoutCommandRequest,
+} from './adapters/command';
+export { parseHttpExpectation, type ScoutHttpExpectation, type ScoutHttpRequest, type ScoutHttpResponse } from './adapters/contract';
 
 // ── Adapters ────────────────────────────────────────────────────────────────
 
@@ -57,8 +90,8 @@ const ADAPTER_BY_KIND: Partial<Record<ScoutCapabilityKind, ScoutAdapterKind>> = 
 
 /** The evidence key each adapter natively produces, usable directly as a requirement key. */
 export const SCOUT_ADAPTER_EVIDENCE: Readonly<Record<ScoutAdapterKind, string>> = {
-  command: 'command-output',
-  api: 'http-exchange',
+  command: COMMAND_EVIDENCE_KEY,
+  api: CONTRACT_EVIDENCE_KEY,
   surface: 'route-capture',
   spec: 'spec-assertions',
   readiness: 'readiness-state',
@@ -100,40 +133,6 @@ export function scoutEvidenceCoverage(
 
 // ── Ports (read-only by construction) ───────────────────────────────────────
 
-export interface ScoutCommandRequest {
-  command: string;
-  timeoutMs: number;
-  /** The candidate the command must run against — a throwaway checkout of it. */
-  ref: string;
-  sha: string;
-}
-
-export interface ScoutCommandOutput {
-  /** Null when the process never reported one (killed, failed to spawn). */
-  exitCode: number | null;
-  timedOut: boolean;
-  durationMs?: number;
-  stdoutTail?: string;
-  stderrTail?: string;
-  /** Where the full output is stored. Absent: the evidence is only partial. */
-  evidenceRef?: string | null;
-}
-
-export interface ScoutHttpRequest {
-  method: string;
-  url: string;
-  timeoutMs: number;
-}
-
-export interface ScoutHttpResponse {
-  /** Null when no response arrived. */
-  status: number | null;
-  finalUrl?: string;
-  bodyExcerpt?: string;
-  durationMs?: number;
-  evidenceRef?: string | null;
-}
-
 export type ScoutViewport = 'phone' | 'desktop';
 export const SCOUT_VIEWPORTS: readonly ScoutViewport[] = ['phone', 'desktop'];
 
@@ -160,6 +159,12 @@ export interface ScoutCaptureShot {
   ref?: string | null;
   refSource?: string | null;
   evidenceRef?: string | null;
+  /**
+   * The capture already classified this navigation as an auth wall (the
+   * Visual Auditor's `configError`). Honoured as-is: the classifier cannot
+   * always re-derive it from the fields above.
+   */
+  configError?: CaptureConfigError | null;
 }
 
 export interface ScoutSpecEvaluation {
@@ -196,86 +201,6 @@ const PORT_OF: Record<ScoutAdapterKind, keyof ScoutProbePorts> = {
   spec: 'spec',
   readiness: 'readiness',
 };
-
-// ── Expectations ────────────────────────────────────────────────────────────
-
-export interface ScoutCommandExpectation {
-  exit: number | 'nonzero';
-  outputIncludes?: string;
-}
-
-export interface ScoutHttpExpectation {
-  /** Exact status, or a class like `2xx`. */
-  status: number | `${1 | 2 | 3 | 4 | 5}xx`;
-  bodyIncludes?: string;
-}
-
-const CLAUSE_SPLIT = /\s*(?:;|,|\band\b)\s*/i;
-const CONTAINS = /^(?:(?:stdout|output|body|response)\s+)?(?:contains|includes)\s+["'`]?(.+?)["'`]?$/i;
-
-/** `journey.expect` → a command expectation. Null when any clause is not understood: we never guess. */
-export function parseCommandExpectation(raw: string | undefined): ScoutCommandExpectation | null {
-  const out: ScoutCommandExpectation = { exit: 0 };
-  if (raw === undefined || !raw.trim()) return out;
-  for (const clause of raw.trim().split(CLAUSE_SPLIT).filter(Boolean)) {
-    let m: RegExpMatchArray | null;
-    if (/^(?:succeeds?|success|passes|ok|exits?\s+(?:cleanly|successfully))$/i.test(clause)) out.exit = 0;
-    else if (/^(?:fails?|exits?\s+non-?zero|non-?zero(?:\s+exit)?)$/i.test(clause)) out.exit = 'nonzero';
-    else if ((m = clause.match(/^(?:exits?|exit\s+code|exit\s+status)\s+(\d{1,3})$/i))) out.exit = Number(m[1]);
-    else if ((m = clause.match(CONTAINS))) out.outputIncludes = m[1];
-    else return null;
-  }
-  return out;
-}
-
-/** `journey.expect` → an HTTP expectation. Null when any clause is not understood. */
-export function parseHttpExpectation(raw: string | undefined): ScoutHttpExpectation | null {
-  const out: ScoutHttpExpectation = { status: '2xx' };
-  if (raw === undefined || !raw.trim()) return out;
-  for (const clause of raw.trim().split(CLAUSE_SPLIT).filter(Boolean)) {
-    let m: RegExpMatchArray | null;
-    if ((m = clause.match(/^(?:status\s+|returns\s+|responds\s+)?([1-5])xx$/i))) out.status = `${Number(m[1]) as 1 | 2 | 3 | 4 | 5}xx`;
-    else if ((m = clause.match(/^(?:status\s+|returns\s+|responds\s+)?([1-5]\d\d)$/i))) out.status = Number(m[1]);
-    else if ((m = clause.match(CONTAINS))) out.bodyIncludes = m[1];
-    else return null;
-  }
-  return out;
-}
-
-function statusMatches(status: number, want: ScoutHttpExpectation['status']): boolean {
-  return typeof want === 'number' ? status === want : Math.floor(status / 100) === Number(want[0]);
-}
-
-// ── Safety ──────────────────────────────────────────────────────────────────
-
-/**
- * Commands a probe never runs, whatever the workspace declared: writes to the
- * remote, merges, releases and deploys, schema pushes against a real database,
- * and anything that silently rewrites code or snapshots. Conservative on
- * purpose — a false refusal costs a person one look; a false run cannot be undone.
- */
-export const SCOUT_UNSAFE_COMMAND_RULES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
-  { id: 'git_write', pattern: /\bgit\s+(?:push|merge|rebase|commit|reset|tag|cherry-pick|am|apply|checkout|switch|stash|clean|restore)\b/i },
-  { id: 'forge_write', pattern: /\bgh\s+(?:pr|release|workflow|repo|issue|secret|variable|run)\s+(?:merge|create|close|edit|delete|run|rerun|reopen|ready|review|comment|set|upload|cancel)\b/i },
-  { id: 'forge_api_write', pattern: /\bgh\s+api\b.*(?:-X|--method)\s*(?:POST|PUT|PATCH|DELETE)\b/i },
-  { id: 'publish', pattern: /\b(?:npm|pnpm|yarn|bun|cargo|gem|twine|poetry|dotnet\s+nuget)\s+(?:publish|release|upload|push)\b/i },
-  {
-    id: 'deploy',
-    pattern: /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?deploy\b|\bvercel\b.*--prod\b|\bwrangler\s+(?:deploy|publish)\b|\bkubectl\s+(?:apply|delete|rollout)\b|\bterraform\s+(?:apply|destroy)\b|\bhelm\s+(?:install|upgrade|uninstall)\b|\bfly\s+deploy\b/i,
-  },
-  {
-    id: 'schema_write',
-    pattern: /\bdb:(?:push|migrate)\b|\bdrizzle-kit\s+(?:push|migrate)\b|\bprisma\s+(?:db\s+push|migrate\s+(?:deploy|dev|reset))\b|\balembic\s+(?:upgrade|downgrade)\b|\brails\s+db:|\bmanage\.py\s+migrate\b/i,
-  },
-  { id: 'auto_fix', pattern: /--fix\b|--write\b|--update-?snapshots?\b|--updateSnapshot\b|\bgofmt\s+-w\b|\bcargo\s+fix\b|\bgo\s+mod\s+tidy\b/i },
-  { id: 'http_write', pattern: /\b(?:curl|wget|http|httpie)\b.*(?:-X|--request|--method)\s*(?:POST|PUT|PATCH|DELETE)\b|\bcurl\b.*\s(?:-d|--data(?:-\w+)?|-F|--form)\s/i },
-];
-
-export function unsafeCommandRule(command: string): string | null {
-  return SCOUT_UNSAFE_COMMAND_RULES.find((r) => r.pattern.test(command))?.id ?? null;
-}
-
-const READ_ONLY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 // ── Plan ────────────────────────────────────────────────────────────────────
 
@@ -402,66 +327,35 @@ export function planScoutProbe(probe: ScoutProbeRecord, profile: ScoutCapability
 
 // ── Judges (synchronous substrate executors) ────────────────────────────────
 
-const TAIL = 200;
-const tail = (s: string | undefined | null) => {
-  const t = (s ?? '').replace(/\s+/g, ' ').trim();
-  return t.length > TAIL ? `…${t.slice(-TAIL)}` : t;
-};
-const refs = (kind: string, ...r: Array<string | null | undefined>): VerificationEvidenceRef[] =>
-  r.filter((x): x is string => typeof x === 'string' && x.length > 0).map((ref) => ({ kind, ref }));
-
 interface CommandInput { action: Extract<ScoutProbeAction, { adapter: 'command' }>; output: ScoutCommandOutput | null }
 interface ApiInput { action: Extract<ScoutProbeAction, { adapter: 'api' }>; url: string; response: ScoutHttpResponse | null }
 interface SurfaceInput { action: Extract<ScoutProbeAction, { adapter: 'surface' }>; shots: ScoutCaptureShot[]; expectedRef: string }
 interface SpecInput { action: Extract<ScoutProbeAction, { adapter: 'spec' }>; evaluation: ScoutSpecEvaluation | null }
 interface ReadinessInput { action: Extract<ScoutProbeAction, { adapter: 'readiness' }>; snapshot: ScoutReadinessSnapshot | null }
 
-function judgeCommand({ action, output }: CommandInput): VerificationObservation {
-  if (!output) return { verdict: 'inconclusive', observed: 'The command produced no result.' };
-  const evidenceRefs = refs(SCOUT_ADAPTER_EVIDENCE.command, output.evidenceRef);
-  if (output.timedOut) return { verdict: 'inconclusive', observed: `Timed out after ${output.durationMs ?? '?'}ms.`, evidenceRefs };
-  if (output.exitCode === null) return { verdict: 'inconclusive', observed: 'The process reported no exit code.', evidenceRefs };
-  const { exit, outputIncludes } = action.expect;
-  const exitOk = exit === 'nonzero' ? output.exitCode !== 0 : output.exitCode === exit;
-  const text = `${output.stdoutTail ?? ''}\n${output.stderrTail ?? ''}`;
-  const outputOk = outputIncludes === undefined || text.includes(outputIncludes);
-  const summary = `exit ${output.exitCode} (expected ${exit === 'nonzero' ? 'non-zero' : exit})${outputIncludes !== undefined ? `; output ${outputOk ? 'includes' : 'lacks'} "${outputIncludes}"` : ''}`;
-  if (exitOk && outputOk) return { verdict: 'pass', observed: summary, evidenceRefs, confidence: 1 };
-  const err = tail(output.stderrTail) || tail(output.stdoutTail);
-  return {
-    verdict: 'fail',
-    observed: err ? `${summary}; ${err}` : summary,
-    evidenceRefs,
-    confidence: 1,
-    signatureParts: [exitOk ? 'output-mismatch' : `exit:${output.exitCode}`],
-  };
-}
-
-function judgeApi({ action, url, response }: ApiInput): VerificationObservation {
-  if (!response || response.status === null) return { verdict: 'inconclusive', observed: `No response from ${action.method} ${action.path}.` };
-  const evidenceRefs = refs(SCOUT_ADAPTER_EVIDENCE.api, response.evidenceRef);
-  const wall = classifyPageLoad({ requestedUrl: url, finalUrl: response.finalUrl ?? url, status: response.status, bodyText: response.bodyExcerpt });
-  if (wall.kind === 'config_error') return { verdict: 'unsupported', observed: wall.message, evidenceRefs };
-  const statusOk = statusMatches(response.status, action.expect.status);
-  const want = action.expect.bodyIncludes;
-  const bodyOk = want === undefined || (response.bodyExcerpt ?? '').includes(want);
-  const summary = `${action.method} ${action.path} → ${response.status} (expected ${action.expect.status})${want !== undefined ? `; body ${bodyOk ? 'includes' : 'lacks'} "${want}"` : ''}`;
-  if (statusOk && bodyOk) return { verdict: 'pass', observed: summary, evidenceRefs, confidence: 1 };
-  return { verdict: 'fail', observed: summary, evidenceRefs, confidence: 1, signatureParts: [statusOk ? 'body-mismatch' : `status:${response.status}`] };
-}
+const judgeCommand = ({ action, output }: CommandInput) => judgeCommandOutput({ expect: action.expect, output });
+const judgeApi = ({ action, url, response }: ApiInput) =>
+  judgeHttpExchange({ method: action.method, path: action.path, url, expect: action.expect, response });
 
 /** Shots that count: captured from the candidate ref (or unknowably so), with stored evidence. */
 function countedShots(shots: readonly ScoutCaptureShot[], expectedRef: string): ScoutCaptureShot[] {
   return shots.filter((s) => captureRefMatch({ ref: s.ref, refSource: s.refSource }, expectedRef) !== 'mismatch');
 }
 
+/** The auth-wall message for a shot, or null: the capture's own verdict first, then the classifier. */
+function shotWall(s: ScoutCaptureShot): string | null {
+  if (s.configError) return CONFIG_ERROR_MESSAGES[s.configError];
+  const wall = classifyPageLoad({ requestedUrl: s.requestedUrl, finalUrl: s.finalUrl, status: s.status, bodyText: s.bodyText });
+  return wall.kind === 'config_error' ? wall.message : null;
+}
+
 function judgeSurface({ shots, expectedRef }: SurfaceInput): VerificationObservation {
   const counted = countedShots(shots, expectedRef);
   const evidenceRefs = counted.flatMap((s) => refs(SCOUT_ADAPTER_EVIDENCE.surface, s.evidenceRef));
   for (const s of counted) {
-    const wall = classifyPageLoad({ requestedUrl: s.requestedUrl, finalUrl: s.finalUrl, status: s.status, bodyText: s.bodyText });
     // An auth wall is the owner's config, never a defect of the page.
-    if (wall.kind === 'config_error') return { verdict: 'unsupported', observed: wall.message, evidenceRefs };
+    const wall = shotWall(s);
+    if (wall) return { verdict: 'unsupported', observed: wall, evidenceRefs };
   }
   if (counted.some((s) => s.status === null)) return { verdict: 'inconclusive', observed: 'A route never finished loading.', evidenceRefs };
   const broken = counted.filter((s) => (s.status as number) >= 400 || (s.pageErrors ?? 0) > 0);
@@ -562,8 +456,7 @@ async function gather(action: ScoutProbeAction, run: ScoutRun, ports: ScoutProbe
       if (new URL(url).origin !== new URL(base).origin) return { input: { action, url, response: null } satisfies ApiInput, coverage: 'absent', configError: false };
       const raw = await ports.http!.request({ method: action.method, url, timeoutMs: opts.httpTimeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS });
       const response = raw ? { ...raw, bodyExcerpt: clean(raw.bodyExcerpt) ?? undefined } : null;
-      const wall = response?.status != null
-        && classifyPageLoad({ requestedUrl: url, finalUrl: response.finalUrl ?? url, status: response.status, bodyText: response.bodyExcerpt }).kind === 'config_error';
+      const wall = !!response && isAuthWall(url, response);
       return { input: { action, url, response } satisfies ApiInput, coverage: cov(response?.status != null, !!response?.evidenceRef), configError: wall };
     }
     case 'surface': {
@@ -573,7 +466,7 @@ async function gather(action: ScoutProbeAction, run: ScoutRun, ports: ScoutProbe
       const want = action.routes.length * action.viewports.length;
       const have = new Set(counted.filter((s) => s.evidenceRef).map((s) => `${s.route}|${s.viewport}`)).size;
       const coverage: EvidenceCoverage = counted.length === 0 ? 'absent' : have >= want ? 'complete' : 'partial';
-      const configError = counted.some((s) => classifyPageLoad({ requestedUrl: s.requestedUrl, finalUrl: s.finalUrl, status: s.status, bodyText: s.bodyText }).kind === 'config_error');
+      const configError = counted.some((s) => shotWall(s) !== null);
       return { input: { action, shots, expectedRef: ref } satisfies SurfaceInput, coverage, configError };
     }
     case 'spec': {
