@@ -247,3 +247,7 @@ export function scheduleTaskRoleRouting(
     void run();
   }
 }
+
+// The kind default (task-role-default.ts) is part of role routing; the task
+// create route reaches it through this module, its one role-routing entry.
+export { kindDefaultCandidates, kindDefaultRole, kindDefaultStamp } from './task-role-default';
