@@ -65,7 +65,7 @@ export default function OperatorAccessFixture() {
     <div className="min-h-screen bg-surface-1 p-4 md:p-8">
       <div className="max-w-5xl mx-auto">
         <h1 className="text-xl font-bold text-text-primary mb-1">Platform Operator access (fixture)</h1>
-        <p className="text-[13px] text-text-muted mb-6">
+        <p className="text-body text-text-muted mb-6">
           Team ceiling, plus three workspaces: one enabled with standard capabilities only, one enabled with secret
           reveal also granted, one never opted in.
         </p>

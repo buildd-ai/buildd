@@ -75,10 +75,10 @@ function CapabilityCheckbox({
         className="mt-0.5 rounded border-border-default"
       />
       <span>
-        <span className={`block text-[12px] font-mono ${elevated ? 'text-status-warning' : 'text-text-primary'}`}>
+        <span className={`block text-meta font-mono ${elevated ? 'text-status-warning' : 'text-text-primary'}`}>
           {capability}
         </span>
-        <span className="block text-[11px] text-text-muted">{AGENT_CAPABILITIES[capability].description}</span>
+        <span className="block text-meta text-text-muted">{AGENT_CAPABILITIES[capability].description}</span>
       </span>
     </label>
   );
@@ -103,13 +103,13 @@ function ChipListEditor({
   }
   return (
     <div>
-      <label className="block text-[12px] font-medium text-text-primary mb-1">{label}</label>
+      <label className="block text-meta font-medium text-text-primary mb-1">{label}</label>
       {values.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-1.5">
           {values.map(v => (
             <span
               key={v}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-3 text-text-primary text-[11px] font-mono"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface-3 text-text-primary text-chip font-mono"
             >
               {v}
               <button
@@ -136,9 +136,9 @@ function ChipListEditor({
         }}
         onBlur={commit}
         placeholder="Name a target, Enter to add"
-        className="w-full px-2.5 py-1.5 border border-border-default rounded-md bg-surface-1 text-text-primary text-[12px]"
+        className="w-full px-2.5 py-1.5 border border-border-default rounded-md bg-surface-1 text-text-primary text-meta"
       />
-      {hint && <p className="text-[11px] text-text-muted mt-1">{hint}</p>}
+      {hint && <p className="text-meta text-text-muted mt-1">{hint}</p>}
     </div>
   );
 }
@@ -148,9 +148,9 @@ function EffectiveGrantPreview({ grant }: { grant: ReturnType<typeof resolveOper
   return (
     <div className="p-3 rounded-md bg-surface-2 border border-border-default">
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Effective grant</span>
+        <span className="text-eyebrow font-semibold uppercase tracking-wider text-text-muted">Effective grant</span>
         <span
-          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium ${
+          className={`inline-flex items-center px-1.5 py-0.5 rounded text-chip font-medium ${
             grant.enabled ? 'bg-status-success/10 text-status-success' : 'bg-surface-3 text-text-muted'
           }`}
         >
@@ -160,11 +160,11 @@ function EffectiveGrantPreview({ grant }: { grant: ReturnType<typeof resolveOper
       {grant.enabled && (
         <>
           <div className="flex flex-wrap gap-1 mb-1.5">
-            {grant.capabilities.length === 0 && <span className="text-[11px] text-text-muted">No capabilities granted</span>}
+            {grant.capabilities.length === 0 && <span className="text-meta text-text-muted">No capabilities granted</span>}
             {grant.capabilities.map(c => (
               <span
                 key={c}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                className={`px-1.5 py-0.5 rounded text-chip font-mono ${
                   ELEVATED_AGENT_CAPABILITIES.has(c) ? 'bg-status-warning/10 text-status-warning' : 'bg-surface-3 text-text-secondary'
                 }`}
               >
@@ -174,7 +174,7 @@ function EffectiveGrantPreview({ grant }: { grant: ReturnType<typeof resolveOper
           </div>
           <div className="space-y-0.5">
             {SCOPE_DIMENSIONS.map(dim => (
-              <div key={dim} className="text-[11px] text-text-muted">
+              <div key={dim} className="text-meta text-text-muted">
                 <span className="text-text-secondary">{DIMENSION_LABEL[dim]}:</span>{' '}
                 {grant.scope[dim].length > 0 ? grant.scope[dim].join(', ') : 'none'}
               </div>
@@ -239,9 +239,9 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
   return (
     <div className="border border-border-default rounded-lg p-4">
       <div className="flex items-center justify-between mb-1">
-        <h3 className="text-[13px] font-semibold text-text-primary">Team ceiling</h3>
+        <h3 className="text-title font-semibold text-text-primary">Team ceiling</h3>
         <label className="flex items-center gap-2 cursor-pointer">
-          <span className="text-[12px] text-text-secondary">Allow workspaces to enable this role</span>
+          <span className="text-meta text-text-secondary">Allow workspaces to enable this role</span>
           <input
             type="checkbox"
             checked={!killSwitchOff}
@@ -250,14 +250,14 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
           />
         </label>
       </div>
-      <p className="text-[12px] text-text-muted mb-3">
+      <p className="text-meta text-text-muted mb-3">
         A kill switch and a capability/scope ceiling for every workspace. Turning it off disables Operator everywhere,
         even a workspace that already opted in. Nothing here enables Operator by itself — each workspace still opts in below.
       </p>
 
       <div className={killSwitchOff ? 'opacity-50 pointer-events-none' : ''}>
         <div className="mb-3">
-          <span className="block text-[12px] font-medium text-text-primary mb-1.5">Deploy / use capabilities</span>
+          <span className="block text-meta font-medium text-text-primary mb-1.5">Deploy / use capabilities</span>
           <div className="space-y-2">
             {STANDARD_CAPS.map(c => (
               <CapabilityCheckbox key={c} capability={c} checked={caps.has(c)} onToggle={() => toggleCap(c)} />
@@ -277,12 +277,12 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
           ))}
         </div>
 
-        <p className="text-[11px] text-text-muted">
+        <p className="text-meta text-text-muted">
           Secret management and reveal authority can only be granted per workspace, never at the team level.
         </p>
       </div>
 
-      {error && <div className="mt-3 px-3 py-2 rounded-md bg-status-error/10 text-status-error text-[12px]">{error}</div>}
+      {error && <div className="mt-3 px-3 py-2 rounded-md bg-status-error/10 text-status-error text-meta">{error}</div>}
 
       <div className="flex items-center gap-3 pt-3 mt-3 border-t border-border-default">
         <button
@@ -391,16 +391,16 @@ function WorkspaceGrantRow({
         className="w-full flex items-center justify-between px-4 py-3 bg-surface-2 hover:bg-surface-3 transition-colors"
       >
         <div className="flex items-center gap-2">
-          <span className="text-[13px] font-medium text-text-primary">{workspace.name}</span>
+          <span className="text-title font-medium text-text-primary">{workspace.name}</span>
           <span
-            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] md:text-[10px] font-medium ${
+            className={`inline-flex items-center px-1.5 py-0.5 rounded text-chip font-medium ${
               preview.enabled ? 'bg-status-success/10 text-status-success' : 'bg-surface-3 text-text-muted'
             }`}
           >
             {preview.enabled ? 'Enabled' : 'Disabled'}
           </span>
           {preview.capabilities.some(c => ELEVATED_AGENT_CAPABILITIES.has(c)) && (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] md:text-[10px] font-medium bg-status-warning/10 text-status-warning">
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-chip font-medium bg-status-warning/10 text-status-warning">
               Elevated
             </span>
           )}
@@ -427,11 +427,11 @@ function WorkspaceGrantRow({
               onChange={e => setEnabled(e.target.checked)}
               className="rounded border-border-default"
             />
-            <span className="text-[13px] text-text-primary">Enabled for this workspace</span>
+            <span className="text-body text-text-primary">Enabled for this workspace</span>
           </label>
 
           <div>
-            <span className="block text-[12px] font-medium text-text-primary mb-1.5">Deploy / use</span>
+            <span className="block text-meta font-medium text-text-primary mb-1.5">Deploy / use</span>
             <div className="space-y-2">
               {STANDARD_CAPS.map(c => (
                 <CapabilityCheckbox key={c} capability={c} checked={standardCaps.has(c)} onToggle={() => toggleStandard(c)} />
@@ -440,10 +440,10 @@ function WorkspaceGrantRow({
           </div>
 
           <div className="p-3 rounded-md border border-status-warning/30 bg-status-warning/5">
-            <span className="block text-[12px] font-medium text-status-warning mb-1.5">
+            <span className="block text-meta font-medium text-status-warning mb-1.5">
               Secret management &amp; reveal — off by default
             </span>
-            <p className="text-[11px] text-text-muted mb-2">
+            <p className="text-meta text-text-muted mb-2">
               Separate from deploy/use above: this lets the agent change or read a credential's plaintext, not just use
               it server-side. Grant it only when a workspace specifically needs it.
             </p>
@@ -467,7 +467,7 @@ function WorkspaceGrantRow({
 
           <EffectiveGrantPreview grant={preview} />
 
-          {error && <div className="px-3 py-2 rounded-md bg-status-error/10 text-status-error text-[12px]">{error}</div>}
+          {error && <div className="px-3 py-2 rounded-md bg-status-error/10 text-status-error text-meta">{error}</div>}
 
           <div className="flex items-center gap-3 pt-2 border-t border-border-default">
             <button
@@ -511,8 +511,8 @@ export function OperatorAccessSection({
   return (
     <div className="border-t border-border-default pt-8 space-y-6">
       <div>
-        <h2 className="text-[15px] font-semibold text-text-primary">Platform Operator access</h2>
-        <p className="text-[12px] text-text-muted mt-0.5">
+        <h2 className="text-title font-semibold text-text-primary">Platform Operator access</h2>
+        <p className="text-meta text-text-muted mt-0.5">
           What the Operator role may do, per workspace. Deploy/use capabilities are separate from secret
           management/reveal authority, which is off by default and must be granted explicitly per workspace. No
           credential value is ever shown here — only the reference it was registered under.
@@ -522,7 +522,7 @@ export function OperatorAccessSection({
       <TeamCeilingCard roleId={roleId} metadata={teamMetadata} />
 
       {workspaces.length === 0 ? (
-        <p className="text-[13px] text-text-muted">No workspaces to configure yet.</p>
+        <p className="text-body text-text-muted">No workspaces to configure yet.</p>
       ) : (
         <div className="space-y-3">
           {workspaces.map(ws => (
