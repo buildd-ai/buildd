@@ -6641,6 +6641,19 @@ describe('webhook → reviews (characterization)', () => {
     expect((call('reconcileSubjectEvent')[0] as any).pr).toBeNull();
   });
 
+  it('a review step that throws is isolated: the next one still runs and the webhook answers 200', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    mockReconcileSubjectEvent.mockImplementation(async (...a: any[]) => {
+      reviewLog.push(['reconcileSubjectEvent', ...a]);
+      throw new Error('reconcile exploded');
+    });
+    const res = await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(res.status).toBe(200);
+    expect(order()).toEqual([
+      'appendPrActivity', 'deliverPrReviewCallback', 'readPrReviewStatus', 'reconcileSubjectEvent', 'shutdownDeadBuilddPrs',
+    ]);
+  });
+
   it('a PR no worker owns: the comment only, with no workspace', async () => {
     mockWorkersFindFirst.mockReturnValue(null);
     await POST(createWebhookRequest('pull_request', prEvent({ head: { ref: 'feature/y', sha: 'sha-head-93' } })));
