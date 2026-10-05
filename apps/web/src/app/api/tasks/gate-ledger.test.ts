@@ -133,6 +133,8 @@ mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings:
 mock.module('@/lib/mission-feed', () => ({
   resolveFeedActor: async () => ({ kind: 'mcp', id: 'acct-1', label: 'acct' }),
   postMissionFeedEvent: async () => {},
+  // The route reaches the module graph through the composition root, which imports this.
+  systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
 }));
 mock.module('@/lib/mission-loop', () => ({ reopenCompletedMission: async () => ({ reopened: false }) }));
 mock.module('@/lib/criteria-escalation', () => ({ resolveCriteriaEscalation: async () => ({ cleared: false }) }));

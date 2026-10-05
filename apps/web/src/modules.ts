@@ -11,15 +11,20 @@
  * `modules.test.ts` pins the order per event.
  */
 import type { AnySubscriber } from '@/lib/core-events';
+import { decisionSubscribers } from '@/lib/decision-subscribers';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
+import { roleSubscribers } from '@/lib/default-roles-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
+  // task.created: the category look is scheduled before the mission chain starts.
+  ...decisionSubscribers,
   ...knowledgeSubscribers,
   ...missionSubscribers,
   // Before notifications: on a completion the chat post was kicked off first.
   ...chatSubscribers,
   ...notificationSubscribers,
+  ...roleSubscribers,
 ];

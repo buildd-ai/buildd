@@ -80,6 +80,35 @@ export type CoreEvent =
       summary: string | null;
       workspace: { dataClass?: string | null; gitConfig?: { dataClass?: string } | null } | null;
     }
+  /**
+   * POST /api/tasks committed a filing. `attached`: subject intake attached it
+   * to an existing canonical task, which `taskId` then names, and nothing new
+   * was inserted. Emitted after the commit; subscribers must not delay or
+   * fail the request (fire-and-forget past the first await).
+   */
+  | {
+      type: 'task.created';
+      taskId: string;
+      workspaceId: string;
+      teamId: string;
+      missionId: string | null;
+      /** The task row's title. */
+      title: string;
+      /** The description as filed. */
+      description: string | null;
+      attached: boolean;
+      /** The stored category, and whether the filer supplied it. */
+      category: { stored: string | null; callerSet: boolean };
+      dataClass: string | null;
+      creator: {
+        accountId: string | null;
+        user: { id: string; email?: string | null; name?: string | null } | null;
+        apiAccount: { id: string; name?: string | null } | null;
+        workerId: string | null;
+      };
+    }
+  /** A team row and its owner membership are written. */
+  | { type: 'team.created'; teamId: string }
   | { type: 'pr.merged'; repoFullName: string; prNumber: number; url: string | null | undefined }
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string };
 
