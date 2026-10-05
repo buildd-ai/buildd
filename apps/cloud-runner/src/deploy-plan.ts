@@ -55,6 +55,13 @@ export interface DeployInputs {
    * similar). Each field is optional; an empty string counts as not supplied.
    */
   modelProxy?: { url?: string; key?: string; authHeader?: string };
+  /**
+   * `--secrets-only`: leave the Worker's code alone and only put secrets and
+   * set the webhook. Every such step runs server-side with the stored
+   * credential, so the run needs no Cloudflare token on the machine at all.
+   * Refused for a Worker that was never deployed.
+   */
+  skipWorkerDeploy?: boolean;
 }
 
 export type SecretName =
@@ -175,8 +182,12 @@ export function planDeploy(i: DeployInputs): DeployPlan {
     return { ok: false, error: 'The runner API key must be a bld_ key.' };
   }
 
+  if (i.skipWorkerDeploy && i.workerSecretNames === null) {
+    return { ok: false, error: 'The Worker has not been deployed yet; run without --secrets-only first.' };
+  }
+
   const secrets = new Set(i.workerSecretNames ?? []);
-  const steps: DeployStep[] = [{ kind: 'ensure_snapshot_bucket' }, { kind: 'wrangler_deploy' }];
+  const steps: DeployStep[] = i.skipWorkerDeploy ? [] : [{ kind: 'ensure_snapshot_bucket' }, { kind: 'wrangler_deploy' }];
   const notes: string[] = [];
 
   // BUILDD_SERVER: not a secret in substance, but kept with the others so a
