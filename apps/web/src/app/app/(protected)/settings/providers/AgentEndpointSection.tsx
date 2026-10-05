@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Select } from '@/components/ui/Select';
 import Chip, { type ChipTone } from '@/components/ui/Chip';
 import { EndpointModelMap } from './EndpointModelMap';
+import { EndpointAppliesToEditor, appliesToLabel, type WorkspaceCopy } from './EndpointAppliesTo';
 
 /** Select value for the team-wide scope (a workspace id is never this). */
 const ALL_WORKSPACES = '__all__';
@@ -22,6 +23,10 @@ export interface MaskedAgentEndpointView {
   scope: 'team' | 'workspace';
   workspaceId: string | null;
   workspaceName: string | null;
+  /** Team row: the workspaces it applies to, null for all (absent from an older server). */
+  appliesTo?: Array<{ id: string; name: string }> | null;
+  /** Workspace row: routes exactly like the team row. */
+  matchesTeam?: boolean;
   kind: Kind;
   baseUrl: string;
   authHeader: 'authorization' | 'x-api-key';
@@ -83,7 +88,9 @@ export function endpointSummary(e: MaskedAgentEndpointView): string {
   return parts.join(' · ');
 }
 
-const scopeName = (e: MaskedAgentEndpointView) => (e.scope === 'team' ? 'All workspaces' : e.workspaceName ?? 'Workspace');
+const scopeName = (e: MaskedAgentEndpointView) => (e.scope === 'team'
+  ? (e.appliesTo ? `${e.appliesTo.length} workspace${e.appliesTo.length === 1 ? '' : 's'}` : 'All workspaces')
+  : e.workspaceName ?? 'Workspace');
 
 export default function AgentEndpointSection({ teamId, canManage, workspaces }: {
   teamId: string;
@@ -116,6 +123,9 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces }: 
   const team = endpoints?.find((e) => e.scope === 'team') ?? null;
   // Team-wide first, then workspaces by name (the server's order).
   const routes = endpoints ?? [];
+  const copies: WorkspaceCopy[] = routes
+    .filter((e) => e.scope === 'workspace' && e.workspaceId)
+    .map((e) => ({ workspaceId: e.workspaceId!, matchesTeam: !!e.matchesTeam }));
 
   return (
     <section aria-labelledby="agent-endpoint-h" data-testid="agent-endpoint">
@@ -132,9 +142,10 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces }: 
         )}
         {routes.map((e) => (
           <RouteCard key={e.id} endpoint={e} teamId={teamId} canManage={canManage && editing === null}
+            workspaces={workspaces} copies={copies}
             onEdit={() => setEditing(e.workspaceId ?? '')} onChanged={load} />
         ))}
-        {routes.length > 0 && !team && (
+        {routes.length > 0 && (!team || team.appliesTo) && (
           <p className="text-text-secondary" data-testid="agent-endpoint-default">All other workspaces: Anthropic (default).</p>
         )}
         {routes.length > 0 && (
@@ -164,15 +175,18 @@ export default function AgentEndpointSection({ teamId, canManage, workspaces }: 
 }
 
 /** One saved endpoint: what it is, where it applies, whether it works, what it sends, and its actions. */
-function RouteCard({ endpoint: e, teamId, canManage, onEdit, onChanged }: {
+function RouteCard({ endpoint: e, teamId, canManage, workspaces, copies, onEdit, onChanged }: {
   endpoint: MaskedAgentEndpointView;
   teamId: string;
   canManage: boolean;
+  workspaces: EndpointWorkspace[];
+  copies: WorkspaceCopy[];
   onEdit: () => void;
   onChanged: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [editingScope, setEditingScope] = useState(false);
   const h = health(e);
 
   async function run(label: string, url: string, method: 'POST' | 'DELETE') {
@@ -200,9 +214,26 @@ function RouteCard({ endpoint: e, teamId, canManage, onEdit, onChanged }: {
         {e.lastVerifiedAt && <span className="text-text-muted">checked {new Date(e.lastVerifiedAt).toLocaleString()}</span>}
       </div>
       {detail && <p className="font-mono text-text-secondary break-all" data-testid="agent-endpoint-detail">{detail}</p>}
-      <p className="text-text-muted">
-        {e.scope === 'team' ? 'Used by every workspace without its own endpoint.' : 'This workspace only. Overrides the team-wide setting.'}
-      </p>
+      {e.scope === 'team' ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-body text-text-secondary" data-testid="agent-endpoint-applies-to">
+            Applies to: {appliesToLabel(e.appliesTo)}
+          </p>
+          {canManage && !editingScope && (
+            <button className="btn btn-quiet" data-testid="agent-endpoint-applies-edit" onClick={() => setEditingScope(true)} disabled={busy}>
+              Edit workspaces
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="text-text-muted">
+          {e.matchesTeam ? 'This workspace only. Same endpoint as the team one.' : 'This workspace only. Overrides the team-wide setting.'}
+        </p>
+      )}
+      {e.scope === 'team' && editingScope && (
+        <EndpointAppliesToEditor teamId={teamId} workspaces={workspaces} appliesTo={e.appliesTo ?? null} copies={copies}
+          onClose={() => setEditingScope(false)} onChanged={onChanged} />
+      )}
       {h.detail && <p className="text-text-secondary">{h.detail}</p>}
       {e.kind !== 'openrouter' && e.mapping && e.mapping.length > 0 && (
         <ul className="border-t border-border-default" data-testid="agent-endpoint-mapping" aria-label="Model mapping">
@@ -256,6 +287,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClo
   const [msg, setMsg] = useState<string | null>(null);
 
   const current = endpoints.find((e) => (scope ? e.workspaceId === scope : e.scope === 'team')) ?? null;
+  const teamRow = endpoints.find((e) => e.scope === 'team') ?? null;
 
   function reset(forScope: string) {
     const e = endpoints.find((x) => (forScope ? x.workspaceId === forScope : x.scope === 'team')) ?? null;
@@ -352,7 +384,7 @@ function Editor({ teamId, workspaces, endpoints, hasGateway, initialScope, onClo
           value={scope || ALL_WORKSPACES}
           disabled={busy}
           onChange={(v) => reset(v === ALL_WORKSPACES ? '' : v)}
-          options={[{ value: ALL_WORKSPACES, label: 'All workspaces' }, ...workspaces.map((w) => ({ value: w.id, label: w.name }))]}
+          options={[{ value: ALL_WORKSPACES, label: teamRow?.appliesTo ? `Team endpoint (${appliesToLabel(teamRow.appliesTo)})` : 'All workspaces' }, ...workspaces.map((w) => ({ value: w.id, label: w.name }))]}
         />
       </div>
       <div className="space-y-2">
