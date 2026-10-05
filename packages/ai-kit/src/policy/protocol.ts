@@ -12,8 +12,8 @@
  */
 
 import {
-  CODING_ONLY_SIGNALS, DECISION_SOURCES, EXPERIMENT_MODES, KIT_PROVIDERS, KIT_TIERS, OUTCOME_SIGNALS,
-  POLICY_EFFORTS, POLICY_SURFACES, TRUSTWORTHY_SIGNALS,
+  CODING_ONLY_SIGNALS, DECISION_SOURCES, EXPERIMENT_MODES, KIT_TIERS, OUTCOME_SIGNALS,
+  POLICY_EFFORTS, POLICY_PROVIDERS, POLICY_SURFACES, TRUSTWORTHY_SIGNALS,
   type DecisionExperiment, type ModelPolicy, type OutcomeReport, type PolicyDecision,
   type PolicyObservation, type PolicyRequest, type PolicyRoute, type PolicyScope, type PolicySurface,
 } from './types';
@@ -111,7 +111,7 @@ export function parseRoute(v: unknown, where: string): Parsed<PolicyRoute> {
   if (!isObject(v)) return { ok: false, error: `${where}: expected { provider, model, effort? }` };
   const extra = strictKeys(v, ['provider', 'model', 'effort'], where);
   if (extra) return { ok: false, error: extra };
-  if (!includes(KIT_PROVIDERS, v.provider)) return { ok: false, error: `${where}.provider must be one of ${KIT_PROVIDERS.join(', ')}` };
+  if (!includes(POLICY_PROVIDERS, v.provider)) return { ok: false, error: `${where}.provider must be one of ${POLICY_PROVIDERS.join(', ')}` };
   if (typeof v.model !== 'string' || !v.model || v.model.length > MAX_MODEL_LEN) return { ok: false, error: `${where}.model must be a non-empty string` };
   if (PROVIDER_KEY_PATTERN.test(v.model)) return { ok: false, error: `${where}.model looks like a provider key` };
   const route: PolicyRoute = { provider: v.provider, model: v.model };

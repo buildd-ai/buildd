@@ -12,6 +12,16 @@ The merge publishes to npm and tags the commit `ai-kit-v<version>`
 (`.github/workflows/publish-ai-kit.yml`); a version with no heading here fails
 the publish.
 
+## 0.20.0 — 2026-10-05
+
+Minor: `openai-codex` is a policy provider.
+
+- `POLICY_PROVIDERS` (`KIT_PROVIDERS` plus `openai-codex`) and
+  `PolicyProvider`: a route may name a subscription-backed coding runtime, as
+  buildd's tier registry already can. Coding surface only in practice; a chat
+  app that is handed one should treat it as unreachable and use its fallback.
+  `KIT_PROVIDERS` and the chat/plan types are unchanged.
+
 ## 0.19.0 — 2026-10-05
 
 Minor: standalone model policy (`@builddai/ai-kit/policy`, new entry point).

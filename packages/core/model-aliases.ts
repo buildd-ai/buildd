@@ -15,6 +15,7 @@
 import { db } from './db/client';
 import { systemCache } from './db/schema';
 import { eq } from 'drizzle-orm';
+import { bundledTierEntry } from './model-tier-defaults';
 
 const CACHE_KEY = 'model_aliases';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -22,11 +23,14 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 /**
  * The in-code alias map. Also the default payload POST /api/admin/refresh-model-aliases
  * publishes to `system_cache.model_aliases` for any alias the operator omits.
+ *
+ * Not a table of its own: each shorthand is the tier it names
+ * (`shorthandPinTier`), read from the model policy's bundled fallback.
  */
 export const DEFAULT_ALIASES: Record<string, string> = {
-  haiku: 'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-5',
-  opus: 'claude-opus-5',
+  haiku: bundledTierEntry('budget').model,
+  sonnet: bundledTierEntry('standard').model,
+  opus: bundledTierEntry('premium').model,
 };
 
 type ThinkingConfig = { type: 'enabled' | 'disabled' | 'adaptive' } | undefined;
