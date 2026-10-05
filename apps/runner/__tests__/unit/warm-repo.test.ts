@@ -19,6 +19,8 @@ import {
   WARM_MAX_AGE_MS,
   WARM_BASE_REF,
   WARM_DEFAULT_MAX_BUNDLE_BYTES,
+  WARM_CACHE_GROWTH_BYTES,
+  WARM_CACHE_GROWTH_PERCENT,
   PNPM_STORE_DIRNAME,
   WarmRepoSession,
   streamToMultipart,
@@ -369,19 +371,36 @@ describe('restore before clone', () => {
 });
 
 describe('refresh rules', () => {
-  test('decideWarmRefresh', async () => {
-    const warm = (ageMs: number, fetchBytes: number) => ({ source: 'warm' as const, ageMs, fetchBytes });
-    expect(decideWarmRefresh({ source: 'clone', reason: 'no_snapshot' }, 'failed')).toBe('seed');
-    expect(decideWarmRefresh({ source: 'clone', reason: 'restore_failed' }, 'wait_timeout')).toBe('seed');
-    expect(decideWarmRefresh({ source: 'clone', reason: 'unavailable' }, 'completed')).toBe('none');
-    expect(decideWarmRefresh({ source: 'clone', reason: 'disk' }, 'completed')).toBe('none');
-    expect(decideWarmRefresh({ source: 'clone', reason: 'disabled' }, 'completed')).toBe('none');
-    expect(decideWarmRefresh(warm(0, 0), 'completed')).toBe('none');
-    expect(decideWarmRefresh(warm(WARM_MAX_AGE_MS + 1, 0), 'completed')).toBe('refresh');
-    expect(decideWarmRefresh(warm(0, WARM_FETCH_REFRESH_BYTES + 1), 'completed')).toBe('refresh');
+  test('decideWarmRefresh: age, fetch, cache_growth triggers, and decision reasons', async () => {
+    const warm = (ageMs: number, fetchBytes: number, restoredCacheBytes: number = 1024) =>
+      ({ source: 'warm' as const, ageMs, fetchBytes, restoredCacheBytes });
+
+    // Clone cases: seed or none
+    expect(decideWarmRefresh({ result: { source: 'clone', reason: 'no_snapshot' }, end: 'failed' })).toEqual({ decision: 'seed' });
+    expect(decideWarmRefresh({ result: { source: 'clone', reason: 'restore_failed' }, end: 'wait_timeout' })).toEqual({ decision: 'seed' });
+    expect(decideWarmRefresh({ result: { source: 'clone', reason: 'unavailable' }, end: 'completed' })).toEqual({ decision: 'none' });
+    expect(decideWarmRefresh({ result: { source: 'clone', reason: 'disk' }, end: 'completed' })).toEqual({ decision: 'none' });
+    expect(decideWarmRefresh({ result: { source: 'clone', reason: 'disabled' }, end: 'completed' })).toEqual({ decision: 'none' });
+
+    // Warm cases: no refresh for fresh cache
+    expect(decideWarmRefresh({ result: warm(0, 0), end: 'completed' })).toEqual({ decision: 'none' });
+
+    // Age trigger
+    expect(decideWarmRefresh({ result: warm(WARM_MAX_AGE_MS + 1, 0), end: 'completed' })).toEqual({ decision: 'refresh', reason: 'age' });
+
+    // Fetch trigger
+    expect(decideWarmRefresh({ result: warm(0, WARM_FETCH_REFRESH_BYTES + 1), end: 'completed' })).toEqual({ decision: 'refresh', reason: 'fetch' });
+
+    // Cache growth trigger: small restored cache, growth > 64 MiB
+    expect(decideWarmRefresh({ result: warm(0, 0, 1024), end: 'completed', currentCacheBytes: 1024 + WARM_CACHE_GROWTH_BYTES + 1 })).toEqual({ decision: 'refresh', reason: 'cache_growth' });
+
+    // Cache growth too small: large restored cache, growth < 64 MiB (but would be < 25% if not for the cap)
+    const largeCacheBytes = 1024 ** 3; // 1 GiB
+    expect(decideWarmRefresh({ result: warm(0, 0, largeCacheBytes), end: 'completed', currentCacheBytes: largeCacheBytes + WARM_CACHE_GROWTH_BYTES / 2 })).toEqual({ decision: 'none' });
+
     // Only after success, so a failing task never spends its exit on an upload.
-    expect(decideWarmRefresh(warm(WARM_MAX_AGE_MS + 1, 0), 'failed')).toBe('none');
-    expect(decideWarmRefresh(warm(WARM_MAX_AGE_MS + 1, 0), 'wait_timeout')).toBe('none');
+    expect(decideWarmRefresh({ result: warm(WARM_MAX_AGE_MS + 1, 0), end: 'failed' })).toEqual({ decision: 'none' });
+    expect(decideWarmRefresh({ result: warm(WARM_MAX_AGE_MS + 1, 0), end: 'wait_timeout' })).toEqual({ decision: 'none' });
   });
 
   test('a fresh warm restore uploads nothing; an old one uploads a new generation after success', async () => {
@@ -389,13 +408,79 @@ describe('refresh rules', () => {
     const fresh = session();
     cloneThrough(fresh, 'ws-a');
     store.calls = [];
+    lines = [];
     await fresh.refresh('completed');
     expect(store.calls).toEqual([]);
+    expect(lines.filter(l => l.startsWith('BUILDD_WARM_REFRESH='))).toEqual([]);
 
     const old = session({ now: store.now + WARM_MAX_AGE_MS + 1 });
     cloneThrough(old, 'ws-b');
+    lines = [];
     await old.refresh('completed');
     expect(store.manifests).toHaveLength(2);
+    expect(lines).toContain('BUILDD_WARM_REFRESH=age');
+  });
+
+  test('cache grew more than 64 MiB: refreshes after completed task, with cache_growth reason', async () => {
+    const seed = session(); cloneThrough(seed, 'ws-seed'); await seed.refresh('completed');
+    expect(store.manifests).toHaveLength(1);
+
+    lines = [];
+    const cacheDir = join(dir, 'growing-cache');
+    const s = session({ cacheDir, now: store.now + 1 });
+    cloneThrough(s);
+    // Simulate cache growth during the run
+    mkdirSync(join(cacheDir, 'new-package'), { recursive: true });
+    writeFileSync(join(cacheDir, 'new-package', 'large.bin'), Buffer.alloc(WARM_CACHE_GROWTH_BYTES + 1024));
+
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(2);
+    expect(lines).toContain('BUILDD_WARM_REFRESH=cache_growth');
+  });
+
+  test('cache grew less than 64 MiB (or 25% of restored): no refresh', async () => {
+    const seed = session(); cloneThrough(seed, 'ws-seed'); await seed.refresh('completed');
+
+    lines = [];
+    const cacheDir = join(dir, 'small-growth-cache');
+    const s = session({ cacheDir, now: store.now + 1 });
+    cloneThrough(s);
+    // Simulate small cache growth
+    mkdirSync(join(cacheDir, 'new-pkg'), { recursive: true });
+    writeFileSync(join(cacheDir, 'new-pkg', 'small.txt'), Buffer.alloc(1024 * 10));
+
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(1); // No new generation
+    expect(lines.filter(l => l.startsWith('BUILDD_WARM_REFRESH='))).toEqual([]);
+  });
+
+  test('cache grew by 25% threshold on a large restored cache: refreshes', async () => {
+    // Create a seed with a larger cache
+    const largeCacheDir = join(dir, 'large-cache');
+    mkdirSync(join(largeCacheDir, 'big-pkg'), { recursive: true });
+    const largeSize = WARM_CACHE_GROWTH_BYTES * 10; // 640 MiB
+    writeFileSync(join(largeCacheDir, 'big-pkg', 'blob'), Buffer.alloc(largeSize));
+
+    const seed = session({ cacheDir: largeCacheDir });
+    cloneThrough(seed, 'ws-seed');
+    await seed.refresh('completed');
+    expect(store.manifests).toHaveLength(1);
+
+    lines = [];
+    const growingCacheDir = join(dir, 'growing-large-cache');
+    // Copy the large cache
+    execFileSync('cp', ['-r', largeCacheDir, growingCacheDir]);
+
+    const s = session({ cacheDir: growingCacheDir, now: store.now + 1 });
+    cloneThrough(s);
+    // Add 26% of the original cache size (should trigger refresh)
+    mkdirSync(join(growingCacheDir, 'more'), { recursive: true });
+    const growthSize = Math.ceil(largeSize * 0.26);
+    writeFileSync(join(growingCacheDir, 'more', 'added'), Buffer.alloc(growthSize));
+
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(2);
+    expect(lines).toContain('BUILDD_WARM_REFRESH=cache_growth');
   });
 
   test('another refresh in flight (begin 409): nothing uploaded, no throw', async () => {

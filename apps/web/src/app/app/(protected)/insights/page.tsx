@@ -1,0 +1,69 @@
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
+import Link from 'next/link';
+import { getCurrentUser } from '@/lib/auth-helpers';
+import { resolveActiveTeamId } from '@/lib/team-access';
+import { can } from '@/lib/permissions';
+import { isFlowWindow, type FlowWindow } from '@/lib/insights-flow';
+import { loadFlowSeries, teamWorkspaceIds } from '@/lib/insights-flow-query';
+import { InsightsClient } from './InsightsClient';
+import { resolveInsightsQaState, sampleFlowSeries } from './sample-series';
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * `/app/insights`: how the active team's agent work moved to production.
+ *
+ * For team roles holding `view_team_usage` (admins and owners by default),
+ * because it shows every member's work. Anyone else gets a plain explanation,
+ * not an empty chart.
+ */
+export default async function InsightsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ window?: string; state?: string | string[] }>;
+}) {
+  const { window: rawWindow, state } = await searchParams;
+  const window: FlowWindow = isFlowWindow(rawWindow) ? rawWindow : '7d';
+
+  const user = await getCurrentUser();
+  if (!user) redirect('/api/auth/signin');
+
+  const cookieStore = await cookies();
+  const teamId = await resolveActiveTeamId(user.id, cookieStore.get('buildd-team')?.value);
+  if (!teamId) {
+    return (
+      <Shell>
+        <p className="text-body text-text-muted">
+          <Link href="/app/teams/new" className="text-accent-text hover:underline">Create a team</Link> to see insights for its work.
+        </p>
+      </Shell>
+    );
+  }
+
+  if (!(await can({ kind: 'user', userId: user.id }, 'view_team_usage', teamId))) {
+    return (
+      <Shell>
+        <div className="card p-4" data-testid="insights-not-allowed">
+          <p className="text-body text-text-primary">Insights show every member&apos;s work, so they&apos;re for team admins.</p>
+          <p className="mt-1 text-meta text-text-muted">Ask a team admin or owner if you need access.</p>
+        </div>
+      </Shell>
+    );
+  }
+
+  const series = resolveInsightsQaState(state) === 'sample'
+    ? { ...sampleFlowSeries(window), truncated: false }
+    : await loadFlowSeries(await teamWorkspaceIds(teamId), window);
+
+  return <InsightsClient series={series} window={window} />;
+}
+
+function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="max-w-3xl mx-auto px-4 pt-4 pb-24 md:pt-6">
+      <h1 className="text-heading font-bold mb-4">Insights</h1>
+      {children}
+    </div>
+  );
+}

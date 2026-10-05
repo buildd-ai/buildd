@@ -1262,6 +1262,14 @@ function ConsumptionSection({
           <span>Cost per task: tokens, turns, tool calls, cost</span>
           <span className="text-primary shrink-0">usage →</span>
         </a>
+        <a
+          data-testid="insights-link"
+          href="/app/insights"
+          className="flex items-baseline justify-between gap-3 text-xs text-text-secondary hover:text-text-primary transition-colors"
+        >
+          <span>How work moves to production, and how much agent time shipped</span>
+          <span className="text-primary shrink-0">insights →</span>
+        </a>
 
         {topTools.length > 0 && (
           <div className="space-y-2 pt-1 border-t border-border-default">
