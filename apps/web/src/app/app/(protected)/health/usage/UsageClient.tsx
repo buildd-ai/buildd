@@ -5,6 +5,7 @@ import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { MetricStat, Stat } from '@/components/StatTile';
 import { coverageLabel, observedAgo, sectionDenominator } from '@/lib/health-metric-grammar';
 import { scanCaveat } from '@/lib/model-presentation';
+import { countOf } from '@/lib/plural';
 import {
   DRILLDOWN_WINDOWS,
   formatDelta,
@@ -68,7 +69,7 @@ export function UsageClient({ view, wsFilter }: Props) {
 
         <div className="mt-2 flex items-baseline justify-between gap-3">
           <span data-testid="usage-header-denominator" className="text-[11px] text-text-muted">
-            {sectionDenominator(tasks, tasks === 1 ? 'task' : 'tasks')} ({window})
+            {countOf(tasks, 'task')} · last {window === '30d' ? '30 days' : '7 days'}
           </span>
           {caveat && (
             <span
@@ -144,21 +145,25 @@ export function UsageClient({ view, wsFilter }: Props) {
             </div>
           </section>
 
-          {/* 2. Where the turns go: navigation. */}
-          <CodeNavigationPanelView view={view} />
-
-          {/* 3. Where the turns go: the shell, on its own denominator. */}
-          <ShellPanelView view={view} />
-
-          {/* 4. Which buildd action ran. Every buildd MCP call multiplexes
-              through one SDK tool name, so the tool histogram above cannot
-              decompose it — but worker_action_events records the bare action
-              name, which this reads. The RUNTIME/WORK classification is
-              deliberately absent, not missing: it is task-conditional and its
-              contract lives in health-analytics-spec §4.3 item 1 / WU-4. */}
-          <ActionBreakdownView view={view} />
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Where the turns go: code navigation, the shell and which buildd action ran.
+ * buildd's own tuning detail, so it renders on Health → Operator, not on
+ * Usage. Each panel renders nothing without data.
+ */
+export function UsageInternals({ view }: { view: UsageDrilldownView }) {
+  if (view.tasks === 0) return null;
+  return (
+    <div data-testid="usage-internals" className="max-w-2xl mx-auto px-4 pb-24">
+      <h2 className="section-label mb-3">Where agent turns go</h2>
+      <CodeNavigationPanelView view={view} />
+      <ShellPanelView view={view} />
+      <ActionBreakdownView view={view} />
     </div>
   );
 }

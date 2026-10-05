@@ -200,7 +200,7 @@ describe('HealthClient — layout', () => {
       failureAnalytics: analytics(),
       usageStats: { total: 40, completed: 30, failed: 4, unassigned: 6 },
     });
-    expect(html).toContain('over 1 runner');
+    expect(html).toContain('1 runner');
     expect(html).toContain('over 8 terminal worker sessions');
     expect(html).toContain('over 40 tasks');
   });
@@ -258,7 +258,8 @@ describe('HealthClient — Problems', () => {
 describe('HealthClient — STATE grammar', () => {
   it('renders runner freshness from the heartbeat, not from render time', () => {
     const html = render({ runners: [runner({ lastHeartbeatAt: ago(3 * HOUR) })] });
-    expect(html).toContain('as of 3h ago');
+    // 3h without a heartbeat is offline, so the line reads "last seen", from the heartbeat.
+    expect(html).toContain('last seen 3h ago');
   });
 
   it('renders `never observed` for a credential that was never verified', () => {
@@ -704,7 +705,7 @@ describe('HealthClient — budget forecast labels', () => {
     });
     expect(html).toContain('health-section-budget-forecast');
     expect(html).not.toContain('?window=');
-    expect(html).toContain('ignores the page window');
+    expect(html).toContain('usage limits and monthly spend');
   });
 
   it('labels monthly and mission spend as an estimate', () => {
