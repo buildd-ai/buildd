@@ -26,6 +26,7 @@ import {
 } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
+import { undraftStackedDependents } from '@/lib/early-release-stacking';
 import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
@@ -1261,6 +1262,16 @@ async function handlePullRequestEvent(event: {
     // mergedAt and would have held back any downstream dispatch until this moment.
     checkDependsOnResolved(worker.task.id).catch((e) =>
       console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
+    );
+
+    // Early release's stacking mechanics: a dependent released `start_stacked`
+    // against this task's branch opened its PR as a draft (create_pr, via
+    // findStackedReleaseForBase) because the upstream might still change.
+    // Now that it's merged, un-draft it — GitHub's own retarget-on-delete
+    // moves its base once the branch itself is deleted, so there's nothing
+    // else to do here.
+    undraftStackedDependents(worker.task.id).catch((e) =>
+      console.error(`[webhook] undraftStackedDependents failed for task ${worker.task!.id}:`, e)
     );
 
     // Advance any task waiting on a pr_merged loop condition for this PR.

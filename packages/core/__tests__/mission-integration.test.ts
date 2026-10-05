@@ -245,6 +245,28 @@ describe('isStackedPhaseBase', () => {
     ).toBe(true);
   });
 
+  // ── early release's stacking mechanics reuse this unchanged ──────────────
+  //
+  // A `start_stacked` early-release decision (docs/design/early-release.md,
+  // "Stacking mechanics") writes the upstream task's own branch name into the
+  // dependent's `context.baseBranch` — the exact same shape a plan-step
+  // predecessor declaration produces, because the dependent already names the
+  // upstream in its own `dependsOn` (that's why a `dependency_releases` row
+  // exists for the pair at all). No change to this predicate was needed for
+  // early release; this test documents and guards that reuse.
+  it('is true for an early-release start_stacked base (dependent already depends on the upstream)', () => {
+    const upstreamId = 'ab12cd34-5555-6666-7777-888899990000';
+    const upstreamBranch = `buildd/${upstreamId.slice(0, 8)}-upstream-thing`;
+    expect(
+      isStackedPhaseBase({
+        contextBaseBranch: upstreamBranch,
+        head: HEAD,
+        mission: OPTED_IN,
+        dependsOn: [upstreamId],
+      }),
+    ).toBe(true);
+  });
+
   it('is false when context.baseBranch is unset', () => {
     expect(isStackedPhaseBase({ contextBaseBranch: undefined, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON })).toBe(false);
     expect(isStackedPhaseBase({ contextBaseBranch: null, head: HEAD, mission: OPTED_IN, dependsOn: DEPENDS_ON })).toBe(false);
