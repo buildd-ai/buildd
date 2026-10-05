@@ -39,6 +39,17 @@
         "wrangler": "4.147.0",
       },
     },
+    "apps/model-policy": {
+      "name": "@buildd/model-policy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@builddai/ai-kit": "workspace:*",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "5.20261002.1",
+        "wrangler": "4.147.0",
+      },
+    },
     "apps/responder": {
       "name": "@buildd/responder",
       "version": "0.0.0",
@@ -53,7 +64,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.268.0",
+      "version": "0.275.1",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@buildd/core": "workspace:*",
@@ -73,7 +84,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.268.0",
+      "version": "0.275.1",
       "dependencies": {
         "@ai-sdk/anthropic": "^4.0.65",
         "@ai-sdk/openai": "^4.0.78",
@@ -123,7 +134,7 @@
     },
     "packages/ai-kit": {
       "name": "@builddai/ai-kit",
-      "version": "0.17.0",
+      "version": "0.18.0",
       "devDependencies": {
         "@ai-sdk/react": "^4.0.119",
         "@happy-dom/global-registrator": "^20.14.5",
@@ -154,7 +165,7 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.268.0",
+      "version": "0.275.1",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.280",
         "@ast-grep/napi": "^0.45.0",
@@ -195,7 +206,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.268.0",
+      "version": "0.275.1",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
@@ -363,6 +374,8 @@
     "@buildd/dispatch": ["@buildd/dispatch@workspace:apps/dispatch"],
 
     "@buildd/dispatch-contract": ["@buildd/dispatch-contract@workspace:packages/dispatch-contract"],
+
+    "@buildd/model-policy": ["@buildd/model-policy@workspace:apps/model-policy"],
 
     "@buildd/openclaw-skill": ["@buildd/openclaw-skill@workspace:packages/openclaw-skill"],
 

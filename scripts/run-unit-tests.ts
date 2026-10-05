@@ -20,6 +20,7 @@ const UNIT_TEST_ROOTS = [
   'apps/responder/src/',
   'apps/cloud-runner/src/',
   'apps/dispatch/src/',
+  'apps/model-policy/src/',
   'packages/core/',
   'packages/ai-kit/',
   'packages/dispatch-contract/',

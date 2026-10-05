@@ -1,0 +1,20 @@
+{
+  "name": "@buildd/model-policy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone model-policy Worker: surface + tier in, provider + model + effort out. No prompts, no provider secrets, no buildd auth.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "type-check": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@builddai/ai-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261002.1",
+    "wrangler": "4.147.0"
+  },
+  "license": "FSL-1.1-ALv2"
+}

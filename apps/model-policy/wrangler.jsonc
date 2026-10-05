@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "model-policy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // No account_id: bind a wrangler profile to this directory
+  // (`bunx wrangler auth activate <profile> apps/model-policy`), so a deploy
+  // can never land on whichever account the shell happens to be logged in to.
+  //
+  // No public route yet. Add a Custom Domain here when there is a first
+  // consumer outside buildd; until then `wrangler dev` is the way in.
+  "workers_dev": false,
+
+  // Secret (wrangler secret put POLICY_TOKENS): `id:token[,id:token]`, each
+  // token at least 24 characters. A policy token authorises resolve and
+  // outcome reports only. This Worker holds no provider key and no buildd
+  // credential, and must not: apps call providers with their own.
+  //
+  // MODEL_POLICY is the policy document (JSON, `ModelPolicy` from
+  // @builddai/ai-kit/policy). Set it with `wrangler secret put MODEL_POLICY`
+  // or `--var` so a deploy does not wipe a dashboard edit. Missing or invalid,
+  // /v1/resolve answers 503 and clients serve their own fallback.
+}
