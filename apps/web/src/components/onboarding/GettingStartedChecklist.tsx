@@ -20,7 +20,7 @@ function StepBody({ id }: { id: GettingStartedStepId }) {
   if (id === 'runner') {
     return (
       <>
-        <p className="text-body text-text-secondary">Install the CLI on any machine, reload your shell, then start it.</p>
+        <p className="text-body text-text-secondary">Install the CLI on any machine, reload your shell, log in, then start it.</p>
         <RunnerInstallSteps className="mt-2" />
       </>
     );

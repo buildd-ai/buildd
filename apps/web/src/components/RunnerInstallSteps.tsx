@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { RUNNER_INSTALL_COMMANDS, RUNNER_LOCAL_UI_URL } from '@/lib/runner-install';
+import { RUNNER_HEADLESS_LOGIN, RUNNER_INSTALL_COMMANDS, RUNNER_SERVICE_INSTALL } from '@/lib/runner-install';
 
 /**
  * How to start a runner, in the one wording every screen uses
@@ -32,7 +32,7 @@ export default function RunnerInstallSteps({ className = '' }: { className?: str
         </button>
       </div>
       <p className="text-meta text-text-muted mt-2">
-        Then open <code className="text-text-secondary">{RUNNER_LOCAL_UI_URL}</code> to connect your account.
+        No browser on this machine? Use <code className="text-text-secondary">{RUNNER_HEADLESS_LOGIN}</code>. To keep it running in the background, use <code className="text-text-secondary">{RUNNER_SERVICE_INSTALL}</code> instead of <code className="text-text-secondary">buildd</code>.
       </p>
     </div>
   );

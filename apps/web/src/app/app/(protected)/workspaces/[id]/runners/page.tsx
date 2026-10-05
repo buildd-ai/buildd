@@ -92,7 +92,7 @@ export default function RunnersPage() {
           <div className="border border-dashed border-border-default p-6">
             <p className="text-text-secondary mb-1">No runners connected</p>
             <p className="text-body text-text-muted mb-4">
-              A runner is the program on your machine that does the work. Start one with these three lines. It shows up here within a minute.
+              A runner is the program on your machine that does the work. Start one with these four lines. It shows up here within a minute.
             </p>
             <RunnerInstallSteps />
           </div>

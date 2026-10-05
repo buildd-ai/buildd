@@ -10,19 +10,23 @@
  *   2. reload the shell: the installer adds ~/.local/bin to the shell rc, but
  *      that export only applies inside the piped installer's own subshell, so
  *      `buildd` is not on PATH in the terminal that ran the one-liner,
- *   3. bare `buildd`, which serves the local UI where the account is connected.
+ *   3. `buildd login`, which opens the browser to connect the account,
+ *   4. bare `buildd`, which starts the runner.
  *
- * `buildd login --device` exists for a machine with no browser; it is the
- * headless exception, not the main path. There is no `buildd run`.
+ * The runner is headless by default: nothing serves a page on localhost unless
+ * it is started with `--debug`, and with no login it idles. So `buildd login`
+ * is a step of its own, never replaced by "open localhost:8766".
+ * There is no `buildd run`.
  */
 export const RUNNER_INSTALL_COMMANDS = [
   'curl -fsSL https://buildd.dev/install.sh | bash',
   'exec $SHELL',
+  'buildd login',
   'buildd',
 ] as const;
 
-/** Where bare `buildd` serves the page that connects the account. */
-export const RUNNER_LOCAL_UI_URL = 'http://localhost:8766';
-
-/** For a server with no browser: log in from the terminal before `buildd`. */
+/** For a machine with no browser: the terminal flavour of `buildd login`. */
 export const RUNNER_HEADLESS_LOGIN = 'buildd login --device';
+
+/** Keeps the runner going after the terminal closes; replaces bare `buildd`. */
+export const RUNNER_SERVICE_INSTALL = 'buildd service install';

@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import CopyBlock from '@/components/CopyBlock';
 import RunnerInstallSteps from '@/components/RunnerInstallSteps';
-import { RUNNER_HEADLESS_LOGIN } from '@/lib/runner-install';
+import { RUNNER_SERVICE_INSTALL } from '@/lib/runner-install';
 
 interface LiveRunner {
   id: string;
@@ -169,14 +169,11 @@ export function ConnectRunnerSection({ workspaceId, runners }: ConnectRunnerSect
                 On your server, install buildd and start it:
               </p>
               <RunnerInstallSteps />
-              <p className="text-xs text-text-muted mt-2">
-                No browser on the server? Run <code>{RUNNER_HEADLESS_LOGIN}</code> before <code>buildd</code> and log in from the terminal.
-              </p>
             </div>
 
             <div>
               <div className="text-sm font-medium mb-2">Keep it running in the background:</div>
-              <CopyBlock text="buildd service install" />
+              <CopyBlock text={RUNNER_SERVICE_INSTALL} />
               <p className="text-xs text-text-muted mt-2">Registers buildd as a background service (launchd on macOS, systemd on Linux) so it survives closing the terminal and reboots.</p>
             </div>
           </div>

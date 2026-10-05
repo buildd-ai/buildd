@@ -598,20 +598,71 @@ if ! cbm_provision; then
 fi
 
 
+# --- next steps: begin ---
+# What to do after the installer. Kept in two functions between these markers so
+# apps/runner/__tests__/unit/install-next-steps.test.ts can run them as-is.
+#
+# The runner is headless unless started with --debug (or PORT set): nothing
+# listens on localhost:8766, and with no API key it idles. So the next step is
+# always `buildd login`, unless a login already exists.
+
+# Where the saved login came from, or nothing when there is none.
+buildd_login_source() {
+  if [ -n "${BUILDD_API_KEY:-}" ]; then
+    echo "BUILDD_API_KEY"
+  elif [ -f "$HOME/.buildd/config.json" ] && grep -Eq '"apiKey"[[:space:]]*:[[:space:]]*"[^"]+"' "$HOME/.buildd/config.json"; then
+    echo "~/.buildd/config.json"
+  fi
+}
+
+# print_next_steps <login source, or ""> <1 if the background service is installed>
+print_next_steps() {
+  local login_source="$1" service="$2"
+  echo ""
+  if [ -n "$login_source" ]; then
+    echo -e "${GREEN}Already logged in (${login_source}), so skip 'buildd login'.${NC}"
+    echo ""
+  elif [ "$service" = "1" ]; then
+    echo -e "${YELLOW}The background service is installed, but it has no account yet, so it will not pick up work.${NC}"
+    echo ""
+  fi
+  echo "Next:"
+  echo '  exec $SHELL              reload your shell so buildd is on your PATH'
+  if [ -z "$login_source" ]; then
+    echo "  buildd login             connect this machine to your buildd account"
+    echo "                           (no browser on this machine? buildd login --device)"
+  fi
+  if [ "$service" = "1" ] && [ -n "$login_source" ]; then
+    echo "  buildd service status    the runner is already running in the background"
+  elif [ "$service" = "1" ]; then
+    echo "  buildd service install   restart the background service with your account"
+  else
+    echo "  buildd                   start the runner in this terminal"
+    echo "                           (or buildd service install to keep it running in the background)"
+  fi
+  echo ""
+  echo "Config is stored in ~/.buildd/config.json"
+}
+# --- next steps: end ---
+
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
-echo ""
+
+LOGIN_SOURCE="$(buildd_login_source)"
 
 # Offer to register the launcher loop as a background service (launchd on
 # macOS, systemd --user on Linux) so it survives closing the terminal and
 # reboots — see apps/runner/README.md "Running as a service". --service
 # registers non-interactively (for scripted installs); otherwise, ask when
-# there's a real terminal to ask on. `curl | bash` makes fd 0 the script
-# itself, so the prompt reads from /dev/tty directly rather than stdin.
+# there's a real terminal to ask on and a login to run it with: a service
+# started with no account idles until it is reinstalled after `buildd login`.
+# `curl | bash` makes fd 0 the script itself, so the prompt reads from
+# /dev/tty directly rather than stdin.
 INSTALL_SERVICE=0
 if [ "$WANT_SERVICE" = "1" ]; then
   INSTALL_SERVICE=1
-elif [ -t 1 ] && [ -r /dev/tty ]; then
+elif [ -n "$LOGIN_SOURCE" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+  echo ""
   printf "%s" "Run buildd in the background so it survives closing this terminal and reboots? [Y/n] "
   read -r SERVICE_ANSWER < /dev/tty || SERVICE_ANSWER=""
   case "$SERVICE_ANSWER" in
@@ -620,21 +671,13 @@ elif [ -t 1 ] && [ -r /dev/tty ]; then
   esac
 fi
 
+SERVICE_INSTALLED=0
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  "$BIN_DIR/buildd" service install || echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"
-else
-  echo "Run buildd to start:"
-  echo "  buildd"
-  echo ""
-  echo -e "${YELLOW}Tip: run 'buildd service install' any time to keep it running in the background.${NC}"
+  if "$BIN_DIR/buildd" service install; then
+    SERVICE_INSTALLED=1
+  else
+    echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"
+  fi
 fi
 
-echo ""
-echo "Then open http://localhost:8766 to connect your account."
-echo ""
-echo "Config is stored in ~/.buildd/config.json"
-echo ""
-
-# Reload PATH for current session
-export PATH="$BIN_DIR:$PATH"
-echo -e "${YELLOW}Run 'source $SHELL_RC' or open a new terminal to use 'buildd' command${NC}"
+print_next_steps "$LOGIN_SOURCE" "$SERVICE_INSTALLED"
