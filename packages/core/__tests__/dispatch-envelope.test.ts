@@ -88,8 +88,10 @@ describe('toEnvelope', () => {
 describe('target ids', () => {
   test('round-trip and reject anything else', () => {
     expect(targetId(WS, 'webhook')).toBe(`buildd:ws:${WS}:webhook`);
-    expect(parseTargetId(targetId(WS, 'github-actions'))).toEqual({ workspaceId: WS, type: 'github-actions' });
+    expect(parseTargetId(targetId(WS, 'runner-wake'))).toEqual({ workspaceId: WS, type: 'runner-wake' });
     expect(parseTargetId(`buildd:ws:${WS}:slack`)).toBeNull();
+    // A queued intent from before GitHub Actions was removed names a type no callback serves.
+    expect(parseTargetId(`buildd:ws:${WS}:github-actions`)).toBeNull();
     expect(parseTargetId(`buildd:ws:not-a-uuid:webhook`)).toBeNull();
     expect(parseTargetId(`other:ws:${WS}:webhook`)).toBeNull();
   });

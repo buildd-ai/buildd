@@ -23,7 +23,7 @@ Wire contract: [`packages/dispatch-contract`](../../packages/dispatch-contract).
 | `src/scope-queue.ts` | `ScopeQueue` SQLite DO: wires storage, alarm and secrets into the engine |
 | `src/engine.ts` | The queue: publish/merge, alarm loop, retries, receipts, prune. Runtime-free |
 | `src/producer.ts` | Signed callbacks to buildd: resolve, relay, receipts |
-| `src/adapters/` | `http`, `github-repository-dispatch`, `runner-wake` |
+| `src/adapters/` | `http`, `runner-wake` |
 | `src/config.ts` | Fail-closed config checks, `DRY_RUN_TYPES` |
 
 The runtime-free files are what the Bun tests cover (`bun run test`). The
@@ -67,12 +67,13 @@ One alarm per scope, set to the earliest due intent (or receipt flush).
   `skipped`, receipt `delivered via skipped:all_declined`: a policy answer
   will not change on retry, and this matches today's terminal broadcast.
 - `also` steps run on the first attempt only; their outcome never changes
-  the intent's state.
+  the intent's state. The mode is generic; buildd's route policy uses none
+  today.
 - A throw is retryable: `next_due = now + retryDelayMs(attempt)` (contract),
   an `attempted` receipt, and the retry resumes at the step that threw. After
   `MAX_DELIVERY_ATTEMPTS`, a `failed` receipt.
-- `resolve` (`resolve: true`, and always for `http` and
-  `github-repository-dispatch`): `deliver` (payload + grant), `decline`,
+- `resolve` (`resolve: true`, and always for `http`): `deliver` (payload +
+  grant), `decline`,
   `skip` (closes, `skipped:<why>`), or `reschedule` (re-arm, no attempt
   counted, at least 15 s out). A grant is held in memory for that one step,
   never written to SQLite, receipts or logs.
@@ -88,12 +89,14 @@ One alarm per scope, set to the earliest due intent (or receipt flush).
   target, outcome, latencyMs, latenessMs}`.
 
 Target type: a registered target wins, else the id's last `:` segment
-(`webhook` → `http`, `github-actions` → `github-repository-dispatch`,
-`runner-wake`). Anything else declines `unknown_target`.
+(`webhook` or `http` → `http`, `runner-wake`). Anything else declines
+`unknown_target` without calling resolve. That includes `github-actions`:
+the GitHub Actions adapter was removed, and an intent queued before then
+skips that step and carries on with the rest of its route.
 
-`DRY_RUN_TYPES` (default `http,github-repository-dispatch`, the P1 shadow):
-those types call resolve and record `dry-run:<type>:<decision>` without
-POSTing. An absent var keeps the default; `""` turns dry-run off.
+`DRY_RUN_TYPES` (default `http`, the P1 shadow): those types call resolve
+and record `dry-run:<type>:<decision>` without POSTing. An absent var keeps
+the default; `""` turns dry-run off, which is what `wrangler.jsonc` sets.
 
 ## Config
 
