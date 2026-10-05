@@ -78,7 +78,7 @@
   "devDependencies": {
     "@neondatabase/serverless": "^1.0.0",
     "@types/bun": "latest",
-    "playwright": "1.61.1",
+    "playwright": "1.63.0",
     "typescript": "^6.0.0",
     "ws": "^8.19.0"
   },
