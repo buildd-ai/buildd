@@ -12,6 +12,8 @@ const mockMint = mock((_p: any) => Promise.resolve({ token: 'ghs_scoped_token', 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: mockGetPermissions }));
 mock.module('@/lib/github-scoped-token', () => ({ mintRepoScopedInstallationToken: mockMint }));
+const mockRecord = mock((_r: any) => Promise.resolve());
+mock.module('@/lib/agent-capabilities/audit', () => ({ recordCapabilityDecision: mockRecord }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -79,6 +81,7 @@ beforeEach(() => {
   mockWorkersFindMany.mockReset();
   mockGetPermissions.mockReset();
   mockMint.mockClear();
+  mockRecord.mockClear();
   // Like the real one: no key, no account.
   mockAuthenticateApiKey.mockImplementation((key: string | null) => Promise.resolve(key ? ACCOUNT : null));
   mockTasksFindFirst.mockResolvedValue(taskRow());
@@ -265,5 +268,21 @@ describe('POST /api/runner/github-token', () => {
     const res = await POST(req());
     expect(res.status).toBe(502);
     expect(JSON.stringify(await res.json())).not.toContain('ghs_');
+  });
+});
+
+describe('capability audit', () => {
+  it('records an allowed grant with its expiry and repo, and no token', async () => {
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    const allowed = mockRecord.mock.calls.map(c => c[0]).find((r: any) => r.decision === 'allowed');
+    expect(allowed).toMatchObject({ capability: 'github.repo_grant', principalVia: 'dispatch', workerId: 'worker-1', resource: 'github_repo:repo-row-1' });
+    expect(JSON.stringify(mockRecord.mock.calls)).not.toContain('ghs_scoped_token');
+  });
+
+  it('records a refusal with its reason', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await POST(req());
+    expect(mockRecord.mock.calls.map(c => c[0])).toContainEqual(expect.objectContaining({ decision: 'refused', reasonCode: 'no_live_worker' }));
   });
 });
