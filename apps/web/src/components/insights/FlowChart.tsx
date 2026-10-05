@@ -78,6 +78,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
     const r = svg.getBoundingClientRect();
     const y = ((e.clientY - r.top) / r.height) * VIEW_H;
     const b = series.buckets[i];
+    // The gap belongs to the strip below it: a tap just under the axis means lost work.
     if (y > geo.zeroY) return 'lost';
     const unit = (geo.zeroY - geo.plot.top) / geo.maxUp;
     let acc = 0;
@@ -140,7 +141,22 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
             <g key={t.value}>
               <line x1={geo.plot.left} x2={geo.plot.right} y1={t.y} y2={t.y} stroke="var(--border)" strokeWidth={1} />
               <text x={geo.plot.left - 6} y={t.y + 3} textAnchor="end" className="fill-text-muted" fontSize={AXIS_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>
-                {Number(Math.abs(t.value).toFixed(2))}
+                {Number(t.value.toFixed(2))}
+              </text>
+            </g>
+          ))}
+          {/* Lost work is its own small chart under the main one: its own name and
+              its own 0..max, so its numbers never sit on the stages' axis. */}
+          {geo.maxDown > 0 && (
+            <text x={geo.plot.left} y={geo.lostTop - 5} className="fill-text-muted" fontSize={AXIS_FONT}>
+              {BAND_LABEL.lost}
+            </text>
+          )}
+          {geo.lostTicks.map(t => (
+            <g key={`lost-${t.value}`}>
+              <line x1={geo.plot.left} x2={geo.plot.right} y1={t.y} y2={t.y} stroke="var(--border)" strokeWidth={1} />
+              <text x={geo.plot.left - 6} y={t.y + 3} textAnchor="end" className="fill-text-muted" fontSize={AXIS_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                {Number(t.value.toFixed(2))}
               </text>
             </g>
           ))}
@@ -154,6 +170,9 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
           {BANDS.map(k => geo.paths[k] && <path key={k} d={geo.paths[k]} fill={fill(k)} fillOpacity={k === 'released' ? 0.55 : 0.85} />)}
           {BANDS.map(k => geo.edges[k] && <path key={`e-${k}`} d={geo.edges[k]} fill="none" stroke="var(--card)" strokeWidth={2} strokeLinejoin="round" />)}
           <line x1={geo.plot.left} x2={geo.plot.right} y1={geo.zeroY} y2={geo.zeroY} stroke="var(--border-strong)" strokeWidth={1} />
+          {geo.maxDown > 0 && (
+            <line x1={geo.plot.left} x2={geo.plot.right} y1={geo.lostTop} y2={geo.lostTop} stroke="var(--border-strong)" strokeWidth={1} />
+          )}
 
           {/* Releases: a hairline and a tick at the top. */}
           {geo.releases.map(r => (
