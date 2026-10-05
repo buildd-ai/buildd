@@ -11,6 +11,8 @@ import {
 
 type Groups = Array<{ title: string; rows: MatrixRow[] }>;
 
+const ROLE_LABEL: Record<EditableRole, string> = { admin: 'Admins', member: 'Members' };
+
 /**
  * Settings → Team → Who can do what. Owners choose, per permission, whether
  * admins and members hold it; owners always do. Everyone else sees the same
@@ -159,12 +161,12 @@ function PermissionRow({
       {(['admin', 'member'] as const).map(role => (
         <div key={role} className="w-16 flex justify-center">
           {row.locked || !editable ? (
-            <span className="text-meta text-text-muted" aria-label={`${role === 'admin' ? 'Admins' : 'Members'}: ${row[role] ? 'yes' : 'no'}`}>
-              {row[role] ? 'Yes' : '—'}
+            <span className="text-meta text-text-muted" aria-label={`${ROLE_LABEL[role]}: ${row[role] ? 'yes' : 'no'}`}>
+              {row[role] ? 'Yes' : 'No'}
             </span>
           ) : (
             <Switch
-              label={`${role === 'admin' ? 'Admins' : 'Members'} may: ${row.description}`}
+              label={`${ROLE_LABEL[role]} may: ${row.description}`}
               checked={row[role]}
               onChange={() => onToggle(role)}
               className={SWITCH_HIT_AREA}
