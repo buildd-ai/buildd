@@ -134,7 +134,7 @@
     },
     "packages/ai-kit": {
       "name": "@builddai/ai-kit",
-      "version": "0.19.0",
+      "version": "0.20.0",
       "devDependencies": {
         "@ai-sdk/react": "^4.0.119",
         "@happy-dom/global-registrator": "^20.14.5",
