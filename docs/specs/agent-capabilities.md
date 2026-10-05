@@ -10,6 +10,49 @@ related: [team-permissions]
 keywords: [platform operator, operator role, deployments:write, deployment_secrets:use, secrets:reveal, credential ref, deploy scope, metadata.operator]
 verified_by: [apps/web/src/lib/operator-capability.test.ts, apps/web/src/lib/operator-capability-source.test.ts, apps/web/src/lib/default-roles.prompts.test.ts]
 supersedes: []
+assertions:
+  - id: agent-capability-registry
+    type: symbol
+    name: AGENT_CAPABILITIES
+    path: apps/web/src/lib/permission-registry.ts
+  - id: role-capability-ceilings
+    type: symbol
+    name: ROLE_CAPABILITY_CEILINGS
+    path: apps/web/src/lib/permission-registry.ts
+  - id: elevated-agent-capabilities
+    type: symbol
+    name: ELEVATED_AGENT_CAPABILITIES
+    path: apps/web/src/lib/permission-registry.ts
+  - id: resolve-operator-grant
+    type: symbol
+    name: resolveOperatorGrant
+    path: apps/web/src/lib/operator-capability.ts
+  - id: authorize-agent
+    type: symbol
+    name: authorizeAgent
+    path: apps/web/src/lib/operator-capability.ts
+  - id: load-operator-grant
+    type: symbol
+    name: loadOperatorGrant
+    path: apps/web/src/lib/operator-capability-source.ts
+  - id: operator-prompt-id
+    type: symbol
+    name: OPERATOR_PROMPT_ID
+    path: apps/web/src/lib/default-roles.ts
+  - id: resolve-role-persona
+    type: symbol
+    name: resolveRolePersona
+    path: apps/web/src/lib/default-roles.ts
+  - id: role-persona-identity
+    type: symbol
+    name: rolePersonaIdentity
+    path: apps/web/src/lib/default-roles.ts
+  - id: operator-capability-test
+    type: test_file
+    path: apps/web/src/lib/operator-capability.test.ts
+  - id: operator-capability-source-test
+    type: test_file
+    path: apps/web/src/lib/operator-capability-source.test.ts
 ---
 # Agent Capabilities
 
