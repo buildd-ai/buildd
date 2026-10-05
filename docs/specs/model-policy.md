@@ -10,6 +10,37 @@ related: [model-routing-and-tiers, usage-and-cost-accounting]
 keywords: [model policy, surface, tier, coding, chat, resolve-only, remotePolicy, createPolicyClient, policy token, shadow, split, adaptive, planId, outcomes]
 verified_by: [packages/ai-kit/src/policy/resolve.test.ts, packages/ai-kit/src/policy/protocol.test.ts, packages/ai-kit/src/policy/client.test.ts, packages/ai-kit/src/policy/contract.test.ts, apps/model-policy/src/handler.test.ts, apps/model-policy/src/imports.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "policy-resolver"
+    type: "symbol"
+    name: "resolveModelPolicy"
+    path: "packages/ai-kit/src/policy/resolve.ts"
+  - id: "policy-request-parser"
+    type: "symbol"
+    name: "parsePolicyRequest"
+    path: "packages/ai-kit/src/policy/protocol.ts"
+  - id: "local-first-client"
+    type: "symbol"
+    name: "createPolicyClient"
+    path: "packages/ai-kit/src/policy/client.ts"
+  - id: "optional-remote-policy"
+    type: "symbol"
+    name: "remotePolicy"
+    path: "packages/ai-kit/src/policy/client.ts"
+  - id: "policy-service-handler"
+    type: "symbol"
+    name: "handle"
+    path: "apps/model-policy/src/handler.ts"
+  - id: "resolver-precedence-tests"
+    type: "test_file"
+    path: "packages/ai-kit/src/policy/resolve.test.ts"
+  - id: "fallback-tests"
+    type: "test_file"
+    path: "packages/ai-kit/src/policy/client.test.ts"
+  - id: "credential-boundary-tests"
+    type: "test_file"
+    path: "apps/model-policy/src/imports.test.ts"
 ---
 
 # Standalone Model Policy
