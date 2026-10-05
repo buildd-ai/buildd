@@ -7,7 +7,7 @@
  *   branch is recorded as a release, and a gated release advances, whether or
  *   not a worker owns the PR. Every delivery, fire-and-forget: both writes are
  *   idempotent on the head sha, so a redelivery records nothing new.
- * - `task.pr_merged` (a task PR's first merged delivery): Path B, the
+ * - `task.pr_merged` (once per merge, worker-owned PRs): Path B, the
  *   webhook-side release trigger for workflow_dispatch workspaces.
  * - `workflow_run.completed`: the release row's state, and the release record
  *   of the task that dispatched the run.
@@ -77,6 +77,8 @@ function recordProdMerge(e: EventOf<'pr.merged'>): void {
 }
 
 async function releaseOnTaskPrMerge(e: EventOf<'task.pr_merged'>): Promise<void> {
+  // Path B has only ever run for a worker-owned PR.
+  if (e.via !== 'worker') return;
   const { repoFullName, baseRef, installationId } = e;
   const mergedTask = { id: e.taskId, workspaceId: e.workspaceId, missionId: e.missionId, release: e.release };
   // Post-merge release trigger — Path B (webhook side).

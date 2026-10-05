@@ -129,14 +129,34 @@ export type CoreEvent =
       };
     }
   /**
-   * A task's own PR merged, and this is the first delivery that says so
-   * (`workers.mergedAt` was unset). Effects of the merge itself, as opposed to
-   * the task's status transition, hang off this, so they run once per merge.
+   * A task's own PR merged: every webhook delivery, redeliveries included,
+   * after `workers.mergedAt` is stamped and before the task's status
+   * transition. Subscribers must be idempotent.
+   */
+  | {
+      type: 'task.pr_merge_delivered';
+      taskId: string;
+      workerId: string;
+      workspaceId: string;
+      missionId: string | null;
+      baseRef: string | null;
+    }
+  /**
+   * A task's PR merged, once per merge, after the task's status transition.
+   * `via: 'worker'`: the PR's own worker row, first delivery (`workers.mergedAt`
+   * was unset). `via: 'branch_match'`: no worker owns the PR; the task was
+   * found by its branch name and this merge completed it.
+   * `transition`: whether this merge flipped the task to completed, found it
+   * already completed, or lost the race to the worker's own completion.
+   * Effects of the merge itself, as opposed to the transition, hang off this.
    */
   | {
       type: 'task.pr_merged';
+      via: 'worker' | 'branch_match';
+      transition: 'flipped' | 'already_completed' | 'not_flipped';
+      taskClass: string | null;
       taskId: string;
-      workerId: string;
+      workerId: string | null;
       workspaceId: string;
       missionId: string | null;
       /** tasks.release: 'true' | 'false' | 'inherit'. */
@@ -144,6 +164,24 @@ export type CoreEvent =
       repoFullName: string;
       baseRef: string | null;
       installationId: number | null;
+    }
+  /** A worker-owned PR closed, merged or not. */
+  | { type: 'pr.closed'; workspaceId: string; prNumber: number; merged: boolean }
+  /** A worker-owned PR's base moved (`edited`), after any repair: `toBase` is where it settled. */
+  | { type: 'pr.base_changed'; workspaceId: string; prNumber: number; fromBase: string; toBase: string }
+  /**
+   * A mission's PR needs a person: held for human review, blocked from
+   * auto-merge, or moved off the mission's integration branch.
+   */
+  | {
+      type: 'pr.needs_human';
+      missionId: string;
+      title: string;
+      prUrl: string;
+      prNumber: number;
+      headSha: string;
+      reason: 'auto_merge_blocked' | 'awaiting_review' | 'base_retargeted';
+      message: string;
     }
   /** A GitHub Actions workflow run completed (any workflow, any repo linked to an installation). */
   | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }

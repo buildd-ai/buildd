@@ -69,15 +69,10 @@
       "apps/web/src/lib/ci-failure-retry.ts": "reviews-merge",
       "apps/web/src/lib/dead-pr-shutdown.ts": "reviews-merge",
       "apps/web/src/lib/knowledge-ingest.ts": "knowledge",
-      "apps/web/src/lib/loop-webhook.ts": "missions",
       "apps/web/src/lib/merge-policy.ts": "reviews-merge",
       "apps/web/src/lib/migration-collision-retry.ts": "reviews-merge",
       "apps/web/src/lib/migration-inspector.ts": "workspace-migration",
       "apps/web/src/lib/mission-base-guard.ts": "missions",
-      "apps/web/src/lib/mission-dependency.ts": "missions",
-      "apps/web/src/lib/mission-notifications.ts": "missions",
-      "apps/web/src/lib/mission-pr.ts": "missions",
-      "apps/web/src/lib/mission-wake.ts": "missions",
       "apps/web/src/lib/notify.ts": "notifications",
       "apps/web/src/lib/pr-activity-comment.ts": "reviews-merge",
       "apps/web/src/lib/pr-landing.ts": "reviews-merge",
@@ -94,7 +89,6 @@
       "apps/web/src/lib/reviewer.ts": "reviews-merge",
       "apps/web/src/lib/spec-recheck.ts": "spec-conformance",
       "apps/web/src/lib/supersession.ts": "reviews-merge",
-      "apps/web/src/lib/surface-ordering.ts": "missions",
       "packages/core/mission-integration.ts": "missions"
     },
     "apps/web/src/app/api/mcp-oauth/[workspace]/route.ts": {
