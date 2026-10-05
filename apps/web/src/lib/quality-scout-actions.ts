@@ -41,6 +41,7 @@ import type {
   ScoutRun,
 } from '@buildd/core/quality-scout/types';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { isTerminalTaskStatus } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 
@@ -199,8 +200,6 @@ export interface ScoutActionStore {
   announce(taskId: string): Promise<void>;
 }
 
-/** A follow-up in one of these is over; a finding that still fails is owed a fresh one. */
-const ENDED_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 const STATE_FOR: Record<'propose' | 'aggregate' | 'retain', Exclude<ScoutActionState, 'none' | 'filed'>> = {
   propose: 'proposed',
@@ -245,7 +244,8 @@ export async function actOnScoutFinding(
     let takeover: string[] = [];
     if (f.actionTaskId) {
       const status = await store.taskStatus(f.actionTaskId);
-      if (status !== null && !ENDED_TASK_STATUSES.has(status)) {
+      // An ended follow-up (completed/failed/cancelled) with the finding still failing is owed a fresh one.
+      if (status !== null && !isTerminalTaskStatus(status)) {
         await store.refreshTask(f.actionTaskId, f, run);
         return { decision, outcome: 'updated', taskId: f.actionTaskId };
       }
