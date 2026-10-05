@@ -13,6 +13,7 @@ import { mockWorkers, type FixtureState } from './fixtures-data';
 import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionTaskStripFixture from './MissionTaskStripFixture';
+import MissionStripLanesFixture from './MissionStripLanesFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
@@ -25,6 +26,7 @@ import {
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_TASK_STRIP_FIXTURE_STATE,
+    MISSION_STRIP_LANES_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
@@ -71,6 +73,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_TASK_STRIP_FIXTURE_STATE) {
         return <MissionTaskStripFixture />;
+    }
+
+    if (state === MISSION_STRIP_LANES_FIXTURE_STATE) {
+        return <MissionStripLanesFixture />;
     }
 
     if (state === MISSION_LIST_EXECUTOR_FIXTURE_STATE) {

@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { parseStripLayout, stripLayoutScope } from '@/lib/mission-task-strip';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives, artifacts } from '@buildd/core/db/schema';
 import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
@@ -111,10 +112,12 @@ export default async function MissionDetailPage({
 }: {
   params: Promise<{ id: string }>;
   // `?tab=` is retired: accepted and ignored, so old links still land.
-  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string }>;
+  searchParams: Promise<{ from?: string; initiativeId?: string; artifact?: string; view?: string; layout?: string; strip?: string }>;
 }) {
   const { id } = await params;
-  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam } = await searchParams;
+  const { from, initiativeId, artifact: initialOpenArtifactId, view: listViewParam, layout: layoutParam, strip: stripParam } = await searchParams;
+  // EXPERIMENT: `?strip=lanes` draws the Landed strip's compact lanes (flat by default).
+  const stripLayout = parseStripLayout(stripParam);
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -1509,7 +1512,7 @@ export default async function MissionDetailPage({
       <MissionVisualReviewProvider missionId={id} visual={boardVisual}>
       <MissionLayoutShell
         initial={parseMissionLayout(layoutParam, listViewParam)}
-        board={boardHeader(<MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} />)}
+        board={boardHeader(<div className="contents" {...stripLayoutScope(stripLayout)}><MissionBoard model={boardModel} completionText={completionText} notice={boardNotice} visual={boardVisual} {...boardLink} {...boardStrip} /></div>)}
         lanes={boardHeader(<MissionLanes model={boardModel} completionText={completionText} visual={boardVisual} {...boardLink} />)}
         feed={boardHeader(
           <MissionFeedLayout

@@ -18,12 +18,14 @@ import {
   deriveFeedPrState,
   deriveFeedTaskState,
   foldMissionDeliverables,
-  orderDeliverables,
   type MissionFeedTaskInput,
 } from './mission-pulse';
+import { buildBoardCells, toBoardTaskInput, type BoardExternalDepInput } from './mission-board';
+import { stripProjection, type StripLane } from './mission-task-strip';
 import {
   toFeedTask,
   latestWorker,
+  type BlockingTask,
   type MissionCardRow,
   type MissionCardSummary,
   type MissionCardTaskRow,
@@ -59,6 +61,12 @@ export interface MissionListCardOptions {
   roleColors?: ReadonlyMap<string, string | null>;
   /** Live worker id → its last reported progress, 0..100. */
   progressByWorker?: ReadonlyMap<string, number>;
+  /**
+   * Every task the page loaded, by id (the page's cross-mission index): a
+   * dependency on another mission's task is judged from it, the way the
+   * mission page judges its `externalDeps`. A dependency outside it is unknown.
+   */
+  taskIndex?: ReadonlyMap<string, BlockingTask & { title?: string | null }>;
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────
@@ -75,10 +83,16 @@ export interface ListCell {
   /** 0..1 — the live worker's reported progress for `running`, 1 otherwise. */
   fill: number;
   href: string;
+  /** Compact lane and component break (`stripProjection`); drawn only under `?strip=lanes`. */
+  lane: StripLane;
+  break: boolean;
 }
 
 export interface ListPhase {
+  /** Unique per group: a phase interleaved by dependency order has one group per run. */
   key: string;
+  /** The phase itself (`p<index>`, or `none`). */
+  phaseKey: string;
   label: string | null;
   /** Counted cells done in this phase / counted cells (cancelled excluded). */
   done: number;
@@ -202,6 +216,17 @@ function firstSentence(text: string | null | undefined): string | null {
   return s.replace(/[.!]$/, '') || null;
 }
 
+/** The mission's dependencies on tasks outside it, as the board reads them. */
+function externalDepsOf(tasks: readonly ListTaskRow[], index: MissionListCardOptions['taskIndex']): BoardExternalDepInput[] {
+  if (!index) return [];
+  const own = new Set(tasks.map(t => t.id));
+  const ids = new Set(tasks.flatMap(t => t.dependsOn ?? []).filter(id => !own.has(id)));
+  return [...ids].flatMap(id => {
+    const row = index.get(id);
+    return row ? [{ id, title: row.title ?? null, status: row.status, workers: (row.workers ?? []) as BoardExternalDepInput['workers'] }] : [];
+  });
+}
+
 function liveWorkerOf(task: ListTaskRow): ListWorkerRow | null {
   for (const w of task.workers ?? []) if (LIVE.has(w.status)) return w;
   return null;
@@ -225,10 +250,20 @@ export function buildMissionListCard(
   const isHeartbeat = schedule?.taskTemplate?.context?.heartbeat === true;
   const isRecurring = !!schedule?.cronExpression && !isHeartbeat && view.group !== 'completed';
 
-  // ── Cells, in pulse order, grouped by phase ──
+  // ── Cells, in strip order, grouped into runs of one phase ──
+  // Identity, order and lane come from the mission page's own projection
+  // (`buildBoardCells` → `stripProjection`), so Home, the list and the Landed
+  // strip draw the same tasks in the same dependency-first order. Only the
+  // cell's coarser state word is the list's own.
   const feed: MissionFeedTaskInput[] = tasks.map(toFeedTask);
-  const ordered = orderDeliverables(foldMissionDeliverables(feed).rows);
+  const feedRows = new Map(foldMissionDeliverables(feed).rows.map(r => [r.task.id, r]));
+  const strip = stripProjection(buildBoardCells({
+    tasks: tasks.map(t => toBoardTaskInput(t as unknown as Parameters<typeof toBoardTaskInput>[0])),
+    externalDeps: externalDepsOf(tasks, opts.taskIndex),
+  }));
+  const ordered = strip.order.flatMap(id => feedRows.get(id) ?? []);
   const phases: ListPhase[] = [];
+  const phaseRuns = new Map<string, number>();
   const counts = { done: view.done, total: view.total, inCi: 0, running: 0, needsYou: 0, queued: 0, failed: 0 };
   let question: ListQuestion | null = null;
 
@@ -260,7 +295,10 @@ export function buildMissionListCard(
     else if (state === 'failed') counts.failed++;
 
     const { label } = taskShortLabel(source);
-    const cell: ListCell = { taskId: r.task.id, label, title: r.task.title, state, fill, href: link(r.task.id) };
+    const cell: ListCell = {
+      taskId: r.task.id, label, title: r.task.title, state, fill, href: link(r.task.id),
+      lane: strip.lanes.get(r.task.id) ?? 0, break: strip.breaks.has(r.task.id),
+    };
 
     if (state === 'needs_you' && !question) {
       const candidates = [source, ...r.attempts.map(a => byId.get(a.id)!).filter(Boolean)];
@@ -275,10 +313,17 @@ export function buildMissionListCard(
       }
     }
 
-    const key = r.task.missionPhaseIndex != null && r.task.missionPhaseLabel ? `p${r.task.missionPhaseIndex}` : 'none';
+    // Dependency order may interleave phases: each run of one phase is its own
+    // group, so the groups never reorder the cells.
+    const phaseKey = r.task.missionPhaseIndex != null && r.task.missionPhaseLabel ? `p${r.task.missionPhaseIndex}` : 'none';
     let phase = phases[phases.length - 1];
-    if (!phase || phase.key !== key) {
-      phase = { key, label: key === 'none' ? null : r.task.missionPhaseLabel ?? null, done: 0, total: 0, cells: [] };
+    if (!phase || phase.phaseKey !== phaseKey) {
+      const run = phaseRuns.get(phaseKey) ?? 0;
+      phaseRuns.set(phaseKey, run + 1);
+      phase = {
+        key: run === 0 ? phaseKey : `${phaseKey}~${run}`, phaseKey,
+        label: phaseKey === 'none' ? null : r.task.missionPhaseLabel ?? null, done: 0, total: 0, cells: [],
+      };
       phases.push(phase);
     }
     // A cancelled task is never drawn as a progress unit: the meter's cells
@@ -304,9 +349,6 @@ export function buildMissionListCard(
       for (const c of p.cells) c.label = 'plan';
     }
   }
-  // Planning happens first, so it reads first (the pulse keeps unphased rows last).
-  const planAt = phases.findIndex(p => p.label === 'Plan' && p.key === 'none');
-  if (planAt > 0) phases.unshift(...phases.splice(planAt, 1));
 
   // ── Live agents ──
   const dots: MissionListCardModel['live']['dots'] = [];

@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { parseStripLayout, stripLayoutScope } from '@/lib/mission-task-strip';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
@@ -99,9 +100,11 @@ function timeAgo(date: Date | string): string {
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams?: Promise<{ workspace?: string; initiative?: string }>;
+  searchParams?: Promise<{ workspace?: string; initiative?: string; strip?: string }>;
 }) {
-  const { workspace: wsFilter, initiative: initFilter } = (await searchParams) ?? {};
+  const { workspace: wsFilter, initiative: initFilter, strip: stripParam } = (await searchParams) ?? {};
+  // EXPERIMENT: `?strip=lanes` draws the mission strips' compact lanes (flat by default).
+  const stripLayout = parseStripLayout(stripParam);
   const user = await getCurrentUser();
 
   const isDev = process.env.NODE_ENV === 'development' && (!process.env.DATABASE_URL || !process.env.DEV_USER_EMAIL); // placeholder unless dev has a DB + dev user
@@ -575,7 +578,7 @@ export default async function HomePage({
               if (last && lastTick) (lastTick as any).result = { summary: last };
             }
             const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
-            const model = buildMissionListCard(row, view, summary, { now: nowMs });
+            const model = buildMissionListCard(row, view, summary, { now: nowMs, taskIndex: homeMissionTaskMap });
             return [{ view, model, completedAt: m.completedAt, row }];
           });
           // Stranded local missions: the decision shadow looks after the
@@ -2116,7 +2119,9 @@ export default async function HomePage({
               )}
             </div>
 
-            <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} timeZone={teamTz} />
+            <div className="contents" {...stripLayoutScope(stripLayout)}>
+              <HomeMissionsSummary rows={homeMissionRows} total={missionTotal} shippedToday={shippedToday} timeZone={teamTz} />
+            </div>
             {audience === 'member' && fleetData && rightNow !== 'create-workspace' && rightNow !== 'get-started' && (
               <FleetStrip fleet={fleetData.fleet} roles={fleetRoles} now={renderNow} timeZone={teamTz} compact />
             )}

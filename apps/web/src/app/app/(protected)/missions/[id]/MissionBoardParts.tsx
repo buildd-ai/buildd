@@ -10,7 +10,7 @@ import { useRouter } from 'next/navigation';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { runnerInitial } from '@/lib/runner-display';
 import { BOARD_LANDED, type BoardCriterion, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
-import { stripKeyTarget, stripTick, type StripMark, type StripSlot, type StripState } from '@/lib/mission-task-strip';
+import { LANE_CLASS, laneVar, stripKeyTarget, stripProjection, stripTick, type StripLane, type StripMark, type StripSlot, type StripState } from '@/lib/mission-task-strip';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
@@ -259,6 +259,9 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
     (e.currentTarget.querySelectorAll('button')[to] as HTMLButtonElement | undefined)?.focus();
   };
   const numbered = n <= MAX_NUMBERED_TICKS;
+  // Lanes and component breaks: drawn only under a `?strip=lanes` scope.
+  const { lanes, breaks } = useMemo(() => stripProjection(model), [model]);
+  const breakAt = (s: StripSlot) => s.kind === 'task' && breaks.has(s.id);
   return (
     <div>
       <div
@@ -266,7 +269,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
         aria-label="Mission tasks. Use the arrow keys to move between tasks."
         data-testid="landed-strip"
         onKeyDown={onKeyDown}
-        className="flex gap-[var(--strip-gap)] pt-1.5"
+        className={`flex gap-[var(--strip-gap)] pt-1.5 ${LANE_CLASS.band.room}`}
       >
         {slots.map((s, i) => {
           if (s.kind === 'fold') {
@@ -278,6 +281,8 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
                 selected={i === sel}
                 tall={!compact}
                 label={`${s.taskIds.length} ${s.state === 'landed' ? 'landed' : 'queued'} tasks`}
+                lane={0}
+                brk={false}
                 onSelect={onSelect}
               />
             );
@@ -292,6 +297,8 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               selected={i === sel}
               tall={!compact}
               label={`Cell ${i + 1} of ${n}${level}, ${STATUS_WORDS[s.state]}: ${t.title}`}
+              lane={lanes.get(s.id) ?? 0}
+              brk={breakAt(s)}
               onSelect={onSelect}
             />
           );
@@ -316,7 +323,7 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               data-testid="landed-strip-tick"
               data-open={open ? 'true' : undefined}
               data-mark={mark ?? undefined}
-              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${open || mark ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
+              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${breakAt(s) ? LANE_CLASS.break : ''} ${open || mark ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
             >
               {body}
             </span>
@@ -328,12 +335,14 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
 }
 
 /** Memoised: a selection change re-renders the two cells it touches, not the strip. */
-const StripCell = memo(function StripCell({ id, state, selected, tall, label, onSelect }: {
+const StripCell = memo(function StripCell({ id, state, selected, tall, label, lane, brk, onSelect }: {
   id: string;
   state: StripState;
   selected: boolean;
   tall: boolean;
   label: string;
+  lane: StripLane;
+  brk: boolean;
   onSelect(taskId: string): void;
 }) {
   return (
@@ -342,12 +351,14 @@ const StripCell = memo(function StripCell({ id, state, selected, tall, label, on
       data-testid="landed-strip-cell"
       data-task-ref={id}
       data-status={state}
+      data-lane={lane}
+      style={laneVar(lane)}
       aria-label={label}
       aria-pressed={selected}
       aria-controls={STRIP_DRAWER_ID}
       tabIndex={selected ? 0 : -1}
       onClick={() => onSelect(id)}
-      className={`block h-11 min-w-0 flex-1 basis-0 cursor-pointer p-0 transition-transform duration-150 motion-reduce:transition-none ${tall ? 'md:h-14' : ''} ${STRIP_CELL_CLASS[state]} ${
+      className={`block h-11 min-w-0 flex-1 basis-0 cursor-pointer p-0 transition-transform duration-150 motion-reduce:transition-none ${tall ? 'md:h-14' : ''} ${STRIP_CELL_CLASS[state]} ${LANE_CLASS.band.top} ${brk ? LANE_CLASS.break : ''} ${
         selected ? `-translate-y-1 outline outline-2 outline-offset-2 ${STRIP_OUTLINE[stripTone(state)]}` : 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-text-primary'
       }`}
     />

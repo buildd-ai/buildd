@@ -21,6 +21,7 @@ import { nextRunLabel, shortAgo, shortDuration, type ListTone, type MissionListC
 import { STATUS_TONE_EDGE, STATUS_TONE_SQUARE, STATUS_TONE_TEXT } from '@/lib/status-tone';
 import { timeAgo } from '@/lib/mission-helpers';
 import PhaseBar, { CELL_BOX } from './PhaseBar';
+import { LANE_CLASS, laneVar } from '@/lib/mission-task-strip';
 import ContinueOnRunnerCta from './ContinueOnRunnerCta';
 
 export interface ListCardProps {
@@ -307,9 +308,9 @@ export function MiniMissionCard({ view, model, workspaceName }: ListCardProps) {
           </>
         ) : (
           <>
-            <span className="flex h-2.5 w-[120px] gap-[2px]" aria-hidden="true">
+            <span className={`flex h-2.5 w-[120px] gap-[2px] ${LANE_CLASS.xs.room}`} aria-hidden="true">
               {model.phases.flatMap(p => p.cells).slice(0, 12).map(c => (
-                <span key={c.taskId} className={`flex-1 ${CELL_BOX[c.state]}`} />
+                <span key={c.taskId} data-lane={c.lane} style={laneVar(c.lane)} className={`flex-1 ${CELL_BOX[c.state]} ${LANE_CLASS.xs.top}`} />
               ))}
             </span>
             <span className="flex items-center gap-2">

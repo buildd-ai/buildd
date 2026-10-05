@@ -11,6 +11,7 @@
  */
 import Link from 'next/link';
 import type { ListCell, ListCellState, ListPhase } from '@/lib/mission-list-card';
+import { LANE_CLASS, laneVar } from '@/lib/mission-task-strip';
 
 export const CELL_STATE_LABEL: Record<ListCellState, string> = {
   done: 'merged',
@@ -51,9 +52,11 @@ function Cell({ cell, size }: { cell: ListCell; size: 'lg' | 'sm' }) {
       data-testid="phase-bar-cell"
       data-state={cell.state}
       data-task-id={cell.taskId}
+      data-lane={cell.lane}
+      style={laneVar(cell.lane)}
       aria-label={`${cell.label}: ${CELL_STATE_LABEL[cell.state]}`}
       title={`${cell.title} · ${CELL_STATE_LABEL[cell.state]}`}
-      className={`relative block min-w-0 flex-1 overflow-hidden ${h} ${CELL_BOX[cell.state]} hover:opacity-90`}
+      className={`relative block min-w-0 flex-1 overflow-hidden ${h} ${CELL_BOX[cell.state]} ${LANE_CLASS[size].top} ${cell.break ? LANE_CLASS.break : ''} hover:opacity-90`}
     >
       {cell.state === 'running' && (
         <span
@@ -87,7 +90,7 @@ export default function PhaseBar({ phases, size = 'lg' }: { phases: readonly Lis
           className="flex min-w-0 flex-col gap-1.5"
           style={{ flex: `${p.cells.length} 1 ${size === 'lg' ? p.cells.length * 44 : 0}px` }}
         >
-          <div className={`flex min-w-0 ${size === 'lg' ? 'gap-[3px]' : 'gap-[2px]'}`}>
+          <div className={`flex min-w-0 ${size === 'lg' ? 'gap-[3px]' : 'gap-[2px]'} ${LANE_CLASS[size].room}`}>
             {p.cells.map(c => <Cell key={c.taskId} cell={c} size={size} />)}
           </div>
           {size === 'lg' && (

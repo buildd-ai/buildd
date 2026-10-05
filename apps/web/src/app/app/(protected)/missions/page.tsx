@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { parseStripLayout, stripLayoutScope } from '@/lib/mission-task-strip';
 import { missions, accounts, workers, workspaces, teams } from '@buildd/core/db/schema';
 import { inArray, and, eq, sql, or, isNull } from 'drizzle-orm';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
@@ -41,9 +42,11 @@ const GROUP_SORT_COMPLETED_LAST = (g: string) => (g === 'completed' ? 1 : 0);
 export default async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string; completedCursor?: string }>;
+  searchParams: Promise<{ workspace?: string; completedCursor?: string; strip?: string }>;
 }) {
-  const { workspace: wsFilter, completedCursor: completedCursorParam } = await searchParams;
+  const { workspace: wsFilter, completedCursor: completedCursorParam, strip: stripParam } = await searchParams;
+  // EXPERIMENT: `?strip=lanes` draws the mission strips' compact lanes (flat by default).
+  const stripLayout = parseStripLayout(stripParam);
   const user = await getCurrentUser();
   if (!user) redirect('/app/auth/signin');
 
@@ -216,7 +219,7 @@ export default async function MissionsPage({
 
     return {
       view,
-      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker }),
+      list: buildMissionListCard(obj as ListMissionRow, view, summary, { now, roleColors, progressByWorker, taskIndex: allMissionTaskMap }),
       workspaceId: obj.workspaceId || null,
       workspaceName: (obj.workspace as any)?.name || null,
       isHeld: obj.isHeld ?? false,
@@ -294,7 +297,9 @@ export default async function MissionsPage({
           <p className="text-sm text-text-secondary">No missions.</p>
         </div>
       ) : (
-        <MissionGrid missions={missionsList} releaseFooters={releaseFooters} slots={maxSeats > 0 ? { live: activeSeats, max: maxSeats } : null} />
+        <div className="contents" {...stripLayoutScope(stripLayout)}>
+          <MissionGrid missions={missionsList} releaseFooters={releaseFooters} slots={maxSeats > 0 ? { live: activeSeats, max: maxSeats } : null} />
+        </div>
       )}
 
       {/* Rule P-4: the completed portion is one bounded page; this is the

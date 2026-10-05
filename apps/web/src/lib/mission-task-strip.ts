@@ -76,6 +76,117 @@ export function stripOrder(model: StripModel): string[] {
   });
 }
 
+// ── Compact lanes (EXPERIMENT, `?strip=lanes`) ──────────────────────────────
+//
+// Opt-in only: the flat strip is the default everywhere. The y axis carries
+// LOCAL branch shape and never graph depth — x already is depth. Three lanes,
+// −1 (up), 0 (the strip's line) and +1 (down), each a few pixels:
+//
+// - a cell with one on-strip dependency that is that dependency's only
+//   dependent keeps its lane (a chain stays flat, however deep);
+// - siblings (the dependents of one cell, or the roots of one fan-in) spread
+//   over the lanes in creation order, so a fan-out reads as a split;
+// - a cell with two or more dependencies is a join and sits on lane 0.
+//
+// Lanes read the static edges (`deps`, satisfied or not) and creation order,
+// never state, so a cell does not hop lanes as work lands. To remove the
+// experiment, delete this section and every `StripLayout` consumer.
+
+export type StripLane = -1 | 0 | 1;
+export type StripLayout = 'flat' | 'lanes';
+
+/** The query parameter that opts a surface into the experiment: `?strip=lanes`. */
+export const STRIP_LAYOUT_PARAM = 'strip';
+
+export function parseStripLayout(v: string | readonly string[] | null | undefined): StripLayout {
+  return (Array.isArray(v) ? v[0] : v) === 'lanes' ? 'lanes' : 'flat';
+}
+
+/**
+ * Spread on the element that scopes a page (`className="contents"`): every
+ * strip inside it draws its lanes. Outside one, the lane classes below are
+ * inert and the strip is the flat production one.
+ */
+export const stripLayoutScope = (layout: StripLayout) => ({ 'data-strip-layout': layout });
+
+/**
+ * The lanes layout's classes, per density. Each cell carries its lane as
+ * `--lane` (−1, 0, 1) and moves by `top` (relative), never by transform, so a
+ * selected cell's own lift still applies. ROOM pads the row by one offset each
+ * way so a moved cell never overlaps what is above or below it.
+ */
+export const LANE_CLASS = {
+  /** The mission page's Landed strip: 6px. */
+  band: { top: 'relative [[data-strip-layout=lanes]_&]:top-[calc(var(--lane)*6px)]', room: '[[data-strip-layout=lanes]_&]:pt-3 [[data-strip-layout=lanes]_&]:pb-1.5' },
+  /** The missions list's phase bar: 4px. */
+  lg: { top: '[[data-strip-layout=lanes]_&]:top-[calc(var(--lane)*4px)]', room: '[[data-strip-layout=lanes]_&]:py-1' },
+  /** Home's compact phase bar: 3px. */
+  sm: { top: '[[data-strip-layout=lanes]_&]:top-[calc(var(--lane)*3px)]', room: '[[data-strip-layout=lanes]_&]:py-[3px]' },
+  /** The mini card's 10px strip: 2px. */
+  xs: { top: 'relative [[data-strip-layout=lanes]_&]:top-[calc(var(--lane)*2px)]', room: '[[data-strip-layout=lanes]_&]:py-[2px] [[data-strip-layout=lanes]_&]:box-content' },
+  /** A wider gap before a cell that opens a new dependency component. */
+  break: '[[data-strip-layout=lanes]_&]:ml-2',
+} as const;
+
+/** The cell's inline lane variable. */
+export const laneVar = (lane: StripLane) => ({ '--lane': lane }) as Record<string, number>;
+
+const spread = (rank: number, of: number): StripLane =>
+  of <= 1 ? 0 : of === 2 ? (rank === 0 ? -1 : 1) : ([-1, 0, 1] as const)[rank % 3];
+
+export interface StripProjection {
+  /** Task ids in strip order (`stripOrder`). */
+  order: string[];
+  /** Per task: its compact lane. */
+  lanes: Map<string, StripLane>;
+  /**
+   * Tasks that open a new dependency component next to a multi-cell one: the
+   * lanes layout leaves a wider gap there, so independent chains never read
+   * as one.
+   */
+  breaks: Set<string>;
+}
+
+/** The one ordered, laned projection every surface draws (detail, list, Home). */
+export function stripProjection(model: StripModel): StripProjection {
+  const order = stripOrder(model);
+  const tasks = model.tasks;
+  const byCreation = (a: string, b: string) =>
+    tasks[a].createdAt - tasks[b].createdAt || (a < b ? -1 : a > b ? 1 : 0);
+  const rankIn = (ids: readonly string[], id: string) => [...ids].sort(byCreation).indexOf(id);
+
+  const rootsOf = new Map<number, string[]>();
+  const size = new Map<number, number>();
+  for (const id of order) {
+    const t = tasks[id];
+    size.set(t.component, (size.get(t.component) ?? 0) + 1);
+    if (t.deps.length === 0) rootsOf.set(t.component, [...(rootsOf.get(t.component) ?? []), id]);
+  }
+
+  const lanes = new Map<string, StripLane>();
+  const breaks = new Set<string>();
+  order.forEach((id, i) => {
+    const t = tasks[id];
+    const parents = t.deps.filter(d => tasks[d.id]).map(d => d.id);
+    let lane: StripLane;
+    if (parents.length === 0) {
+      const roots = rootsOf.get(t.component) ?? [id];
+      lane = spread(rankIn(roots, id), roots.length);
+    } else if (parents.length > 1) {
+      lane = 0;
+    } else {
+      const siblings = tasks[parents[0]].unblocks.map(u => u.id).filter(u => tasks[u]);
+      lane = siblings.length <= 1 ? lanes.get(parents[0]) ?? 0 : spread(rankIn(siblings, id), siblings.length);
+    }
+    lanes.set(id, lane);
+    const prev = i > 0 ? tasks[order[i - 1]] : null;
+    if (prev && prev.component !== t.component && ((size.get(prev.component) ?? 0) > 1 || (size.get(t.component) ?? 0) > 1)) {
+      breaks.add(id);
+    }
+  });
+  return { order, lanes, breaks };
+}
+
 // ── Slots and the 64-cell cap (§7.11) ───────────────────────────────────────
 
 /** The most cell buttons the strip draws (`FLIGHT_STRIP_BAR_CAP`). */

@@ -149,7 +149,7 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
         <span
           aria-hidden="true"
           data-testid="landed-strip-connector"
-          className={`absolute top-[50px] h-9 w-0.5 -ml-px transition-[left] duration-200 motion-reduce:transition-none ${compact ? '' : 'md:top-[62px] md:h-10'} ${TONE_BG[tone]}`}
+          className={`absolute top-[50px] h-9 w-0.5 -ml-px transition-[left] duration-200 motion-reduce:transition-none [[data-strip-layout=lanes]_&]:top-[62px] ${compact ? '' : 'md:top-[62px] md:h-10 md:[[data-strip-layout=lanes]_&]:top-[74px]'} ${TONE_BG[tone]}`}
           style={{ left: caret }}
         />
         {slot.kind === 'fold' ? (
