@@ -1964,8 +1964,9 @@ export async function POST(req: NextRequest) {
     const claudeEnabledForTeam = !enabledBackends || enabledBackends.includes('claude');
     let claudePoolBlocked = false;
 
-    if (accountBudgetExhausted && !tenantCtx?.tenantId) {
-      // Account's own OAuth session/budget is exhausted.
+    if (accountBudgetExhausted && !tenantCtx?.tenantId && !interactiveSession) {
+      // Account's own OAuth session/budget is exhausted. Interactive sessions
+      // have their own credentials and do not consume this account budget.
       claudePoolBlocked = true;
     } else if (tenantCtx?.tenantId) {
       const workspaceTeamId = (task as any).workspace?.teamId as string | undefined;
@@ -2707,7 +2708,10 @@ export async function POST(req: NextRequest) {
     // Same signal for a wall on any OTHER provider: every candidate was deferred
     // by `budget_paused`, so the runner needs the earliest reset across the pauses
     // this batch actually saw — `account.budgetResetsAt` only tracks Claude.
-    if (accountBudgetExhausted || deferrals.budget_paused > 0) {
+    // Exception: interactive sessions have their own credentials and do not consume
+    // the account's provider budget, so they should not be blocked by accountBudgetExhausted.
+    const accountBudgetBlocksBackgroundRunner = accountBudgetExhausted && !interactiveSession;
+    if (accountBudgetBlocksBackgroundRunner || deferrals.budget_paused > 0) {
       return emptyClaim({
         budgetResetsAt: earliestFutureReset(),
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
@@ -3002,7 +3006,9 @@ export async function POST(req: NextRequest) {
       ? { ...cw, task: { ...(cw.task as any), workspace: withoutDispatchToken((cw.task as any).workspace) } }
       : cw)),
     ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
-    ...(accountBudgetExhausted && {
+    // Only report partial budget exhaustion for background runners. Interactive sessions
+    // have their own credentials and should not be told about account budget state.
+    ...(accountBudgetExhausted && !interactiveSession && {
       budgetResetsAt: earliestFutureReset(),
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
     }),
