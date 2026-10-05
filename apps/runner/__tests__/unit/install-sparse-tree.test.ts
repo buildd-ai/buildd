@@ -86,8 +86,8 @@ describe('install.sh sparse tree', () => {
       .split('\n')
       .filter((l) => /\bsudo\b/.test(l) && !l.trim().startsWith('#') && !l.includes('echo') && !l.includes('printf'));
     for (const line of sudoLines) {
-      // Allowed: probes (`sudo -n true`, `command -v sudo`), and the guarded $CBM_SUDO / CBM_SUDO="sudo".
-      expect(line).toMatch(/sudo -n true|command -v sudo|CBM_SUDO/);
+      // Allowed: probes (`sudo -n true`, `command -v sudo`).
+      expect(line).toMatch(/sudo -n true|command -v sudo/);
     }
   });
 });

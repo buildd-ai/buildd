@@ -119,6 +119,6 @@ describe('agent model endpoint on the claim (docs/design/agent-model-endpoint.md
     const { AGENT_ENDPOINT_RUNNER_FEATURE } = await import('@buildd/core/agent-endpoint');
     expect(AGENT_ENDPOINT_RUNNER_FEATURE).toBe('agent_endpoint');
     expect(sentBodies[0].runnerFeatures).toContain(AGENT_ENDPOINT_RUNNER_FEATURE);
-    expect(sentBodies[0].runnerFeatures).toContain('cbm_withhold');
+    expect(sentBodies[0].runnerFeatures).not.toContain('cbm_withhold');
   });
 });

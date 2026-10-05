@@ -26,7 +26,6 @@ import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
 import { recordTaskAreaOutcome } from '@buildd/core/task-area-prediction-source';
 import { recordOrchestrationTouchLabel } from '@buildd/core/orchestration-ledger-source';
-import { detectCbmFleetDisabled, detectCbmEnforcedUnused, CBM_HEALTH_TERMINAL_STATUSES } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
@@ -213,7 +212,7 @@ async function workerConflictResponse(id: string, extra?: Record<string, unknown
  * Why this exists: the documented worker workflow has the agent call the buildd
  * MCP `complete_task` itself. That marks the worker terminal server-side and
  * pushes worker:completed, so the runner's own completion PATCH — the sole
- * carrier of `resultMeta` (CBM metrics, tool histogram, model attribution),
+ * carrier of `resultMeta` (tool histogram, model attribution),
  * token counts, reported cost, git stats and subagent spans — arrives on a
  * terminal row and is refused with 409 {abort:true}. A large share of completed
  * workers therefore had result_meta NULL with zero cost and zero tokens, and
@@ -3731,20 +3730,6 @@ export async function PATCH(
         // Systemic-failure detector: pages (critical) when tasks start failing
         // in a row, so an "all tasks failing on the runner" outage is caught fast.
         recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
-        // Fleet CBM-disabled detector: pages (error) when every recent worker in
-        // this workspace has binary_absent — a broken platform capability, not just
-        // one bad task. Passes the current worker's CBM outcome directly to avoid a
-        // timing gap between the DB write and the query.
-        // All three terminal statuses set completedAt and carry resultMeta.cbm, and
-        // the detectors' own history query covers all three — gating the call on
-        // 'completed' alone meant an all-failing workspace (the exact shape of a
-        // missing-binary outage) never reached the widened query.
-        if (CBM_HEALTH_TERMINAL_STATUSES.includes(status)) {
-          const currentCbm = (resultMeta as Record<string, unknown> | undefined)?.cbm ?? null;
-          detectCbmFleetDisabled(worker.workspaceId, currentCbm).catch(() => {});
-          // Same shape, opposite condition: mounted-and-ignored rather than absent.
-          detectCbmEnforcedUnused(worker.workspaceId, currentCbm).catch(() => {});
-        }
       }
 
       // Post-completion side effects (non-fatal — must not block worker update).

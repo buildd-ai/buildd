@@ -38,8 +38,6 @@ const webSrc = join(__dirname, '..');
  */
 const RUNNER_CONSUMED_EVENTS: Record<string, string> = {
   'task:assigned': 'runner claim routing; the UI learns via task:updated',
-  'graph:base-advanced':
-    'the codebase-graph seed cache is a directory on the runner host, so only the runner can act on a base advance',
 };
 
 const SERVER_ONLY_EVENTS: Record<string, string> = {

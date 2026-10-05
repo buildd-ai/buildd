@@ -26,8 +26,6 @@ import {
 } from '@/lib/failure-analytics';
 import { getGateAnalytics } from '@/lib/gate-analytics-query';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
-import type { CbmHealthSummary } from '@/lib/cbm-insight';
-import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { fetchSubagentTimeRows, SUBAGENT_TIME_CAPTURED_SINCE, SUBAGENT_TIME_ROW_LIMIT } from '@/lib/subagent-time-query';
@@ -46,7 +44,6 @@ import { FAILED_WORKER_STATUSES } from '@buildd/shared';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { GateAnalytics } from '@buildd/shared';
-export type { CbmHealthSummary };
 export type { SubagentMetrics };
 export type SubagentDelegationPanel = DerivedMetric<SubagentMetrics>;
 export type { ErrorPatternMetrics };
@@ -176,13 +173,13 @@ export interface CredentialHealthItem {
 /**
  * Which data each Health page needs. A page asks only for its own sources, so
  * Overview does not pay for the gate ledger and Failures does not run the
- * codebase-graph query. The sources and their shapes are unchanged from the
+ * subagent-time query. The sources and their shapes are unchanged from the
  * single Health page they came from.
  */
 export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
-  | 'strandedBackends' | 'cbm' | 'subagentDelegation' | 'errorPatterns'
+  | 'strandedBackends' | 'subagentDelegation' | 'errorPatterns'
   | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
@@ -195,7 +192,7 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
   failures: new Set(['failureAnalytics', 'failureGroups']),
   runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules']),
   operator: new Set([
-    'dispatchHealth', 'gateAnalytics', 'experiments', 'cbm', 'subagentDelegation',
+    'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
   ]),
 };
@@ -217,7 +214,6 @@ export interface HealthData {
   failureAnalytics: FailureAnalytics | null;
   gateAnalytics: import('@buildd/shared').GateAnalytics | null;
   window: FailureWindow;
-  cbm: CbmHealthSummary | null;
   subagentDelegation: SubagentDelegationPanel | null;
   errorPatterns: ErrorPatternPanel | null;
   experiments: Awaited<ReturnType<typeof loadHealthExperiments>> | null;
@@ -286,7 +282,6 @@ export async function loadHealth({
     failureAnalytics,
     gateAnalytics,
     strandSummary,
-    cbmSummary,
     subagentDelegation,
     errorPatterns,
     dispatchHealth,
@@ -481,19 +476,6 @@ need('gateAnalytics') ? getGateAnalytics(scopedWsIds, window).catch(() => null) 
       ? getBackendStrandSummary({ teamId: activeTeamId, workspaceIds: scopedWsIds }).catch(() => null)
       : null,
 
-    // Codebase graph (CBM). TREND — obeys the page window (was pinned to 7d).
-    // Same aggregation the /api/cbm/metrics endpoint returns — the page used to
-    // show CBM only as rows in the generic top-tools list, which cannot
-    // distinguish "mounted and never queried" from healthy. Shared with the
-    // usage drill-down, which runs the same cohort rules on its own window.
-    need('cbm')
-      ? fetchCbmSummary({
-      workspaceIds: scopedWsIds,
-      window,
-      windowStart: new Date(Date.now() - parseWindowMs(window)),
-    }).catch(() => null)
-      : null,
-
     // Delegated-work TREND: what share of a session's total agent-effort
     // (wall clock + background subagent time) was handed to background
     // subagents. Computed, stored on every terminal worker, and read by
@@ -674,7 +656,6 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       failureAnalytics: failureAnalytics ?? null,
       gateAnalytics: gateAnalytics ?? null,
       window,
-      cbm: cbmSummary ?? null,
       subagentDelegation: subagentDelegation ?? null,
       errorPatterns: errorPatterns ?? null,
       experiments,

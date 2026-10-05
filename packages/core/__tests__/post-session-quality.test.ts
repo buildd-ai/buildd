@@ -44,16 +44,7 @@ function source(over: Partial<StageASource> = {}): StageASource {
           mcp__buildd__recall: 3,
           mcp__buildd__learn: 1,
           mcp__buildd__buildd: 5,
-          'mcp__codebase-memory__search_graph': 2,
-        },
-        cbm: {
-          outcome: 'enforced',
-          bootstrapResult: 'skipped_warm',
-          toolCalls: { search_graph: 2 },
-          totalCbmCalls: 2,
-          readCount: 10,
-          grepCount: 0,
-          globCount: 0,
+          'mcp__other__search': 2,
         },
       },
     },
@@ -116,21 +107,21 @@ describe('isEligibleTerminalWorker', () => {
 });
 
 describe('classifyToolCounts', () => {
-  it('counts Recall, Learn, CBM and Buildd tool families', () => {
+  it('counts Recall, Learn and Buildd tool families', () => {
     const c = classifyToolCounts({
       Bash: 4,
       mcp__buildd__recall: 3,
       mcp__buildd__learn: 2,
       mcp__buildd__buildd_memory: 1,
       mcp__buildd__buildd: 5,
-      'mcp__codebase-memory__trace_path': 2,
+      'mcp__other__trace': 2,
     });
-    expect(c).toMatchObject({ known: true, total: 17, distinct: 6, recall: 3, learn: 3, cbm: 2, buildd: 11 });
+    expect(c).toMatchObject({ known: true, total: 17, distinct: 6, recall: 3, learn: 3, buildd: 11 });
   });
 
   it('reports absence as unknown, never zero', () => {
     expect(classifyToolCounts(undefined)).toEqual({
-      known: false, total: null, distinct: null, recall: null, learn: null, cbm: null, buildd: null, top: [],
+      known: false, total: null, distinct: null, recall: null, learn: null, buildd: null, top: [],
     });
   });
 
@@ -180,14 +171,13 @@ describe('buildStageAFacts', () => {
     expect(facts.behaviour).toMatchObject({
       turns: 42, inputTokens: 1000, outputTokens: 500, costUsd: 1.25, mcpCallCount: 7,
     });
-    expect(facts.behaviour.tools).toMatchObject({ recall: 3, learn: 1, cbm: 2, buildd: 9 });
+    expect(facts.behaviour.tools).toMatchObject({ recall: 3, learn: 1, buildd: 9 });
     expect(facts.behaviour.durationMs).toBe(30 * 60 * 1000);
     expect(facts.context).toMatchObject({
       roleSlug: 'builder', taskKind: 'engineering', taskCategory: 'feature', missionId: 'mission-a',
       workspaceId: 'ws-a', mergePolicyTier: 'agent-review', qualityMode: 'shadow',
     });
     expect(facts.knowledge).toEqual({
-      codeGraph: { outcome: 'enforced', disableReason: null, bootstrapResult: 'skipped_warm' },
       corpora: { code: 'indexed', docs: 'not_indexed' },
     });
     expect(facts.trace).toEqual({ transcript: 'present', transcriptSizeBytes: null, orderedTraceAvailable: false });
@@ -217,7 +207,6 @@ describe('buildStageAFacts', () => {
     expect(facts.behaviour.tools.recall).toBeNull();
     expect(facts.errors).toBeNull();
     expect(facts.knowledge.corpora).toBeNull();
-    expect(facts.knowledge.codeGraph).toBeNull();
     expect(facts.unavailable).toEqual(['reviews', 'ci_fixes', 'error_traces', 'corpora']);
   });
 

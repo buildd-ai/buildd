@@ -802,56 +802,6 @@ export interface ModelUsage {
   costUSD: number;
 }
 
-/** CBM (Codebase Memory) observability metrics captured per task. */
-export interface CbmMetrics {
-  /** How CBM was activated for this task. */
-  outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  /** Why CBM was not active (only set when outcome='disabled'). */
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'experiment_withheld' | 'binary_absent' | 'mount_unavailable';
-  /**
-   * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
-   * outcome='enforced'.
-   *
-   * 'skipped_warm' means no index was needed because a shared seeded cache already
-   * held this repo's graph. Distinct from 'ok' on purpose: lumping them together
-   * makes the warm-start path invisible, so you cannot tell a fleet that is
-   * serving 0s starts from one that is paying a full index per task.
-   *
-   * 'backgrounded' means the build overran the startup wait budget and was handed
-   * off rather than aborted — the session started without a graph and the graph
-   * arrives mid-session. Kept separate from both 'ok' and 'failed' because it is
-   * neither: see backgroundIndexLanded for what the build actually did.
-   */
-  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
-  bootstrapFailReason?: string;
-  /**
-   * Whether a backgrounded build finished successfully before the session ended.
-   * Only set when bootstrapResult='backgrounded'.
-   *
-   * The load-bearing field for judging the hand-off. Reclassifying overrunning
-   * builds out of 'failed' improves the index-build failure rate by definition;
-   * this is the number that says whether it improved anything real.
-   */
-  backgroundIndexLanded?: boolean;
-  /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
-  toolCalls: Record<string, number>;
-  /** Total CBM MCP tool calls across all CBM tools. */
-  totalCbmCalls: number;
-  /** Read tool call count for this task. */
-  readCount: number;
-  /** Grep tool call count for this task. */
-  grepCount: number;
-  /** Glob tool call count for this task. */
-  globCount: number;
-  /**
-   * CBM search injection (docs/design/cbm-search-injection.md): the runner's
-   * own graph lookups after an agent's identifier search, and what it appended.
-   * NOT agent CBM calls — never in `toolCalls` / `totalCbmCalls`. Counts and
-   * labels only. Absent on sessions where injection never ran.
-   */
-  injection?: import('../cbm-injection').CbmInjectionMetrics;
-}
-
 /**
  * What a session's `Bash` calls were FOR, as counts.
  *
@@ -859,8 +809,7 @@ export interface CbmMetrics {
  * which owns the bucket definitions and the pipeline/chain dominance rule).
  * Bash is the most-called tool and `toolCounts` records it as one opaque bar,
  * so a shell `grep`/`rg`/VCS content search was indistinguishable from a build
- * or a `cat` — and invisible to the Read/Grep/Glob counters in `cbm`, which
- * only see the file-access TOOLS.
+ * or a `cat`.
  *
  * Counts only, bounded at a few hundred bytes per worker. `searchShapes` is a
  * coarse shape of the search pattern (bare identifier / regex / quoted phrase
@@ -891,13 +840,10 @@ export interface ResultMeta {
    * policy off. See docs/design/reliable-env-provisioning.md.
    */
   provisionFailure?: { code: string; phase: string; message: string };
-  /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
-  cbm?: CbmMetrics;
   /**
    * Every tool_use in the session counted by exact tool name (`Bash`, `Edit`,
    * `mcp__buildd__buildd`, …), written by the runner at terminal state. Counts,
-   * not events — unlike `workers.mcpCalls` this is never truncated, and unlike
-   * `cbm.toolCalls` it covers built-in and non-CBM MCP tools too.
+   * not events — unlike `workers.mcpCalls` this is never truncated.
    *
    * Absent on workers that predate the histogram (runner release) or that called
    * no tools. Consumers must treat absence as "unknown", not zero — see
@@ -2791,15 +2737,14 @@ export const experiments = pgTable('experiments', {
   // 'tier_pool': one row per tier model pool (tier_pools.experiment_id), so
   // pool draws share this table's salt and assignment rows. See
   // docs/design/tier-model-pools.md.
-  kind: text('kind').notNull().$type<'model_routing' | 'cbm_access' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
+  kind: text('kind').notNull().$type<'model_routing' | 'tier_pool' | 'heartbeat_triage' | 'question_gate'>(),
   // Share of ELIGIBLE units drawn into the treatment arm. Resolved through
   // resolveEnrolmentFraction, so an out-of-range value runs the control rather
   // than enrolling everyone.
   treatmentFraction: real('treatment_fraction').notNull().default(0.5),
   policyVersion: integer('policy_version').notNull().default(1),
   // Kind-specific shape; for model_routing see ModelRoutingExperimentConfig in
-  // packages/core/model-routing-experiment.ts, for cbm_access see
-  // CbmAccessExperimentConfig in packages/core/cbm-access-experiment.ts.
+  // packages/core/model-routing-experiment.ts.
   config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
   visibility: text('visibility').notNull().default('admins').$type<'admins' | 'team'>(),
   decision: text('decision'),
@@ -5214,7 +5159,7 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
   candidateCount: integer('candidate_count').notNull(),
   candidateTruncated: boolean('candidate_truncated').notNull().default(false),
   candidateOmitted: integer('candidate_omitted').notNull().default(0),
-  // { source, neighbours, neighboursUsed, excludedFuture, cbm, revision, revisionPinned, ... }
+  // { source, neighbours, neighboursUsed, excludedFuture, revision, revisionPinned, ... }
   coverage: jsonb('coverage').$type<Record<string, unknown>>().notNull(),
   // [{ step, fingerprint, decisionVersion, offered: number[], suggested, path, confidence, status, reason, applied }]
   picks: jsonb('picks').$type<Array<Record<string, unknown>>>().notNull(),

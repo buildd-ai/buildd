@@ -499,7 +499,7 @@ export async function attachTaskAreaScope(
       taskObj.context = taskObj.context ?? {};
       taskObj.context[TASK_AREA_CONTEXT_KEY] = hint;
     }
-    appendContextBlock(cw, renderTaskAreaBlock(hint, { cbmAvailable: !cw.cbmExperiment?.withheld && !(cw as any).cbmDisabled }));
+    appendContextBlock(cw, renderTaskAreaBlock(hint));
   }
 }
 

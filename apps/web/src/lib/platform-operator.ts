@@ -3,7 +3,7 @@
  * buildd itself, as opposed to the teams that use it.
  *
  * Operators see Health → Operator, buildd's own tooling (dispatch internals,
- * gates, experiments, codebase-graph stats). It is cross-team platform
+ * gates, experiments). It is cross-team platform
  * plumbing, so it is not a team permission: a team owner is not an operator.
  *
  * The signed-in counterpart of lib/platform-admin.ts (which gates API keys by

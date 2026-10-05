@@ -344,7 +344,7 @@ async function waitForOutcome(workerId: string, d: RunOnceDeps, opts: { parkArme
     const status = d.workerManager.getWorker(workerId)?.status;
     if (status === undefined) return 'failed';
     // `done`/`error` is set before the session's teardown finishes (worktree,
-    // credential and CBM cleanup); wait for that too.
+    // credential cleanup); wait for that too.
     if ((status === 'done' || status === 'error') && !d.workerManager.hasLiveSession(workerId)) {
       return status === 'done' ? 'completed' : 'failed';
     }
