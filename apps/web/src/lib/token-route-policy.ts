@@ -8,7 +8,7 @@ export function requiredTokenScope(pathname: string, method: string): TokenScope
   if (/^\/api\/tasks\/[^/]+\/(approve-plan|reject-plan)$/.test(path)) return 'tasks:admin';
   if (/^\/api\/workers\/[^/]+\/instruct$/.test(path)) return 'workers:admin';
   if (/^\/api\/workspaces\/[^/]+\/memory(?:\/|$)/.test(path) && method === 'DELETE') return 'knowledge:admin';
-  if (/^\/api\/(stats|health|cbm)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
+  if (/^\/api\/(stats|health)(\/|$)/.test(path)) return read ? 'analytics:read' : 'admin';
   if (/^\/api\/releases(\/|$)/.test(path)) return 'releases';
   if (/^\/api\/secrets(\/|$)/.test(path) || /^\/api\/cloudflare\/credential/.test(path)) return 'secrets';
   if (/^\/api\/runner\/credential-(lease|refresh)$/.test(path)) return 'secrets';
@@ -58,7 +58,7 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
     if (queryWorkspaces?.some(id => !token.workspaceIds!.includes(id))) return false;
     // Only accept filters the endpoint actually applies. A decorative query
     // parameter must never turn a team-wide response into scoped authorization.
-    if (/^\/api\/(stats|health|cbm|decisions)(\/|$)/.test(url.pathname)) {
+    if (/^\/api\/(stats|health|decisions)(\/|$)/.test(url.pathname)) {
       const filters: Record<string, string[]> = {
         '/api/stats/actions': ['workspace'], '/api/stats/usage': ['workspace'],
         '/api/stats/coordination': ['workspaceId', 'workspace'], '/api/health/failures': ['workspaceId'], '/api/health/dispatch': ['workspaceId'],

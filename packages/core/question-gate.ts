@@ -152,7 +152,7 @@ export type QuestionDisposition = 'decide' | 'hold' | 'ask';
  *  - `auth_secrets`: pathManifest touches `auth_and_secrets` risk-class paths
  *    (default: `apps/web/src/app/api/secrets/`, `packages/core/secrets/`).
  *  - `ci_deploy`: pathManifest touches `ci_deploy_config` risk-class paths
- *    (default: `.github/workflows/`, `docker/worker/Dockerfile`, `vercel.json`).
+ *    (default: `.github/workflows/`, `vercel.json`).
  *  - `protected_path`: pathManifest touches a path the WORKSPACE itself
  *    declared sensitive (merge policy deny/escalate paths) beyond the three
  *    universal classes above.
@@ -167,7 +167,7 @@ export type HardRailKind = 'migration' | 'auth_secrets' | 'ci_deploy' | 'protect
 
 const DEFAULT_SCHEMA_PATHS = ['packages/core/db/schema.ts', 'packages/core/drizzle/'];
 const DEFAULT_AUTH_SECRETS_PATHS = ['apps/web/src/app/api/secrets/', 'packages/core/secrets/'];
-const DEFAULT_CI_DEPLOY_PATHS = ['.github/workflows/', 'docker/worker/Dockerfile', 'vercel.json'];
+const DEFAULT_CI_DEPLOY_PATHS = ['.github/workflows/', 'vercel.json'];
 
 const SPENDING_TEXT_PATTERN = /\$\s?\d|\bbudget\b|\bsubscription\b|\bupgrad(?:e|ed|es|ing)\s+(?:the\s+|your\s+|this\s+)?plan\b|\bspend(?:ing)?\b|\bpurchase\b|\bcredit card\b|\bpricing tier\b/i;
 

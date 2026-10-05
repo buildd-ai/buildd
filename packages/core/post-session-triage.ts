@@ -144,7 +144,6 @@ export interface TriageSignals {
   ciFixAttempts: number | null;
   recallCalls: number | null;
   learnCalls: number | null;
-  cbmCalls: number | null;
   errorTotal: number | null;
   transcriptPresent: boolean;
   unreadSources: number;
@@ -163,7 +162,6 @@ export function deriveTriageSignals(facts: StageAFacts): TriageSignals {
     ciFixAttempts: o.ciFixAttempts,
     recallCalls: tools.known ? tools.recall : null,
     learnCalls: tools.known ? tools.learn : null,
-    cbmCalls: tools.known ? tools.cbm : null,
     errorTotal: facts.errors ? facts.errors.total : null,
     transcriptPresent: facts.trace.transcript === 'present',
     unreadSources: facts.unavailable.length,

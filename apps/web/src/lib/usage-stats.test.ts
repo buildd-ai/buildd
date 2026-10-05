@@ -81,7 +81,7 @@ describe('percentile / distribution', () => {
 describe('serverOf', () => {
   test('splits the MCP server out of the tool name', () => {
     expect(serverOf('mcp__buildd__recall')).toBe('buildd');
-    expect(serverOf('mcp__codebase-memory__search_code')).toBe('codebase-memory');
+    expect(serverOf('mcp__github__get_pr')).toBe('github');
   });
 
   test('built-in tools bucket together', () => {
@@ -107,7 +107,7 @@ describe('toolCountsForWorker', () => {
     expect(result.counts).toEqual({ Bash: 12, Read: 30, 'mcp__buildd__buildd': 4 });
   });
 
-  test('falls back to mcpCalls + CBM counters for pre-histogram workers', () => {
+  test('falls back to mcpCalls + legacy cbm counters for pre-histogram workers', () => {
     const result = toolCountsForWorker(row({
       resultMeta: {
         stopReason: null, durationMs: 0, durationApiMs: 0, numTurns: 0, modelUsage: {},
@@ -268,14 +268,14 @@ describe('computeUsageStats', () => {
         taskId: 't1',
         resultMeta: {
           stopReason: null, durationMs: 0, durationApiMs: 0, numTurns: 0, modelUsage: {},
-          toolCounts: { Read: 10, Bash: 5, 'mcp__buildd__buildd': 4, 'mcp__codebase-memory__search_code': 3 },
+          toolCounts: { Read: 10, Bash: 5, 'mcp__buildd__buildd': 4, 'mcp__github__get_pr': 3 },
         },
       }),
     ]);
     const byServer = Object.fromEntries(stats.tools.byServer.map(s => [s.server, s.calls]));
     expect(byServer[BUILT_IN_SERVER]).toBe(15);
     expect(byServer['buildd']).toBe(4);
-    expect(byServer['codebase-memory']).toBe(3);
+    expect(byServer['github']).toBe(3);
   });
 
   test('overflow bucket is counted in byTool but attributed to no server', () => {

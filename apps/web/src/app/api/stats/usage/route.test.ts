@@ -375,13 +375,12 @@ describe('GET /api/stats/usage — fine-grained breakdowns', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', name: 'Buildd' }]);
   });
 
-  it('returns bash buckets, search shapes, buildd actions and graph tools, each with its own population', async () => {
+  it('returns bash buckets, search shapes and buildd actions, each with its own population', async () => {
     mockWorkersFindMany.mockResolvedValue([
       worker({
         resultMeta: {
-          toolCounts: { Bash: 5, 'mcp__codebase-memory__search_graph': 2 },
+          toolCounts: { Bash: 5 },
           bashCommandCounts: { total: 5, buckets: { code_search: 3, test: 2 }, searchShapes: { identifier: 3 } },
-          cbm: { outcome: 'enforced', toolCalls: { search_graph: 2 }, totalCbmCalls: 2, readCount: 0, grepCount: 0, globCount: 0 },
         },
       }),
     ]);
@@ -400,8 +399,7 @@ describe('GET /api/stats/usage — fine-grained breakdowns', () => {
     expect(body.buildActions.totalCalls).toBe(2);
     expect(body.buildActions.capturedSince).toBe('2026-09-03');
     expect(body.buildActions.workers).toBe(1);
-    expect(body.cbmTools.sessions).toBe(1);
-    expect(body.cbmTools.tools[0]).toMatchObject({ tool: 'search_graph', calls: 2, sessions: 1 });
+    expect(body.cbmTools).toBeUndefined();
   });
 
   it('nulls a breakdown whose read failed instead of failing the response', async () => {
@@ -411,7 +409,6 @@ describe('GET /api/stats/usage — fine-grained breakdowns', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.buildActions).toBeNull();
-    expect(body.cbmTools).toBeNull();
     expect(body.totals.tasks).toBe(1);
   });
 });

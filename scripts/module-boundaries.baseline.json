@@ -227,7 +227,6 @@
       "apps/web/src/lib/terminal-record-ledger.ts": "health-quality",
       "apps/web/src/lib/visual-audit-evidence.ts": "visual-qa",
       "packages/core/bash-failure-trace.ts": "health-quality",
-      "packages/core/cbm-health.ts": "knowledge",
       "packages/core/orchestration-ledger-source.ts": "missions",
       "packages/core/routing-analytics.ts": "health-quality",
       "packages/core/runner-health.ts": "health-quality"
@@ -260,7 +259,6 @@
       "apps/web/src/app/api/workers/claim/mission-handoff-injection.ts": "missions"
     },
     "apps/web/src/app/api/workers/claim/route.ts": {
-      "apps/web/src/app/api/workers/claim/cbm-experiment.ts": "experiments",
       "apps/web/src/app/api/workers/claim/connector-block-notify.ts": "connectors",
       "apps/web/src/app/api/workers/claim/connector-prefilter.ts": "connectors",
       "apps/web/src/app/api/workers/claim/mcp-connector-injection.ts": "connectors",
@@ -479,7 +477,6 @@
       "packages/core/mission-integration.ts": "missions"
     },
     "packages/core/db/schema.ts": {
-      "packages/core/cbm-injection.ts": "knowledge",
       "packages/core/decision-model.ts": "jev-decisions",
       "packages/core/inference-policy.ts": "jev-decisions",
       "packages/core/mission-helpers.ts": "missions",
@@ -537,7 +534,6 @@
       "packages/core/model-tier-defaults.ts": "model-tiers"
     },
     "packages/core/prompt-catalog.ts": {
-      "packages/core/cbm-injection-decision.ts": "jev-decisions",
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
       "packages/core/memory-decisions.ts": "jev-decisions",

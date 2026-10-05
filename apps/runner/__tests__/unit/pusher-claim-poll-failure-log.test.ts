@@ -44,7 +44,6 @@ function makeManager(claimPendingTasks: () => Promise<any[]>, claimAndStart: (ta
     claimPendingTasks,
     claimAndStart,
     getProbedWorkers: () => new Set<string>(),
-    resolveRepoPath: () => null,
   };
   const config: any = {
     pusherKey: undefined,
