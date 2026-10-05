@@ -127,7 +127,7 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
             <g key={t.value}>
               <line x1={geo.plot.left} x2={geo.plot.right} y1={t.y} y2={t.y} stroke="var(--border)" strokeWidth={1} />
               <text x={geo.plot.left - 6} y={t.y + 3} textAnchor="end" className="fill-text-muted" fontSize={AXIS_FONT} style={{ fontVariantNumeric: 'tabular-nums' }}>
-                {Math.abs(t.value) % 1 ? Math.abs(t.value).toFixed(1) : Math.abs(t.value)}
+                {Number(Math.abs(t.value).toFixed(2))}
               </text>
             </g>
           ))}

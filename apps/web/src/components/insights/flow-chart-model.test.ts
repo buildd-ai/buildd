@@ -41,12 +41,13 @@ const S = series([
 ]);
 
 describe('niceCeil', () => {
-  it('rounds up to 1, 2, 5 steps', () => {
+  it('rounds up on a fine ladder so the stack fills most of the height', () => {
     expect(niceCeil(0)).toBe(1);
-    expect(niceCeil(1.2)).toBe(2);
-    expect(niceCeil(3)).toBe(5);
-    expect(niceCeil(7)).toBe(10);
-    expect(niceCeil(11)).toBe(20);
+    expect(niceCeil(1.2)).toBe(1.5);
+    expect(niceCeil(3)).toBe(3);
+    expect(niceCeil(7)).toBe(8);
+    expect(niceCeil(11)).toBe(15);
+    expect(niceCeil(101)).toBe(150);
   });
 });
 
