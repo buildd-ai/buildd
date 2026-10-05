@@ -28,6 +28,13 @@ const KIND_CHIP: Record<FailureGroup['kind'], { tone: 'warning' | 'error' | 'mut
   stopped: { tone: 'muted', label: 'Stopped' },
 };
 
+/** Same thresholds the old Worker failures tile used. */
+function rateClass(pct: number): string {
+  if (pct >= 25) return 'text-status-error';
+  if (pct >= 10) return 'text-status-warning';
+  return 'text-text-primary';
+}
+
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -123,7 +130,7 @@ export function FailureGroupsSection({
       {headline && headline.terminal > 0 && (
         <div className="card px-4 py-3" data-testid="failure-groups-headline">
           <p className="section-label">Failure rate · {windowLabel}</p>
-          <p className="text-heading font-bold tabular-nums text-text-primary">{headline.failureRatePct}%</p>
+          <p className={`text-heading font-bold tabular-nums ${rateClass(headline.failureRatePct)}`} data-testid="failure-groups-rate">{headline.failureRatePct}%</p>
           <p className="text-meta text-text-muted">
             {headline.failed} of {headline.terminal} agent runs failed
             {groups.platformFailures > 0 && <> · {plural(groups.platformFailures, 'was', 'were')} platform problems, not the task</>}
