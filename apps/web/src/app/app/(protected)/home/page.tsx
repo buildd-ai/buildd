@@ -75,6 +75,9 @@ import { getChatAvailability } from '@/lib/chat-availability';
 import { listConversations, type ConversationListItem } from '@/lib/chat/conversations';
 import HomeChatCard from '@/components/chat/HomeChatCard';
 import ProviderOnboardingCard from '@/components/onboarding/ProviderOnboardingCard';
+import GettingStartedChecklist from '@/components/onboarding/GettingStartedChecklist';
+import { gettingStartedChecklist } from '@/lib/getting-started';
+import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
@@ -132,6 +135,8 @@ export default async function HomePage({
   let missions: HomeMissionSummary[] = [];
 
   let totalTaskCount = 0;
+  // Getting-started: does the team hold an agent key? null = not looked up.
+  let hasAgentCredential: boolean | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
 
   let pendingSuggestions: {
@@ -288,12 +293,15 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, recent, overrides] = await Promise.all([
+        const [role, chatAvail, recent, overrides, agentKey] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
           listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
           getTeamPermissionOverrides(activeTeamId),
+          // A failed lookup reads as "has a key": never nag a working team.
+          teamHasAgentCredential(activeTeamId).catch(() => true),
         ]);
+        hasAgentCredential = agentKey;
         audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatRecent = recent;
@@ -1883,6 +1891,17 @@ export default async function HomePage({
     workspaceCount,
     totalTaskCount,
   });
+  // One ordered getting-started list (lib/getting-started.ts), from real data.
+  // Shown until runner, agent key and a first task all exist; a lookup that
+  // did not run or failed never shows it.
+  const gettingStarted = workspaceCount > 0 && hasAgentCredential !== null
+    ? gettingStartedChecklist({
+        runnerConnected: fleetData ? fleetData.fleet.runners.length > 0 : true,
+        hasAgentCredential,
+        hasTask: totalTaskCount > 0,
+      })
+    : null;
+  const showGettingStarted = gettingStarted?.visible === true;
 
   // ── Fleet redesign ──
   const questions: HomeQuestion[] = (fleetData?.questions ?? []).map(q => ({
@@ -1951,7 +1970,15 @@ export default async function HomePage({
         {chatPlacement.kind === 'chat' && chatTeamId && (
           <HomeChatCard teamId={chatTeamId} workspaces={teamWorkspaces} recent={chatRecent} compact={audience === 'operator'} initialWorkspaceId={wsFilter ?? null} />
         )}
-        {chatPlacement.kind === 'onboarding' && chatTeamId && <ProviderOnboardingCard teamId={chatTeamId} hasActionableWork={needsYouCount > 0} />}
+        {/* Getting started comes first; while it shows, chat setup folds into
+            its footer line instead of pitching a second key card above it. */}
+        {showGettingStarted && gettingStarted && (
+          <GettingStartedChecklist
+            checklist={gettingStarted}
+            chatSetupHref={chatPlacement.kind === 'onboarding' ? '/app/settings/providers' : null}
+          />
+        )}
+        {chatPlacement.kind === 'onboarding' && chatTeamId && !showGettingStarted && <ProviderOnboardingCard teamId={chatTeamId} hasActionableWork={needsYouCount > 0} />}
         {chatPlacement.kind === 'connect-own' && chatTeamId && (
           <ConnectOwnKeyCard teamId={chatTeamId} returnTo="/app/home" />
         )}
@@ -1975,7 +2002,7 @@ export default async function HomePage({
         <div className="flex flex-col xl:grid xl:grid-cols-[minmax(0,1fr)_400px] xl:gap-8">
           <div className="min-w-0">
             <div data-testid="home-right-now">
-              {rightNow === 'create-workspace' || rightNow === 'get-started' ? (
+              {rightNow === 'get-started' ? null : rightNow === 'create-workspace' ? (
                 <div className="mb-8">
                   <div className="section-label mb-4">Right Now</div>
                   {rightNow === 'create-workspace' ? (
@@ -1991,49 +2018,7 @@ export default async function HomePage({
                     Connect a repo
                   </Link>
                 </div>
-              ) : rightNow === 'get-started' ? (
-                <div className="border border-dashed border-border-default p-5">
-                  <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
-                  <div className="space-y-3">
-                    <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <span className="text-[11px] font-mono text-text-muted">1</span>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[13px] text-text-primary">Install the CLI</div>
-                        <div className="mt-1.5 px-3 py-2 bg-surface-3 font-mono text-[11px] text-text-secondary overflow-x-auto">
-                          curl -fsSL https://buildd.dev/install.sh | bash
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <span className="text-[11px] font-mono text-text-muted">2</span>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[13px] text-text-primary">Log in &amp; connect</div>
-                        <div className="mt-1.5 px-3 py-2 bg-surface-3 font-mono text-[11px] text-text-secondary overflow-x-auto">
-                          buildd login
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full border border-border-default flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <span className="text-[11px] font-mono text-text-muted">3</span>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-[13px] text-text-primary">
-                          <NewWorkLink kind="task" className="text-accent-text hover:underline">Create a task</NewWorkLink>
-                          {' '}or start the runner
-                        </div>
-                        <div className="mt-1.5 px-3 py-2 bg-surface-3 font-mono text-[11px] text-text-secondary overflow-x-auto">
-                          buildd
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                  ) : null}
+              ) : null}
                 </div>
               ) : (
                 <>
