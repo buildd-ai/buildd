@@ -7,6 +7,7 @@ import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
 import { mintTaskToken, missingTaskTokenScopes } from '@/lib/task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 
 /**
  * POST /api/runner/task-token  { taskId, ttlMs? } -> { token, taskId, expiresAt }
@@ -56,6 +57,7 @@ export async function POST(req: NextRequest) {
     !tokenWorkspaceAllowed(account.workspaceIds, task.workspaceId) ||
     !(await verifyAccountWorkspaceAccess(account.id, task.workspaceId, 'canClaim'))
   ) {
+    void recordCapabilityDecision({ capability: 'task_token.mint', decision: 'refused', accountId: account.id, resource: `task:${taskId}`, reasonCode: 'not_found' });
     return NextResponse.json({ error: 'Task not found' }, { status: 404 });
   }
 
@@ -70,5 +72,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Task tokens are not available: no signing secret configured.' }, { status: 503 });
   }
 
+  void recordCapabilityDecision({ capability: 'task_token.mint', decision: 'allowed', accountId: account.id, workspaceId: task.workspaceId, taskId, expiresAt: new Date(minted.expiresAt) });
   return NextResponse.json({ token: minted.token, taskId, expiresAt: new Date(minted.expiresAt).toISOString() });
 }

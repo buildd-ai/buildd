@@ -38,6 +38,7 @@ import { resolveAgentModelRoute } from '@buildd/core/agent-endpoint';
 import { resolveAnthropicAuth } from '@/lib/claude-credential';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -72,8 +73,13 @@ export async function POST(req: NextRequest) {
   }
 
   const resolved = await resolveDispatchPrincipal(account, { taskId, workerId, dispatchToken });
-  if (!resolved.ok) return fail(resolved.status, resolved.error);
+  if (!resolved.ok) {
+    void recordCapabilityDecision({ capability: 'model.endpoint', decision: 'refused', accountId: account.id, principalVia: 'dispatch', resource: `task:${taskId}`, reasonCode: resolved.reasonCode });
+    return fail(resolved.status, resolved.error);
+  }
   const { task, workspace: ws } = resolved;
+  const p = resolved.principal;
+  const audit = { capability: 'model.endpoint' as const, workspaceId: p.workspaceId, taskId: p.taskId, workerId: p.workerId, accountId: p.accountId, principalVia: p.via };
 
   // Codex speaks the OpenAI Responses API with its own credential (§2).
   if ((task as { backend?: string | null }).backend === 'codex') return fail(404, 'No agent model endpoint for this task');
@@ -82,6 +88,7 @@ export async function POST(req: NextRequest) {
     const decision = await resolveAgentModelRoute({ teamId: ws.teamId, workspaceId: ws.id, accountId: account.id });
     if (decision && decision.winner === 'endpoint') {
       const e = decision.endpoint;
+      void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: `agent_endpoint:${e.kind}` });
       return NextResponse.json(
         { kind: e.kind, baseUrl: e.baseUrl, key: e.apiKey, authHeader: e.authHeader, models: e.models },
         { headers: NO_STORE },
@@ -92,6 +99,7 @@ export async function POST(req: NextRequest) {
     // credential winning still falls through to 404, same as before.
     const auth = await resolveAnthropicAuth({ teamId: ws.teamId, workspaceId: ws.id });
     if (auth && auth.purpose === 'anthropic_api_key') {
+      void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: 'anthropic_api_key' });
       return NextResponse.json({ source: 'anthropic_api_key', key: auth.headers['x-api-key'] }, { headers: NO_STORE });
     }
     return fail(404, 'No agent model endpoint for this task');

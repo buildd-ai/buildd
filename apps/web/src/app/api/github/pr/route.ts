@@ -21,6 +21,7 @@ import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-cap
 import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
 import { INTERACTIVE_RUNNER } from '@/lib/interactive-session';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
 import { getCurrentUser } from '@/lib/auth-helpers';
@@ -191,10 +192,21 @@ function isStoredPrStale(pr: { mergedAt?: Date | string | null; prLifecycleStatu
  * (lib/agent-capabilities/pr-ownership.ts). One ledger row per refusal, so
  * "why was this refused" and "how often" both have an answer.
  */
+/** How the caller relates to the worker, for the capability audit row. */
+function auditVia(account: { id: string; taskScope?: unknown }, worker: { accountId?: string | null }) {
+  if (account.taskScope) return 'task_token' as const;
+  return worker.accountId === account.id ? 'worker_account' as const : null;
+}
+
 function refusePrOwnership(
-  worker: { id: string; workspaceId: string | null; taskId: string | null; branch: string | null; task?: { missionId?: string | null } | null },
+  worker: { id: string; workspaceId: string | null; taskId: string | null; branch: string | null; accountId?: string | null; task?: { missionId?: string | null } | null },
   verdict: Extract<PrOwnershipVerdict, { owned: false }> | { owned: false; reasonCode: 'pr_outside_linked_repo'; error: string },
+  capability: 'pr.create' | 'pr.adopt' = 'pr.create',
 ) {
+  void recordCapabilityDecision({
+    capability, decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+    accountId: worker.accountId ?? null, principalVia: 'worker_account', reasonCode: verdict.reasonCode,
+  });
   fireGateEvent({
     gate: GATE_SLUGS.PR_OWNERSHIP,
     surface: 'POST /api/github/pr',
@@ -378,7 +390,7 @@ export async function POST(req: NextRequest) {
               owned: false,
               reasonCode: 'pr_outside_linked_repo',
               error: `Refusing to record ${existingPrUrl}: it is not a pull request in this workspace's repository (${ownRepo.fullName}).`,
-            });
+            }, 'pr.adopt');
           }
           if (!realPr) {
             try {
@@ -400,7 +412,7 @@ export async function POST(req: NextRequest) {
           interactiveWorker: isInteractiveWorker,
           otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
         }, collectRetryLineage);
-        if (!ownership.owned) return refusePrOwnership(worker, ownership);
+        if (!ownership.owned) return refusePrOwnership(worker, ownership, 'pr.adopt');
         // Record what was actually adopted: later lookups (get_pr, merge_pr,
         // CI attribution) key off workers.branch, and the generated name
         // claim_task handed this worker was never the real one.
@@ -464,6 +476,11 @@ export async function POST(req: NextRequest) {
       // saw. Recording it would let a wrong value drop a human merge gate; leaving
       // it null keeps today's behaviour until the pull_request webhook reports the
       // real base ref. Unknown degrades to the gate, never away from it.
+      void recordCapabilityDecision({
+        capability: 'pr.adopt', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+        accountId: account.id, principalVia: auditVia(account, worker), resource: prNumber ? `pr:${prNumber}` : null,
+        sideEffect: prNumber ? { prNumber } : null,
+      });
       await db.update(workers).set({
         prUrl: existingPrUrl,
         prNumber,
@@ -1073,6 +1090,11 @@ export async function POST(req: NextRequest) {
       ? await fetchSplitPrStats(repo.installation.installationId, repo.fullName, prData.number)
       : null;
 
+    void recordCapabilityDecision({
+      capability: 'pr.create', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id,
+      accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prData.number}`,
+      sideEffect: { prNumber: prData.number, head },
+    });
     // Update worker with PR info and diff stats from GitHub's response
     await db
       .update(workers)
@@ -1274,9 +1296,11 @@ export async function PATCH(req: NextRequest) {
     // A per-task token, and an agent run on its runner's key, may close only a
     // PR its task owns: its own worker's PR or one the task names.
     if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !agentRunMayActOnPr(account, worker, prNumber)) {
+      void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: 'A task token may close only its own PR' }, { status: 403 });
     }
     if (!account.taskScope && !agentRunMayActOnPr(account, worker, prNumber)) {
+      void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: `An agent run may close only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
     }
 
@@ -1294,6 +1318,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'GitHub repo not found' }, { status: 404 });
     }
 
+    void recordCapabilityDecision({ capability: 'pr.close', decision: 'allowed', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}` });
     const prData = await githubApi(
       repo.installation.installationId,
       `/repos/${repo.fullName}/pulls/${prNumber}`,
@@ -1457,6 +1482,7 @@ export async function PUT(req: NextRequest) {
       }
       // A per-task token is held to the same rule below, with its own message.
       if (!account.taskScope && !agentRunMayActOnPr(account, worker, prNumber)) {
+        void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
         return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
       }
     } else {
@@ -1474,6 +1500,7 @@ export async function PUT(req: NextRequest) {
     // A per-task token, and an agent run on its runner's key, may merge only a
     // PR its task owns: its own worker's PR or one the task names.
     if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !agentRunMayActOnPr(account, worker, prNumber)) {
+      void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: 'A task token may merge only its own PR' }, { status: 403 });
     }
 
@@ -1901,6 +1928,11 @@ export async function PUT(req: NextRequest) {
       }, { status: 409 });
     }
     const result = slotted.result;
+    void recordCapabilityDecision({
+      capability: 'pr.merge', decision: result.merged ? 'allowed' : 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId ?? null,
+      workerId: worker.id ?? null, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`,
+      reasonCode: result.merged ? null : 'merge_failed', sideEffect: result.merged ? { prNumber, merged: true } : null,
+    });
 
     if (result.merged) {
       await db
