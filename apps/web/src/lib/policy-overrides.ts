@@ -147,8 +147,14 @@ export function parsePolicyOverrides(raw: unknown, log: Log = defaultLog): Polic
 
 // ── In-process snapshot ────────────────────────────────────────────────────────
 
-/** The shared snapshot (`@buildd/core/runtime-snapshot`); `policy-overrides-source.ts` loads it. */
-export const policyOverridesSnapshot = createRuntimeSnapshot<PolicyOverrides>(EMPTY_POLICY_OVERRIDES);
+/**
+ * The shared snapshot (`@buildd/core/runtime-snapshot`); `policy-overrides-source.ts`
+ * loads it. Process-wide: instrumentation installs it in its own bundle and the
+ * route handlers read it from theirs.
+ */
+export const policyOverridesSnapshot = createRuntimeSnapshot<PolicyOverrides>(EMPTY_POLICY_OVERRIDES, {
+  sharedKey: 'buildd.policy-overrides.snapshot',
+});
 
 /** Replace the active overrides. Called by the server loader; tests may call it directly. */
 export function installPolicyOverrides(overrides: PolicyOverrides): void {
