@@ -274,6 +274,13 @@ jobs:
 
       - name: Install bubblewrap
         run: |
+          # The runner image preloads a packages.microsoft.com source (for
+          # dotnet/azure-cli/etc.) that this job never uses. When that repo's
+          # signing key rotates or 403s, it fails `apt-get update` outright even
+          # though the Ubuntu archive bubblewrap actually comes from is fine --
+          # so drop it before updating rather than let an unrelated repo's
+          # flakiness take this job down.
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends bubblewrap
           bwrap --version
