@@ -70,6 +70,16 @@ export function branchCarriesTaskId(branch: string, taskId: string): boolean {
   return new RegExp(`(?:^|[/_-])${id8}(?:[/_-]|$)`).test(branch.toLowerCase());
 }
 
+/**
+ * The task names this PR: in its title, description or context, or as the
+ * PR its retry attempt is bound to. "Fix review on #42", "land PR #42".
+ */
+export function taskNamesPr(task: PrOwnershipTask | null | undefined, prNumber: number): boolean {
+  if (!task) return false;
+  const subject = task.reviewerRetryPrNumber ?? task.ciRetryPrNumber ?? task.conflictRetryPrNumber ?? null;
+  return subject === prNumber || namesPr(task, prNumber);
+}
+
 function namesPr(task: PrOwnershipTask, prNumber: number): boolean {
   const text = `${task.title ?? ''}\n${task.description ?? ''}`;
   if (new RegExp(`(?:#|/pull/)${prNumber}(?!\\d)`).test(text)) return true;
