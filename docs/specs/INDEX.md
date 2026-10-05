@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (51)
+## Active (52)
 
 ### auth (5)
 
@@ -24,10 +24,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Usage & Cost Accounting](./usage-and-cost-accounting.md) · @max — verified 2026-08-30
   Worker usage MUST be recorded only from the worker's own report and attributed to one task, team-month and provider pool, and a budget-blocked claim MUST answer budget_exhausted with a reset time, not race_lost.
 
-### integrations (3)
+### integrations (4)
 
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-08-28
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
+- [Standalone Model Policy](./model-policy.md) · @max — verified 2026-10-05
+  A caller MUST get provider, model and effort from surface (chat or coding) plus tier alone, locally or from the policy service, with a fallback answer always and no provider secret ever crossing the boundary.
 - [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-10-03
   The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18

@@ -42,6 +42,20 @@ export function agentTaskTokenEnabled(env: Record<string, string | undefined> = 
  */
 export { isOrchestrationTask } from '@buildd/shared';
 
+/**
+ * Roles whose own deliverable IS an admin-level buildd action, so a
+ * worker-level task token cannot do their job at all. Not orchestration (they
+ * coordinate nothing and get no PR exemptions), they just need the runner key
+ * for the agent's buildd MCP, like orchestration does.
+ *  - consolidator: the weekly knowledge pass is consolidate_knowledge
+ *    (find_duplicates / find_decayed / archive), which is admin-only.
+ */
+export const ADMIN_ACTION_ROLES: ReadonlySet<string> = new Set(['consolidator']);
+
+export function usesAdminBuilddActions(task: { roleSlug?: string | null } | null | undefined): boolean {
+  return !!task?.roleSlug && ADMIN_ACTION_ROLES.has(task.roleSlug);
+}
+
 export interface ParsedTaskToken {
   token: string;
   expiresAt: number;
@@ -68,7 +82,7 @@ export type MintTaskTokenFn = (taskId: string, ttlMs: number, signal: AbortSigna
 
 export type AgentBuilddAuth =
   | { source: 'task-token'; token: string; expiresAt: number }
-  | { source: 'runner-key'; token: string; reason: 'disabled' | 'runner-key-is-task-token' | 'orchestration-role' | 'mint-failed'; detail?: string };
+  | { source: 'runner-key'; token: string; reason: 'disabled' | 'runner-key-is-task-token' | 'orchestration-role' | 'admin-role' | 'mint-failed'; detail?: string };
 
 /** Short, secret-free reason for a mint failure. */
 export function describeMintFailure(err: unknown): string {
@@ -97,6 +111,8 @@ export async function resolveAgentBuilddAuth(opts: {
   mint: MintTaskTokenFn | undefined;
   /** isOrchestrationTask(task): keep the runner key, no mint, one info line. */
   orchestration?: boolean;
+  /** usesAdminBuilddActions(task): keep the runner key, no mint, one info line. */
+  adminRole?: boolean;
   info?: (line: string) => void;
   env?: Record<string, string | undefined>;
   warn?: (line: string) => void;
@@ -120,6 +136,10 @@ export async function resolveAgentBuilddAuth(opts: {
   if (opts.orchestration) {
     info(`[agent-task-token] task ${(taskId ?? '').slice(0, 8)}: orchestration task (organizer role, planning mode or heartbeat); the agent's buildd MCP calls use the runner key (source=runner-key reason=orchestration-role).`);
     return { source: 'runner-key', token: runnerKey, reason: 'orchestration-role' };
+  }
+  if (opts.adminRole) {
+    info(`[agent-task-token] task ${(taskId ?? '').slice(0, 8)}: role needs admin-level buildd actions a task token does not carry; the agent's buildd MCP calls use the runner key (source=runner-key reason=admin-role).`);
+    return { source: 'runner-key', token: runnerKey, reason: 'admin-role' };
   }
 
   let detail: string;

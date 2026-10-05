@@ -27,7 +27,8 @@ export type PageReason = string;
 const UNPAGED_CAUSES: ReadonlySet<HumanCause> = new Set(['human_tier', 'landing_error', 'github_unreadable', 'pr_closed']);
 
 const CAUSE_WORDS: Partial<Record<HumanCause, string>> = {
-  refresh_exhausted: 'it lost the race to the base branch',
+  refresh_exhausted: 'it lost the race to the base branch (retrying next cycle)',
+  refresh_unsafe: 'the base keeps changing the same files (retrying next cycle)',
   refresh_failed: 'its branch could not be updated from the base (not a conflict)',
   semantic_unverified: 'it and the base edit the same files and the overlap could not be verified',
   fix_exhausted: 'the automatic fixes ran out of attempts',
@@ -76,6 +77,7 @@ type Override = { verdict?: boolean; size?: boolean; freshness?: boolean };
 /** The override `landPr` honours for a "merge anyway" on this cause, or null when a person may not override it. */
 const MERGE_ANYWAY: Record<string, Override> = {
   'needs_human:refresh_exhausted': { freshness: true },
+  'needs_human:refresh_unsafe': { freshness: true },
   'needs_human:size_cap': { size: true },
   'needs_human:blocking_verdict': { verdict: true },
   'needs_human:low_confidence': { verdict: true },

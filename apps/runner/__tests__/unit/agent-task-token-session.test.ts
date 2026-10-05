@@ -386,6 +386,17 @@ describe('agent buildd MCP auth uses a per-task token', () => {
     });
   }
 
+  // The consolidator's whole job is consolidate_knowledge, an admin action: on
+  // a task token every call came back forbidden and the weekly pass failed.
+  test('consolidator role → no mint, the runner key, one info line', async () => {
+    await runTask(manager, 'w-tt-consolidator', undefined, { roleSlug: 'consolidator' });
+    expect(lastQueryOpts).not.toBeNull();
+    expect(mintCalls).toHaveLength(0);
+    expect(builddAuthHeader()).toBe(`Bearer ${RUNNER_KEY}`);
+    expect(logged.filter(l => l.includes('could not mint'))).toHaveLength(0);
+    expect(sessionLogs.some(l => l.includes('source=runner-key reason=admin-role'))).toBe(true);
+  });
+
   test('organizer on Codex → BUILDD_MCP_BEARER_TOKEN is the runner key', async () => {
     await runTask(manager, 'w-tt-orch-codex', 'codex', { roleSlug: 'organizer' });
     expect(mintCalls).toHaveLength(0);

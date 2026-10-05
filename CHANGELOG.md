@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Standalone model policy: apps can ask which model to use by surface (chat or coding) and tier, with no buildd account and a safe fallback when the policy service is down (#3605)
+
+### Fixed
+
+- Approved, green PRs converge instead of stalling on a moving base or a stale reviewer verdict; landing re-drives them or requests a fresh review and reports its next step (#3606)
+- `request_pr_review` accepts a task token when the task itself names the PR (#3607)
+- `create_pr` accepts the branch an interactive session actually pushed (#3603)
+- Interactive MCP sessions bypass account budget exhaustion checks at claim, since they bring their own credentials (#3599)
+- Warm snapshots refresh a size-skipped pnpm store when the snapshot cap is raised, instead of waiting 24 hours (#3600)
+- Insights: failed and abandoned work gets its own labelled strip and scale under the flow chart (#3601)
+
 ## [0.260.0] - 2026-10-01
 
 ### Added

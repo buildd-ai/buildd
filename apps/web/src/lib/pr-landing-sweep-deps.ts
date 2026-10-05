@@ -38,7 +38,19 @@ import {
 const TERMINAL_LIFECYCLE = [...TERMINAL_PR_LIFECYCLE];
 
 /**
- * Open worker PRs in an `enforce` workspace whose newest review says approve.
+ * Newest-review verdicts the sweep hands to `landPr`. An approve is the PR it
+ * exists for. A blocking verdict is included because it may have gone stale (a
+ * later head, or a sibling PR / migration / conflict state that has since
+ * changed) and `landPr` is the one place that revalidates it — without this a
+ * stale escalation whose webhook was missed blocks forever.
+ */
+export const SWEEP_REVIEW_VERDICTS = ['approve', 'escalate', 'request-changes'] as const;
+/** The review states those verdicts surface as. */
+export const SWEEP_REVIEW_STATES = new Set<string>(['approved', 'escalated', 'changes_requested']);
+
+/**
+ * Open worker PRs in an `enforce` workspace whose newest review is one of
+ * `SWEEP_REVIEW_VERDICTS`.
  *
  * Deliberately NOT narrowed to lifecycle `ci_green`: a lost green event leaves
  * a PR at `ci_running`, which is the very case this backstop exists for, and
@@ -67,7 +79,7 @@ async function listFloor(limit: number): Promise<PrRef[]> {
           SELECT 1 FROM ${workspaces} w
           WHERE w.id = ${workers.workspaceId} AND w.git_config->'landing'->>'mode' = 'enforce'
         )`,
-        sql`${newestReviewVerdict} = 'approve'`,
+        sql`${newestReviewVerdict} IN ('approve', 'escalate', 'request-changes')`,
       ),
     )
     .limit(limit);
@@ -134,7 +146,7 @@ export function createLandingSweepDeps(): LandingSweepDeps {
       if (policyFor(worker.prBaseRef).tier === 'human') return { ok: false, skip: 'human_tier' };
 
       const review = await readPrReviewStatus({ workspaceId: ref.workspaceId, prNumber: ref.prNumber });
-      if (review.state !== 'approved') return { ok: false, skip: 'not_approved' };
+      if (!SWEEP_REVIEW_STATES.has(review.state)) return { ok: false, skip: 'not_approved' };
 
       const identity = pickWorkspaceRepoIdentity(workspace);
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: identity.fullName });
