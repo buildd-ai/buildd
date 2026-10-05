@@ -34,7 +34,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { spawnSync } from 'child_process';
+import * as childProcess from 'child_process';
 
 export type HostSeat = 'env' | 'login';
 
@@ -88,7 +88,7 @@ export function defaultMacKeychainHasLogin(): boolean {
   if (keychainCache && now - keychainCache.at < KEYCHAIN_CACHE_MS) return keychainCache.value;
   let value = false;
   try {
-    const r = spawnSync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
+    const r = childProcess.spawnSync('security', ['find-generic-password', '-s', MAC_KEYCHAIN_SERVICE], {
       stdio: 'ignore',
       timeout: 3000,
     });
@@ -168,4 +168,49 @@ export function hostModelCredentialValues(
   return HOST_MODEL_CREDENTIAL_VARS
     .map((label) => ({ label: `host:${label}`, value: (env[label] ?? '').trim() }))
     .filter((s) => s.value.length >= 8);
+}
+
+// ─── Codex: the machine's own Codex / ChatGPT login ─────────────────────────
+
+/** The runner user's real Codex home: `$CODEX_HOME` when set, else `~/.codex`. */
+export function resolveLocalCodexHome(
+  env: Record<string, string | undefined> = process.env,
+  home: string = homedir(),
+): string {
+  const explicit = (env.CODEX_HOME ?? '').trim();
+  return explicit || join(home, '.codex');
+}
+
+/** `<local Codex home>/auth.json` when it exists (a `codex login` on this machine), else null. */
+export function localCodexAuthPath(
+  env: Record<string, string | undefined> = process.env,
+  home: string = homedir(),
+): string | null {
+  const p = join(resolveLocalCodexHome(env, home), 'auth.json');
+  return existsSync(p) ? p : null;
+}
+
+export type CodexSeatChoice = 'machine' | 'server' | 'none';
+
+/**
+ * Whose Codex login a Codex task gets. Same modes as the Claude seat:
+ * - `auto`: the machine's login when the claim delivers no Codex credential;
+ *   a delivered credential is used as before.
+ * - `prefer`: the machine's login also beats a delivered ChatGPT (OAuth)
+ *   credential. A delivered API key is metered usage the team chose, and is
+ *   still used.
+ * - `off`: the old behaviour: the machine's login only through an explicitly
+ *   set `CODEX_HOME`, and only with no delivered credential.
+ */
+export function decideCodexSeat(opts: {
+  mode: HostSeatMode;
+  serverCredentialType?: 'oauth' | 'api_key' | null;
+  localAuthPath: string | null;
+  explicitCodexHome: boolean;
+}): CodexSeatChoice {
+  const { mode, serverCredentialType, localAuthPath } = opts;
+  const machineAvailable = !!localAuthPath && (mode !== 'off' || opts.explicitCodexHome);
+  if (!serverCredentialType) return machineAvailable ? 'machine' : 'none';
+  if (mode === 'prefer' && serverCredentialType === 'oauth' && machineAvailable) return 'machine';
+  return 'server';
 }

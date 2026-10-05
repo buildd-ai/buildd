@@ -128,6 +128,25 @@ CLAUDE_CODE_OAUTH_TOKEN` mean the stored seat. The token value is never
 logged, and it is redacted from milestones, error traces and evidence like any
 other credential.
 
+### Codex (ChatGPT) login
+
+The same rule covers Codex tasks. Run `codex login` on the runner machine as
+the runner's user. The runner finds it in `$CODEX_HOME` if that is set, and in
+`~/.codex` otherwise, so no extra environment is needed. Each Codex worker
+keeps its own Codex home (config, sessions). Its `auth.json` is a link to your
+login, so the CLI's token refreshes land in your file and do not go stale in a
+copy. A credential buildd delivers is never written through that link.
+
+`BUILDD_HOST_SEAT` works the same way. Under `auto`, your login is used when
+the team stores no Codex credential in buildd. Under `prefer`, it also beats a
+stored ChatGPT login. A team OpenAI API key is metered usage the team chose,
+so it is still used under every mode. The log line `Codex login: this
+machine's own` confirms which login ran.
+
+A ChatGPT login rotates its refresh token on every use. Several Codex workers
+refreshing at once can sign each other out. Keep the runner at one concurrent
+Codex task per login, or give Codex a team OpenAI API key.
+
 ## CLI reference
 
 | Command | Purpose |
