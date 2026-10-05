@@ -109,8 +109,60 @@ export type CoreEvent =
     }
   /** A team row and its owner membership are written. */
   | { type: 'team.created'; teamId: string }
-  | { type: 'pr.merged'; repoFullName: string; prNumber: number; url: string | null | undefined }
+  /**
+   * A PR merged. `delivery` is present when the GitHub webhook delivered the
+   * merge (every delivery, redeliveries included); reconciliation emits the
+   * same fact without it.
+   */
+  | {
+      type: 'pr.merged';
+      repoFullName: string;
+      prNumber: number;
+      url: string | null | undefined;
+      delivery?: {
+        installationId: number | null;
+        baseRef: string | null;
+        baseSha: string | null;
+        headSha: string;
+        mergeCommitSha: string | null;
+        title: string | null;
+      };
+    }
+  /**
+   * A task's own PR merged, and this is the first delivery that says so
+   * (`workers.mergedAt` was unset). Effects of the merge itself, as opposed to
+   * the task's status transition, hang off this, so they run once per merge.
+   */
+  | {
+      type: 'task.pr_merged';
+      taskId: string;
+      workerId: string;
+      workspaceId: string;
+      missionId: string | null;
+      /** tasks.release: 'true' | 'false' | 'inherit'. */
+      release: string | null;
+      repoFullName: string;
+      baseRef: string | null;
+      installationId: number | null;
+    }
+  /** A GitHub Actions workflow run completed (any workflow, any repo linked to an installation). */
+  | { type: 'workflow_run.completed'; run: WorkflowRunFact; installationId: number | null }
   | { type: 'pr.ci_failed'; repoFullName: string; prNumber: number; headSha: string };
+
+/** The fields of a GitHub `workflow_run` payload the platform reads. */
+export interface WorkflowRunFact {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  html_url: string;
+  head_branch: string | null;
+  head_sha: string;
+  event?: string;
+  path?: string;
+  head_commit?: { id?: string; message?: string } | null;
+  repository: { full_name: string };
+}
 
 export type CoreEventType = CoreEvent['type'];
 export type EventOf<K extends CoreEventType> = Extract<CoreEvent, { type: K }>;

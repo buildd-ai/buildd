@@ -6092,3 +6092,187 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
     expect(mockRecordPrReverts).not.toHaveBeenCalled();
   });
 });
+
+// ── Characterization: what the webhook does for releases ─────────────────────
+// Pins, with arguments, the release effects the event switch runs today: the
+// prod-merge record and gated-release advance on every merged delivery, the
+// Path-B dispatch on a task PR's first merged delivery only, and the
+// workflow_run read-back. The releases module moves behind emit(); this block
+// must stay green across that move.
+describe('webhook → releases (characterization)', () => {
+  beforeEach(() => {
+    resetAll();
+    mockRecordDirectProdMerge.mockClear();
+    mockAdvanceGatedReleaseOnPrMerge.mockClear();
+    mockRecordAndDispatchRelease.mockClear();
+    mockDispatchWorkflowRelease.mockClear();
+    mockClaimMissionReleaseAttempt.mockClear();
+    mockRecordDispatchedRelease.mockClear();
+    mockAbandonMissionReleaseAttempt.mockClear();
+    mockCountPendingTasksForMission.mockClear();
+    mockNotifyTeamOf.mockClear();
+    mockRecordPrReverts.mockClear();
+  });
+
+  function mergedPr(overrides: Record<string, any> = {}) {
+    return {
+      action: 'closed',
+      pull_request: {
+        number: 81,
+        merged: true,
+        draft: false,
+        title: 'Release v1.2.0',
+        body: null,
+        head: { ref: 'dev', sha: 'sha-head-81' },
+        base: { ref: 'main', sha: 'sha-base-81' },
+        merge_commit_sha: 'sha-merge-81',
+        html_url: 'https://github.com/test-org/test-repo/pull/81',
+        ...overrides.pull_request,
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+      ...(overrides.root ?? {}),
+    };
+  }
+
+  function taskWorker(task: Record<string, any> = {}, worker: Record<string, any> = {}) {
+    return {
+      id: 'w-81', workspaceId: 'ws1', taskId: 't-81', prNumber: 81, mergedAt: null,
+      task: {
+        id: 't-81', status: 'completed', taskClass: 'work', workspaceId: 'ws1',
+        release: 'true', title: 'Ship it', missionId: null, loopState: null, ...task,
+      },
+      ...worker,
+    };
+  }
+
+  const dispatchWorkspace = (trigger: string) => ({
+    id: 'ws1',
+    name: 'test-repo',
+    releaseConfig: { enabled: true, strategy: 'workflow_dispatch', workflowFile: 'ship.yml', ref: 'dev', trigger },
+    gitConfig: { defaultBranch: 'dev' },
+  });
+
+  it('a merged PR records the prod merge and advances a gated release, with these args', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    const res = await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(res.status).toBe(200);
+    expect(mockRecordDirectProdMerge).toHaveBeenCalledTimes(1);
+    expect(mockRecordDirectProdMerge.mock.calls[0]?.[0]).toEqual({
+      repoFullName: 'test-org/test-repo', installationId: 5000, baseRef: 'main',
+      headSha: 'sha-merge-81', previousSha: 'sha-base-81',
+    });
+    expect(mockAdvanceGatedReleaseOnPrMerge).toHaveBeenCalledTimes(1);
+    expect(mockAdvanceGatedReleaseOnPrMerge.mock.calls[0]?.[0]).toEqual({
+      repoFullName: 'test-org/test-repo', baseRef: 'main', prHeadSha: 'sha-head-81', installationId: 5000,
+      mergeCommitSha: 'sha-merge-81', baseSha: 'sha-base-81', prTitle: 'Release v1.2.0', prNumber: 81,
+    });
+  });
+
+  it('a redelivered merge records again (the record is idempotent, not the guard)', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ release: 'false' }, { mergedAt: new Date() }));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockRecordDirectProdMerge).toHaveBeenCalledTimes(1);
+    expect(mockAdvanceGatedReleaseOnPrMerge).toHaveBeenCalledTimes(1);
+  });
+
+  it('a missing merge commit reads as undefined / null', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    await POST(createWebhookRequest('pull_request', mergedPr({ pull_request: { merge_commit_sha: null } })));
+    expect((mockRecordDirectProdMerge.mock.calls[0]?.[0] as any).headSha).toBeUndefined();
+    expect((mockAdvanceGatedReleaseOnPrMerge.mock.calls[0]?.[0] as any).mergeCommitSha).toBeNull();
+  });
+
+  it('a PR closed unmerged, or a merge with no installation, records nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    await POST(createWebhookRequest('pull_request', mergedPr({ pull_request: { merged: false } })));
+    await POST(createWebhookRequest('pull_request', mergedPr({ root: { installation: undefined } })));
+    expect(mockRecordDirectProdMerge).not.toHaveBeenCalled();
+    expect(mockAdvanceGatedReleaseOnPrMerge).not.toHaveBeenCalled();
+  });
+
+  it('Path B every_merge: a task PR first merge dispatches the release and annotates the task', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    mockGithubApi.mockReturnValue(Promise.resolve({}));
+    await POST(createWebhookRequest('pull_request', mergedPr({ pull_request: { base: { ref: 'dev', sha: 'sha-base-81' } } })));
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+    expect(mockRecordAndDispatchRelease.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: 'ws1', installationId: 5000, owner: 'test-org', name: 'test-repo',
+      repoFullName: 'test-org/test-repo', workflowFile: 'ship.yml', ref: 'dev', prodBranch: 'dev',
+      inputs: { force: 'false' }, triggeredBy: 'auto',
+    });
+    const annotate = updateCalls.find(c => c.table === schemaMock.tasks && (c.setValues as any).releaseResult);
+    expect((annotate!.setValues as any).releaseResult).toMatchObject({ status: 'pending_ci', releaseId: 'rel-auto-1' });
+  });
+
+  it('Path B: a redelivered merge dispatches nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({}, { mergedAt: new Date() }));
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockRecordAndDispatchRelease).not.toHaveBeenCalled();
+  });
+
+  it('Path B: release=false and trigger=manual dispatch nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ release: 'false' }));
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('manual'));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockRecordAndDispatchRelease).not.toHaveBeenCalled();
+  });
+
+  it('Path B on_mission_complete: claims, dispatches, then records the dispatched release', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ missionId: 'm-81' }));
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('on_mission_complete'));
+    mockMissionsFindFirst.mockReturnValue({ workingBranch: null, integrationBranchEnabled: false } as any);
+    mockGithubApi.mockReturnValue(Promise.resolve({}));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockCountPendingTasksForMission).toHaveBeenCalledWith('m-81');
+    expect(mockClaimMissionReleaseAttempt).toHaveBeenCalledWith('m-81');
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+    expect(mockRecordDispatchedRelease).toHaveBeenCalledWith('m-81', 'ship.yml@dev');
+    expect(mockAbandonMissionReleaseAttempt).not.toHaveBeenCalled();
+  });
+
+  it('workflow_run: the revert ledger first, then the release row, then the task record and a failure alert', async () => {
+    selectTableResults = (t) => {
+      if (t === schemaMock.releases) return [{ id: 'release-81', workspaceId: 'ws1', state: 'dispatched', runUrl: 'https://github.com/test-org/test-repo/actions/runs/8181' }];
+      if (t === schemaMock.tasks) return [{ id: 't-81', releaseResult: { status: 'pending_ci', message: 'dispatched', runId: 8181 }, missionId: null, workspaceId: 'ws1' }];
+      return null;
+    };
+    const res = await POST(createWebhookRequest('workflow_run', {
+      action: 'completed',
+      workflow_run: {
+        id: 8181, name: 'Release', status: 'completed', conclusion: 'failure',
+        html_url: 'https://github.com/test-org/test-repo/actions/runs/8181',
+        head_branch: 'dev', head_sha: 'sha-dev', event: 'push', path: '.github/workflows/release.yml',
+        head_commit: { id: 'sha-dev', message: 'Revert "feat: x"' },
+        repository: { full_name: 'test-org/test-repo' },
+      },
+      repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      installation: { id: 5000 },
+    }));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrReverts).toHaveBeenCalledTimes(1);
+    const releaseIdx = updateCalls.findIndex(c => c.table === schemaMock.releases && (c.setValues as any).state === 'failed');
+    const taskIdx = updateCalls.findIndex(c => c.table === schemaMock.tasks && (c.setValues as any).releaseResult);
+    expect(releaseIdx).toBeGreaterThanOrEqual(0);
+    expect(taskIdx).toBeGreaterThan(releaseIdx);
+    expect((updateCalls[taskIdx]!.setValues as any).releaseResult.status).toBe('failed');
+    const alert = mockNotifyTeamOf.mock.calls.find((c: any[]) => String(c[2]?.title).startsWith('Release workflow failed'));
+    expect(alert).toBeDefined();
+    expect(alert![0]).toEqual({ taskId: 't-81' });
+    expect(alert![2]).toMatchObject({ title: 'Release workflow failed — Release', url: 'https://github.com/test-org/test-repo/actions/runs/8181', priority: 1 });
+  });
+
+  it('a Path B failure is isolated: the webhook still answers 200', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    mockRecordAndDispatchRelease.mockImplementationOnce(async () => { throw new Error('github down'); });
+    const res = await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(res.status).toBe(200);
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+  });
+});
