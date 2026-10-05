@@ -37,6 +37,8 @@ import type {
   FailureSignatureLookup,
   FailureSignatureRow,
   FailureWindow,
+  FailureIncident,
+  FailureIncidentSeverity,
 } from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -336,6 +338,11 @@ export const workerActions = [
   // Read-only and team-scoped. Worker level, not trigger: the caller who needs
   // to know "is my failure already known?" is the one that just failed.
   'get_failure_analytics',
+  // Read-only over the Failure Pattern Sentinel's own ledger (GET
+  // /api/health/incidents) — same reasoning as get_failure_analytics above:
+  // the agent chasing "is this already a known incident?" needs this without
+  // a dashboard session.
+  'list_incidents',
   'get_manifest_coverage',
   'get_path_claim_stats',
   'get_decision_stats',
@@ -618,6 +625,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"executor"|"creationSource"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate and completed-task count. groupBy "executor" splits work claimed from an interactive MCP session (claim_task, workers.runner = "mcp") from work a background runner claimed, with placeholder workers no runner executed (system, external, openclaw) under "other". Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. groupBy="role" reports a routed role (one the decision model filled in) as its own "<Role> · inferred" group beside the stated one, and every role group carries median/p90 time-to-claim. groupBy="creationSource" splits by where a task was filed from (dashboard, api, mcp, github, local_ui, schedule, webhook, orchestrator, conflict) — use it to size the "(unassigned)" role bucket by origin instead of reporting it qualitatively; note a chat-filed task is stamped creationSource "dashboard", so this split alone still can\'t separate chat from dashboard quick-adds. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor. Also returns every tool, Bash intent buckets and code-search shapes (exact-histogram tasks only), per-action buildd calls (recorded since capture began) and per-tool codebase-graph calls (session-keyed), each with its own coverage line.',
     read_evidence: '{ taskId? | prNumber? | evidenceId? (one is required; taskId: full UUID or 8+ char prefix), workspaceId? (with prNumber or evidenceId; defaults to the session workspace), kind? ("command_output"|"test_report"|"ci_job_log"|"transcript"|"pr_diff"), tail? (last N lines, max 10000), grep? (case-insensitive regex, max 200 chars, at most one * or +), cursor? (from a previous truncated read) } — read the stored run evidence behind a task or PR: full failing command output, test reports, CI job logs. With no tail/grep (and no evidenceId) it lists the objects; with tail or grep it reads the newest matching object. Text is redacted and capped at 64 KB; a truncated read says so and returns a cursor. Never returns a download URL.',
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. The overview also reports PR landing: p50/p90 time from approved-and-green to merged, and how many PRs are stuck past the 30-minute target, plus full knowledge-ingest jobs no runner has taken. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    list_incidents: '{ workspaceId?, status? (CSV of open|acknowledged|resolved, or "all"; default "open,acknowledged"), severity? (CSV of low|medium|high|critical — narrows the list; the returned counts.bySeverity always covers every severity within the status scope regardless of this filter), rule? (CSV of retry_fork|lineage_multi_pr|repeated_failure|stranded_gate|path_overlap_stall|provider_attribution_mismatch|failure_rate_spike|output_unmet_boundary), signature? (exact match on one incident\'s stable pattern signature), limit? (default 50, max 200) } — read-only over the Failure Pattern Sentinel\'s incident ledger (GET /api/health/incidents), the same failure_incidents table the detector sweep writes. Each incident carries: severity, the rule and reasonCode behind it, a human title, firstSeenAt/lastSeenAt, occurrenceCount and recurrenceCount, affectedRefs (representative task/worker/PR ids), evidenceRefs (bounded pointers to the underlying rows), impact (the rule\'s own counters), lastAlertedAt/lastAlertSeverity (alert state), linkedFixTaskId, and acknowledgedAt/resolvedAt. Use this before filing a `[friction]` task or a manual bug report for something that looks systemic — it may already be tracked, paged and linked to a fix task. counts.total is the filtered row count regardless of limit, so you can tell whether the list was truncated.',
     get_page_source: '{ workerId?, sha? (commit to audit; default the head of captureRef.ref), prNumber? (use this PR\'s head commit instead, e.g. when that branch deploys to Production), waitSeconds? (0-45 long-poll on a preview still building) } — where the visual auditor\'s pages come from, per gitConfig.visualQa.pageSource (sandbox | vercel-preview | auto), and which branch to capture: captureRef { ref, source, integrationBase } is the mission\'s integration branch on a mission-branch mission, else trunk — dispatch the sandbox capture with --ref captureRef.ref and record it on every shot as qa.ref / qa.refSource. Reads the commit\'s GitHub deployment statuses (no Vercel credential) and returns the source, the preview URL when one is READY, or why not: "pending" (call again), "preview_unavailable" (loud: ask the owner, never pass). Also names the env vars capture reads for the two auth walls and whether each is mapped. Returns no secret.',
     list_runners: '{ workspaceId? } — runners the caller can see: per runner "a busy of b slots", browser (yes = online now), branch, runner build and update state (currentCommit, diskCommit, commitDrift, updating, updateAvailable[Since], upToDateWithDeployed on main), workspaces, last heartbeat. Cloud runs (one container per task) are one elastic group per dispatcher, "N running", with each run nested. With workspaceId: only its runners, led by "Browser-capable runner online for <ws>: yes/no".',
     get_visual_review: '{ missionTitle? | missionId?, workspaceId?, awaitingOnly? } — a mission\'s visual QA: phase; each audit task (status, times, why); per route+viewport: round, agent verdict, finding, human decision, fix task, shot links; manual shots and reports; what needs you. missionTitle is team-wide unless workspaceId. No mission: missions waiting on you. [admin]',
@@ -945,6 +953,43 @@ function formatFailureOverview(analytics: FailureAnalytics, limit: number): stri
       lines.push(`  … ${omitted} more (raise limit, max ${FAILURE_SIGNATURES_MAX}, or pass error=<text> to look one up)`);
     }
   }
+
+  return lines.join('\n');
+}
+
+/**
+ * Failure Pattern Sentinel incident list, newest/most-severe first (the route
+ * already sorted it). Every field on `FailureIncident` surfaces: severity,
+ * rule/reasonCode, first/last seen, occurrence/recurrence counts, impact,
+ * a representative ref, alert state and any linked fix task.
+ */
+function formatIncidentsList(
+  incidents: FailureIncident[],
+  counts: { total: number; bySeverity: Record<FailureIncidentSeverity, number> },
+): string {
+  const bySeverityLine = `${counts.bySeverity.critical} critical, ${counts.bySeverity.high} high, `
+    + `${counts.bySeverity.medium} medium, ${counts.bySeverity.low} low in scope`;
+  if (incidents.length === 0) return `No matching incidents (${bySeverityLine}).`;
+
+  const header = `${counts.total} incident(s) matched — ${bySeverityLine}`
+    + (counts.total > incidents.length ? ` (showing ${incidents.length}, raise limit for more)` : '');
+  const lines: string[] = [header];
+
+  incidents.forEach((inc, i) => {
+    const ref = [
+      inc.affectedRefs.taskIds[0] ? `task ${inc.affectedRefs.taskIds[0].slice(0, 8)}` : null,
+      inc.affectedRefs.prNumbers[0] !== undefined ? `PR #${inc.affectedRefs.prNumbers[0]}` : null,
+    ].filter(Boolean).join(' · ');
+    const alert = inc.lastAlertSeverity ? `alerted ${inc.lastAlertSeverity} @ ${inc.lastAlertedAt}` : 'not alerted';
+    const fix = inc.linkedFixTaskId ? `fix task ${inc.linkedFixTaskId.slice(0, 8)}` : 'no fix task';
+    const recurrence = inc.recurrenceCount > 0 ? ` · recurred ${inc.recurrenceCount}x` : '';
+    lines.push(
+      `  ${i + 1}. [${inc.severity.toUpperCase()}] ${inc.status} — ${truncateTo(inc.title, 160)}\n` +
+      `     ${inc.rule} (${inc.reasonCode}) · ${inc.occurrenceCount} occurrence(s)${recurrence}` +
+      ` · first ${inc.firstSeenAt} · last ${inc.lastSeenAt}\n` +
+      `     ${alert} · ${fix}${ref ? ` · e.g. ${ref}` : ''} · id ${inc.id}`,
+    );
+  });
 
   return lines.join('\n');
 }
@@ -4705,6 +4750,38 @@ export async function handleBuilddAction(
       const overview = formatFailureOverview(analytics, limit);
       const stalledIngest = data?.stalledIngest as StalledIngestReport | undefined;
       return text(stalledIngest ? `${overview}\n\n${formatStalledIngest(stalledIngest)}` : overview);
+    }
+
+    case 'list_incidents': {
+      // Read-only. Scoping is not re-implemented here: GET /api/health/incidents
+      // derives the team from the caller's bearer token and 404s a workspaceId
+      // outside it, exactly like get_failure_analytics above.
+      const rawWsId = typeof params.workspaceId === 'string' && params.workspaceId.trim()
+        ? params.workspaceId.trim()
+        : null;
+      let wsId: string | null = null;
+      if (rawWsId) {
+        wsId = await resolveWorkspaceId(api, rawWsId, ctx);
+      }
+
+      const qs: string[] = [];
+      if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
+      for (const [key, max] of [['status', Infinity], ['severity', Infinity], ['rule', Infinity]] as const) {
+        const raw = typeof params[key] === 'string' && params[key].trim() ? params[key].trim() : null;
+        if (raw) qs.push(`${key}=${encodeURIComponent(raw.slice(0, max === Infinity ? 200 : max))}`);
+      }
+      const rawSignature = typeof params.signature === 'string' && params.signature.trim() ? params.signature.trim() : null;
+      if (rawSignature) qs.push(`signature=${encodeURIComponent(rawSignature.slice(0, 300))}`);
+      const limit = typeof params.limit === 'number' ? Math.min(Math.max(Math.round(params.limit), 1), 200) : null;
+      if (limit) qs.push(`limit=${limit}`);
+
+      const data = await api(`/api/health/incidents${qs.length ? `?${qs.join('&')}` : ''}`);
+      const incidents = (data?.incidents ?? []) as FailureIncident[];
+      const counts = (data?.counts ?? { total: 0, bySeverity: { low: 0, medium: 0, high: 0, critical: 0 } }) as {
+        total: number;
+        bySeverity: Record<FailureIncidentSeverity, number>;
+      };
+      return text(formatIncidentsList(incidents, counts));
     }
 
     case 'suggest_schedule_update': {
