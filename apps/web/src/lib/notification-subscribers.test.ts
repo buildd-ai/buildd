@@ -41,6 +41,19 @@ describe('notification subscribers', () => {
     expect(calls[1][3].message).toBe('Task failed (content redacted)');
   });
 
+  it('a sensitive workspace: a retry push carries no title or workspace name', async () => {
+    await emit({ type: 'task.retrying', ...worker, sensitive: true }, { subscribers });
+    expect(calls).toEqual([['notifyTeam', 'team-1', 'taskFailed', {
+      title: 'Task retrying', message: 'Task auto-retrying (content redacted)', url: 'https://buildd.dev/app/tasks/t-1', urlTitle: 'View task', priority: 0,
+    }]]);
+  });
+
+  it('a sensitive workspace: the dead-credential alert carries no title', async () => {
+    await emit({ type: 'task.failed', ...worker, sensitive: true, error: '401 Invalid authentication credentials' }, { subscribers });
+    const alert = calls.find(c => c[0] === 'notifyTeam' && c[2] === 'credentialExpired');
+    expect(alert[3].message).not.toContain('Fix the cursor');
+  });
+
   it('a dead credential adds its own alert after the failure push', async () => {
     await emit({ type: 'task.failed', ...worker, error: '401 Invalid authentication credentials' }, { subscribers });
     expect(calls.filter(c => c[0] === 'notifyTeam').map(c => c[2])).toEqual(['taskFailed', 'credentialExpired']);
