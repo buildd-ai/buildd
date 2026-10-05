@@ -345,6 +345,8 @@ MCPEOF
 }
 GLOBALEOF
       fi
+      # The entry holds the key: owner-only, like ~/.buildd/config.json.
+      chmod 600 "$CLAUDE_JSON"
 
       echo "Registered buildd MCP server globally in ~/.claude.json"
       echo "Buildd will be available in every Claude Code session."

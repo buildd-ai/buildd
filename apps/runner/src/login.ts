@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from 'util';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { writeSecretJsonFile } from './secure-file';
+import { writeBuilddMcpEntry } from './claude-json-mcp';
 
 const CONFIG_DIR = join(homedir(), '.buildd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -64,24 +65,7 @@ function configureMcp(apiKey: string, server: string) {
   if (values['no-mcp']) return;
 
   try {
-    let config: Record<string, unknown> = {};
-    if (existsSync(CLAUDE_JSON)) {
-      config = JSON.parse(readFileSync(CLAUDE_JSON, 'utf-8'));
-    }
-
-    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
-      config.mcpServers = {};
-    }
-
-    (config.mcpServers as Record<string, unknown>).buildd = {
-      type: 'http',
-      url: `${server}/api/mcp`,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-    };
-
-    writeFileSync(CLAUDE_JSON, JSON.stringify(config, null, 2) + '\n');
+    writeBuilddMcpEntry(CLAUDE_JSON, apiKey, server);
     console.log(`MCP server configured in ${CLAUDE_JSON}`);
   } catch (err) {
     console.error('Failed to configure MCP:', err);
