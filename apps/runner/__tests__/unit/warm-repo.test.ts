@@ -9,7 +9,7 @@
  * bottom (spawnSync blocks this thread, so the server cannot live in it).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { execFileSync, spawn } from 'child_process';
+import { execFileSync, spawn, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { tmpdir } from 'os';
@@ -34,6 +34,7 @@ import {
   pnpmStoreDir,
   writeCacheFileList,
   warmRepoEnabled,
+  resolveWarmCap,
   type SnapshotTransport,
 } from '../../src/warm-repo';
 import { ensureIsolatedClone } from '../../src/workspace';
@@ -56,6 +57,8 @@ class FakeStore {
   uploads = new Map<string, { path: string; parts: Map<number, Buffer> }>();
   /** Every part, in arrival order. */
   partLog: Array<{ path: string; size: number }> = [];
+  /** What `GET /warm/limits` answers (the Worker's per-workspace cap); 404 when unset. */
+  limitBytes: number | null = null;
 
   transport(): SnapshotTransport {
     const s = this;
@@ -63,6 +66,7 @@ class FakeStore {
       getJson(path) {
         s.calls.push(`GET ${path}`);
         if (s.unreachable) return { status: 0, body: null };
+        if (path === '/warm/limits') return s.limitBytes === null ? { status: 404, body: null } : { status: 200, body: { maxBytes: s.limitBytes } };
         if (path !== '/warm') return { status: 404, body: null };
         const m = s.manifests.at(-1);
         return m ? { status: 200, body: m } : { status: 404, body: null };
@@ -74,6 +78,14 @@ class FakeStore {
         if (!b) return { status: 404, bytes: 0 };
         writeFileSync(file, b);
         return { status: 200, bytes: b.length };
+      },
+      pipeTo(path, command, args) {
+        s.calls.push(`PIPE ${path}`);
+        if (s.unreachable) return { status: 0, bytes: 0, ok: false, detail: 'unreachable' };
+        const b = s.files.get(path);
+        if (!b) return { status: 404, bytes: 0, ok: false, detail: 'not found' };
+        const r = spawnSync(command, args, { input: b, stdio: ['pipe', 'ignore', 'pipe'] });
+        return { status: 200, bytes: b.length, ok: r.status === 0, detail: r.stderr?.toString() ?? '' };
       },
       upload(path, file) {
         s.calls.push(`PUT ${path}`);
@@ -144,8 +156,9 @@ let seedClone: string;
 let store: FakeStore;
 let lines: string[];
 
-function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number } = {}) {
+function session(opts: { cacheDir?: string; free?: number | null; now?: number; maxBundleBytes?: number; partBytes?: number; measureRepoBytes?: (p: string) => number; zstd?: boolean; log?: (m: string) => void } = {}) {
   return new WarmRepoSession({
+    ...(opts.zstd !== undefined ? { zstd: opts.zstd } : {}),
     ...(opts.maxBundleBytes !== undefined ? { maxBundleBytes: opts.maxBundleBytes } : {}),
     ...(opts.partBytes !== undefined ? { partBytes: opts.partBytes } : {}),
     ...(opts.measureRepoBytes ? { measureRepoBytes: opts.measureRepoBytes } : {}),
@@ -154,7 +167,7 @@ function session(opts: { cacheDir?: string; free?: number | null; now?: number; 
     tmpDir: join(dir, 'tmp'),
     freeBytes: () => (opts.free === undefined ? 100 * 1024 ** 3 : opts.free),
     now: () => opts.now ?? store.now,
-    log: () => {},
+    log: opts.log ?? (() => {}),
     // The post-restore fetch retries (git-clone.ts); never wait for real here.
     sleep: () => {},
     retryAfter: () => null,
@@ -265,7 +278,7 @@ describe('restore before clone', () => {
     const path = cloneThrough(s);
 
     expect(sourceLine()).toBe('BUILDD_REPO_SOURCE=warm');
-    expect(phaseNames()).toEqual(['restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end']);
+    expect(phaseNames()).toEqual(['restore_warm_start', 'restore_warm_end', 'restore_cache_start', 'restore_cache_end', 'fetch_start', 'fetch_end']);
     expect(phaseNames()).not.toContain('clone_start');
     expect(metric('restore_bytes')).toBe(store.manifests[0]!.repoBytes);
     expect(metric('cache_bytes')).toBe(store.manifests[0]!.cacheBytes);
@@ -439,6 +452,9 @@ describe('refresh rules', () => {
   });
 
   test('cache grew less than 64 MiB (or 25% of restored): no refresh', async () => {
+    // Growth is measured on disk against the restored cache on disk (the
+    // tarball is compressed, so its size says nothing about either).
+    writeFileSync(join(dir, 'cache', 'base.bin'), randomBytes(100 * 1024));
     const seed = session(); cloneThrough(seed, 'ws-seed'); await seed.refresh('completed');
 
     lines = [];
@@ -513,7 +529,8 @@ describe('big repos: the upload is measured first, capped, and streamed', () => 
     lines = [];
     store.calls = [];
     await s.refresh('failed');
-    expect(store.calls).toEqual([]);
+    // Only the cap lookup: no lock, no upload.
+    expect(store.calls).toEqual(['GET /warm/limits']);
     expect(lines).toContain('BUILDD_WARM_UPLOAD=skipped too_large');
     expect(metric('warm_repo_bytes')).toBeGreaterThan(1);
     // Nothing was timed as an upload.
@@ -656,6 +673,153 @@ describe('pnpm store: nested in the dependency cache tarball', () => {
   });
 });
 
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+const cachePart = () => store.files.get(`/warm/${store.manifests.at(-1)!.generation}/cache`)!;
+const skipLines = () => lines.filter(l => l.startsWith('BUILDD_CACHE_SKIPPED='));
+
+describe('compressed cache tarball (zstd, streamed both ways)', () => {
+  test('the cache part is zstd-compressed, restores through a stream (no tarball on disk), and the restore is timed', async () => {
+    const cacheDir = join(dir, 'zcache');
+    mkdirSync(join(cacheDir, 'pkg@1.0.0'), { recursive: true });
+    writeFileSync(join(cacheDir, 'pkg@1.0.0', 'index.js'), 'module.exports = "a";\n'.repeat(2000));
+    const s = session({ cacheDir, zstd: true });
+    cloneThrough(s, 'ws-z');
+    await s.refresh('failed');
+    const stored = cachePart();
+    expect(stored.subarray(0, 4).equals(ZSTD_MAGIC)).toBe(true);
+    // Compressed: well under the raw tar the metric reports.
+    expect(metric('cache_raw_bytes')).toBeGreaterThan(stored.length * 2);
+
+    lines = [];
+    store.calls = [];
+    const restored = join(dir, 'zrestored');
+    cloneThrough(session({ cacheDir: restored, zstd: true }), 'ws-z2');
+    expect(readFileSync(join(restored, 'pkg@1.0.0', 'index.js'), 'utf-8')).toBe('module.exports = "a";\n'.repeat(2000));
+    expect(store.calls).toContain(`PIPE /warm/${store.manifests[0]!.generation}/cache`);
+    expect(store.calls).not.toContain(`GET /warm/${store.manifests[0]!.generation}/cache`);
+    expect(phaseNames()).toContain('restore_cache_start');
+    expect(phaseNames()).toContain('restore_cache_end');
+    expect(metric('cache_bytes')).toBe(stored.length);
+  });
+
+  test('an uncompressed cache tarball from an older snapshot still restores', async () => {
+    const seed = session({ zstd: false });
+    cloneThrough(seed, 'ws-plain');
+    await seed.refresh('failed');
+    expect(cachePart().subarray(0, 4).equals(ZSTD_MAGIC)).toBe(false);
+    const restored = join(dir, 'plain-restored');
+    cloneThrough(session({ cacheDir: restored, zstd: true }), 'ws-plain2');
+    expect(readFileSync(join(restored, 'is-number@7.0.0', 'index.js'), 'utf-8')).toBe('module.exports = 1;\n');
+  });
+
+  test('the cap applies to the compressed size: a store over the cap raw but under it compressed is kept', async () => {
+    const cacheDir = join(dir, 'squeezable');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME, 'files'), { recursive: true });
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'files', 'zeros'), Buffer.alloc(150 * 1024));
+    const s = session({ cacheDir, zstd: true, maxBundleBytes: 50 * 1024 });
+    cloneThrough(s, 'ws-squeeze');
+    await s.refresh('failed');
+    expect(store.manifests).toHaveLength(1);
+    expect(skipLines()).toEqual([]);
+    const restored = join(dir, 'squeeze-restored');
+    cloneThrough(session({ cacheDir: restored, zstd: true }), 'ws-squeeze2');
+    expect(statSync(join(restored, PNPM_STORE_DIRNAME, 'files', 'zeros')).size).toBe(150 * 1024);
+  });
+});
+
+describe('a cache subtree left out for size is reported', () => {
+  test('a pnpm store far over the cap is left out before tarring: a skip line with its size and the cap, and a log line', async () => {
+    const cacheDir = join(dir, 'huge-store');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg.js'), 'small');
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'big.bin'), randomBytes(400 * 1024));
+    const logged: string[] = [];
+    const s = session({ cacheDir, zstd: true, maxBundleBytes: 50 * 1024, log: (m) => logged.push(m) });
+    cloneThrough(s, 'ws-huge');
+    await s.refresh('failed');
+    expect(store.manifests).toHaveLength(1);
+    expect(skipLines()).toEqual([`BUILDD_CACHE_SKIPPED=pnpm-store ${400 * 1024} ${50 * 1024}`]);
+    expect(logged.some(l => l.includes('pnpm store') && l.includes(String(50 * 1024)))).toBe(true);
+  });
+
+  test('a pnpm store that compresses past the cap mid-stream: the cache is re-sent without it, and the skip is reported', async () => {
+    const cacheDir = join(dir, 'dense-store');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg.js'), 'small');
+    // Random bytes do not compress: inside the raw headroom, over the cap once compressed.
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'dense.bin'), randomBytes(80 * 1024));
+    const s = session({ cacheDir, zstd: true, maxBundleBytes: 50 * 1024, partBytes: 8 * 1024 });
+    cloneThrough(s, 'ws-dense');
+    await s.refresh('failed');
+    expect(store.manifests).toHaveLength(1);
+    expect(skipLines()).toEqual([`BUILDD_CACHE_SKIPPED=pnpm-store ${80 * 1024} ${50 * 1024}`]);
+    const restored = join(dir, 'dense-restored');
+    cloneThrough(session({ cacheDir: restored }), 'ws-dense2');
+    expect(existsSync(join(restored, PNPM_STORE_DIRNAME))).toBe(false);
+    expect(readFileSync(join(restored, 'bun-pkg.js'), 'utf-8')).toBe('small');
+  });
+
+  test('a cache with no pnpm store that is over the cap anyway: the whole cache is reported as skipped', async () => {
+    const cacheDir = join(dir, 'dense-cache');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, 'dense.bin'), randomBytes(80 * 1024));
+    const s = session({ cacheDir, zstd: true, maxBundleBytes: 50 * 1024, partBytes: 8 * 1024 });
+    cloneThrough(s, 'ws-dense-cache');
+    await s.refresh('failed');
+    expect(store.manifests).toHaveLength(1);
+    expect(store.manifests[0]!.cacheBytes).toBe(0);
+    expect(skipLines()).toHaveLength(1);
+    expect(skipLines()[0]).toMatch(new RegExp(`^BUILDD_CACHE_SKIPPED=cache \\d+ ${50 * 1024}$`));
+  });
+});
+
+describe('cache growth is measured on disk, not against the compressed tarball', () => {
+  test('a store left out for size and rebuilt by the next run does not refresh the snapshot every run', async () => {
+    const cacheDir = join(dir, 'loop-cache');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg.js'), 'small');
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'big.bin'), randomBytes(400 * 1024));
+    const seed = session({ cacheDir, zstd: true, maxBundleBytes: 50 * 1024 });
+    cloneThrough(seed, 'ws-loop');
+    await seed.refresh('completed');
+    expect(store.manifests).toHaveLength(1);
+
+    // Next run: restored without the store; the install rebuilds it.
+    const next = join(dir, 'loop-next');
+    const s = session({ cacheDir: next, zstd: true, maxBundleBytes: 50 * 1024, now: store.now + 1 });
+    cloneThrough(s, 'ws-loop2');
+    expect(existsSync(join(next, PNPM_STORE_DIRNAME))).toBe(false);
+    mkdirSync(join(next, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(next, PNPM_STORE_DIRNAME, 'big.bin'), randomBytes(400 * 1024));
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(1);
+  });
+});
+
+describe('the per-workspace cap comes from the Worker (GET /warm/limits)', () => {
+  test('a cap from the store overrides the container default', async () => {
+    store.limitBytes = 1;
+    const s = session({ maxBundleBytes: 1024 ** 3 });
+    cloneThrough(s);
+    lines = [];
+    await s.refresh('failed');
+    expect(lines).toContain('BUILDD_WARM_UPLOAD=skipped too_large');
+    expect(store.manifests).toHaveLength(0);
+  });
+
+  test('no answer, or a malformed one: the container default stands', async () => {
+    store.limitBytes = null;
+    const s = session({ maxBundleBytes: 1024 ** 3 });
+    cloneThrough(s);
+    await s.refresh('failed');
+    expect(store.manifests).toHaveLength(1);
+    expect(resolveWarmCap({ status: 200, body: { maxBytes: -5 } }, 7)).toBe(7);
+    expect(resolveWarmCap({ status: 200, body: { maxBytes: '9' } }, 7)).toBe(7);
+    expect(resolveWarmCap({ status: 500, body: null }, 7)).toBe(7);
+    expect(resolveWarmCap({ status: 200, body: { maxBytes: 9 } }, 7)).toBe(9);
+  });
+});
+
 describe('streamToMultipart', () => {
   function recordingTransport() {
     const parts: number[] = [];
@@ -684,7 +848,7 @@ describe('streamToMultipart', () => {
       command: 'head', args: ['-c', String(1024 * 1024), '/dev/zero'],
       transport: r.t, path: '/warm/0000000000000001/repo', partBytes: 64 * 1024, maxBytes: 10 * 1024 * 1024,
     });
-    expect(out).toEqual({ ok: true, bytes: 1024 * 1024 });
+    expect(out).toEqual({ ok: true, bytes: 1024 * 1024, inputBytes: 1024 * 1024 });
     expect(r.parts).toEqual(Array.from({ length: 16 }, () => 64 * 1024));
     expect(r.completed().map(p => p.partNumber)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1));
     expect(r.calls[1]).toBe('PUT /warm/0000000000000001/repo/multipart/1 u-1');
@@ -700,6 +864,30 @@ describe('streamToMultipart', () => {
     expect(out.ok === false && out.reason).toBe('failed');
     expect(out.ok === false && out.detail).toContain('out of memory');
     expect(r.calls).toContain('DELETE /warm/0000000000000001/repo/multipart');
+    expect(r.calls.some(c => c.endsWith('/complete'))).toBe(false);
+  });
+
+  test('through a filter: the filter\'s output is what goes up, and the producer\'s byte count is reported', async () => {
+    const r = recordingTransport();
+    const out = await streamToMultipart({
+      command: 'head', args: ['-c', String(256 * 1024), '/dev/zero'],
+      filter: { command: 'zstd', args: ['-q', '-c'] },
+      transport: r.t, path: '/warm/0000000000000001/cache', partBytes: 64 * 1024, maxBytes: 10 * 1024 * 1024,
+    });
+    expect(out.ok).toBe(true);
+    expect(out.ok && out.inputBytes).toBe(256 * 1024);
+    expect(out.ok && out.bytes).toBeLessThan(4096);
+  });
+
+  test('a producer that fails behind a filter still fails the upload', async () => {
+    const r = recordingTransport();
+    const out = await streamToMultipart({
+      command: 'sh', args: ['-c', 'printf abc; echo "tar: boom" >&2; exit 2'],
+      filter: { command: 'zstd', args: ['-q', '-c'] },
+      transport: r.t, path: '/warm/0000000000000001/cache', partBytes: 64 * 1024, maxBytes: 1024 * 1024,
+    });
+    expect(out.ok).toBe(false);
+    expect(out.ok === false && out.detail).toContain('boom');
     expect(r.calls.some(c => c.endsWith('/complete'))).toBe(false);
   });
 
@@ -914,6 +1102,16 @@ describe('curlTransport against a real HTTP server', () => {
       expect(t.remove!('/warm/x/repo/multipart', { 'x-buildd-upload-id': 'u-1' })).toEqual({ status: 200 });
       expect(t.download('/nothing', join(dir, 'n.bin')).status).toBe(404);
       expect(existsSync(join(dir, 'n.bin'))).toBe(false);
+      // Streamed into a command's stdin: the body, its status and size, and the command's own result.
+      const piped = join(dir, 'piped.bin');
+      const ok = t.pipeTo('/warm/x/repo', 'sh', ['-c', 'cat > "$1"', 'sh', piped]);
+      expect(ok).toEqual({ status: 200, bytes: 3000, ok: true, detail: '' });
+      expect(statSync(piped).size).toBe(3000);
+      const failed = t.pipeTo('/warm/x/repo', 'sh', ['-c', 'cat >/dev/null; echo "tar: broken" >&2; exit 2']);
+      expect(failed.status).toBe(200);
+      expect(failed.ok).toBe(false);
+      expect(failed.detail).toContain('tar: broken');
+      expect(t.pipeTo('/nothing', 'sh', ['-c', 'cat >/dev/null']).status).toBe(404);
     } finally {
       child.kill();
     }

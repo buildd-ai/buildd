@@ -59,6 +59,7 @@ import {
   parsePhaseLine,
   parseRepoSourceLine,
   parseWarmUploadLine,
+  parseCacheSkippedLine,
   recordMetric,
   recordPhase,
   runLabel,
@@ -605,7 +606,9 @@ export class TaskSupervisor {
         return;
       }
       const warmUpload = parseWarmUploadLine(line);
-      if (warmUpload) this.patchTimings({ warmUpload });
+      if (warmUpload) { this.patchTimings({ warmUpload }); return; }
+      const cacheSkipped = parseCacheSkippedLine(line);
+      if (cacheSkipped) this.patchTimings({ cacheSkipped });
     };
     try {
       for (;;) {

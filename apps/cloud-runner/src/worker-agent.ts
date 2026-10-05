@@ -210,7 +210,13 @@ export class WorkerAgent extends Agent<Env, RunState> {
     // The worker is the one this agent is running (its claim line, or the
     // task.resume it was dispatched with), so a park bundle is only ever
     // this run's own.
-    return { workspaceId: grant.workspaceId, ...(this.state.workerId ? { workerId: this.state.workerId } : {}) };
+    return {
+      workspaceId: grant.workspaceId,
+      ...(this.state.workerId ? { workerId: this.state.workerId } : {}),
+      // The workspace's own warm cap (gitConfig.warmSnapshot.maxBytes), from
+      // the same authenticated grant; the Worker default applies without it.
+      ...(grant.warmSnapshotMaxBytes ? { maxBytes: grant.warmSnapshotMaxBytes } : {}),
+    };
   }
 
   /**
