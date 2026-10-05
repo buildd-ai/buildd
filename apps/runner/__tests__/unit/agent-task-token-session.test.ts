@@ -7,12 +7,11 @@
  * A failed mint falls back to the key, and the session still starts. The token
  * never reaches persisted worker state, worker PATCH bodies or logs.
  *
- * Harness after cbm-experiment-withheld.test.ts (SDK `query` stubbed, options
- * captured); the backend factory is wrapped to capture the Codex env.
+ * Harness: SDK `query` stubbed, options
+ * captured; the backend factory is wrapped to capture the Codex env.
  */
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { LocalUIConfig } from '../../src/types';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 import * as realBackends from '../../src/backends/index.js';
 import * as realSessionLogger from '../../src/session-logger';
 import * as realEvidenceWriter from '../../src/evidence-writer';
@@ -148,11 +147,6 @@ mock.module('../../src/env-scan', () => ({
   scanMcpServersRich: () => [],
   checkBwrapSupport: () => true,
   checkBwrapMountIsolationSupport: () => true,
-}));
-
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 /** Captured runStreamed opts per backend. The Codex backend is faked (no CLI). */

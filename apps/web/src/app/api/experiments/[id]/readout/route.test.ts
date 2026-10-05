@@ -95,13 +95,6 @@ describe('GET /api/experiments/[id]/readout', () => {
     expect(mockRun).not.toHaveBeenCalled();
   });
 
-  it('cbm_access still uses the task readout', async () => {
-    as('admin');
-    stored = row({ kind: 'cbm_access' });
-    expect((await get()).status).toBe(200);
-    expect(mockRun).toHaveBeenCalled();
-  });
-
   it('reads the current policy version with the configured minimum sample', async () => {
     as('admin');
     const body = await (await get()).json();

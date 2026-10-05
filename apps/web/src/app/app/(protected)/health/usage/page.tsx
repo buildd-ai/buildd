@@ -7,7 +7,6 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { computeUsageStats, describeScan, parseWindowMs } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
-import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import { buildActionBreakdownPanel, buildUsageDrilldownView, resolveDrilldownWindow } from '@/lib/usage-drilldown';
 import {
   ACTION_EVENTS_CAPTURED_SINCE,
@@ -29,8 +28,7 @@ export const dynamic = 'force-dynamic';
  * than the same numbers at two sizes.
  *
  * The page is TASK-KEYED — every section reads the `aggregateByTask` fold, so a
- * task retried three times is one task costing the sum of its attempts. The one
- * exception declares itself at the stat (see `indexAdoptionLine`).
+ * task retried three times is one task costing the sum of its attempts.
  */
 export default async function UsageDrilldownPage({
   searchParams,
@@ -86,12 +84,10 @@ export default async function UsageDrilldownPage({
   // every delta into an artefact of the cap.
   const previousStart = new Date(now - 2 * windowMs);
 
-  const [rows, previousRows, cbm, actionRows, actionWorkers] = await Promise.all([
+  const [rows, previousRows, actionRows, actionWorkers] = await Promise.all([
     fetchUsageRows({ workspaceIds: scopedWsIds, windowStart }).catch(() => []),
     fetchUsageRows({ workspaceIds: scopedWsIds, windowStart: previousStart, windowEnd: windowStart })
       .catch(() => []),
-    fetchCbmSummary({ workspaceIds: scopedWsIds, window: resolution.window, windowStart })
-      .catch(() => null),
     // Guarded like every sibling: a failure here costs this one panel, not the
     // page. `null` from the pair below renders nothing rather than a zero.
     fetchActionEvents({ workspaceIds: scopedWsIds, windowStart }).catch(() => null),
@@ -107,7 +103,6 @@ export default async function UsageDrilldownPage({
     // useful thing to render than a generic "nothing to compare against".
     previous: { stats: computeUsageStats(previousRows, 'none'), truncated: previousScan.truncated },
     scan: describeScan(rows, windowStart, USAGE_ROW_LIMIT),
-    cbm,
     actions: actionRows && actionWorkers !== null
       ? buildActionBreakdownPanel({
           rows: actionRows,

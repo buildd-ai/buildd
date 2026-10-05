@@ -637,17 +637,6 @@ const mockResolvePolicy = mock((
 });
 mock.module('@/lib/merge-policy', () => ({ resolvePolicy: mockResolvePolicy }));
 
-// CBM fleet detectors. The real implementations are DB-backed and no-op unless
-// OPS_ALERTS_ENABLED, so stubbing them is the only way to observe the caller gate.
-// CBM_HEALTH_TERMINAL_STATUSES must be re-exported — route.ts imports it for that gate.
-const mockDetectCbmFleetDisabled = mock(() => Promise.resolve());
-const mockDetectCbmEnforcedUnused = mock(() => Promise.resolve());
-mock.module('@buildd/core/cbm-health', () => ({
-  CBM_HEALTH_TERMINAL_STATUSES: ['completed', 'failed', 'error'] as const,
-  detectCbmFleetDisabled: mockDetectCbmFleetDisabled,
-  detectCbmEnforcedUnused: mockDetectCbmEnforcedUnused,
-}));
-
 // path-claim reaches a real db client (`packages/core/db/client`, which the
 // `@buildd/core/db` stub above does not cover), so leaving it unmocked means
 // every terminal transition in this file quietly attempts a network round trip
@@ -1398,7 +1387,7 @@ describe('PATCH /api/workers/[id]', () => {
   // When the agent calls the buildd MCP `complete_task` itself — the documented
   // worker workflow — the SERVER marks the worker terminal and pushes
   // worker:completed. The runner's own completion PATCH, the sole carrier of
-  // resultMeta (CBM metrics, tool histogram, model attribution), then lands on
+  // resultMeta (tool histogram, model attribution), then lands on
   // an already-terminal row and is 409'd, so a large share of completed workers
   // carried no result_meta, no cost and no token counts at all. That cohort was
   // also the long-session one, which biased every adoption/cost rollup toward
@@ -1429,7 +1418,6 @@ describe('PATCH /api/workers/[id]', () => {
         numTurns: 37,
         durationMs: 1_234_567,
         modelUsage: {},
-        cbm: { outcome: 'enforced', totalCbmCalls: 20, toolCalls: { search_graph: 20 } },
         toolCounts: { Bash: 12, Read: 4 },
       },
       inputTokens: 500_000,
@@ -1476,8 +1464,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(metricsSets.length).toBe(1);
       const written = metricsSets[0];
-      // The whole point: the CBM/tool metrics reach the row.
-      expect((written.resultMeta as any).cbm.totalCbmCalls).toBe(20);
+      // The whole point: the tool metrics reach the row.
       expect((written.resultMeta as any).toolCounts.Bash).toBe(12);
       expect(written.inputTokens).toBe(500_000);
       expect(written.outputTokens).toBe(20_000);
@@ -1534,7 +1521,7 @@ describe('PATCH /api/workers/[id]', () => {
         workspaceId: 'ws-1',
         taskId: 'task-1',
         pendingInstructions: null,
-        resultMeta: { provisionFailure: { code: 'cbm_missing' } },
+        resultMeta: { provisionFailure: { code: 'node_missing' } },
         costUsd: '0',
         inputTokens: 0,
         outputTokens: 0,
@@ -1550,7 +1537,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       const written = metricsSets[0];
-      expect((written.resultMeta as any).provisionFailure.code).toBe('cbm_missing');
+      expect((written.resultMeta as any).provisionFailure.code).toBe('node_missing');
       expect((written.resultMeta as any).numTurns).toBe(4);
     });
 
@@ -7847,8 +7834,6 @@ describe('PATCH /api/workers/[id]', () => {
     beforeEach(() => {
       mockRecordTaskOutcome.mockReset();
       mockRecordTaskOutcome.mockResolvedValue(true);
-      mockDetectCbmFleetDisabled.mockClear();
-      mockDetectCbmEnforcedUnused.mockClear();
     });
 
     // task_outcomes.actual_model was NULL for every row because the caller passed
@@ -7918,26 +7903,6 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBeNull();
-    });
-
-    // The detectors' history query covers completed/failed/error, but the caller
-    // gate was 'completed' only — so on a workspace where every worker fails (the
-    // exact shape of a missing-binary outage) the widened query was never reached.
-    it('runs the CBM fleet detectors on failed and error, not just completed', async () => {
-      for (const status of ['completed', 'failed', 'error']) {
-        mockDetectCbmFleetDisabled.mockClear();
-        mockDetectCbmEnforcedUnused.mockClear();
-        setupTerminal();
-        const res = await PATCH(createMockRequest({
-          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
-          body: { status, error: status === 'completed' ? undefined : 'boom', resultMeta: { cbm: { outcome: 'disabled', disableReason: 'binary_absent' } } },
-        }), { params: mockParams });
-
-        expect(res.status).toBe(200);
-        expect(mockDetectCbmFleetDisabled).toHaveBeenCalledTimes(1);
-        expect(mockDetectCbmEnforcedUnused).toHaveBeenCalledTimes(1);
-        expect(mockDetectCbmFleetDisabled.mock.calls[0][1]).toEqual({ outcome: 'disabled', disableReason: 'binary_absent' });
-      }
     });
   });
 

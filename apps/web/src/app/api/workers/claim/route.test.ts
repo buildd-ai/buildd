@@ -376,14 +376,6 @@ mock.module('@buildd/core/tier-pool-source', () => ({
   recordAgentPoolAssignment: mockRecordAgentPoolAssignment,
 }));
 
-// CBM-access experiment glue. The real module is exercised in
-// packages/core/__tests__/cbm-access-experiment-source.test.ts; here only the
-// call-site wiring is under test. Default: no running experiment.
-const mockEnrolCbmAccessExperiment = mock((_args: any): Promise<any> => Promise.resolve(null));
-mock.module('@buildd/core/cbm-access-experiment-source', () => ({
-  enrolCbmAccessExperiment: mockEnrolCbmAccessExperiment,
-}));
-
 // Records every tier lookup the claim makes and delegates to the real
 // resolver, so tests can check the surface a claim asks for.
 // mock.module rewrites the live namespace, so the real function is captured first.
@@ -2247,51 +2239,19 @@ describe('POST /api/workers/claim', () => {
       });
     });
 
-    describe('CBM-access experiment wiring', () => {
-      beforeEach(() => {
-        mockEnrolCbmAccessExperiment.mockReset();
-        mockEnrolCbmAccessExperiment.mockResolvedValue(null);
+    // The codebase-memory graph was removed. A runner in the field still sends
+    // the old `cbm_withhold` feature; the claim must ignore it, not refuse it.
+    it('ignores the retired cbm_withhold runner feature', async () => {
+      setup();
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { ...(await claimReq().json()), runnerFeatures: ['cbm_withhold'] },
       });
-
-      it('asks the experiment about every claimed task, with its team and the runner CLI version', async () => {
-        setup();
-        const res = await POST(claimReq());
-        const data = await res.json();
-        expect(data.workers.length).toBe(1);
-        expect(mockEnrolCbmAccessExperiment).toHaveBeenCalledTimes(1);
-        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0]).toMatchObject({
-          teamId: 'team-1', task: { id: 'task-1' }, roleCbmDisabled: false, runnerCliVersion: '2.1.300',
-          // This request declares no runnerFeatures: an old runner, not enrolable.
-          runnerCanWithhold: false,
-        });
-        // Not enrolled: the payload carries no marker, so the runner runs CBM as today.
-        expect(data.workers[0].cbmExperiment).toBeUndefined();
-      });
-
-      it('a runner that declares the withhold feature is enrolable', async () => {
-        setup();
-        const req = createMockRequest({
-          headers: { Authorization: 'Bearer bld_test' },
-          body: { ...(await claimReq().json()), runnerFeatures: ['cbm_withhold'] },
-        });
-        await POST(req);
-        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0].runnerCanWithhold).toBe(true);
-      });
-
-      it('a withheld draw reaches the runner on the claimed worker', async () => {
-        setup();
-        const marker = { experimentId: 'exp-cbm', policyVersion: 1, arm: 'treatment', withheld: true };
-        mockEnrolCbmAccessExperiment.mockResolvedValue(marker);
-        const data = await (await POST(claimReq())).json();
-        expect(data.workers[0].cbmExperiment).toEqual(marker);
-      });
-
-      it('does not enrol a task whose claim lock was lost', async () => {
-        setup();
-        mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
-        await POST(claimReq());
-        expect(mockEnrolCbmAccessExperiment).not.toHaveBeenCalled();
-      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+      expect((data.workers[0] as any).cbmExperiment).toBeUndefined();
     });
   });
 
