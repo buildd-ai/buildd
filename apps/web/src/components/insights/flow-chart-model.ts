@@ -2,7 +2,7 @@
  * Geometry for the Insights flow chart: pure, so it is tested without a DOM.
  *
  * Bands stack bottom-up in the order work moves (running, waiting on you,
- * review, merged, released); lost work hangs below the axis. Running is one
+ * review, merged, released); lost work is its own strip under the chart. Running is one
  * band: the role split lives in the tooltip and the legend list, because
  * splitting a band into same-hue shades fails the colour checks.
  */
@@ -42,8 +42,15 @@ export interface ChartGeometry {
   height: number;
   /** Plot box inside the margins. */
   plot: { left: number; right: number; top: number; bottom: number };
-  /** y of the zero axis. */
+  /** y of the zero axis of the main chart. */
   zeroY: number;
+  /**
+   * Top edge of the lost-work strip under the main chart (= plot.bottom when
+   * nothing was lost). The strip is its own small chart with its own scale,
+   * separated from the main one by STRIP_GAP, so its numbers never share an axis
+   * with the stages above.
+   */
+  lostTop: number;
   /** Max stacked value above the axis and max lost below it (both >= 1). */
   maxUp: number;
   maxDown: number;
@@ -51,7 +58,10 @@ export interface ChartGeometry {
   paths: Record<BandKey, string>;
   /** Top edge per band, for the 2px separator. */
   edges: Record<BandKey, string>;
+  /** Main chart ticks, 0..maxUp. */
   yTicks: { value: number; y: number }[];
+  /** Strip ticks, 0 at its top and maxDown at its bottom; empty when too short to label. */
+  lostTicks: { value: number; y: number }[];
   xTicks: { at: number; x: number; label: string }[];
   releases: { at: number; x: number; version: string | null; shipped: boolean }[];
   xOf: (t: number) => number;
@@ -60,8 +70,10 @@ export interface ChartGeometry {
 
 export const MIN_DOWN_SHARE = 0.15;
 export const MAX_DOWN_SHARE = 0.35;
-/** Closer than this to the zero line, a tick label would collide with "0". */
+/** Closer than this, two tick labels collide. */
 const TICK_GAP = 14;
+/** Space between the main chart and the lost-work strip: room for the strip's name. */
+export const STRIP_GAP = 18;
 
 /** Round up to a clean axis maximum on a fine ladder (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10 per decade), so a stack never fills only half the height. */
 export function niceCeil(v: number): number {
@@ -84,11 +96,12 @@ export function buildGeometry(series: FlowSeries, width: number, height: number)
   const maxUp = niceCeil(Math.max(1, ...stackTotals));
   const maxLost = Math.max(0, ...buckets.map(b => b.lost));
   const maxDown = maxLost > 0 ? niceCeil(maxLost) : 0;
-  // Lost work gets its own scale below the axis, in 15-35% of the height: enough
+  // Lost work gets its own strip under the chart, 15-35% of the height: enough
   // to read when there is a little, never enough to flatten the work above.
   const plotH = plot.bottom - plot.top;
   const downShare = maxDown > 0 ? Math.min(MAX_DOWN_SHARE, Math.max(MIN_DOWN_SHARE, maxDown / (maxUp + maxDown))) : 0;
-  const zeroY = plot.top + plotH * (1 - downShare);
+  const lostTop = plot.bottom - plotH * downShare;
+  const zeroY = maxDown > 0 ? lostTop - STRIP_GAP : plot.bottom;
   const unit = (zeroY - plot.top) / maxUp;
 
   const { from, to } = series.window;
@@ -108,15 +121,17 @@ export function buildGeometry(series: FlowSeries, width: number, height: number)
     paths[key] = buckets.length ? `M${top.join('L')}L${bottom.join('L')}Z` : '';
     edges[key] = buckets.length ? `M${top.join('L')}` : '';
   }
-  const downUnit = maxDown > 0 ? (plot.bottom - zeroY) / maxDown : 0;
-  const lostPts = buckets.map((b, i) => `${xs[i].toFixed(1)},${(zeroY + b.lost * downUnit).toFixed(1)}`);
+  const downUnit = maxDown > 0 ? (plot.bottom - lostTop) / maxDown : 0;
+  const lostPts = buckets.map((b, i) => `${xs[i].toFixed(1)},${(lostTop + b.lost * downUnit).toFixed(1)}`);
   paths.lost = buckets.length && maxDown > 0
-    ? `M${xs[0].toFixed(1)},${zeroY.toFixed(1)}L${lostPts.join('L')}L${xs[xs.length - 1].toFixed(1)},${zeroY.toFixed(1)}Z`
+    ? `M${xs[0].toFixed(1)},${lostTop.toFixed(1)}L${lostPts.join('L')}L${xs[xs.length - 1].toFixed(1)},${lostTop.toFixed(1)}Z`
     : '';
   edges.lost = buckets.length && maxDown > 0 ? `M${lostPts.join('L')}` : '';
 
   const yTicks = [0, maxUp / 2, maxUp].map(v => ({ value: v, y: zeroY - v * unit }));
-  if (maxDown > 0 && plot.bottom - zeroY >= TICK_GAP) yTicks.push({ value: -maxDown, y: plot.bottom });
+  const lostTicks = maxDown > 0 && plot.bottom - lostTop >= TICK_GAP
+    ? [{ value: 0, y: lostTop }, { value: maxDown, y: plot.bottom }]
+    : [];
 
   const spanMs = to - from;
   const day = 86_400_000;
@@ -133,11 +148,13 @@ export function buildGeometry(series: FlowSeries, width: number, height: number)
     height,
     plot,
     zeroY,
+    lostTop,
     maxUp,
     maxDown,
     paths,
     edges,
     yTicks,
+    lostTicks,
     xTicks,
     releases: series.releases.map(r => ({
       at: r.at,

@@ -8257,6 +8257,34 @@ describe('explicit taskId claims (organizer workflow)', () => {
     expect(other.diagnostics?.reason).not.toBe('rate_limited');
   });
 
+  it('an interactive session can claim when account budget is exhausted (interactive sessions have their own credentials)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      ...account(),
+      authType: 'oauth',
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 3600000).toISOString(),
+    });
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'mcp' }, interactiveHeaders())).json();
+    // A background runner would get 'budget_exhausted', but an interactive session
+    // has its own credentials and should not be blocked by account budget.
+    expect(data.workers).toHaveLength(1);
+    expect(data.diagnostics).toBeUndefined();
+  });
+
+  it('a background runner cannot claim when account budget is exhausted', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      ...account(),
+      authType: 'oauth',
+      budgetExhaustedAt: new Date().toISOString(),
+      budgetResetsAt: new Date(Date.now() + 3600000).toISOString(),
+    });
+    mockTasksFindMany.mockResolvedValueOnce([task()]);
+    const data = await (await claim({ runner: 'runner-7' })).json();
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics.reason).toBe('budget_exhausted');
+  });
+
   it('local executor: repeated explicit claims of one task are not rate-limited', async () => {
     mockAuthenticateApiKey.mockResolvedValue(account());
     mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-L' });
