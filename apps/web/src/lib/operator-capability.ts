@@ -159,6 +159,22 @@ function configOf(row: RoleGrantRow | null | undefined): OperatorGrantConfig | n
 }
 
 /**
+ * `metadata` with `operator` replaced by `config` (or dropped when `config` is
+ * null or empty), every other key untouched. The admin UI writes the whole
+ * grant object on each save, same as it does for `allowedTools`/`mcpServers`
+ * — there is no partial-field patch semantics here, unlike routing text.
+ */
+export function withOperatorGrantMetadata(metadata: unknown, config: OperatorGrantConfig | null): Record<string, unknown> {
+  const meta = { ...(metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? (metadata as Record<string, unknown>) : {}) };
+  if (!config || Object.keys(config).length === 0) {
+    delete meta.operator;
+  } else {
+    meta.operator = config;
+  }
+  return meta;
+}
+
+/**
  * The effective grant of `roleSlug` in `workspaceId`, from its team default row
  * and its workspace override row (either may be absent). See the file header
  * for the rules.

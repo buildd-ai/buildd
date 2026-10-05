@@ -104,6 +104,40 @@ entry in `AGENT_CAPABILITIES` (`apps/web/src/lib/permission-registry.ts`).
 - AC-6: GIVEN a failed or empty db read WHEN `loadOperatorGrant` runs THEN it
   returns a disabled grant and does not throw.
 
+## Admin UX
+
+**Capability statement**: An admin MUST be able to read and edit a role's
+`metadata.operator` grant — team ceiling and workspace opt-in separately —
+through the same team/workspace role settings surface used for every other
+role field, never a parallel admin system, and never see a credential value.
+
+**Invariants**:
+- `PATCH /api/roles/[id]` accepts `operatorGrant` (an `OperatorGrantConfig`, or
+  `null` to clear) and writes it to `metadata.operator` on that row via
+  `withOperatorGrantMetadata`, alongside `metadata.routing` and every other
+  metadata key, untouched. A role with no entry in `ROLE_CAPABILITY_CEILINGS`
+  rejects `operatorGrant` with 400: writing it would be inert, so it is
+  refused rather than silently stored.
+- `POST /api/roles/[id]/overrides` accepts the same `operatorGrant` field for
+  a workspace override row, under the same ceiling check. Unlike every other
+  overridable field, a new override row never inherits the team default's
+  `metadata.operator` — the workspace's grant is its own opt-in, not a copy of
+  the team's ceiling config.
+- The team-settings page (`apps/web/src/app/app/(protected)/team/[slug]/settings/`)
+  renders `OperatorAccessSection` instead of the generic workspace-overrides
+  editor when the role's slug holds any agent capability. It shows: a team
+  kill switch and standard-capability/scope ceiling; per workspace, an
+  enabled toggle, deploy/use capabilities and secret management/reveal
+  capabilities in two visually distinct groups (the latter unchecked by
+  default), and scope chip lists; and a live effective-grant preview computed
+  with `resolveOperatorGrant` from the current draft, before saving.
+- No surface ever renders a credential value — scope only ever carries the
+  reference string a credential was registered under.
+
+**Code surface**: `apps/web/src/app/api/roles/[id]/route.ts`,
+`apps/web/src/app/api/roles/[id]/overrides/route.ts`,
+`apps/web/src/app/app/(protected)/team/[slug]/settings/OperatorAccessSection.tsx`.
+
 ## Operator persona
 
 **Capability statement**: The Operator's persona text MUST resolve through the
