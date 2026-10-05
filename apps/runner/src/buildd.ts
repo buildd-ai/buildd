@@ -711,10 +711,11 @@ export class BuilddClient {
    * parseAgentTaskTokenResponse (agent-task-token.ts). A non-2xx rejects with
    * a ServerRefusalError carrying `status`. Never queued to the outbox.
    */
-  async mintTaskToken(taskId: string, ttlMs: number, signal?: AbortSignal): Promise<unknown> {
+  /** `level: 'admin'` asks for an orchestration session's token; omitted, the server mints a worker token. */
+  async mintTaskToken(taskId: string, ttlMs: number, signal?: AbortSignal, level?: 'admin'): Promise<unknown> {
     return this.fetch('/api/runner/task-token', {
       method: 'POST',
-      body: JSON.stringify({ taskId, ttlMs }),
+      body: JSON.stringify(level === 'admin' ? { taskId, ttlMs, level } : { taskId, ttlMs }),
       ...(signal ? { signal } : {}),
     });
   }

@@ -10,7 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
-import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
 import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
@@ -569,6 +569,11 @@ export async function POST(req: NextRequest) {
     // A mission link must stay inside the workspace's team (see isMissionLinkable).
     // Checked before any write, including the friction-dedupe append below.
     if (missionId && !(await isMissionLinkable(missionId, targetWorkspace.teamId))) {
+      return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
+    }
+    // A per-task token files work only onto its own task's mission, never
+    // another mission on the team, whatever its level.
+    if (missionId && apiAccount && !(await taskScopeAllowsMission(apiAccount, missionId))) {
       return NextResponse.json({ error: 'Mission not found' }, { status: 404 });
     }
     const subjectPolicy = resolveSubjectPolicy(targetWorkspace.gitConfig?.subjectPolicy);

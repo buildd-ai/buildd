@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-05
 summary: A caller MUST get provider, model and effort from surface (chat or coding) plus tier alone, locally or from the policy service, with a fallback answer always and no provider secret ever crossing the boundary.
 domain: integrations
-surfaces: [packages/ai-kit/src/policy/resolve.ts, packages/ai-kit/src/policy/protocol.ts, packages/ai-kit/src/policy/client.ts, apps/model-policy/src/handler.ts]
+surfaces: [packages/ai-kit/src/policy/resolve.ts, packages/ai-kit/src/policy/client.ts, apps/model-policy/src/handler.ts, packages/core/model-policy.ts]
 related: [model-routing-and-tiers, usage-and-cost-accounting]
 keywords: [model policy, surface, tier, coding, chat, resolve-only, remotePolicy, createPolicyClient, policy token, shadow, split, adaptive, planId, outcomes]
-verified_by: [packages/ai-kit/src/policy/resolve.test.ts, packages/ai-kit/src/policy/protocol.test.ts, packages/ai-kit/src/policy/client.test.ts, packages/ai-kit/src/policy/contract.test.ts, apps/model-policy/src/handler.test.ts, apps/model-policy/src/imports.test.ts]
+verified_by: [packages/ai-kit/src/policy/resolve.test.ts, packages/ai-kit/src/policy/protocol.test.ts, packages/ai-kit/src/policy/client.test.ts, packages/ai-kit/src/policy/contract.test.ts, apps/model-policy/src/handler.test.ts, apps/model-policy/src/imports.test.ts, packages/core/__tests__/model-policy.test.ts, packages/core/__tests__/model-policy-authority.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -41,6 +41,17 @@ assertions:
   - id: "credential-boundary-tests"
     type: "test_file"
     path: "apps/model-policy/src/imports.test.ts"
+  - id: "buildd-registry-as-policy"
+    type: "symbol"
+    name: "registryModelPolicy"
+    path: "packages/core/model-policy.ts"
+  - id: "buildd-remote-default-layer"
+    type: "symbol"
+    name: "resolveRemoteTier"
+    path: "packages/core/model-policy.ts"
+  - id: "buildd-single-authority-guard"
+    type: "test_file"
+    path: "packages/core/__tests__/model-policy-authority.test.ts"
 ---
 
 # Standalone Model Policy
@@ -130,8 +141,62 @@ without a trustworthy signal, and outcomes MUST stay typed observations.
 `packages/ai-kit/src/policy/client.ts`, `apps/model-policy/src/handler.ts`,
 `apps/model-policy/src/auth.ts`, `apps/model-policy/wrangler.jsonc`.
 
+## buildd on the policy
+
+**Capability statement**: buildd's own tier selection, for agent claims and
+for chat and inference calls, MUST go through this resolver; there is no
+second tier resolver in buildd.
+
+**Invariants**:
+- A team's `model_tier_registry` rows are a `ModelPolicy`
+  (`registryModelPolicy`, `packages/core/model-policy.ts`): team rows →
+  `tiers`, team surface rows → `surfaces` (`agent` → `coding`), workspace rows →
+  `overrides`. `resolveTierEntry` resolves it with the kit's `pickRoute`;
+  `pickRegistryRow`, which the admin views use, is answered the same way.
+  Settings and `manage_model_tiers` keep writing rows; nothing else changes
+  for an admin.
+- Agent claims ask surface `coding`; chat turns and `inference-client` ask
+  `chat`. Every resolved entry carries `policy: { version, planId, source,
+  surface, experiment? }`; claims store it as `context.resolvedTier.policy`.
+- A tier the registry leaves unset is the service's to answer when
+  `BUILDD_MODEL_POLICY_URL` + `BUILDD_MODEL_POLICY_TOKEN` are set
+  (`resolveRemoteTier`, `source: 'policy'`). A registry row is never
+  overridden by the service. A `bundled`/`fallback` service answer is not
+  authoritative: buildd's catalog pick and the bundled policy apply.
+- Outage: a failed resolve backs off 30s and serves the last good service
+  answer as `cached` with `planId: null` (outcomes from many runs never land on
+  one plan), then the catalog, then `DEFAULT_MODEL_POLICY`. The DB being down
+  skips the registry, not the policy.
+- `TIER_DEFAULTS`, the alias map and every code-level default
+  (`bundledTierEntry`) are derived from `DEFAULT_MODEL_POLICY`. No call site
+  indexes `TIER_DEFAULTS` or reads registry rows to resolve a tier
+  (`model-policy-authority.test.ts`); model-id literals are policed by
+  `scripts/lint-model-ids.ts`.
+- Exact-id pins (task `model`, role full id) are the documented escape hatch
+  and bypass tier resolution. A shorthand pin (`opus`/`sonnet`/`haiku`) is a
+  tier request (`shorthandPinTier`) and resolves through the policy. A model
+  the runner cannot launch is replaced by the dispatch guard, and the claim
+  then stores no policy decision (none ran).
+- Coding outcomes go to the service only for a decision it issued (a
+  planId): `tests` from CI on the run's PR, `review_verdict` + `rework` from
+  the reviewer, `merged` on merge, `duration` + `cost` at the run's end. Chat
+  reports nothing: buildd has no chat signal keyed to a decision yet.
+  Experiment and pool arms buildd draws itself are not policy decisions and
+  report nothing here.
+
+**Acceptance criteria**:
+- AC-4: WHEN a team splits `standard` by surface THEN a claim gets the
+  `coding` row and a chat call the `chat` row.
+- AC-5: WHEN a registry row pins a tier and a service is configured THEN the
+  service is not asked for that tier.
+- AC-6: WHEN the service fails THEN the claim resolves from the last good
+  answer with no planId, or the bundled policy, and the next 30s make no call.
+
 ## Verification gaps
 
-- The Worker is not deployed and has no route; deploy is manual (`apps/model-policy/README.md`).
-- buildd's own claim and chat paths still resolve tiers through its registry,
-  not through this protocol; no adapter exports the registry as a `ModelPolicy` yet.
+- Deploying the Worker needs Cloudflare credentials and its runtime secrets;
+  that is the one manual step (`apps/model-policy/README.md`, Deploy). Until
+  `BUILDD_MODEL_POLICY_URL`/`_TOKEN` are set, buildd resolves locally (registry
+  + bundled policy) and reports no outcomes.
+- buildd's own model-routing experiment and tier pools still draw arms on top
+  of the policy's decision; they are not yet policy experiments.

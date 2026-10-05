@@ -427,7 +427,7 @@ describe('resolveTierEntry — split tier', () => {
     expect(chat.surface).toBeUndefined();
   });
 
-  it('caches per surface, so one surface never serves the other its entry', async () => {
+  it('caches the team document once, and one surface never serves the other its entry', async () => {
     mockFindMany.mockResolvedValue([
       row(null, 'agent', 'agent-model'),
       row(null, 'chat', 'chat-model'),
@@ -436,7 +436,9 @@ describe('resolveTierEntry — split tier', () => {
     expect((await resolveTierEntry('standard', TEAM_A, null, 'agent')).model).toBe('agent-model');
     expect((await resolveTierEntry('standard', TEAM_A, null, 'chat')).model).toBe('chat-model');
     expect((await resolveTierEntry('standard', TEAM_A, null, 'agent')).model).toBe('agent-model');
-    expect(mockFindMany).toHaveBeenCalledTimes(2);
+    // One load: the cache holds the team's rows (its policy document), and the
+    // surface is applied by the resolver on every read.
+    expect(mockFindMany).toHaveBeenCalledTimes(1);
   });
 
   it('a team write flushes cached workspace entries too', async () => {

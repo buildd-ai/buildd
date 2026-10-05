@@ -120,7 +120,6 @@ const SUMMARY_MAX = 220;
 export const VERIFIED_BY_DEBT = new Set([
   'auth-oauth-boundaries',
   'codex-backend-spec',
-  'credential-isolation',
   'db-migration-gates',
   'external-cron-triggers',
   'knowledge-store-retrieval',

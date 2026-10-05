@@ -133,3 +133,37 @@ describe('TaskActionZone — inline Force start', () => {
     expect(container.textContent).toContain('browser-capable runner');
   });
 });
+
+describe('TaskActionZone — a provider sign-in failure', () => {
+  it('says what to do in plain words, links the credential setting, and folds the raw text', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'Not logged in · Please run /login' } });
+    await flush();
+    const zone = container.textContent ?? '';
+    expect(zone).toContain('no working model key');
+    expect(zone).not.toContain('Please run /login');
+    const link = container.querySelector('a[href="/app/settings/runners#agent-backends"]');
+    expect(link?.textContent).toBe('Add an agent key');
+    const raw = button('Show raw output');
+    expect(raw).toBeDefined();
+    await act(async () => { raw!.click(); });
+    expect(container.textContent).toContain('Not logged in · Please run /login');
+    // Retry stays one click away.
+    expect(button('Retry on claude')).toBeDefined();
+  });
+
+  it('classifies from the full error when the excerpt is only its first line', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: '[mcp-sdk] warning…', raw: '[mcp-sdk] warning\nNot logged in · Please run /login' } });
+    await flush();
+    expect(container.textContent).toContain('no working model key');
+  });
+
+  it('any other failure still shows its excerpt as before', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'Tests failed: 3 of 12' } });
+    await flush();
+    expect(container.textContent).toContain('Tests failed: 3 of 12');
+    expect(button('Show raw output')).toBeUndefined();
+  });
+});

@@ -447,7 +447,32 @@ jobs:
               '
             "
           SCRIPT
-          sleep 5
+
+          # Wait up to 30 seconds for the runner to bind and respond on port 8767.
+          # The test file also probes for 90 seconds in beforeAll, but an early
+          # check here captures port-binding or startup issues quickly.
+          echo "Waiting for runner to be ready on $TEST_HOST:8767..."
+          for i in $(seq 1 30); do
+            if curl -s -f -w '%{http_code}' "http://$TEST_HOST:8767/api/config" -o /dev/null 2>&1 | grep -q '^200$'; then
+              echo "Runner ready: port 8767 is responding"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "::error::Runner failed to bind/respond on port 8767 after 30s. Capturing diagnostics..."
+              tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec $TEST_CONTAINER bash -c '
+                echo \"=== Listening ports ===\"
+                netstat -tulpn 2>/dev/null | grep -E \":(3333|8767)\" || ss -tulpn 2>/dev/null | grep -E \":(3333|8767)\" || echo \"Could not get port listing\"
+                echo \"=== Runner process ===\"
+                ps aux | grep -E \"bun.*runner|index.ts\" | grep -v grep || echo \"No runner process found\"
+                echo \"=== Last 20 lines of /tmp/buildd-test.log ===\"
+                tail -20 /tmp/buildd-test.log 2>/dev/null || echo \"No runner log\"
+              '" || true
+              echo "::error::Unable to reach runner on http://$TEST_HOST:8767/api/config. Check port exposure and network connectivity."
+              exit 1
+            fi
+            echo "Waiting for runner... ($i/30)"
+            sleep 1
+          done
         env:
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           # The runner only answers requests whose Host is one of its own

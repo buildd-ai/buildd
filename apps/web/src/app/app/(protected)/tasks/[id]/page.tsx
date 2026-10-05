@@ -64,6 +64,10 @@ import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence
 import { evidenceViewOf } from '@/lib/task-evidence';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
+import RunnerReachBanner from './RunnerReachBanner';
+import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
+import { canAdministerTeamKeys } from '@/lib/key-level-policy';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 import TaskOverflowMenu from './TaskOverflowMenu';
 import { AskAboutLink } from '@/components/chat/ChatEntry';
 import { missionContextBarFor, type MissionContextBarData } from './mission-context-bar';
@@ -297,7 +301,23 @@ export default async function TaskDetailPage({
       console.error('[task-page] evidence list failed:', err instanceof Error ? err.message : err);
       return [];
     });
-  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt] = await Promise.all([
+  // Why no runner can claim a pending task: a restricted workspace its
+  // runners are not linked to (a new user's "My Workspace" before the login
+  // fix). Runner work only; a local mission's task is claimed from a session.
+  // Shown only when the task can start (filtered below, once deps are known).
+  const runnerReachLoad = task.status === 'pending' && missionExecutorOf(missionContextRow) !== 'local' && task.workspace
+    ? Promise.all([
+        loadRunnerReachDiagnosis({
+          id: task.workspace.id,
+          teamId: task.workspace.teamId,
+          accessMode: task.workspace.accessMode,
+        }),
+        getTeamPermissionOverrides(access.teamId),
+      ])
+        .then(([diagnosis, overrides]) => diagnosis ? { diagnosis, canFix: canAdministerTeamKeys(access.role, overrides) } : null)
+        .catch(() => null)
+    : Promise.resolve(null);
+  const [taskArtifacts, errorTraces, ship, teamTimezone, roleRow, peerWorkers, ciAttemptTasks, dependentTasks, runnerHeartbeats, auditVisual, evidenceFiles, openAttempt, runnerReachRaw] = await Promise.all([
     // Artifacts for all workers on this task
     workerIds.length > 0
       ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
@@ -382,6 +402,7 @@ export default async function TaskDetailPage({
     prWorker?.prUrl && prWorker.prNumber && prWorker.prLifecycleStatus !== 'closed'
       ? loadOpenAttempt(task.id)
       : Promise.resolve(null),
+    runnerReachLoad,
   ]);
   const shippedRelease = ship.shippedRelease;
   // Runners by hostname, never their raw URL (runner-display).
@@ -710,6 +731,7 @@ export default async function TaskDetailPage({
 
   const canReassign = task.status !== 'completed' && task.status !== 'pending';
   const canStart = task.status === 'pending' && !isBlocked;
+  const runnerReach = canStart ? runnerReachRaw : null;
 
   // Canonical lifecycle phase — the single spine the whole page (and the mission
   // drawer, via the same fn) keys off to decide what to foreground.
@@ -1169,6 +1191,9 @@ export default async function TaskDetailPage({
             different things. The page alone adds runner targeting. An open
             question is answered in the live worker view below
             (worker-needs-input-banner), which leads the list on mobile. */}
+        {runnerReach && (
+          <RunnerReachBanner workspaceId={task.workspaceId} diagnosis={runnerReach.diagnosis} canFix={runnerReach.canFix} />
+        )}
         {(phase === 'failed' || canStart || isBlocked) && (
           <div className="mb-6" data-testid="task-page-action-zone">
             <TaskPageActionZone
@@ -1178,7 +1203,7 @@ export default async function TaskDetailPage({
               isBlocked={isBlocked}
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
-              lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
+              lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
               roleSlug={task.roleSlug}
               missionExecutor={missionExecutorOf(missionContextRow)}

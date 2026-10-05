@@ -235,6 +235,38 @@ describe('GET /api/tasks/[id]', () => {
     expect(served.status).toBe(200);
   });
 
+  it("lets an orchestration task's admin token read the tasks on its own mission, and nothing else", async () => {
+    const OWN = '22222222-2222-4222-8222-222222222222';
+    const sibling = (over: Record<string, unknown>) => ({
+      id: TASK_ID, title: 'Sibling', status: 'pending', workspaceId: 'ws-1', missionId: 'm-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' }, ...over,
+    });
+    let row: any = sibling({});
+    // The route's read of the task, and the scope helper's read of the token's own task.
+    mockTasksFindFirst.mockImplementation(async (args: any) =>
+      args?.with?.mission?.columns?.initiativeId ? { missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } } : row);
+    mockGetCurrentUser.mockResolvedValue(null);
+    const get = () => callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
+    const taskScope = { taskId: OWN, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'admin', taskScope });
+    expect((await get()).status).toBe(200);
+    row = sibling({ missionId: 'm-2' });
+    expect((await get()).status).toBe(404);
+    row = sibling({ workspaceId: 'ws-2' });
+    expect((await get()).status).toBe(404);
+    row = sibling({ missionId: null });
+    expect((await get()).status).toBe(404);
+
+    // A worker-level token is still confined to its own task, before any read.
+    row = sibling({});
+    mockTasksFindFirst.mockClear();
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'worker', taskScope });
+    expect((await get()).status).toBe(404);
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    mockTasksFindFirst.mockReset();
+  });
+
   it('never returns the workspace dispatch token, to a per-task token or an account key', async () => {
     const mockTask = {
       id: TASK_ID,

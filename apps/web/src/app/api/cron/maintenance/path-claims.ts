@@ -20,7 +20,7 @@ import { releaseAndNotify, resolveReleaseReasonForTask } from '@/lib/path-claim-
  * release it triggers writes their `path_claim.released` dispatch intent. A
  * completed blocker whose PR is still open is left alone — it still blocks.
  *
- * Runs on the hourly `schedules` cron tick, so it is a repair loop, never the
+ * Runs on the hourly `maintenance` cron tick (split out of `schedules`), so it is a repair loop, never the
  * normal wake path — cheap: with no leaked claims it does two empty-set
  * queries and returns 0.
  */

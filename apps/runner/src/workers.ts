@@ -11,7 +11,7 @@ import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
 import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
@@ -80,7 +80,8 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
-import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
+import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
 import {
@@ -147,7 +148,8 @@ import {
   SESSION_END_PUSH_TEXT,
   type SessionEndLabel,
 } from './session-end-classification.js';
-import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
+import { withoutRunnerKeyValues } from './runner-key-guard.js';
+import { buildCodexMcpServers, describeSkippedMcpServer, resolveMcpJsonHttpServers, urlOrigin, type BuilddCredentialExpansion } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -587,7 +589,7 @@ function hasClaudeCredentials(): boolean {
   }
 
   // Check env vars
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return true;
   }
 
@@ -2927,8 +2929,9 @@ export class WorkerManager {
    * Park with the classified reason recorded and visible on the task page —
    * reusing the same `waitingFor`/`waiting_input` surface a live
    * `AskUserQuestion` already renders, so no new UI is needed. `disposition`
-   * 'hold' tags it the same way the Jev gate tags a live held question
-   * (parks exactly like 'ask' today; see question-gate.ts HOLD_RESURFACE_MS).
+   * 'hold' tags it the same way the Jev gate tags a live held question (the
+   * server parks it without a notification until its deadline; see
+   * apps/web/src/lib/question-hold.ts).
    */
   private async parkSessionEnd(
     worker: LocalWorker,
@@ -3064,9 +3067,20 @@ export class WorkerManager {
     const fileBased = worker.roleBundle
       ? resolveRoleEnvMapping(worker.roleBundle.envMapping, process.env as Record<string, string>)
       : { resolved: {}, missing: [] };
+    // Role env lands in the agent's env (and the install env). The file-based
+    // mapping reads the runner's own process.env, so a label naming the
+    // runner's key variable would hand the agent that key; drop any value equal
+    // to the runner key, whatever the label or source.
+    const { env: resolved, dropped } = withoutRunnerKeyValues(
+      { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
+      this.config.apiKey,
+    );
+    if (dropped.length > 0) {
+      console.warn(`[roles] role env ${dropped.join(', ')} not given to the agent: the value is this runner's own key`);
+    }
     return {
-      resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
-      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? [])],
+      resolved,
+      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? []), ...dropped],
     };
   }
 
@@ -3103,20 +3117,20 @@ export class WorkerManager {
     const agentBuilddAuth = await resolveAgentBuilddAuth({
       runnerKey: this.config.apiKey,
       taskId: task.id,
-      // Organizer / planning / heartbeat sessions need admin-level actions a
-      // worker-level task token does not carry.
+      // Organizer / planning / heartbeat sessions ask for an admin-level
+      // token confined to their own mission; refused, they keep the key.
       orchestration: isOrchestrationTask(task),
       // Roles whose deliverable is itself an admin action (consolidator).
       adminRole: usesAdminBuilddActions(task),
       info: line => console.log(`[Worker ${worker.id}] ${line}`),
       mint: typeof (this.buildd as any).mintTaskToken === 'function'
-        ? (taskId, ttlMs, signal) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal)
+        ? (taskId, ttlMs, signal, level) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal, level)
         : undefined,
       warn: line => console.warn(`[Worker ${worker.id}] ${line}`),
     });
     const agentBuilddToken = agentBuilddAuth.token;
     if (agentBuilddAuth.source === 'task-token') {
-      sessionLog(worker.id, 'info', 'agent_buildd_auth', 'source=task-token', task.id);
+      sessionLog(worker.id, 'info', 'agent_buildd_auth', agentBuilddAuth.level === 'admin' ? 'source=task-token level=admin' : 'source=task-token', task.id);
     } else if (agentBuilddAuth.reason === 'orchestration-role' || agentBuilddAuth.reason === 'admin-role') {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.reason}`, task.id);
     } else if (agentBuilddAuth.reason === 'mint-failed') {
@@ -3127,11 +3141,16 @@ export class WorkerManager {
     // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
     // credentials — see buildWorkerSecretValues). Applies to milestones,
     // currentAction, error traces, evidence bodies and the history archive.
-    const secretValues = buildWorkerSecretValues(
-      this.config.apiKey,
-      worker,
-      agentBuilddAuth.source === 'task-token' ? agentBuilddToken : undefined,
-    );
+    const secretValues = [
+      ...buildWorkerSecretValues(
+        this.config.apiKey,
+        worker,
+        agentBuilddAuth.source === 'task-token' ? agentBuilddToken : undefined,
+      ),
+      // The machine's own model credentials the agent env may carry (a host
+      // seat token, operator API keys): exact-value redacted like a claim secret.
+      ...hostModelCredentialValues(),
+    ];
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
     // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
@@ -3476,7 +3495,16 @@ export class WorkerManager {
           this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
         }
       }
+      // The machine's own Claude login (host-seat.ts): used when the claim
+      // delivers no stored seat, or over one under BUILDD_HOST_SEAT=prefer.
+      // With a stored seat under the default, the env is the pre-passthrough one.
+      const seatDecision = applyHostSeatPolicy(cleanEnv, {
+        serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
+        isCodexTask,
+      });
+      const hostSeat = seatDecision.hostSeat;
       const modelEnv = applyModelEnv(cleanEnv, {
+        hostSeat,
         llmProvider: this.config.llmProvider,
         serverApiKey: worker.serverApiKey,
         serverOauthToken: worker.serverOauthToken,
@@ -3485,7 +3513,7 @@ export class WorkerManager {
         trustedBaseUrl: process.env[TRUSTED_MODEL_BASE_URL_ENV],
         modelEndpoint: worker.modelEndpoint,
         teamEndpointWithheld: worker.modelEndpointIgnored,
-        budgetModel: TIER_DEFAULTS.budget.model,
+        budgetModel: bundledTierEntry('budget').model,
       });
       // Preflight: a Codex task whose team agent model endpoint has no
       // OpenAI-compatible route (anthropic-compatible kind) can't run at all —
@@ -3510,6 +3538,18 @@ export class WorkerManager {
       if (modelEnv.injected.includes('serverOauthToken')) {
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
       }
+      if (modelEnv.hostSeatUsed && hostSeat) {
+        const skipped = worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId
+          ? '; the server-delivered seat is not used'
+          : '';
+        console.log(`[Worker ${worker.id}] Claude seat: ${describeHostSeat(hostSeat)}${skipped}`);
+        sessionLog(worker.id, 'info', 'claude_seat_source', `source=machine-${hostSeat}${skipped ? ' server_seat=skipped' : ''}`, task.id);
+      } else if (modelEnv.injected.includes('serverOauthToken') || shouldUseClaudeCredential(modelEnv, worker)) {
+        if (seatDecision.deferredTo === 'server' && seatDecision.detected) {
+          console.log(`[Worker ${worker.id}] Claude seat: the seat stored in buildd; ${describeHostSeat(seatDecision.detected)} is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
+        }
+        sessionLog(worker.id, 'info', 'claude_seat_source', `source=server-managed${seatDecision.deferredTo ? ` machine_seat=${seatDecision.detected}` : ''}`, task.id);
+      }
       if (modelEnv.injected.includes('tenantOauthToken') && tenantCtx) {
         console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
         this.addMilestone(worker, { type: 'status', label: `Tenant: ${tenantCtx.displayName || tenantCtx.tenantId}`, ts: Date.now() });
@@ -3519,14 +3559,20 @@ export class WorkerManager {
       }
 
       // Build a separate expansion env for resolving ${VAR} references in .mcp.json
-      // HTTP server headers. This env is NEVER passed to the agent subprocess — it
-      // exists only so the header-resolution code below can bake credentials into
-      // the MCP server entries before mounting them. The agent only sees the already-
-      // resolved Authorization headers inside queryOptions.mcpServers, not the raw keys.
+      // HTTP server headers. This env is never the agent's env, but what it
+      // resolves is agent-visible: resolved headers go to the Claude CLI on its
+      // argv, and Codex bearer tokens go into the agent env. So the runner key is
+      // NOT in it. `${BUILDD_API_KEY}` resolves through `builddMcpCredential`
+      // instead: to the agent's own buildd credential (the per-task token when
+      // minted), and only for a server on this runner's buildd origin. A server
+      // anywhere else asking for it is refused with a warning (mcp-json.ts).
       const headerExpansionEnv: Record<string, string> = {
         ...cleanEnv,
-        ...(this.config.apiKey ? { BUILDD_API_KEY: this.config.apiKey } : {}),
         ...(worker.mcpSecrets ?? {}),
+      };
+      const builddMcpCredential: BuilddCredentialExpansion = {
+        origin: urlOrigin(this.config.builddServer) ?? '',
+        token: agentBuilddToken ?? '',
       };
       if (worker.mcpSecrets && Object.keys(worker.mcpSecrets).length > 0) {
         console.log(`[Worker ${worker.id}] MCP credential secrets available for header resolution (NOT in agent env): ${Object.keys(worker.mcpSecrets).join(', ')}`);
@@ -3553,8 +3599,28 @@ export class WorkerManager {
           ? stableCodexHomeIsolatedPath(task.workspaceId, worker.id, this.config.workspaceIsolationRoot)
           : undefined;
 
+        // Whose Codex login (host-seat.ts decideCodexSeat): the machine's own
+        // `codex login` ($CODEX_HOME, else ~/.codex) when the claim delivers no
+        // Codex credential, or over a delivered ChatGPT login under
+        // BUILDD_HOST_SEAT=prefer. A delivered API key is still used.
+        const machineCodexAuth = localCodexAuthPath();
+        const codexSeat = decideCodexSeat({
+          mode: hostSeatMode(),
+          serverCredentialType: worker.codexCredential?.credentialType ?? null,
+          localAuthPath: machineCodexAuth,
+          explicitCodexHome: !!process.env.CODEX_HOME,
+        });
+        (worker as any).codexSeatSource = codexSeat;
+
         let _ch: string;
-        if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
+        if (codexSeat === 'machine' && machineCodexAuth) {
+          // The stable per-worker home keeps its own config.toml and sessions/;
+          // auth.json links to the machine's login so CLI refreshes land there.
+          _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
+          linkMachineCodexAuth(_ch, machineCodexAuth);
+          console.log(`[Worker ${worker.id}] Codex login: this machine's own (codex login on the runner host)${worker.codexCredential ? '; the server-delivered Codex login is not used' : ''}`);
+          sessionLog(worker.id, 'info', 'codex_seat_source', `source=machine${worker.codexCredential ? ' server_seat=skipped' : ''}`, task.id);
+        } else if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
           const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
@@ -3572,20 +3638,8 @@ export class WorkerManager {
         } else {
           _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
-        // No server-injected credential: fall back to the operator's local Codex
-        // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
-        // the stable home so resolveAuth/codex can authenticate. This matches the
-        // claim route, which already advertises CODEX_HOME as a local-auth capability
-        // — without this, a runner with only local OAuth creds passes the claim gate
-        // but dies at the spawn guard below.
-        if (!worker.codexCredential) {
-          const localHome = process.env.CODEX_HOME;
-          if (localHome && localHome !== _ch) {
-            const localAuth = join(localHome, 'auth.json');
-            if (existsSync(localAuth) && !existsSync(join(_ch, 'auth.json'))) {
-              copyFileSync(localAuth, join(_ch, 'auth.json'));
-            }
-          }
+        if (codexSeat === 'server' && machineCodexAuth && worker.codexCredential?.credentialType === 'oauth') {
+          console.log(`[Worker ${worker.id}] Codex login: the one stored in buildd; this machine's own is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
         }
         cleanEnv.CODEX_HOME = _ch;
         const session = this.sessions.get(worker.id);
@@ -3631,6 +3685,7 @@ export class WorkerManager {
           mcpJson: codexMcpJson,
           connectors: (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined,
           env: headerExpansionEnv,
+          builddCredential: builddMcpCredential,
         });
         Object.assign(cleanEnv, codexMcp.bearerEnv);
         for (const w of codexMcp.warnings) console.warn(`[Worker ${worker.id}] Codex: ${w}`);
@@ -3752,7 +3807,7 @@ export class WorkerManager {
       // is known-expired. The claim route (criterion D) already attempts a refresh
       // and clears the credential on unrecoverable failure — this is a second guard
       // for the window between claim and spawn (clock skew, race, long queue wait).
-      if (isCodexTask && worker.codexCredential) {
+      if (isCodexTask && worker.codexCredential && (worker as any).codexSeatSource !== 'machine') {
         const expiryError = checkCodexCredentialExpiry(worker.codexCredential);
         if (expiryError) {
           throw new Error(
@@ -4463,7 +4518,7 @@ export class WorkerManager {
 
       // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
       // resolving ${VAR} references (url and headers) using headerExpansionEnv
-      // (which includes BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not
+      // (mcpSecrets; ${BUILDD_API_KEY} via builddMcpCredential). Claude Code SDK does not
       // expand ${VAR} in HTTP server headers when reading .mcp.json — servers with
       // unresolved refs would connect without auth and receive 401 (which the
       // agent sees as "OAuth required"), so they are skipped and warned instead.
@@ -4478,13 +4533,14 @@ export class WorkerManager {
             const { servers, skipped } = resolveMcpJsonHttpServers(cwdMcpData, headerExpansionEnv, {
               requireHttpType: true,
               isTaken: name => Boolean(queryOptions.mcpServers[name]),
+              builddCredential: builddMcpCredential,
             });
             for (const srv of servers) {
               queryOptions.mcpServers[srv.name] = { type: 'http', url: srv.url, headers: srv.headers };
               console.log(`[Worker ${worker.id}] Injected .mcp.json server "${srv.name}" into queryOptions (${Object.keys(srv.headers).length} header(s))`);
             }
             for (const sk of skipped) {
-              console.warn(`[Worker ${worker.id}] MCP server "${sk.name}" not mounted: unresolved \${${sk.unresolved.join('}, ${')}} — mcpSecrets not delivered by claim route?`);
+              console.warn(`[Worker ${worker.id}] ${describeSkippedMcpServer(sk)}`);
             }
           } catch {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
@@ -5258,7 +5314,9 @@ export class WorkerManager {
         // (seed-if-missing means it was never rewritten from the stale snapshot) and
         // POST the current tokens back so the credential store stays fresh.
         // Best-effort — never throws, never logs token values.
-        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
+        // Never when the machine's own login ran the session: that would upload
+        // the runner host's login into buildd.
+        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth' && (worker as any).codexSeatSource !== 'machine') {
           try {
             const currentAuth = readCodexAuthJson(worker.id);
             if (currentAuth?.access_token && currentAuth?.refresh_token) {

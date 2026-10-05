@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.276.1",
+  "version": "0.277.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -26,6 +26,7 @@
     "./task-routing-preview": "./task-routing-preview.ts",
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
+    "./model-policy": "./model-policy.ts",
     "./model-pin": "./model-pin.ts",
     "./model-tier-liveness": "./model-tier-liveness.ts",
     "./model-capability-requirements": "./model-capability-requirements.ts",

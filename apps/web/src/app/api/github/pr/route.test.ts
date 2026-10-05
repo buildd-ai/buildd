@@ -593,6 +593,69 @@ describe('POST /api/github/pr', () => {
     expect(data.pr.title).toBe('My PR');
   });
 
+  // `autoMergeEnabled` in the response must say what the merge gate will do,
+  // which is decided by the resolved merge policy — never by the inert legacy
+  // `autoMergeOnGreenCI` / `autoMergePR` flags (no gate reads them).
+  describe('autoMergeEnabled follows the resolved merge policy, not the legacy flags', () => {
+    async function createWith(opts: { gitConfig: Record<string, unknown>; mission?: Record<string, unknown> | null; requiresReview?: boolean }) {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        workspace: { ...WORKSPACE_OK, gitConfig: opts.gitConfig },
+        ...(opts.mission || opts.requiresReview
+          ? { taskId: 'task-1', task: { id: 'task-1', title: 'T', missionId: opts.mission ? 'mission-1' : null, requiresReview: opts.requiresReview ?? false } }
+          : {}),
+      });
+      if (opts.mission) mockMissionsFindFirst.mockResolvedValue(opts.mission);
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValue({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'My PR',
+        base: { ref: 'main' },
+      });
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+      }));
+      expect(res.status).toBe(200);
+      return res.json();
+    }
+
+    it('is absent when the workspace policy is human, even with autoMergeOnGreenCI: true stored', async () => {
+      const data = await createWith({ gitConfig: { autoMergeOnGreenCI: true, mergePolicy: { tier: 'human' } } });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+
+    it('is true under the default auto-threshold policy, even with autoMergeOnGreenCI: false stored', async () => {
+      const data = await createWith({ gitConfig: { autoMergeOnGreenCI: false } });
+      expect(data.autoMergeEnabled).toBe(true);
+    });
+
+    it('is absent under an agent-review workspace policy', async () => {
+      const data = await createWith({
+        gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } },
+      });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+
+    it('is absent when the task requires review', async () => {
+      const data = await createWith({ gitConfig: {}, requiresReview: true });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+
+    it('is absent when the mission policy is human', async () => {
+      const data = await createWith({
+        gitConfig: {},
+        mission: { mergePolicy: { tier: 'human' }, workingBranch: null, integrationBranchEnabled: false },
+      });
+      expect(data.autoMergeEnabled).toBeUndefined();
+    });
+  });
+
   it('updates worker with PR URL after creation', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
@@ -6291,9 +6354,20 @@ describe('agent run on the runner key — close / merge', () => {
     expect((await close(7)).status).toBe(200);
   });
 
-  it('lets an organizer task close a sibling’s PR', async () => {
-    mockWorkersFindFirst.mockResolvedValue(runWorker({ roleSlug: 'organizer' }));
+  it('lets an organizer task close a PR of another task on its own mission', async () => {
+    mockWorkersFindFirst
+      .mockResolvedValueOnce(runWorker({ roleSlug: 'organizer', missionId: 'mission-1' }))
+      .mockResolvedValueOnce({ id: 'w-sibling', task: { missionId: 'mission-1' } });
     expect((await close(7)).status).toBe(200);
+  });
+
+  it('refuses an organizer task closing another mission’s PR, before calling GitHub', async () => {
+    mockWorkersFindFirst
+      .mockResolvedValueOnce(runWorker({ roleSlug: 'organizer', missionId: 'mission-1' }))
+      .mockResolvedValueOnce({ id: 'w-elsewhere', task: { missionId: 'mission-2' } });
+    const res = await close(7);
+    expect(res.status).toBe(403);
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
   it('refuses to merge a PR its task does not name, before the merge policy runs', async () => {

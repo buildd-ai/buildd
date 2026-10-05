@@ -24,6 +24,8 @@ import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-an
 import Spinner from '@/components/Spinner';
 import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
+import Disclosure from '@/components/ui/Disclosure';
+import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import { useTaskStart } from '@/components/tasks/useTaskStart';
 import { useDisplayTimezone } from '@/components/DisplayTimezone';
 import { formatInZone } from '@/lib/zoned-time';
@@ -59,7 +61,8 @@ export interface TaskActionZoneProps {
   isBlocked: boolean;
   blockedByCount: number;
   backend: 'claude' | 'codex' | null;
-  lastError: { excerpt: string } | null;
+  /** `excerpt` is the line shown; `raw`, when given, is the full text it is classified from. */
+  lastError: { excerpt: string; raw?: string | null } | null;
   worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
@@ -108,6 +111,8 @@ export default function TaskActionZone({
   });
   const has = (id: (typeof actions)[number]) => actions.includes(id);
   const otherBackend = otherBackendOf(backend);
+  // "Not logged in · Please run /login" and kin: say what to do instead.
+  const authFailure = lastError ? explainProviderAuthFailure(lastError.raw ?? lastError.excerpt, backend) : null;
   const local = missionExecutor === 'local';
 
   // Owned here, not by the input: the refetch below drops the question, and
@@ -169,7 +174,17 @@ export default function TaskActionZone({
       {/* Failed → why + retry */}
       {has('retry') && (
         <div className="space-y-3 border-2 border-status-error p-4">
-          {lastError ? (
+          {authFailure && lastError ? (
+            <div className="space-y-2" data-testid="task-auth-failure">
+              <p className="text-body text-text-primary">{authFailure.message}</p>
+              <Link href={authFailure.href} data-action="fix_credential" className="inline-flex min-h-11 md:min-h-9 items-center font-mono text-body font-medium text-accent-text hover:underline">
+                {authFailure.linkLabel}
+              </Link>
+              <Disclosure summary="Show raw output">
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] bg-surface-2 p-3 font-mono text-meta text-text-secondary">{lastError.raw?.trim() || lastError.excerpt}</pre>
+              </Disclosure>
+            </div>
+          ) : lastError ? (
             <p className="break-words font-mono text-[12px] leading-relaxed text-status-error">{lastError.excerpt}</p>
           ) : (
             <p className="font-mono text-[12px] text-text-secondary">This task failed.</p>

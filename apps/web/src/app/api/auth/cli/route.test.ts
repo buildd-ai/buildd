@@ -9,6 +9,8 @@ const mockAccountsFindFirst = mock(() => null as any);
 const mockUpdate = mock(() => ({ set: () => ({ where: () => ({ returning: () => [] }) }) }));
 let inserted: any[] = [];
 
+const mockLinkPersonal = mock((_a: { accountId: string; userId: string }) => Promise.resolve(1));
+mock.module('@/lib/personal-workspace-links', () => ({ linkAccountToPersonalWorkspaces: mockLinkPersonal }));
 mock.module('@/auth', () => ({ auth: mockAuth }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
@@ -56,6 +58,7 @@ describe("GET /api/auth/cli — key level follows the signed-in user's team role
     mockAccountsFindFirst.mockReset();
     mockAccountsFindFirst.mockResolvedValue(null);
     mockUpdate.mockClear();
+    mockLinkPersonal.mockClear();
   });
 
   it('caps a team member at worker level even when admin is requested', async () => {
@@ -100,5 +103,13 @@ describe("GET /api/auth/cli — key level follows the signed-in user's team role
     expect(redirectParams(res).get('error')).toBeTruthy();
     expect(redirectParams(res).get('token')).toBeNull();
     expect(inserted).toHaveLength(0);
+  });
+
+  // `buildd login`'s token must reach the restricted "My Workspace" sign-in
+  // created, or the user's first task never gets claimed.
+  it("links the new login account to the user's personal workspaces", async () => {
+    mockGetUserTeamRole.mockResolvedValue('owner');
+    await GET(cliReq({ client: 'runner' }));
+    expect(mockLinkPersonal).toHaveBeenCalledWith({ accountId: 'acct-new', userId: 'user-1' });
   });
 });

@@ -24,7 +24,7 @@ const MERGED_DISMISS_MS = 5000;
 // in flight, retries exhausted — is never decided by `state`: that's server
 // truth, held in `optimistic` only until fresh `item` props land, then
 // cleared unconditionally so a background refresh always wins.
-type MergeState = 'idle' | 'confirming' | 'merging' | 'error' | 'review_blocked';
+type MergeState = 'idle' | 'confirming' | 'merging' | 'error' | 'review_blocked' | 'pending';
 
 type Optimistic =
   | { kind: 'merged' }
@@ -131,6 +131,14 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
           setReviewBlockMsg(outcome.message);
           setReviewClearedBy(outcome.clearedBy);
           setMergeState('review_blocked');
+          break;
+        case 'pending':
+          // A platform-owned wait: no Retry, no Dismiss. Re-render Home so the
+          // card re-derives from server truth — it moves to the in-flight list
+          // with what exactly is pending (resolveMergeChip).
+          setErrorMsg(outcome.message);
+          setMergeState('pending');
+          setTimeout(() => router.refresh(), RESOLVE_REFRESH_MS);
           break;
         case 'indeterminate':
           setErrorMsg(outcome.message);
@@ -387,6 +395,15 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
               Dismiss
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Pending strip — checks or the review are still running. Informational
+          only: a platform-owned wait gets neither Retry nor Dismiss. */}
+      {!optimistic && mergeState === 'pending' && (
+        <div className="mt-2 flex items-center gap-1.5" data-testid="merge-card-pending">
+          <Spinner size="xs" className="flex-shrink-0" aria-label="Waiting on checks or review" />
+          <span className="text-[11px] text-text-secondary min-w-0">{errorMsg}</span>
         </div>
       )}
 

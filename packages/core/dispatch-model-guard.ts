@@ -19,7 +19,7 @@ import {
   makeCatalogServabilityCheck,
   type UnrecognizedModelReason,
 } from './model-capability-requirements';
-import { TIER_DEFAULTS, type Tier } from './model-tier-defaults';
+import { TIERS, bundledTierEntry, type Tier } from './model-tier-defaults';
 
 /** Where a resolved model id came from, for the error record. */
 export type DispatchModelSource =
@@ -45,7 +45,7 @@ export const DISPATCH_MODEL_REJECTED_PATTERN = 'dispatch_model_rejected';
 
 const KNOWN_GOOD_IDS: ReadonlySet<string> = new Set([
   ...Object.keys(MODEL_MIN_CLI_VERSION),
-  ...Object.values(TIER_DEFAULTS).map((e) => e.model),
+  ...TIERS.map((t) => bundledTierEntry(t).model),
 ]);
 
 /**
@@ -138,7 +138,7 @@ export function guardDispatchModel(args: {
   const next =
     args.fallbacks.find(
       (f) => f.model !== args.resolved && checkDispatchModel(f.model, args.catalog).ok,
-    ) ?? { model: TIER_DEFAULTS[args.tier].model, source: 'tier_default' as const };
+    ) ?? { model: bundledTierEntry(args.tier).model, source: 'tier_default' as const };
 
   return {
     model: next.model,

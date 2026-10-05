@@ -20,9 +20,9 @@ afterEach(() => { act(() => root.unmount()); host.remove(); });
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
 
-function installFetch(opts: { claude: boolean; codex: boolean; enabled?: string[] | null }) {
+function installFetch(opts: { claude: boolean; codex: boolean; enabled?: string[] | null; secrets?: Array<{ purpose: string }> }) {
   globalThis.fetch = mock(async (url: string) => {
-    if (url.startsWith('/api/secrets')) return json({ secrets: [] });
+    if (url.startsWith('/api/secrets')) return json({ secrets: opts.secrets ?? [] });
     if (url.includes('/backend-readiness')) return json({ backends: [] });
     if (url === '/api/teams/t1') return json({ team: { enabledBackends: opts.enabled ?? null } });
     if (url.endsWith('/backends')) return json({ backends: [{ id: 'claude', available: true }, { id: 'codex', available: opts.codex }] });
@@ -76,5 +76,33 @@ describe('AgentBackendsSection rows', () => {
     installFetch({ claude: true, codex: true, enabled: ['claude'] });
     await mount();
     expect(chips('routing-row')).toEqual(['Codex off']);
+  });
+});
+
+describe('stored subscription login notice', () => {
+  const notice = () => host.querySelector<HTMLElement>('[data-testid="stored-seat-notice"]');
+
+  it('warns a team that stores a Claude and a Codex login, and links the runner setup doc', async () => {
+    installFetch({ claude: true, codex: true, secrets: [{ purpose: 'oauth_token' }, { purpose: 'codex_credential' }] });
+    await mount();
+    const n = notice();
+    expect(n).not.toBeNull();
+    expect(n!.textContent).toContain('a Claude login and a ChatGPT (Codex) login');
+    expect(n!.textContent).toContain('will be removed');
+    expect(n!.textContent).toContain('BUILDD_HOST_SEAT=prefer');
+    expect(n!.querySelector('a')!.getAttribute('href')).toContain('apps/runner/README.md#model-login-on-the-runner-machine');
+  });
+
+  it('names only what is stored', async () => {
+    installFetch({ claude: true, codex: false, secrets: [{ purpose: 'claude_credential' }] });
+    await mount();
+    expect(notice()!.textContent).toContain('stores a Claude login in buildd');
+    expect(notice()!.textContent).not.toContain('codex login');
+  });
+
+  it('stays hidden for metered keys only', async () => {
+    installFetch({ claude: true, codex: true, secrets: [{ purpose: 'anthropic_api_key' }, { purpose: 'openai_api_key' }, { purpose: 'agent_endpoint' }] });
+    await mount();
+    expect(notice()).toBeNull();
   });
 });
