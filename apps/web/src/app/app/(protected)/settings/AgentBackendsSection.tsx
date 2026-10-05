@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ScopeSelector } from '@/components/ScopeSelector';
 import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { useConfirm } from '@/components/useConfirm';
+import StoredSeatNotice, { storedSeatKinds, type StoredSeatKind } from './StoredSeatNotice';
 
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
@@ -207,6 +208,8 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   // primary Claude card can show "connected via …" instead of a misleading "Connect"
   // when Claude is actually working through the (collapsed) fallback path.
   const [claudeFallbackConnected, setClaudeFallbackConnected] = useState(false);
+  // Subscription logins this team stores in buildd (moving to the runner).
+  const [storedSeats, setStoredSeats] = useState<StoredSeatKind[]>([]);
   // Per-backend stranding, refetched whenever a credential/routing change could
   // have cleared it (`reloadKey`).
   const [strand, setStrand] = useState<BackendStrandStat[] | null>(null);
@@ -227,6 +230,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         if (cancelled) return;
         const has = (d.secrets || []).some((s: { purpose?: string }) => s.purpose === 'oauth_token' || s.purpose === 'anthropic_api_key');
         setClaudeFallbackConnected(has);
+        setStoredSeats(storedSeatKinds(d.secrets));
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -275,6 +279,7 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
 
   return (
     <>
+      <StoredSeatNotice kinds={storedSeats} />
       {/* Claude: the one-tap OAuth connect is the primary path. Setup token / API
           key is a collapsed fallback inside the same row. */}
       <ClaudeConnectedAccountCard
