@@ -562,6 +562,32 @@ describe('POST /api/tasks', () => {
       expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace');
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
+
+    for (const level of ['worker', 'admin']) {
+      it(`a ${level} task token files onto its own task's mission, and is refused another mission on the team`, async () => {
+        const OWN_MISSION = '33333333-3333-4333-8333-333333333333';
+        const OTHER_MISSION = '44444444-4444-4444-8444-444444444444';
+        mockAccountsFindFirst.mockResolvedValue({ ...scoped, level });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+        // Both missions are on the team; the token's own task is on OWN_MISSION.
+        mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
+        mockTasksFindFirst.mockImplementation(async (args: any) =>
+          args?.with?.mission?.columns?.initiativeId ? { missionId: OWN_MISSION, workspaceId: 'ws-1', mission: { initiativeId: null } } : null);
+        mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+
+        const refused = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Elsewhere', missionId: OTHER_MISSION },
+        }));
+        expect(refused.status).toBe(404);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+
+        const filed = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Follow-up', missionId: OWN_MISSION },
+        }));
+        expect(filed.status).toBe(200);
+        mockTasksFindFirst.mockReset();
+      });
+    }
   });
 
   it('rejects analytics readers before inserting a task', async () => {

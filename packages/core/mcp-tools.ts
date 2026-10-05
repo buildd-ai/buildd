@@ -410,6 +410,44 @@ export const adminActions = [
   'memory_delete',
 ] as const;
 
+/**
+ * The admin actions an orchestration task's admin-level per-task token
+ * (organizer, planning, heartbeat; apps/web/src/lib/task-token.ts) may call,
+ * with the sub-actions it may use (null: every sub-action). Each is confined
+ * by its REST route to the token's own task's mission in its own workspace.
+ * Every other admin action is team-wide (other missions, workspaces, secrets,
+ * schedules, skills, releases, knowledge maintenance) and is refused to a
+ * task token before it reaches a route. Pinned, with the reason for each
+ * refusal, by apps/web/src/lib/task-token-mcp-coverage.test.ts.
+ */
+export const ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS: Readonly<Record<string, readonly string[] | null>> = {
+  // Its own mission only: read it, edit its descriptive fields, arm it, and
+  // run or read its criteria. Never list, create or delete missions, or move
+  // tasks between them.
+  manage_missions: ['get', 'update', 'arm', 'evaluate', 'get_criteria_state'],
+  // Plans of planning tasks on its own mission.
+  approve_plan: null,
+  reject_plan: null,
+  // Workers of tasks on its own mission.
+  send_agent_message: null,
+};
+
+/**
+ * Why an orchestration task token may not call `action`, or null when it may
+ * (any non-admin action, and the allowed admin actions above).
+ */
+export function orchestrationTaskTokenRefusal(action: string, params: Record<string, unknown> = {}): string | null {
+  if (!(adminActions as readonly string[]).includes(action)) return null;
+  if (!Object.hasOwn(ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS, action)) {
+    return `action '${action}' is team-wide; a per-task token cannot use it, even at admin level`;
+  }
+  const subs = ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS[action];
+  if (subs && !subs.includes(String(params.action))) {
+    return `${action} action '${String(params.action)}' is not available to a per-task token; it may use ${subs.join(', ')} on its own mission`;
+  }
+  return null;
+}
+
 export const allActions = [...workerActions, ...adminActions] as const;
 
 // delete and consolidate_knowledge moved to adminActions / buildd tool (compliance + single-consumer ops)

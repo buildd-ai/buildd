@@ -3115,20 +3115,20 @@ export class WorkerManager {
     const agentBuilddAuth = await resolveAgentBuilddAuth({
       runnerKey: this.config.apiKey,
       taskId: task.id,
-      // Organizer / planning / heartbeat sessions need admin-level actions a
-      // worker-level task token does not carry.
+      // Organizer / planning / heartbeat sessions ask for an admin-level
+      // token confined to their own mission; refused, they keep the key.
       orchestration: isOrchestrationTask(task),
       // Roles whose deliverable is itself an admin action (consolidator).
       adminRole: usesAdminBuilddActions(task),
       info: line => console.log(`[Worker ${worker.id}] ${line}`),
       mint: typeof (this.buildd as any).mintTaskToken === 'function'
-        ? (taskId, ttlMs, signal) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal)
+        ? (taskId, ttlMs, signal, level) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal, level)
         : undefined,
       warn: line => console.warn(`[Worker ${worker.id}] ${line}`),
     });
     const agentBuilddToken = agentBuilddAuth.token;
     if (agentBuilddAuth.source === 'task-token') {
-      sessionLog(worker.id, 'info', 'agent_buildd_auth', 'source=task-token', task.id);
+      sessionLog(worker.id, 'info', 'agent_buildd_auth', agentBuilddAuth.level === 'admin' ? 'source=task-token level=admin' : 'source=task-token', task.id);
     } else if (agentBuilddAuth.reason === 'orchestration-role' || agentBuilddAuth.reason === 'admin-role') {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.reason}`, task.id);
     } else if (agentBuilddAuth.reason === 'mint-failed') {

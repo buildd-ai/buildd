@@ -34,6 +34,9 @@ const mockMissionsFindFirst = mock(() => ({
   priority: 0,
 }) as any);
 const mockInitiativesFindFirst = mock(() => null as any);
+// A per-task token's own task and worker, as the scope helpers read them.
+const mockTasksFindFirst = mock((_args?: any) => Promise.resolve(null as any));
+const mockWorkersFindFirst = mock((_args?: any) => Promise.resolve(null as any));
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 let updatedSetData: any = null;
 const mockMissionsUpdate = mock(() => ({
@@ -206,9 +209,9 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findFirst: mock(() => Promise.resolve(null)) },
       initiatives: { findFirst: mockInitiativesFindFirst },
       missionNotes: { findFirst: mockMissionNotesFindFirst },
-      workers: { findFirst: mock(() => Promise.resolve(null)) },
+      workers: { findFirst: (args: any) => mockWorkersFindFirst(args) },
       tasks: {
-        findFirst: mock(() => Promise.resolve(null)),
+        findFirst: (args: any) => mockTasksFindFirst(args),
         findMany: mockTasksFindManyForExecutorChange,
       },
     },
@@ -257,7 +260,7 @@ mock.module('@buildd/core/db/schema', () => ({
   gateEvents: { gate: 'gate', missionId: 'missionId', outcome: 'outcome', detail: 'detail', occurredAt: 'occurredAt' },
 }));
 
-import { PATCH } from './route';
+import { GET, PATCH } from './route';
 import { criterionFingerprint } from '@buildd/core/mission-helpers';
 
 const makeParams = (id: string) => Promise.resolve({ id });
@@ -2188,5 +2191,87 @@ describe('PATCH /api/missions/[id] — goal-criteria quality shadow (docs/specs/
     expect((await patch({ goalCriteria: [strong, { type: 'command', command: 'bun run test', label: 'throw: tests pass' }] })).status).toBe(200);
     await flush();
     expect(quality()).toEqual([]);
+  });
+});
+
+describe("/api/missions/[id] — an orchestration task's admin per-task token", () => {
+  const MISSION = '11111111-1111-4111-8111-111111111111';
+  const OTHER = '22222222-2222-4222-8222-222222222222';
+  const taskScope = { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+  const ADMIN_TOKEN = { id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null, workspaceIds: null, taskScope };
+  const patch = (body: Record<string, unknown>, id = MISSION) => PATCH(
+    new NextRequest(`http://localhost/api/missions/${id}`, { method: 'PATCH', body: JSON.stringify(body), headers: { authorization: 'Bearer bld_key' } }),
+    { params: makeParams(id) },
+  );
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockReturnValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(ADMIN_TOKEN);
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue({ missionId: MISSION, workspaceId: 'ws-1', mission: { initiativeId: null } });
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-own', accountId: 'acct-1' });
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockReturnValue({ id: MISSION, teamId: 'team-1', title: 'Mine', workspaceId: 'ws-1', scheduleId: null, priority: 0, status: 'active' });
+    updatedSetData = null;
+    mockMissionsUpdate.mockReset();
+    mockMissionsUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedSetData = { ...updatedSetData, ...data };
+        return { where: mock(() => ({ returning: mock(() => [{ id: MISSION, ...data }]) })) };
+      }),
+    }));
+  });
+
+  it("edits its own task's mission's descriptive fields", async () => {
+    const res = await patch({ description: 'Sharper brief', priority: 3, actorWorkerId: 'worker-own' });
+    expect(res.status).toBe(200);
+    expect(updatedSetData.description).toBe('Sharper brief');
+  });
+
+  it('is refused every other field, naming it, and writes nothing', async () => {
+    for (const body of [
+      { workspaceId: 'ws-2' }, { initiativeId: 'i-1' }, { costBudgetUsd: 1000 }, { maxConcurrentTasks: 50 },
+      { cronExpression: '* * * * *' }, { executor: 'local' }, { model: 'x' }, { mergePolicy: {} }, { branchStrategy: 'direct' },
+      { goalCriteria: [] }, { dependsOnMission: OTHER }, { surfaceAuditWaiver: 'no visual change in this mission at all' },
+      { description: 'ok', backend: 'codex' },
+    ]) {
+      const res = await patch(body);
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain(Object.keys(body).at(-1)!);
+    }
+    expect(updatedSetData).toBeNull();
+  });
+
+  it("is refused a feed entry attributed to another task's worker", async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-other', accountId: 'acct-1' });
+    expect((await patch({ description: 'x', actorWorkerId: 'worker-other' })).status).toBe(403);
+    expect(updatedSetData).toBeNull();
+  });
+
+  it('is refused another mission, before reading it', async () => {
+    expect((await patch({ description: 'x' }, OTHER)).status).toBe(404);
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+    const res = await GET(new NextRequest(`http://localhost/api/missions/${OTHER}`, { headers: { authorization: 'Bearer bld_key' } }), { params: makeParams(OTHER) });
+    expect(res.status).toBe(404);
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('a worker-level task token is refused even its own mission', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ ...ADMIN_TOKEN, level: 'worker' });
+    expect((await patch({ description: 'x' })).status).toBe(404);
+    const res = await GET(new NextRequest(`http://localhost/api/missions/${MISSION}`, { headers: { authorization: 'Bearer bld_key' } }), { params: makeParams(MISSION) });
+    expect(res.status).toBe(404);
+    expect(updatedSetData).toBeNull();
+  });
+
+  it('an admin account key is unaffected: it may still change any field', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null });
+    expect((await patch({ maxConcurrentTasks: 4 })).status).toBe(200);
+    expect(updatedSetData.maxConcurrentTasks).toBe(4);
   });
 });
