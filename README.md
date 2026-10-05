@@ -1,147 +1,98 @@
-# Buildd
+# buildd
 
-**Task Queue for AI Agents** — Create tasks. Agents work. Code ships.
+**Agents say they're done. buildd checks.**
 
-Create tasks from a dashboard, CLI, or API — or schedule them on a cron. AI agents claim tasks, branch, code, and open PRs automatically. Shared memory means your 10th task avoids the mistakes of your first.
+You write down what done means, as checks. Agents do the work on runners you control. buildd runs the tests, its own review agents and its decision models, and nothing counts as done until the checks pass.
 
-[buildd.dev](https://buildd.dev) · [Docs](https://docs.buildd.dev) · [GitHub](https://github.com/buildd-ai/buildd)
+[buildd.dev](https://buildd.dev) · [Docs](https://docs.buildd.dev) · [Dashboard](https://buildd.dev/app)
 
-## Quick Start
+## How it works
+
+1. **Start with what done means.** You give a mission its goal criteria. Where it can, buildd runs each one as a check: a command that must exit 0, PRs that must merge, an artifact that must exist. A criterion no command can express stays a plain sentence, and a model grades it. A mission can't complete until every criterion passes.
+2. **You only get asked when it matters.** When an agent asks a question, a decision model answers the low-stakes ones on the spot. Questions that touch migrations, auth and secrets, CI or deploys, protected paths or spending always come to you.
+3. **buildd checks the work.** buildd won't merge a PR on red CI. Depending on the merge policy you pick, a reviewer agent reads the change and approves it, sends it back to the author or escalates to you, and a visual auditor screenshots the pages a mission changed. Work that falls short goes back.
+
+The server coordinates and never runs an agent. Runners claim tasks over the REST API, do the work in a git worktree, open the PR and report back. Agent runs take minutes to hours, longer than a serverless request can live.
+
+## Quick start
 
 ```bash
-# Install the CLI
 curl -fsSL https://buildd.dev/install.sh | bash
-
-# Authenticate (opens browser, configures CLI + MCP)
-buildd login
-
-# Start the local worker UI
+exec $SHELL
 buildd
 ```
 
-That's it. `buildd login` saves your API key and auto-configures the remote MCP server in `~/.claude.json`, so Claude Code can use buildd tools immediately.
+Then open http://localhost:8766 and connect your account.
 
-For headless/SSH environments: `buildd login --device`
+The installer clones the runner into `~/.buildd`, installs Bun if you don't have it, puts the `buildd` launcher in `~/.local/bin` and adds that to your shell rc. It offers to register a background service at the end; pass `--service` to register it without asking (`curl -fsSL https://buildd.dev/install.sh | bash -s -- --service`). Windows: `irm buildd.dev/install.ps1 | iex`.
 
-## How It Works
-
-```
-        ┌──────────────────────────────────────────────┐
-        │       buildd server (Next.js on Vercel)      │
-        │   dashboard · auth · task + mission state    │
-        │            REST API · MCP server             │
-        └──────────────────────────────────────────────┘
-                             ▲
-                             │ claim / report over REST
-             ┌───────────────┼───────────────┐
-             │               │               │
-    ┌────────┴───────┐ ┌─────┴──────┐ ┌──────┴───────┐
-    │  Claude Code   │ │ buildd CLI │ │ cloud runner │
-    │    + MCP       │ │   runner   │ │  your own    │
-    │  your laptop   │ │  laptop/VM │ │  Cloudflare  │
-    └────────────────┘ └────────────┘ └──────────────┘
-```
-
-Buildd separates **coordination** from **execution**. The server owns tasks, auth,
-and state; it never runs an agent. Workers run wherever you want — your laptop, a
-VM, a cloud runner on your own Cloudflare account — claim work over the REST
-API, and report back.
-
-That split is deliberate: agent runs take minutes to hours, which no serverless
-request budget survives. It also means buildd works *with* whatever agent you
-already use rather than replacing it.
-
-## Features
-
-- **Missions** — Group related work under a goal. Missions track progress across many
-  tasks, generate them on a schedule, and hold a cost budget that pauses spawning
-  when spent.
-- **Roles** — Agent personas with their own model, tool allowlist, MCP servers, and
-  delegation rules. Ships with organizer, builder, researcher, writer, analyst, and
-  reviewer; tasks route to a role and only a worker offering that role can claim them.
-- **Scheduled Tasks** — Set a cron and agents run automatically: nightly test suites,
-  daily PR reviews, weekly dependency audits. RSS and HTTP triggers too.
-- **Knowledge & Memory** — Agents record gotchas, patterns, and decisions as they work.
-  Retrieval injects the relevant ones into future prompts automatically, over an entity
-  graph built from your PRs and code rather than a flat note list.
-- **Multiple Backends** — Claude and Codex, with model tiers and automatic failover when
-  a provider is rate-limited, out of budget, or its credentials go bad.
-- **MCP Connectors** — Mount MCP servers per role, with credentials resolved at claim
-  time and never stored by the worker. Least-privilege by default: no role opts in, no
-  server mounts.
-- **Planning Mode** — Agents propose implementation plans for human approval before
-  writing code.
-- **GitHub-Native** — Agents create branches, commit, and open PRs. Webhooks reconcile
-  PR state and can create tasks automatically.
-- **Sandboxed Execution** — Workers run under a filesystem sandbox with an explicit
-  mount allowlist, so an agent cannot read outside the workspace it was given.
-- **Teams** — Invite collaborators, manage access (owner/admin/member), share workspaces
-  and connectors across teams.
-- **Real-Time Control** — Monitor progress, send instructions to running agents mid-task,
-  and approve plans live.
-- **MCP Integration** — Use Claude Code to create, claim, and work tasks directly.
-  Auto-configured on login.
-
-## CLI Commands
+On a headless or SSH machine with no browser, connect from the terminal instead:
 
 ```bash
-buildd                 # Start local worker UI
-buildd login           # Authenticate (browser OAuth)
-buildd login --device  # Authenticate (headless/SSH)
-buildd status          # Show current auth state
-buildd logout          # Remove saved API key
-buildd init <id>       # Configure MCP for a specific workspace
-buildd install --global # Register MCP server globally
+buildd login --device
 ```
 
-## Documentation
+`buildd login` also registers the buildd MCP server in `~/.claude.json`, so Claude Code can create and work tasks. Runner commands, the background service and env overrides are in [apps/runner/README.md](apps/runner/README.md).
 
-Full documentation at **[docs.buildd.dev](https://docs.buildd.dev)**
+Next: create a workspace and your first mission in the [dashboard](https://buildd.dev/app), and read the [runner guide](https://docs.buildd.dev/docs/getting-started/runner).
 
-- [Getting Started](https://docs.buildd.dev/docs/getting-started/runner) — Run your first worker
-- [Missions](https://docs.buildd.dev/docs/features/missions) — Goals that organize and generate tasks
-- [Skills](https://docs.buildd.dev/docs/features/skills) — Reusable agent instructions
-- [Schedules](https://docs.buildd.dev/docs/features/schedules) — Cron and trigger-based automation
-- [Memory](https://docs.buildd.dev/docs/features/memory) — Workspace knowledge base
-- [Codex Backend](https://docs.buildd.dev/docs/getting-started/codex-backend) — Running on Codex instead of Claude
-- [MCP Server](https://docs.buildd.dev/docs/integrations/mcp-server) — Drive buildd from Claude Code
-- [Teams](https://docs.buildd.dev/docs/features/teams) — Collaboration and access control
-- [Planning Mode](https://docs.buildd.dev/docs/features/planning-mode) — Human-in-the-loop approval
-- [GitHub Integration](https://docs.buildd.dev/docs/features/github) — Webhooks and PR management
-- [Task Access](https://docs.buildd.dev/docs/concepts/task-access) — Auth model and scoping
-- [Self-Hosting](https://docs.buildd.dev/docs/deployment/self-hosting) — Deploy your own instance
+## Where it runs
 
-## Project Structure
+| Where | Status | |
+|---|---|---|
+| Your machine or server | Available | Laptop, build box, VM. Runners connect out to buildd; nothing has to reach in. |
+| Your Cloudflare account | Preview | A fresh container per task, with a short-lived GitHub token for one repo ([apps/cloud-runner](apps/cloud-runner)). |
+| Hosted by us | Coming soon | We run the runner; you still bring your own model key. |
 
-```
-apps/
-├── web/              Next.js dashboard + REST API + MCP server (Vercel)
-└── runner/           Standalone worker runner, CLI and local web UI (Bun)
+Specs, review and merge rules are the same wherever the runner lives.
 
-packages/
-├── core/             Schema + migrations (Drizzle), knowledge store, model routing
-├── shared/           Shared TypeScript types
-└── openclaw-skill/   Packaged agent skill
-```
+## Models
+
+Bring your own key. Store it in buildd, team-wide or for one workspace, and runners receive it when they claim a task.
+
+- **Anthropic** API key for Claude tasks
+- **OpenRouter** key
+- **LiteLLM** or another OpenAI-compatible gateway (`apiKey` + `baseUrl`)
+- **OpenAI** API key for Codex tasks
+
+Each task runs on Claude (Agent SDK) or Codex, picked per task, role or workspace. Credentials live in one encrypted `secrets` table; see [docs/credentials-architecture.md](docs/credentials-architecture.md).
+
+Every prompt the server sends a model has a public default in this repo, and a deployment can override any of them ([docs/prompts.md](docs/prompts.md)).
+
+## Repo layout
+
+| Path | What it is |
+|---|---|
+| `apps/web` | Next.js dashboard, REST API and MCP server (`src/app/api/mcp`) |
+| `apps/runner` | The runner: claims tasks, runs agents, local web UI and `buildd` CLI (Bun) |
+| `apps/cloud-runner` | Cloudflare Worker that runs one container per task |
+| `apps/dispatch` | Cloudflare Worker for queued delivery, timers and retries |
+| `apps/model-policy` | Cloudflare Worker that maps a surface and tier to a provider and model |
+| `packages/core` | Drizzle schema and migrations, knowledge store, model routing, question gate |
+| `packages/shared` | Types shared by the server and the runner |
+| `packages/ai-kit` | Chat components, tool permissions and model plans for your own app (`@builddai/ai-kit`) |
+| `packages/dispatch-contract` | Wire types between buildd and the dispatch Worker |
+
+The product spec lives in [docs/SPEC.md](docs/SPEC.md), with per-capability contracts in [docs/specs/](docs/specs/).
 
 ## Contributing
 
 ```bash
-bun install            # Install dependencies
-cp .env.example .env.local  # Configure environment
-bun dev                # Start dev server
+bun install
+cp apps/web/.env.example apps/web/.env.local   # fill in DATABASE_URL, AUTH_SECRET, ...
+bun dev
 ```
 
-See the [self-hosting guide](https://docs.buildd.dev/docs/deployment/self-hosting) for full setup including database and environment variables.
+Run the unit tests with `bun run test`, not `bun test`. The script runs each test file in its own process; `bun test` loads them all into one, and module mocks leak between files. Read [CLAUDE.md](CLAUDE.md) for repo conventions (branching, migrations, the public-repo rules) and [docs/testing.md](docs/testing.md) for the test layout. PRs target `dev`.
 
 ## License
 
-Copyright 2026 Max Jacubowsky. Licensing is per directory:
+Licensing is per directory. Check the `license` field in each `package.json`.
 
 | Path | License |
 |---|---|
-| Everything not listed below — the server (`apps/web`), `packages/core`, `apps/cloud-runner`, `apps/responder` | [FSL-1.1-ALv2](LICENSE) |
-| `apps/runner`, `packages/shared`, `packages/ai-kit` | [Apache 2.0](apps/runner/LICENSE) |
+| `apps/runner`, `packages/shared`, `packages/ai-kit`, `packages/dispatch-contract` | [Apache-2.0](apps/runner/LICENSE) |
 | `packages/openclaw-skill` | MIT |
+| Everything else, including the server (`apps/web`) and `packages/core` | [FSL-1.1-ALv2](LICENSE) |
 
-The Functional Source License lets you read, modify, self-host and use buildd for anything except offering a competing product or service. Each release converts to Apache 2.0 two years after it ships. Releases before this change stay under Apache 2.0.
+The Functional Source License lets you read, modify, self-host and use the server for anything except a competing product or service. Each release becomes Apache-2.0 two years after it ships.
