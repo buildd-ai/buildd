@@ -49,6 +49,7 @@ export type InferenceCapability =
   | 'endpoint_model_match'
   | 'question_gate'
   | 'post_session_triage'
+  | 'early_release'
   | 'chat';
 
 export type CapabilityKind = 'interactive' | 'built_in' | 'opt_in' | 'server_feature';
@@ -234,6 +235,16 @@ export const INFERENCE_CAPABILITIES: Record<InferenceCapability, CapabilityDescr
     label: 'Session quality triage',
     description: 'After an agent session ends, a decision model reads counts and outcomes (never code or text) and picks which sessions deserve a closer look. Never changes the task or its PR.',
     costHint: '~$0.00005 per session',
+  },
+  // Early release (apps/web/src/lib/early-release-decision.ts). Live once on:
+  // a confident model answer may start a dependent before its upstream merges.
+  // The deterministic release rules apply without it; every failure waits.
+  early_release: {
+    id: 'early_release',
+    kind: 'opt_in',
+    label: 'Early release',
+    description: 'When a task waits on another task\'s pull request, a decision model says whether it can safely start now instead of waiting for the merge. Anything it is unsure about waits.',
+    costHint: '~$0.00003 per waiting task',
   },
   chat: {
     id: 'chat',
