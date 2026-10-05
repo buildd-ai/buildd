@@ -47,7 +47,7 @@ export const COMMIT_CHECKS_FIXTURE_STATE = 'commit-checks';
 export const ANSWER_STATES_FIXTURE_STATE = 'answer-states';
 export const AGENT_ACCESS_FIXTURE_STATE = 'agent-access';
 
-/** Health's tool list with every row's breakdown, collapsed and open (ToolBreakdownFixture.tsx). */
+/** Health's tool list with every row's breakdown, collapsed and open (tool-breakdown-fixture.tsx). */
 export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
 
 /** The mission Board's Landed strip and its tethered drawer (mission-task-strip-fixtures.ts). */

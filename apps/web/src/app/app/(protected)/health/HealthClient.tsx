@@ -1350,9 +1350,10 @@ function ConsumptionSection({
   const toolGroups = groupToolsByServer(tools.byTool);
   const breakdownFor = (list: typeof tools.byTool) => buildToolBreakdown({
     tools: list,
-    bashBuckets: stats.bashBuckets.classifiedCalls > 0 ? stats.bashBuckets : null,
-    actions: stats.builddActions,
-    fileAreas: stats.fileAreas.tasksWithAreas > 0 ? stats.fileAreas.byTool : null,
+    // Each source may be absent (older rows, a failed read): that row stays plain.
+    bashBuckets: stats.bashBuckets?.classifiedCalls ? stats.bashBuckets : null,
+    actions: stats.builddActions ?? null,
+    fileAreas: stats.fileAreas?.tasksWithAreas ? stats.fileAreas.byTool : null,
   });
   const topRows = breakdownFor(topTools);
   const maxToolCalls = topTools[0]?.calls ?? 0;

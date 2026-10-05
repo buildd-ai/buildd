@@ -21,7 +21,7 @@ import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import AgentAccessFixture from './AgentAccessFixture';
-import ToolBreakdownFixture from './ToolBreakdownFixture';
+import ToolBreakdownFixture from './tool-breakdown-fixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
