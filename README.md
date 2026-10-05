@@ -6,11 +6,22 @@ You write down what done means, as checks. Agents do the work on runners you con
 
 [buildd.dev](https://buildd.dev) · [Docs](https://docs.buildd.dev) · [Dashboard](https://buildd.dev/app)
 
+<a href="https://media.buildd.dev/clips/full.mp4">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://media.buildd.dev/readme/hero-light.jpg">
+    <img alt="An agent reports Done, and buildd asks whether it really is. Click to watch the 45-second film." src="https://media.buildd.dev/readme/hero-dark.jpg" width="100%">
+  </picture>
+</a>
+
+<p align="center"><a href="https://media.buildd.dev/clips/full.mp4">Watch it ship (45s)</a></p>
+
 ## How it works
 
 1. **Start with what done means.** You give a mission its goal criteria. Where it can, buildd runs each one as a check: a command that must exit 0, PRs that must merge, an artifact that must exist. A criterion no command can express stays a plain sentence, and a model grades it. A mission can't complete until every criterion passes.
 2. **You only get asked when it matters.** When an agent asks a question, a decision model answers the low-stakes ones on the spot. Questions that touch migrations, auth and secrets, CI or deploys, protected paths or spending always come to you.
 3. **buildd checks the work.** buildd won't merge a PR on red CI. Depending on the merge policy you pick, a reviewer agent reads the change and approves it, sends it back to the author or escalates to you, and a visual auditor screenshots the pages a mission changed. Work that falls short goes back.
+
+<img alt="Before: the invoice table overflows on a phone and the check fails. After: rows become cards and the check passes." src="https://media.buildd.dev/readme/before-after.jpg" width="100%">
 
 The server coordinates and never runs an agent. Runners claim tasks over the REST API, do the work in a git worktree, open the PR and report back. Agent runs take minutes to hours, longer than a serverless request can live.
 
