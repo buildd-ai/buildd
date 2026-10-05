@@ -71,7 +71,7 @@ export const COMPOSITION_ROOTS: ReadonlySet<string> = new Set<string>([
 ]);
 
 const SCAN_ROOTS = ['apps/web/src', 'packages/core', 'packages/shared/src'];
-const EXCLUDED = /(^|\/)(node_modules|__tests__|tests|__fixtures__)\/|^packages\/core\/drizzle\/|\.(test|spec)\.tsx?$|\.d\.ts$|fixtures?\.tsx?$|fake-db/;
+const EXCLUDED = /(^|\/)(node_modules|__tests__|tests|__fixtures__)\/|^packages\/core\/drizzle\/|\.(test|spec)\.tsx?$|\.d\.ts$|[Ff]ixtures?\.tsx?$|fake-db/;
 
 /** Runtime source files the guard polices (tests, fixtures and migrations excluded). */
 export function scannedFiles(cwd = process.cwd()): string[] {

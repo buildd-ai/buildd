@@ -774,34 +774,6 @@
     "apps/web/src/app/app/(protected)/workspaces/[id]/page.tsx": {
       "apps/web/src/components/chat/ChatEntry.tsx": "chat"
     },
-    "apps/web/src/app/app/dev/fixtures/MissionBoardVisualFixture.tsx": {
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionBoard.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionFeedLayout.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionLanes.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionScreensRow.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionShippedHeader.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionVisualReview.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionVisualReviewSetting.tsx": "missions",
-      "apps/web/src/components/visual-review/fixture-transport.ts": "visual-qa",
-      "apps/web/src/lib/mission-delivery.ts": "missions",
-      "apps/web/src/lib/mission-shipped-header.ts": "missions"
-    },
-    "apps/web/src/app/app/dev/fixtures/MissionCheckInsFixture.tsx": {
-      "apps/web/src/app/app/(protected)/missions/[id]/HeartbeatChecklistEditor.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/HeartbeatStatusBadge.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/HeartbeatTimeline.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionCheckIns.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionMonitoringToggle.tsx": "missions",
-      "apps/web/src/app/app/(protected)/missions/[id]/QuietHoursConfig.tsx": "missions",
-      "apps/web/src/lib/mission-checkins.ts": "missions"
-    },
-    "apps/web/src/app/app/dev/fixtures/MissionListExecutorFixture.tsx": {
-      "apps/web/src/components/missions/MissionListCards.tsx": "missions"
-    },
-    "apps/web/src/app/app/dev/fixtures/MissionTaskStripFixture.tsx": {
-      "apps/web/src/app/app/(protected)/missions/[id]/MissionBoard.tsx": "missions",
-      "apps/web/src/components/missions/MissionSituationBlock.tsx": "missions"
-    },
     "apps/web/src/app/app/dev/fixtures/page.tsx": {
       "apps/web/src/components/visual-review/VisualReviewAsk.tsx": "visual-qa",
       "apps/web/src/components/visual-review/VisualReviewDeck.tsx": "visual-qa",
