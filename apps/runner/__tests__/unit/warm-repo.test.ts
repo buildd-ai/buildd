@@ -862,6 +862,51 @@ describe('pnpm store skipped for size is refreshed when cap is raised', () => {
     expect(lines.filter(l => l.startsWith('BUILDD_WARM_REFRESH='))).toEqual([]);
   });
 
+  test('old manifest without cacheSkipped field: refreshes once to record skip, then stabilizes', async () => {
+    // This test simulates backward compatibility: an old manifest (created before
+    // cacheSkipped was added) that lacks the field. The first refresh after
+    // encountering such a manifest should trigger, recording cacheSkipped for future runs.
+
+    const cacheDir = join(dir, 'old-manifest-cache');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg.js'), Buffer.alloc(100 * 1024)); // 100KB other cache
+    const storeBytes = 250 * 1024;
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'store.bin'), randomBytes(storeBytes));
+
+    const cap = 50 * 1024;
+
+    // First session: create initial snapshot with store skipped (with cacheSkipped recorded)
+    const seed = session({ cacheDir, zstd: true, maxBundleBytes: cap });
+    cloneThrough(seed, 'ws-seed');
+    await seed.refresh('completed');
+    expect(store.manifests).toHaveLength(1);
+    expect((store.manifests[0] as any).cacheSkipped).toEqual({ part: 'pnpm-store', capBytes: cap });
+    const seedGen = store.manifests[0]!.generation;
+
+    // Manually remove cacheSkipped from the manifest to simulate it being an old one
+    delete (store.manifests[0] as any).cacheSkipped;
+
+    // Second session: restore from the old manifest (without cacheSkipped) and run again
+    // The restore will lack the store (wasn't in manifest), rebuild it during run,
+    // then the refresh should detect growth and trigger with cache_growth
+    const nextCache = join(dir, 'old-manifest-next');
+    store.limitBytes = cap;
+    lines = [];
+    const s = session({ cacheDir: nextCache, zstd: true, maxBundleBytes: cap, now: store.now + 1 });
+    cloneThrough(s, 'ws-next');
+    // Simulate the store being rebuilt during the run
+    mkdirSync(join(nextCache, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(nextCache, PNPM_STORE_DIRNAME, 'store.bin'), randomBytes(storeBytes));
+
+    await s.refresh('completed');
+    // Since the old manifest has no cacheSkipped record, the store counts as cache growth
+    // and triggers a refresh, creating a new manifest with cacheSkipped recorded
+    expect(store.manifests).toHaveLength(2);
+    expect(lines).toContain('BUILDD_WARM_REFRESH=cache_growth');
+    const newGen = store.manifests[1]!.generation;
+    expect(newGen).not.toBe(seedGen);
+  });
+
 });
 
 describe('the per-workspace cap comes from the Worker (GET /warm/limits)', () => {
