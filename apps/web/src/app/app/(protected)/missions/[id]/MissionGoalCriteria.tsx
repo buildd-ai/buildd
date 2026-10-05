@@ -539,9 +539,9 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
   return (
     <div className="card p-4">
       {/* Header row */}
-      <div className="flex items-center justify-between mb-3 gap-2">
+      <div className="flex flex-wrap items-center justify-between mb-3 gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <h2 className="section-label">Goal criteria</h2>
+          <h2 className="section-label whitespace-nowrap">Goal criteria</h2>
           {overallVerdict && !blocked && (
             <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[11px] md:text-[10px] uppercase tracking-wide ${VERDICT_CONFIG[overallVerdict].cls}`}>
               {VERDICT_CONFIG[overallVerdict].icon} {VERDICT_CONFIG[overallVerdict].label}
