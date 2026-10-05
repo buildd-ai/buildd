@@ -30,7 +30,7 @@ import { defaultCbmAccessConfig } from '@buildd/core/cbm-access-experiment';
 import { defaultHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import { defaultQuestionGateConfig } from '@buildd/core/question-gate';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
-import { roleHas } from '@/lib/permission-registry';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -46,12 +46,12 @@ export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly Experimen
   concluded: [],
 };
 
-export function isExperimentAdmin(role: TeamRole | null | undefined): boolean {
-  return roleHas(role, 'run_experiments');
+export function isExperimentAdmin(role: TeamRole | null | undefined, overrides: PermissionOverrides | null): boolean {
+  return roleHas(role, 'run_experiments', overrides);
 }
 
-export function canViewExperiment(visibility: string, role: TeamRole | null | undefined): boolean {
-  return visibility === 'team' || isExperimentAdmin(role);
+export function canViewExperiment(visibility: string, role: TeamRole | null | undefined, overrides: PermissionOverrides | null): boolean {
+  return visibility === 'team' || isExperimentAdmin(role, overrides);
 }
 
 /**

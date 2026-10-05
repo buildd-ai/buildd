@@ -21,6 +21,7 @@ import { canViewExperiment, isExperimentAdmin, parseCreateExperiment, toExperime
 import { insertExperiment, listTeamExperiments } from '@/lib/experiments-store';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
 import type { ExperimentHealthFinding } from '@buildd/core/experiment-health';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export async function GET(req: NextRequest) {
   const workspaceParam = req.nextUrl.searchParams.get('workspaceId');
@@ -40,7 +41,8 @@ export async function GET(req: NextRequest) {
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
 
-  const rows = (await listTeamExperiments(viewer.teamId)).filter(r => canViewExperiment(r.visibility, viewer.role));
+  const overrides = await getTeamPermissionOverrides(viewer.teamId);
+  const rows = (await listTeamExperiments(viewer.teamId)).filter(r => canViewExperiment(r.visibility, viewer.role, overrides));
   const experiments = rows.map(toExperimentDTO);
   // Enrolment health of the running ones (at most one per kind per team), so a
   // starved or unbalanced experiment shows up where it is listed. A failed
@@ -50,7 +52,7 @@ export async function GET(req: NextRequest) {
     const findings = await runExperimentHealth(r).catch(() => null);
     if (findings) health[r.id] = findings;
   }));
-  return NextResponse.json({ experiments, canManage: isExperimentAdmin(viewer.role), health });
+  return NextResponse.json({ experiments, canManage: isExperimentAdmin(viewer.role, overrides), health });
 }
 
 export async function POST(req: NextRequest) {
@@ -60,7 +62,7 @@ export async function POST(req: NextRequest) {
   const who = await resolveExperimentViewer(req, req.nextUrl.searchParams.get('workspaceId'));
   if (!who.ok) return NextResponse.json({ error: who.error }, { status: who.status });
   const { viewer } = who;
-  if (!isExperimentAdmin(viewer.role)) {
+  if (!isExperimentAdmin(viewer.role, await getTeamPermissionOverrides(viewer.teamId))) {
     return NextResponse.json({ error: 'Creating an experiment requires team admin or owner' }, { status: 403 });
   }
 

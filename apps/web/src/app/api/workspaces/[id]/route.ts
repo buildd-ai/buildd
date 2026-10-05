@@ -6,7 +6,7 @@ import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
 import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
@@ -216,7 +216,7 @@ export async function PATCH(
     if (touchesAdminSettings) {
       const isAdmin = apiAccount
         ? hasTokenRouteAdminAccess(apiAccount, req)
-        : roleHas(sessionRole, 'manage_workspace_settings');
+        : roleHas(sessionRole, 'manage_workspace_settings', await getTeamPermissionOverrides(workspaceTeamId!));
       if (!isAdmin) {
         return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
       }
@@ -453,7 +453,7 @@ export async function DELETE(
   try {
     // A caller who may not delete it is told the workspace does not exist.
     const access = await verifyWorkspaceAccess(user.id, id);
-    if (!access || !roleHas(access.role, 'delete_workspace')) {
+    if (!access || !roleHas(access.role, 'delete_workspace', await getTeamPermissionOverrides(access.teamId))) {
       return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     }
 

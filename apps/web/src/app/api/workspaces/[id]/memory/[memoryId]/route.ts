@@ -11,7 +11,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { getMemoryStoreForTeam, getMemoryIndexStore } from '@/lib/memory-helper';
 import { updateMemory, transitionMemory } from '@buildd/core/memory-write';
 import { isMemoryReviewAction } from '@buildd/core/memory-candidates';
@@ -19,6 +19,7 @@ import { buildNamespace } from '@buildd/core/knowledge-store';
 import { resolveMemoryProjectKey } from '@buildd/core/memory-scope';
 import { normalizeProject } from '@buildd/core/project-scope';
 import type { MemoryStore } from '@buildd/core/memory-store';
+import { can } from '@/lib/permissions';
 
 const REVIEW_VERB = { promote: 'promoted', dismiss: 'dismissed', reverified: 'marked re-verified' } as const;
 
@@ -75,9 +76,9 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
  */
 async function isTeamAdmin(auth: NonNullable<Awaited<ReturnType<typeof authenticateRequest>>>, workspaceId: string, teamId: string): Promise<boolean> {
   if (auth.type === 'session') {
-    return !!(await verifyWorkspaceAccess(auth.user.id, workspaceId, 'admin'));
+    return holdsInWorkspace(auth.user.id, workspaceId, 'review_memory');
   } else if (auth.type === 'api') {
-    return canCallerAdminTeam({ kind: 'account', accountId: auth.account.id, teamId: auth.account.teamId, level: auth.account.scopes?.some(scope => scope === 'admin' || scope === 'knowledge:admin') ? 'admin' : auth.account.level }, teamId);
+    return can({ kind: 'account', accountId: auth.account.id, teamId: auth.account.teamId, level: auth.account.scopes?.some(scope => scope === 'admin' || scope === 'knowledge:admin') ? 'admin' : auth.account.level }, 'review_memory', teamId);
   }
   return true; // dev mode
 }

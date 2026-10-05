@@ -95,6 +95,7 @@ function harness(opts: { key?: boolean; model?: MockLanguageModelV4; limits?: ()
     now: () => new Date('2026-09-26T21:30:00Z'),
     allowedToolGroups: new Set(opts.allowedGroups ?? []) as any,
     limits: opts.limits ?? (async () => ({ ok: true as const, budgetWarning: false })),
+    permissionOverrides: async () => ({}),
     route: opts.route ?? (async () => ({ tier: 'standard' as const, allowWrites: true, source: 'fallback' as const })),
     routingAccess: async () => ({ ok: false as const, error: { kind: 'missing_key' as const } }),
     resolveModel: async (o: any) => { resolveCalls.push(o); tiersAsked.push(o.tier); return (opts.key ?? true)

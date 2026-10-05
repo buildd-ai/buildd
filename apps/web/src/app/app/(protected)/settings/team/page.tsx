@@ -8,6 +8,7 @@ import TeamDetailClient from '../../teams/[id]/TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,7 +68,7 @@ export default async function TeamSettingsPage({
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={roleHas(role, 'manage_team_members')}
+          canManage={roleHas(role, 'manage_team_members', await getTeamPermissionOverrides(team.id))}
         />
       ) : (
         <p className="text-sm text-text-secondary">Could not load the team.</p>

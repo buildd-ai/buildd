@@ -15,7 +15,7 @@ const calls: string[] = [];
 
 mock.module('@/lib/auth-helpers', () => ({ getRequestPrincipal: async () => principal }));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { teamMembers: { findFirst: async () => (memberRole ? { role: memberRole } : null) } } },
+  db: { query: { teams: { findFirst: async () => null }, teamMembers: { findFirst: async () => (memberRole ? { role: memberRole } : null) } } },
 }));
 mock.module('@/lib/chat-retro/store', () => ({
   readTeamSettings: async () => stored,

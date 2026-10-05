@@ -6,7 +6,7 @@ import { workers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { holdsInWorkspace } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import {
   appendInstructionHistory,
@@ -66,7 +66,7 @@ export async function POST(
   // admin/owner role in it. Anything else sees "not found".
   const canAdminister = hasAdminToken
     ? apiAccount!.teamId === worker.workspace?.teamId
-    : !!(await verifyWorkspaceAccess(user!.id, worker.workspaceId, 'admin'));
+    : await holdsInWorkspace(user!.id, worker.workspaceId, 'steer_workers');
   if (!canAdminister) {
     return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
   }

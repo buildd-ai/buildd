@@ -31,7 +31,7 @@ mock.module('drizzle-orm', () => ({
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { accounts: { findFirst: mockAccountsFindFirst } },
+    query: { teams: { findFirst: async () => null }, accounts: { findFirst: mockAccountsFindFirst } },
     insert: (_t: unknown) => ({
       values: (vals: any) => {
         inserted.push(vals);

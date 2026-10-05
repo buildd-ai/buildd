@@ -5,8 +5,9 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, holdsInWorkspace } from '@/lib/team-access';
 import { isUuid } from '@/lib/uuid';
+
 
 // GET /api/tasks/[id]/messages - Return instruction history for the task's latest worker
 export async function GET(
@@ -66,7 +67,7 @@ export async function GET(
     // applies, so the Steer canvas doesn't offer a composer whose every send 404s.
     const canSend = apiAccount && hasTokenRouteAdminAccess(apiAccount, req, 'workers:admin')
       ? apiAccount.teamId === task.workspace?.teamId
-      : user ? !!(await verifyWorkspaceAccess(user.id, task.workspaceId, 'admin')) : false;
+      : user ? await holdsInWorkspace(user.id, task.workspaceId, 'steer_workers') : false;
 
     return NextResponse.json({ taskId: id, workerId: worker?.id ?? null, canSend, messages });
   } catch (error) {

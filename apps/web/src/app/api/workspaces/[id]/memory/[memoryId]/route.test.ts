@@ -77,11 +77,13 @@ mock.module('@/lib/team-access', () => ({
     return { teamId: TEAM, role };
   },
   verifyAccountWorkspaceAccess: async () => (hasAccess ? { teamId: TEAM } : null),
+  // review_memory defaults to owner + admin.
+  holdsInWorkspace: async () => hasAccess && RANK[role] >= RANK.admin,
   canCallerAdminTeam: async (caller: any, teamId: string) =>
     caller.kind === 'account' && caller.level === 'admin' && caller.teamId === teamId,
 }));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { accounts: { findFirst: async () => apiAccount } } },
+  db: { query: { teams: { findFirst: async () => null }, accounts: { findFirst: async () => apiAccount } } },
 }));
 
 const { PATCH } = await import('./route');

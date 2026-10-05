@@ -28,6 +28,7 @@ import { isTaskToken } from '@/lib/task-token';
 import { canViewExperiment, toExperimentDTO } from '@/lib/experiments';
 import { getTeamExperimentForReadout } from '@/lib/experiments-store';
 import { runExperimentHealth } from '@buildd/core/experiment-health-source';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const notFound = () => NextResponse.json({ error: 'Experiment not found' }, { status: 404 });
@@ -42,7 +43,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!UUID_RE.test(id)) return notFound();
 
   const row = await getTeamExperimentForReadout(who.viewer.teamId, id);
-  if (!row || !canViewExperiment(row.visibility, who.viewer.role)) return notFound();
+  if (!row || !canViewExperiment(row.visibility, who.viewer.role, await getTeamPermissionOverrides(who.viewer.teamId))) return notFound();
 
   let policyVersion = row.policyVersion;
   const pv = req.nextUrl.searchParams.get('policyVersion');

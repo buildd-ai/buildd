@@ -7,9 +7,9 @@ import { TOKEN_PRESETS, TOKEN_SCOPE_DEFINITIONS, type TokenScope } from '@buildd
 import { Select } from '@/components/ui/Select';
 import ApiKeyModal from '@/components/ApiKeyModal';
 import { defaultTeamId, readActiveTeamCookie } from '@/lib/active-team-client';
-import { roleHas } from '@/lib/permission-registry';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
-interface Team { id: string; name: string; slug: string; role: string }
+interface Team { id: string; name: string; slug: string; role: string; permissionOverrides?: PermissionOverrides }
 interface Workspace { id: string; name: string; repo: string | null }
 type Preset = keyof typeof TOKEN_PRESETS;
 const inputClass = 'w-full min-h-11 px-3 py-2 border border-border-default bg-surface-1 text-base md:text-sm';
@@ -31,7 +31,7 @@ export default function NewAccountPage() {
   const [accountType, setAccountType] = useState('user');
   const [maxConcurrent, setMaxConcurrent] = useState('5');
   const selectedTeam = teams.find(team => team.id === selectedTeamId);
-  const canAdmin = roleHas(selectedTeam?.role, 'manage_team_keys');
+  const canAdmin = roleHas(selectedTeam?.role, 'manage_team_keys', selectedTeam?.permissionOverrides ?? null);
 
   useEffect(() => {
     fetch('/api/teams').then(async res => {
@@ -98,7 +98,7 @@ export default function NewAccountPage() {
         <form onSubmit={handleSubmit} className="space-y-5">
           {error && <p role="alert" className="border border-status-error p-3 text-sm text-status-error">{error}</p>}
           <div className="card p-4 space-y-4">
-            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!roleHas(teams.find(team => team.id === id)?.role, 'manage_team_keys')) { setScopes(current => current.filter(scope => !scope.endsWith(':admin') && !['admin','secrets','releases','schedules:write'].includes(scope))); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
+            {teams.length > 1 && <div><label htmlFor="team" className="block text-sm mb-2">Team</label><Select id="team" value={selectedTeamId} onChange={id => { setSelectedTeamId(id); if (!roleHas(teams.find(team => team.id === id)?.role, 'manage_team_keys', teams.find(team => team.id === id)?.permissionOverrides ?? null)) { setScopes(current => current.filter(scope => !scope.endsWith(':admin') && !['admin','secrets','releases','schedules:write'].includes(scope))); if (preset === 'admin') choosePreset('runner'); } }} options={teams.map(team => ({ value: team.id, label: team.name }))} /></div>}
             <div><label htmlFor="name" className="block text-sm mb-2">Token name</label><input id="name" name="name" required placeholder="release-ci" className={inputClass} /></div>
             <fieldset><legend className="section-label mb-3">Preset</legend><div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {(Object.keys(TOKEN_PRESETS) as Preset[]).map(key => <label key={key} className={`min-h-11 p-3 border cursor-pointer ${preset === key ? 'border-primary bg-surface-3' : 'border-border-default'} ${key === 'admin' && !canAdmin ? 'opacity-50' : ''}`}>

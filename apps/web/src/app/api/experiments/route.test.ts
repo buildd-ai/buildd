@@ -18,7 +18,7 @@ const taskToken = (workspaceId = 'ws-own') =>
   mintTaskToken({ accountId: 'acct-1', taskId: 'task-own', workspaceId, keyHash: KEY_HASH })!.token;
 const mockAccountFind = mock(async () => ({ id: 'acct-1', apiKey: KEY_HASH, teamId: TEAM, level: 'admin', scopes: null, workspaceIds: null, expiresAt: null }));
 const mockAuthenticateApiKey = mock(async () => null as any);
-mock.module('@buildd/core/db', () => ({ db: { query: { accounts: { findFirst: mockAccountFind } } } }));
+mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null }, accounts: { findFirst: mockAccountFind } } } }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 const mockTaskViewer = mock(async (_workspaceId: string, accountId: string) =>
   ({ ok: true, viewer: { teamId: TEAM, role: 'member', userId: null, accountId } }) as any);

@@ -4,9 +4,10 @@ import { accounts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { canCallerAdminTeam, getUserTeamIds, type TeamScopeCaller } from '@/lib/team-access';
+import { getUserTeamIds, type TeamScopeCaller } from '@/lib/team-access';
 import { handleAccountAiBudgetPatch, type AccountBudgetDeps } from '@/lib/ai/account-budget';
 import { isUuid } from '@/lib/uuid';
+import { can } from '@/lib/permissions';
 
 const deps: AccountBudgetDeps = {
   async caller(req) {
@@ -20,7 +21,7 @@ const deps: AccountBudgetDeps = {
   async callerTeamIds(caller: TeamScopeCaller) {
     return caller.kind === 'account' ? [caller.teamId] : getUserTeamIds(caller.userId);
   },
-  canAdminTeam: canCallerAdminTeam,
+  canAdminTeam: (caller: TeamScopeCaller, teamId: string) => can(caller, 'manage_ai_budget', teamId),
   async loadAccount(id) {
     const row = await db.query.accounts.findFirst({ where: eq(accounts.id, id), columns: { id: true, teamId: true } });
     return row ?? null;

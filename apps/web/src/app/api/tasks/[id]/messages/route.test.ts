@@ -13,13 +13,20 @@ const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
+const mockHoldsInWorkspace = mock(async (u: string, w: string, _permission: string) => {
+  const access: any = await (mockVerifyWorkspaceAccess as any)(u, w);
+  return !!access && (access.role === 'owner' || access.role === 'admin');
+});
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  // The route asks for a named permission in the workspace's team; mirror the
+  // registry default (owner, admin) over this file's access mock.
+  holdsInWorkspace: mockHoldsInWorkspace,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       tasks: { findFirst: mockTasksFindFirst },
       workers: { findFirst: mockWorkersFindFirst },
     },

@@ -42,7 +42,7 @@ mock.module('@/lib/api-auth', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       accounts: { findFirst: mockAccountsFindFirst },
     },
     update: mockUpdate,
@@ -56,7 +56,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   accounts: { id: 'id', teamId: 'teamId' },
 }));
 

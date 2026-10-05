@@ -26,7 +26,7 @@ mock.module('next/headers', () => ({ cookies: async () => ({ get: (n: string) =>
 mock.module('next/navigation', () => ({ redirect: (to: string) => { throw new Error(`redirect ${to}`); } }));
 let accountRows: any[] = [];
 let accountQuery: any = null;
-mock.module('@buildd/core/db', () => ({ db: { query: { workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
+mock.module('@buildd/core/db', () => ({ db: { query: { teams: { findFirst: async () => null }, workspaces: { findMany: async () => [] }, accounts: { findMany: async (q: any) => { accountQuery = q; return accountRows; } } } } }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamsWithDetails: async () => TEAMS,
   getUserWorkspaceIds: async () => [],
