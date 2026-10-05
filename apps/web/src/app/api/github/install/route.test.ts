@@ -46,15 +46,17 @@ describe('GET /api/github/install', () => {
     expect(location).toContain('/app/auth/signin');
   });
 
-  it('returns 500 when GitHub app not configured', async () => {
+  it('sends a person to a page with a next step when the GitHub App is not configured', async () => {
     mockAuth.mockResolvedValue({ user: { id: 'user-1', email: 'user@test.com' } });
     mockIsGitHubAppConfigured.mockReturnValue(false);
 
     const response = await GET(createRequest());
-    expect(response.status).toBe(500);
-
-    const data = await response.json();
-    expect(data.error).toContain('GitHub App not configured');
+    // A link someone clicked: never a raw JSON error body.
+    expect(response.status).toBe(307);
+    expect(response.headers.get('content-type') ?? '').not.toContain('application/json');
+    const location = new URL(response.headers.get('location')!);
+    expect(location.pathname).toBe('/app/settings/github');
+    expect(location.searchParams.get('github')).toBe('unavailable');
   });
 
   it('redirects to GitHub install URL with state parameter', async () => {

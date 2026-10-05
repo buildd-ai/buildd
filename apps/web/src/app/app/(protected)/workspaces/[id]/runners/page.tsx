@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 
 interface Runner {
   id: string;
@@ -88,11 +89,12 @@ export default function RunnersPage() {
             {error}
           </div>
         ) : runners.length === 0 ? (
-          <div className="border border-dashed border-border-default rounded-lg p-8 text-center">
-            <p className="text-text-secondary mb-2">No active runners</p>
-            <p className="text-sm text-text-muted">
-              Start a runner with <code className="px-1 py-0.5 bg-surface-3 rounded">buildd run</code>. It shows up here after its first heartbeat.
+          <div className="border border-dashed border-border-default p-6">
+            <p className="text-text-secondary mb-1">No runners connected</p>
+            <p className="text-body text-text-muted mb-4">
+              A runner is the program on your machine that does the work. Start one with these three lines. It shows up here within a minute.
             </p>
+            <RunnerInstallSteps />
           </div>
         ) : (
           <div className="space-y-3">
