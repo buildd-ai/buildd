@@ -78,10 +78,7 @@ export default function WorkspaceList({
                             <line x1="9" y1="14" x2="15" y2="14" />
                         </svg>
                     </div>
-                    <h2 className="text-[15px] font-semibold mb-1">No workspaces</h2>
-                    <p className="text-[13px] text-text-muted mb-5">
-                        A workspace maps to a repository. Agents work on its tasks in that repo.
-                    </p>
+                    <h2 className="text-[15px] font-semibold mb-5">No workspaces</h2>
                     <Link
                         href="/app/workspaces/new"
                         className="px-5 py-2 bg-primary text-white hover:bg-primary-hover text-[13px] font-medium"

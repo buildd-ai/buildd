@@ -19,7 +19,7 @@ import { eq } from 'drizzle-orm';
 import type { RelayRequest, RelayResponse, ResolveRequest, ResolveResponse } from '@buildd/dispatch-contract';
 import { primaryCause } from '@buildd/core/dispatch-outbox';
 import { parseTargetId, type DispatchTargetType } from '@buildd/core/dispatch-envelope';
-import { inDispatchCustody, loadCustodyRow, type CustodyRow } from '@buildd/core/dispatch-handoff';
+import { claimCustody, inDispatchCustody, loadCustodyRow, type CustodyRow } from '@buildd/core/dispatch-handoff';
 import {
   claimabilitySkip,
   githubActionsWanted,
@@ -51,6 +51,8 @@ export interface GitHubGrantSource {
 
 export interface ResolveDeps {
   loadRow: (id: string) => Promise<CustodyRow | null>;
+  /** Take custody of a published row whose ack has not landed yet; true if taken. */
+  claimCustody: (id: string) => Promise<boolean>;
   loadTask: typeof loadForDelivery;
   /** SET NX: true = first mint in the window, false = already minted, null = could not ask. */
   grantOnce: (key: string, ttlSec: number) => Promise<boolean | null>;
@@ -78,6 +80,7 @@ async function githubSource(workspace: DispatchContext['workspace']): Promise<Gi
 
 export const RESOLVE_DEPS: ResolveDeps = {
   loadRow: loadCustodyRow,
+  claimCustody,
   loadTask: loadForDelivery,
   grantOnce: tryLock,
   githubSource,
@@ -112,9 +115,13 @@ async function preamble(
   if (!allowed.includes(target.type)) {
     return { kind: 'error', status: 400, error: `${target.type} is not handled by this callback` };
   }
-  const row = await deps.loadRow(req.id);
+  let row = await deps.loadRow(req.id);
   if (!row) return { kind: 'error', status: 404, error: 'unknown dispatch id' };
   if (row.workspaceId.toLowerCase() !== target.workspaceId) return { kind: 'error', status: 403, error: 'target is outside this intent\'s scope' };
+  // The callback can outrun the publish ack; take custody for it (claimCustodySql).
+  if (!inDispatchCustody(row) && row.status === 'pending' && row.handedOffAt == null && await deps.claimCustody(row.id)) {
+    row = (await deps.loadRow(req.id)) ?? row;
+  }
   if (!inDispatchCustody(row)) return { kind: 'moot', why: `not_in_custody:${row.status}` };
   if (row.intent !== 'work_execution') return { kind: 'moot', why: `no_adapter:${row.intent}` };
   const loaded = await deps.loadTask(row.taskId);

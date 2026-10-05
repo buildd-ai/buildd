@@ -5,7 +5,7 @@
  * `taskScope`; nothing stops a route from then treating it like the account
  * key. So each route file that calls it must also apply a scope check
  * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
- * `taskScopeAllowsWorkerPr`,
+ * `taskScopeAllowsWorkerPr` / `taskScopeAllowsMission` / `taskScopeAllowsInitiative`,
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
  * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it
@@ -18,9 +18,12 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
+  'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
+  'apps/web/src/app/api/artifacts/upload-url/route.ts',
+  'apps/web/src/app/api/connectors/mounted/route.ts',
   'apps/web/src/app/api/discrepancies/[id]/route.ts',
   'apps/web/src/app/api/discrepancies/route.ts',
   'apps/web/src/app/api/evidence/route.ts',
@@ -29,28 +32,42 @@ const OPTED_IN = [
   'apps/web/src/app/api/explain/route.ts',
   'apps/web/src/app/api/github/pr/review/route.ts',
   'apps/web/src/app/api/github/pr/route.ts',
+  'apps/web/src/app/api/github/pr/supersede/route.ts',
   'apps/web/src/app/api/health/failures/route.ts',
+  'apps/web/src/app/api/initiatives/[id]/artifacts/route.ts',
   'apps/web/src/app/api/mcp/route.ts',
+  'apps/web/src/app/api/missions/[id]/artifacts/route.ts',
+  'apps/web/src/app/api/missions/[id]/notes/route.ts',
+  'apps/web/src/app/api/prs/route.ts',
+  'apps/web/src/app/api/releases/[id]/route.ts',
+  'apps/web/src/app/api/releases/route.ts',
   'apps/web/src/app/api/stats/coordination/route.ts',
   'apps/web/src/app/api/stats/usage/route.ts',
   'apps/web/src/app/api/tasks/[id]/error-traces/route.ts',
   'apps/web/src/app/api/tasks/[id]/evidence/route.ts',
+  'apps/web/src/app/api/tasks/[id]/messages/route.ts',
+  'apps/web/src/app/api/tasks/[id]/notes/route.ts',
   'apps/web/src/app/api/tasks/[id]/route.ts',
   'apps/web/src/app/api/tasks/route.ts',
   'apps/web/src/app/api/workers/[id]/artifacts/route.ts',
   'apps/web/src/app/api/workers/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
+  'apps/web/src/app/api/workers/[id]/page-source/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
   'apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts',
   'apps/web/src/app/api/workers/[id]/reattach/route.ts',
   'apps/web/src/app/api/workers/[id]/route.ts',
   'apps/web/src/app/api/workers/[id]/session-upload-url/route.ts',
+  'apps/web/src/app/api/workers/active/route.ts',
   'apps/web/src/app/api/workers/claim/route.ts',
   'apps/web/src/app/api/workers/heartbeat/route.ts',
+  'apps/web/src/app/api/workspaces/[id]/artifacts/route.ts',
   'apps/web/src/app/api/workspaces/[id]/config/route.ts',
   'apps/web/src/app/api/workspaces/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workspaces/[id]/memory/route.ts',
+  'apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/route.ts',
+  'apps/web/src/app/api/workspaces/[id]/schedules/route.ts',
 ];
 
 function routesCallingIt(): string[] {

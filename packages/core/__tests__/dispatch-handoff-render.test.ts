@@ -8,6 +8,7 @@ import {
   ackHandoffSql,
   ackMergedSql,
   applyReceiptsSql,
+  claimCustodySql,
   parseAppliedReceipts,
   fallBackToInAppSql,
   selectForRepublishSql,
@@ -57,6 +58,17 @@ describe('ack statements', () => {
     expect(JSON.parse(String(params[0]))).toEqual([{ id: A, mode: 'dispatch', into: B }]);
     expect(sql).toContain("'merged_into_pending'");
     expect(sql).toContain('merged_into = CASE');
+  });
+});
+
+describe('claimCustodySql', () => {
+  test('binds the id and only takes a published, unacked, pending row of a dispatch or shadow workspace that was not taken back', () => {
+    const { sql, params } = render(claimCustodySql(A));
+    expect(params).toEqual([A]);
+    expect(sql).toContain("o.status = 'pending' AND o.handed_off_at IS NULL AND o.published_at IS NOT NULL");
+    expect(sql).toContain("w.dispatch_transport IN ('dispatch', 'shadow')");
+    expect(sql).toContain("dispatchFallbackAt");
+    expect(sql).toContain("CASE WHEN w.dispatch_transport = 'dispatch' THEN 'handed_off' ELSE o.status END");
   });
 });
 

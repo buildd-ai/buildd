@@ -17,6 +17,7 @@ import {
   ackHandoff,
   ackMerged,
   applyReceipts,
+  claimCustody,
   loadCustodyRow,
   selectForPublish,
 } from '@buildd/core/dispatch-handoff';
@@ -270,5 +271,54 @@ describe('custody, health and history', () => {
     const [h] = await dispatchHistoryForTask(d);
     expect(h.transport).toBe('dispatch');
     expect(h.handedOffAt).not.toBeNull();
+  });
+});
+
+describe('callback outruns its publish ack (claimCustody)', () => {
+  /** Publish (stamps published_at) without acking: the ack is still in flight. */
+  async function publishedUnacked(ws: string) {
+    const t = await seedTask(ws);
+    const [r] = (await selectForPublish({ taskId: t, limit: 1 })).filter(x => x.taskId === t);
+    return { t, r };
+  }
+
+  test('dispatch workspace: the callback takes custody, and the late ack then changes nothing', async () => {
+    const { t, r } = await publishedUnacked(dispatch);
+    expect(await claimCustody(r.id)).toBe(true);
+    let [row] = await rowsFor(t);
+    expect(row.status).toBe('handed_off');
+    expect(row.transport).toBe('dispatch');
+    expect(row.handed_off_at).not.toBeNull();
+    expect(await ackHandoff([{ id: r.id, mode: r.mode }])).toBe(0);
+    [row] = await rowsFor(t);
+    expect(row.status).toBe('handed_off');
+    expect(await claimCustody(r.id)).toBe(false); // already in custody: no second write
+    expect(await claimedIds()).not.toContain(r.id); // the in-app drain never takes it
+  });
+
+  test('shadow workspace: only marked, still pending for the in-app drain', async () => {
+    const { t, r } = await publishedUnacked(shadow);
+    expect(await claimCustody(r.id)).toBe(true);
+    const [row] = await rowsFor(t);
+    expect(row.status).toBe('pending');
+    expect(row.handed_off_at).not.toBeNull();
+  });
+
+  test('refused: never published, in_app workspace, taken by the in-app drain, or taken back by the floor', async () => {
+    const never = await seedTask(dispatch);
+    expect(await claimCustody((await rowsFor(never))[0].id)).toBe(false);
+
+    const app = await seedTask(inApp);
+    const appRow = (await rowsFor(app))[0];
+    await db.execute(sql`UPDATE task_dispatch_outbox SET published_at = now() WHERE id = ${appRow.id}::uuid`);
+    expect(await claimCustody(appRow.id)).toBe(false);
+
+    const { r: taken } = await publishedUnacked(dispatch);
+    await db.execute(sql`UPDATE task_dispatch_outbox SET status = 'delivering' WHERE id = ${taken.id}::uuid`);
+    expect(await claimCustody(taken.id)).toBe(false);
+
+    const { r: back } = await publishedUnacked(dispatch);
+    await db.execute(sql`UPDATE task_dispatch_outbox SET metadata = jsonb_build_object('dispatchFallbackAt', now()::text) WHERE id = ${back.id}::uuid`);
+    expect(await claimCustody(back.id)).toBe(false);
   });
 });

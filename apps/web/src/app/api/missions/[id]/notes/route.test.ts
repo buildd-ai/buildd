@@ -9,6 +9,8 @@ const mockMissionsFindFirst = mock(() => null as any);
 const mockMissionNotesFindFirst = mock(() => null as any);
 const mockMissionNotesFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockTasksFindFirst = mock(() => null as any);
+const mockWorkersFindFirst = mock(() => null as any);
 
 let insertedNoteValues: any = null;
 const mockInsert = mock(() => ({
@@ -68,6 +70,8 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: mockMissionsFindFirst },
       missionNotes: { findFirst: mockMissionNotesFindFirst, findMany: mockMissionNotesFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
+      workers: { findFirst: mockWorkersFindFirst },
     },
     insert: () => mockInsert(),
     update: () => mockUpdate(),
@@ -88,6 +92,7 @@ mock.module('@buildd/core/db/schema', () => ({
     createdAt: 'createdAt', authorType: 'authorType',
   },
   workspaces: { id: 'id', accessMode: 'accessMode' },
+  accounts: { id: 'id' },
 }));
 
 import { GET, POST } from './route';
@@ -446,5 +451,109 @@ describe('POST /api/missions/[id]/notes', () => {
     asUser();
     await POST(createRequest({ method: 'POST', body: { type: 'update', title: 'Sync', authorType: 'system' } }), { params: mockParams });
     expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/missions/[id]/notes — per-task token', () => {
+  const OWN_TASK = '22222222-2222-4222-8222-222222222222';
+  const SCOPED = { id: 'acct-1', teamId: 'team-1', level: 'worker', scopes: null, taskScope: { taskId: OWN_TASK, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const post = (body: Record<string, unknown>, missionId = MISSION_ID) =>
+    POST(createRequest({ method: 'POST', body, headers: { authorization: 'Bearer bld_test' }, url: `http://localhost:3000/api/missions/${missionId}/notes` }), { params: Promise.resolve({ id: missionId }) });
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue({ id: MISSION_ID, teamId: 'team-1', workspaceId: 'ws-1' });
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue({ missionId: MISSION_ID, workspaceId: 'ws-1', mission: { initiativeId: null } });
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindFirst.mockResolvedValue({ taskId: OWN_TASK, accountId: 'acct-1' });
+    mockInsert.mockReset();
+    insertedNoteValues = null;
+    mockInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        insertedNoteValues = vals;
+        return { returning: mock(() => [{ id: 'note-1', ...vals, createdAt: new Date() }]) };
+      }),
+    });
+  });
+
+  it("posts to its own task's mission feed, pinned to its own task and worker", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await post({ type: 'question', title: 'Which?', taskId: OWN_TASK, workerId: 'worker-own' });
+    expect(res.status).toBe(201);
+    expect(insertedNoteValues.missionId).toBe(MISSION_ID);
+    expect(insertedNoteValues.taskId).toBe(OWN_TASK);
+  });
+
+  it('is refused another mission, before the mission is read or anything written', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const other = '33333333-3333-4333-8333-333333333333';
+    const res = await post({ type: 'update', title: 'Elsewhere' }, other);
+    expect(res.status).toBe(404);
+    expect(mockMissionsFindFirst).not.toHaveBeenCalled();
+    expect(insertedNoteValues).toBeNull();
+  });
+
+  it('is refused a note pinned to another task', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await post({ type: 'update', title: 'Pinned', taskId: '44444444-4444-4444-8444-444444444444' });
+    expect(res.status).toBe(403);
+    expect(insertedNoteValues).toBeNull();
+  });
+
+  it("is refused a note attributed to another task's worker", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockWorkersFindFirst.mockResolvedValue({ taskId: '44444444-4444-4444-8444-444444444444', accountId: 'acct-1' });
+    const res = await post({ type: 'question', title: 'Which?', workerId: 'worker-other' });
+    expect(res.status).toBe(403);
+    expect(insertedNoteValues).toBeNull();
+  });
+
+  it("stores a task token's note as agent-authored, with the default status, whatever the body claims", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    const res = await post({ type: 'question', title: 'Which?', authorType: 'user', status: 'answered' });
+    expect(res.status).toBe(201);
+    expect(insertedNoteValues.authorType).toBe('agent');
+    expect(insertedNoteValues.status).toBe('open');
+    expect(mockWakeMissionAfterResponse).not.toHaveBeenCalled();
+  });
+
+  for (const type of ['guidance', 'reply'] as const) {
+    it(`refuses a task token a ${type} note, before writing`, async () => {
+      mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+      const res = await post({ type, title: 'Do it this way' });
+      expect(res.status).toBe(403);
+      expect(insertedNoteValues).toBeNull();
+    });
+  }
+
+  it('refuses a task token answering a question via replyTo, before marking anything answered', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockUpdate.mockClear();
+    const res = await post({ type: 'update', title: 'Answered', replyTo: '55555555-5555-4555-8555-555555555555' });
+    expect(res.status).toBe(403);
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(insertedNoteValues).toBeNull();
+  });
+
+  it("an admin account key's authorType, status, guidance and replies are honoured as before", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'admin', scopes: null });
+    const res = await post({ type: 'guidance', title: 'Steer', authorType: 'user', status: 'dismissed' });
+    expect(res.status).toBe(201);
+    expect(insertedNoteValues.authorType).toBe('user');
+    expect(insertedNoteValues.status).toBe('dismissed');
+  });
+
+  it('a worker-level account key is still refused by the admin gate', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker', scopes: null });
+    const res = await post({ type: 'update', title: 'Progress' });
+    expect(res.status).toBe(401);
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    expect(insertedNoteValues).toBeNull();
   });
 });

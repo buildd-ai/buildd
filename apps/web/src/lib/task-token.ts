@@ -17,15 +17,23 @@ import { TOKEN_PRESETS, type TokenScope } from '@buildd/core/token-scopes';
  * own claim, a read of its own task and an edit of its descriptive fields;
  * filing and listing tasks in its own workspace; its own worker's read, PATCH,
  * heartbeat, MCP, artifacts, park/re-attach and session-upload calls;
- * opening, closing, merging and requesting review of its own PR (merge still
- * subject to the merge policy); reading PRs and reviews in its task's
- * workspace; a read of that workspace's config and memory; the diagnostic
- * reads in that workspace (error traces of its tasks, its account's workers
- * and the workspace rollup, failure analytics narrowed to it, explain, and run
+ * opening, closing, merging, requesting review of and recording a supersession
+ * for its own PR (merge still subject to the merge policy; the superseding PR
+ * only in its workspace's repo); its own worker's page source; reading and
+ * listing PRs and reviews in its task's workspace; reads of that workspace's
+ * config, memory, schedules, releases, mounted connectors and the runners that
+ * reach it (without their viewer tokens); the diagnostic reads in that
+ * workspace (error traces of its tasks, its account's workers and the
+ * workspace rollup, failure analytics narrowed to it, explain, and run
  * evidence); its usage and coordination stats and spec discrepancies (narrowed
  * to that one workspace, never team-wide); and listing or reading team-visible
- * experiments (no readouts, no changes). The budget forecast is not among
- * them: it is team-wide by nature. The set is pinned by task-token-routes.test.ts.
+ * experiments (no readouts, no changes). It may also post notes, always as an
+ * agent, on its own task or its own task's mission; read task messages and
+ * artifacts in its own workspace; upload artifacts for its own worker; update
+ * its own task's artifacts and its mission's mission-level ones; and create
+ * artifacts on its own mission or that mission's initiative. The budget
+ * forecast is not among them: it is team-wide by nature. The set is pinned by
+ * task-token-routes.test.ts.
  *
  * The token also carries the task's workspace (so routes can confine it to
  * that workspace without another lookup) and a binding to the minting key:

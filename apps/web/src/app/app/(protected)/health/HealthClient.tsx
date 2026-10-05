@@ -692,7 +692,6 @@ export function HealthClient({
           {runners.length === 0 ? (
             <div className="p-4 text-center">
               <p className="text-sm text-text-muted">No runners connected</p>
-              <p className="text-xs text-text-muted mt-1">Runners appear here when they send heartbeats.</p>
             </div>
           ) : (
             <div className="divide-y divide-border-default">
