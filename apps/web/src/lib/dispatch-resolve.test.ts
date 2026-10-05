@@ -152,6 +152,7 @@ async function inAppOutcome(c: Case): Promise<Outcome> {
 const testDeps = (c: Case): ResolveDeps => ({
   ...RESOLVE_DEPS,
   loadRow: async () => custodyRow(c),
+  claimCustody: async () => false,
   grantOnce: async () => true,
   githubSource: async () => ({ installationId: 42, repoId: 7, fullName: 'org/repo', installedPermissions: { contents: 'write' } }),
   mintGitHubToken: async () => ({ token: 'ghs_scoped', expiresAt: new Date(Date.now() + 3_600_000) }),
@@ -333,6 +334,28 @@ describe('resolveDispatch', () => {
     expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: 'buildd:ws:99999999-9999-4999-8999-999999999999:webhook' }, d)).status).toBe(403);
     expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, { ...d, loadRow: async () => null })).status).toBe(404);
     expect((await resolveDispatch({ id: ROW_ID, attempt: -1, target: T('webhook') } as never, d)).status).toBe(400);
+  });
+
+  it('a callback that outran its publish ack takes custody and proceeds instead of losing the wake', async () => {
+    seed(base);
+    const d = testDeps(base);
+    const row = custodyRow(base);
+    let acked = false;
+    const claimed: string[] = [];
+    const deps: ResolveDeps = {
+      ...d,
+      loadRow: async () => (acked ? row : { ...row, status: 'pending', handedOffAt: null }),
+      claimCustody: async id => { claimed.push(id); acked = true; return true; },
+    };
+    expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, deps)).body).toMatchObject({ decision: 'deliver' });
+    expect(claimed).toEqual([ROW_ID]);
+    // The relayed runner wake takes the same path.
+    acked = false;
+    expect((await relayDispatch({ id: ROW_ID, attempt: 1, target: T('runner-wake') }, deps)).body).toMatchObject({ outcome: 'delivered' });
+    // When the claim is refused (taken back, never published, in-app took it) the answer stays not_in_custody.
+    const refused: ResolveDeps = { ...d, loadRow: async () => ({ ...row, status: 'pending', handedOffAt: null }), claimCustody: async () => false };
+    expect((await resolveDispatch({ id: ROW_ID, attempt: 1, target: T('webhook') }, refused)).body)
+      .toEqual({ decision: 'skip', why: 'not_in_custody:pending' });
   });
 
   it('a row out of custody, a non-work intent, or a gone task answers skip so Dispatch closes it', async () => {
