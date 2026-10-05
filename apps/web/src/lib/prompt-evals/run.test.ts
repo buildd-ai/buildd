@@ -4,8 +4,9 @@ import { installPrompts, listRegisteredPrompts, resetPrompts } from '@buildd/cor
 import { promptedQuestions, resetPromptedQuestionsCache } from '@buildd/core/prompted-decision';
 import { DEFAULT_DECISION_MODEL, type decisionCall } from '@buildd/core/decision-client';
 import { TASK_CATEGORY_PROMPT_ID, TASK_CATEGORY_PROMPT_VERSION, TASK_CATEGORY_QUESTIONS } from '../task-category-decision';
+import { CHAT_INSTRUCTIONS_PROMPT_ID } from '../chat/instructions';
 import {
-  DEFAULT_PROMPT_EVAL_MODEL,
+  NO_EVAL_SET,
   PROMPT_EVAL_BUDGET_MS,
   evalModelConfig,
   runPromptEval,
@@ -20,19 +21,33 @@ import {
 const PUSHED_MARKER = 'Pushed wording nine: a regression counts as a bug even when it was never filed as one.';
 const CASE_TITLE = 'Invoice total loses the discount line after a refresh';
 
-function pushedRepo(opts: { extraFile?: Record<string, string> } = {}): Record<string, string> {
+const CHAT_BODY = 'Private chat wording: answer from live state, briefly, and never guess an id.\n';
+const CHAT_MODEL = 'anthropic/claude-chat-tier-model';
+
+function pushedRepo(opts: { extraFile?: Record<string, string>; chat?: boolean; cases?: boolean } = {}): Record<string, string> {
   const q = structuredClone(TASK_CATEGORY_QUESTIONS) as typeof TASK_CATEGORY_QUESTIONS;
   (q.category.criteria.bug as { what: string }).what = PUSHED_MARKER;
   const body = `${JSON.stringify(q, null, 2)}\n`;
-  return {
-    'manifest.json': JSON.stringify({ prompts: [{ id: TASK_CATEGORY_PROMPT_ID, version: 5, file: 'prompts/tc.json', sha256: sha256Hex(body) }] }),
-    'prompts/tc.json': body,
+  const prompts = [{ id: TASK_CATEGORY_PROMPT_ID, version: 5, file: 'prompts/tc.json', sha256: sha256Hex(body) }];
+  if (opts.chat) prompts.push({ id: CHAT_INSTRUCTIONS_PROMPT_ID, version: 2, file: 'prompts/chat.md', sha256: sha256Hex(CHAT_BODY) });
+  const cases = opts.cases === false ? {} : {
     'evals/task-category.jsonl': [
       JSON.stringify({ id: 'c1', label: 'bug', title: CASE_TITLE, description: 'Customers see a higher total.' }),
       JSON.stringify({ id: 'c2', label: 'docs', title: 'Document the export columns', description: '' }),
     ].join('\n'),
+  };
+  return {
+    'manifest.json': JSON.stringify({ prompts }),
+    'prompts/tc.json': body,
+    ...(opts.chat ? { 'prompts/chat.md': CHAT_BODY } : {}),
+    ...cases,
     ...opts.extraFile,
   };
+}
+
+/** The 12-hex hash a result row stores for the pushed task-category text. */
+function pushedHash(files = pushedRepo()): string {
+  return sha256Hex(files['prompts/tc.json']).slice(0, 12);
 }
 
 const memReader = (files: Record<string, string>): PromptFileReader => ({
@@ -55,10 +70,13 @@ interface Recorded {
   finished: PromptEvalRunPatch[];
   results: PromptEvalResultRow[];
   routes: Array<{ config: unknown; teamId: string }>;
+  decideModels: Array<string | undefined>;
+  hashLookups: string[][];
 }
 
 function deps(over: Partial<PromptEvalDeps> = {}, files = pushedRepo()): { deps: PromptEvalDeps; rec: Recorded } {
-  const rec: Recorded = { runs: [], finished: [], results: [], routes: [] };
+  const rec: Recorded = { runs: [], finished: [], results: [], routes: [], decideModels: [], hashLookups: [] };
+  const decide = (over.decide ?? fakeDecide) as unknown as (p: { model?: string }) => Promise<unknown>;
   return {
     rec,
     deps: {
@@ -68,16 +86,18 @@ function deps(over: Partial<PromptEvalDeps> = {}, files = pushedRepo()): { deps:
       reader: () => memReader(files),
       operatorTeamId: async () => 'team-op',
       teamDecisionModel: async () => null,
+      chatModel: async () => CHAT_MODEL,
       resolveRoute: async (config, scope) => {
         rec.routes.push({ config, teamId: scope.teamId });
-        return { apiKey: 'or-key', endpoint: { kind: 'chat', baseURL: 'https://openrouter.ai/api/v1', provider: 'openrouter' }, model: config.model };
+        return { apiKey: 'or-key', endpoint: { kind: 'chat', baseURL: 'https://openrouter.ai/api/v1', provider: 'openrouter' }, model: config?.model ?? DEFAULT_DECISION_MODEL };
       },
+      lastEvaluatedHashes: async ids => { rec.hashLookups.push(ids); return new Map(); },
       runInFlight: async () => false,
       insertRun: async row => { rec.runs.push(row); return 'run-1'; },
       finishRun: async (_id, patch) => { rec.finished.push(patch); },
       insertResults: async rows => { rec.results.push(...rows); },
-      decide: fakeDecide,
       ...over,
+      decide: (async (p: { model?: string }) => { rec.decideModels.push(p.model); return decide(p); }) as unknown as typeof decisionCall,
     },
   };
 }
@@ -87,34 +107,142 @@ afterEach(() => {
   resetPromptedQuestionsCache();
 });
 
-describe('runPromptEval', () => {
-  it('scores the pushed text and stores id, fingerprint, model and score per set', async () => {
+describe('runPromptEval: the production model per prompt surface', () => {
+  it('scores a decision prompt with the team decision model (default Jev), no mismatch', async () => {
     const { deps: d, rec } = deps();
     const out = await runPromptEval({ trigger: 'push', ref: 'abc123' }, d);
 
     expect(out.status).toBe('passed');
-    expect(rec.runs[0]).toMatchObject({ trigger: 'push', promptsRef: 'abc123', teamId: 'team-op', evalModel: DEFAULT_PROMPT_EVAL_MODEL });
+    expect(rec.routes[0]).toEqual({ config: null, teamId: 'team-op' });
+    expect(new Set(rec.decideModels)).toEqual(new Set([DEFAULT_DECISION_MODEL]));
+    expect(rec.runs[0]).toMatchObject({ trigger: 'push', promptsRef: 'abc123', teamId: 'team-op', evalModel: DEFAULT_DECISION_MODEL, prodModel: DEFAULT_DECISION_MODEL, modelMismatch: false });
     const tc = rec.results.find(r => r.benchmarkSet === 'task_category')!;
     expect(tc).toMatchObject({
       promptId: TASK_CATEGORY_PROMPT_ID,
       promptSource: 'private',
       promptRowVersion: 5,
       promptVersion: `${TASK_CATEGORY_PROMPT_VERSION}+p5`,
-      model: DEFAULT_PROMPT_EVAL_MODEL,
+      model: DEFAULT_DECISION_MODEL,
       status: 'scored',
       cases: 2,
       accuracy: 1,
     });
-    expect(tc.promptHash).toHaveLength(12);
+    expect(tc.promptHash).toBe(pushedHash());
     expect(rec.finished[0]).toMatchObject({ status: 'passed', loadedPrompts: 1, problems: [] });
   });
 
-  it('never stores prompt text or case content', async () => {
+  it('uses the team\'s configured decision model and route, as live decisions do', async () => {
+    const team = { endpoint: 'chat' as const, model: 'gw/decider', via: 'litellm' as const };
+    const { deps: d, rec } = deps({ teamDecisionModel: async () => team });
+    await runPromptEval({ trigger: 'manual' }, d);
+    expect(rec.routes[0].config).toEqual(team);
+    expect(rec.runs[0]).toMatchObject({ evalModel: 'gw/decider', prodModel: 'gw/decider', modelMismatch: false });
+    expect(rec.results.find(r => r.status === 'scored')!.model).toBe('gw/decider');
+  });
+
+  it('ignores PROMPT_EVAL_MODEL: there is no eval-wide default model any more', async () => {
+    const { deps: d, rec } = deps({ env: { PROMPTS_REPO: 'acme/acme-prompts', PROMPT_EVAL_MODEL: 'deepseek/deepseek-v4.1-flash' } });
+    await runPromptEval({ trigger: 'manual' }, d);
+    expect(rec.runs[0]).toMatchObject({ evalModel: DEFAULT_DECISION_MODEL, modelMismatch: false });
+    expect(rec.decideModels).not.toContain('deepseek/deepseek-v4.1-flash');
+  });
+
+  it('a per-run override is used, recorded on the run and each row, and flagged as a mismatch', async () => {
     const { deps: d, rec } = deps();
-    await runPromptEval({ trigger: 'cron' }, d);
-    const stored = JSON.stringify(rec);
+    const out = await runPromptEval({ trigger: 'manual', teamId: 'team-caller', model: 'deepseek/deepseek-v4-pro' }, d);
+    expect(out).toMatchObject({ evalModel: 'deepseek/deepseek-v4-pro', prodModel: DEFAULT_DECISION_MODEL, modelMismatch: true });
+    expect(rec.routes[0]).toEqual({ config: { endpoint: 'chat', model: 'deepseek/deepseek-v4-pro', via: 'openrouter' }, teamId: 'team-caller' });
+    expect(rec.runs[0]).toMatchObject({ evalModel: 'deepseek/deepseek-v4-pro', modelMismatch: true });
+    expect(rec.results.find(r => r.status === 'scored')!.model).toBe('deepseek/deepseek-v4-pro');
+  });
+
+  it('an override naming the production model is no mismatch', async () => {
+    const { deps: d, rec } = deps();
+    await runPromptEval({ trigger: 'manual', model: DEFAULT_DECISION_MODEL }, d);
+    expect(rec.routes[0].config).toEqual({ endpoint: 'systemone', model: DEFAULT_DECISION_MODEL, via: 'openrouter' });
+    expect(rec.runs[0].modelMismatch).toBe(false);
+  });
+
+  it('routes an override through the LiteLLM gateway when live decisions do', () => {
+    expect(evalModelConfig('x/y', { endpoint: 'chat', model: 'gw/x', via: 'litellm' })).toEqual({ endpoint: 'chat', model: 'x/y', via: 'litellm' });
+  });
+
+  it('records a chat prompt with the chat tier model, as a no-eval-set row', async () => {
+    const { deps: d, rec } = deps({}, pushedRepo({ chat: true }));
+    const out = await runPromptEval({ trigger: 'push', ref: 'abc' }, d);
+    expect(out.status).toBe('passed');
+    const chat = rec.results.find(r => r.promptId === CHAT_INSTRUCTIONS_PROMPT_ID)!;
+    expect(chat).toMatchObject({
+      benchmarkSet: NO_EVAL_SET,
+      status: 'no_eval_set',
+      model: CHAT_MODEL,
+      promptRowVersion: 2,
+      promptHash: sha256Hex(CHAT_BODY).slice(0, 12),
+      cases: 0,
+      accuracy: null,
+      baselineAccuracy: null,
+      coverageAt90: null,
+      accuracyAt90: null,
+      costUsd: 0,
+    });
+  });
+});
+
+describe('runPromptEval: no eval set, never a fake score', () => {
+  it('a decision prompt whose cases file is missing gets a no-eval-set row and makes no call', async () => {
+    const { deps: d, rec } = deps({}, pushedRepo({ cases: false }));
+    const out = await runPromptEval({ trigger: 'push', ref: 'abc' }, d);
+    expect(out.status).toBe('passed');
+    expect(rec.decideModels).toEqual([]);
+    const tc = rec.results.find(r => r.promptId === TASK_CATEGORY_PROMPT_ID)!;
+    expect(tc).toMatchObject({ benchmarkSet: 'task_category', status: 'no_eval_set', cases: 0, accuracy: null, model: DEFAULT_DECISION_MODEL });
+    expect(rec.results.every(r => r.status !== 'no_cases')).toBe(true);
+  });
+
+  it('an unchanged set whose id is not in the run writes no row at all', async () => {
+    const { deps: d, rec } = deps();
+    await runPromptEval({ trigger: 'push', ref: 'abc' }, d);
+    // task_role and heartbeat_triage are not in the pushed text: nothing to say about them.
+    expect(rec.results.map(r => r.promptId)).toEqual([TASK_CATEGORY_PROMPT_ID]);
+  });
+});
+
+describe('runPromptEval: a push scores only what changed', () => {
+  it('skips, writing nothing and calling nothing, when no pushed text changed', async () => {
+    const { deps: d, rec } = deps({ lastEvaluatedHashes: async () => new Map([[TASK_CATEGORY_PROMPT_ID, pushedHash()]]) });
+    const out = await runPromptEval({ trigger: 'push', ref: 'abc' }, d);
+    expect(out).toEqual({ status: 'skipped', reason: expect.stringContaining('no prompt text changed') });
+    expect(rec.runs).toEqual([]);
+    expect(rec.results).toEqual([]);
+    expect(rec.decideModels).toEqual([]);
+  });
+
+  it('scores the changed id and leaves the unchanged one out', async () => {
+    const files = pushedRepo({ chat: true });
+    const { deps: d, rec } = deps({ lastEvaluatedHashes: async () => new Map([[CHAT_INSTRUCTIONS_PROMPT_ID, sha256Hex(CHAT_BODY).slice(0, 12)], [TASK_CATEGORY_PROMPT_ID, '000000000000']]) }, files);
+    const out = await runPromptEval({ trigger: 'push', ref: 'abc' }, d);
+    expect(out.status).toBe('passed');
+    expect(rec.results.map(r => r.promptId)).toEqual([TASK_CATEGORY_PROMPT_ID]);
+    expect(rec.results[0].status).toBe('scored');
+  });
+
+  it('a manual run scores everything, changed or not', async () => {
+    const { deps: d, rec } = deps({ lastEvaluatedHashes: async () => new Map([[TASK_CATEGORY_PROMPT_ID, pushedHash()]]) });
+    const out = await runPromptEval({ trigger: 'manual' }, d);
+    expect(out.status).toBe('passed');
+    expect(rec.hashLookups).toEqual([]);
+    expect(rec.results.find(r => r.promptId === TASK_CATEGORY_PROMPT_ID)?.status).toBe('scored');
+  });
+});
+
+describe('runPromptEval: safety', () => {
+  it('never stores prompt text or case content', async () => {
+    const { deps: d, rec } = deps({}, pushedRepo({ chat: true }));
+    await runPromptEval({ trigger: 'manual' }, d);
+    const stored = JSON.stringify({ runs: rec.runs, finished: rec.finished, results: rec.results });
     expect(stored).not.toContain(PUSHED_MARKER);
     expect(stored).not.toContain(CASE_TITLE);
+    expect(stored).not.toContain(CHAT_BODY.trim());
   });
 
   it('withholds every result when the report would carry prompt text', async () => {
@@ -151,44 +279,16 @@ describe('runPromptEval', () => {
     expect(live()).not.toContain(PUSHED_MARKER);
   });
 
-  it('flags a model mismatch: live decisions on Jev, the eval on DeepSeek', async () => {
-    const { deps: d, rec } = deps();
-    const out = await runPromptEval({ trigger: 'cron' }, d);
-    expect(out.status).toBe('passed');
-    expect(rec.runs[0]).toMatchObject({ prodModel: DEFAULT_DECISION_MODEL, evalModel: DEFAULT_PROMPT_EVAL_MODEL, modelMismatch: true });
-  });
-
-  it('no mismatch when the eval asks the model live decisions use', async () => {
-    const { deps: d, rec } = deps({ teamDecisionModel: async () => ({ endpoint: 'chat', model: DEFAULT_PROMPT_EVAL_MODEL, via: 'openrouter' }) });
-    await runPromptEval({ trigger: 'cron' }, d);
-    expect(rec.runs[0].modelMismatch).toBe(false);
-  });
-
-  it('resolves the key through the team decision route, honouring PROMPT_EVAL_MODEL and a per-run override', async () => {
-    const a = deps({ env: { PROMPTS_REPO: 'acme/acme-prompts', PROMPT_EVAL_MODEL: 'deepseek/deepseek-v4-pro' } });
-    await runPromptEval({ trigger: 'cron' }, a.deps);
-    expect(a.rec.routes[0]).toEqual({ config: { endpoint: 'chat', model: 'deepseek/deepseek-v4-pro', via: 'openrouter' }, teamId: 'team-op' });
-
-    const b = deps();
-    await runPromptEval({ trigger: 'manual', teamId: 'team-caller', model: 'typesafe/jev-1.13' }, b.deps);
-    expect(b.rec.routes[0]).toEqual({ config: { endpoint: 'systemone', model: 'typesafe/jev-1.13', via: 'openrouter' }, teamId: 'team-caller' });
-    expect(b.rec.runs[0].modelMismatch).toBe(false);
-  });
-
-  it('routes through the LiteLLM gateway when live decisions do', () => {
-    expect(evalModelConfig(DEFAULT_PROMPT_EVAL_MODEL, { endpoint: 'chat', model: 'gw/x', via: 'litellm' })).toEqual({ endpoint: 'chat', model: DEFAULT_PROMPT_EVAL_MODEL, via: 'litellm' });
-  });
-
   it('fails, naming the key, when no key resolves for the team', async () => {
-    const { deps: d, rec } = deps({ resolveRoute: async config => ({ apiKey: null, model: config.model }) });
-    const out = await runPromptEval({ trigger: 'cron' }, d);
+    const { deps: d, rec } = deps({ resolveRoute: async config => ({ apiKey: null, model: config?.model ?? DEFAULT_DECISION_MODEL }) });
+    const out = await runPromptEval({ trigger: 'manual' }, d);
     expect(out.status).toBe('failed');
     expect(rec.finished[0].problems).toEqual([expect.stringContaining('no OpenRouter key resolves for the team')]);
   });
 
   it('skips, writing nothing, when no prompts repo is configured', async () => {
     const { deps: d, rec } = deps({ env: {} });
-    expect(await runPromptEval({ trigger: 'cron' }, d)).toEqual({ status: 'skipped', reason: expect.stringContaining('PROMPTS_REPO') });
+    expect(await runPromptEval({ trigger: 'manual' }, d)).toEqual({ status: 'skipped', reason: expect.stringContaining('PROMPTS_REPO') });
     expect(rec.runs).toEqual([]);
   });
 
@@ -212,7 +312,7 @@ describe('runPromptEval', () => {
     let t = 1_000;
     const slow = (async (p: never) => { t += PROMPT_EVAL_BUDGET_MS; return fakeDecide(p); }) as unknown as typeof decisionCall;
     const { deps: d, rec } = deps({ decide: slow, now: () => t });
-    const out = await runPromptEval({ trigger: 'cron' }, d);
+    const out = await runPromptEval({ trigger: 'manual' }, d);
     expect(out.status).toBe('failed');
     const tc = rec.results.find(r => r.benchmarkSet === 'task_category')!;
     expect(tc.notRun).toBeGreaterThan(0);
@@ -222,7 +322,7 @@ describe('runPromptEval', () => {
   it('a dry run makes no calls and needs no key', async () => {
     let calls = 0;
     const { deps: d, rec } = deps({
-      resolveRoute: async config => ({ apiKey: null, model: config.model }),
+      resolveRoute: async config => ({ apiKey: null, model: config?.model ?? DEFAULT_DECISION_MODEL }),
       decide: (async () => { calls++; throw new Error('no calls'); }) as unknown as typeof decisionCall,
     });
     const out = await runPromptEval({ trigger: 'manual', dryRun: true }, d);
@@ -234,7 +334,7 @@ describe('runPromptEval', () => {
   it('leaves the deployment snapshot alone when one is installed', async () => {
     installPrompts([]);
     const { deps: d } = deps();
-    await runPromptEval({ trigger: 'cron' }, d);
+    await runPromptEval({ trigger: 'manual' }, d);
     expect(promptedQuestions(TASK_CATEGORY_PROMPT_ID, TASK_CATEGORY_QUESTIONS, TASK_CATEGORY_PROMPT_VERSION).promptVersion).toBe(TASK_CATEGORY_PROMPT_VERSION);
   });
 });

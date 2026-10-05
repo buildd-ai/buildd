@@ -2,8 +2,8 @@
 /**
  * Run the decision benchmarks against a deployment's own prompt text, from a
  * checkout. buildd's own deployment runs the same eval server-side
- * (apps/web/src/lib/prompt-evals/run.ts: on a push to the prompts repo, weekly,
- * and on demand); this CLI is for a local run or a self-hosted deployment.
+ * (apps/web/src/lib/prompt-evals/run.ts: on a push to the prompts repo, for the
+ * ids whose text changed, and on demand); this CLI is for a local run or a self-hosted deployment.
  *
  * Public CI only ever exercises the public defaults compiled into this repo. A
  * deployment that replaces them (docs/prompts.md) needs its replacement text

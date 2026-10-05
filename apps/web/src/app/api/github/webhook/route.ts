@@ -2485,7 +2485,7 @@ async function handlePushEvent(event: {
   commits?: Array<{ id?: string; message?: string; added?: string[]; modified?: string[]; removed?: string[] }>;
   head_commit?: { message?: string } | null;
 }): Promise<void> {
-  // A push to the private prompts repo scores the pushed text (lib/prompt-evals/run.ts).
+  // A push to the private prompts repo scores the pushed text that changed (lib/prompt-evals/run.ts).
   // Network + model work, so after(); never fails the webhook.
   const promptEvalRef = promptEvalRefForPush(event);
   if (promptEvalRef) {
@@ -2496,7 +2496,7 @@ async function handlePushEvent(event: {
           .catch(err => console.error('[prompt-evals] push eval failed:', err instanceof Error ? err.message : String(err))),
       );
     } catch (err) {
-      console.warn('[prompt-evals] after() unavailable; the weekly cron will score it:', err);
+      console.warn('[prompt-evals] after() unavailable; this push is not scored (run POST /api/admin/prompt-evals):', err);
     }
   }
 
