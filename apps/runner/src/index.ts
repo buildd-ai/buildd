@@ -2685,7 +2685,7 @@ if (!config.apiKey && !config.serverless) {
   if (DEBUG_MODE) {
     console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
   } else {
-    console.log(`   ${RED}▸${RESET} No API key — run with ${BOLD}--debug${RESET} or set ${BOLD}BUILDD_API_KEY${RESET}`);
+    console.log(`   ${RED}▸${RESET} Not logged in — run ${BOLD}buildd login${RESET} (or set ${BOLD}BUILDD_API_KEY${RESET}), then start buildd again`);
   }
 }
 console.log('');

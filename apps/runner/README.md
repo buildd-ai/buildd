@@ -4,13 +4,19 @@ The standalone worker that claims and executes buildd tasks. Install with:
 
 ```bash
 curl -fsSL https://buildd.dev/install.sh | bash
+exec $SHELL
+buildd login        # or: buildd login --device, on a machine with no browser
+buildd              # or: buildd service install, to run it in the background
 ```
 
 (Windows: `irm buildd.dev/install.ps1 | iex`.) This installs Bun, a sparse
 clone of this repo under `~/.buildd`, headless Chromium, and the `buildd`
 launcher at `~/.local/bin/buildd`.
 
-Running `buildd` on its own starts the runner in the foreground: a
+The runner is headless: it serves no local page unless started with
+`buildd --debug` (http://localhost:8766), and without a login it idles, so
+`buildd login` comes first. Running `buildd` on its own starts the runner in
+the foreground: a
 restart-on-update loop that re-execs itself whenever the self-updater applies
 a new version (exit code 75), and otherwise keeps running until you close the
 terminal. See `docs/testing.md` and `docs/specs/runner-liveness.md` for the

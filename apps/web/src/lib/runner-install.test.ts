@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { RUNNER_INSTALL_COMMANDS, RUNNER_LOCAL_UI_URL } from './runner-install';
+import { RUNNER_INSTALL_COMMANDS } from './runner-install';
 
 const REPO = join(import.meta.dir, '../../../..');
 const installer = readFileSync(join(REPO, 'apps/runner/install.sh'), 'utf8');
@@ -23,18 +23,20 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 describe('runner install instruction', () => {
-  it('is the one-liner, a shell reload, then bare buildd', () => {
+  it('is the one-liner, a shell reload, buildd login, then bare buildd', () => {
     expect([...RUNNER_INSTALL_COMMANDS]).toEqual([
       'curl -fsSL https://buildd.dev/install.sh | bash',
       'exec $SHELL',
+      'buildd login',
       'buildd',
     ]);
   });
 
   it('ends where the installer says it ends', () => {
-    // install.sh closes with "Run buildd to start:  buildd" and the local UI URL.
-    expect(installer).toContain('echo "  buildd"');
-    expect(installer).toContain(`open ${RUNNER_LOCAL_UI_URL}`);
+    // install.sh's next steps (print_next_steps) name the same commands.
+    expect(installer).toContain("exec $SHELL");
+    expect(installer).toContain('  buildd login ');
+    expect(installer).toContain('  buildd                   start the runner');
   });
 
   it('points at the short URL the proxy serves', () => {
@@ -42,13 +44,20 @@ describe('runner install instruction', () => {
     expect(proxy).toContain('/install.sh');
   });
 
-  it('no screen tells people to run a command that does not exist', () => {
+  it('no screen tells people to run a command that does not exist, or to open :8766', () => {
     const offenders: string[] = [];
     // Screens, plus API error hints the screens print verbatim.
     for (const file of [...walk(join(REPO, 'apps/web/src/app')), ...walk(join(REPO, 'apps/web/src/components'))]) {
       const src = readFileSync(file, 'utf8');
       const rel = relative(REPO, file);
       if (/\bbuildd run\b/.test(src)) offenders.push(`${rel}: buildd run`);
+      // The runner is headless unless started with --debug, so no screen sends
+      // people to the local port to connect their account.
+      for (const line of src.split('\n')) {
+        if (/\bopen\b[^\n]{0,120}8766|8766[^\n]{0,120}connect/i.test(line) && !line.includes('--debug')) {
+          offenders.push(`${rel}: open :8766 to connect`);
+        }
+      }
       if (src.includes('manage_workspaces action=update')) offenders.push(`${rel}: manage_workspaces action=update`);
       if (src.includes('raw.githubusercontent.com/buildd-ai/buildd/main/apps/runner/install.sh')) {
         offenders.push(`${rel}: long installer URL (use ${RUNNER_INSTALL_COMMANDS[0]})`);

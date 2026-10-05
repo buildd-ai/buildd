@@ -19,18 +19,15 @@ The server coordinates and never runs an agent. Runners claim tasks over the RES
 ```bash
 curl -fsSL https://buildd.dev/install.sh | bash
 exec $SHELL
+buildd login
 buildd
 ```
 
-Then open http://localhost:8766 and connect your account.
+`buildd login` opens your browser to connect this machine to your account; on a headless or SSH machine with no browser, use `buildd login --device` and enter the code it prints. `buildd` then starts the runner in that terminal. To keep it running after you close the terminal, and across reboots, run `buildd service install` instead.
 
-The installer clones the runner into `~/.buildd`, installs Bun if you don't have it, puts the `buildd` launcher in `~/.local/bin` and adds that to your shell rc. It offers to register a background service at the end; pass `--service` to register it without asking (`curl -fsSL https://buildd.dev/install.sh | bash -s -- --service`). Windows: `irm buildd.dev/install.ps1 | iex`.
+The installer clones the runner into `~/.buildd`, installs Bun if you don't have it, puts the `buildd` launcher in `~/.local/bin` and adds that to your shell rc. Once you're logged in, re-running it offers to register the background service; pass `--service` to register it without asking (`curl -fsSL https://buildd.dev/install.sh | bash -s -- --service`). Windows: `irm buildd.dev/install.ps1 | iex`.
 
-On a headless or SSH machine with no browser, connect from the terminal instead:
-
-```bash
-buildd login --device
-```
+The runner has no web page by default. `buildd --debug` adds a local one on http://localhost:8766 for troubleshooting.
 
 `buildd login` also registers the buildd MCP server in `~/.claude.json`, so Claude Code can create and work tasks. Runner commands, the background service and env overrides are in [apps/runner/README.md](apps/runner/README.md).
 
