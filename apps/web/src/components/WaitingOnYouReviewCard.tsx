@@ -24,6 +24,7 @@ type CardState =
   | 'merging'
   | 'merged'
   | 'error'
+  | 'pending'
   | 'conflict_dispatched'
   | 'conflict_exhausted'
   | 're_reviewing'
@@ -176,6 +177,12 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           setErrorMsg(outcome.clearedBy ? `${outcome.message}. ${outcome.clearedBy}` : outcome.message);
           setMergeRetrySafe(true);
           setState('error');
+          break;
+        case 'pending':
+          // Checks or a review round are still running — a platform-owned
+          // wait, so no Retry and no Dismiss (see merge-outcome.ts).
+          setErrorMsg(outcome.message);
+          setState('pending');
           break;
         case 'indeterminate':
           setErrorMsg(outcome.message);
@@ -461,6 +468,13 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 <path d="M20 6L9 17l-5-5" />
               </svg>
               Merged
+            </div>
+          )}
+
+          {state === 'pending' && (
+            <div className="mt-2.5 pt-2 flex items-center gap-1.5" data-testid="review-card-pending">
+              <Spinner size="xs" className="flex-shrink-0" aria-label="Waiting on checks or review" />
+              <span className="text-[11px] text-text-secondary min-w-0">{errorMsg}</span>
             </div>
           )}
 
