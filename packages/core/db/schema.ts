@@ -5027,7 +5027,7 @@ export type DecisionChallengerRun = typeof decisionChallengerRuns.$inferSelect;
 
 // Prompt evals (apps/web/src/lib/prompt-evals/run.ts): the decision benchmark
 // sets scored against the prompt text a deployment runs, or is about to run.
-// One run row per eval, one result row per benchmark set. Content-free like the
+// One run row per eval, one result row per prompt id evaluated. Content-free like the
 // decision ledger: prompt ids, row versions, content hashes, model ids, counts
 // and rates. Never prompt text, case content or error strings; every result is
 // checked against the loaded prompt bodies before it is written.
@@ -5039,10 +5039,11 @@ export const promptEvalRuns = pgTable('prompt_eval_runs', {
   status: text('status').notNull().$type<'running' | 'passed' | 'failed' | 'refused' | 'skipped'>(),
   // The prompts repo ref scored (a sha for a push; else the configured ref).
   promptsRef: text('prompts_ref'),
-  // The model that answered the eval, and the model the team's live decisions use.
+  // The model that answered the decision prompts (the production model unless
+  // a per-run override was given), and the model the team's live decisions use.
   evalModel: text('eval_model'),
   prodModel: text('prod_model'),
-  // True when they differ: the scores then do not predict production behaviour.
+  // True only when an override differed: the scores then do not predict production behaviour.
   modelMismatch: boolean('model_mismatch').notNull().default(false),
   dryRun: boolean('dry_run').notNull().default(false),
   loadedPrompts: integer('loaded_prompts'),
@@ -5070,7 +5071,8 @@ export const promptEvalResults = pgTable('prompt_eval_results', {
   // The decision promptVersion naming the text, e.g. `tc1+p3`.
   promptVersion: text('prompt_version').notNull(),
   model: text('model'),
-  status: text('status').notNull().$type<'scored' | 'dry_run' | 'no_cases'>(),
+  // no_eval_set: nothing to score it against (no_cases on older rows).
+  status: text('status').notNull().$type<'scored' | 'dry_run' | 'no_eval_set' | 'no_cases'>(),
   cases: integer('cases').notNull(),
   accuracy: real('accuracy'),
   baselineAccuracy: real('baseline_accuracy'),

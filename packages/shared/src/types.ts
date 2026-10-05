@@ -3554,8 +3554,13 @@ export interface PromptEvalResultSummary {
   /** First 12 hex of the sha256 of the text scored. */
   promptHash: string;
   promptVersion: string;
+  /**
+   * The model that scored it, or for `no_eval_set` the model that serves it in
+   * production (nothing was called). Null for a dry run.
+   */
   model: string | null;
-  status: 'scored' | 'dry_run' | 'no_cases';
+  /** `no_eval_set`: no benchmark set or no labelled cases; every score is null. `no_cases` is the older name. */
+  status: 'scored' | 'dry_run' | 'no_eval_set' | 'no_cases';
   cases: number;
   accuracy: number | null;
   baselineAccuracy: number | null;
@@ -3570,6 +3575,7 @@ export interface PromptEvalResultSummary {
 export interface PromptEvalRunSummary {
   id: string;
   teamId: string | null;
+  /** `cron`: a run from the retired weekly schedule. */
   trigger: 'push' | 'cron' | 'manual';
   status: 'running' | 'passed' | 'failed' | 'refused' | 'skipped';
   promptsRef: string | null;
@@ -3577,7 +3583,7 @@ export interface PromptEvalRunSummary {
   /** The model the team's live decisions use. */
   prodModel: string | null;
   modelMismatch: boolean;
-  /** Present when `modelMismatch`: the scores do not predict production behaviour. */
+  /** Set only when a per-run override scored on another model than production: the scores do not predict production behaviour. */
   modelMismatchNote?: string;
   dryRun: boolean;
   loadedPrompts: number | null;
