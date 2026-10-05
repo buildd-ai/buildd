@@ -103,6 +103,11 @@ describe('seams that have shipped stay cut', () => {
     expect(imported.filter(f => behindSlots.includes(f))).toEqual([]);
   });
 
+  test('the GitHub webhook reaches the releases module only through emit()', () => {
+    const imported = Object.entries(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(([, mod]) => mod === 'releases').map(([f]) => f)).toEqual([]);
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);

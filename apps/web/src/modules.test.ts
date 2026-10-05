@@ -45,7 +45,9 @@ describe('composition root', () => {
     expect(byEvent('task.terminal')).toEqual(['knowledge:task-evidence']);
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
-    expect(byEvent('pr.merged')).toEqual(['notifications:ledger-pr-merged']);
+    expect(byEvent('pr.merged')).toEqual(['releases:release-record-prod-merge', 'notifications:ledger-pr-merged']);
+    expect(byEvent('task.pr_merged')).toEqual(['releases:release-path-b-trigger']);
+    expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed']);
   });
 
