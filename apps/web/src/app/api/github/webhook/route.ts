@@ -62,6 +62,7 @@ import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
+import { scheduleEarlyReleaseDispatch } from '@/lib/early-release-dispatch-trigger';
 import { conformanceManifest } from '@/lib/path-declaration';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -659,6 +660,8 @@ async function handlePullRequestEvent(event: {
     base?: { ref: string; sha?: string };
     html_url: string;
     mergeable?: boolean | null;
+    additions?: number;
+    deletions?: number;
   };
   installation?: { id: number };
   repository: { full_name: string };
@@ -931,6 +934,32 @@ async function handlePullRequestEvent(event: {
         pr,
         openWorker as typeof openWorker & { taskId: string },
       );
+    }
+
+    // Early release (docs/design/early-release.md): the upstream task's own PR
+    // just became visible for review (raised, or un-drafted) — check every
+    // PENDING task that depends on it. Workspace-gated inside the dispatcher
+    // itself (gitConfig.earlyRelease.mode), so the DB read below is the only
+    // cost for a workspace that has not opted in.
+    if (!pr.draft && event.installation && (action === 'opened' || action === 'ready_for_review') && openWorker?.taskId) {
+      const earlyReleaseWorkspace = await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, openWorker.workspaceId),
+        columns: { teamId: true, gitConfig: true },
+      });
+      if (earlyReleaseWorkspace) {
+        scheduleEarlyReleaseDispatch({
+          workspaceId: openWorker.workspaceId,
+          teamId: earlyReleaseWorkspace.teamId,
+          gitConfig: earlyReleaseWorkspace.gitConfig,
+          upstreamTaskId: openWorker.taskId,
+          upstreamPrNumber: pr.number,
+          upstreamBranch: pr.head.ref,
+          repoFullName: repository.full_name,
+          installationId: event.installation.id,
+          upstreamAdditions: pr.additions ?? null,
+          upstreamDeletions: pr.deletions ?? null,
+        });
+      }
     }
 
     // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
