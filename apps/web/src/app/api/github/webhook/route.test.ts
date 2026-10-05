@@ -6926,6 +6926,25 @@ describe('webhook → reviewer flows (characterization)', () => {
     }]);
   });
 
+  it('a CI-fix retry that throws is isolated: the next PR in the suite is still handled and the webhook answers 200', async () => {
+    mockRetryCiFailureForPr.mockImplementationOnce(async (input: any) => {
+      reviewLog.push(['retryCiFailureForPr', input]);
+      throw new Error('retry exploded');
+    });
+    const payload = makeCheckSuitePayload({
+      check_suite: {
+        conclusion: 'failure', head_sha: 'sha-red',
+        pull_requests: [
+          { number: 95, head: { sha: 'sha-red', ref: 'x' }, base: { sha: 'b', ref: 'dev' } },
+          { number: 96, head: { sha: 'sha-red', ref: 'y' }, base: { sha: 'b', ref: 'dev' } },
+        ],
+      },
+    });
+    const res = await POST(createWebhookRequest('check_suite', payload));
+    expect(res.status).toBe(200);
+    expect(reviewLog.filter(c => c[0] === 'retryCiFailureForPr').map(c => (c[1] as any).prNumber)).toEqual([95, 96]);
+  });
+
   it('CI green does not ask for a CI fix', async () => {
     const payload = makeCheckSuitePayload({ check_suite: { conclusion: 'success' } });
     await POST(createWebhookRequest('check_suite', payload));
