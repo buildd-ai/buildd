@@ -67,6 +67,21 @@ describe('buildGeometry', () => {
     expect(g2.zeroY).toBe(g2.plot.bottom);
   });
 
+  it('gives lost work 15-35% of the height whatever its size, and drops a colliding tick label', () => {
+    const many = series(Array.from({ length: 30 }, (_, n) =>
+      w({ workerId: `f${n}`, taskId: `f${n}`, taskStatus: 'failed', status: 'failed', startedAt: T0 + n * 600_000, completedAt: T0 + n * 600_000 + 60_000 })));
+    const gm = buildGeometry(many, 400, 220);
+    const plotH = gm.plot.bottom - gm.plot.top;
+    expect((gm.plot.bottom - gm.zeroY) / plotH).toBeCloseTo(0.35, 5);
+    const busy = series(Array.from({ length: 40 }, (_, n) =>
+      w({ workerId: `r${n}`, taskId: `r${n}`, startedAt: T0, completedAt: T0 + 20 * H })).concat(
+      w({ workerId: 'x', taskId: 'x', taskStatus: 'failed', status: 'failed', startedAt: T0, completedAt: T0 + H })));
+    const gb = buildGeometry(busy, 400, 220);
+    expect((gb.plot.bottom - gb.zeroY) / (gb.plot.bottom - gb.plot.top)).toBeCloseTo(0.15, 5);
+    const tiny = buildGeometry(S, 400, 60);
+    expect(tiny.yTicks.some(t => t.value < 0)).toBe(false);
+  });
+
   it('places release marks on the time axis', () => {
     expect(g.releases).toHaveLength(1);
     expect(g.releases[0].x).toBeCloseTo(g.plot.left + (g.plot.right - g.plot.left) / 2, 5);

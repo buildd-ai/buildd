@@ -58,6 +58,11 @@ export interface ChartGeometry {
   bucketIndexAt: (x: number) => number;
 }
 
+export const MIN_DOWN_SHARE = 0.15;
+export const MAX_DOWN_SHARE = 0.35;
+/** Closer than this to the zero line, a tick label would collide with "0". */
+const TICK_GAP = 14;
+
 /** Round up to a clean axis maximum: 1, 2, 5, 10, 20, 50 ... */
 export function niceCeil(v: number): number {
   if (v <= 1) return 1;
@@ -79,10 +84,11 @@ export function buildGeometry(series: FlowSeries, width: number, height: number)
   const maxUp = niceCeil(Math.max(1, ...stackTotals));
   const maxLost = Math.max(0, ...buckets.map(b => b.lost));
   const maxDown = maxLost > 0 ? niceCeil(maxLost) : 0;
-  // The area below the axis is sized to its share of the range, at least a sliver.
-  const span = maxUp + maxDown;
+  // Lost work gets its own scale below the axis, in 15-35% of the height: enough
+  // to read when there is a little, never enough to flatten the work above.
   const plotH = plot.bottom - plot.top;
-  const zeroY = plot.top + (maxDown > 0 ? plotH * (maxUp / span) : plotH);
+  const downShare = maxDown > 0 ? Math.min(MAX_DOWN_SHARE, Math.max(MIN_DOWN_SHARE, maxDown / (maxUp + maxDown))) : 0;
+  const zeroY = plot.top + plotH * (1 - downShare);
   const unit = (zeroY - plot.top) / maxUp;
 
   const { from, to } = series.window;
@@ -110,7 +116,7 @@ export function buildGeometry(series: FlowSeries, width: number, height: number)
   edges.lost = buckets.length && maxDown > 0 ? `M${lostPts.join('L')}` : '';
 
   const yTicks = [0, maxUp / 2, maxUp].map(v => ({ value: v, y: zeroY - v * unit }));
-  if (maxDown > 0) yTicks.push({ value: -maxDown, y: plot.bottom });
+  if (maxDown > 0 && plot.bottom - zeroY >= TICK_GAP) yTicks.push({ value: -maxDown, y: plot.bottom });
 
   const spanMs = to - from;
   const day = 86_400_000;

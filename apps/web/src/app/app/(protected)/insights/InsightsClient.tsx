@@ -36,7 +36,9 @@ export function InsightsClient({ series, window }: Props) {
         <div className="mt-1 flex flex-wrap items-baseline gap-x-6 gap-y-2">
           <span className="text-display font-bold text-text-primary">{formatShare(headline.shippedShare)}</span>
           <span className="text-body text-text-secondary">
-            {headline.releases} {headline.releases === 1 ? 'release' : 'releases'} · median {formatDuration(headline.medianStartToProdMs)} from first agent start to production
+            {headline.shippedTasks} {headline.shippedTasks === 1 ? 'task' : 'tasks'} shipped
+            {headline.releases > 0 && <> in {headline.releases} {headline.releases === 1 ? 'release' : 'releases'}</>}
+            {headline.medianStartToProdMs != null && <> · median {formatDuration(headline.medianStartToProdMs)} from first agent start to production</>}
           </span>
         </div>
         <p className="mt-2 text-meta text-text-muted">
