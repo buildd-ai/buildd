@@ -19,6 +19,7 @@ import EvidenceStorageFixture from './EvidenceStorageFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
+import AgentAccessFixture from './AgentAccessFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
     FIXTURE_VIEWS,
@@ -31,6 +32,7 @@ import {
     TASK_SHIPPED_FIXTURE_STATE,
     COMMIT_CHECKS_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
+    AGENT_ACCESS_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -97,6 +99,9 @@ export default function DevFixturesPage() {
         return <MissionCheckInsFixture />;
     }
 
+    if (state === AGENT_ACCESS_FIXTURE_STATE) {
+        return <AgentAccessFixture />;
+    }
     if (state === ANSWER_STATES_FIXTURE_STATE) {
         return <AnswerStatesFixture />;
     }

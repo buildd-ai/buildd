@@ -39,6 +39,7 @@ import {
 import { countWorkersInWindow } from '@/lib/action-events';
 import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
+import { loadAgentAccessReport, type AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
 import { FAILED_WORKER_STATUSES } from '@buildd/shared';
 
@@ -180,7 +181,7 @@ export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
   | 'strandedBackends' | 'subagentDelegation' | 'errorPatterns'
-  | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups';
+  | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups' | 'agentAccess';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
@@ -191,7 +192,7 @@ export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>>
   overview: new Set(['runners', 'schedules', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast']),
   // failureAnalytics stays for the headline rate (failed / finished).
   failures: new Set(['failureAnalytics', 'failureGroups']),
-  runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules']),
+  runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules', 'agentAccess']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'subagentDelegation',
     'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
@@ -221,6 +222,8 @@ export interface HealthData {
   dispatchHealth: Awaited<ReturnType<typeof getDispatchHealth>> | null;
   /** What is failing, one group per cause (lib/health-failure-groups.ts). */
   failureGroups: (FailureGroupsView & { truncated: boolean }) | null;
+  /** Grants and refusals for agent runs in the scoped workspaces (lib/agent-capabilities/access-log.ts). */
+  agentAccess: AgentAccessReport | null;
   now: number;
 }
 
@@ -287,6 +290,7 @@ export async function loadHealth({
     errorPatterns,
     dispatchHealth,
     failureGroups,
+    agentAccess,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     need('runners')
@@ -567,6 +571,10 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       return { ...view, truncated: failed.length >= FAILURE_GROUP_WORKER_LIMIT };
     })().catch(() => null)
       : null,
+
+    // Agent runs' access: grant failures with their fix, refusals by reason.
+    // A read failure hides the section, never the page.
+    need('agentAccess') ? loadAgentAccessReport(scopedWsIds).catch(() => null) : null,
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
@@ -662,6 +670,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       experiments,
       dispatchHealth: dispatchHealth ?? null,
       failureGroups: failureGroups ?? null,
+      agentAccess: agentAccess ?? null,
       now,
     },
   };
