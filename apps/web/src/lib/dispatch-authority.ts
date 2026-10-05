@@ -264,7 +264,7 @@ export async function loadForDelivery(taskId: string): Promise<{ task: DispatchC
     },
     with: {
       workspace: {
-        columns: { id: true, name: true, repo: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
+        columns: { id: true, name: true, repo: true, webhookConfig: true },
       },
     },
   });

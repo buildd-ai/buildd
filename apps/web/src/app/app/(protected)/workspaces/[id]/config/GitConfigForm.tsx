@@ -593,7 +593,6 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig }: Pro
                                 { value: 'any', label: 'Any runner (no preference)' },
                                 { value: 'user', label: 'User runners only (personal / local)' },
                                 { value: 'service', label: 'Service runners only (CI / automated)' },
-                                { value: 'action', label: 'Action runners only (workflow automation)' },
                             ]}
                         />
                         <p className="text-xs text-text-muted mt-1">

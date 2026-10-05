@@ -5,7 +5,7 @@
 
 import type { DispatchEnvelope, ResolveResponse, RouteStep } from '@buildd/dispatch-contract';
 
-export const TARGET_TYPES = ['http', 'github-repository-dispatch', 'runner-wake'] as const;
+export const TARGET_TYPES = ['http', 'runner-wake'] as const;
 export type TargetType = (typeof TARGET_TYPES)[number];
 
 export type ResolvedDeliver = Extract<ResolveResponse, { decision: 'deliver' }>;
@@ -43,12 +43,14 @@ export type AdapterRegistry = Partial<Record<TargetType, TransportAdapter>>;
 
 export type FetchFn = (input: string, init: RequestInit) => Promise<Response>;
 
-/** Target-id suffix (after the last `:`) → adapter type, for unregistered targets. */
+/**
+ * Target-id suffix (after the last `:`) → adapter type, for unregistered
+ * targets. `github-actions` is gone on purpose: an intent queued before it
+ * was removed declines that step as `unknown_target` and moves on.
+ */
 const SUFFIX_TYPES: Record<string, TargetType> = {
   webhook: 'http',
   http: 'http',
-  'github-actions': 'github-repository-dispatch',
-  'github-repository-dispatch': 'github-repository-dispatch',
   'runner-wake': 'runner-wake',
 };
 
