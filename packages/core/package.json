@@ -17,6 +17,7 @@
     "./mcp-tool-groups": "./mcp-tool-groups.ts",
     "./prior-work-render": "./prior-work-render.ts",
     "./model-aliases": "./model-aliases.ts",
+    "./model-thinking": "./model-thinking.ts",
     "./model-catalog": "./model-catalog.ts",
     "./model-catalog-cache": "./model-catalog-cache.ts",
     "./chat-model-eligibility": "./chat-model-eligibility.ts",

@@ -1,6 +1,6 @@
 /**
  * Model alias map — short names (haiku, sonnet, opus) → full model IDs — plus the
- * extended-thinking guards used at dispatch time.
+ * the extended-thinking guards (re-exported from `model-thinking.ts`).
  *
  * Honest state of this module (verified 2026-08-30):
  * - `DEFAULT_ALIASES` is the in-code map, read by POST /api/admin/refresh-model-aliases.
@@ -33,48 +33,7 @@ export const DEFAULT_ALIASES: Record<string, string> = {
   opus: bundledTierEntry('premium').model,
 };
 
-type ThinkingConfig = { type: 'enabled' | 'disabled' | 'adaptive' } | undefined;
-type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined;
-
-/**
- * Returns true for models that require extended thinking to be enabled
- * at xhigh/max effort levels (passing thinking: { type: "disabled" } returns 400).
- */
-export function requiresThinkingEnabled(modelId: string): boolean {
-  return /claude-opus-5/i.test(modelId) || rejectsDisabledThinking(modelId);
-}
-
-/**
- * Returns true for models that reject `thinking: { type: "disabled" }` at EVERY
- * effort level, not only xhigh/max: on Fable and Mythos thinking is always on
- * and the parameter has to be omitted entirely, so any explicit disable is a 400.
- *
- * Load-bearing for the `premium-plus` tier, which points at Fable — a workspace
- * carrying `thinking: disabled` would otherwise 400 on every task routed there.
- */
-export function rejectsDisabledThinking(modelId: string): boolean {
-  return /claude-(fable|mythos)/i.test(modelId);
-}
-
-/**
- * Resolve the effective thinking config, stripping a "disabled" override when
- * the model requires thinking at xhigh/max effort (API returns 400 otherwise).
- */
-export function resolveEffectiveThinking(
-  model: string,
-  configuredEffort: Effort,
-  configuredThinking: ThinkingConfig,
-): ThinkingConfig {
-  const id = model || '';
-  const mustStrip =
-    // Fable/Mythos: disabled is rejected regardless of effort.
-    rejectsDisabledThinking(id) ||
-    // Opus 5: disabled is accepted at effort `high` or below, 400 above it.
-    (/claude-opus-5/i.test(id) && (configuredEffort === 'xhigh' || configuredEffort === 'max'));
-  return mustStrip && (configuredThinking as any)?.type === 'disabled'
-    ? undefined
-    : configuredThinking;
-}
+export { requiresThinkingEnabled, rejectsDisabledThinking, resolveEffectiveThinking } from './model-thinking';
 
 /**
  * Publish an alias map to `system_cache.model_aliases`.
