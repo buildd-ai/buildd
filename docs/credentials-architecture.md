@@ -251,10 +251,21 @@ Set and delete through `/api/secrets` (team owner/admin, or an admin API key);
 `POST /api/secrets/[id]/verify` checks it against Cloudflare's token-verify
 endpoints and records `lastVerifiedAt` / health (a rejection marks it
 `revoked`, a network error leaves health alone). `GET /api/cloudflare/credential`
-returns masked metadata only. `POST /api/cloudflare/credential/reveal` is the
-one route that returns a stored value: `bld_` admin API keys only, own team
-only, `no-store`, for `apps/cloud-runner/scripts/deploy.ts`. The token is never
-sent to a runner.
+returns masked metadata only.
+
+The token is **used** without being handed out: deployment actions
+(docs/specs/deployment-actions.md) resolve it server-side by credential
+reference (the row's label, or `cloudflare` when unlabelled) and call
+Cloudflare themselves, returning a redacted result. A Platform Operator task
+reaches them through the `deploy` MCP action under its workspace grant
+(docs/specs/agent-capabilities.md); a person with an admin key through
+`POST /api/deployments`. Every call is audited in `deployment_audit_events`.
+
+`POST /api/cloudflare/credential/reveal` is the one route that returns a
+stored value, the `secrets:reveal` escape hatch: `bld_` admin API keys only,
+own team only, `no-store`, audited as elevated before it decrypts. Its one
+remaining caller is the container-image `wrangler deploy` step of
+`apps/cloud-runner/scripts/deploy.ts`. The token is never sent to a runner.
 
 ## OpenAI API key for Codex agent tasks (`openai_api_key`)
 
