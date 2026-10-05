@@ -13,7 +13,8 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
  * resolves to its minting account at `worker` level, never flagged as a host
  * runner, carrying `taskScope`. A route that calls this MUST then confine the
  * request to its own task: `taskScopeAllowsTask` / `taskScopeAllowsWorker` /
- * `taskScopeAllowsWorkspace` (enforced by task-token-routes.test.ts).
+ * `taskScopeAllowsWorkspace` / `taskScopeAllowsMission` /
+ * `taskScopeAllowsInitiative` (enforced by task-token-routes.test.ts).
  *
  * A token stops authenticating when its minting key is regenerated or the
  * account is deleted: the token is bound to the key hash current at mint time.
@@ -94,4 +95,66 @@ export function taskScopeAllowsWorkerPr(
   if (!taskScopeAllowsTask(account, worker.taskId)) return false;
   if (worker.accountId !== undefined && worker.accountId !== account.id) return false;
   return worker.prNumber === prNumber;
+}
+
+/**
+ * The mission of a task token's own task, and that mission's initiative.
+ * One read; null when the task is gone or not in the token's workspace. The
+ * `where` callback keeps this module off the schema's table exports.
+ */
+async function ownTaskMission(scope: TaskScope): Promise<{ missionId: string | null; initiativeId: string | null } | null> {
+  const task = await db.query.tasks.findFirst({
+    where: (t, { eq: eqOp }) => eqOp(t.id, scope.taskId),
+    columns: { missionId: true, workspaceId: true },
+    with: { mission: { columns: { initiativeId: true } } },
+  });
+  if (!task || task.workspaceId !== scope.workspaceId) return null;
+  return { missionId: task.missionId ?? null, initiativeId: task.mission?.initiativeId ?? null };
+}
+
+/**
+ * True unless the caller is a task token and `missionId` is not its own
+ * task's mission. Mission writes (notes, mission-level artifacts) are
+ * confined to that one mission.
+ */
+export async function taskScopeAllowsMission(
+  account: { taskScope?: TaskScope },
+  missionId: string | null | undefined,
+): Promise<boolean> {
+  if (!account.taskScope) return true;
+  if (!missionId) return false;
+  const own = await ownTaskMission(account.taskScope);
+  return !!own?.missionId && own.missionId === missionId;
+}
+
+/**
+ * True unless the caller is a task token and `initiativeId` is not the
+ * initiative its own task's mission belongs to.
+ */
+export async function taskScopeAllowsInitiative(
+  account: { taskScope?: TaskScope },
+  initiativeId: string | null | undefined,
+): Promise<boolean> {
+  if (!account.taskScope) return true;
+  if (!initiativeId) return false;
+  const own = await ownTaskMission(account.taskScope);
+  return !!own?.initiativeId && own.initiativeId === initiativeId;
+}
+
+/**
+ * True unless the caller is a task token and `workerId` names a worker that is
+ * not its own (same account, its own task). For a worker id a client passes
+ * in a body to attribute a write, e.g. a note's author, which decides whose
+ * next check-in receives the reply. An absent id is allowed.
+ */
+export async function taskScopeAllowsWorkerId(
+  account: { id: string; taskScope?: TaskScope },
+  workerId: string | null | undefined,
+): Promise<boolean> {
+  if (!account.taskScope || !workerId) return true;
+  const worker = await db.query.workers.findFirst({
+    where: (w, { eq: eqOp }) => eqOp(w.id, workerId),
+    columns: { taskId: true, accountId: true },
+  });
+  return !!worker && worker.accountId === account.id && taskScopeAllowsWorker(account, worker);
 }

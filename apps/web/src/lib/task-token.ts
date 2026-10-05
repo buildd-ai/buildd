@@ -27,8 +27,13 @@ import { TOKEN_PRESETS, type TokenScope } from '@buildd/core/token-scopes';
  * workspace rollup, failure analytics narrowed to it, explain, and run
  * evidence); its usage and coordination stats and spec discrepancies (narrowed
  * to that one workspace, never team-wide); and listing or reading team-visible
- * experiments (no readouts, no changes). The budget forecast is not among
- * them: it is team-wide by nature. The set is pinned by task-token-routes.test.ts.
+ * experiments (no readouts, no changes). It may also post notes, always as an
+ * agent, on its own task or its own task's mission; read task messages and
+ * artifacts in its own workspace; upload artifacts for its own worker; update
+ * its own task's artifacts and its mission's mission-level ones; and create
+ * artifacts on its own mission or that mission's initiative. The budget
+ * forecast is not among them: it is team-wide by nature. The set is pinned by
+ * task-token-routes.test.ts.
  *
  * The token also carries the task's workspace (so routes can confine it to
  * that workspace without another lookup) and a binding to the minting key:
