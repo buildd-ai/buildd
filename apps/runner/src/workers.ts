@@ -76,7 +76,7 @@ import {
   uploadSessionDiagnostics,
 } from './session-diagnostics';
 import { EvidenceWriter, buildWorkerSecretValues } from './evidence-writer';
-import { resolveAgentBuilddAuth, isOrchestrationTask } from './agent-task-token';
+import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } from './agent-task-token';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
@@ -3106,6 +3106,8 @@ export class WorkerManager {
       // Organizer / planning / heartbeat sessions need admin-level actions a
       // worker-level task token does not carry.
       orchestration: isOrchestrationTask(task),
+      // Roles whose deliverable is itself an admin action (consolidator).
+      adminRole: usesAdminBuilddActions(task),
       info: line => console.log(`[Worker ${worker.id}] ${line}`),
       mint: typeof (this.buildd as any).mintTaskToken === 'function'
         ? (taskId, ttlMs, signal) => (this.buildd as any).mintTaskToken(taskId, ttlMs, signal)
@@ -3115,8 +3117,8 @@ export class WorkerManager {
     const agentBuilddToken = agentBuilddAuth.token;
     if (agentBuilddAuth.source === 'task-token') {
       sessionLog(worker.id, 'info', 'agent_buildd_auth', 'source=task-token', task.id);
-    } else if (agentBuilddAuth.reason === 'orchestration-role') {
-      sessionLog(worker.id, 'info', 'agent_buildd_auth', 'source=runner-key reason=orchestration-role', task.id);
+    } else if (agentBuilddAuth.reason === 'orchestration-role' || agentBuilddAuth.reason === 'admin-role') {
+      sessionLog(worker.id, 'info', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.reason}`, task.id);
     } else if (agentBuilddAuth.reason === 'mint-failed') {
       sessionLog(worker.id, 'warn', 'agent_buildd_auth', `source=runner-key reason=${agentBuilddAuth.detail ?? 'unknown'}`, task.id);
     }
