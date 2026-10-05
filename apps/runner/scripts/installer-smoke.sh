@@ -53,8 +53,10 @@ for _ in $(seq 1 60); do
   kill -0 "$PID" 2>/dev/null || break
   sleep 1
 done
-kill "$PID" 2>/dev/null || true
+# Children first: once the launcher loop dies its bun child is reparented and
+# `pkill -P` can no longer find it.
 pkill -P "$PID" 2>/dev/null || true
+kill "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 
 if [ "$ok" != "1" ]; then
