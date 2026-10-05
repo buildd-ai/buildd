@@ -31,6 +31,23 @@ export const DEP_SATISFYING_STATUSES = ['completed', 'cancelled'] as const;
 export const DEP_UNBLOCKING_PR_LIFECYCLE = 'closed';
 
 /**
+ * `dependency_releases.decision` values that satisfy a dependency ahead of
+ * the upstream's own status/PR state — docs/design/early-release.md "Data
+ * model". A dependent is also unblocked when a non-revoked release row names
+ * it as the dependent and the upstream as the dependency, with one of these
+ * decisions:
+ *
+ *   - `start_now` — claim immediately, off trunk.
+ *   - `start_stacked` — claim immediately, off the upstream's branch.
+ *
+ * `wait` deliberately is NOT here: it is a recorded decision to keep the
+ * dependsOn gate closed, not a release. This arm is purely additive to the
+ * `completed` + no-open-PR check in `dependencySatisfied()` — a workspace
+ * that never writes a `dependency_releases` row sees no behavior change.
+ */
+export const EARLY_RELEASE_SATISFYING_DECISIONS = ['start_now', 'start_stacked'] as const;
+
+/**
  * PR lifecycle states nothing can move a worker out of: the PR merged, closed,
  * or is `unresolvable` (GitHub cannot answer for it — see `lib/pr-freshness.ts`).
  * Re-asking GitHub cannot change any of them, and a later CI event must not
