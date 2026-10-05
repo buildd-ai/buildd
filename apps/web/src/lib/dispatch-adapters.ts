@@ -20,7 +20,6 @@ import {
   buildTaskPayload,
   buildWebhookPayload,
   dispatchToWebhook,
-  tryGitHubActionsDispatch,
   type DispatchTask,
   type DispatchWorkspace,
   type TaskDispatchEvent,
@@ -71,8 +70,6 @@ export interface CauseRoute {
    * new. A webhook that lists events gets every cause mapped to one it lists.
    */
   legacyDefault: boolean;
-  /** GitHub Actions repository_dispatch, which only those same two paths started. */
-  githubActions: boolean;
   /**
    * Legacy unblocked-path quirk: a webhook without `events` was never filtered
    * by runnerPreference on this path. Kept so the default stays a no-op.
@@ -86,13 +83,13 @@ export function routeForCause(cause: DispatchCause): CauseRoute {
     case 'review.fix_requested':
     case 'ci.retry':
     case 'conflict.retry':
-      return { event: 'task.created', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: false };
+      return { event: 'task.created', legacyDefault: true, legacyUnfilteredRunnerPreference: false };
     case 'plan_child.ready':
     case 'plan_child.created':
-      return { event: 'task.created', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
+      return { event: 'task.created', legacyDefault: false, legacyUnfilteredRunnerPreference: false };
     case 'dependency.satisfied':
     case 'manual.start':
-      return { event: cause === 'manual.start' ? 'task.retry' : 'task.unblocked', legacyDefault: true, githubActions: true, legacyUnfilteredRunnerPreference: true };
+      return { event: cause === 'manual.start' ? 'task.retry' : 'task.unblocked', legacyDefault: true, legacyUnfilteredRunnerPreference: true };
     case 'path_claim.released':
     case 'budget.available':
     case 'credential.restored':
@@ -100,12 +97,12 @@ export function routeForCause(cause: DispatchCause): CauseRoute {
     case 'capacity.freed':
     case 'task.unblocked':
     case 'start_at.reached':
-      return { event: 'task.unblocked', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
+      return { event: 'task.unblocked', legacyDefault: false, legacyUnfilteredRunnerPreference: false };
     case 'policy.requested':
-      return { event: 'task.unblocked', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
+      return { event: 'task.unblocked', legacyDefault: false, legacyUnfilteredRunnerPreference: false };
     case 'task.requeued':
     case 'task.reassigned':
-      return { event: 'task.retry', legacyDefault: false, githubActions: false, legacyUnfilteredRunnerPreference: false };
+      return { event: 'task.retry', legacyDefault: false, legacyUnfilteredRunnerPreference: false };
   }
 }
 
@@ -174,11 +171,6 @@ export function webhookPayloadFor(ctx: DispatchContext): TaskWebhookPayload {
   return buildWebhookPayload(ctx.task, routeForCause(ctx.cause).event, { cause: ctx.cause, dispatchId: ctx.dispatchId });
 }
 
-/** GitHub Actions is supplementary, for the legacy causes, and fires on an intent's first attempt only. */
-export function githubActionsWanted(ctx: Pick<DispatchContext, 'attemptCount' | 'cause'>): boolean {
-  return ctx.attemptCount <= 1 && routeForCause(ctx.cause).githubActions;
-}
-
 const runnerPayload = (ctx: DispatchContext) => ({
   ...buildTaskPayload(ctx.task, ctx.workspace),
   dispatch: { id: ctx.dispatchId, cause: ctx.cause },
@@ -236,21 +228,6 @@ export const workspaceWebhook: DispatchAdapter = {
   },
 };
 
-/**
- * GitHub Actions repository_dispatch. Supplementary: fires and always passes
- * the wake on. First attempt only — a retry (say the broadcast after it
- * failed) must not start another workflow run for the same intent.
- */
-export const githubActions: DispatchAdapter = {
-  name: 'github-actions',
-  async offer(ctx) {
-    if (githubActionsWanted(ctx)) {
-      tryGitHubActionsDispatch(ctx.workspace, ctx.task).catch(() => {});
-    }
-    return DECLINED;
-  },
-};
-
 /** The broadcast every Pusher-connected runner hears. Terminal: it always takes the wake. */
 export const runnerBroadcast: DispatchAdapter = {
   name: 'runner-broadcast',
@@ -290,7 +267,6 @@ export const TASK_WAKE_ADAPTERS: readonly DispatchAdapter[] = [
   runnerClaimability,
   targetedLocalRunner,
   workspaceWebhook,
-  githubActions,
   runnerBroadcast,
 ];
 

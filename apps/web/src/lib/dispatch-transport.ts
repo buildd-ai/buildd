@@ -10,8 +10,8 @@
  *
  * Dispatch moves envelopes; Buildd decides what they mean. `routeFor` only
  * says which destinations are worth trying, using the same policy the in-app
- * chain uses (lib/dispatch-adapters.ts). The final say for a webhook or
- * GitHub Actions step is the resolve callback at delivery time
+ * chain uses (lib/dispatch-adapters.ts). The final say for a webhook step
+ * is the resolve callback at delivery time
  * (lib/dispatch-resolve.ts), and for a runner wake it is the claim route.
  */
 import { db } from '@buildd/core/db';
@@ -43,7 +43,6 @@ import {
   type RepublishRow,
 } from '@buildd/core/dispatch-handoff';
 import { routeForCause, targetLocalUiUrlOf, webhookWants, type DispatchContext } from '@/lib/dispatch-adapters';
-import { isGitHubAppConfigured } from '@/lib/github';
 import type { DispatchWorkspace } from '@/lib/task-dispatch-delivery';
 
 /** The publish is awaited this long; a slower Worker costs one sweep, not the request. */
@@ -92,8 +91,6 @@ export function runnerWakePayload(row: Pick<PublishableRow, 'id'>, task: Pick<Ro
  *  - the webhook, `first` + resolve, when `webhookWants` would take this
  *    cause from this workspace (startAt and the held gate are judged at
  *    resolve time, when the wake is due);
- *  - GitHub Actions, `also` + resolve, for the legacy causes on an intent's
- *    first attempt when the workspace is linked and the App configured;
  *  - the runner wake, `first`, always last (the terminal broadcast).
  *
  * Null for a non-work intent: no adapter exists for those kinds, so they are
@@ -111,9 +108,6 @@ export function routeFor(row: PublishableRow, task: RouteTask, workspace: Dispat
   const config = workspace.webhookConfig as WorkspaceWebhookConfig | null | undefined;
   if (config && webhookWants(config, { ...task, startAt: null }, route, true)) {
     steps.push({ target: targetId(row.workspaceId, 'webhook'), mode: 'first', resolve: true });
-  }
-  if (row.attemptCount === 0 && route.githubActions && workspace.githubInstallationId && workspace.githubRepoId && isGitHubAppConfigured()) {
-    steps.push({ target: targetId(row.workspaceId, 'github-actions'), mode: 'also', resolve: true });
   }
   steps.push(wake);
   return { steps, payload };
@@ -138,7 +132,7 @@ async function loadRouteContext(taskIds: string[]): Promise<Map<string, RouteCon
     },
     with: {
       workspace: {
-        columns: { id: true, name: true, repo: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
+        columns: { id: true, name: true, repo: true, webhookConfig: true },
       },
     },
   });

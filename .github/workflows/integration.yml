@@ -418,6 +418,17 @@ jobs:
 
       - name: Start preview runner
         if: steps.sync.outputs.machine_online != 'false' && inputs.runner
+        # BUILDD_HOME isolates this process's WorkerStore/history/session-log
+        # from the test machine's real `~/.buildd` (this container doubles as
+        # a live dogfood runner). Without it the preview runner resumes real
+        # in-flight workers on boot, which crash loop on stale/foreign
+        # credentials and destabilize the local-UI server mid-test —
+        # integration-config.test.ts then sees it "become unavailable" and
+        # fails the whole job. /tmp/buildd-ci is wiped at the start of this
+        # job and removed in Cleanup, so no extra lifecycle management needed.
+        # Same isolation scripts/run-unit-tests.ts already applies per unit
+        # test file (see apps/runner/src/buildd-home.ts); this step is the one
+        # place that launches the runner directly and was missed by that fix.
         run: |
           tailscale ssh "$TEST_USER@$TEST_HOST" << SCRIPT
             docker exec $TEST_CONTAINER bash -c "
@@ -431,6 +442,7 @@ jobs:
                 export BUILDD_LOCAL_TOKEN=$BUILDD_LOCAL_TOKEN
                 export BUILDD_API_KEY=$BUILDD_API_KEY
                 export BUILDD_SERVER=http://localhost:3333
+                export BUILDD_HOME=/tmp/buildd-ci/.buildd-home
                 cd /tmp/buildd-ci && bun run apps/runner/src/index.ts >> /tmp/buildd-test.log 2>&1
               '
             "

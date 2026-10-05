@@ -14,7 +14,6 @@ export interface WorkspaceWithRunners {
     /** Admin on this workspace's team and at least one other (see moveTargets). */
     canMove: boolean;
     runners: {
-        action: boolean;
         service: boolean;
         user: boolean;
     };
@@ -117,10 +116,6 @@ export default function WorkspaceList({
 
                                     <div className="flex flex-col md:items-end gap-3 md:w-64 shrink-0">
                                         <div className="flex gap-3 items-center text-xs w-full justify-between md:justify-end">
-                                            <div className={`flex items-center gap-1 ${workspace.runners.action ? 'text-status-success' : 'text-text-muted'}`} title="GitHub Actions">
-                                                {workspace.runners.action ? <CheckIcon /> : <XIcon />}
-                                                <span>GH Action</span>
-                                            </div>
                                             <div className={`flex items-center gap-1 ${workspace.runners.service ? 'text-status-success' : 'text-text-muted'}`} title="Service Worker">
                                                 {workspace.runners.service ? <CheckIcon /> : <XIcon />}
                                                 <span>Service</span>
