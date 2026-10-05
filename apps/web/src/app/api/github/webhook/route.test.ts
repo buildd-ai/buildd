@@ -624,6 +624,17 @@ mock.module('@/lib/pr-activity-comment', () => ({ ...realPrActivity, appendPrAct
 const mockShutdownDeadBuilddPrs = mock(async (...a: unknown[]) => { reviewLog.push(['shutdownDeadBuilddPrs', ...a]); return {} as any; });
 mock.module('@/lib/dead-pr-shutdown', () => ({ shutdownDeadBuilddPrs: mockShutdownDeadBuilddPrs }));
 
+// The CI-fix retry keeps its real implementation (the CI tests above drive it
+// through the db mock); only the call is logged, for the reviewer-flows
+// characterization.
+import * as realCiFailureRetry from '@/lib/ci-failure-retry';
+const realRetryCiFailureForPr = realCiFailureRetry.retryCiFailureForPr;
+const mockRetryCiFailureForPr = mock(async (input: any) => {
+  reviewLog.push(['retryCiFailureForPr', input]);
+  return realRetryCiFailureForPr(input);
+});
+mock.module('@/lib/ci-failure-retry', () => ({ ...realCiFailureRetry, retryCiFailureForPr: mockRetryCiFailureForPr }));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -6729,5 +6740,195 @@ describe('webhook → reviews (characterization)', () => {
     mockWorkersFindFirst.mockReturnValue(null);
     await POST(createWebhookRequest('pull_request_review', reviewEvent('approved')));
     expect(insertCalls).toHaveLength(0);
+  });
+});
+
+describe('webhook → reviewer flows (characterization)', () => {
+  // Reviewer dispatch on open, re-dispatch on push, and the CI-fix retry, with
+  // what each one means for core's no-CI auto-merge.
+  const order = () => reviewLog.map(c => c[0]);
+  const call = (n: string, i = 0) => reviewLog.filter(c => c[0] === n)[i]!.slice(1);
+  const OLD = 'a'.repeat(40);
+  const NEW = 'b'.repeat(40);
+  beforeEach(() => {
+    resetAll();
+    reviewLog.length = 0;
+    mockAppendPrActivity.mockClear();
+    mockRetryCiFailureForPr.mockClear();
+    mockRecordEvent.mockClear();
+    mockInspectPullRequestMigrations.mockImplementation(async (...a: any[]) => { reviewLog.push(['inspectPullRequestMigrations', ...a]); return { safe: true } as any; });
+    mockCreateReviewerTask.mockImplementation(async (...a: any[]) => { reviewLog.push(['createReviewerTask', ...a]); return { id: 'reviewer-95' } as any; });
+    mockAnnounceTaskCreated.mockImplementation(async (...a: any[]) => { reviewLog.push(['announceTaskCreated', ...a]); });
+    mockWakeTask.mockImplementation(async (...a: any[]) => { reviewLog.push(['wakeTask', ...a]); });
+    mockTryAutoMergeWorkerPr.mockImplementation(async (...a: any[]) => { reviewLog.push(['tryAutoMergeWorkerPr', ...a]); });
+    mockRecordEvent.mockImplementation(async (e: any) => { reviewLog.push(['recordEvent', e]); return { recorded: 1 }; });
+    mockWorkersFindFirst.mockReturnValue({ id: 'w-95', workspaceId: 'ws1', taskId: 't-95', branch: 'buildd/abcdef12-z', prNumber: 95, prBaseRef: 'dev' });
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', teamId: 'team-1', gitConfig: {} });
+    mockWorkspacesFindMany.mockReturnValue([{ id: 'ws1', teamId: 'team-1', gitConfig: {} }]);
+    mockTasksFindFirst.mockReturnValue({
+      id: 't-95', title: 'Z', description: 'do z', backend: 'claude', missionId: 'm-95',
+      pathManifest: null, context: { iteration: 1, maxIterations: 3 }, requiresReview: false, mission: null,
+    });
+    mockGithubApi.mockReturnValue(Promise.resolve([{ filename: 'src/z.ts', additions: 3, deletions: 1, status: 'modified' }]));
+    agentReview();
+  });
+  function agentReview() {
+    mockResolvePolicy.mockReturnValue({
+      tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', escalateToPaths: [], maxConfidenceThreshold: 0.6 },
+    } as any);
+  }
+  function prEvent(action: string, overrides: Record<string, any> = {}) {
+    return {
+      action,
+      pull_request: {
+        number: 95, merged: false, draft: false, title: 'feat: z', body: 'Z body',
+        head: { ref: 'buildd/abcdef12-z', sha: NEW }, base: { ref: 'dev', sha: 'sha-base-95' },
+        html_url: 'https://github.com/test-org/test-repo/pull/95',
+        ...overrides,
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+  }
+  function verdict(state: string, over: Record<string, any> = {}) {
+    mockReadPrReviewStatus.mockImplementation(async (...a: any[]) => {
+      reviewLog.push(['readPrReviewStatus', ...a]);
+      return {
+        state, terminal: state !== 'queued' && state !== 'reviewing', reviewTaskId: 'review-95', adoptedTaskId: 't-95',
+        verdict: state === 'changes_requested' ? 'request-changes' : state === 'approved' ? 'approve' : null,
+        confidence: 0.9, summary: 'needs work', feedback: 'fix it', escalationReason: null,
+        iteration: 1, maxIterations: 3, reviewHeadSha: OLD, prState: 'open', merged: false, mergeBlocked: null, ...over,
+      } as any;
+    });
+  }
+
+  // ── opened ────────────────────────────────────────────────────────────────
+  it('opened, agent-review: migrations, the reviewer, its announce and wake, then the PR comment; no auto-merge', async () => {
+    const res = await POST(createWebhookRequest('pull_request', prEvent('opened')));
+    expect(res.status).toBe(200);
+    expect(order()).toEqual(['inspectPullRequestMigrations', 'createReviewerTask', 'announceTaskCreated', 'wakeTask', 'appendPrActivity']);
+    expect(call('createReviewerTask')[0]).toMatchObject({
+      workspaceId: 'ws1', originalTaskId: 't-95', worker: { branch: 'buildd/abcdef12-z' }, prNumber: 95, headSha: NEW,
+      reviewerRole: 'reviewer', confidenceThreshold: 0.6, installationId: 5000, repoFullName: 'test-org/test-repo',
+      prBody: 'Z body', baseRef: 'dev',
+      originalTask: { title: 'Z', backend: 'claude', missionId: 'm-95', iteration: 1, maxIterations: 3 },
+    });
+    expect(call('announceTaskCreated')[0]).toMatchObject({ id: 'reviewer-95', workspaceId: 'ws1', missionId: 'm-95', roleSlug: 'reviewer' });
+    expect(call('wakeTask')).toEqual(['reviewer-95', 'task.created']);
+    expect((call('appendPrActivity')[0] as any)).toMatchObject({ prNumber: 95, entry: { kind: 'reviewing' }, workspaceId: 'ws1' });
+  });
+
+  it('a redelivered open: the reviewer dedupes, nothing is announced, and the PR is still held from auto-merge', async () => {
+    mockCreateReviewerTask.mockImplementation(async (...a: any[]) => { reviewLog.push(['createReviewerTask', ...a]); return { id: 'reviewer-95', deduplicated: true } as any; });
+    await POST(createWebhookRequest('pull_request', prEvent('opened')));
+    expect(order()).toEqual(['inspectPullRequestMigrations', 'createReviewerTask']);
+  });
+
+  it('opened, auto-threshold with no CI: no reviewer; core auto-merges', async () => {
+    mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } as any);
+    await POST(createWebhookRequest('pull_request', prEvent('opened')));
+    expect(order()).toEqual(['inspectPullRequestMigrations', 'tryAutoMergeWorkerPr']);
+  });
+
+  it('opened, auto-threshold, but a migration collision the retry handles: held from the no-CI auto-merge', async () => {
+    mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } as any);
+    mockInspectPullRequestMigrations.mockImplementation(async () => ({ safe: false, collision: { index: 1 } }) as any);
+    mockTryDispatchMigrationCollisionRetry.mockImplementation(async (...a: any[]) => { reviewLog.push(['tryDispatchMigrationCollisionRetry', ...a]); return { handled: true }; });
+    await POST(createWebhookRequest('pull_request', prEvent('opened')));
+    expect(order()).toEqual(['tryDispatchMigrationCollisionRetry']);
+    expect(call('tryDispatchMigrationCollisionRetry')[0]).toMatchObject({ workerId: 'w-95', taskId: 't-95', prNumber: 95, headSha: NEW, workspaceId: 'ws1', installationId: 5000 });
+  });
+
+  it('opened, pre-flight escalation: mission note, the needs-human fact, a team alert and the PR comment; no reviewer, no auto-merge', async () => {
+    mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: true, reason: 'touches auth' } as any);
+    mockNotifyMissionPrReady.mockImplementation(async (...a: any[]) => { reviewLog.push(['notifyMissionPrReady', ...a]); });
+    mockNotifyTeamOf.mockImplementation((...a: any[]) => { reviewLog.push(['notifyTeamOf', ...a]); });
+    await POST(createWebhookRequest('pull_request', prEvent('opened')));
+    expect(order()).toEqual(['inspectPullRequestMigrations', 'notifyMissionPrReady', 'notifyTeamOf', 'appendPrActivity']);
+    expect(insertCalls.map(c => c.values?.type)).toEqual(['reviewer_escalated']);
+    expect((call('appendPrActivity')[0] as any).entry).toEqual({ kind: 'human_review_required', note: 'touches auth' });
+  });
+
+  it('opened as a draft: nothing; a draft is neither reviewed nor auto-merged', async () => {
+    await POST(createWebhookRequest('pull_request', prEvent('opened', { draft: true })));
+    expect(order()).toEqual([]);
+  });
+
+  it('a dispatch that throws falls through to the no-CI path (which holds an agent-review PR)', async () => {
+    mockCreateReviewerTask.mockImplementation(async () => { throw new Error('boom'); });
+    const res = await POST(createWebhookRequest('pull_request', prEvent('opened')));
+    expect(res.status).toBe(200);
+    expect(order()).toEqual(['inspectPullRequestMigrations']);
+    // The no-CI path ran: it resolved the policy a second time, for the merge.
+    expect(mockResolvePolicy).toHaveBeenCalledTimes(2);
+  });
+
+  // ── synchronize ───────────────────────────────────────────────────────────
+  it('a push after request-changes: the "changes pushed" comment, then the re-review with the prior verdict', async () => {
+    verdict('changes_requested');
+    await POST(createWebhookRequest('pull_request', prEvent('synchronize')));
+    expect(order()).toEqual(['appendPrActivity', 'readPrReviewStatus', 'createReviewerTask', 'announceTaskCreated', 'wakeTask', 'appendPrActivity']);
+    expect((call('appendPrActivity')[0] as any)).toMatchObject({ entry: { kind: 'changes_pushed', sha: NEW.slice(0, 7) }, onlyIfPresent: true });
+    expect(call('createReviewerTask')[0]).toMatchObject({
+      headSha: NEW, baseRef: 'dev',
+      priorVerdict: { headSha: OLD, verdict: 'request-changes', confidence: 0.9, summary: 'needs work', feedback: 'fix it' },
+    });
+    expect((call('appendPrActivity', 1)[0] as any).entry).toEqual({ kind: 'reviewing' });
+  });
+
+  it('a redelivered push (head equals the reviewed head): the comment only', async () => {
+    verdict('changes_requested', { reviewHeadSha: NEW });
+    await POST(createWebhookRequest('pull_request', prEvent('synchronize')));
+    expect(order()).toEqual(['appendPrActivity', 'readPrReviewStatus']);
+  });
+
+  it('a push while a reviewer works the PR: single-flight, no second reviewer', async () => {
+    verdict('reviewing');
+    await POST(createWebhookRequest('pull_request', prEvent('synchronize')));
+    expect(order()).toEqual(['appendPrActivity', 'readPrReviewStatus']);
+    expect(mockFireGateEvent.mock.calls.map(c => (c[0] as any).gate)).toContain('reviewer_single_flight');
+  });
+
+  it('a push after an approval carries the approval forward instead of re-reviewing', async () => {
+    verdict('approved');
+    await POST(createWebhookRequest('pull_request', prEvent('synchronize')));
+    expect(order()).toEqual(['appendPrActivity', 'readPrReviewStatus']);
+    expect(mockCarryForwardApproval).toHaveBeenCalledTimes(1);
+    expect(mockCarryForwardApproval.mock.calls[0][0]).toMatchObject({ workspaceId: 'ws1', prNumber: 95, baseRef: 'dev', headSha: NEW });
+  });
+
+  it('a push to a draft: the comment, no re-review', async () => {
+    verdict('changes_requested');
+    await POST(createWebhookRequest('pull_request', prEvent('synchronize', { draft: true })));
+    expect(order()).toEqual(['appendPrActivity']);
+  });
+
+  it('a push the workspace no longer wants agent-reviewed: no reviewer', async () => {
+    verdict('changes_requested');
+    mockResolvePolicy.mockReturnValue({ tier: 'human' } as any);
+    await POST(createWebhookRequest('pull_request', prEvent('synchronize')));
+    expect(order()).toEqual(['appendPrActivity', 'readPrReviewStatus']);
+  });
+
+  // ── check_suite failure ───────────────────────────────────────────────────
+  it('CI red: for each PR the ledger records it before the CI-fix retry is asked, with the suite head', async () => {
+    const payload = makeCheckSuitePayload({
+      check_suite: {
+        conclusion: 'failure', head_sha: 'sha-red',
+        pull_requests: [{ number: 95, head: { sha: 'sha-red', ref: 'x' }, base: { sha: 'b', ref: 'dev' } }],
+      },
+    });
+    const res = await POST(createWebhookRequest('check_suite', payload));
+    expect(res.status).toBe(200);
+    expect(order()).toEqual(['recordEvent', 'retryCiFailureForPr']);
+    expect(call('retryCiFailureForPr')).toEqual([{
+      repoFullName: 'test-org/test-repo', prNumber: 95, headSha: 'sha-red', installationId: 5000, surface: 'webhook:check_suite',
+    }]);
+  });
+
+  it('CI green does not ask for a CI fix', async () => {
+    const payload = makeCheckSuitePayload({ check_suite: { conclusion: 'success' } });
+    await POST(createWebhookRequest('check_suite', payload));
+    expect(mockRetryCiFailureForPr).not.toHaveBeenCalled();
   });
 });
