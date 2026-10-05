@@ -57,6 +57,37 @@ describe('core → module imports (ratchet)', () => {
   });
 });
 
+describe('seams that have shipped stay cut', () => {
+  // The worker PATCH's post-commit fan-out moved behind emit() (lib/core-emit.ts):
+  // core emits, the composition root (apps/web/src/modules.ts) lists who reacts.
+  const PATCH = 'apps/web/src/app/api/workers/[id]/route.ts';
+  const movedBehindEmit = [
+    'apps/web/src/lib/subscriptions.ts',
+    'apps/web/src/lib/task-evidence-store.ts',
+    'apps/web/src/lib/mission-completion.ts',
+    'apps/web/src/lib/mission-criteria-verify.ts',
+    'apps/web/src/lib/mission-criteria-prose.ts',
+    'apps/web/src/lib/mission-criteria-worker-eval.ts',
+    'apps/web/src/lib/subject-sweep.ts',
+    'apps/web/src/lib/memory-decisions.ts',
+    'apps/web/src/lib/notify-rules.ts',
+  ];
+
+  test('the worker PATCH no longer imports the modules its completion fans out to', () => {
+    const imported = Object.keys(current.backend[PATCH] ?? {});
+    expect(imported.filter(f => movedBehindEmit.includes(f))).toEqual([]);
+  });
+
+  test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
+    const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
+    expect(writers).toEqual([]);
+  });
+
+  test('the composition root is the only exempt importer', () => {
+    expect([...COMPOSITION_ROOTS]).toEqual(['apps/web/src/modules.ts']);
+  });
+});
+
 describe('the guard sees the files it polices', () => {
   const files = scannedFiles();
   const set = new Set(files);
