@@ -46,7 +46,8 @@ import { tmpdir } from 'node:os';
 // entry is how this gate lost its coverage (see C30 above). Each entry
 // states why.
 const ALLOWLIST: string[] = [
-  'packages/core/model-aliases.ts', // thinking guards match model families by pattern; the alias map itself is derived from the bundled policy
+  'packages/core/model-aliases.ts', // the alias map itself is derived from the bundled policy
+  'packages/core/model-thinking.ts', // thinking guards match model families by pattern (split out of model-aliases so the runner never loads the db client)
   'packages/core/model-prices.ts', // price book keyed by model ID
   'packages/core/model-tier-liveness.ts', // audits tier IDs; the IDs in its docstrings ARE the spec of the parser
   'packages/core/model-display.ts', // humanises model IDs; the IDs in its docstrings ARE the spec of the parser
