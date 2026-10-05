@@ -5,7 +5,7 @@ owner: max
 last_verified: 2026-10-05
 summary: A caller MUST get provider, model and effort from surface (chat or coding) plus tier alone, locally or from the policy service, with a fallback answer always and no provider secret ever crossing the boundary.
 domain: integrations
-surfaces: [packages/ai-kit/src/policy/resolve.ts, packages/ai-kit/src/policy/protocol.ts, packages/ai-kit/src/policy/client.ts, apps/model-policy/src/handler.ts, packages/core/model-policy.ts]
+surfaces: [packages/ai-kit/src/policy/resolve.ts, packages/ai-kit/src/policy/client.ts, apps/model-policy/src/handler.ts, packages/core/model-policy.ts]
 related: [model-routing-and-tiers, usage-and-cost-accounting]
 keywords: [model policy, surface, tier, coding, chat, resolve-only, remotePolicy, createPolicyClient, policy token, shadow, split, adaptive, planId, outcomes]
 verified_by: [packages/ai-kit/src/policy/resolve.test.ts, packages/ai-kit/src/policy/protocol.test.ts, packages/ai-kit/src/policy/client.test.ts, packages/ai-kit/src/policy/contract.test.ts, apps/model-policy/src/handler.test.ts, apps/model-policy/src/imports.test.ts, packages/core/__tests__/model-policy.test.ts, packages/core/__tests__/model-policy-authority.test.ts]
