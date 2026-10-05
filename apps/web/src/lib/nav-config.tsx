@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { settingsBackHref, settingsItemFor } from './settings-nav';
+import { healthItemFor } from './health-nav';
 
 /**
  * Single source of truth for primary navigation (unified-app-ia §D.2).
@@ -142,7 +143,10 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/workspaces') return 'Workspaces';
   if (pathname === '/app/tasks') return 'Activity';
   if (pathname === '/app/team') return 'Team';
-  if (pathname === '/app/health') return 'Health';
+  // Every Health page is a top-level page with the Health link row; Overview
+  // keeps the section's name.
+  const healthItem = healthItemFor(pathname);
+  if (healthItem) return healthItem.id === 'overview' ? 'Health' : healthItem.label;
   if (pathname === '/app/artifacts') return 'Artifacts';
   if (pathname === '/app/settings') return 'Settings';
   // Each settings section is a full page on a phone (list → detail); the
@@ -173,6 +177,9 @@ export const WORKSPACE_FILTERED_PAGES: ReadonlySet<string> = new Set([
   '/app/releases',
   '/app/tasks',
   '/app/health',
+  '/app/health/failures',
+  '/app/health/runners',
+  '/app/health/operator',
   '/app/health/usage',
 ]);
 
