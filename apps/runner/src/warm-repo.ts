@@ -289,6 +289,7 @@ export interface WarmManifest {
   repoBytes: number;
   cacheBytes: number;
   defaultBranch: string;
+  cacheSkipped?: { part: 'pnpm-store'; capBytes: number };
 }
 
 const GENERATION_RE = /^\d{16}$/;
@@ -301,7 +302,19 @@ export function parseWarmManifest(body: unknown): WarmManifest | null {
   const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
   const createdAt = n(b.createdAt), repoBytes = n(b.repoBytes), cacheBytes = n(b.cacheBytes);
   if (createdAt === null || repoBytes === null || cacheBytes === null || repoBytes === 0) return null;
-  return { generation: b.generation, createdAt, repoBytes, cacheBytes, defaultBranch: b.defaultBranch };
+
+  let cacheSkipped: WarmManifest['cacheSkipped'];
+  if (b.cacheSkipped !== undefined) {
+    const cs = b.cacheSkipped as Partial<{ part: string; capBytes: number }> | null;
+    const cap = n(cs?.capBytes);
+    if (cs?.part === 'pnpm-store' && cap !== null) {
+      cacheSkipped = { part: 'pnpm-store', capBytes: cap };
+    } else {
+      return null;
+    }
+  }
+
+  return { generation: b.generation, createdAt, repoBytes, cacheBytes, defaultBranch: b.defaultBranch, cacheSkipped };
 }
 
 // ── Credential guard ──────────────────────────────────────────────────────────
@@ -383,9 +396,11 @@ export type WarmResult =
    * `restoredCacheBytes`: the cache on disk right after the restore (not the
    * tarball, which is compressed). `restoredPnpmStore`: whether that restore
    * brought a pnpm store back; one that was left out for size is not counted
-   * as growth when the run rebuilds it (refreshOrThrow).
+   * as growth when the run rebuilds it (refreshOrThrow), unless the cap has
+   * changed since it was skipped. `manifest`: the restored warm snapshot
+   * metadata, including whether a cache part was skipped and the cap in force.
    */
-  | { source: 'warm'; ageMs: number; fetchBytes: number; restoredCacheBytes: number; restoredPnpmStore?: boolean }
+  | { source: 'warm'; ageMs: number; fetchBytes: number; restoredCacheBytes: number; restoredPnpmStore?: boolean; manifest?: WarmManifest }
   | { source: 'clone'; reason: RepoFallbackReason };
 
 export type RunEnd = 'completed' | 'failed' | 'wait_timeout' | 'parked';
@@ -712,6 +727,8 @@ export class WarmRepoSession {
   disabled = false;
   result: WarmResult | null = null;
   private clonePath: string | null = null;
+  /** Recorded when uploadCache skips the pnpm store. */
+  private cacheSkipped: WarmManifest['cacheSkipped'] | null = null;
 
   constructor(readonly d: WarmRepoDeps) {}
 
@@ -810,7 +827,7 @@ export class WarmRepoSession {
     this.metric('fetch_bytes', fetchBytes);
     const ageMs = Math.max(0, this.d.now() - manifest.createdAt);
     this.metric('snapshot_age_ms', ageMs);
-    this.result = { source: 'warm', ageMs, fetchBytes, restoredCacheBytes, restoredPnpmStore };
+    this.result = { source: 'warm', ageMs, fetchBytes, restoredCacheBytes, restoredPnpmStore, manifest };
     emitRepoSource('warm', undefined, this.d.lineOpts);
     this.d.log(`[warm] restored generation ${manifest.generation} (${ageMs} ms old, fetched ${fetchBytes} bytes)`);
     return true;
@@ -877,6 +894,7 @@ export class WarmRepoSession {
     const skipStore = (why: string) => {
       emitCacheSkipped('pnpm-store', storeBytes, cap, this.d.lineOpts);
       this.d.log(`[warm] pnpm store (${storeBytes} bytes) left out of the cache upload: ${why}, over the ${cap}-byte warm snapshot cap`);
+      this.cacheSkipped = { part: 'pnpm-store', capBytes: cap };
     };
     let withoutStore = storeBytes > 0 && cacheBytes > fitsRaw;
     if (withoutStore) skipStore(`the cache is ${cacheBytes} bytes on disk`);
@@ -921,13 +939,26 @@ export class WarmRepoSession {
     const clonePath = this.clonePath;
     if (!this.result || !clonePath || !existsSync(join(clonePath, '.git'))) return;
     const currentCacheBytes = dirSizeBytes(this.d.cacheDir);
-    // A pnpm store the restore did not bring back was (most likely) left
-    // out for size; the install rebuilt it. Counting it as growth would
-    // re-upload, and leave it out again, after every run. A store that is
-    // genuinely new is picked up by the age refresh.
-    const grownBytes = this.result.source === 'warm' && this.result.restoredPnpmStore === false
-      ? currentCacheBytes - dirSizeBytes(pnpmStoreDir(this.d.cacheDir))
-      : currentCacheBytes;
+
+    // Calculate cache growth, deciding whether to suppress a missing pnpm store.
+    // A store left out for size should not trigger re-uploads when the cap is
+    // unchanged. But if the cap has grown, the store should be counted as growth
+    // so a new manifest with the store can be created.
+    let grownBytes = currentCacheBytes;
+    if (this.result.source === 'warm' && this.result.restoredPnpmStore === false) {
+      const storeBytes = dirSizeBytes(pnpmStoreDir(this.d.cacheDir));
+      // Check if the manifest says the store was skipped and at what cap.
+      const recordedSkip = this.result.manifest?.cacheSkipped;
+      if (recordedSkip?.part === 'pnpm-store') {
+        // Manifest has a skip record. Get the current cap to decide whether to suppress.
+        const cap = resolveWarmCap(this.d.transport.getJson('/warm/limits'), this.d.maxBundleBytes ?? WARM_DEFAULT_MAX_BUNDLE_BYTES);
+        if (cap <= recordedSkip.capBytes) {
+          // Cap is unchanged or smaller, suppress the store to prevent the re-upload loop.
+          grownBytes = currentCacheBytes - storeBytes;
+        }
+        // Otherwise: cap is larger, include store in growth to trigger refresh.
+      }
+    }
     const { decision, reason } = decideWarmRefresh({ result: this.result, end, currentCacheBytes: grownBytes });
     if (decision === 'none') return;
     if (reason) emitWarmRefresh(reason, this.d.lineOpts);
@@ -982,7 +1013,9 @@ export class WarmRepoSession {
       }
       uploaded += repo.bytes;
       uploaded += await this.uploadCache(generation, cap, currentCacheBytes, partBytes, maxBytes);
-      const commit = this.d.transport.post(`/warm/${generation}/commit`, { defaultBranch });
+      const commitBody: { defaultBranch: string; cacheSkipped?: WarmManifest['cacheSkipped'] } = { defaultBranch };
+      if (this.cacheSkipped) commitBody.cacheSkipped = this.cacheSkipped;
+      const commit = this.d.transport.post(`/warm/${generation}/commit`, commitBody);
       if (commit.status !== 201) throw new Error(`commit answered ${commit.status || 'nothing'}`);
       this.d.log(`[warm] ${decision === 'seed' ? 'seeded' : 'refreshed'} generation ${generation} (${uploaded} bytes)`);
     } finally {
