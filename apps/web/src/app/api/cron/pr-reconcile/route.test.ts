@@ -30,6 +30,12 @@ mock.module('@/lib/pr-supersession-detect', () => ({
   sweepClosedUnsupersededPrs: mockClosedPrSweep,
 }));
 
+const EARLY_RELEASE_ZERO = { enumerated: 0, processed: 0, refreshed: 0, escalated: 0, ignored: 0, skipped: 0, errors: 0 };
+const mockEarlyRelease = mock(() => Promise.resolve(EARLY_RELEASE_ZERO));
+mock.module('@/lib/early-release-reconciler', () => ({
+  reconcileEarlyReleases: mockEarlyRelease,
+}));
+
 // The two sweeps below were unmocked too, so they queried the live database.
 mock.module('@/lib/stranded-tasks-sweep', () => ({
   sweepStrandedTasks: async () => ({ scanned: 0, stranded: 0, cleared: 0 }),
@@ -112,6 +118,8 @@ describe('GET /api/cron/pr-reconcile', () => {
     mockRefreshRedrive.mockResolvedValue(REDRIVE_ZERO);
     mockCiRedSweep.mockReset();
     mockCiRedSweep.mockResolvedValue(CI_RED_ZERO);
+    mockEarlyRelease.mockReset();
+    mockEarlyRelease.mockResolvedValue(EARLY_RELEASE_ZERO);
     dueCount = 0;
     process.env.CRON_SECRET = 'test-secret';
   });
@@ -487,5 +495,29 @@ describe('GET /api/cron/pr-reconcile', () => {
       expect((await GET(makeRequest(undefined, GATED))).status).toBe(401);
       expect(mockCiRedSweep).not.toHaveBeenCalled();
     });
+  });
+
+  // ── Early-release reconciler ───────────────────────────────────────────────
+  //
+  // Re-checks every non-revoked early-release decision against the upstream
+  // PR's current state (lib/early-release-reconciler.ts).
+
+  it('runs the early-release reconciler hourly and reports it', async () => {
+    mockEarlyRelease.mockResolvedValue({ ...EARLY_RELEASE_ZERO, enumerated: 2, processed: 2, refreshed: 1, escalated: 1 });
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    expect(mockEarlyRelease).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.earlyRelease).toMatchObject({ refreshed: 1, escalated: 1 });
+  });
+
+  it('an early-release reconciler failure does not discard merge-state healing', async () => {
+    mockReconcile.mockResolvedValue({ total: 4, stamped: 2, closed: 0, skipped: 2, errors: 0 });
+    mockEarlyRelease.mockRejectedValue(new Error('early-release query failed'));
+    const res = await GET(makeRequest('test-secret', '?scope=merge-state'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.reconcile.stamped).toBe(2);
+    expect(body.earlyRelease.error).toContain('early-release query failed');
   });
 });

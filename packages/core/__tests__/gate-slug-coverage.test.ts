@@ -45,9 +45,7 @@ const slugs = Object.entries(GATE_SLUGS);
  * the entry must be removed once the slug is wired — the test below fails if a
  * pending slug is already referenced, so the list cannot go stale silently.
  */
-const PENDING_WIRING = new Set<string>([
-  'EARLY_RELEASE', // docs/design/early-release.md — wired by the rule/reconciler tasks
-]);
+const PENDING_WIRING = new Set<string>([]);
 
 describe('gate slug coverage', () => {
   const corpus = wiringSources()
