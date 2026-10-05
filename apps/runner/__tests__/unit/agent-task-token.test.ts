@@ -10,6 +10,7 @@ import {
   isOrchestrationTask,
   parseAgentTaskTokenResponse,
   resolveAgentBuilddAuth,
+  usesAdminBuilddActions,
 } from '../../src/agent-task-token';
 import { buildWorkerSecretValues } from '../../src/evidence-writer';
 import { BuilddClient } from '../../src/buildd';
@@ -193,6 +194,45 @@ describe('isOrchestrationTask', () => {
     ['heartbeat flag not true', { context: { heartbeat: 'yes' } }, false],
   ])('%s → %p', (_n, task, expected) => {
     expect(isOrchestrationTask(task as any)).toBe(expected);
+  });
+});
+
+describe('usesAdminBuilddActions', () => {
+  test.each([
+    // The weekly consolidation pass is consolidate_knowledge, an admin action.
+    ['consolidator role', { roleSlug: 'consolidator' }, true],
+    ['builder', { roleSlug: 'builder' }, false],
+    ['organizer (covered by isOrchestrationTask instead)', { roleSlug: 'organizer' }, false],
+    ['no role', {}, false],
+    ['no task', undefined, false],
+  ])('%s → %p', (_n, task, expected) => {
+    expect(usesAdminBuilddActions(task as any)).toBe(expected);
+  });
+});
+
+describe('resolveAgentBuilddAuth for an admin-action role', () => {
+  test('runner key, no mint, one info line with the reason, no warning', async () => {
+    let called = 0;
+    const infos: string[] = [];
+    const warns: string[] = [];
+    const auth = await resolveAgentBuilddAuth({
+      runnerKey: KEY, taskId: TASK, env: {}, adminRole: true,
+      info: l => infos.push(l), warn: l => warns.push(l),
+      mint: async () => { called++; return okBody(); },
+    });
+    expect(auth).toMatchObject({ source: 'runner-key', token: KEY, reason: 'admin-role' });
+    expect(called).toBe(0);
+    expect(warns).toEqual([]);
+    expect(infos).toHaveLength(1);
+    expect(infos[0]).toContain('source=runner-key reason=admin-role');
+    expect(infos[0]).not.toContain(KEY);
+  });
+
+  test('the escape hatch and a task-token runner key still win', async () => {
+    expect(await resolveAgentBuilddAuth({ runnerKey: KEY, taskId: TASK, env: { BUILDD_AGENT_TASK_TOKEN: '0' }, adminRole: true, mint: undefined }))
+      .toMatchObject({ reason: 'disabled' });
+    expect(await resolveAgentBuilddAuth({ runnerKey: TOKEN, taskId: TASK, env: {}, adminRole: true, mint: undefined }))
+      .toMatchObject({ reason: 'runner-key-is-task-token' });
   });
 });
 
