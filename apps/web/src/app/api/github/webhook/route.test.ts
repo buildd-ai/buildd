@@ -6266,4 +6266,13 @@ describe('webhook → releases (characterization)', () => {
     expect(alert![0]).toEqual({ taskId: 't-81' });
     expect(alert![2]).toMatchObject({ title: 'Release workflow failed — Release', url: 'https://github.com/test-org/test-repo/actions/runs/8181', priority: 1 });
   });
+
+  it('a Path B failure is isolated: the webhook still answers 200', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    mockRecordAndDispatchRelease.mockImplementationOnce(async () => { throw new Error('github down'); });
+    const res = await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(res.status).toBe(200);
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+  });
 });
