@@ -137,6 +137,10 @@ mock.module('@/lib/mission-feed', () => ({
   systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
 }));
 mock.module('@/lib/mission-loop', () => ({ reopenCompletedMission: async () => ({ reopened: false }) }));
+// This file asserts the gate ledger. What a filing sets off reaches modules
+// through emit() (asserted in route.test.ts), so the composition root and its
+// module graph stay out of this process.
+mock.module('@/lib/core-emit', () => ({ emit: async () => {} }));
 mock.module('@/lib/criteria-escalation', () => ({ resolveCriteriaEscalation: async () => ({ cleared: false }) }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: async () => {},

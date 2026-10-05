@@ -116,6 +116,11 @@ describe('FleetStrip', () => {
   it('links slots into the mission, never to a bare task page', () => {
     expect(html).not.toContain('href="/app/tasks/');
   });
+  it('says runners, not fleet: no ops jargon on Home', () => {
+    const compact = renderToStaticMarkup(<FleetStrip fleet={fleet} roles={[]} now={NOW} timeZone="UTC" compact />);
+    for (const h of [html, compact]) expect(h).not.toMatch(/>\s*Fleet\b/i);
+    expect(compact).toContain('Runners');
+  });
 });
 
 describe('FleetStrip — a cloud dispatcher is one elastic group', () => {
@@ -152,7 +157,7 @@ describe('FleetStrip — a cloud dispatcher is one elastic group', () => {
     expect(html.match(/data-testid="fleet-idle-slots"/g)?.length).toBe(1);
   });
   it('the section label counts the group apart from the machines', () => {
-    expect(t).toContain('Fleet · 1 runner × 2 slots + 1 elastic group');
+    expect(t).toContain('Runners · 1 runner × 2 slots + 1 elastic group');
   });
 });
 

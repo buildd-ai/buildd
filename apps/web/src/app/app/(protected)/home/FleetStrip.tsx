@@ -1,5 +1,5 @@
 /**
- * Home's FLEET panel: runners × slots. Each busy slot row shows its live
+ * Home's runners panel: runners × slots. Each busy slot row shows its live
  * worker (role square, task name + short label, progress); a couple of
  * recently finished slots keep their "idle · last …" row; every other quiet
  * slot folds into one "N idle slots" row, so ten slots with one agent on them
@@ -303,7 +303,7 @@ export function FleetStrip({
             data-testid="fleet-summary"
             className="card flex min-h-11 cursor-pointer list-none items-center gap-3 px-4 py-2.5 md:px-5 [&::-webkit-details-marker]:hidden"
           >
-            <span className="section-label hidden shrink-0 text-text-muted md:inline">Fleet</span>
+            <span className="section-label hidden shrink-0 text-text-muted md:inline">Runners</span>
             <SummaryLine fleet={fleet} now={now} />
             <span className="shrink-0 font-mono text-[11px] text-text-muted">
               <span className="group-open:hidden">show ▸</span>

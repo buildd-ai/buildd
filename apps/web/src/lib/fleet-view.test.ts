@@ -398,9 +398,9 @@ describe('ephemeral --once runs: one elastic group per cloud dispatcher', () => 
       [run('a', 'headless://container/once/a'), run('b', 'headless://container/once/b')],
       { now: NOW },
     );
-    expect(fleetLabel(s)).toBe('Fleet · 2 runners × 4 slots + 1 elastic group');
+    expect(fleetLabel(s)).toBe('Runners · 2 runners × 4 slots + 1 elastic group');
     const only = buildFleetSnapshot([cloud('a')], [run('a', 'headless://container/once/a')], { now: NOW });
-    expect(fleetLabel(only)).toBe('Fleet · 1 elastic group');
+    expect(fleetLabel(only)).toBe('Runners · 1 elastic group');
   });
 });
 

@@ -153,6 +153,15 @@ bun install
 # root. It is only attempted when that cannot prompt: as root, or with
 # passwordless sudo (announced first). Everyone else gets the browser without
 # system libs plus the one apt line to run themselves. BUILDD_NO_SUDO=1 opts out.
+# --- chromium deps hint: begin ---
+# The system libraries a Chromium installed without --with-deps may still need.
+# Linux only: macOS needs none, and has no apt.
+chromium_deps_hint() {
+  if [ "$1" = "Linux" ]; then
+    echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
+  fi
+}
+# --- chromium deps hint: end ---
 echo -e "${GREEN}Installing headless Chromium (pinned Playwright)...${NC}"
 CHROMIUM_WITH_DEPS=0
 if [ "$(uname -s)" = "Linux" ]; then
@@ -168,8 +177,12 @@ if [ "$CHROMIUM_WITH_DEPS" = "1" ] && bun run browser:install --with-deps 2>&1; 
 else
   [ "$CHROMIUM_WITH_DEPS" = "1" ] && echo -e "${YELLOW}--with-deps failed. Trying without...${NC}"
   if bun run browser:install 2>&1; then
-    echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
-    echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
+    if [ "$(uname -s)" = "Linux" ]; then
+      echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
+    else
+      echo -e "${GREEN}Headless Chromium installed${NC}"
+    fi
+    chromium_deps_hint "$(uname -s)"
   else
     echo -e "${YELLOW}Warning: Headless Chromium could not be installed.${NC}"
     echo -e "${YELLOW}  Browser capability will not be advertised. To fix:${NC}"
@@ -193,6 +206,10 @@ cat > "$BIN_DIR/buildd" << 'LAUNCHER'
 #   PROJECTS_ROOT   - Project directories to scan
 #   BUILDD_SERVER   - Server URL (default: https://buildd.dev)
 #   PORT            - Local server port (default: 8766)
+#
+# Every bun call passes --no-env-file: `buildd` runs from whatever folder you
+# are in, and Bun would otherwise auto-load that folder's .env — a project's
+# API key and server URL would point this runner at someone else's server.
 # =============================================================================
 
 # Ensure bun is on PATH (non-interactive shells like Docker CMD, nohup, systemd
@@ -221,6 +238,11 @@ fi
 
 # Subcommands
 case "${1:-}" in
+  help|-h|--help)
+    # Answered by the runner's own usage text (cli-args.ts) without starting it.
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" --help
+    ;;
+
   init)
     # Per-workspace MCP registration: writes .mcp.json in current repo
     if [ ! -d ".git" ]; then
@@ -242,8 +264,8 @@ case "${1:-}" in
     BUILDD_KEY=""
     BUILDD_SERVER="https://buildd.dev"
     if [ -f "$CONFIG_FILE" ]; then
-      BUILDD_KEY=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-      BUILDD_SERVER=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
+      BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
+      BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
     fi
     if [ -z "$BUILDD_KEY" ]; then
       echo "Error: not logged in. Run 'buildd login' first." >&2
@@ -281,7 +303,7 @@ MCPEOF
     if [ -f "$CLAUDE_SETTINGS" ]; then
       if ! grep -q '"enableAllProjectMcpServers"' "$CLAUDE_SETTINGS" 2>/dev/null; then
         # Use bun to merge the setting
-        bun -e "
+        bun --no-env-file -e "
           const fs = require('fs');
           const settings = JSON.parse(fs.readFileSync('$CLAUDE_SETTINGS', 'utf-8'));
           settings.enableAllProjectMcpServers = true;
@@ -309,8 +331,8 @@ MCPEOF
       BUILDD_KEY=""
       BUILDD_SERVER="https://buildd.dev"
       if [ -f "$CONFIG_FILE" ]; then
-        BUILDD_KEY=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
-        BUILDD_SERVER=$(bun -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
+        BUILDD_KEY=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.apiKey||'')" 2>/dev/null)
+        BUILDD_SERVER=$(bun --no-env-file -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG_FILE','utf-8'));console.log(c.builddServer||'https://buildd.dev')" 2>/dev/null)
       fi
       if [ -z "$BUILDD_KEY" ]; then
         echo "Error: not logged in. Run 'buildd login' first." >&2
@@ -319,7 +341,7 @@ MCPEOF
 
       if [ -f "$CLAUDE_JSON" ]; then
         # Merge into existing config
-        bun -e "
+        bun --no-env-file -e "
           const fs = require('fs');
           const config = JSON.parse(fs.readFileSync('$CLAUDE_JSON', 'utf-8'));
           if (!config.mcpServers) config.mcpServers = {};
@@ -361,18 +383,18 @@ GLOBALEOF
 
   skill)
     shift
-    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
     ;;
 
   login)
     shift
-    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
     ;;
 
   logout)
     CONFIG_FILE="$HOME/.buildd/config.json"
     if [ -f "$CONFIG_FILE" ]; then
-      bun -e "
+      bun --no-env-file -e "
         const fs = require('fs');
         const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
         delete config.apiKey;
@@ -388,7 +410,7 @@ GLOBALEOF
   status)
     CONFIG_FILE="$HOME/.buildd/config.json"
     if [ -f "$CONFIG_FILE" ]; then
-      bun -e "
+      bun --no-env-file -e "
         const fs = require('fs');
         const config = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf-8'));
         if (config.apiKey) {
@@ -410,13 +432,13 @@ GLOBALEOF
 
   service)
     shift
-    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
+    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
     ;;
 esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
 while true; do
-  bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
+  bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
   EXIT_CODE=$?
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
   echo "Restarting after update..."

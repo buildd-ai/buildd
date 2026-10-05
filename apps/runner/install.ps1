@@ -86,14 +86,14 @@ if "%PROJECTS_ROOT%"=="" (
 
 REM `buildd login` connects this machine to an account, as in the bash launcher.
 if /i "%~1"=="login" (
-    bun run "%USERPROFILE%\.buildd\apps\runner\src\login.ts" %2 %3
+    bun --no-env-file run "%USERPROFILE%\.buildd\apps\runner\src\login.ts" %2 %3
     exit /b
 )
 
 REM Restart loop (exit code 75 = update applied, restart) — mirrors install.sh's
 REM bash launcher so the self-updater behaves the same on every platform.
 :runloop
-bun run "%USERPROFILE%\.buildd\apps\runner\src\index.ts" %*
+bun --no-env-file run "%USERPROFILE%\.buildd\apps\runner\src\index.ts" %*
 if %ERRORLEVEL% EQU 75 (
     echo Restarting after update...
     timeout /t 1 /nobreak >nul

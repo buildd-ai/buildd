@@ -69,7 +69,11 @@ mock.module('@/lib/subscriptions', () => ({
   prMergedEvent: (a: any) => ({ type: 'pr.merged', ...a }),
   prCiFailedEvent: (a: any) => ({ type: 'pr.ci_failed', ...a }),
   taskCompletedEvent: (a: any) => ({ type: 'task.completed', ...a }),
+  taskFailedEvent: (a: any) => ({ type: 'task.failed', ...a }),
 }));
+// The chat module's "task done" post, reached lazily by its subscriber.
+const mockPostTaskCompletedEvent = mock(async (_a: any) => {});
+mock.module('@/lib/chat/mission-events', () => ({ postTaskCompletedEvent: mockPostTaskCompletedEvent }));
 // Revert ledger: the writer is stood in; what it parses and writes is covered
 // in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
 const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
@@ -115,8 +119,9 @@ mock.module('@/lib/pushover', () => ({
 // Tenant alerts go to the owning team's channel: mockNotifyTeamOf records the
 // subject and event so a test reads where each one was routed.
 const mockNotifyTeamOf = mock((_subject: any, _event: any, _payload: any) => {});
+const mockNotifyTeam = mock(async (..._a: any[]) => {});
 mock.module('@/lib/notify', () => ({
-  notifyTeam: mock(async () => {}),
+  notifyTeam: mockNotifyTeam,
   notifyTeamOf: async (subject: any, event: any, payload: any) => {
     mockNotifyTeamOf(subject, event, payload);
   },
@@ -584,6 +589,24 @@ mock.module('@/lib/surface-ordering', () => ({
 }));
 const mockCarryForwardApproval = mock(async (_p: any): Promise<any> => ({ carried: false, reason: 'test' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForwardApproval }));
+
+// The mission loop-on-merge and integration-PR helpers, recorded in call order
+// for the missions characterization at the end of this file. Real modules are
+// spread in so other importers keep every export; each stub defaults to the
+// no-op answer the real helper gives when there is nothing to do.
+import * as realLoopWebhook from '@/lib/loop-webhook';
+import * as realMissionPr from '@/lib/mission-pr';
+const missionLog: Array<[string, ...unknown[]]> = [];
+let missionPrOpenResult: any = { ok: false, reason: 'work_incomplete' };
+const mockEvaluateAndAdvanceLoopOnMerge = mock(async (...a: unknown[]) => { missionLog.push(['evaluateAndAdvanceLoopOnMerge', ...a]); });
+const mockMaybeOpenMissionIntegrationPr = mock(async (...a: unknown[]) => { missionLog.push(['maybeOpenMissionIntegrationPr', ...a]); return missionPrOpenResult; });
+const mockNoteMissionPrOpenFailure = mock(async (...a: unknown[]) => { missionLog.push(['noteMissionPrOpenFailure', ...a]); });
+mock.module('@/lib/loop-webhook', () => ({ ...realLoopWebhook, evaluateAndAdvanceLoopOnMerge: mockEvaluateAndAdvanceLoopOnMerge }));
+mock.module('@/lib/mission-pr', () => ({
+  ...realMissionPr,
+  maybeOpenMissionIntegrationPr: mockMaybeOpenMissionIntegrationPr,
+  noteMissionPrOpenFailure: mockNoteMissionPrOpenFailure,
+}));
 
 // Import handler AFTER mocks
 import { POST } from './route';
@@ -5859,6 +5882,92 @@ describe('release PR CI success pins the live head', () => {
   });
 });
 
+// A release the worker PATCH held for CI has had no outcome event yet; the
+// release PR's CI settles it here, and this is where its one task.completed
+// or task.failed is emitted (the PATCH emits neither while held).
+describe('held release: the release PR\'s CI emits the task\'s terminal event', () => {
+  const HEAD = 'a'.repeat(40);
+  beforeEach(() => {
+    resetAll();
+    mockRecordEvent.mockClear();
+    mockNotifyTeam.mockClear();
+    mockPostTaskCompletedEvent.mockClear();
+    selectTableResults = (table) => {
+      if (table === schemaMock.tasks) {
+        return [{ id: 'release-task', title: 'Ship it', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42, releasePrUrl: 'https://example.test/pr/42' } }];
+      }
+      if (table === schemaMock.workers) return [{ id: 'w-rel' }];
+      return null;
+    };
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'release-task', title: 'Ship it', workspaceId: 'ws-release',
+      workspace: { name: 'W', teamId: 'team-1', dataClass: null },
+    });
+  });
+
+  const ledger = () => mockRecordEvent.mock.calls.map(c => c[0]).filter((e: any) => e.type?.startsWith('task.'));
+  const pushes = () => mockNotifyTeam.mock.calls.map(c => c.slice(0, 3));
+  const deliverSuccess = () => POST(createWebhookRequest('check_suite',
+    makeCheckSuitePayload({ check_suite: { conclusion: 'success', head_sha: HEAD } })));
+
+  it('resolved green: task.completed for the task\'s worker, the done push and the chat post', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: HEAD } });
+    mockAllCheckSuitesPassed.mockResolvedValue(true);
+    mockMergePullRequest.mockResolvedValue({ merged: true });
+    await deliverSuccess();
+    await new Promise(r => setTimeout(r, 0));
+    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+    expect(ledger()).toEqual([{ type: 'task.completed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release' }]);
+    expect(pushes()).toEqual([['team-1', 'taskCompleted', {
+      title: 'Task done', message: 'Ship it\nW', url: 'https://buildd.dev/app/tasks/release-task', urlTitle: 'View task', priority: -1,
+    }]]);
+    expect(mockPostTaskCompletedEvent).toHaveBeenCalledWith({ taskId: 'release-task' });
+  });
+
+  it('resolved green but the merge is rejected: task.failed naming the release merge', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: HEAD } });
+    mockAllCheckSuitesPassed.mockResolvedValue(true);
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Base branch was modified' });
+    await deliverSuccess();
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release',
+      reason: 'Release merge failed: Base branch was modified',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Ship it\nW\nRelease merge failed: Base branch was modified',
+      url: 'https://buildd.dev/app/tasks/release-task', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(mockPostTaskCompletedEvent).not.toHaveBeenCalled();
+  });
+
+  it('resolved red: task.failed naming the release CI; no done push, no chat post', async () => {
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    await new Promise(r => setTimeout(r, 0));
+    expect(updateCalls.some(c => c.setValues.status === 'failed')).toBe(true);
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release',
+      reason: 'Release CI failed: CI failed on PR #42',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Ship it\nW\nRelease CI failed: CI failed on PR #42',
+      url: 'https://buildd.dev/app/tasks/release-task', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(mockPostTaskCompletedEvent).not.toHaveBeenCalled();
+  });
+
+  it('resolved red in a sensitive workspace: no title in the ledger, the redacted push with the fixed label', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'release-task', title: 'Ship it', workspaceId: 'ws-release',
+      workspace: { name: 'W', teamId: 'team-1', dataClass: 'sensitive' },
+    });
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: null, workspaceId: 'ws-release', reason: 'Release CI failed',
+    }]);
+    expect((pushes()[0]![2] as any).message).toBe('Task failed (content redacted)\nRelease CI failed');
+  });
+});
+
 describe('subscriptions ledger: the webhook records the right event', () => {
   beforeEach(() => { resetAll(); mockRecordEvent.mockClear(); });
 
@@ -6090,5 +6199,307 @@ describe('revert ledger: merged PRs and default-branch commits are recorded', ()
       }));
     }
     expect(mockRecordPrReverts).not.toHaveBeenCalled();
+  });
+});
+
+// ── Characterization: what the webhook does for releases ─────────────────────
+// Pins, with arguments, the release effects the event switch runs today: the
+// prod-merge record and gated-release advance on every merged delivery, the
+// Path-B dispatch on a task PR's first merged delivery only, and the
+// workflow_run read-back. The releases module moves behind emit(); this block
+// must stay green across that move.
+describe('webhook → releases (characterization)', () => {
+  beforeEach(() => {
+    resetAll();
+    mockRecordDirectProdMerge.mockClear();
+    mockAdvanceGatedReleaseOnPrMerge.mockClear();
+    mockRecordAndDispatchRelease.mockClear();
+    mockDispatchWorkflowRelease.mockClear();
+    mockClaimMissionReleaseAttempt.mockClear();
+    mockRecordDispatchedRelease.mockClear();
+    mockAbandonMissionReleaseAttempt.mockClear();
+    mockCountPendingTasksForMission.mockClear();
+    mockNotifyTeamOf.mockClear();
+    mockRecordPrReverts.mockClear();
+  });
+
+  function mergedPr(overrides: Record<string, any> = {}) {
+    return {
+      action: 'closed',
+      pull_request: {
+        number: 81,
+        merged: true,
+        draft: false,
+        title: 'Release v1.2.0',
+        body: null,
+        head: { ref: 'dev', sha: 'sha-head-81' },
+        base: { ref: 'main', sha: 'sha-base-81' },
+        merge_commit_sha: 'sha-merge-81',
+        html_url: 'https://github.com/test-org/test-repo/pull/81',
+        ...overrides.pull_request,
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+      ...(overrides.root ?? {}),
+    };
+  }
+
+  function taskWorker(task: Record<string, any> = {}, worker: Record<string, any> = {}) {
+    return {
+      id: 'w-81', workspaceId: 'ws1', taskId: 't-81', prNumber: 81, mergedAt: null,
+      task: {
+        id: 't-81', status: 'completed', taskClass: 'work', workspaceId: 'ws1',
+        release: 'true', title: 'Ship it', missionId: null, loopState: null, ...task,
+      },
+      ...worker,
+    };
+  }
+
+  const dispatchWorkspace = (trigger: string) => ({
+    id: 'ws1',
+    name: 'test-repo',
+    releaseConfig: { enabled: true, strategy: 'workflow_dispatch', workflowFile: 'ship.yml', ref: 'dev', trigger },
+    gitConfig: { defaultBranch: 'dev' },
+  });
+
+  it('a merged PR records the prod merge and advances a gated release, with these args', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    const res = await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(res.status).toBe(200);
+    expect(mockRecordDirectProdMerge).toHaveBeenCalledTimes(1);
+    expect(mockRecordDirectProdMerge.mock.calls[0]?.[0]).toEqual({
+      repoFullName: 'test-org/test-repo', installationId: 5000, baseRef: 'main',
+      headSha: 'sha-merge-81', previousSha: 'sha-base-81',
+    });
+    expect(mockAdvanceGatedReleaseOnPrMerge).toHaveBeenCalledTimes(1);
+    expect(mockAdvanceGatedReleaseOnPrMerge.mock.calls[0]?.[0]).toEqual({
+      repoFullName: 'test-org/test-repo', baseRef: 'main', prHeadSha: 'sha-head-81', installationId: 5000,
+      mergeCommitSha: 'sha-merge-81', baseSha: 'sha-base-81', prTitle: 'Release v1.2.0', prNumber: 81,
+    });
+  });
+
+  it('a redelivered merge records again (the record is idempotent, not the guard)', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ release: 'false' }, { mergedAt: new Date() }));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockRecordDirectProdMerge).toHaveBeenCalledTimes(1);
+    expect(mockAdvanceGatedReleaseOnPrMerge).toHaveBeenCalledTimes(1);
+  });
+
+  it('a missing merge commit reads as undefined / null', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    await POST(createWebhookRequest('pull_request', mergedPr({ pull_request: { merge_commit_sha: null } })));
+    expect((mockRecordDirectProdMerge.mock.calls[0]?.[0] as any).headSha).toBeUndefined();
+    expect((mockAdvanceGatedReleaseOnPrMerge.mock.calls[0]?.[0] as any).mergeCommitSha).toBeNull();
+  });
+
+  it('a PR closed unmerged, or a merge with no installation, records nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    await POST(createWebhookRequest('pull_request', mergedPr({ pull_request: { merged: false } })));
+    await POST(createWebhookRequest('pull_request', mergedPr({ root: { installation: undefined } })));
+    expect(mockRecordDirectProdMerge).not.toHaveBeenCalled();
+    expect(mockAdvanceGatedReleaseOnPrMerge).not.toHaveBeenCalled();
+  });
+
+  it('Path B every_merge: a task PR first merge dispatches the release and annotates the task', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    mockGithubApi.mockReturnValue(Promise.resolve({}));
+    await POST(createWebhookRequest('pull_request', mergedPr({ pull_request: { base: { ref: 'dev', sha: 'sha-base-81' } } })));
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+    expect(mockRecordAndDispatchRelease.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: 'ws1', installationId: 5000, owner: 'test-org', name: 'test-repo',
+      repoFullName: 'test-org/test-repo', workflowFile: 'ship.yml', ref: 'dev', prodBranch: 'dev',
+      inputs: { force: 'false' }, triggeredBy: 'auto',
+    });
+    const annotate = updateCalls.find(c => c.table === schemaMock.tasks && (c.setValues as any).releaseResult);
+    expect((annotate!.setValues as any).releaseResult).toMatchObject({ status: 'pending_ci', releaseId: 'rel-auto-1' });
+  });
+
+  it('Path B: a redelivered merge dispatches nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({}, { mergedAt: new Date() }));
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockRecordAndDispatchRelease).not.toHaveBeenCalled();
+  });
+
+  it('Path B: release=false and trigger=manual dispatch nothing', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ release: 'false' }));
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('manual'));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockRecordAndDispatchRelease).not.toHaveBeenCalled();
+  });
+
+  it('Path B on_mission_complete: claims, dispatches, then records the dispatched release', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ missionId: 'm-81' }));
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('on_mission_complete'));
+    mockMissionsFindFirst.mockReturnValue({ workingBranch: null, integrationBranchEnabled: false } as any);
+    mockGithubApi.mockReturnValue(Promise.resolve({}));
+    await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(mockCountPendingTasksForMission).toHaveBeenCalledWith('m-81');
+    expect(mockClaimMissionReleaseAttempt).toHaveBeenCalledWith('m-81');
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+    expect(mockRecordDispatchedRelease).toHaveBeenCalledWith('m-81', 'ship.yml@dev');
+    expect(mockAbandonMissionReleaseAttempt).not.toHaveBeenCalled();
+  });
+
+  it('workflow_run: the revert ledger first, then the release row, then the task record and a failure alert', async () => {
+    selectTableResults = (t) => {
+      if (t === schemaMock.releases) return [{ id: 'release-81', workspaceId: 'ws1', state: 'dispatched', runUrl: 'https://github.com/test-org/test-repo/actions/runs/8181' }];
+      if (t === schemaMock.tasks) return [{ id: 't-81', releaseResult: { status: 'pending_ci', message: 'dispatched', runId: 8181 }, missionId: null, workspaceId: 'ws1' }];
+      return null;
+    };
+    const res = await POST(createWebhookRequest('workflow_run', {
+      action: 'completed',
+      workflow_run: {
+        id: 8181, name: 'Release', status: 'completed', conclusion: 'failure',
+        html_url: 'https://github.com/test-org/test-repo/actions/runs/8181',
+        head_branch: 'dev', head_sha: 'sha-dev', event: 'push', path: '.github/workflows/release.yml',
+        head_commit: { id: 'sha-dev', message: 'Revert "feat: x"' },
+        repository: { full_name: 'test-org/test-repo' },
+      },
+      repository: { full_name: 'test-org/test-repo', default_branch: 'dev' },
+      installation: { id: 5000 },
+    }));
+    expect(res.status).toBe(200);
+    expect(mockRecordPrReverts).toHaveBeenCalledTimes(1);
+    const releaseIdx = updateCalls.findIndex(c => c.table === schemaMock.releases && (c.setValues as any).state === 'failed');
+    const taskIdx = updateCalls.findIndex(c => c.table === schemaMock.tasks && (c.setValues as any).releaseResult);
+    expect(releaseIdx).toBeGreaterThanOrEqual(0);
+    expect(taskIdx).toBeGreaterThan(releaseIdx);
+    expect((updateCalls[taskIdx]!.setValues as any).releaseResult.status).toBe('failed');
+    const alert = mockNotifyTeamOf.mock.calls.find((c: any[]) => String(c[2]?.title).startsWith('Release workflow failed'));
+    expect(alert).toBeDefined();
+    expect(alert![0]).toEqual({ taskId: 't-81' });
+    expect(alert![2]).toMatchObject({ title: 'Release workflow failed — Release', url: 'https://github.com/test-org/test-repo/actions/runs/8181', priority: 1 });
+  });
+
+  it('a Path B failure is isolated: the webhook still answers 200', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    mockWorkspacesFindFirst.mockReturnValue(dispatchWorkspace('every_merge'));
+    mockRecordAndDispatchRelease.mockImplementationOnce(async () => { throw new Error('github down'); });
+    const res = await POST(createWebhookRequest('pull_request', mergedPr()));
+    expect(res.status).toBe(200);
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Characterization: what the webhook does for missions ─────────────────────
+// Pins, in order and with arguments, the mission reactions to a task PR's
+// merge or close: the loop-on-merge advance and the integration-PR open on
+// every merged delivery; the mission wake and the dependency unblock once per
+// merge, after the status transition; the surface-intent settle on any close.
+// The missions module moves behind emit(); this block must stay green.
+describe('webhook → missions (characterization)', () => {
+  const order = () => missionLog.map(c => c[0]);
+  beforeEach(() => {
+    resetAll();
+    missionLog.length = 0;
+    missionPrOpenResult = { ok: false, reason: 'work_incomplete' };
+    mockEvaluateAndAdvanceLoopOnMerge.mockClear();
+    mockMaybeOpenMissionIntegrationPr.mockClear();
+    mockNoteMissionPrOpenFailure.mockClear();
+    mockCheckDependsOnResolved.mockImplementation(async (...a: any[]) => { missionLog.push(['checkDependsOnResolved', ...a]); });
+    mockResolveCompletedTask.mockImplementation(async (...a: any[]) => { missionLog.push(['resolveCompletedTask', ...a]); });
+    mockWakeMissionAfterResponse.mockImplementation((...a: any[]) => { missionLog.push(['wakeMissionAfterResponse', ...a]); });
+    mockCheckAndUnblockDependentMissions.mockImplementation(async (...a: any[]) => { missionLog.push(['checkAndUnblockDependentMissions', ...a]); return []; });
+    mockSettleSurfaceIntentsOnClose.mockImplementation(async (...a: any[]) => { missionLog.push(['settleSurfaceIntentsOnClose', ...a]); return { woke: [] }; });
+    mockNotifyMissionPrReady.mockImplementation(async (...a: any[]) => { missionLog.push(['notifyMissionPrReady', ...a]); });
+  });
+
+  function prEvent(overrides: Record<string, any> = {}) {
+    return {
+      action: 'closed',
+      pull_request: {
+        number: 91, merged: true, draft: false, title: 'feat: x', body: null,
+        head: { ref: 'buildd/abcdef12-feat-x', sha: 'sha-head-91' },
+        base: { ref: 'mission/x-1234abcd', sha: 'sha-base-91' },
+        merge_commit_sha: 'sha-merge-91',
+        html_url: 'https://github.com/test-org/test-repo/pull/91',
+        ...overrides,
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+  }
+  function worker(task: Record<string, any> = {}, w: Record<string, any> = {}) {
+    return {
+      id: 'w-91', workspaceId: 'ws1', taskId: 't-91', prNumber: 91, mergedAt: null,
+      task: {
+        id: 't-91', status: 'in_progress', taskClass: 'attempt', workspaceId: 'ws1',
+        release: 'false', title: 'X', missionId: 'm-91', loopState: null, ...task,
+      },
+      ...w,
+    };
+  }
+  const merged = () => order().filter(n => n !== 'settleSurfaceIntentsOnClose');
+
+  it('first merge of an attempt task: dependents, loop, integration PR, then resolve, wake and unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    const res = await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(res.status).toBe(200);
+    expect(merged()).toEqual([
+      'checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr',
+      'resolveCompletedTask', 'wakeMissionAfterResponse', 'checkAndUnblockDependentMissions',
+    ]);
+    const call = (n: string) => missionLog.find(c => c[0] === n)!.slice(1);
+    expect(call('evaluateAndAdvanceLoopOnMerge')).toEqual(['w-91', 't-91', 'ws1']);
+    expect(call('maybeOpenMissionIntegrationPr')).toEqual(['m-91', { assumeCompletedTaskIds: ['t-91'] }]);
+    expect(call('wakeMissionAfterResponse')).toEqual(['m-91', 'pr_merged']);
+    expect(call('checkAndUnblockDependentMissions')).toEqual(['m-91', 'merged']);
+    expect(call('settleSurfaceIntentsOnClose')).toEqual([{ workspaceId: 'ws1', prNumber: 91 }]);
+  });
+
+  it('first merge of a work task: no wake on the transition, still the unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ taskClass: 'work' }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual([
+      'checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr',
+      'resolveCompletedTask', 'checkAndUnblockDependentMissions',
+    ]);
+  });
+
+  it('first merge of an already-completed task: no resolve; the wake, then the unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ status: 'completed', taskClass: 'work' }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual([
+      'checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr',
+      'wakeMissionAfterResponse', 'checkAndUnblockDependentMissions',
+    ]);
+  });
+
+  it('a redelivered merge: loop and integration PR again; no wake, no unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ status: 'completed' }, { mergedAt: new Date() }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual(['checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr']);
+  });
+
+  it('a task with no mission: no integration PR, wake or unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ missionId: null }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual(['checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'resolveCompletedTask']);
+  });
+
+  it('an integration PR that should have opened and did not leaves a mission note', async () => {
+    missionPrOpenResult = { ok: false, reason: 'branch_missing', detail: 'gone' };
+    mockWorkersFindFirst.mockReturnValue(worker());
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(missionLog.find(c => c[0] === 'noteMissionPrOpenFailure')!.slice(1)).toEqual(['m-91', missionPrOpenResult]);
+  });
+
+  it('a PR closed unmerged: the surface settle only', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    await POST(createWebhookRequest('pull_request', prEvent({ merged: false })));
+    expect(order()).toEqual(['settleSurfaceIntentsOnClose']);
+  });
+
+  it('a branch-matched merge with no worker: the unblock, then the resolve', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    mockTasksFindFirst.mockReturnValue({ id: 'abcdef12-0000-4000-8000-000000000000', status: 'in_progress', missionId: 'm-91', workspaceId: 'ws1' } as any);
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(order()).toEqual(['checkAndUnblockDependentMissions', 'resolveCompletedTask']);
+    expect(missionLog[0]).toEqual(['checkAndUnblockDependentMissions', 'm-91', 'merged']);
   });
 });

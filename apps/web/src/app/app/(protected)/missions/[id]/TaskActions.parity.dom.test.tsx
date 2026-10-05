@@ -57,6 +57,10 @@ beforeEach(() => {
   startReply = { status: 200, body: {} };
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     const u = String(url);
+    // Both backends configured, so a failed task offers the switch on every surface.
+    if (u.endsWith('/backends') && init?.method !== 'POST') {
+      return { ok: true, status: 200, json: async () => ({ backends: [{ id: 'claude', available: true }, { id: 'codex', available: true }] }) } as Response;
+    }
     if (init?.method === 'POST') calls.push({ url: u, body: init.body ? JSON.parse(String(init.body)) : undefined });
     const firstStart = u.endsWith('/start') && calls.filter(c => c.url.endsWith('/start')).length === 1;
     const reply = firstStart ? startReply : { status: 200, body: { status: 'pending' } };

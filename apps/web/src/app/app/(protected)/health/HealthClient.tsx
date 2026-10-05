@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
-import { FailureGroupsSection } from './_components/FailureGroups';
+import { FailureGroupsSection, TopFailureGroups } from './_components/FailureGroups';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
@@ -34,6 +34,7 @@ import {
   groupFailuresBySignature,
   lifetimeRuns,
   monthlyAnchor,
+  observedAgo,
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
@@ -41,6 +42,8 @@ import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
+import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
+import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
 import type { HealthExperiments } from '@/lib/health-experiments-shared';
 import { formatEstimatedUsd, ESTIMATED_COST_TITLE } from '@/lib/cost-label';
@@ -205,6 +208,13 @@ const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> 
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
   ]),
+};
+
+/** Runner sandbox posture in plain words; 'sandbox unknown' is deliberately absent (renders nothing). */
+const SANDBOX_PLAIN_LABEL: Record<string, string> = {
+  sandboxed: 'sandboxed',
+  unsandboxed: 'not sandboxed',
+  'mounts unrestricted': 'sandbox partly on',
 };
 
 const VIEW_TITLE: Record<HealthView, string> = {
@@ -471,13 +481,47 @@ export function HealthClient({
   }, [consumption]);
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
-  const hasProblems =
+  // On Overview the failures come from the merged failure groups (the same ones
+  // TopFailureGroups renders), so the status sentence and the list can't disagree.
+  const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
+  const nonFailureProblems =
     brokenCredentials.length > 0 ||
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
     degradedSandboxRunners.length > 0 ||
-    failedSchedules.length > 0 ||
-    recentFailures.length > 0;
+    failedSchedules.length > 0;
+  const hasProblems =
+    nonFailureProblems || (page === 'overview' ? overviewFailureGroups > 0 : recentFailures.length > 0);
+
+  // Overview: one status sentence first, short status rows after the attention list.
+  const overview = page === 'overview'
+    ? {
+        headline: overviewHeadline({
+          noRunners: runners.length === 0,
+          offlineRunners: offlineRunners.length,
+          unsandboxedRunners: degradedSandboxRunners.length,
+          brokenCredentials: brokenCredentials.length,
+          strandedBackends: strandedBackends.length,
+          failingSchedules: failedSchedules.length,
+          failureGroups: overviewFailureGroups,
+        }),
+        rows: overviewStatusRows({
+          runners: {
+            total: runners.length,
+            online: runners.filter(r => isRunnerOnline(r.lastHeartbeatAt, now)).length,
+            busySlots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.activeWorkerCount : 0), 0),
+            slots: runners.reduce((n, r) => n + (isRunnerOnline(r.lastHeartbeatAt, now) ? r.maxConcurrentWorkers : 0), 0),
+          },
+          credentials: { total: credentialHealth.length, broken: brokenCredentials.length },
+          budget: {
+            monthly: budgetForecast?.monthly
+              ? { spentUsd: budgetForecast.monthly.spentUsd, budgetUsd: budgetForecast.monthly.budgetUsd, pctUsed: budgetForecast.monthly.pctUsed }
+              : null,
+            pausedProviders: (budgetForecast?.codex?.isExhausted ? 1 : 0) + (budgetForecast?.claudeTenant?.isExhausted ? 1 : 0),
+          },
+        }),
+      }
+    : null;
 
   // Partition schedules: heartbeat (mission internals) vs regular
   const heartbeatSchedules = schedules.filter(s => s.isHeartbeat);
@@ -499,12 +543,15 @@ export function HealthClient({
         </div>
       </div>
 
-      {/* 1. Problems now */}
-      {show('problems') && (
+      {overview && <OverviewHeadline tone={overview.headline.tone} text={overview.headline.text} />}
+
+      {/* 1. Problems now. On Overview the headline already says "All good", so an
+          empty Problems section would only repeat it. */}
+      {show('problems') && !(overview && !hasProblems) && (
       <section data-testid="health-section-problems" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h2 className="section-label">Problems</h2>
-          {failureGroups.total > 0 && (
+          {page !== 'overview' && failureGroups.total > 0 && (
             <span data-testid="problems-denominator" className="text-[11px] text-text-muted">
               {sectionDenominator(
                 failureGroups.total,
@@ -519,7 +566,9 @@ export function HealthClient({
             <span className="text-sm text-status-success font-medium">All systems healthy</span>
           </div>
         ) : (
-          <div className="card divide-y divide-border-default">
+          <>
+          {(page !== 'overview' || nonFailureProblems) && (
+          <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
               const purposeLabel =
@@ -662,7 +711,7 @@ export function HealthClient({
                 Fixed 24h regardless of `?window=` — documented exception (spec
                 §2.3): this is a triage feed, not a trend, and at 30d it would be
                 a 20-row-capped dump of month-old failures. */}
-            {failureGroups.groups.map((g) => {
+            {page !== 'overview' && failureGroups.groups.map((g) => {
               const sample = g.sample;
               return (
                 <div key={g.signature} className="px-4 py-3" data-testid="problem-failure-group">
@@ -699,7 +748,7 @@ export function HealthClient({
               );
             })}
 
-            {failureGroups.hiddenFailures > 0 && (
+            {page !== 'overview' && failureGroups.hiddenFailures > 0 && (
               <div className="px-4 py-2.5">
                 <span className="text-xs text-text-muted">
                   +{failureGroups.hiddenFailures} more failure
@@ -711,9 +760,14 @@ export function HealthClient({
               </div>
             )}
           </div>
+          )}
+          {page === 'overview' && <TopFailureGroups groups={failureGroupsView} now={now} />}
+          </>
         )}
       </section>
       )}
+
+      {overview && <OverviewStatusRows rows={overview.rows} />}
 
       {show('orphanedPrs') && <OrphanedPrsBlock rows={orphanedPrs} now={now} />}
 
@@ -727,11 +781,9 @@ export function HealthClient({
       {show('capacity') && (
       <div data-testid="health-section-runners" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
-          <h3 className="text-xs font-medium text-text-secondary">Capacity</h3>
+          <h3 className="text-xs font-medium text-text-secondary">Runners</h3>
           {runners.length > 0 && (
-            <span className="text-[11px] text-text-muted">
-              {sectionDenominator(runners.length, runners.length === 1 ? 'runner' : 'runners')}
-            </span>
+            <span className="text-[11px] text-text-muted">{countOf(runners.length, 'runner')}</span>
           )}
         </div>
         <div className="card">
@@ -745,14 +797,15 @@ export function HealthClient({
                 const online = isRunnerOnline(hb.lastHeartbeatAt, now);
                 const idle = online && hb.activeWorkerCount === 0;
                 const health = runnerHealth.get(hb.id);
-                const statusLabel = online ? (idle ? 'idle' : 'online') : 'stale';
+                const statusLabel = online ? (idle ? 'idle' : 'working') : 'offline';
                 const statusClass = online
                   ? idle ? 'text-text-muted' : 'text-status-success'
                   : 'text-text-muted';
                 // Green means ENFORCED (namespace + mount allowlist), never merely
                 // "bwrap is installed here" — see deriveSandboxPosture.
                 const posture = deriveSandboxPosture(hb);
-                const sandboxLabel = posture.label;
+                // Plain words; an unknown posture says nothing rather than "sandbox unknown".
+                const sandboxLabel = SANDBOX_PLAIN_LABEL[posture.label] ?? null;
                 const sandboxClass = posture.tier === 'success'
                   ? 'text-status-success'
                   : posture.tier === 'warning'
@@ -773,22 +826,24 @@ export function HealthClient({
                           <span className={`text-[11px] md:text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}
                           </span>
-                          <span
-                            className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
-                            title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · never probed'}`}
-                          >
-                            {sandboxLabel}
-                          </span>
+                          {sandboxLabel && (
+                            <span
+                              className={`text-[11px] md:text-[10px] font-mono ${sandboxClass}`}
+                              title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · never probed'}`}
+                            >
+                              {sandboxLabel}
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-text-muted">
-                          {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers ·{' '}
-                          {freshness(hb.lastHeartbeatAt, now)}
+                          {hb.activeWorkerCount} of {hb.maxConcurrentWorkers} agents running ·{' '}
+                          {online ? `checked ${observedAgo(hb.lastHeartbeatAt, now) ?? 'just now'}` : `last seen ${observedAgo(hb.lastHeartbeatAt, now) ?? 'never'}`}
                         </p>
                       </div>
                       <button
                         onClick={() => checkRunnerHealth(hb.id)}
                         disabled={health?.loading}
-                        className="text-[11px] px-2.5 h-7 rounded-md border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong disabled:opacity-50 transition-colors shrink-0"
+                        className="text-[11px] px-2.5 h-7 border border-border-default text-text-secondary hover:text-text-primary hover:border-border-strong disabled:opacity-50 transition-colors shrink-0"
                       >
                         {health?.loading ? '…' : health?.expanded ? 'Hide' : 'Check health'}
                       </button>
@@ -902,7 +957,7 @@ export function HealthClient({
             </svg>
             Schedules
             <span className="font-normal text-text-muted ml-1">
-              ({activeRegular.length} active{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${heartbeatSchedules.length} check-in${heartbeatSchedules.length !== 1 ? 's' : ''}` : ''})
+              ({activeRegular.length} on{pausedRegular.length > 0 ? `, ${pausedRegular.length} paused` : ''}{heartbeatSchedules.length > 0 ? `, ${countOf(heartbeatSchedules.length, 'mission check-in')}` : ''})
             </span>
           </button>
 
@@ -1719,11 +1774,10 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
   return (
     <div data-testid="health-section-budget-forecast" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
-        <h3 className="text-xs font-medium text-text-secondary">Budget forecast</h3>
-        {/* Documented exception: pinned to the provider's own session window and
-            the calendar month. It cannot obey `?window=`, so it says what it
-            does obey instead of quietly ignoring the control. */}
-        <span className="text-[11px] text-text-muted text-right">provider session window · ignores the page window</span>
+        <h3 className="text-xs font-medium text-text-secondary">Budget</h3>
+        {/* Pinned to each provider's own usage period and the calendar month,
+            never to a page window; this page has no window control. */}
+        <span className="text-[11px] text-text-muted text-right">usage limits and monthly spend</span>
       </div>
       <div className="card divide-y divide-border-default">
 
@@ -1737,7 +1791,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
                   className="tabular-nums font-medium text-text-primary"
                   title="Usage vs. conservative floor (p25 of exhaustion history). Remaining capacity is usually higher."
                 >
-                  {s.pressurePct}% of floor
+                  {s.pressurePct}% of usual limit
                 </span>
                 <span className="text-text-muted">·</span>
                 <span>{formatReset(s.windowEndsAt, now)}</span>
@@ -1775,7 +1829,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {learningSessions.length > 0 && (
           <div className="px-4 py-2.5">
             <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
-              {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} · no exhaustion data
+              {countOf(learningSessions.length, 'Claude sign-in')} · no usage limit hit so far
             </span>
           </div>
         )}
@@ -1890,6 +1944,13 @@ const CREDENTIAL_PURPOSE_LABELS: Record<string, string> = {
   codex_credential: 'Codex credential',
 };
 
+const CREDENTIAL_STATUS_WORD: Record<CredentialHealthItem['healthStatus'], string> = {
+  healthy: 'working',
+  degraded: 'failing',
+  revoked: 'revoked',
+  unknown: 'not checked',
+};
+
 const CREDENTIAL_TONE: Record<CredentialHealthItem['healthStatus'], string> = {
   healthy: 'text-status-success',
   degraded: 'text-status-warning',
@@ -1920,10 +1981,7 @@ function CredentialStateSection({
       <div className="flex items-baseline justify-between gap-3 mb-3">
         <h3 className="text-xs font-medium text-text-secondary">Credentials</h3>
         <span className="text-[11px] text-text-muted">
-          {sectionDenominator(
-            credentials.length,
-            credentials.length === 1 ? 'backend credential' : 'backend credentials',
-          )}
+          {countOf(credentials.length, 'credential')}
         </span>
       </div>
       <div className="card divide-y divide-border-default">
@@ -1934,7 +1992,7 @@ function CredentialStateSection({
             </span>
             <div className="flex items-center gap-2 text-xs shrink-0">
               <span className={`font-medium ${CREDENTIAL_TONE[c.healthStatus] ?? 'text-text-muted'}`}>
-                {c.healthStatus}
+                {CREDENTIAL_STATUS_WORD[c.healthStatus] ?? c.healthStatus}
               </span>
               {c.consecutiveAuthFailures > 0 && (
                 <>

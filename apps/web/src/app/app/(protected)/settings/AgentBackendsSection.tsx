@@ -6,6 +6,9 @@ import ConnectionRow, { StatusChip } from './_components/ConnectionRow';
 import { useConfirm } from '@/components/useConfirm';
 import StoredSeatNotice, { storedSeatKinds, type StoredSeatKind } from './StoredSeatNotice';
 
+/** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
+const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
+
 /**
  * Shared action affordances for the credential cards. Replaces the old bare
  * blue-/red-text links with consistent bordered pills that read as buttons and
@@ -201,9 +204,12 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
   // One row open at a time: on a phone two open credential forms are a scroll.
   const [open, setOpen] = useState<RowKey | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string>(teamWorkspaces[0]?.id ?? '');
-  // Setup-token / API-key is the fallback for Claude — collapsed by default so the
-  // one-tap OAuth connect is the single primary Claude action (less clutter).
-  const [showClaudeAlt, setShowClaudeAlt] = useState(false);
+  // The model key (Anthropic API key; OpenRouter / LiteLLM via an agent
+  // endpoint) is the primary Claude path. A subscription sign-in only works on a
+  // runner the person hosts and signs in on, so it is folded and says so.
+  const [showSeat, setShowSeat] = useState(false);
+  // Bumped to move focus to the key field (the row's Add key, or #agent-key).
+  const [focusKey, setFocusKey] = useState(0);
   // True when the team already has a setup-token / API-key Claude credential — so the
   // primary Claude card can show "connected via …" instead of a misleading "Connect"
   // when Claude is actually working through the (collapsed) fallback path.
@@ -234,7 +240,15 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [teamId, showClaudeAlt]);
+  }, [teamId, showSeat, open]);
+
+  // Deep link from the getting-started checklist and the failed-task page:
+  // /app/settings/runners#agent-key opens the Claude row on the key field.
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.location.hash !== '#agent-key') return;
+    setOpen('claude');
+    setFocusKey((k) => k + 1);
+  }, []);
 
   useEffect(() => {
     if (!teamId) return;
@@ -291,23 +305,21 @@ export default function AgentBackendsSection({ workspaces, currentTeamId }: Prop
         open={open === 'claude'}
         onToggle={() => toggle('claude')}
         onOpen={() => setOpen('claude')}
+        onAddKey={() => { setOpen('claude'); setFocusKey((k) => k + 1); }}
+        seatOpen={showSeat}
+        onSeatToggle={() => setShowSeat((v) => !v)}
         scopeControl={scopeControl}
+        keyForm={
+          <div className="space-y-3">
+            <ClaudeCard mode="api_key" teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} focusRequest={focusKey} />
+            <p className="text-xs text-text-secondary">
+              Using OpenRouter or a LiteLLM gateway instead?{' '}
+              <a href={AGENT_ENDPOINT_HREF} className="text-accent-text hover:underline">Add it as the agent model endpoint</a>.
+            </p>
+          </div>
+        }
       >
-        <div className="border-t border-border-default pt-3">
-          <button
-            onClick={() => setShowClaudeAlt((v) => !v)}
-            // .btn is nowrap + fixed 32px; this label is too long for a phone,
-            // so let it wrap (it used to push /app/settings into a sideways pan).
-            className="btn btn-quiet h-auto min-h-11 md:min-h-8 py-1.5 whitespace-normal text-left justify-start leading-snug max-w-full"
-          >
-            {showClaudeAlt ? '▾' : '▸'} Other ways to connect Claude: setup token or API key
-          </button>
-          {showClaudeAlt && (
-            <div className="mt-3 pl-3 border-l-2 border-border-default">
-              <ClaudeCard teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} />
-            </div>
-          )}
-        </div>
+        <ClaudeCard mode="setup_token" teamId={teamId} scope={scope} workspaceId={scope === 'workspace' ? workspaceId : null} teamTargets={teamTargets} />
       </ClaudeConnectedAccountCard>
       <CodexCard
         accessWorkspaceId={accessWorkspaceId}
@@ -516,12 +528,18 @@ interface SecretMeta {
   lastVerificationError?: string | null;
 }
 
-function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[] }) {
+/**
+ * One stored Claude credential kind: `api_key` (an Anthropic API key, the
+ * primary path) or `setup_token` (a `claude setup-token` seat, folded under the
+ * self-hosted-runner sign-in). `focusRequest` changes move focus to the field.
+ */
+function ClaudeCard({ mode, teamId, scope, workspaceId, teamTargets, focusRequest = 0 }: { mode: 'api_key' | 'setup_token'; teamId: string; scope: Scope; workspaceId: string | null; teamTargets: TeamTarget[]; focusRequest?: number }) {
   const [secrets, setSecrets] = useState<SecretMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [verifying, setVerifying] = useState(false);
-  const [purpose, setPurpose] = useState<ClaudePurpose>('oauth_token');
+  const purpose: ClaudePurpose = mode === 'api_key' ? 'anthropic_api_key' : 'oauth_token';
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const [value, setValue] = useState('');
   const [msg, setMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [replaceOpen, setReplaceOpen] = useState(false);
@@ -549,12 +567,21 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
     void load();
   }, [load]);
 
-  // Credentials matching the selected scope.
+  // Credentials of this kind matching the selected scope.
   const matching = secrets.filter(
     (s) =>
-      (s.purpose === 'oauth_token' || s.purpose === 'anthropic_api_key') &&
+      s.purpose === purpose &&
       (scope === 'workspace' ? s.workspaceId === workspaceId : s.workspaceId === null),
   );
+
+  // Focus the field once it is on screen (it waits for the credential list).
+  useEffect(() => {
+    if (!focusRequest || loading) return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.scrollIntoView?.({ block: 'center' });
+  }, [focusRequest, loading, matching.length]);
 
   async function save() {
     setBusy(true);
@@ -597,7 +624,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
       if (!res.ok) throw new Error(data.error ?? 'Failed to save');
       setValue('');
       setReplaceOpen(false);
-      setMsg({ type: 'success', text: 'Claude credential saved.' });
+      setMsg({ type: 'success', text: mode === 'api_key' ? 'API key saved.' : 'Setup token saved.' });
       await load();
     } catch (e) {
       setMsg({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save' });
@@ -652,21 +679,10 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
 
   const inputForm = (
     <div className="space-y-2">
-      <div className="seg">
-        <button
-          onClick={() => setPurpose('oauth_token')}
-          className={`seg-item ${purpose === 'oauth_token' ? 'seg-item-active' : ''}`}
-        >
-          Setup token
-        </button>
-        <button
-          onClick={() => setPurpose('anthropic_api_key')}
-          className={`seg-item ${purpose === 'anthropic_api_key' ? 'seg-item-active' : ''}`}
-        >
-          API key
-        </button>
-      </div>
       <input
+        ref={inputRef}
+        id={mode === 'api_key' ? 'agent-key' : undefined}
+        aria-label={mode === 'api_key' ? 'Anthropic API key' : 'Claude setup token'}
         type="password"
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -679,7 +695,7 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
           disabled={busy || !value.trim()}
           className="btn btn-primary"
         >
-          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace' : 'Save credential'}
+          {busy ? 'Saving…' : allTeams ? `Apply to all ${teamTargets.length} teams` : matching.length > 0 ? 'Replace' : mode === 'api_key' ? 'Save key' : 'Save token'}
         </button>
         {replaceOpen && (
           <button onClick={() => { setReplaceOpen(false); setValue(''); }} className="btn btn-quiet">Cancel</button>
@@ -691,10 +707,11 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
   return (
     <div className="space-y-3">
       <div>
-        <h3 className="text-sm font-medium text-text-primary">Setup token / API key</h3>
+        <h3 className="text-sm font-medium text-text-primary">{mode === 'api_key' ? 'Anthropic API key' : 'Setup token'}</h3>
         <p className="text-xs text-text-secondary mt-0.5">
-          An OAuth token from <code className="bg-surface-3 px-1 rounded text-[11px]">claude setup-token</code> (seat-based)
-          or an Anthropic API key (pay-per-token).
+          {mode === 'api_key'
+            ? <>Agents run on your own key and you pay Anthropic per token. Create one in the Anthropic console.</>
+            : <>An OAuth token from <code className="bg-surface-3 px-1 text-[11px]">claude setup-token</code>, for a runner you host.</>}
         </p>
       </div>
 
@@ -756,9 +773,9 @@ function ClaudeCard({ teamId, scope, workspaceId, teamTargets }: { teamId: strin
         <div className="space-y-3">
           {allTeams ? (
             <span className="text-xs text-text-muted">Applies the same Claude credential to all {teamTargets.length} teams you manage.</span>
-          ) : (
+          ) : mode === 'setup_token' ? (
             <span className="status-pill status-pill-idle">Not connected</span>
-          )}
+          ) : null}
           {inputForm}
         </div>
       )}
@@ -972,7 +989,13 @@ interface RowProps {
   scopeControl: ReactNode;
 }
 
-function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand, open, onToggle, onOpen, scopeControl, children }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null; children?: ReactNode } & RowProps) {
+/**
+ * The Claude row. Its body leads with `keyForm` (the model key, the primary
+ * path); the subscription sign-in (OAuth connect, pasted .credentials.json and
+ * `children`, the setup token) is folded under one disclosure labelled
+ * self-hosted runner only, open by default only for a team already signed in.
+ */
+function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fallbackConnected = false, strand, open, onToggle, onOpen, onAddKey, seatOpen, onSeatToggle, keyForm, scopeControl, children }: { accessWorkspaceId: string; scope: Scope; teamTargets: TeamTarget[]; fallbackConnected?: boolean; strand?: BackendStrandStat | null; onAddKey: () => void; seatOpen: boolean; onSeatToggle: () => void; keyForm: ReactNode; children?: ReactNode } & RowProps) {
   const { confirm, confirmDialog } = useConfirm();
   const [status, setStatus] = useState<ClaudeCredentialStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1146,14 +1169,17 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
 
   const chip = loading || allTeams ? undefined : status?.connected
     ? (status.expired ? <StatusChip tone="warn">Expired</StatusChip> : <StatusChip tone="ok">Connected</StatusChip>)
-    : fallbackConnected ? <StatusChip tone="ok">Setup token</StatusChip> : <StatusChip tone="idle">Not connected</StatusChip>;
+    : fallbackConnected ? <StatusChip tone="ok">Connected</StatusChip> : <StatusChip tone="idle">Not connected</StatusChip>;
   const where = status?.scope === 'workspace' ? 'this workspace' : 'all workspaces';
   const meta = loading ? 'Checking…'
     : allTeams ? `Applies to all ${teamTargets.length} teams you manage`
-    : status?.connected ? `One-tap login · ${where}${status.lastVerifiedAt ? ` · verified ${new Date(status.lastVerifiedAt).toLocaleDateString()}` : ''}`
-    : fallbackConnected ? 'Setup token or API key'
-    : 'Seat or API key';
-  const needsConnect = !loading && !allTeams && !oauth && (status?.connected ? status.expired : !fallbackConnected);
+    : status?.connected ? `Subscription sign-in · ${where}${status.lastVerifiedAt ? ` · verified ${new Date(status.lastVerifiedAt).toLocaleDateString()}` : ''}`
+    : fallbackConnected ? 'API key or setup token'
+    : 'API key: Anthropic, OpenRouter or LiteLLM';
+  // An expired sign-in is reconnected; with nothing stored the next step is a key.
+  const needsReconnect = !loading && !allTeams && !oauth && !!status?.connected && status.expired;
+  const needsKey = !loading && !allTeams && !status?.connected && !fallbackConnected;
+  const seatShown = seatOpen || !!status?.connected || !!oauth;
 
   return (
     <ConnectionRow
@@ -1163,9 +1189,13 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       meta={meta}
       open={open}
       onToggle={onToggle}
-      action={needsConnect ? (
+      action={needsReconnect ? (
         <button onClick={() => { onOpen(); void startOAuth(); }} disabled={busy} className="btn btn-accent">
-          {status?.connected ? 'Reconnect' : 'Connect'}
+          Reconnect
+        </button>
+      ) : needsKey ? (
+        <button onClick={onAddKey} className="btn btn-accent">
+          Add key
         </button>
       ) : undefined}
     >
@@ -1173,6 +1203,24 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
 
       <StrandedWorkNotice stat={strand} />
 
+      {keyForm}
+
+      <div className="border-t border-border-default pt-3">
+        <button
+          type="button"
+          onClick={onSeatToggle}
+          aria-expanded={seatShown}
+          // .btn is nowrap + fixed 32px; this label is too long for a phone,
+          // so let it wrap (it used to push /app/settings into a sideways pan).
+          className="btn btn-quiet h-auto min-h-11 md:min-h-8 py-1.5 whitespace-normal text-left justify-start leading-snug max-w-full"
+        >
+          {seatShown ? '▾' : '▸'} Claude subscription sign-in · self-hosted runner only
+        </button>
+        {seatShown && (
+        <div className="mt-3 space-y-3 pl-3 border-l-2 border-border-default">
+        <p className="text-xs text-text-muted">
+          A Claude Pro or Max login runs agents only on a runner you host and sign in on yourself. Buildd&apos;s cloud runner needs an API key.
+        </p>
       {loading ? (
         <div className="text-sm text-text-tertiary">Loading…</div>
       ) : status?.connected ? (
@@ -1264,7 +1312,10 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
       {msg && (
         <div className={`text-sm ${msg.type === 'error' ? 'text-status-error' : 'text-status-success'}`}>{msg.text}</div>
       )}
-      {children}
+      {children && <div className="border-t border-border-default pt-3">{children}</div>}
+        </div>
+        )}
+      </div>
       {confirmDialog}
     </ConnectionRow>
   );

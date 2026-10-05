@@ -2,13 +2,13 @@
 title: OAuth Provider & Signing Keys
 status: active
 owner: max
-last_verified: 2026-09-05
+last_verified: 2026-10-05
 summary: buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
 domain: auth
 surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/signing-keys.ts, apps/web/src/lib/signing-key-windows.ts, apps/web/src/app/api/.well-known/jwks.json/route.ts]
 related: [auth-oauth-boundaries, credential-isolation, external-cron-triggers, mcp-action-contracts]
 keywords: [rfc 7591, dynamic client registration, rfc 9728, resource_metadata, jwks, kid, es256, hs256, code_challenge, signing_key, assertion grant]
-verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/lib/oauth/storage.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts]
+verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/lib/oauth/storage.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts, apps/web/src/app/api/auth/device/approve/route.test.ts, apps/web/src/app/app/device/page.test.tsx]
 assertions:
   - id: jwks-route-get
     type: route
@@ -400,6 +400,13 @@ system.
   the row via an atomic `UPDATE ... WHERE status = 'pending'` so a code is
   approved at most once. An approved-but-expired row MUST be flipped to
   `expired` and rejected with HTTP 400.
+- A device code MUST be approved only by an explicit confirm. Loading
+  `/app/device` (with or without `?code=`) MUST NOT approve anything; it shows
+  the code, the requesting client, when it was requested and the account/team
+  it would connect, and approval is the page's confirm button. The approve
+  route MUST be POST-only and MUST reject a body without `confirm: true` with
+  HTTP 400, and every approval MUST be logged with the requester's IP and
+  user agent.
 - `POST /api/auth/device/token` MUST return HTTP 428 while `pending`, HTTP 400
   for unknown/expired tokens, and on the first successful poll MUST return the
   plaintext key and immediately null `deviceCodes.apiKey` — one-time retrieval.
@@ -416,11 +423,16 @@ system.
 - AC-32: GIVEN a device code already in `approved` status WHEN approve is
   called again with the same `userCode` THEN the server returns HTTP 400
   (the `status = 'pending'` predicate matched no row).
+- AC-32a: GIVEN a signed-in user WHEN they load `/app/device?code=<pending>`
+  THEN no request is sent and the row stays `pending`; WHEN approve is called
+  without `confirm: true` THEN the server returns HTTP 400 and nothing changes.
 
 **Code surface**:
 - CLI flow: `apps/web/src/app/api/auth/cli/route.ts:35-159`
 - Device flow: `apps/web/src/app/api/auth/device/code/route.ts:30-63`,
-  `apps/web/src/app/api/auth/device/approve/route.ts:16-113`,
+  `apps/web/src/app/api/auth/device/approve/route.ts`,
+  confirm page `apps/web/src/app/app/device/page.tsx` +
+  `apps/web/src/lib/device-confirm.ts`,
   `apps/web/src/app/api/auth/device/token/route.ts:12-78`
 - Key hashing: `apps/web/src/lib/api-auth.ts` — `hashApiKey()`,
   `extractApiKeyPrefix()`

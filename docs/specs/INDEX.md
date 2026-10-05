@@ -14,7 +14,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 - [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-09-30
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
-- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-09-05
+- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
 - [Team Permissions](./team-permissions.md) · @max — verified 2026-10-04
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
@@ -140,12 +140,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-04
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
-## Draft (2)
+## Draft (3)
 
 - [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-01
   Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
+- [Provider-Backed Browser for Visual Review](./visual-qa-browser-providers.md) · @max — verified 2026-10-05
+  The visual-auditor role MUST be eligible exactly when a selected browser provider (local Chromium or a Cloudflare session) proves it works, and MUST be able to review a Buildd service booted inside its own sandbox.
 
 ## Superseded (2)
 

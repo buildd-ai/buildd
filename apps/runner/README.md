@@ -22,6 +22,31 @@ a new version (exit code 75), and otherwise keeps running until you close the
 terminal. See `docs/testing.md` and `docs/specs/runner-liveness.md` for the
 update/heartbeat contract.
 
+## Pointing at another buildd server
+
+The runner and `buildd login` talk to `https://buildd.dev` unless told
+otherwise. For a self-hosted server or a local one, log in against it:
+
+```bash
+buildd login --server https://buildd.example.com
+buildd login --server http://localhost:3000 --device   # no browser on this machine
+```
+
+The login saves the server next to the API key in `~/.buildd/config.json`
+(`builddServer`), and the runner reads it from there, so `buildd` and
+`buildd service install` need no flag afterwards. To check: `buildd status`.
+
+`BUILDD_SERVER` overrides the saved server for the runner process only, which
+is handy for a one-off run or a container:
+
+```bash
+BUILDD_SERVER=https://buildd.example.com buildd
+```
+
+`buildd login` does not read `BUILDD_SERVER`; pass `--server` to it. The API
+key belongs to the server that issued it, so after switching servers run
+`buildd login --server …` again.
+
 ## Running as a service
 
 `buildd` on its own is foreground-only — closing the terminal (or logging
@@ -158,7 +183,7 @@ Codex task per login, or give Codex a team OpenAI API key.
 | Command | Purpose |
 |---|---|
 | `buildd` | Run the worker in the foreground |
-| `buildd login` / `buildd logout` | Authenticate / clear the saved API key |
+| `buildd login` / `buildd logout` | Authenticate / clear the saved API key (`--server <url>` for a server other than buildd.dev, `--device` without a browser) |
 | `buildd status` | Show login status |
 | `buildd service install\|uninstall\|status\|logs` | Manage the background service (macOS/Linux) |
 | `buildd init <workspace-id>` | Write a per-repo `.mcp.json` for Claude Code |
