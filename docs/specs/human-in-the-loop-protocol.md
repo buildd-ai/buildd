@@ -5,10 +5,10 @@ owner: max
 last_verified: 2026-10-02
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts]
+surfaces: [apps/web/src/lib/question-hold.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts, apps/web/src/app/api/workers/[id]/question-check/route.ts, apps/runner/src/question-gate.ts, packages/core/question-brief.ts, packages/core/question-gate.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts, answered-question-resume]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
-verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts]
+verified_by: [apps/web/src/lib/question-hold.test.ts, apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts, packages/core/__tests__/question-brief.test.ts, packages/core/__tests__/question-gate.test.ts, apps/web/src/lib/question-gate-check.test.ts, apps/runner/__tests__/unit/question-gate.test.ts, apps/web/src/app/api/workers/[id]/question-check/route.test.ts, apps/web/src/app/api/workers/claim/question-gate.test.ts, apps/web/src/app/api/decisions/[id]/override/route.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -183,10 +183,10 @@ path unchanged.
      spending), a second decision (`QUESTION_DECIDE_DECISION`) picks the
      disposition: `decide` (Jev picks one of the listed options; the answer is
      the AskUserQuestion tool result, verdict `decide` — nobody is parked or
-     notified), `hold` (parked exactly like `ask` today, tagged
-     `disposition: 'hold'` with a `holdReason` and a bounded `resurfaceAt` —
-     no notification-suppression wiring exists yet, see
-     `HOLD_RESURFACE_MS`'s doc comment), or `ask` (parked and notified,
+     notified), `hold` (parked like `ask`, tagged `disposition: 'hold'` with a
+     `holdReason` and a `resurfaceAt` at most `HOLD_RESURFACE_MS` out, but
+     nobody is notified when it parks — `apps/web/src/lib/question-hold.ts`
+     surfaces it at the deadline if it is still unanswered), or `ask` (parked and notified,
      unchanged). Low confidence, an invalid/missing option index, or a
      question with no options all fail open to `ask`.
   Every failure at either stage (sensitive workspace, no key, gateway decision
@@ -256,6 +256,17 @@ path unchanged.
   `decide` is never attempted — the outcome is `hard_rail`, the disposition is
   `ask`, and a `decision_records` row is written with
   `reason: 'rail_blocked:<rail>'`, `applied: false`.
+- AC-HITL-40a: GIVEN a question parked with `disposition: 'hold'` WHEN the
+  worker PATCH stores it THEN nobody is notified and no `task.needs_input` row
+  is recorded, unless the workspace is sensitive, the kill switch is off, or a
+  hard rail applies to the task's pathManifest or the question's text — then
+  the hold tag is stripped and it is notified as an `ask`, whatever the runner
+  sent. Its `resurfaceAt` is clamped to at most `HOLD_RESURFACE_MS` from the
+  first park, and a re-sent copy keeps the first deadline. WHEN `resurfaceAt`
+  passes and the worker is still `waiting_input` on that question THEN the
+  resurface pass (riding `/api/cron/notify-away`'s gated and floor ticks)
+  notifies exactly once; a worker that moved on is never notified, and one
+  whose task closed is settled as dropped.
 - AC-HITL-41: GIVEN a confident `decide` with a valid option index WHEN stage 2
   resolves THEN the reply's `verdict` is `decide` (not `send`), `decision`
   names the chosen option and its confidence, and a `decision_records` row is

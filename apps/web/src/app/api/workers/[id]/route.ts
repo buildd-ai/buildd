@@ -1,6 +1,6 @@
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
-import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
+import { withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
@@ -18,6 +18,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
+import { markHoldDue, notifyParkedQuestion, resolveHold, type HoldResolution } from '@/lib/question-hold';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
@@ -1070,6 +1071,8 @@ export async function PATCH(
   if (verificationEvidence && typeof verificationEvidence === 'object' && !Array.isArray(verificationEvidence)) {
     updates.verificationEvidence = verificationEvidence as Record<string, unknown>;
   }
+  // Set when the incoming question carries a `hold` tag; null = an ordinary ask.
+  let hold: HoldResolution | null = null;
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
     // Contract violation: the agent stopped and asked, but stated no real
@@ -1085,33 +1088,37 @@ export async function PATCH(
     const briefed = waitingFor !== null && waitingFor?.type === 'question'
       ? withSanitizedBrief(waitingFor)
       : waitingFor;
+    // A held question (lib/question-hold.ts): the server decides whether the
+    // runner's `hold` tag stands — never on a hard rail, a sensitive
+    // workspace or with the gate off — and bounds its deadline.
+    let stored = briefed;
+    if (briefed && briefed.type === 'question' && (briefed as { disposition?: unknown }).disposition === 'hold') {
+      const holdTask = worker.taskId
+        ? await db.query.tasks.findFirst({ where: eq(tasks.id, worker.taskId), columns: { pathManifest: true } })
+        : null;
+      hold = resolveHold({
+        waitingFor: briefed as Record<string, unknown>,
+        stored: worker.waitingFor as Record<string, unknown> | null,
+        sensitive: isSensitive,
+        gitConfig: wsForSensitivity?.gitConfig ?? null,
+        pathManifest: holdTask?.pathManifest ?? null,
+        nowMs: Date.now(),
+      });
+      stored = hold.waitingFor as typeof briefed;
+    }
     updates.waitingFor = (isSensitive && waitingFor !== null)
       ? { type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
-      : (briefed !== null && isContentlessQuestion ? { ...briefed, contractViolation: true } : briefed);
+      : (stored !== null && isContentlessQuestion ? { ...stored, contractViolation: true } : stored);
   }
-  // Pushover notification when agent needs input — sensitive: generic message only
-  if (waitingFor?.type === 'question') {
-    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-    // Short by design: the question, one line of context, the recommended default.
-    const note = questionNotificationText(
-      withSanitizedBrief(waitingFor),
-      { sensitive: isSensitive },
+  // Notification when agent needs input — sensitive: generic message only.
+  // Team Pushover channel + the originating chat conversation. A held question
+  // is not notified now: the resurface sweep notifies it at its deadline if it
+  // is still unanswered (lib/question-hold.ts).
+  if (waitingFor?.type === 'question' && !hold?.held) {
+    notifyParkedQuestion(
+      { workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: id, waitingFor, sensitive: isSensitive },
+      { recordLedger: false },
     );
-    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
-      title: note.title,
-      message: note.message,
-      url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
-      urlTitle: 'Respond',
-      priority: 0,
-    });
-    // Agent chat: a mission filed from a conversation gets the question posted
-    // back into it. Lazy + best-effort: never on this PATCH's critical path.
-    if (worker.taskId) {
-      const taskId = worker.taskId;
-      void import('@/lib/chat/mission-events')
-        .then(m => m.postQuestionEvent({ taskId, workerId: id, prompt: waitingFor.prompt, sensitive: isSensitive }))
-        .catch(() => {});
-    }
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
@@ -4065,9 +4072,13 @@ export async function PATCH(
   // worker write landed, so a conflicted PATCH records nothing. The key is per
   // question, so the runner re-sending the same waitingFor writes one row.
   // Fire-and-forget: emit never throws, and the ledger write adds no latency.
-  if (waitingFor?.type === 'question' && worker.taskId) {
+  // A held question records nothing now; the resurface pass records it.
+  if (waitingFor?.type === 'question' && worker.taskId && !hold?.held) {
     void emit({ type: 'task.needs_input', taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt });
   }
+  // A held question's deadline, for the resurface sweep's gated tick. After
+  // the write landed, like the ledger row; best effort, the floor tick re-seeds.
+  if (hold?.held === true) void markHoldDue(id, hold.resurfaceAtMs);
 
   // One terminal record per worker, on every path that lands here: a real
   // completion, a real failure, a runner-reconciled process death reported as
