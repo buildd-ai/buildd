@@ -79,6 +79,44 @@ as the foreground loop: an update still exits 75, and the service supervisor
 (not the launcher's own `while` loop) brings it back up for anything else,
 e.g. a real crash.
 
+## Model login on the runner machine
+
+The runner gives its agents whatever Claude login its own machine has, and that
+login wins over a subscription seat stored in buildd's Settings. Two ways to
+set one up, both as the user the runner runs as:
+
+- **`claude login`** (interactive). Run it once on the machine. The Claude CLI
+  keeps the login under `$HOME` (`~/.claude/.credentials.json` on Linux, the
+  login keychain on macOS) and refreshes it itself.
+- **`claude setup-token`** (headless). Run it anywhere you can open a browser,
+  and put the printed value in the runner's environment as
+  `CLAUDE_CODE_OAUTH_TOKEN`. It is a long-lived token with no refresh, so it
+  suits servers and containers.
+
+A metered key or endpoint the team configured still applies: a delivered
+`ANTHROPIC_API_KEY` fills that variable when the machine has not set it, and a
+team agent model endpoint or a non-Anthropic `ANTHROPIC_BASE_URL` replaces the
+login (a seat is never sent to a third-party host).
+
+Per setup:
+
+| Where the runner runs | What to do |
+|---|---|
+| Your own Mac or Linux box, in a terminal | `claude login`, then start `buildd`. Or `export CLAUDE_CODE_OAUTH_TOKEN=...` in the shell that starts it. |
+| macOS service (`buildd service install`) | `claude login` as the same user; the LaunchAgent runs as you and sees the keychain login. |
+| Linux service (`systemd --user`) | `claude login` as the same user, or put the token in a file only you can read and point the unit at it: `install -m 600 /dev/null ~/.config/buildd/seat.env`, write `CLAUDE_CODE_OAUTH_TOKEN=...` into it, then `systemctl --user edit buildd-runner` and add `[Service]` / `EnvironmentFile=%h/.config/buildd/seat.env`, then `systemctl --user restart buildd-runner`. |
+| Coder, Docker or a similar container | Set `CLAUDE_CODE_OAUTH_TOKEN` in the container or workspace environment the runner process inherits (a workspace parameter or secret, not a file baked into the image), and restart the runner. |
+
+Check which one a worker used in its log: `Claude seat: this machine's own
+login (...)` means the machine's login; `Injected server-managed
+CLAUDE_CODE_OAUTH_TOKEN` means a seat stored in buildd. The token value is
+never logged, and it is redacted from milestones, error traces and evidence
+like any other credential.
+
+`BUILDD_HOST_SEAT=off` in the runner's environment restores the old order (the
+stored seat wins and the env token is not given to agents). Use it only to
+switch back quickly if the machine's login turns out to be stale.
+
 ## CLI reference
 
 | Command | Purpose |

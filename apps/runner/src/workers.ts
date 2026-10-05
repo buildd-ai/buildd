@@ -80,6 +80,7 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
+import { applyHostSeatPolicy, describeHostSeat, detectHostSeat, hostModelCredentialValues } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
@@ -588,7 +589,7 @@ function hasClaudeCredentials(): boolean {
   }
 
   // Check env vars
-  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
+  if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return true;
   }
 
@@ -3139,11 +3140,16 @@ export class WorkerManager {
     // claim-delivered secret channel (mcpSecrets, roleEnvSecrets, agent-backend
     // credentials — see buildWorkerSecretValues). Applies to milestones,
     // currentAction, error traces, evidence bodies and the history archive.
-    const secretValues = buildWorkerSecretValues(
-      this.config.apiKey,
-      worker,
-      agentBuilddAuth.source === 'task-token' ? agentBuilddToken : undefined,
-    );
+    const secretValues = [
+      ...buildWorkerSecretValues(
+        this.config.apiKey,
+        worker,
+        agentBuilddAuth.source === 'task-token' ? agentBuilddToken : undefined,
+      ),
+      // The machine's own model credentials the agent env may carry (a host
+      // seat token, operator API keys): exact-value redacted like a claim secret.
+      ...hostModelCredentialValues(),
+    ];
     const redactWorkerSecrets = createSecretRedactor(secretValues);
     this.secretRedactors.set(worker.id, redactWorkerSecrets);
     // BYO evidence: requestEvidenceUploadUrl is optional-called so this no-ops
@@ -3488,7 +3494,12 @@ export class WorkerManager {
           this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
         }
       }
+      // The machine's own Claude login wins over a server-delivered seat
+      // (host-seat.ts). BUILDD_HOST_SEAT=off restores the old order.
+      applyHostSeatPolicy(cleanEnv);
+      const hostSeat = isCodexTask ? null : detectHostSeat();
       const modelEnv = applyModelEnv(cleanEnv, {
+        hostSeat,
         llmProvider: this.config.llmProvider,
         serverApiKey: worker.serverApiKey,
         serverOauthToken: worker.serverOauthToken,
@@ -3521,6 +3532,15 @@ export class WorkerManager {
       }
       if (modelEnv.injected.includes('serverOauthToken')) {
         console.log(`[Worker ${worker.id}] Injected server-managed CLAUDE_CODE_OAUTH_TOKEN`);
+      }
+      if (modelEnv.hostSeatUsed && hostSeat) {
+        const skipped = worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId
+          ? '; the server-delivered seat is not used'
+          : '';
+        console.log(`[Worker ${worker.id}] Claude seat: ${describeHostSeat(hostSeat)}${skipped}`);
+        sessionLog(worker.id, 'info', 'claude_seat_source', `source=machine-${hostSeat}${skipped ? ' server_seat=skipped' : ''}`, task.id);
+      } else if (modelEnv.injected.includes('serverOauthToken') || shouldUseClaudeCredential(modelEnv, worker)) {
+        sessionLog(worker.id, 'info', 'claude_seat_source', 'source=server-managed', task.id);
       }
       if (modelEnv.injected.includes('tenantOauthToken') && tenantCtx) {
         console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);
