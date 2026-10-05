@@ -13,15 +13,20 @@
  *
  * and two terminal outcomes, counted cumulatively from the window start:
  *   released (reached production: a healthy/degraded release carried it, or it
- *            merged in a workspace with no tracked release process)
+ *            merged in a workspace with no tracked release process). A release
+ *            carries a merge when it names the task, or when it was cut after
+ *            the change reached the trunk it releases from (a mission-branch
+ *            merge reaches trunk when its mission's PR merges).
  *   lost     (failed or cancelled with no PR, or its PR closed unmerged)
  *
  * WIP stages are time-weighted per bucket (average tasks in that stage over the
  * bucket), so a ten-minute run in an hourly bucket reads as 0.17, not 0 or 1.
  *
- * Known approximations, kept visible rather than papered over:
- *   - "waiting" is only known for workers parked NOW (from their last update);
- *     past waits are not stored, so they read as running.
+ * Approximations:
+ *   - "waiting" is only known for workers parked now.
+ *   - a finished worker with no recorded end runs at most MAX_UNENDED_RUN_MS:
+ *     its row keeps being touched by PR refreshes, so its last update is not
+ *     when it stopped.
  *   - a PR's close time is its last GitHub check (`prLastCheckedAt`), unless a
  *     person recorded it abandoned. A PR superseded by another merged PR is
  *     neither shipped nor lost here: the PR that landed carries the shipping.
@@ -72,6 +77,8 @@ export interface FlowWorkerRow {
   prSupersededAt: number | null;
   /** Closed PR a person declared abandoned. */
   prAbandonedAt: number | null;
+  /** Branch the PR merged into; `mission/...` means a mission integration branch. */
+  prBaseRef?: string | null;
 }
 
 export interface FlowReleaseRow {
@@ -81,6 +88,8 @@ export interface FlowReleaseRow {
   state: string;
   /** When it reached production (healthyAt ?? deployedAt ?? createdAt). */
   at: number;
+  /** When its commit range was fixed (dispatchedAt ?? createdAt); defaults to `at`. */
+  cutAt?: number;
 }
 
 export interface FlowInput {
@@ -92,6 +101,8 @@ export interface FlowInput {
   releaseTasks: { releaseId: string; taskId: string }[];
   /** Workspaces that have ever recorded a release; elsewhere a merge ships. */
   releaseWorkspaceIds: string[];
+  /** When each mission's own PR merged into trunk, for mission-branch merges. */
+  missionTrunkMergedAt?: Record<string, number>;
 }
 
 export type FlowStage = 'running' | 'waiting' | 'review' | 'merged';
@@ -164,6 +175,9 @@ const LOST_TASK = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'comp
 
 interface Interval { from: number; to: number; role?: string }
 
+/** Longest a finished worker with no recorded end is counted as running. */
+export const MAX_UNENDED_RUN_MS = 8 * HOUR;
+
 function overlap(a0: number, a1: number, b0: number, b1: number): number {
   return Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 }
@@ -180,7 +194,8 @@ function runEnd(w: FlowWorkerRow, now: number): number {
   if (w.status === 'waiting_input') return Math.min(now, w.updatedAt ?? w.startedAt ?? now);
   if (w.completedAt != null) return w.completedAt;
   if (LIVE.has(w.status)) return now;
-  return w.updatedAt ?? w.startedAt ?? now;
+  const start = w.startedAt ?? now;
+  return Math.min(w.updatedAt ?? start, start + MAX_UNENDED_RUN_MS, now);
 }
 
 function stageSegments(
@@ -218,8 +233,10 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
   // Group workers by task key; remember which task ids belong to each key.
   const groups = new Map<string, FlowWorkerRow[]>();
   const keyOfTask = new Map<string, string>();
+  const seenWorkers = new Set<string>();
   for (const w of input.workers) {
-    if (w.startedAt == null) continue;
+    if (w.startedAt == null || seenWorkers.has(w.workerId)) continue;
+    seenWorkers.add(w.workerId);
     const key = w.parentTaskId ?? w.taskId ?? `worker:${w.workerId}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(w);
@@ -235,6 +252,25 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
     if (!r || !key || !SHIPPED_RELEASE_STATES.has(r.state)) continue;
     const prev = firstShip.get(key);
     if (prev == null || r.at < prev) firstShip.set(key, r.at);
+  }
+
+  // Shipped releases per workspace, in cut order, for merges no release names.
+  const shippedByWs = new Map<string, FlowReleaseRow[]>();
+  for (const r of input.releases) {
+    if (!SHIPPED_RELEASE_STATES.has(r.state)) continue;
+    if (!shippedByWs.has(r.workspaceId)) shippedByWs.set(r.workspaceId, []);
+    shippedByWs.get(r.workspaceId)!.push(r);
+  }
+  for (const list of shippedByWs.values()) list.sort((a, b) => (a.cutAt ?? a.at) - (b.cutAt ?? b.at));
+  const missionTrunk = input.missionTrunkMergedAt ?? {};
+  /** When the first shipped release cut after `trunkAt` reached production, or null. */
+  function shipByCut(workspaceId: string, trunkAt: number): number | null {
+    let best: number | null = null;
+    for (const r of shippedByWs.get(workspaceId) ?? []) {
+      if ((r.cutAt ?? r.at) < trunkAt || r.at > now) continue;
+      if (best == null || r.at < best) best = r.at;
+    }
+    return best;
   }
 
   const tasks: FlowTask[] = [];
@@ -271,7 +307,12 @@ export function buildFlowSeries(input: FlowInput): FlowSeries {
       if (mergedAt != null) {
         review = { from: openedAt, to: Math.max(openedAt, mergedAt) };
         if (releaseWs.has(own.workspaceId)) {
-          shippedAt = firstShip.get(key) ?? null;
+          const mergeRow = same.find(r => r.mergedAt === mergedAt) ?? latestPr;
+          const viaMission = (mergeRow.prBaseRef ?? '').startsWith('mission/');
+          const trunkAt = viaMission ? (mergeRow.missionId ? missionTrunk[mergeRow.missionId] : undefined) : mergedAt;
+          const byCut = trunkAt != null ? shipByCut(own.workspaceId, Math.max(trunkAt, mergedAt)) : null;
+          const byEdge = firstShip.get(key) ?? null;
+          shippedAt = byEdge != null && byCut != null ? Math.min(byEdge, byCut) : (byEdge ?? byCut);
           merged = { from: mergedAt, to: shippedAt ?? now };
         } else {
           shippedAt = firstShip.get(key) ?? mergedAt;
