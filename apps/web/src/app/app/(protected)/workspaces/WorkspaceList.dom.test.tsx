@@ -132,3 +132,22 @@ describe('WorkspaceList move-to-team', () => {
     expect(document.querySelector('[data-testid="move-toast"]')?.textContent).toContain('Moved Example Workspace to Team B');
   });
 });
+
+describe('runner markers', () => {
+  it('shows no unexplained crosses for a workspace with no runner yet', () => {
+    act(() => root.render(<WorkspaceList {...props} />));
+    const text = container.textContent ?? '';
+    expect(text).not.toContain('Service');
+    expect(text).not.toContain('GH Action');
+    expect(container.querySelector('[data-testid="workspace-runner-marker"]')).toBeNull();
+  });
+
+  it('names a connected runner in plain words and explains it on hover', () => {
+    const withRunner = { ...ws('ws-3', 'Busy Workspace', false), runners: { service: true, user: false } };
+    act(() => root.render(<WorkspaceList workspaces={[withRunner]} moveTeams={[]} />));
+    const markers = [...container.querySelectorAll('[data-testid="workspace-runner-marker"]')];
+    expect(markers.map((m) => m.textContent)).toEqual(['Server runner']);
+    expect(markers[0].getAttribute('title')).toMatch(/always-on server/);
+  });
+});
+

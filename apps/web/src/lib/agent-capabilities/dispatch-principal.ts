@@ -21,7 +21,7 @@ import {
 async function loadTask(taskId: string) {
   return db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { id: true, workspaceId: true, backend: true },
+    columns: { id: true, workspaceId: true, backend: true, context: true },
     with: {
       workspace: {
         columns: { id: true, teamId: true, accessMode: true, webhookConfig: true, githubRepoId: true, gitConfig: true, releaseConfig: true },
@@ -64,7 +64,7 @@ export async function resolveDispatchPrincipal(
 
   const rows = await db.query.workers.findMany({
     where: and(eq(workers.taskId, input.taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES])),
-    columns: { id: true, accountId: true, workspaceId: true, status: true, taskId: true },
+    columns: { id: true, accountId: true, workspaceId: true, status: true, taskId: true, branch: true },
   });
   const mine = ownLiveWorkers(rows, { taskId: input.taskId, workspaceId: ws.id, accountId: account.id, workerId: input.workerId });
   if (mine.length === 0) {
@@ -79,6 +79,7 @@ export async function resolveDispatchPrincipal(
       // Without a workerId the task's live worker stands in. One task has at
       // most one live worker in practice; any of them satisfies the rule above.
       workerId: mine[0]!.id,
+      workerBranch: rows.find(w => w.id === mine[0]!.id)?.branch ?? null,
       taskId: task.id,
       workspaceId: ws.id,
       teamId: ws.teamId,
@@ -87,4 +88,29 @@ export async function resolveDispatchPrincipal(
     task,
     workspace: ws,
   };
+}
+
+/**
+ * The branches a cloud run may move (the egress push allow-list in
+ * apps/cloud-runner/src/outbound.ts): the worker's own branch, plus the task's
+ * `context.headBranch` when it pins one (a mission's shared working branch,
+ * which every task on that mission pushes; the claim route normally makes it
+ * the worker's branch as well). A stacked phase pushes its own branch on top
+ * of its predecessor's, so `context.baseBranch` is never included. A protected
+ * branch is never pushable, whatever the task says.
+ */
+export function taskPushableBranches(args: {
+  workerBranch?: string | null;
+  context?: unknown;
+  protectedBranches: readonly string[];
+}): string[] {
+  const head = (args.context as { headBranch?: unknown } | null | undefined)?.headBranch;
+  const out: string[] = [];
+  for (const b of [args.workerBranch, head]) {
+    if (typeof b !== 'string') continue;
+    const name = b.trim();
+    if (!name || args.protectedBranches.includes(name) || out.includes(name)) continue;
+    out.push(name);
+  }
+  return out;
 }
