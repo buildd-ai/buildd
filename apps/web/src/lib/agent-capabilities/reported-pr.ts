@@ -48,7 +48,7 @@ export interface GithubPrView {
 export type ReportedPrVerdict =
   | { accept: true; verified: true; pr: { number: number; url: string; baseRef: string | null; view: GithubPrView } }
   | { accept: true; verified: false; pr: { number: number | null; url: string | null } }
-  | { accept: false; reasonCode: 'pr_outside_linked_repo' | 'pr_unreadable' | 'head_not_owned' | 'protected_head' | 'mission_base'; error: string };
+  | { accept: false; reasonCode: 'pr_outside_linked_repo' | 'pr_unreadable' | 'head_not_owned' | 'protected_head' | 'head_claimed' | 'mission_base'; error: string };
 
 function numberFromUrl(url: string | null | undefined): number | null {
   const m = url ? /\/pull\/(\d+)(?:\D|$)/.exec(url) : null;

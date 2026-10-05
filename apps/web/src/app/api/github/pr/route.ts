@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { failedChecks } from '@/lib/failed-checks';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
-import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
+import { eq, and, ne, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, githubAppBotLogin, mergePullRequest } from '@/lib/github';
 import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
@@ -18,7 +18,8 @@ import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
-import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict } from '@/lib/agent-capabilities/pr-ownership';
+import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict, type InteractiveHeadHolder } from '@/lib/agent-capabilities/pr-ownership';
+import { INTERACTIVE_RUNNER } from '@/lib/interactive-session';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 // GET only: the dashboard session (in-app chat reads PRs as the signed-in user).
@@ -211,6 +212,20 @@ function refusePrOwnership(
   );
 }
 
+/**
+ * Other workers (any task) already recorded on `head` in this workspace —
+ * the DB half of the `interactive_head` ownership basis (pr-ownership.ts).
+ * Only called for a verified interactive worker, since it is the only caller
+ * that basis ever applies to.
+ */
+async function fetchOtherHeadHolders(workspaceId: string, selfWorkerId: string, head: string): Promise<InteractiveHeadHolder[]> {
+  const rows = await db.query.workers.findMany({
+    where: and(eq(workers.branch, head), eq(workers.workspaceId, workspaceId), ne(workers.id, selfWorkerId)),
+    columns: { id: true, taskId: true, status: true, prUrl: true },
+  });
+  return rows.map(r => ({ workerId: r.id, taskId: r.taskId, status: r.status, hasPr: r.prUrl != null }));
+}
+
 // POST /api/github/pr - Create a pull request
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -253,6 +268,14 @@ export async function POST(req: NextRequest) {
     if (!worker) {
       return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
     }
+
+    // workers.runner is client-supplied at claim time, but this value is only
+    // ever reached here as 'mcp' after interactive-session.ts's HMAC check
+    // passed at claim — an UNVERIFIED claim is stamped 'mcp-unverified'
+    // instead and never qualifies. Gates the interactive_head ownership
+    // basis below: only a session buildd itself proved was interactive may
+    // open a PR from a head that is not its own derived branch.
+    const isInteractiveWorker = worker.runner === INTERACTIVE_RUNNER;
 
     // Team membership OR being the account that runs the worker (see
     // canActOnWorkerPr), and a per-task token only for its own worker. Runs
@@ -374,8 +397,17 @@ export async function POST(req: NextRequest) {
           workerBranch: worker.branch,
           task: worker.task,
           protectedBranches: repoProtectedBranches(worker.workspace ?? {}, ownRepo?.defaultBranch),
+          interactiveWorker: isInteractiveWorker,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, observedHead) : undefined,
         }, collectRetryLineage);
         if (!ownership.owned) return refusePrOwnership(worker, ownership);
+        // Record what was actually adopted: later lookups (get_pr, merge_pr,
+        // CI attribution) key off workers.branch, and the generated name
+        // claim_task handed this worker was never the real one.
+        if (ownership.basis === 'interactive_head' && worker.branch !== observedHead) {
+          await db.update(workers).set({ branch: observedHead, updatedAt: new Date() }).where(eq(workers.id, workerId));
+          worker.branch = observedHead;
+        }
       }
       if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
         const ready = await ensureIntegrationBaseForTaskPr({
@@ -591,16 +623,28 @@ export async function POST(req: NextRequest) {
     // An agent run opens or adopts a PR only from a head its task owns. The
     // PR number is not known yet; dedup below re-asks with it, in case the
     // task names the PR it found.
-    const ownershipInput = ownershipApplies(prAccess.actor, account)
+    const ownershipApplied = ownershipApplies(prAccess.actor, account);
+    const ownershipInput = ownershipApplied
       ? {
           workerBranch: worker.branch,
           task: worker.task,
           protectedBranches: repoProtectedBranches(workspace, repo.defaultBranch),
+          interactiveWorker: isInteractiveWorker,
+          otherHeadHolders: isInteractiveWorker ? await fetchOtherHeadHolders(worker.workspaceId, worker.id, head) : undefined,
         }
       : null;
     const headOwnership = ownershipInput
       ? await verifyPrOwnership({ ...ownershipInput, head, prNumber: null }, collectRetryLineage)
       : null;
+
+    // Record what was actually pushed: later lookups (get_pr, merge_pr, CI
+    // attribution, and the DERIVE-DON'T-ACCEPT mission-base check just below)
+    // all key off workers.branch, and the generated name claim_task handed
+    // this worker was never the real one.
+    if (headOwnership && headOwnership.owned && headOwnership.basis === 'interactive_head' && worker.branch !== head) {
+      await db.update(workers).set({ branch: head, updatedAt: new Date() }).where(eq(workers.id, workerId));
+      worker.branch = head;
+    }
 
     const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
     const maxIterations = typeof taskContext?.maxIterations === 'number' ? taskContext.maxIterations : 3;
