@@ -327,7 +327,7 @@ export function fleetSummary(fleet: FleetSnapshot): FleetSummary {
 }
 
 /**
- * The fleet's section label: "Fleet · 2 runners × 4 slots", or without the
+ * The runners section label: "Runners · 2 runners × 4 slots", or without the
  * "× N slots" when runners differ in size. Home's panel and Settings → Runners
  * both print it, so the two pages name the fleet the same way.
  */
@@ -339,8 +339,8 @@ export function fleetLabel(fleet: Pick<FleetSnapshot, 'runners'>): string {
   const sizes = new Set(hosts.map(r => r.maxSlots));
   const each = sizes.size === 1 && n > 0 ? ` × ${[...sizes][0]} slots` : '';
   const elastic = groups > 0 ? `${groups} elastic group${groups === 1 ? '' : 's'}` : '';
-  if (n === 0 && elastic) return `Fleet · ${elastic}`;
-  return `Fleet · ${n} runner${n === 1 ? '' : 's'}${each}${elastic ? ` + ${elastic}` : ''}`;
+  if (n === 0 && elastic) return `Runners · ${elastic}`;
+  return `Runners · ${n} runner${n === 1 ? '' : 's'}${each}${elastic ? ` + ${elastic}` : ''}`;
 }
 
 export type HeadlinePart = { text: string; tone?: 'accent' | 'success' };

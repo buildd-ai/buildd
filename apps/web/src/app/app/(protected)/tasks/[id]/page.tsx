@@ -59,6 +59,7 @@ import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSource
 import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 import { loadOpenAttempt } from '@/lib/explain';
 import TaskEvidenceCard from './TaskEvidenceCard';
+import { explainProviderAuthFailure, plainWorkerError } from '@/lib/provider-auth-failure';
 import TaskEvidenceFiles from './TaskEvidenceFiles';
 import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence-read';
 import { evidenceViewOf } from '@/lib/task-evidence';
@@ -253,6 +254,12 @@ export default async function TaskDetailPage({
   ]);
   const openQuestionCount = openQuestionRows.length;
   const failedExcerpt = truncateExcerpt(taskWorkers[0]?.error);
+  const taskBackend = (task.backend as 'claude' | 'codex' | null) ?? null;
+  // A failed run whose agent could not sign in to its model provider: the action
+  // zone says so in plain words, so the raw error chrome below steps back.
+  const authFailure = task.status === 'failed'
+    ? explainProviderAuthFailure(taskWorkers[0]?.error ?? null, taskBackend)
+    : null;
   const missionContextBar: MissionContextBarData | null = missionContextBarFor(
     missionContextRow as unknown as MissionCardRow | null,
     task.id,
@@ -1146,7 +1153,7 @@ export default async function TaskDetailPage({
             )}
             {/* On a completed task, matched errors are a hiccup the run got
                 past (the quiet row under "Your move"), not a red chip. */}
-            {errorTraces.length > 0 && !shippedView && (
+            {errorTraces.length > 0 && !shippedView && !authFailure && (
               <a
                 href="#agent-error-traces"
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium border border-status-error/30 text-status-error hover:bg-status-error/10 transition-colors"
@@ -1374,7 +1381,7 @@ export default async function TaskDetailPage({
           />
         )}
 
-        <TaskEvidenceCard status={task.status} result={task.result} />
+        <TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} />
 
         <TaskEvidenceFiles
           taskId={task.id}
@@ -1389,8 +1396,10 @@ export default async function TaskDetailPage({
             <details className="card">
               {/* Red only where the errors may have cost the result; a done
                   task got past them. */}
-              <summary className={`cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] select-none ${shippedView ? 'text-text-muted hover:text-text-secondary' : 'text-red-400 hover:text-red-300'}`}>
-                {shippedView ? 'Handled errors' : 'Agent errors'} · {errorTraces.length}
+              {/* Muted, too, once the failure is explained above: the same
+                  sign-in error matched six times is not six problems. */}
+              <summary className={`cursor-pointer p-4 font-mono text-[11px] md:text-[10px] uppercase tracking-[2.5px] select-none ${shippedView || authFailure ? 'text-text-muted hover:text-text-secondary' : 'text-red-400 hover:text-red-300'}`}>
+                {shippedView ? 'Handled errors' : authFailure ? 'Matched errors' : 'Agent errors'} · {errorTraces.length}
               </summary>
               <div className="px-4 pb-4 space-y-2 border-t border-border-default pt-3">
                 <p className="text-xs text-text-muted mb-2">
@@ -1794,9 +1803,14 @@ export default async function TaskDetailPage({
                         <span title={worker.branch}>{displayBranchName(worker.branch)}</span>
                         {worker.account && ` \u00B7 ${worker.account.name}`}
                       </div>
-                      {worker.error && (
-                        <p className="font-mono text-[11px] text-status-error mt-0.5 whitespace-pre-wrap break-words" title={worker.error}>{worker.error}</p>
-                      )}
+                      {(() => {
+                        // "Not logged in · Please run /login" and kin, in plain words (raw on hover).
+                        const shown = plainWorkerError(worker.error, taskBackend);
+                        if (!shown) return null;
+                        return (
+                          <p className={`mt-0.5 whitespace-pre-wrap break-words text-status-error ${shown.plain ? 'text-[12px]' : 'font-mono text-[11px]'}`} title={shown.raw}>{shown.text}</p>
+                        );
+                      })()}
                       {worker.status === 'superseded' && (
                         <p className="text-[11px] text-text-muted mt-0.5">
                           Session ended after you answered the question.{' '}

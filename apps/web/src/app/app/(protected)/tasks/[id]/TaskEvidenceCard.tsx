@@ -18,9 +18,14 @@ const RAW_CLASSES = new Set(['unknown', 'auth']);
 export default function TaskEvidenceCard({
   status,
   result,
+  workerError = null,
+  backend = null,
 }: {
   status: string;
   result: unknown;
+  /** The latest worker's error: a sign-in failure is recognised from it too. */
+  workerError?: string | null;
+  backend?: 'claude' | 'codex' | null;
 }) {
   const r = (result ?? null) as { evidence?: TaskEvidence; mismatch?: TaskMismatch[] } | null;
   const evidence = r?.evidence ?? null;
@@ -28,9 +33,22 @@ export default function TaskEvidenceCard({
   if (!evidence && mismatch.length === 0) return null;
   // The plain next step is the action zone's (TaskActionZone); here the
   // card only names it and keeps the stderr folded.
-  const auth = evidence ? explainProviderAuthFailure(evidence.keyLines.join('\n'), null) : null;
+  const auth = evidence
+    ? explainProviderAuthFailure([...evidence.keyLines, workerError ?? ''].join('\n'), backend)
+    : null;
+  // A sign-in failure the action zone already explains, with nothing else
+  // recorded (no failing command, no failed check, no diff), adds only noise.
+  const curated = !!evidence && (
+    !!evidence.lastFailingCommand
+    || (evidence.ciChecks ?? []).some(c => c.state === 'failed')
+    || (evidence.diff?.files ?? 0) > 0
+  );
+  const showEvidence = !!evidence && !(auth && !curated);
+  if (!showEvidence && mismatch.length === 0) return null;
   const collapseRaw = !!evidence && (auth !== null || RAW_CLASSES.has(evidence.errorClass));
-  const label = auth ? 'agent sign-in' : evidence?.errorClass.replace('_', ' ');
+  const label = auth
+    ? 'agent sign-in'
+    : evidence && evidence.errorClass !== 'unknown' ? evidence.errorClass.replace('_', ' ') : null;
   const keyLines = evidence && evidence.keyLines.length > 0 ? (
     <pre className="font-mono text-meta text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere] bg-surface-2 p-3 max-h-60 md:max-h-80 overflow-auto">
       {evidence.keyLines.join('\n')}
@@ -51,10 +69,10 @@ export default function TaskEvidenceCard({
           </ul>
         </div>
       )}
-      {evidence && (
+      {evidence && showEvidence && (
         <details className="card" open={status === 'failed'}>
           <summary className="cursor-pointer min-h-11 flex items-center px-4 py-3 font-mono text-eyebrow font-bold uppercase tracking-[2px] text-status-error select-none">
-            Evidence · {label}
+            Evidence{label ? ` · ${label}` : ''}
           </summary>
           <div className="px-4 pb-4 space-y-3 border-t border-border-default pt-3">
             {evidence.lastFailingCommand && (

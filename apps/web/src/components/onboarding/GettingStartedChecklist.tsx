@@ -3,7 +3,7 @@ import Chip from '@/components/ui/Chip';
 import Eyebrow from '@/components/ui/Eyebrow';
 import RunnerInstallSteps from '@/components/RunnerInstallSteps';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
-import type { GettingStartedChecklist as Checklist, GettingStartedStepId } from '@/lib/getting-started';
+import type { FirstTaskState, GettingStartedChecklist as Checklist, GettingStartedStepId } from '@/lib/getting-started';
 import { AGENT_CREDENTIAL_HREF } from '@/lib/provider-auth-failure';
 
 /** Settings → Model providers → Agent model endpoint (OpenRouter, LiteLLM). */
@@ -12,11 +12,11 @@ export const AGENT_ENDPOINT_HREF = '/app/settings/providers#agent-endpoint-h';
 const TITLES: Record<GettingStartedStepId, string> = {
   runner: 'Connect a runner',
   credential: 'Add an agent key',
-  task: 'File a first task',
+  task: 'Run a first task',
 };
 
 /** Shell lines, one per row, in one inset block. */
-function StepBody({ id }: { id: GettingStartedStepId }) {
+function StepBody({ id, taskState }: { id: GettingStartedStepId; taskState?: FirstTaskState }) {
   if (id === 'runner') {
     return (
       <>
@@ -42,6 +42,20 @@ function StepBody({ id }: { id: GettingStartedStepId }) {
       </>
     );
   }
+  if (taskState === 'failed') {
+    return (
+      <p className="text-body text-text-secondary">
+        Your first task failed. Needs you, below, says why and how to fix it; then retry it.
+      </p>
+    );
+  }
+  if (taskState === 'open') {
+    return (
+      <p className="text-body text-text-secondary">
+        Your first task is queued or running. This step is done when it finishes.
+      </p>
+    );
+  }
   return (
     <p className="text-body text-text-secondary">
       <NewWorkLink kind="task" className="text-accent-text hover:underline">New task</NewWorkLink>
@@ -52,7 +66,7 @@ function StepBody({ id }: { id: GettingStartedStepId }) {
 
 /**
  * Home's one getting-started list (lib/getting-started.ts): runner, agent key,
- * first task, in order. A done step folds to its title and a Done chip; the
+ * a first task that succeeded, in order. A done step folds to its title and a Done chip; the
  * current step shows how. The host renders nothing once `visible` is false.
  */
 export default function GettingStartedChecklist({ checklist, chatSetupHref }: { checklist: Checklist; chatSetupHref?: string | null }) {
@@ -92,7 +106,7 @@ export default function GettingStartedChecklist({ checklist, chatSetupHref }: { 
               </div>
               {!step.done && (
                 <div className="mt-1">
-                  <StepBody id={step.id} />
+                  <StepBody id={step.id} taskState={step.taskState} />
                 </div>
               )}
             </div>

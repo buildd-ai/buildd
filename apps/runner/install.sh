@@ -153,6 +153,15 @@ bun install
 # root. It is only attempted when that cannot prompt: as root, or with
 # passwordless sudo (announced first). Everyone else gets the browser without
 # system libs plus the one apt line to run themselves. BUILDD_NO_SUDO=1 opts out.
+# --- chromium deps hint: begin ---
+# The system libraries a Chromium installed without --with-deps may still need.
+# Linux only: macOS needs none, and has no apt.
+chromium_deps_hint() {
+  if [ "$1" = "Linux" ]; then
+    echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
+  fi
+}
+# --- chromium deps hint: end ---
 echo -e "${GREEN}Installing headless Chromium (pinned Playwright)...${NC}"
 CHROMIUM_WITH_DEPS=0
 if [ "$(uname -s)" = "Linux" ]; then
@@ -168,8 +177,12 @@ if [ "$CHROMIUM_WITH_DEPS" = "1" ] && bun run browser:install --with-deps 2>&1; 
 else
   [ "$CHROMIUM_WITH_DEPS" = "1" ] && echo -e "${YELLOW}--with-deps failed. Trying without...${NC}"
   if bun run browser:install 2>&1; then
-    echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
-    echo -e "${YELLOW}  Ubuntu/Debian: sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2${NC}"
+    if [ "$(uname -s)" = "Linux" ]; then
+      echo -e "${GREEN}Headless Chromium installed (install system deps manually if launch fails)${NC}"
+    else
+      echo -e "${GREEN}Headless Chromium installed${NC}"
+    fi
+    chromium_deps_hint "$(uname -s)"
   else
     echo -e "${YELLOW}Warning: Headless Chromium could not be installed.${NC}"
     echo -e "${YELLOW}  Browser capability will not be advertised. To fix:${NC}"

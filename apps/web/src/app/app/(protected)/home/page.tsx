@@ -17,7 +17,7 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
 import { missionTaskHref } from '@/lib/mission-task-href';
@@ -76,7 +76,7 @@ import { listConversations, type ConversationListItem } from '@/lib/chat/convers
 import HomeChatCard from '@/components/chat/HomeChatCard';
 import ProviderOnboardingCard from '@/components/onboarding/ProviderOnboardingCard';
 import GettingStartedChecklist from '@/components/onboarding/GettingStartedChecklist';
-import { gettingStartedChecklist } from '@/lib/getting-started';
+import { firstTaskState, gettingStartedChecklist, type FirstTaskState } from '@/lib/getting-started';
 import { teamHasAgentCredential } from '@/lib/getting-started-load';
 import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
@@ -135,6 +135,8 @@ export default async function HomePage({
   let missions: HomeMissionSummary[] = [];
 
   let totalTaskCount = 0;
+  // Getting started's third step: done only once a task has succeeded.
+  let firstTask: FirstTaskState = 'none';
   // Getting-started: does the team hold an agent key? null = not looked up.
   let hasAgentCredential: boolean | null = null;
   let lastHeartbeat: { name: string; lastHeartbeatAt: Date } | null = null;
@@ -366,11 +368,15 @@ export default async function HomePage({
       if (wsIds.length > 0) {
         // Count total tasks to distinguish new vs returning users
         // Exclude attempt tasks (CI retries, reviewer runs) — they nest under parents.
+        // By status: the same rows also say whether a first task has succeeded.
         const totalResult = await db
-          .select({ count: sql<number>`count(*)::int` })
+          .select({ status: tasks.status, count: sql<number>`count(*)::int` })
           .from(tasks)
-          .where(and(inArray(tasks.workspaceId, wsIds), isNull(tasks.parentTaskId)));
-        totalTaskCount = totalResult[0]?.count || 0;
+          .where(and(inArray(tasks.workspaceId, wsIds), isNull(tasks.parentTaskId)))
+          .groupBy(tasks.status);
+        const countsByStatus = Object.fromEntries(totalResult.map((r) => [r.status, r.count || 0]));
+        totalTaskCount = totalResult.reduce((n, r) => n + (r.count || 0), 0);
+        firstTask = firstTaskState(countsByStatus);
 
         // Active workers with their tasks and objectives
         const activeWorkers = await db.query.workers.findMany({
@@ -1502,6 +1508,39 @@ export default async function HomePage({
             }
           }
 
+          // 1b. Tasks that failed for a reason the owner fixes in settings
+          // (no working agent key). Read fresh: a retried task is no longer
+          // `failed`, so its card goes on the next build. Recent only: an old
+          // failure the owner already moved past is not a live ask.
+          const failedTaskRows = await db.query.tasks.findMany({
+            where: and(
+              inArray(tasks.workspaceId, wsIds),
+              eq(tasks.status, 'failed'),
+              isNull(tasks.parentTaskId),
+              gte(tasks.updatedAt, new Date(Date.now() - 7 * 86_400_000)),
+            ),
+            columns: { id: true, title: true, status: true, backend: true, missionId: true },
+            with: {
+              mission: { columns: { id: true, title: true } },
+              workers: {
+                columns: { error: true },
+                orderBy: (w, { desc: descOrder }) => [descOrder(w.createdAt)],
+                limit: 1,
+              },
+            },
+            orderBy: desc(tasks.updatedAt),
+            limit: 5,
+          });
+          waitingOnYou.push(...buildFailedTaskItems(failedTaskRows.map((t) => ({
+            taskId: t.id,
+            title: t.title,
+            status: t.status,
+            backend: (t.backend as 'claude' | 'codex' | null) ?? null,
+            workerError: (t.workers as Array<{ error: string | null }> | undefined)?.[0]?.error ?? null,
+            missionId: t.missionId,
+            missionTitle: (t.mission as { title?: string } | null)?.title ?? null,
+          }))));
+
           // 2. Unanswered worker questions (waiting_input with waitingFor set)
           const waitingInputWorkers = await db.query.workers.findMany({
             where: and(
@@ -1892,13 +1931,13 @@ export default async function HomePage({
     totalTaskCount,
   });
   // One ordered getting-started list (lib/getting-started.ts), from real data.
-  // Shown until runner, agent key and a first task all exist; a lookup that
+  // Shown until a runner, an agent key and a task that succeeded all exist; a lookup that
   // did not run or failed never shows it.
   const gettingStarted = workspaceCount > 0 && hasAgentCredential !== null
     ? gettingStartedChecklist({
         runnerConnected: fleetData ? fleetData.fleet.runners.length > 0 : true,
         hasAgentCredential,
-        hasTask: totalTaskCount > 0,
+        firstTask,
       })
     : null;
   const showGettingStarted = gettingStarted?.visible === true;

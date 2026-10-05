@@ -49,7 +49,7 @@ describe('FleetOverview', () => {
     // Home's slot meter, one square per slot.
     expect(html).toContain('aria-label="2 of 4 slots in use"');
     // Home's label vocabulary.
-    expect(t).toContain('Fleet · 2 runners × 4 slots');
+    expect(t).toContain('Runners · 2 runners × 4 slots');
   });
 
   it('headlines busy of capacity, and counts offline runners', () => {
@@ -76,7 +76,7 @@ describe('FleetOverview', () => {
     expect(t).not.toContain('3 /3 busy');
     // The host runner keeps its slot meter.
     expect(t).toContain('1 /4 busy');
-    expect(t).toContain('Fleet · 1 runner × 4 slots + 1 elastic group');
+    expect(t).toContain('Runners · 1 runner × 4 slots + 1 elastic group');
   });
 
   it('flags a runner whose agent is waiting on you', () => {

@@ -214,3 +214,20 @@ describe('Worker history branch — tasks/[id]/page.tsx (demo polish)', () => {
     expect(pageSource).toContain('{displayBranchName(worker.branch)}');
   });
 });
+
+describe('a sign-in failure reads in plain words — tasks/[id]/page.tsx', () => {
+  it('Worker history shows a worker error through plainWorkerError, raw text on hover', () => {
+    expect(pageSource).toContain("import { explainProviderAuthFailure, plainWorkerError } from '@/lib/provider-auth-failure'");
+    expect(pageSource).toContain('plainWorkerError(worker.error');
+    expect(pageSource).not.toMatch(/>\{worker\.error\}</);
+  });
+
+  it('the header error count and the red Agent errors card step back once the cause is explained', () => {
+    expect(pageSource).toMatch(/errorTraces\.length > 0 && !shippedView && !authFailure &&/);
+    expect(pageSource).toContain("authFailure ? 'Matched errors'");
+  });
+
+  it('the evidence card gets the worker error, so it can tell the cause is already explained', () => {
+    expect(pageSource).toContain('<TaskEvidenceCard status={task.status} result={task.result} workerError={taskWorkers[0]?.error ?? null} backend={taskBackend} />');
+  });
+});
