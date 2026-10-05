@@ -35,7 +35,9 @@ test -x "$BUILDD" || { echo "smoke: FAIL — launcher $BUILDD was not written"; 
 cd "$(mktemp -d)"
 
 echo "smoke: buildd --version"
-"$BUILDD" --version
+VERSION_OUT=$("$BUILDD" --version 2>&1) || { echo "smoke: FAIL — buildd --version exited non-zero:"; echo "$VERSION_OUT"; exit 1; }
+echo "$VERSION_OUT"
+echo "$VERSION_OUT" | grep -q '^buildd runner ' || { echo "smoke: FAIL — buildd --version did not print the runner version"; exit 1; }
 
 echo "smoke: starting runner on :$SMOKE_PORT"
 LOG="$HOME/runner-smoke.log"
