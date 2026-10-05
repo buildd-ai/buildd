@@ -33,7 +33,7 @@ export function insightsStats(headline: FlowSeries['headline']): InsightsStat[] 
       id: 'to-production',
       label: 'To production',
       value: headline.medianStartToProdMs != null ? formatDuration(headline.medianStartToProdMs) : 'None',
-      detail: 'median, first start to release',
+      detail: 'median to release',
     },
     {
       id: 'lost',
