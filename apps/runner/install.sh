@@ -621,10 +621,11 @@ print_next_steps() {
   echo ""
   if [ -n "$login_source" ]; then
     echo -e "${GREEN}Already logged in (${login_source}), so skip 'buildd login'.${NC}"
+    echo ""
   elif [ "$service" = "1" ]; then
     echo -e "${YELLOW}The background service is installed, but it has no account yet, so it will not pick up work.${NC}"
+    echo ""
   fi
-  echo ""
   echo "Next:"
   echo '  exec $SHELL              reload your shell so buildd is on your PATH'
   if [ -z "$login_source" ]; then
