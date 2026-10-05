@@ -22,9 +22,16 @@ assertions:
     method: POST
     path: /api/workers/[id]/evidence-upload-url
     file: apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts
-  - id: evidence-retention-job
+  - id: evidence-backend-retention-days
     type: config_key
-    key: evidenceObjects
+    key: retentionDays
+    file: apps/web/src/lib/evidence-backend.ts
+  # Unbuilt (build item 8, P4): retention_days is configured on the backend,
+  # but no job reads evidence_objects.expires_at to delete expired objects yet.
+  # The spec names apps/web/src/lib/evidence-retention.ts as the new module.
+  - id: evidence-retention-job-reads-expiry
+    type: config_key
+    key: expiresAt
     file: apps/web/src/lib/evidence-retention.ts
 ---
 
