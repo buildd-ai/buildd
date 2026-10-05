@@ -9,13 +9,13 @@ const myWorkspace = { id: 'ws-mine', teamId: 'team-p', accessMode: 'restricted' 
 describe('planPersonalWorkspaceLinks', () => {
   it("links a fresh user's login account to the restricted workspace sign-in created", () => {
     expect(planPersonalWorkspaceLinks({
-      userId, role: 'owner', team, account: loginAccount, teamWorkspaces: [myWorkspace],
+      userId, canManageTeamKeys: true, team, account: loginAccount, teamWorkspaces: [myWorkspace],
     })).toEqual([{ accountId: 'acct-login', workspaceId: 'ws-mine', canClaim: true, canCreate: true }]);
   });
 
   it('adds nothing for an open workspace (already reachable within the team) or an existing link', () => {
     expect(planPersonalWorkspaceLinks({
-      userId, role: 'owner', team, account: loginAccount,
+      userId, canManageTeamKeys: true, team, account: loginAccount,
       teamWorkspaces: [{ id: 'ws-open', teamId: 'team-p', accessMode: 'open' }, myWorkspace],
       existingLinks: ['ws-mine'],
     })).toEqual([]);
@@ -23,19 +23,19 @@ describe('planPersonalWorkspaceLinks', () => {
 
   it("never links in a shared team, even one the user owns", () => {
     expect(planPersonalWorkspaceLinks({
-      userId, role: 'owner', team: { id: 'team-p', slug: 'acme' }, account: loginAccount, teamWorkspaces: [myWorkspace],
+      userId, canManageTeamKeys: true, team: { id: 'team-p', slug: 'acme' }, account: loginAccount, teamWorkspaces: [myWorkspace],
     })).toEqual([]);
   });
 
   it("never links in someone else's personal team", () => {
     expect(planPersonalWorkspaceLinks({
-      userId, role: 'admin', team: { id: 'team-p', slug: personalTeamSlug('user-2') }, account: loginAccount, teamWorkspaces: [myWorkspace],
+      userId, canManageTeamKeys: true, team: { id: 'team-p', slug: personalTeamSlug('user-2') }, account: loginAccount, teamWorkspaces: [myWorkspace],
     })).toEqual([]);
   });
 
-  it('requires the user to own the team', () => {
+  it('requires the user to be allowed to manage team keys', () => {
     expect(planPersonalWorkspaceLinks({
-      userId, role: 'member', team, account: loginAccount, teamWorkspaces: [myWorkspace],
+      userId, canManageTeamKeys: false, team, account: loginAccount, teamWorkspaces: [myWorkspace],
     })).toEqual([]);
   });
 
@@ -45,13 +45,13 @@ describe('planPersonalWorkspaceLinks', () => {
       { ...loginAccount, teamId: 'team-other' },
       { ...loginAccount, workspaceIds: ['ws-elsewhere'] },
     ]) {
-      expect(planPersonalWorkspaceLinks({ userId, role: 'owner', team, account, teamWorkspaces: [myWorkspace] })).toEqual([]);
+      expect(planPersonalWorkspaceLinks({ userId, canManageTeamKeys: true, team, account, teamWorkspaces: [myWorkspace] })).toEqual([]);
     }
   });
 
   it("ignores workspaces of another team even if passed in", () => {
     expect(planPersonalWorkspaceLinks({
-      userId, role: 'owner', team, account: loginAccount,
+      userId, canManageTeamKeys: true, team, account: loginAccount,
       teamWorkspaces: [{ id: 'ws-x', teamId: 'team-other', accessMode: 'restricted' }],
     })).toEqual([]);
   });

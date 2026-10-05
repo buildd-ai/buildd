@@ -1029,7 +1029,7 @@ describe('POST /api/workers/claim', () => {
     const linksFor = (account: { id: string; type: string; teamId: string }) =>
       planPersonalWorkspaceLinks({
         userId,
-        role: account.teamId === personalTeam.id ? 'owner' : null,
+        canManageTeamKeys: account.teamId === personalTeam.id,
         team: personalTeam,
         account: { ...account, workspaceIds: null },
         teamWorkspaces: [myWorkspace],

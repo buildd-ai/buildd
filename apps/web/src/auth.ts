@@ -186,7 +186,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         if (account && workspace) {
           const links = planPersonalWorkspaceLinks({
             userId: newUser.id,
-            role: 'owner',
+            // The user was just made this team's owner, above.
+            canManageTeamKeys: true,
             team,
             account: { ...account, workspaceIds: null },
             teamWorkspaces: [workspace],

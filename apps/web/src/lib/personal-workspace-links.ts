@@ -17,6 +17,7 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, teamMembers, teams, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { invalidateAccountWorkspaceCache } from './account-workspace-cache';
+import { getTeamPermissionOverrides, roleHas } from './permissions';
 import { personalTeamSlug, planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
 
 export { personalTeamSlug, planPersonalWorkspaceLinks } from './personal-workspace-links-plan';
@@ -61,7 +62,7 @@ export async function linkAccountToPersonalWorkspaces(args: {
     ]);
     const planned = planPersonalWorkspaceLinks({
       userId: args.userId,
-      role: membership?.role ?? null,
+      canManageTeamKeys: roleHas(membership?.role, 'manage_team_keys', await getTeamPermissionOverrides(team.id)),
       team,
       account,
       teamWorkspaces,
