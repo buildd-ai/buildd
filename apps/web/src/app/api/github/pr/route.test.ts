@@ -861,6 +861,105 @@ describe('POST /api/github/pr', () => {
         expect((await res.json()).pr.number).toBe(9);
       });
     });
+
+    // A worker claimed from an interactive/local MCP session (workers.runner
+    // === 'mcp', set only after interactive-session.ts's HMAC check passes at
+    // claim) may open its PR from a branch it actually pushed to, even when it
+    // differs from the generated name claim_task handed it — as long as no
+    // other worker already holds that exact name. Closes the friction cluster
+    // (tasks e38e4b1a / 30381a54) where this always fell back to a manual
+    // gh-pr-create + correct_task_result workaround.
+    describe('interactive session, a custom head (interactive_head)', () => {
+      const CUSTOM = 'ci/private-prompt-evals';
+      const interactiveWorker = (o: Record<string, unknown> = {}) => agentWorker({ runner: 'mcp', ...o });
+
+      it('accepts a custom head nobody else holds, and records it as the worker’s own branch', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([]);
+        const payloads = captureUpdatePayloads();
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(200);
+        expect(opened()).toBe(true);
+        const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+        expect(JSON.parse((createCall as any[])[2].body).head).toBe(CUSTOM);
+        expect(payloads.some(p => p.branch === CUSTOM)).toBe(true);
+      });
+
+      it('refuses a custom head a live worker on another task already holds, and says whose', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([{ id: 'w-2', taskId: 'other-task-id', status: 'running', prUrl: null }]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        const data = await res.json();
+        expect(data.code).toBe('head_claimed');
+        expect(data.error).toContain('other-ta');
+        expect(opened()).toBe(false);
+      });
+
+      it('refuses a custom head a dead worker on another task already shipped a PR from', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([
+          { id: 'w-2', taskId: 'other-task-id', status: 'completed', prUrl: 'https://github.com/owner/repo/pull/5' },
+        ]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_claimed');
+        expect(opened()).toBe(false);
+      });
+
+      it('a background runner’s worker cannot use a custom head, even with the name free', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker({ runner: 'host' }));
+        mockWorkersFindMany.mockReturnValue([]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+        expect(mockWorkersFindMany).not.toHaveBeenCalled();
+      });
+
+      it('an unverified mcp claim cannot use a custom head either (client-forged runner: "mcp" without the server marker)', async () => {
+        mockWorkersFindFirst.mockResolvedValue(agentWorker({ runner: 'mcp-unverified' }));
+        mockWorkersFindMany.mockReturnValue([]);
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('head_not_owned');
+      });
+
+      it('still refuses the protected default branch as head', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker());
+        mockWorkersFindMany.mockReturnValue([]);
+
+        const res = await post({ head: 'main' });
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).code).toBe('protected_head');
+      });
+
+      it('a mission-branch task still gets its PR based on the integration branch, not the custom head', async () => {
+        mockWorkersFindFirst.mockResolvedValue(interactiveWorker({
+          task: { id: TASK_ID, title: 'feat: own thing', description: '', context: {}, dependsOn: [], missionId: 'obj-1', taskClass: 'work' },
+        }));
+        mockWorkersFindMany.mockReturnValue([]);
+        mockMissionsFindFirst.mockResolvedValue({ workingBranch: 'mission/checkout-arc-1a2b3c4d', integrationBranchEnabled: true });
+
+        const res = await post({ head: CUSTOM });
+
+        expect(res.status).toBe(200);
+        const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+        const body = JSON.parse((createCall as any[])[2].body);
+        expect(body.head).toBe(CUSTOM);
+        expect(body.base).toBe('mission/checkout-arc-1a2b3c4d');
+      });
+    });
   });
 
   describe('Option A′ — derive, don’t accept (P1)', () => {

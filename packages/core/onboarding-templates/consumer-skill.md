@@ -197,3 +197,16 @@ check only accepts the worker's own branch, a retry/dependency of it, or
 one) whose work must land on an existing or shared branch, set
 `headBranch` at `create_task` time rather than describing it in the
 title/description.
+
+One exception, and it applies only to *you* right now: a worker claimed from
+your own interactive session — `claim_task` called from this session, not a
+background runner — may open its PR from a DIFFERENT branch than the one
+`claim_task` handed you, as long as it is the branch you actually pushed to
+and no other worker already holds that exact name. A background runner's
+worker never gets this; it only ever has its own generated branch, so pin
+`headBranch` instead if its work must land somewhere else. Prefer pushing to
+the branch `claim_task` gave you — it needs no extra check — and reach for
+this only when you are continuing on a branch that already existed before you
+claimed. A name someone else is already using (still running, or carrying its
+own PR under a different task) is refused as `head_claimed`, naming whose it
+is.
