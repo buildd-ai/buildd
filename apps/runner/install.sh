@@ -22,7 +22,8 @@ echo -e "${GREEN}Installing buildd runner...${NC}"
 if ! command -v bun &> /dev/null; then
   echo -e "${YELLOW}Bun not found. Installing...${NC}"
   curl -fsSL https://bun.sh/install | bash
-  export PATH="$HOME/.bun/bin:$PATH"
+  # bun's installer honours BUN_INSTALL; look where it actually put the binary.
+  export PATH="${BUN_INSTALL:-$HOME/.bun}/bin:$PATH"
 fi
 
 # Install directory
