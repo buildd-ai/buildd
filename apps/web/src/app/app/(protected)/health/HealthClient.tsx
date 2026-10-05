@@ -42,6 +42,8 @@ import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import { countOf } from '@/lib/plural';
 import { ExperimentsSection } from './ExperimentsSection';
 import { DispatchSection } from './DispatchSection';
+import { AgentAccessSection } from '@/components/AgentAccessCard';
+import type { AgentAccessReport } from '@/lib/agent-capabilities/access-log';
 import { OverviewHeadline, OverviewStatusRows } from './_components/OverviewSummary';
 import { overviewHeadline, overviewStatusRows } from '@/lib/health-overview';
 import type { DispatchHealthReport } from '@buildd/core/dispatch-health-report';
@@ -195,7 +197,7 @@ function humanizeCron(expr: string): string {
 export type HealthView = 'all' | 'overview' | 'failures' | 'runners' | 'operator';
 
 type HealthBlock =
-  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'dispatch' | 'schedules'
+  | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'agentAccess' | 'dispatch' | 'schedules'
   | 'failureAnalytics' | 'gates' | 'taskOutcomes' | 'experiments' | 'consumption'
   | 'subagentDelegation' | 'errorPatterns' | 'failureGroups';
 
@@ -203,7 +205,7 @@ const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> 
   overview: new Set(['problems']),
   // One failures view (lib/health-failure-groups.ts); the raw breakdown is on Operator.
   failures: new Set(['failureGroups']),
-  runners: new Set(['capacity', 'budget', 'credentials', 'schedules']),
+  runners: new Set(['capacity', 'budget', 'credentials', 'agentAccess', 'schedules']),
   operator: new Set([
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption',
     'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
@@ -250,6 +252,8 @@ interface Props {
   /** Dispatch transport health for the scoped workspaces; null hides the section. */
   dispatchHealth?: DispatchHealthReport | null;
   failureGroups?: (FailureGroupsView & { truncated: boolean }) | null;
+  /** Agent runs' grants and refusals; null hides the section. */
+  agentAccess?: AgentAccessReport | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -298,13 +302,14 @@ export function HealthClient({
   experiments = null,
   dispatchHealth = null,
   failureGroups: failureGroupsView = null,
+  agentAccess = null,
   now,
   page = 'all',
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
   // The page window only means something where a TREND section renders.
   const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'subagentDelegation', 'errorPatterns'] as const).some(show);
-  const showsState = (['capacity', 'budget', 'credentials', 'dispatch', 'schedules'] as const).some(show);
+  const showsState = (['capacity', 'budget', 'credentials', 'agentAccess', 'dispatch', 'schedules'] as const).some(show);
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [runnerHealth, setRunnerHealth] = useState<Map<string, RunnerHealthState>>(new Map());
@@ -937,6 +942,8 @@ export function HealthClient({
       {show('credentials') && credentialHealth.length > 0 && (
         <CredentialStateSection credentials={credentialHealth} now={now} />
       )}
+
+      {show('agentAccess') && <AgentAccessSection report={agentAccess} />}
 
       {show('dispatch') && <DispatchSection report={dispatchHealth ?? null} now={now} />}
 
