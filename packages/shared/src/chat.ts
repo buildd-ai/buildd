@@ -116,6 +116,20 @@ export interface ListProviderKeysResponse {
    * own, `own` = everyone brings their own.
    */
   keyPolicy: 'team' | 'team_or_own' | 'own';
+  /**
+   * What the caller's chat turn resolves to right now, from the same resolver a
+   * turn uses: the model vendor, whose key pays (`scope`), and `via: 'litellm'`
+   * when the team's gateway serves it. Null when no key resolves; absent from
+   * older servers.
+   */
+  chatUses?: ChatUses | null;
+}
+
+/** The provider and credential scope a chat turn actually resolves to. */
+export interface ChatUses {
+  provider: ChatProvider;
+  scope: 'user' | 'account' | 'workspace' | 'team' | 'env';
+  via?: 'litellm';
 }
 
 /** `PUT /api/inference-keys` */

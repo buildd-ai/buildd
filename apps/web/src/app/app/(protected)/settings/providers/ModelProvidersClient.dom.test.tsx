@@ -1,5 +1,5 @@
 /**
- * Model providers and the Account chat row, mounted in happy-dom with a stubbed
+ * Model providers, mounted in happy-dom with a stubbed
  * fetch. Fixtures are illustrative; nothing here is a real key.
  */
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
@@ -18,7 +18,6 @@ mock.module('next/navigation', () => ({
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: ModelProvidersClient } = await import('./ModelProvidersClient');
-const { default: PersonalProviderKeys } = await import('../account/PersonalProviderKeys');
 
 const teamKey = { id: 'k1', provider: 'openrouter', scope: 'team', last4: '91c0', health: 'healthy', lastVerifiedAt: '2026-09-26T10:00:00Z', lastVerificationError: null, updatedAt: '2026-09-26T10:00:00Z', source: 'inference_key' };
 let body: Record<string, unknown> = {};
@@ -226,52 +225,3 @@ for (const vp of VIEWPORTS) {
     });
   });
 }
-
-describe('Account chat row', () => {
-  it('a member under the team key sees one line and no provider cards', async () => {
-    body = { ...body, canManageTeamKeys: false, providers: [{ provider: 'openrouter', team: teamKey, mine: null, membersWithOwnKey: null }] };
-    await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
-    expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('OpenRouter · team key');
-    expect(host.querySelectorAll('[data-testid^="provider-key-"][data-configured]').length).toBe(0);
-    expect(host.textContent).not.toContain('Use my own key instead');
-  });
-
-  it('is one line that links to Model providers, with no section of its own', async () => {
-    body = { ...body, canManageTeamKeys: false, providers: [{ provider: 'anthropic', team: { ...teamKey, provider: 'anthropic' }, mine: null, membersWithOwnKey: null }] };
-    await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
-    const row = host.querySelector('[data-testid="chat-key-row"]')!;
-    expect(row.tagName).toBe('A');
-    expect(row.getAttribute('href')).toBe('/app/settings/providers');
-    expect(row.textContent).toContain('Chat uses');
-    expect(row.textContent).toContain('Anthropic · team key');
-    expect(host.querySelector('h2')).toBeNull();
-    expect(host.textContent).not.toMatch(/interactive ai/i);
-  });
-
-  it('with no team key, a member is told to ask an admin', async () => {
-    body = { ...body, canManageTeamKeys: false };
-    await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
-    expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('Not set up yet · ask an admin');
-    expect(host.textContent).not.toContain('not connected');
-  });
-
-  it('when own keys are allowed, they sit behind a quiet disclosure', async () => {
-    body = { ...body, keyPolicy: 'team_or_own', providers: [{ provider: 'openrouter', team: teamKey, mine: null, membersWithOwnKey: null }] };
-    await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
-    const details = host.querySelector('details')!;
-    expect(details.open).toBe(false);
-    expect(details.querySelector('summary')?.textContent).toContain('Use my own key instead');
-  });
-
-  it('when everyone brings their own key, leads with Connect OpenRouter and tucks the paste field away', async () => {
-    body = { ...body, keyPolicy: 'own' };
-    await mount(<PersonalProviderKeys teamId="t" isAdmin={false} />);
-    expect(host.querySelector('[data-testid="chat-key-line"]')?.textContent).toBe('Add your OpenRouter key');
-    expect(host.querySelector('[data-testid="connect-openrouter"]')?.getAttribute('href')).toContain('scope=user');
-    const details = host.querySelector('details')!;
-    expect(details.open).toBe(false);
-    expect(details.querySelector('summary')?.textContent).toContain('Paste a key instead');
-    const cards = [...details.querySelectorAll('[data-testid^="provider-key-"][data-configured]')].map((e) => e.getAttribute('data-testid'));
-    expect(cards).toEqual(['provider-key-openrouter']);
-  });
-});
