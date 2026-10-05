@@ -77,26 +77,26 @@ describe('claimedSymbols', () => {
   });
 
   test('ignores paths, prose, and dotted expressions — codeSurfacePaths owns paths', () => {
-    const body = 'see `apps/runner/src/workers.ts`, `resultMeta.cbm`, and `a real sentence`';
+    const body = 'see `apps/runner/src/workers.ts`, `resultMeta.toolCounts`, and `a real sentence`';
     expect(claimedSymbols(body)).toEqual([]);
   });
 
   test('ignores PascalCase and snake_case: mostly library types and third-party tool names', () => {
-    // `NextRequest` is imported, `index_repository` is a CBM tool — neither is ours
+    // `NextRequest` is imported, `index_repository` is a third-party tool — neither is ours
     // to guarantee, and including them produced the only false positives observed.
     expect(claimedSymbols('`NextRequest` calls `index_repository`')).toEqual([]);
   });
 
   test('deduplicates repeated claims', () => {
-    expect(claimedSymbols('`buildCbmActivation` … `buildCbmActivation`')).toEqual([
-      'buildCbmActivation',
+    expect(claimedSymbols('`buildWorkerBwrapArgv` … `buildWorkerBwrapArgv`')).toEqual([
+      'buildWorkerBwrapArgv',
     ]);
   });
 });
 
 describe('resolveSymbols', () => {
   test('a symbol that exists in the source tree is not reported dead', () => {
-    expect([...resolveSymbols(['buildCbmActivation'])]).toEqual([]);
+    expect([...resolveSymbols(['buildWorkerBwrapArgv'])]).toEqual([]);
   });
 
   test('a symbol that exists nowhere is reported dead', () => {
@@ -115,7 +115,7 @@ describe('resolveSymbols', () => {
   });
 
   test('resolves a mixed batch in one pass', () => {
-    const dead = resolveSymbols(['buildCbmActivation', 'zzzAlsoNotReal', 'CBM_BINARY_PATH']);
+    const dead = resolveSymbols(['buildWorkerBwrapArgv', 'zzzAlsoNotReal', 'isMountAllowlistEnabled']);
     expect([...dead]).toEqual(['zzzAlsoNotReal']);
   });
 

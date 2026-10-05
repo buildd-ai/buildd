@@ -155,17 +155,13 @@
     },
     "apps/web/src/app/api/tasks/route.ts": {
       "apps/web/src/lib/change-intent.ts": "missions",
-      "apps/web/src/lib/criteria-escalation.ts": "missions",
-      "apps/web/src/lib/mission-feed.ts": "missions",
       "apps/web/src/lib/mission-integration-branch.ts": "missions",
       "apps/web/src/lib/mission-link-scope.ts": "missions",
-      "apps/web/src/lib/mission-loop.ts": "missions",
       "apps/web/src/lib/mission-surface-audit.ts": "visual-qa",
       "apps/web/src/lib/required-connectors.ts": "connectors",
       "apps/web/src/lib/subject-anchor-observer.ts": "missions",
       "apps/web/src/lib/subject-intake-db.ts": "intake-integrations",
       "apps/web/src/lib/subject-intake.ts": "intake-integrations",
-      "apps/web/src/lib/task-category-decision.ts": "jev-decisions",
       "apps/web/src/lib/task-category.ts": "health-quality",
       "apps/web/src/lib/task-role-apply.ts": "roles-skills",
       "packages/core/friction-manifest.ts": "health-quality",
@@ -181,9 +177,6 @@
       "packages/core/decision-model.ts": "jev-decisions",
       "packages/core/inference-key-policy.ts": "jev-decisions",
       "packages/core/inference-policy.ts": "jev-decisions"
-    },
-    "apps/web/src/app/api/teams/route.ts": {
-      "apps/web/src/lib/default-roles.ts": "roles-skills"
     },
     "apps/web/src/app/api/version/route.ts": {
       "apps/web/src/lib/deploy-identity.ts": "releases"
@@ -227,7 +220,6 @@
       "apps/web/src/lib/terminal-record-ledger.ts": "health-quality",
       "apps/web/src/lib/visual-audit-evidence.ts": "visual-qa",
       "packages/core/bash-failure-trace.ts": "health-quality",
-      "packages/core/cbm-health.ts": "knowledge",
       "packages/core/orchestration-ledger-source.ts": "missions",
       "packages/core/routing-analytics.ts": "health-quality",
       "packages/core/runner-health.ts": "health-quality"
@@ -260,7 +252,6 @@
       "apps/web/src/app/api/workers/claim/mission-handoff-injection.ts": "missions"
     },
     "apps/web/src/app/api/workers/claim/route.ts": {
-      "apps/web/src/app/api/workers/claim/cbm-experiment.ts": "experiments",
       "apps/web/src/app/api/workers/claim/connector-block-notify.ts": "connectors",
       "apps/web/src/app/api/workers/claim/connector-prefilter.ts": "connectors",
       "apps/web/src/app/api/workers/claim/mcp-connector-injection.ts": "connectors",
@@ -309,7 +300,6 @@
       "apps/web/src/lib/mission-task-href.ts": "missions"
     },
     "apps/web/src/auth.ts": {
-      "apps/web/src/lib/default-roles.ts": "roles-skills",
       "apps/web/src/lib/personal-workspace-links-plan.ts": "notifications"
     },
     "apps/web/src/lib/agent-capabilities/github.ts": {
@@ -479,7 +469,6 @@
       "packages/core/mission-integration.ts": "missions"
     },
     "packages/core/db/schema.ts": {
-      "packages/core/cbm-injection.ts": "knowledge",
       "packages/core/decision-model.ts": "jev-decisions",
       "packages/core/inference-policy.ts": "jev-decisions",
       "packages/core/mission-helpers.ts": "missions",
@@ -537,7 +526,6 @@
       "packages/core/model-tier-defaults.ts": "model-tiers"
     },
     "packages/core/prompt-catalog.ts": {
-      "packages/core/cbm-injection-decision.ts": "jev-decisions",
       "packages/core/decision-kind-post-session-triage.ts": "jev-decisions",
       "packages/core/decision-kind-scout-probe-selection.ts": "jev-decisions",
       "packages/core/memory-decisions.ts": "jev-decisions",

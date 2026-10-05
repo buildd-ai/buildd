@@ -1,8 +1,6 @@
 import type { BuilddTask, LocalUIConfig } from './types';
-import { CBM_WITHHOLD_RUNNER_FEATURE } from '@buildd/core/cbm-access-experiment';
 import { AGENT_ENDPOINT_RUNNER_FEATURE } from '@buildd/core/agent-endpoint';
 import { AGENT_GITHUB_TOKEN_RUNNER_FEATURE } from '@buildd/core/agent-github-credentials';
-import type { CbmInjectionDecisionReply, CbmInjectionFacts } from '@buildd/core/cbm-injection';
 import { QUESTION_GATE_RUNNER_FEATURE, type QuestionGateReply } from '@buildd/core/question-gate';
 import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
@@ -175,8 +173,6 @@ export class BuilddClient {
   async claimTask(maxTasks = 1, workspaceId?: string, runner?: string, taskId?: string, availableSkills?: string[], claimAcrossAccessible = false, environment?: WorkerEnvironment): Promise<{ workers: any[]; diagnostics?: ClaimDiagnostics; budgetResetsAt?: string | null }> {
     const body: Record<string, unknown> = {
       maxTasks, workspaceId, taskId, runner: runner || 'runner',
-      // This build honours cbmExperiment.withheld (workers.ts); without the flag
-      // the server does not enrol this runner's tasks in the CBM experiment.
       // AGENT_ENDPOINT_RUNNER_FEATURE: this build applies modelEndpoint
       // (workers.ts); without it the server keeps sending Anthropic credentials.
       // QUESTION_GATE_RUNNER_FEATURE: this build routes AskUserQuestion
@@ -184,7 +180,7 @@ export class BuilddClient {
       // AGENT_GITHUB_TOKEN_RUNNER_FEATURE: this build applies
       // githubCredentials (agent-github-credentials.ts); without it the
       // server never asks this runner to scope the agent's GitHub access.
-      runnerFeatures: [CBM_WITHHOLD_RUNNER_FEATURE, AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
+      runnerFeatures: [AGENT_ENDPOINT_RUNNER_FEATURE, QUESTION_GATE_RUNNER_FEATURE, AGENT_GITHUB_TOKEN_RUNNER_FEATURE],
       // A per-machine model provider beats the team's agent model endpoint
       // (docs/design/agent-model-endpoint.md §2.1). Reported as a boolean so
       // the server can skip sending an endpoint key this machine won't use.
@@ -509,32 +505,6 @@ export class BuilddClient {
     } catch (err) {
       const name = (err as { name?: string } | null)?.name;
       return { kind: 'unavailable', reason: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'error' };
-    }
-  }
-
-  /**
-   * CBM search injection: which list to show, decided server-side (the team's
-   * decision key never reaches a runner). Facts only, no text. Bounded by
-   * `timeoutMs` and never throws: any failure is a `{ ok: false }` reply, on
-   * which the injector shows callers anyway.
-   */
-  async decideCbmInjection(workerId: string, facts: CbmInjectionFacts, timeoutMs: number): Promise<CbmInjectionDecisionReply> {
-    const started = Date.now();
-    try {
-      const body = await this.fetch(`/api/workers/${workerId}/cbm-injection`, {
-        method: 'POST',
-        body: JSON.stringify({ facts }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (body && typeof body === 'object' && typeof (body as { ok?: unknown }).ok === 'boolean') {
-        return body as CbmInjectionDecisionReply;
-      }
-      return { ok: false, error: 'bad_reply', latencyMs: Date.now() - started, version: null };
-    } catch (err: any) {
-      const error = isServerRefusal(err)
-        ? `http_${(err as ServerRefusalError).status}`
-        : err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'transport';
-      return { ok: false, error, latencyMs: Date.now() - started, version: null };
     }
   }
 

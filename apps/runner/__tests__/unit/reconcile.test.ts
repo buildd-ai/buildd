@@ -181,7 +181,7 @@ describe('purgeCompleted', () => {
   // purgeCompleted drops the worker record; a session still in the map is the
   // last handle on its `claude` subprocess. Deleting the map entry alone (the
   // old behaviour) orphaned that process. The session is REAPED, not torn
-  // down: startSession's finally only cleans up (credential/config/CBM dirs)
+  // down: startSession's finally only cleans up (credential/config dirs)
   // while the entry is still there, and deletes it itself.
   test('reaps the session of every purged worker, leaving the entry for its finally', () => {
     const manager = new WorkerManager(testConfig);

@@ -12,9 +12,6 @@ import {
   formatTokens,
   formatUsd,
   healthHref,
-  INDEX_ADOPTION_CAVEAT,
-  INDEX_ADOPTION_TOOLTIP,
-  SESSION_KEYED_NOTE,
   shortToolName,
   type DrilldownWindow,
   type UsageDrilldownView,
@@ -36,9 +33,7 @@ interface Props {
  * `/app/health/usage` — what a task costs, and where the turns go.
  *
  * TASK-KEYED throughout, which is what the header denominator claims and what
- * every section below honours. The single exception is the index adoption line,
- * which counts worker SESSIONS; it says so at the stat rather than being quietly
- * relabelled to agree with the header.
+ * every section below honours.
  */
 export function UsageClient({ view, wsFilter }: Props) {
   const { window, tasks, perTask, totals, scan } = view;
@@ -155,10 +150,7 @@ export function UsageClient({ view, wsFilter }: Props) {
           {/* 3. Where the turns go: the shell, on its own denominator. */}
           <ShellPanelView view={view} />
 
-          {/* 4. Index adoption — the one session-keyed line on the page. */}
-          <IndexAdoptionView view={view} />
-
-          {/* 5. Which buildd action ran. Every buildd MCP call multiplexes
+          {/* 4. Which buildd action ran. Every buildd MCP call multiplexes
               through one SDK tool name, so the tool histogram above cannot
               decompose it — but worker_action_events records the bare action
               name, which this reads. The RUNTIME/WORK classification is
@@ -174,7 +166,7 @@ export function UsageClient({ view, wsFilter }: Props) {
 // ── Code navigation ──────────────────────────────────────────────────────────
 
 /**
- * Read / Grep / Glob / codebase-graph, with cross-window deltas.
+ * Read / Grep / Glob, with cross-window deltas.
  *
  * "Navigation", not "search", and deliberately without `Bash`: nothing records
  * the command inside a shell call, so counting it here would fold every build
@@ -230,7 +222,7 @@ function CodeNavigationPanelView({ view }: { view: UsageDrilldownView }) {
               <p
                 data-testid="usage-code-nav-coverage"
                 className="text-[11px] text-text-muted"
-                title="Older tasks are reconstructed from a capped MCP call log and CBM counters. ≥ marks those counts as floors."
+                title="Older tasks are reconstructed from a capped MCP call log and legacy Read/Grep/Glob counters. ≥ marks those counts as floors."
               >
                 {coverageLabel(panel.coverage)} tasks measured exactly
               </p>
@@ -393,112 +385,6 @@ function CountRows({
           </span>
         </div>
       ))}
-    </div>
-  );
-}
-
-// ── Index adoption ───────────────────────────────────────────────────────────
-
-/**
- * Is the codebase graph actually queried when it is there?
- *
- * The one session-keyed line on a task-keyed page. It counts CBM-enabled
- * completed worker sessions with no dedup by task, and folding it to tasks would
- * change what it measures rather than how it is worded — so it keeps its
- * population and declares it, at the stat, in the label and in the note.
- */
-function IndexAdoptionView({ view }: { view: UsageDrilldownView }) {
-  const line = view.adoption;
-
-  return (
-    <section data-testid="usage-section-adoption" className="mb-6">
-      <h2 className="section-label mb-3">Codebase graph</h2>
-      <div className="card p-4 space-y-2">
-        <div className="flex items-baseline justify-between gap-3">
-          {/* Long form where there is room, short form where there is not —
-              neither uses the word "task", because these rows are not tasks. */}
-          <span
-            data-testid="usage-index-adoption"
-            className="text-xs text-text-secondary"
-            title={INDEX_ADOPTION_TOOLTIP}
-          >
-            <span className="hidden sm:inline">{line.available ? line.label : 'Graph adoption'}</span>
-            <span className="sm:hidden">{line.shortLabel}</span>
-          </span>
-          <span
-            className={`hidden sm:inline text-lg tabular-nums shrink-0 ${line.available ? 'text-text-primary' : 'text-text-muted'}`}
-            title={line.unavailableReason ?? undefined}
-          >
-            {line.rate === null ? '' : `${Math.round(line.rate * 100)}%`}
-          </span>
-        </div>
-
-        {line.unavailableReason && (
-          <p data-testid="usage-adoption-unavailable" className="text-[11px] text-text-muted">
-            {line.unavailableReason}
-          </p>
-        )}
-
-        <p data-testid="usage-adoption-session-keyed" className="text-[11px] text-warning/90">
-          {SESSION_KEYED_NOTE}
-        </p>
-        {/* The tooltip carries the full exclusion list; this is the half of it a
-            reader must not have to hover to find. */}
-        <p data-testid="usage-adoption-caveat" className="text-[11px] text-text-muted">
-          {INDEX_ADOPTION_CAVEAT}
-        </p>
-
-        <CbmToolsView view={view} />
-      </div>
-    </section>
-  );
-}
-
-/**
- * Every graph tool, over the adoption line's own population: CBM-enabled
- * completed SESSIONS. Placed under that line, not in the task-keyed code
- * navigation panel, so the two populations are never read as one.
- */
-function CbmToolsView({ view }: { view: UsageDrilldownView }) {
-  const t = view.cbmTools;
-  if (!t) return null;
-
-  return (
-    <div data-testid="usage-cbm-tools" className="space-y-1 pt-3 border-t border-border-default">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-xs text-text-secondary">Graph calls by tool</span>
-        <span data-testid="usage-cbm-tools-denominator" className="text-[11px] text-text-muted shrink-0">
-          {sectionDenominator(t.sessions, t.sessions === 1 ? 'session' : 'sessions')}
-        </span>
-      </div>
-      {t.tools.length === 0 ? (
-        <p className="text-[11px] text-text-muted">No graph tool was called in these sessions.</p>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 text-[11px] md:text-[9px] uppercase tracking-wide text-text-muted">
-            <span className="flex-1">tool</span>
-            <span className="w-14 text-right">calls</span>
-            <span className="w-14 text-right" title="Sessions that called this tool at least once">sessions</span>
-            <span className="w-10 text-right">share</span>
-          </div>
-          {t.tools.map((row) => (
-            <div key={row.tool} data-testid="usage-cbm-tool-row" className="flex items-center gap-2 min-w-0">
-              <span className="font-mono text-[11px] text-text-primary flex-1 min-w-0 truncate" title={row.tool}>
-                {row.tool}
-              </span>
-              <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
-                {row.calls.toLocaleString('en-US')}
-              </span>
-              <span className="w-14 text-right text-[11px] text-text-muted tabular-nums shrink-0">
-                {row.sessions}
-              </span>
-              <span className="w-10 text-right text-[11px] text-text-muted tabular-nums shrink-0">
-                {formatShare(row.share)}
-              </span>
-            </div>
-          ))}
-        </>
-      )}
     </div>
   );
 }

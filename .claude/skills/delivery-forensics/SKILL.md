@@ -1,13 +1,13 @@
 ---
 name: delivery-forensics
-description: Measure buildd's own delivery loop from raw sources — prod DB, GitHub Actions, the Coder runner, KB and CBM. Use when asked why PRs conflict, why CI fails, how long the fail→resolve loop takes, whether PRs merge eventually, or for any "analyse the last N missions/PRs" question. Carries the access recipes that are non-obvious or actively broken.
+description: Measure buildd's own delivery loop from raw sources — prod DB, GitHub Actions, the Coder runner and the KB. Use when asked why PRs conflict, why CI fails, how long the fail→resolve loop takes, whether PRs merge eventually, or for any "analyse the last N missions/PRs" question. Carries the access recipes that are non-obvious or actively broken.
 ---
 
 # Delivery forensics
 
 Four sources. Each answers something the others cannot. Use the DB for
-*outcomes*, GitHub for *causes*, the runner for *liveness*, KB/CBM for *why the
-code is shaped that way*.
+*outcomes*, GitHub for *causes*, the runner for *liveness*, the KB and the code
+for *why the code is shaped that way*.
 
 ## 1. Prod DB — the only place outcomes live
 
@@ -111,12 +111,12 @@ title. `claims.log` is real signal for starvation (`diagnosticReason`).
 
 `curl -s localhost:8766/api/version` → `currentCommit` vs `diskCommit`/`commitDrift`.
 
-## 4. KB and CBM
+## 4. KB and code
 
 - `recall` (`scope:["memory","task"]`) — thin on delivery-loop questions; it
   indexes task summaries, so it answers "has this exact failure been seen"
   better than "what is our conflict rate".
-- `codebase-memory` `search_graph` — use it to find the *policy* code behind a
+- Search the code (`rg`) for the *policy* behind a
   number, e.g. `DEFAULT_MAX_CI_RETRIES` in `apps/web/src/lib/ci-retry.ts`,
   `classifyMergeFailure` / `dispatchConflictRetry` in `conflict-retry.ts`.
 

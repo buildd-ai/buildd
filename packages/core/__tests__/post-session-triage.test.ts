@@ -146,7 +146,7 @@ describe('deriveTriageSignals / buildTriageState', () => {
     expect(s).toMatchObject({
       sessionFailed: false, retried: true, prShipped: true, merged: false,
       reviewRounds: 1, requestChanges: 0, ciFixAttempts: 1,
-      recallCalls: 2, learnCalls: 1, cbmCalls: 0, errorTotal: 0, transcriptPresent: true,
+      recallCalls: 2, learnCalls: 1, errorTotal: 0, transcriptPresent: true,
     });
   });
 

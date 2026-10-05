@@ -40,8 +40,8 @@ checks the exit codes with `--network none`.
 | Claude Code | the native binary inside `@anthropic-ai/claude-agent-sdk-linux-x64`, pinned by `bun.lock` through the SDK version. This is the binary the runner spawns (`sdk-binary-path.ts`). No separate `@anthropic-ai/claude-code` install: a second copy would not be the one that runs. It is also linked as `/usr/local/bin/claude`. |
 | Runner + `@buildd/core`, `@buildd/shared`, `@builddai/ai-kit` | baked in at build time, `bun install --frozen-lockfile --production --filter @buildd/runner` |
 
-The image leaves out tests, migrations, the web app, Playwright browsers and
-the codebase-memory binary. Tasks that need `browser` or CBM will not find them.
+The image leaves out tests, migrations, the web app and Playwright browsers.
+Tasks that need `browser` will not find them.
 
 **User.** The image runs as the base image's `bun` user (uid 1000), not root.
 Claude Code refuses bypass-permissions mode as root unless `IS_SANDBOX=1` is

@@ -32,7 +32,7 @@ import { isReviewerTask, resolveInheritanceParent } from './experiment-lineage';
 import { mapRouterAlias } from './model-tier-registry';
 import { TIERS, type Tier as RegistryTier } from './model-tier-defaults';
 
-// Lineage rules are shared with the CBM-access experiment; re-exported so
+// Lineage rules are shared with the other experiment kinds; re-exported so
 // existing importers of this module keep resolving.
 export { isReviewerTask, resolveInheritanceParent };
 

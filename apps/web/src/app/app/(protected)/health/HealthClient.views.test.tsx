@@ -142,7 +142,6 @@ const render = (over: Record<string, any> = {}) =>
       budgetForecast={null}
       failureAnalytics={null}
       window="7d"
-      cbm={null}
       subagentDelegation={null}
       errorPatterns={null}
       now={NOW}

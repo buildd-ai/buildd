@@ -18,7 +18,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runExperimentReadout } from '@buildd/core/experiment-readout-source';
 import { MODEL_ROUTING_EXPERIMENT_KIND, parseModelRoutingConfig } from '@buildd/core/model-routing-experiment';
-import { CBM_ACCESS_EXPERIMENT_KIND } from '@buildd/core/cbm-access-experiment';
 import { TIER_POOL_EXPERIMENT_KIND } from '@buildd/core/tier-pool';
 import { runTierPoolReadout } from '@buildd/core/tier-pool-admin';
 import { runHeartbeatTriageReadout } from '@buildd/core/heartbeat-triage-readout-source';
@@ -69,7 +68,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const readout = await runTierPoolReadout({ id: row.id, policyVersion });
     return NextResponse.json({ experiment: toExperimentDTO(row), policyVersion, readout, health });
   }
-  if (row.kind !== MODEL_ROUTING_EXPERIMENT_KIND && row.kind !== CBM_ACCESS_EXPERIMENT_KIND) {
+  if (row.kind !== MODEL_ROUTING_EXPERIMENT_KIND) {
     return NextResponse.json({ error: `No readout for experiment kind '${row.kind}'` }, { status: 422 });
   }
   const { minSamplePerArm } = parseModelRoutingConfig(row.config);
