@@ -10,6 +10,7 @@ mock.module('next/navigation', () => ({
 }));
 
 import { HealthClient } from './HealthClient';
+import { buildFailureGroups } from '@/lib/health-failure-groups';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 import type { CredentialHealthItem, RecentFailure, ScheduleRow } from './page';
 
@@ -163,6 +164,7 @@ const everything = {
   schedules: [schedule()],
   recentFailures: [failure()],
   failureAnalytics: analytics(),
+  failureGroups: { ...buildFailureGroups({ failures: [{ workerId: 'w-1', taskId: 't-1', taskTitle: 'A task', workspaceName: 'ws', error: 'boom', exitCause: 'code_failure', completedAt: ago(HOUR) }], traces: [] }), truncated: false },
   consumption: consumption(),
   usageStats: { total: 5, completed: 4, failed: 1, unassigned: 2 },
   orphanedPrs: [{
@@ -180,9 +182,12 @@ describe('HealthClient — pages', () => {
     }
   });
 
-  it('Failures shows the failure analytics, with the window picker', () => {
+  it('Failures shows the grouped failures, with the window picker', () => {
     const html = render({ ...everything, page: 'failures' });
-    expect(has(html, 'health-section-failure-analytics')).toBe(true);
+    expect(has(html, 'health-section-failure-groups')).toBe(true);
+    expect(has(html, 'failure-groups-headline')).toBe(true);
+    // The raw breakdown lives on Operator now; one failures view per page.
+    expect(has(html, 'health-section-failure-analytics')).toBe(false);
     expect(has(html, 'health-section-problems')).toBe(false);
     expect(has(html, 'health-section-consumption')).toBe(false);
     expect(html).toContain('aria-label="Window"');
@@ -200,17 +205,17 @@ describe('HealthClient — pages', () => {
 
   it('Operator holds the internal tooling and none of the team-facing sections', () => {
     const html = render({ ...everything, page: 'operator' });
-    for (const id of ['health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs']) {
+    for (const id of ['health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs', 'health-section-failure-analytics']) {
       expect(has(html, id)).toBe(true);
     }
-    for (const id of ['health-section-problems', 'health-section-runners', 'health-section-failure-analytics']) {
+    for (const id of ['health-section-problems', 'health-section-runners', 'health-section-failure-groups']) {
       expect(has(html, id)).toBe(false);
     }
   });
 
   it('every section that renders on the single page renders on exactly one route', () => {
     const ids = ['health-section-problems', 'health-section-runners', 'health-section-credentials', 'health-section-schedules',
-      'health-section-failure-analytics', 'health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs'];
+      'health-section-failure-analytics', 'health-section-failure-groups', 'health-section-consumption', 'health-section-task-outcomes', 'health-section-orphaned-prs'];
     const all = render({ ...everything });
     for (const id of ids) {
       expect(has(all, id)).toBe(true);

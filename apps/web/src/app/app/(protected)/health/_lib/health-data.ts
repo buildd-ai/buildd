@@ -1,6 +1,6 @@
 import 'server-only';
 import { db } from '@buildd/core/db';
-import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets } from '@buildd/core/db/schema';
+import { workspaces, tasks, workers, workspaceSkills, taskSchedules, missions, secrets, workerErrorTraces } from '@buildd/core/db/schema';
 import { and, eq, inArray, desc, sql, or, isNull } from 'drizzle-orm';
 import { cookies } from 'next/headers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
@@ -41,6 +41,8 @@ import {
 import { countWorkersInWindow } from '@/lib/action-events';
 import { loadHealthExperiments } from '@/lib/health-experiments';
 import { getDispatchHealth } from '@/lib/dispatch-health';
+import { buildFailureGroups, type FailureGroupsView } from '@/lib/health-failure-groups';
+import { FAILED_WORKER_STATUSES } from '@buildd/shared';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { GateAnalytics } from '@buildd/shared';
@@ -181,20 +183,25 @@ export type HealthDataKey =
   | 'runners' | 'usageStats' | 'schedules' | 'recentFailures' | 'credentials'
   | 'budgetForecast' | 'consumption' | 'failureAnalytics' | 'gateAnalytics'
   | 'strandedBackends' | 'cbm' | 'subagentDelegation' | 'errorPatterns'
-  | 'dispatchHealth' | 'orphanedPrs' | 'experiments';
+  | 'dispatchHealth' | 'orphanedPrs' | 'experiments' | 'failureGroups';
 
 export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
 export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>> = {
   // Problems: broken credentials, stranded backends, offline runners, failing schedules, 24h failures.
-  overview: new Set(['runners', 'schedules', 'recentFailures', 'credentials', 'strandedBackends']),
-  failures: new Set(['failureAnalytics']),
+  // failureGroups feeds the Overview's top failures (TopFailureGroups).
+  overview: new Set(['runners', 'schedules', 'recentFailures', 'credentials', 'strandedBackends', 'failureGroups']),
+  // failureAnalytics stays for the headline rate (failed / finished).
+  failures: new Set(['failureAnalytics', 'failureGroups']),
   runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules']),
   operator: new Set([
     'dispatchHealth', 'gateAnalytics', 'experiments', 'cbm', 'subagentDelegation',
-    'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption',
+    'usageStats', 'orphanedPrs', 'errorPatterns', 'consumption', 'failureAnalytics',
   ]),
 };
+
+/** Failed workers read for the grouped view. Newest first; older ones drop past the cap. */
+export const FAILURE_GROUP_WORKER_LIMIT = 500;
 
 export interface HealthData {
   orphanedPrs: OrphanedPrRow[];
@@ -215,6 +222,8 @@ export interface HealthData {
   errorPatterns: ErrorPatternPanel | null;
   experiments: Awaited<ReturnType<typeof loadHealthExperiments>> | null;
   dispatchHealth: Awaited<ReturnType<typeof getDispatchHealth>> | null;
+  /** What is failing, one group per cause (lib/health-failure-groups.ts). */
+  failureGroups: (FailureGroupsView & { truncated: boolean }) | null;
   now: number;
 }
 
@@ -281,6 +290,7 @@ export async function loadHealth({
     subagentDelegation,
     errorPatterns,
     dispatchHealth,
+    failureGroups,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     need('runners')
@@ -534,7 +544,47 @@ need('gateAnalytics') ? getGateAnalytics(scopedWsIds, window).catch(() => null) 
     // Dispatch transport STATE for the scoped workspaces: the same report the
     // dispatch_health MCP action prints. Postgres counts plus one short Worker
     // /health probe; a failure hides the section, never the page.
-need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null,  ]);
+need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null,
+
+    // What is failing, one group per cause: failed workers in the window plus
+    // the error-trace patterns seen on them (lib/health-failure-groups.ts).
+    need('failureGroups')
+      ? (async (): Promise<(FailureGroupsView & { truncated: boolean }) | null> => {
+      const windowStart = new Date(Date.now() - parseWindowMs(window));
+      const failed = await db.query.workers.findMany({
+        where: and(
+          inArray(workers.workspaceId, scopedWsIds),
+          inArray(workers.status, [...FAILED_WORKER_STATUSES]),
+          sql`${workers.completedAt} >= ${windowStart}`,
+        ),
+        columns: { id: true, taskId: true, workspaceId: true, error: true, exitCause: true, completedAt: true },
+        with: { task: { columns: { title: true } } },
+        orderBy: [desc(workers.completedAt)],
+        limit: FAILURE_GROUP_WORKER_LIMIT,
+      });
+      const ids = (failed as Array<{ id: string }>).map(w => w.id);
+      const traces = ids.length
+        ? await db
+            .selectDistinct({ workerId: workerErrorTraces.workerId, pattern: workerErrorTraces.pattern })
+            .from(workerErrorTraces)
+            .where(inArray(workerErrorTraces.workerId, ids))
+        : [];
+      const view = buildFailureGroups({
+        failures: (failed as any[]).map(w => ({
+          workerId: w.id,
+          taskId: w.taskId ?? null,
+          taskTitle: (w.task as { title: string } | null)?.title ?? null,
+          workspaceName: wsById.get(w.workspaceId) ?? '(unknown)',
+          error: w.error ?? null,
+          exitCause: w.exitCause ?? null,
+          completedAt: (w.completedAt ?? new Date()).toISOString(),
+        })),
+        traces: traces as Array<{ workerId: string; pattern: string }>,
+      });
+      return { ...view, truncated: failed.length >= FAILURE_GROUP_WORKER_LIMIT };
+    })().catch(() => null)
+      : null,
+  ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
     .filter((b) => b.strandedPending > 0)
@@ -629,6 +679,7 @@ need('dispatchHealth') ? getDispatchHealth(scopedWsIds).catch(() => null) : null
       errorPatterns: errorPatterns ?? null,
       experiments,
       dispatchHealth: dispatchHealth ?? null,
+      failureGroups: failureGroups ?? null,
       now,
     },
   };
