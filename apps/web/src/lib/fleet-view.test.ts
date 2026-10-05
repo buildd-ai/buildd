@@ -201,7 +201,7 @@ describe('homeHeadline', () => {
     expect(parts.find(p => p.tone === 'success')?.text).toBe('shipped');
   });
   it('an idle fleet is said in plain words, never "fleet idle"', () => {
-    expect(text(homeHeadline({ live: 0, needsYou: 0 }))).toBe('No agents working. Nothing needs input.');
+    expect(text(homeHeadline({ live: 0, needsYou: 0 }))).toBe('Nothing needs you right now.');
     expect(text(homeHeadline({ live: 0, needsYou: 2 }))).toBe('No agents working. 2 need you.');
   });
 });

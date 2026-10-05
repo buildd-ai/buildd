@@ -353,7 +353,7 @@ export function homeHeadline(input: { live: number; needsYou: number; shipped?: 
     return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs input.' }];
   }
   if (shipped) return [{ text: `No agents working. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
-  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'No agents working. Nothing needs input.' }];
+  return needsYou > 0 ? [{ text: 'No agents working. ' }, needs] : [{ text: 'Nothing needs you right now.' }];
 }
 
 /** Midnight of `now`'s calendar day in `tz` (IANA), epoch ms. Invalid zone → UTC. */
