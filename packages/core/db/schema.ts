@@ -41,6 +41,12 @@ export const teams = pgTable('teams', {
   // active hours — where there is no single known viewer. Seeded from the detected zone
   // of the first member to sign in. See packages/core/timezone.ts.
   timezone: text('timezone'),
+
+  // Per-team permission grants: permission name -> team roles that hold it. An
+  // absent key = the registry default (apps/web/src/lib/permission-registry.ts).
+  // Read only through sanitizeOverrides; owners always hold everything, and
+  // locked permissions ignore this. Written by PUT /api/teams/[id]/permissions.
+  permissionOverrides: jsonb('permission_overrides').$type<Record<string, string[]>>().default({}).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 

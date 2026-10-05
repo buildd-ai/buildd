@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import AddConnectionModal from './AddConnectionModal';
 import { Select } from '@/components/ui/Select';
-import { roleHas } from '@/lib/permission-registry';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
 interface Connector {
   id: string;
@@ -21,6 +21,7 @@ interface Team {
   id: string;
   name: string;
   role: string; // 'owner' | 'admin' | 'member'
+  permissionOverrides?: PermissionOverrides;
 }
 
 interface ConnectorShare {
@@ -125,10 +126,11 @@ export default function ConnectionsClient({
         const res = await fetch('/api/teams');
         if (res.ok) {
           const data = await res.json();
-          setTeams((data.teams || []).map((t: { id: string; name: string; role?: string }) => ({
+          setTeams((data.teams || []).map((t: { id: string; name: string; role?: string; permissionOverrides?: PermissionOverrides }) => ({
             id: t.id,
             name: t.name,
             role: t.role ?? 'member',
+            permissionOverrides: t.permissionOverrides,
           })));
         }
       } catch {
@@ -356,7 +358,7 @@ export default function ConnectionsClient({
   // ownership moves only to a team the actor is owner/admin of).
   const sharedTeamIds = new Set(shares.map(s => s.sharedWithTeamId));
   const shareableTeams = teams.filter(t => t.id !== ownerTeamId && !sharedTeamIds.has(t.id));
-  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && roleHas(t.role, 'manage_connectors'));
+  const transferableTeams = teams.filter(t => t.id !== ownerTeamId && roleHas(t.role, 'manage_connectors', t.permissionOverrides ?? null));
 
   return (
     <div className={embedded ? '' : 'px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-4xl'}>

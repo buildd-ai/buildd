@@ -79,6 +79,7 @@ import ConnectOwnKeyCard from '@/components/onboarding/ConnectOwnKeyCard';
 import { NewWorkLink } from '@/components/chat/ChatEntry';
 import { homeChatPlacement, type HomeChatPlacement } from './home-view';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 // --- Helpers ---
 
@@ -283,12 +284,13 @@ export default async function HomePage({
       if (activeTeamId) {
         // Role and chat availability are independent: one wait. Availability
         // stops at one column read for a team that hasn't turned chat on.
-        const [role, chatAvail, recent] = await Promise.all([
+        const [role, chatAvail, recent, overrides] = await Promise.all([
           getUserTeamRole(user.id, activeTeamId).catch(() => null),
           getChatAvailability(user.id, activeTeamId).catch(() => null),
           listConversations(user.id, activeTeamId, 3).catch(() => [] as ConversationListItem[]),
+          getTeamPermissionOverrides(activeTeamId),
         ]);
-        audience = homeAudience(role);
+        audience = homeAudience(role, overrides);
         chatPlacement = homeChatPlacement(audience, chatAvail);
         chatRecent = recent;
         chatTeamId = activeTeamId;

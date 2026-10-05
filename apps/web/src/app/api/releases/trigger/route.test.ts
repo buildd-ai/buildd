@@ -77,7 +77,7 @@ const mockGetCallerAdminTeamIds = mock(async (caller: any) => {
   if (caller.kind === 'account') return caller.level === 'admin' ? [caller.teamId] : [];
   return adminTeamsByUser[caller.userId] ?? [];
 });
-mock.module('@/lib/team-access', () => ({ getCallerAdminTeamIds: mockGetCallerAdminTeamIds }));
+mock.module('@/lib/permissions', () => ({ teamIdsWhere: (caller: any, _permission: string) => mockGetCallerAdminTeamIds(caller) }));
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/github', () => ({ isGitHubAppConfigured: mockIsGitHubAppConfigured, githubApi: mockGithubApi }));
@@ -98,10 +98,10 @@ mock.module('@buildd/core/db', () => ({
   db: {
     insert: mockInsert,
     update: mockUpdate,
-    query: { releases: { findFirst: mockReleaseFindFirst } },
+    query: { teams: { findFirst: async () => null }, releases: { findFirst: mockReleaseFindFirst } },
   },
 }));
-mock.module('@buildd/core/db/schema', () => ({ releases: 'releases' }));
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' }, releases: 'releases' }));
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b, op: 'eq' }),
   and: (...args: any[]) => args,

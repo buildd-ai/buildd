@@ -34,7 +34,7 @@ let teamWorkspaceRows: Array<{ id: string; teamId: string; accessMode: string }>
 const linkedWorkspaceIds: string[] = [];
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       accounts: { findMany: mockAccountsFindMany },
       workspaces: { findMany: mock(() => Promise.resolve(teamWorkspaceRows)) },
     },
@@ -50,7 +50,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   accounts: { teamId: 'teamId', createdAt: 'createdAt' },
   accountWorkspaces: accountWorkspacesTable,
   workspaces: {teamId: "teamId"},

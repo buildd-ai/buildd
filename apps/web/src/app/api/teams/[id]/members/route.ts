@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
-import { roleHas, type TeamRole } from '@/lib/permissions';
+import { roleHas, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
 
 export async function GET(
   req: NextRequest,
@@ -81,7 +81,7 @@ export async function POST(
     }
 
     const currentRole = membership.role as TeamRole;
-    if (!roleHas(currentRole, 'manage_team_members')) {
+    if (!roleHas(currentRole, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -96,7 +96,7 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
-    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner')) {
+    if (role === 'owner' && !roleHas(currentRole, 'assign_team_owner', await getTeamPermissionOverrides(teamId))) {
       return NextResponse.json({ error: 'Only owners can add owners' }, { status: 403 });
     }
 

@@ -255,7 +255,7 @@ export default function TeamDetailClient({
             >
               Edit
             </button>
-            {roleHas(currentUserRole, 'delete_team') && !isPersonal && (
+            {roleHas(currentUserRole, 'delete_team', null /* locked */) && !isPersonal && (
               <button
                 onClick={handleDelete}
                 disabled={deleting}
@@ -299,7 +299,7 @@ export default function TeamDetailClient({
                 </div>
               </div>
               <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
-                {canManage && roleHas(currentUserRole, 'assign_team_owner') && member.userId !== currentUserId ? (
+                {canManage && roleHas(currentUserRole, 'assign_team_owner', null /* locked */) && member.userId !== currentUserId ? (
                   <Select
                     value={member.role}
                     onChange={(v) => handleRoleChange(member.userId, v)}

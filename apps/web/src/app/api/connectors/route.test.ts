@@ -35,7 +35,7 @@ mock.module('@buildd/core/secrets', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       connectors: { findMany: mockConnectorsFindMany, findFirst: mockConnectorsFindFirst },
       connectorShares: { findMany: mockConnectorSharesFindMany },
       secrets: { findMany: mockSecretsFindMany },
@@ -51,7 +51,7 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   connectors: { teamId: 'teamId', id: 'id', name: 'name' },
   connectorShares: { connectorId: 'connectorId', sharedWithTeamId: 'sharedWithTeamId' },
   secrets: { teamId: 'teamId', purpose: 'purpose', label: 'label' },

@@ -20,6 +20,7 @@ import { isTaskToken } from '@/lib/task-token';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { canViewExperiment, isExperimentAdmin, planExperimentPatch, toExperimentDTO } from '@/lib/experiments';
 import { applyExperimentUpdate, findOtherRunning, getTeamExperiment } from '@/lib/experiments-store';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const notFound = () => NextResponse.json({ error: 'Experiment not found' }, { status: 404 });
@@ -43,7 +44,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!UUID_RE.test(id)) return notFound();
 
   const row = await getTeamExperiment(who.viewer.teamId, id);
-  if (!row || !canViewExperiment(row.visibility, who.viewer.role)) return notFound();
+  if (!row || !canViewExperiment(row.visibility, who.viewer.role, await getTeamPermissionOverrides(who.viewer.teamId))) return notFound();
   return NextResponse.json({ experiment: toExperimentDTO(row) });
 }
 
@@ -60,8 +61,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const row = await getTeamExperiment(viewer.teamId, id);
   // Existence before role: a member probing an admins-only id must get the
   // same 404 as for an id that does not exist.
-  if (!row || !canViewExperiment(row.visibility, viewer.role)) return notFound();
-  if (!isExperimentAdmin(viewer.role)) {
+  if (!row || !canViewExperiment(row.visibility, viewer.role, await getTeamPermissionOverrides(viewer.teamId))) return notFound();
+  if (!isExperimentAdmin(viewer.role, await getTeamPermissionOverrides(viewer.teamId))) {
     return NextResponse.json({ error: 'Changing an experiment requires team admin or owner' }, { status: 403 });
   }
 

@@ -3,7 +3,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
-import { roleHas, type TeamRole } from '@/lib/permissions';
+import { roleHas, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
 
 export async function PATCH(
   req: NextRequest,
@@ -23,7 +23,7 @@ export async function PATCH(
       ),
     });
 
-    if (!currentMembership || !roleHas(currentMembership.role, 'assign_team_owner')) {
+    if (!currentMembership || !roleHas(currentMembership.role, 'assign_team_owner', await getTeamPermissionOverrides(teamId))) {
       return NextResponse.json({ error: 'Only owners can change roles' }, { status: 403 });
     }
 
@@ -101,7 +101,7 @@ export async function DELETE(
     }
 
     const currentRole = currentMembership.role as TeamRole;
-    if (!roleHas(currentRole, 'manage_team_members')) {
+    if (!roleHas(currentRole, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
@@ -138,7 +138,7 @@ export async function DELETE(
     }
 
     // Removing an owner takes more than member management: admins cannot.
-    if (targetMembership.role === 'owner' && !roleHas(currentRole, 'assign_team_owner')) {
+    if (targetMembership.role === 'owner' && !roleHas(currentRole, 'assign_team_owner', await getTeamPermissionOverrides(teamId))) {
       return NextResponse.json({ error: 'Admins cannot remove owners' }, { status: 403 });
     }
 

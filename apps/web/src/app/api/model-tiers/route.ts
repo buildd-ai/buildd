@@ -12,7 +12,7 @@ import {
   verifyWorkspaceAccess,
   verifyAccountWorkspaceAccess,
 } from '@/lib/team-access';
-import { roleHas } from '@/lib/permissions';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { resolveAllTiers, invalidateTierCache, TIERS, type Tier, type TierSurface } from '@buildd/core/model-tier-registry';
 import { isTierSurface, type TierEntryWithSurfaces } from '@buildd/core/model-tier-defaults';
 
@@ -83,7 +83,7 @@ async function resolveTeam(
 
   if (opts.write) {
     if (!role) role = await getUserTeamRole(user.id, teamId);
-    if (!roleHas(role, 'manage_model_tiers')) {
+    if (!roleHas(role, 'manage_model_tiers', await getTeamPermissionOverrides(teamId))) {
       return fail(403, 'Only a team owner or admin can change model tiers');
     }
   }

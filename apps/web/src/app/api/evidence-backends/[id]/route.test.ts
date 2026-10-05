@@ -20,11 +20,11 @@ mock.module('@/lib/evidence-backend-access', () => ({
 }));
 mock.module('@/lib/experiment-access', () => ({ resolveExperimentViewer: async () => viewer }));
 mock.module('drizzle-orm', () => ({ eq: (c: unknown, v: unknown) => ({ c, v }) }));
-mock.module('@buildd/core/db/schema', () => ({ evidenceBackends: new Proxy({}, { get: (_t, p) => String(p) }) }));
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' }, evidenceBackends: new Proxy({}, { get: (_t, p) => String(p) }) }));
 mock.module('@buildd/core/secrets', () => ({ getSecretsProvider: () => ({ set: mockSet, delete: mockDeleteSecret }) }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { evidenceBackends: { findFirst: async () => row } },
+    query: { teams: { findFirst: async () => null }, evidenceBackends: { findFirst: async () => row } },
     update: () => ({ set: (s: any) => ({ where: async () => { updateSet = s; } }) }),
     delete: () => ({ where: async () => { deleted = true; } }),
   },

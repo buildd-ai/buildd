@@ -19,7 +19,7 @@ describe('workspace danger zone', () => {
 
   it('is gated on delete_workspace', () => {
     const before = PAGE.slice(0, idx);
-    const lastGate = before.lastIndexOf("roleHas(access.role, 'delete_workspace') && (");
+    const lastGate = before.lastIndexOf("roleHas(access.role, 'delete_workspace', overrides) && (");
     expect(lastGate).toBeGreaterThan(-1);
     // Nothing between the gate and the section closes the gated expression.
     expect(before.slice(lastGate)).not.toMatch(/\)\}/);

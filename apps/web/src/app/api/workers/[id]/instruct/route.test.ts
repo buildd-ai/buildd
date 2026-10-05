@@ -24,8 +24,15 @@ mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
 
+const mockHoldsInWorkspace = mock(async (u: string, w: string, _permission: string) => {
+  const access: any = await (mockVerifyWorkspaceAccess as any)(u, w);
+  return !!access && (access.role === 'owner' || access.role === 'admin');
+});
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  // The route asks for a named permission in the workspace's team; mirror the
+  // registry default (owner, admin) over this file's access mock.
+  holdsInWorkspace: mockHoldsInWorkspace,
 }));
 
 mock.module('@/lib/pusher', () => ({
@@ -36,7 +43,7 @@ mock.module('@/lib/pusher', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       workers: { findFirst: mockWorkersFindFirst },
     },
     update: () => mockWorkersUpdate(),
@@ -47,7 +54,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   workers: 'workers',
 }));
 
@@ -186,7 +193,7 @@ describe('POST /api/workers/[id]/instruct', () => {
     const res = await POST(req, { params: mockParams });
 
     expect(res.status).toBe(404);
-    expect(mockVerifyWorkspaceAccess).toHaveBeenCalledWith('user-1', 'ws-1', 'admin');
+    expect(mockHoldsInWorkspace).toHaveBeenCalledWith('user-1', 'ws-1', 'steer_workers');
   });
 
   it('returns 404 when worker not found', async () => {

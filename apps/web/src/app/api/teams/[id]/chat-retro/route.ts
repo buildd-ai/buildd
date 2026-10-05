@@ -15,7 +15,7 @@ import { db } from '@buildd/core/db';
 import { teamMembers } from '@buildd/core/db/schema';
 import { getRequestPrincipal } from '@/lib/auth-helpers';
 import { isUuid } from '@/lib/uuid';
-import { keyLevelHas, roleHas } from '@/lib/permissions';
+import { keyLevelHas, roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 import { applyChatRetroPatch, chatRetroGloballyEnabled } from '@/lib/chat-retro/settings';
 import { deleteTeamLessons, listRecentLessons, readTeamSettings, writeTeamSettings } from '@/lib/chat-retro/store';
 
@@ -38,7 +38,7 @@ async function requireTeamAdmin(req: NextRequest, teamId: string): Promise<NextR
     columns: { role: true },
   });
   if (!membership) return NextResponse.json({ error: 'Team not found' }, { status: 404 });
-  if (!roleHas(membership.role, 'manage_chat_retro')) {
+  if (!roleHas(membership.role, 'manage_chat_retro', await getTeamPermissionOverrides(teamId))) {
     return NextResponse.json({ error: 'Only a team owner or admin can see or change chat retro settings' }, { status: 403 });
   }
   return null;

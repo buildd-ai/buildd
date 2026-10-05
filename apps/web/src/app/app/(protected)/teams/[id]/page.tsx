@@ -6,6 +6,7 @@ import BackButton from './BackButton';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { roleHas } from '@/lib/permission-registry';
 import TeamDetailClient from './TeamDetailClient';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,7 +66,7 @@ export default async function TeamDetailPage({
 
   const isPersonal = team.slug.startsWith('personal-');
   const currentUserRole = membership.role as 'owner' | 'admin' | 'member';
-  const canManage = roleHas(currentUserRole, 'manage_team_members');
+  const canManage = roleHas(currentUserRole, 'manage_team_members', await getTeamPermissionOverrides(team.id));
 
   return (
     <main className="min-h-screen p-8">

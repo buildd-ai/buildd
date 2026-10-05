@@ -6,6 +6,7 @@ import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserTeamIds, getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 // Generalized CLI OAuth flow:
 // 1. CLI redirects here with ?callback=http://localhost:PORT/callback&client=cli&level=admin
@@ -111,7 +112,7 @@ export async function GET(req: NextRequest) {
       errorUrl.searchParams.set('error', 'Not a member of the target team');
       return NextResponse.redirect(errorUrl.toString());
     }
-    const grantedLevel = clampKeyLevel(role, requestedLevel);
+    const grantedLevel = clampKeyLevel(role, requestedLevel, await getTeamPermissionOverrides(teamId));
 
     // Generate a fresh plaintext key for this auth flow
     const plaintextKey = generateApiKey();

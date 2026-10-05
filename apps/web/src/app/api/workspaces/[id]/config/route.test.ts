@@ -35,7 +35,7 @@ mock.module('@/lib/team-access', () => ({
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     update: () => mockWorkspacesUpdate(),
@@ -47,7 +47,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ args, type: 'and' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   workspaces: { id: 'id', teamId: 'teamId' },
 }));
 
