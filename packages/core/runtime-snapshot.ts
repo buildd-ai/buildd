@@ -9,7 +9,31 @@
  * Pure: no DB, no env. The record's reader is injected by a server-only
  * `*-source.ts` module, so a client bundle (or the runner) that imports the
  * snapshot only ever sees what was installed, which is the initial value.
+ *
+ * One store per process, not per module instance. Next.js compiles
+ * `instrumentation.ts` (which installs the snapshot at boot) separately from
+ * the route handlers (which read it), so a module-level `let` gives each its
+ * own copy: the boot load filled one and every route read the other, still
+ * empty. A snapshot created with a `sharedKey` keeps its state on `globalThis`
+ * under `Symbol.for(sharedKey)`, so every copy of the module reads and writes
+ * the same value and refresher.
  */
+
+/**
+ * Process-wide state under `Symbol.for(key)` on `globalThis`, created by `init`
+ * the first time any copy of the calling module asks for it. Use it for
+ * module-level state that a separately bundled copy must see too.
+ */
+export function sharedProcessState<S>(key: string, init: () => S): S {
+  const g = globalThis as unknown as Record<symbol, S | undefined>;
+  const sym = Symbol.for(key);
+  let state = g[sym];
+  if (state === undefined) {
+    state = init();
+    g[sym] = state;
+  }
+  return state;
+}
 
 export interface RuntimeSnapshot<T> {
   /** The installed value. Pokes the refresher first, so a server process stays fresh. */
@@ -23,24 +47,39 @@ export interface RuntimeSnapshot<T> {
   reset(): void;
 }
 
-export function createRuntimeSnapshot<T>(initial: T): RuntimeSnapshot<T> {
-  let value = initial;
-  let refresher: (() => void) | null = null;
+export interface RuntimeSnapshotOptions {
+  /**
+   * Share the state with every other snapshot created under this key in the
+   * process (`Symbol.for(sharedKey)` on `globalThis`). Required for anything a
+   * server process installs in one bundle and reads in another. Omit for a
+   * private snapshot (tests).
+   */
+  sharedKey?: string;
+}
+
+interface SnapshotCell<T> {
+  value: T;
+  refresher: (() => void) | null;
+}
+
+export function createRuntimeSnapshot<T>(initial: T, opts: RuntimeSnapshotOptions = {}): RuntimeSnapshot<T> {
+  const init = (): SnapshotCell<T> => ({ value: initial, refresher: null });
+  const cell = opts.sharedKey ? sharedProcessState(opts.sharedKey, init) : init();
   return {
     read() {
-      refresher?.();
-      return value;
+      cell.refresher?.();
+      return cell.value;
     },
-    peek: () => value,
+    peek: () => cell.value,
     install(next) {
-      value = next;
+      cell.value = next;
     },
     setRefresher(fn) {
-      refresher = fn;
+      cell.refresher = fn;
     },
     reset() {
-      value = initial;
-      refresher = null;
+      cell.value = initial;
+      cell.refresher = null;
     },
   };
 }
