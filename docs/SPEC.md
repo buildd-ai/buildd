@@ -176,7 +176,9 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
 - **`mode`**: `execution | planning` (planning tasks produce a plan, not code).
 - **`outputRequirement`**: `pr_required | artifact_required | none | auto` — enforced
   on completion. `outputSchema` drives SDK structured output.
-- **`runnerPreference`** (`any | user | service | action`) +
+- **`runnerPreference`** (`any | user | service`, plus the legacy stored value
+  `action` from the removed GitHub Actions runner, which the dashboard no
+  longer offers) +
   **`roleSlug`** — claim-time routing constraints. `roleSlug` is nullable: when
   set, only runners that advertise this skill in `availableSkills` can claim the
   task; when null, any runner with workspace access can claim it. **Null is the

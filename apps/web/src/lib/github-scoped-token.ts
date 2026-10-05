@@ -28,16 +28,6 @@ export const TASK_TOKEN_PERMISSIONS: Readonly<Record<string, PermissionLevel>> =
   metadata: 'read',
 };
 
-/**
- * What a repository_dispatch POST needs: contents write (GitHub REST docs for
- * "Create a repository dispatch event"; not verified against a live App
- * here). Used for the Dispatch transport's GitHub Actions grant.
- */
-export const REPOSITORY_DISPATCH_PERMISSIONS: Readonly<Record<string, PermissionLevel>> = {
-  contents: 'write',
-  metadata: 'read',
-};
-
 const RANK: Record<string, number> = { read: 1, write: 2, admin: 3 };
 
 /**

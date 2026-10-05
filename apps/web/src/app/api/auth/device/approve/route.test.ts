@@ -13,6 +13,8 @@ let updates: Array<{ table: unknown; vals: any }> = [];
 
 const schema = { deviceCodes: { __t: 'deviceCodes' }, accounts: { __t: 'accounts' } };
 
+const mockLinkPersonal = mock((_a: { accountId: string; userId: string }) => Promise.resolve(1));
+mock.module('@/lib/personal-workspace-links', () => ({ linkAccountToPersonalWorkspaces: mockLinkPersonal }));
 mock.module('@/auth', () => ({ auth: mockAuth }));
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
@@ -35,7 +37,9 @@ mock.module('@buildd/core/db', () => ({
     insert: (_t: unknown) => ({
       values: (vals: any) => {
         inserted.push(vals);
-        return Promise.resolve();
+        const p: any = Promise.resolve();
+        p.returning = () => Promise.resolve([{ id: 'acct-new', ...vals }]);
+        return p;
       },
     }),
     update: (table: unknown) => ({
@@ -77,6 +81,7 @@ describe("POST /api/auth/device/approve — key level follows the approver's tea
     mockGetUserTeamRole.mockReset();
     mockAccountsFindFirst.mockReset();
     mockAccountsFindFirst.mockResolvedValue(null);
+    mockLinkPersonal.mockClear();
   });
 
   it('caps a team member at worker level when the device asked for admin', async () => {
@@ -100,5 +105,12 @@ describe("POST /api/auth/device/approve — key level follows the approver's tea
     expect(res.status).toBe(200);
     expect(inserted).toHaveLength(1);
     expect(updates.some(u => u.table === schema.accounts)).toBe(false);
+  });
+
+  it("links the approved device's new account to the user's personal workspaces", async () => {
+    mockGetUserTeamRole.mockResolvedValue('owner');
+    const res = await POST(approveReq());
+    expect(res.status).toBe(200);
+    expect(mockLinkPersonal).toHaveBeenCalledWith({ accountId: 'acct-new', userId: 'user-1' });
   });
 });

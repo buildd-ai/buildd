@@ -8,6 +8,7 @@ import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { getUserDefaultTeamId, getUserTeamRole } from '@/lib/team-access';
 import { clampKeyLevel, parseKeyLevel } from '@/lib/key-level-policy';
 import { getTeamPermissionOverrides } from '@/lib/permissions';
+import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -81,7 +82,7 @@ export async function POST(req: NextRequest) {
 
     const plaintextKey = generateApiKey();
 
-    await db.insert(accounts).values({
+    const [created] = await db.insert(accounts).values({
       name: accountName,
       type: 'user',
       level,
@@ -89,7 +90,11 @@ export async function POST(req: NextRequest) {
       apiKey: hashApiKey(plaintextKey),
       apiKeyPrefix: extractApiKeyPrefix(plaintextKey),
       teamId,
-    });
+    }).returning({ id: accounts.id });
+
+    // A personal team's workspace starts restricted; without a link this
+    // login's runner could never claim the user's own tasks.
+    if (created?.id) await linkAccountToPersonalWorkspaces({ accountId: created.id, userId: session.user.id });
 
     // Store plaintext in device code record for CLI to retrieve
     await db.update(deviceCodes)

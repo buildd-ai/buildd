@@ -94,7 +94,6 @@ export default async function WorkspacesPage() {
           teamId: ws.team?.id || null,
           canMove: targetsFor(ws.team?.id ?? null) !== null,
           runners: {
-            action: connectedAccounts.some((aw) => aw.account?.type === 'action' && aw.canClaim) || !!activeTypes?.has('action'),
             service: connectedAccounts.some((aw) => aw.account?.type === 'service' && aw.canClaim) || !!activeTypes?.has('service'),
             user: connectedAccounts.some((aw) => aw.account?.type === 'user' && aw.canClaim) || !!activeTypes?.has('user'),
           },
