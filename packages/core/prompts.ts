@@ -18,7 +18,7 @@
  * Pure: no DB, no env. Safe to import anywhere a public default is; the
  * runner and client bundles never install a snapshot, so they see defaults.
  */
-import { createRuntimeSnapshot } from './runtime-snapshot';
+import { createRuntimeSnapshot, sharedProcessState } from './runtime-snapshot';
 
 export interface ActivePrompt {
   id: string;
@@ -32,8 +32,12 @@ export type PromptSnapshot = ReadonlyMap<string, ActivePrompt>;
 
 const EMPTY: PromptSnapshot = new Map();
 
-/** The shared snapshot; `prompts-source.ts` loads it. */
-export const promptsSnapshot = createRuntimeSnapshot<PromptSnapshot>(EMPTY);
+/**
+ * The shared snapshot; `prompts-source.ts` loads it. Process-wide (see
+ * `runtime-snapshot.ts`): instrumentation installs it in its own bundle and
+ * every route handler reads it from theirs.
+ */
+export const promptsSnapshot = createRuntimeSnapshot<PromptSnapshot>(EMPTY, { sharedKey: 'buildd.prompts.snapshot' });
 
 /** Replace the active prompts. Called by the server loader; tests may call it directly. */
 export function installPrompts(rows: Iterable<ActivePrompt>): void {
@@ -72,7 +76,7 @@ export function resetPrompts(): void {
   promptsSnapshot.reset();
   fallbacks.clear();
   warned.clear();
-  fallbackListener = null;
+  accounting.listener = null;
   valueCache.clear();
 }
 
@@ -81,14 +85,20 @@ export function resetPrompts(): void {
 /** `missing`: no active row. `invalid`: a row exists but its body was rejected. */
 export type PromptFallbackReason = 'missing' | 'invalid';
 
-const fallbacks = new Map<string, { missing: number; invalid: number }>();
-const warned = new Set<string>();
-
-let fallbackListener: ((id: string, reason: PromptFallbackReason) => void) | null = null;
+// Process-wide for the same reason as the snapshot: the listener is installed
+// at boot (instrumentation's bundle), resolves count in the routes' bundles, and
+// deploy-identity reports the counts from its own.
+const accounting = sharedProcessState('buildd.prompts.fallbacks', () => ({
+  fallbacks: new Map<string, { missing: number; invalid: number }>(),
+  warned: new Set<string>(),
+  listener: null as ((id: string, reason: PromptFallbackReason) => void) | null,
+}));
+const fallbacks = accounting.fallbacks;
+const warned = accounting.warned;
 
 /** Called on every fallback (after counting). The server installs one that logs in production; null removes it. */
 export function setPromptFallbackListener(fn: ((id: string, reason: PromptFallbackReason) => void) | null): void {
-  fallbackListener = fn;
+  accounting.listener = fn;
 }
 
 function countFallback(id: string, reason: PromptFallbackReason): void {
@@ -98,7 +108,7 @@ function countFallback(id: string, reason: PromptFallbackReason): void {
   const c = fallbacks.get(id) ?? { missing: 0, invalid: 0 };
   c[reason]++;
   fallbacks.set(id, c);
-  fallbackListener?.(id, reason);
+  accounting.listener?.(id, reason);
 }
 
 /** Per prompt id, how many resolves in this process fell back to the public default. */
