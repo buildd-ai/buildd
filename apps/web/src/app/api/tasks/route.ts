@@ -19,6 +19,7 @@ import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { scheduleTaskRoleRouting } from '@/lib/task-role-apply';
+import { kindDefaultCandidates, kindDefaultRole, kindDefaultStamp } from '@/lib/task-role-default';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
@@ -1314,6 +1315,24 @@ export async function POST(req: NextRequest) {
     const previewRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
     let previewRoleModel: string | null = null;
     let roleMayBeInferred = false;
+    // Same rule the insert below applies; computed here so the kind default
+    // (task-role-default.ts) can tell a work row from bookkeeping.
+    const isBookkeepingTitle =
+      title.startsWith('[friction] ') ||
+      title.startsWith('Aggregate results:') ||
+      title.startsWith('Evaluate mission completion:') ||
+      title.startsWith('Mission:') ||
+      title.startsWith('Close mission') ||
+      // Option A′: the row that owns a mission integration PR. The opener
+      // sets `taskClass` directly, but a caller can create one through this
+      // route, and as `work` it would become a deliverable of the very
+      // mission whose completion it is waiting on.
+      title.startsWith(MISSION_PR_TASK_PREFIX);
+    // A task filed with no role gets its kind's default role when the
+    // workspace has it (task-role-default.ts). Stamped as inferred, so the
+    // decision model may still replace it and the claim keeps the task's model.
+    let kindDefaultSlug: string | null = null;
+    let kindDefaultCandidateCount = 0;
     if (targetWorkspace.teamId) {
       try {
         const roleRows = await db.query.workspaceSkills.findMany({
@@ -1324,7 +1343,10 @@ export async function POST(req: NextRequest) {
             or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
             ...(previewRoleSlug ? [eq(workspaceSkills.slug, previewRoleSlug)] : []),
           ),
-          columns: { slug: true, model: true, workspaceId: true, teamId: true, metadata: true },
+          columns: {
+            slug: true, name: true, model: true, workspaceId: true, teamId: true, metadata: true,
+            enabled: true, isRole: true, allowedTools: true, connectorRefs: true, defaultBackend: true,
+          },
         });
         if (previewRoleSlug) {
           const row = pickRoleRowForTask(roleRows, {
@@ -1333,6 +1355,20 @@ export async function POST(req: NextRequest) {
           previewRoleModel = row ? (row.model ?? 'inherit') : null;
         } else {
           roleMayBeInferred = countRoleInferenceCandidates(roleRows, workspaceId) >= 2;
+          const kindCandidates = kindDefaultCandidates(roleRows, {
+            workspaceId,
+            backend: resolvedBackend ?? null,
+            outputRequirement: outputRequirement ?? null,
+            pathManifestIsConcrete,
+            emitsPlan: !!emitsPlan,
+          });
+          kindDefaultCandidateCount = kindCandidates.length;
+          kindDefaultSlug = kindDefaultRole({
+            statedRoleSlug: null,
+            kind: finalKind ?? null,
+            taskClass: isBookkeepingTitle ? 'bookkeeping' : 'work',
+            candidates: kindCandidates,
+          });
         }
       } catch (err) {
         console.warn('[tasks] role lookup for routing preview failed:', err);
@@ -1371,18 +1407,7 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         status: 'pending',
         mode: emitsPlan ? 'planning' : 'execution',
-        taskClass: (
-          title.startsWith('[friction] ') ||
-          title.startsWith('Aggregate results:') ||
-          title.startsWith('Evaluate mission completion:') ||
-          title.startsWith('Mission:') ||
-          title.startsWith('Close mission') ||
-          // Option A′: the row that owns a mission integration PR. The opener
-          // sets `taskClass` directly, but a caller can create one through this
-          // route, and as `work` it would become a deliverable of the very
-          // mission whose completion it is waiting on.
-          title.startsWith(MISSION_PR_TASK_PREFIX)
-        ) ? 'bookkeeping' : 'work',
+        taskClass: isBookkeepingTitle ? 'bookkeeping' : 'work',
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: {
@@ -1404,6 +1429,7 @@ export async function POST(req: NextRequest) {
           // see task-routing-preview.ts. Lets analytics and the model cell tell
           // "the filer said this" apart from "we guessed this".
           ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+          ...(kindDefaultSlug ? { roleInferred: kindDefaultStamp(kindDefaultSlug, kindDefaultCandidateCount) } : {}),
           ...backendPinnedCtx,
         },
         ...(project ? { project } : {}),
@@ -1412,7 +1438,7 @@ export async function POST(req: NextRequest) {
         ...(outputSchema ? { outputSchema } : {}),
         ...(missionId ? { missionId } : {}),
         ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
-        ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
+        ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : kindDefaultSlug ? { roleSlug: kindDefaultSlug } : {}),
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
         ...(pathManifest ? {
           pathManifest,
@@ -1590,7 +1616,9 @@ export async function POST(req: NextRequest) {
           teamId: targetWorkspace.teamId,
           workspaceId,
           accountId: creatorContext.createdByAccountId ?? null,
-          statedRoleSlug: task.roleSlug ?? null,
+          // The caller's role only: a kind default is not stated, so the
+          // decision model still runs and may replace it.
+          statedRoleSlug: typeof roleSlug === 'string' && roleSlug ? roleSlug : null,
           title: task.title,
           label: task.label ?? null,
           kind: rawKind ?? null,
