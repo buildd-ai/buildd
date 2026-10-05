@@ -30,6 +30,30 @@ change (`src/handler.test.ts` pins the env).
 ```bash
 cd apps/model-policy
 bunx wrangler dev --var POLICY_TOKENS:dev:$(openssl rand -hex 16) --var MODEL_POLICY:'{"version":"1","tiers":{}}'
+```
+
+Deploy with the Cloudflare credential stored in buildd, which never comes to
+your machine (docs/specs/deployment-actions.md). The script builds the bundle
+with `wrangler deploy --dry-run` (no credential) and buildd uploads it:
+
+```bash
+# A person with an admin buildd key:
+BUILDD_API_KEY=bld_… POLICY_TOKENS=… MODEL_POLICY=… \
+  bun apps/model-policy/scripts/deploy.ts --workspace <id> --credential-ref cloudflare \
+  --secret POLICY_TOKENS --secret MODEL_POLICY
+
+# A Platform Operator task: write the request, then pass it to the `deploy`
+# MCP action. buildd checks the workspace's Operator grant for
+# cloudflare / model-policy / <environment> / <credential ref>.
+bun apps/model-policy/scripts/deploy.ts --emit /tmp/model-policy-deploy.json [--environment staging]
+```
+
+`--environment` other than `production` deploys the Worker
+`model-policy-<environment>`. Secrets set separately survive a code upload.
+
+Without a credential in buildd, wrangler still works directly:
+
+```bash
 bunx wrangler auth activate <profile> apps/model-policy   # once per machine
 bunx wrangler secret put POLICY_TOKENS
 bunx wrangler secret put MODEL_POLICY

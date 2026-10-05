@@ -4773,6 +4773,54 @@ export type GateEvent = typeof gateEvents.$inferSelect;
 export type NewGateEvent = typeof gateEvents.$inferInsert;
 
 /**
+ * Audit trail of deployment actions buildd runs server-side with a stored
+ * deploy credential, and of every plaintext reveal of one
+ * (apps/web/src/lib/deployments, docs/specs/deployment-actions.md).
+ *
+ * Unlike gate_events this is not fire-and-forget: the row is written BEFORE
+ * the credential is used (outcome 'started') and settled afterwards, and a
+ * request whose row cannot be written does not run. A crash mid-deploy
+ * therefore still leaves a 'started' row.
+ *
+ * Holds the credential REFERENCE (a label) only. There is no column a
+ * credential value could go in, and `result` is built field by field from an
+ * allowlist, never copied from a provider response.
+ */
+export const deploymentAuditEvents = pgTable('deployment_audit_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  // Null only for a reveal, which is team-wide.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  accountId: uuid('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  // 'operator': an agent role acting under its workspace grant.
+  // 'admin': a human's admin API key, the escape hatch.
+  principal: text('principal').notNull().$type<'operator' | 'admin'>(),
+  roleSlug: text('role_slug'),
+  operation: text('operation').notNull(),
+  capabilities: jsonb('capabilities').$type<string[]>().notNull(),
+  // True when an elevated capability (secrets:reveal, deployment_secrets:manage) was exercised.
+  elevated: boolean('elevated').default(false).notNull(),
+  provider: text('provider'),
+  project: text('project'),
+  environment: text('environment'),
+  credentialRef: text('credential_ref'),
+  outcome: text('outcome').notNull().$type<'started' | 'denied' | 'succeeded' | 'failed'>(),
+  reason: text('reason'),
+  result: jsonb('result').$type<Record<string, unknown>>(),
+}, (t) => ({
+  workspaceOccurredIdx: index('deployment_audit_events_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+  teamOccurredIdx: index('deployment_audit_events_team_occurred_idx').on(t.teamId, t.occurredAt),
+  taskIdx: index('deployment_audit_events_task_idx').on(t.taskId),
+}));
+
+export type DeploymentAuditEvent = typeof deploymentAuditEvents.$inferSelect;
+export type NewDeploymentAuditEvent = typeof deploymentAuditEvents.$inferInsert;
+
+/**
  * One row per worker session end, on every path — completed, failed, the
  * output-requirement gate refusing a completion, and a runner process death
  * reconciled at the next startup. See packages/core/terminal-records.ts.

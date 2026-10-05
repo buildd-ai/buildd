@@ -6,7 +6,7 @@ last_verified: 2026-10-05
 summary: An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 domain: auth
 surfaces: [apps/web/src/lib/permission-registry.ts, apps/web/src/lib/operator-capability.ts, apps/web/src/lib/operator-capability-source.ts, apps/web/src/lib/default-roles.ts]
-related: [team-permissions]
+related: [team-permissions, deployment-actions]
 keywords: [platform operator, operator role, deployments:write, deployment_secrets:use, secrets:reveal, credential ref, deploy scope, metadata.operator]
 verified_by: [apps/web/src/lib/operator-capability.test.ts, apps/web/src/lib/operator-capability-source.test.ts, apps/web/src/lib/default-roles.prompts.test.ts]
 supersedes: []
@@ -155,6 +155,8 @@ fingerprint without its text.
 - `rolePersonaIdentity` carries slug, prompt id, source, version and
   fingerprint only, never the body.
 - The persona grants nothing: authority comes from the grant above.
+- Executing a deploy with a granted capability is
+  [deployment-actions](deployment-actions.md).
 - The Operator is not routable; a task carries the slug only when filed with it.
 
 **Code surface**:
