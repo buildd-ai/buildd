@@ -12,7 +12,7 @@ import {
   tasksInBand,
 } from './flow-chart-model';
 import { dailyRows, fmtCount } from './FlowChart';
-import { resolveInsightsQaState, sampleFlowSeries } from '@/app/app/(protected)/insights/sample-series';
+import { emptyFlowSeries, resolveInsightsQaState, sampleFlowSeries } from '@/app/app/(protected)/insights/sample-series';
 
 const H = 3_600_000;
 const T0 = Date.UTC(2026, 0, 10, 0, 0, 0);
@@ -152,11 +152,24 @@ describe('fmtCount', () => {
   });
 });
 
+describe('empty state', () => {
+  it('has buckets but no tasks, releases or share', () => {
+    const e = emptyFlowSeries('7d', T0 + 7 * 24 * H);
+    expect(e.buckets).toHaveLength(168);
+    expect(e.tasks).toEqual([]);
+    expect(e.headline.shippedShare).toBeNull();
+  });
+});
+
 describe('sample state', () => {
   it('is dev-server only', () => {
     expect(resolveInsightsQaState('sample', 'development')).toBe('sample');
     expect(resolveInsightsQaState('sample', 'production')).toBeNull();
     expect(resolveInsightsQaState('other', 'development')).toBeNull();
+    expect(resolveInsightsQaState('empty', 'development')).toBe('empty');
+    expect(resolveInsightsQaState('not-admin', 'development')).toBe('not-admin');
+    expect(resolveInsightsQaState('not-admin', 'production')).toBeNull();
+    expect(resolveInsightsQaState(['empty', 'sample'], 'development')).toBe('empty');
   });
 
   it('renders a populated, deterministic week through the real fold', () => {
