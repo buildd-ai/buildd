@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { buildFlowSeries, type FlowWorkerRow } from '@/lib/insights-flow';
 import {
   STACK,
+  STRIP_GAP,
   bandValue,
   buildGeometry,
   formatDuration,
@@ -73,14 +74,41 @@ describe('buildGeometry', () => {
       w({ workerId: `f${n}`, taskId: `f${n}`, taskStatus: 'failed', status: 'failed', startedAt: T0 + n * 600_000, completedAt: T0 + n * 600_000 + 60_000 })));
     const gm = buildGeometry(many, 400, 220);
     const plotH = gm.plot.bottom - gm.plot.top;
-    expect((gm.plot.bottom - gm.zeroY) / plotH).toBeCloseTo(0.35, 5);
+    expect((gm.plot.bottom - gm.lostTop) / plotH).toBeCloseTo(0.35, 5);
     const busy = series(Array.from({ length: 40 }, (_, n) =>
       w({ workerId: `r${n}`, taskId: `r${n}`, startedAt: T0, completedAt: T0 + 20 * H })).concat(
       w({ workerId: 'x', taskId: 'x', taskStatus: 'failed', status: 'failed', startedAt: T0, completedAt: T0 + H })));
     const gb = buildGeometry(busy, 400, 220);
-    expect((gb.plot.bottom - gb.zeroY) / (gb.plot.bottom - gb.plot.top)).toBeCloseTo(0.15, 5);
+    expect((gb.plot.bottom - gb.lostTop) / (gb.plot.bottom - gb.plot.top)).toBeCloseTo(0.15, 5);
     const tiny = buildGeometry(S, 400, 60);
     expect(tiny.yTicks.some(t => t.value < 0)).toBe(false);
+    // Too short to label both ends without a collision: the strip keeps no ticks.
+    expect(tiny.lostTicks).toEqual([]);
+  });
+
+  it('gives lost work its own strip and its own scale, apart from the stages above', () => {
+    const many = series(Array.from({ length: 30 }, (_, n) =>
+      w({ workerId: `f${n}`, taskId: `f${n}`, taskStatus: 'failed', status: 'failed', startedAt: T0 + n * 600_000, completedAt: T0 + n * 600_000 + 60_000 })));
+    const gm = buildGeometry(many, 400, 220);
+    // A gap separates the two charts: nothing of the main chart reaches into the strip.
+    expect(gm.lostTop - gm.zeroY).toBeGreaterThanOrEqual(STRIP_GAP);
+    // The main axis is labelled 0..maxUp only; no negative or lost value sits on it.
+    expect(gm.yTicks.every(t => t.value >= 0 && t.y <= gm.zeroY + 0.001)).toBe(true);
+    expect(gm.yTicks.map(t => t.value)).toContain(gm.maxUp);
+    // The strip carries its own ticks, 0 at its top edge and its max at the bottom.
+    expect(gm.lostTicks.map(t => t.value)).toEqual([0, gm.maxDown]);
+    expect(gm.lostTicks[0].y).toBeCloseTo(gm.lostTop, 5);
+    expect(gm.lostTicks[1].y).toBeCloseTo(gm.plot.bottom, 5);
+    // The lost area is drawn inside the strip only.
+    const ys = [...gm.paths.lost.matchAll(/,(-?[\d.]+)/g)].map(m => Number(m[1]));
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(gm.lostTop - 0.05);
+    expect(Math.max(...ys)).toBeLessThanOrEqual(gm.plot.bottom + 0.05);
+  });
+
+  it('has no strip, gap or strip ticks when nothing was lost', () => {
+    const g2 = buildGeometry(series([w({ workerId: '1', taskId: 'x', startedAt: T0, completedAt: T0 + H })]), 400, 220);
+    expect(g2.lostTop).toBe(g2.plot.bottom);
+    expect(g2.lostTicks).toEqual([]);
   });
 
   it('places release marks on the time axis', () => {
