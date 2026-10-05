@@ -139,8 +139,9 @@ A Vercel env change does not reach a running deployment.
 - Preview (`stg`) has no `DISPATCH_*` on purpose: the transport is off on
   previews.
 - The deploy token is `CF_DISPATCH_API_TOKEN` / `CF_DISPATCH_ACCOUNT_ID` in
-  Doppler `buildd/dev_ci`, pushed to GitHub Actions with `gh-secret-push`.
-  Never Vercel.
+  Doppler `buildd/dev_ci`, pushed to GitHub Actions repo secrets with
+  `gh-secret-push`. Never Vercel, and never Actions variables: Actions logs
+  in this repo are world-readable. See [Deploy](#deploy).
 
 ## Local development
 
@@ -163,4 +164,32 @@ curl localhost:8787/health
    Doppler to Vercel and redeploy.
 3. Add a custom domain or route, and set `DISPATCH_URL` to it in Doppler
    `prd`. `workers.dev` is blocked on the owner's network.
-4. Deploy: `bun run deploy`. CI deploys with the `dev_ci` token above.
+4. Push the deploy token to GitHub (see [Deploy](#deploy)), then let CI
+   deploy.
+
+## Deploy
+
+CI deploys it: `.github/workflows/deploy-dispatch.yml`.
+
+- **On release.** A push to `main` that touches `apps/dispatch/**` or
+  `packages/dispatch-contract/**` deploys, so the Worker ships with the
+  release that contains its change, like the web app. Merges to `dev` deploy
+  nothing.
+- **Manually.** `gh workflow run deploy-dispatch.yml --ref main`, optionally
+  `-f ref=<tag-or-sha>` to deploy (or roll back to) a specific commit.
+
+The job runs the Worker tests and `tsc`, runs `wrangler deploy` with
+`CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` from the repo secrets
+`CF_DISPATCH_API_TOKEN` / `CF_DISPATCH_ACCOUNT_ID`, then fails unless
+`/health` answers `"configured":true`. It fails first, by name, if either
+secret is missing. It never sets `PUBLISH_SECRET` or `CALLBACK_SECRET`; a
+deploy keeps the Worker's existing secrets.
+
+The secrets come from Doppler `buildd/dev_ci`, pushed with
+`~/infrastructure/scripts/gh-secret-push.mjs` (dry run by default; `--apply`
+writes every name on its `buildd` allowlist).
+
+A local deploy still works: `bunx wrangler deploy` here uses the `personal`
+profile bound in Owner setup. The binding lives in your wrangler user config,
+not the repo, and a `CLOUDFLARE_API_TOKEN` in the shell takes precedence over
+it, so unset that first if you mean the profile.
