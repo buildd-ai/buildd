@@ -55,3 +55,35 @@ export function plainCreateError(status: number, apiError: string | undefined): 
   }
   return raw;
 }
+
+/** What the Create new repo tab offers instead of a create button it cannot honour. */
+export interface CreateRepoNextStep {
+  message: string;
+  action: 'connect-existing' | 'install-github';
+  label: string;
+  href?: string;
+}
+
+/**
+ * Creating a repository needs the GitHub App on this server and installed on
+ * an account. Without either, the create button is disabled and this is the
+ * one next step shown in its place. Null when nothing blocks it.
+ */
+export function createRepoNextStep(input: { githubConfigured: boolean; installationCount: number }): CreateRepoNextStep | null {
+  if (!input.githubConfigured) {
+    return {
+      message: 'GitHub is not set up on this buildd server, so it cannot create repositories. Connect a repository you already have instead, or start without one.',
+      action: 'connect-existing',
+      label: 'Use Connect existing',
+    };
+  }
+  if (input.installationCount === 0) {
+    return {
+      message: 'To create a repository, connect GitHub to the account or organisation that will own it.',
+      action: 'install-github',
+      label: 'Connect GitHub',
+      href: '/api/github/install',
+    };
+  }
+  return null;
+}

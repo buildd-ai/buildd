@@ -29,6 +29,7 @@ let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 const realFetch = globalThis.fetch;
 let calls: { url: string; body: unknown }[] = [];
+let codexConfigured = false;
 
 function stubFetch(startReply: { status: number; body: Record<string, unknown> }, fleet: unknown[] = []) {
   calls = [];
@@ -37,6 +38,9 @@ function stubFetch(startReply: { status: number; body: Record<string, unknown> }
     calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (u === '/api/workers/active') {
       return { ok: true, status: 200, json: async () => ({ activeLocalUis: fleet }) } as Response;
+    }
+    if (u.endsWith('/backends')) {
+      return { ok: true, status: 200, json: async () => ({ backends: [{ id: 'claude', available: true }, { id: 'codex', available: codexConfigured }] }) } as Response;
     }
     const first = calls.filter(c => c.url.endsWith('/start')).length === 1;
     const reply = first ? startReply : { status: 200, body: {} };
@@ -142,14 +146,14 @@ describe('TaskActionZone — a provider sign-in failure', () => {
     const zone = container.textContent ?? '';
     expect(zone).toContain('no working model key');
     expect(zone).not.toContain('Please run /login');
-    const link = container.querySelector('a[href="/app/settings/runners#agent-backends"]');
+    const link = container.querySelector('a[href="/app/settings/runners#agent-key"]');
     expect(link?.textContent).toBe('Add an agent key');
     const raw = button('Show raw output');
     expect(raw).toBeDefined();
     await act(async () => { raw!.click(); });
     expect(container.textContent).toContain('Not logged in · Please run /login');
     // Retry stays one click away.
-    expect(button('Retry on claude')).toBeDefined();
+    expect(button('Retry on Claude')).toBeDefined();
   });
 
   it('classifies from the full error when the excerpt is only its first line', async () => {
@@ -165,5 +169,34 @@ describe('TaskActionZone — a provider sign-in failure', () => {
     await flush();
     expect(container.textContent).toContain('Tests failed: 3 of 12');
     expect(button('Show raw output')).toBeUndefined();
+  });
+});
+
+describe('TaskActionZone — a failed task offers only a backend that can run it', () => {
+  afterEach(() => { codexConfigured = false; });
+
+  it('names the backend as a product: Retry on Claude', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'boom' } });
+    await flush();
+    expect(button('Retry on Claude')).toBeDefined();
+    expect(button('Retry on claude')).toBeUndefined();
+  });
+
+  it('no Switch to Codex when Codex is not configured', async () => {
+    codexConfigured = false;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'boom' } });
+    await flush();
+    expect(button('Switch to')).toBeUndefined();
+    expect(container.querySelector('[data-action="switch_backend"]')).toBeNull();
+  });
+
+  it('offers Switch to Codex once Codex is configured', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', lastError: { excerpt: 'boom' } });
+    await flush();
+    expect(button('Switch to Codex')).toBeDefined();
   });
 });

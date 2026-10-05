@@ -1,6 +1,6 @@
 /**
  * One Waiting-on-You action card (MERGE · REVIEW · QUESTION · DECIDE ·
- * DISCREPANCY · RECONNECT · APPROVE · RESOLVING · FIXING_CI · FIXING_REVIEW ·
+ * DISCREPANCY · RECONNECT · FAILED · APPROVE · RESOLVING · FIXING_CI · FIXING_REVIEW ·
  * CI_RUNNING · REVIEW_RUNNING · AUTO_MERGE · BLOCKED · STALE),
  * moved verbatim out of home/page.tsx so the page composes sections instead
  * of spelling every card. Selection and ordering stay in lib/action-queue.ts.
@@ -96,6 +96,34 @@ export function ActionQueueCard({ item }: { item: ActionQueueItem }) {
             <span className="font-normal text-text-secondary"> needs re-authorising</span>
           </div>
         </Link>
+      );
+    }
+    if (item.chip === 'FAILED') {
+      // Two targets, so not one big link: the task, and the setting that fixes it.
+      return (
+        <div
+          key={item.subjectKey}
+          data-testid="needs-you-failed"
+          className="border-l-2 border-status-error bg-status-error/5 px-4 py-3"
+        >
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="text-[11px] font-mono font-medium tracking-wide uppercase text-status-error">
+              Failed
+            </span>
+            {arc && arc.kind !== 'workspace' && (
+              <span className="text-[11px] text-text-muted">{arc.label}</span>
+            )}
+          </div>
+          <Link href={actionCardTaskLink(item, { page: true })} className="block text-[13px] font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] hover:underline">
+            {item.taskTitle}
+          </Link>
+          {item.failureMessage && <p className="text-[12px] text-text-secondary mt-0.5">{item.failureMessage}</p>}
+          {item.fixHref && (
+            <Link href={item.fixHref} data-action="fix_credential" className="inline-flex items-center min-h-11 md:min-h-0 mt-1 font-mono text-[12px] font-medium text-accent-text hover:underline">
+              {item.fixLabel ?? 'Fix it'}
+            </Link>
+          )}
+        </div>
       );
     }
     if (item.chip === 'APPROVE') {
