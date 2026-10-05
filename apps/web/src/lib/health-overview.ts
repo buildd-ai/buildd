@@ -72,7 +72,8 @@ export function overviewStatusRows(s: OverviewState): OverviewStatusRow[] {
         };
 
   const credentialRow: OverviewStatusRow = credentials.total === 0
-    ? { key: 'credentials', label: 'Credentials', value: 'None set up', tone: 'warning', href: RUNNERS_HREF }
+    // No stored credential is normal when runners use their own sign-in: neutral, not a warning.
+    ? { key: 'credentials', label: 'Credentials', value: 'None stored', tone: 'muted', href: RUNNERS_HREF }
     : credentials.broken > 0
       ? {
           key: 'credentials',

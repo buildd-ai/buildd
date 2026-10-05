@@ -116,7 +116,7 @@ describe('UsageClient — header', () => {
         worker({ workerId: 'c', taskId: 't-2' }),
       ],
     });
-    expect(html).toContain('over 2 tasks (7d)');
+    expect(html).toContain('2 tasks · last 7 days');
     expect(html).not.toContain('worker sessions (7d)');
   });
 
@@ -124,7 +124,7 @@ describe('UsageClient — header', () => {
     const html = render({ window: '24h' });
     expect(html).toContain('data-testid="usage-clamp-notice"');
     expect(html).toContain('24h is too thin for stable percentages here');
-    expect(html).toContain('over 8 tasks (7d)');
+    expect(html).toContain('8 tasks · last 7 days');
   });
 
   it('sends you back to Health at 24h, unclamped — the clamp does not follow you out', () => {

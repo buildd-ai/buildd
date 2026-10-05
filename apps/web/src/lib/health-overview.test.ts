@@ -41,13 +41,13 @@ describe('overviewStatusRows', () => {
       .toMatchObject({ value: 'None connected', tone: 'error' });
   });
 
-  it('credentials: working, broken, or none set up', () => {
+  it('credentials: working, broken, or none stored (runners may use their own sign-in)', () => {
     expect(byKey(STATE).credentials).toMatchObject({ value: '2 working', tone: 'ok' });
     expect(byKey({ ...STATE, credentials: { total: 2, broken: 1 } }).credentials)
       .toMatchObject({ value: '1 needs attention', tone: 'error' });
     expect(byKey({ ...STATE, credentials: { total: 3, broken: 2 } }).credentials.value).toBe('2 need attention');
     expect(byKey({ ...STATE, credentials: { total: 0, broken: 0 } }).credentials)
-      .toMatchObject({ value: 'None set up', tone: 'warning' });
+      .toMatchObject({ value: 'None stored', tone: 'muted' });
   });
 
   it('budget: a paused provider wins, then the monthly limit, else no limit', () => {
