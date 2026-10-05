@@ -135,11 +135,13 @@ class FakeStore {
         if (m && m[1] === s.lock) {
           const repo = s.files.get(`/warm/${m[1]}/repo`);
           if (!repo) return { status: 409, body: null };
-          const manifest = {
+          const b = body as { defaultBranch: string; cacheSkipped?: { part: string; capBytes: number } };
+          const manifest: any = {
             generation: m[1]!, createdAt: s.now, repoBytes: repo.length,
             cacheBytes: s.files.get(`/warm/${m[1]}/cache`)?.length ?? 0,
-            defaultBranch: (body as { defaultBranch: string }).defaultBranch,
+            defaultBranch: b.defaultBranch,
           };
+          if (b.cacheSkipped) manifest.cacheSkipped = b.cacheSkipped;
           s.manifests.push(manifest);
           s.lock = null;
           return { status: 201, body: manifest };
@@ -793,6 +795,71 @@ describe('cache growth is measured on disk, not against the compressed tarball',
     writeFileSync(join(next, PNPM_STORE_DIRNAME, 'big.bin'), randomBytes(400 * 1024));
     await s.refresh('completed');
     expect(store.manifests).toHaveLength(1);
+  });
+});
+
+describe('pnpm store skipped for size is refreshed when cap is raised', () => {
+  test('cap raised: store was skipped at old cap, new cap is larger, so it refreshes with cache_growth', async () => {
+    const cacheDir = join(dir, 'raise-cap-cache');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg.js'), Buffer.alloc(100 * 1024)); // 100KB other cache
+    const storeBytes = 250 * 1024;
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'store.bin'), randomBytes(storeBytes));
+
+    // Seed with small cap: pnpm store gets skipped (cache is larger than cap * HEADROOM: 350KB > 50KB*6=300KB)
+    const oldCap = 50 * 1024;
+    const seed = session({ cacheDir, zstd: true, maxBundleBytes: oldCap });
+    cloneThrough(seed, 'ws-seed');
+    await seed.refresh('completed');
+    expect(store.manifests).toHaveLength(1);
+    expect(skipLines()).toEqual([`BUILDD_CACHE_SKIPPED=pnpm-store ${storeBytes} ${oldCap}`]);
+    const gen1 = store.manifests[0]!.generation;
+    // Check that the manifest has cacheSkipped recorded
+    expect((store.manifests[0] as any).cacheSkipped).toEqual({ part: 'pnpm-store', capBytes: oldCap });
+
+    // Next run: cap is raised; the store fits now and should refresh
+    const nextCache = join(dir, 'raise-cap-next');
+    const newCap = 300 * 1024;
+    store.limitBytes = newCap;
+    lines = [];
+    const s = session({ cacheDir: nextCache, zstd: true, maxBundleBytes: newCap, now: store.now + 1 });
+    cloneThrough(s, 'ws-next');
+    // Simulate the store being rebuilt during the run
+    mkdirSync(join(nextCache, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(nextCache, PNPM_STORE_DIRNAME, 'store.bin'), randomBytes(storeBytes));
+
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(2);
+    expect(lines).toContain('BUILDD_WARM_REFRESH=cache_growth');
+    const gen2 = store.manifests[1]!.generation;
+    expect(gen2).not.toBe(gen1);
+  });
+
+  test('same cap: store was skipped, cap is unchanged, no refresh (avoid re-upload loop)', async () => {
+    const cacheDir = join(dir, 'same-cap-cache');
+    mkdirSync(join(cacheDir, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(cacheDir, 'bun-pkg.js'), Buffer.alloc(100 * 1024)); // 100KB other cache
+    const storeBytes = 250 * 1024;
+    writeFileSync(join(cacheDir, PNPM_STORE_DIRNAME, 'store.bin'), randomBytes(storeBytes));
+
+    const cap = 50 * 1024;
+    const seed = session({ cacheDir, zstd: true, maxBundleBytes: cap });
+    cloneThrough(seed, 'ws-seed');
+    await seed.refresh('completed');
+    expect(store.manifests).toHaveLength(1);
+
+    // Next run: same cap, store is rebuilt
+    const nextCache = join(dir, 'same-cap-next');
+    store.limitBytes = cap;
+    lines = [];
+    const s = session({ cacheDir: nextCache, zstd: true, maxBundleBytes: cap, now: store.now + 1 });
+    cloneThrough(s, 'ws-next');
+    mkdirSync(join(nextCache, PNPM_STORE_DIRNAME), { recursive: true });
+    writeFileSync(join(nextCache, PNPM_STORE_DIRNAME, 'store.bin'), randomBytes(storeBytes));
+
+    await s.refresh('completed');
+    expect(store.manifests).toHaveLength(1); // No refresh
+    expect(lines.filter(l => l.startsWith('BUILDD_WARM_REFRESH='))).toEqual([]);
   });
 });
 
