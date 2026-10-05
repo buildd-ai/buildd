@@ -194,6 +194,22 @@ describe('formatVisualReview: wrong-ref shots (visual-qa-auditor.md, "Page sourc
   });
 });
 
+describe('formatVisualReview: cells resolved elsewhere (visual-qa-human-review.md, "The crux")', () => {
+  it('lists a stuck fix-merged cell resolved by a later round\'s capture under a different variant, kept for audit', () => {
+    const m = model({
+      resolvedElsewhere: [{ key: '/app/example|mobile|eur', route: '/app/example', viewport: 'mobile', variant: 'eur', resolvedBy: '/app/example|mobile|' }],
+    });
+    const text = formatVisualReview(m, 'Example', { audience: 'mcp' });
+    expect(text).toContain('Resolved (1): a merged fix\'s cell with no screenshot of its own since, verified instead by a later round\'s capture of the same route, viewport and state under a different variant; kept for audit, not shown for review:');
+    expect(text).toContain('  - /app/example phone (eur): resolved by /app/example|mobile|');
+  });
+
+  it('says nothing about it when there are none', () => {
+    const text = formatVisualReview(model(), 'Example', { audience: 'mcp' });
+    expect(text).not.toContain('Resolved (');
+  });
+});
+
 describe('formatVisualReview for chat', () => {
   it('links each screenshot to its artifact page (never the image), and keeps the "not seen" line', () => {
     const text = formatVisualReview(model(), 'Example');

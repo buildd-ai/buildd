@@ -2170,6 +2170,23 @@ export interface VisualReviewCaptureGap {
   round: number;
 }
 
+/**
+ * A cell stuck "awaiting a new screenshot" after its fix merged, whose place
+ * (route, viewport and state) a different cell — another variant key —
+ * captured after the merge: a later round often re-shoots only the routes it
+ * fixed with no title collision, so the recapture lands in a sibling cell
+ * instead of this one's history. Hidden from `cells`/`queue`/the summary
+ * counts; kept here for audit (docs/design/visual-qa-human-review.md).
+ */
+export interface VisualReviewResolvedElsewhere {
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  variant: string | null;
+  /** The cell key whose current shot, captured after the merge, resolves this one. */
+  resolvedBy: string;
+}
+
 /** One audit screenshot, as every surface renders it. */
 export interface VisualReviewShot {
   /** The artifact id. */
@@ -2394,6 +2411,8 @@ export interface VisualReviewModel {
   superseded?: VisualReviewSupersededShot[];
   /** Wrong-ref shots the auditor still has to recapture. Never in `cells` or `queue`. */
   captureGaps?: VisualReviewCaptureGap[];
+  /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
+  resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   generatedAt: string;
 }
 

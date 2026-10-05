@@ -335,6 +335,11 @@ function wrongRefLines(model: VisualReviewModel, o: FormatVisualReviewOptions): 
     lines.push(`Superseded (${superseded.length}): shots from the wrong branch, replaced by a shot from ${superseded[0].expectedRef}; kept for audit, not shown for review:`);
     for (const s of superseded) lines.push(`  - ${s.route} ${VIEWPORT_WORD[s.viewport]}: captured from ${s.ref}, replaced by ${pageLink(o, s.supersededBy)}`);
   }
+  const resolved = model.resolvedElsewhere ?? [];
+  if (resolved.length > 0) {
+    lines.push(`Resolved (${resolved.length}): a merged fix's cell with no screenshot of its own since, verified instead by a later round's capture of the same route, viewport and state under a different variant; kept for audit, not shown for review:`);
+    for (const r of resolved) lines.push(`  - ${r.route} ${VIEWPORT_WORD[r.viewport]}${r.variant ? ` (${r.variant})` : ''}: resolved by ${r.resolvedBy}`);
+  }
   return lines;
 }
 
