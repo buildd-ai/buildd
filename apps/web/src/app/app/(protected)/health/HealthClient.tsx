@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
+import { FailureGroupsSection } from './_components/FailureGroups';
+import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds, isScheduleErrorLive } from '@/lib/schedule-health';
@@ -193,15 +195,16 @@ export type HealthView = 'all' | 'overview' | 'failures' | 'runners' | 'operator
 type HealthBlock =
   | 'problems' | 'orphanedPrs' | 'capacity' | 'budget' | 'credentials' | 'dispatch' | 'schedules'
   | 'failureAnalytics' | 'gates' | 'taskOutcomes' | 'experiments' | 'consumption' | 'cbm'
-  | 'subagentDelegation' | 'errorPatterns';
+  | 'subagentDelegation' | 'errorPatterns' | 'failureGroups';
 
 const VIEW_BLOCKS: Record<Exclude<HealthView, 'all'>, ReadonlySet<HealthBlock>> = {
   overview: new Set(['problems']),
-  failures: new Set(['failureAnalytics']),
+  // One failures view (lib/health-failure-groups.ts); the raw breakdown is on Operator.
+  failures: new Set(['failureGroups']),
   runners: new Set(['capacity', 'budget', 'credentials', 'schedules']),
   operator: new Set([
     'dispatch', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'cbm',
-    'subagentDelegation', 'errorPatterns', 'orphanedPrs',
+    'subagentDelegation', 'errorPatterns', 'orphanedPrs', 'failureAnalytics',
   ]),
 };
 
@@ -238,6 +241,7 @@ interface Props {
   experiments?: HealthExperiments | null;
   /** Dispatch transport health for the scoped workspaces; null hides the section. */
   dispatchHealth?: DispatchHealthReport | null;
+  failureGroups?: (FailureGroupsView & { truncated: boolean }) | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -286,12 +290,13 @@ export function HealthClient({
   errorPatterns,
   experiments = null,
   dispatchHealth = null,
+  failureGroups: failureGroupsView = null,
   now,
   page = 'all',
 }: Props) {
   const show = (block: HealthBlock) => page === 'all' || VIEW_BLOCKS[page].has(block);
   // The page window only means something where a TREND section renders.
-  const showsTrend = (['failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'cbm', 'subagentDelegation', 'errorPatterns'] as const).some(show);
+  const showsTrend = (['failureGroups', 'failureAnalytics', 'gates', 'taskOutcomes', 'experiments', 'consumption', 'cbm', 'subagentDelegation', 'errorPatterns'] as const).some(show);
   const showsState = (['capacity', 'budget', 'credentials', 'dispatch', 'schedules'] as const).some(show);
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -1104,6 +1109,15 @@ export function HealthClient({
           <p data-testid="seat-auth-confession" className="text-[11px] text-text-muted mb-3">
             {seatAuthConfession}
           </p>
+        )}
+
+        {show('failureGroups') && (
+          <FailureGroupsSection
+            groups={failureGroupsView}
+            headline={failureAnalytics ? { failureRatePct: failureAnalytics.totals.failureRatePct, failed: failureAnalytics.totals.failed, terminal: failureAnalytics.totals.terminal } : null}
+            windowLabel={activeWindow}
+            now={now}
+          />
         )}
 
         {show('failureAnalytics') && failureAnalytics && (
