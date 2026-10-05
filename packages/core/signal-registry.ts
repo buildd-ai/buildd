@@ -330,6 +330,17 @@ export const CRON_JOB_REGISTRY: CronJobRegistryEntry[] = [
     },
   },
   {
+    slug: 'failure-pattern-sentinel',
+    job: 'failure-pattern-sentinel',
+    name: 'Failure Pattern Sentinel backstop sweep',
+    changedPolarity: 'findings',
+    changedMeaning: 'incidents opened or updated this run (a systemic pattern found), not work performed',
+    notifyTest: {
+      file: 'apps/web/src/lib/failure-pattern-sweep.test.ts',
+      title: 'opens one incident, pages, and files a fix task for a critical pattern',
+    },
+  },
+  {
     // Declared rather than defaulted: this job feeds a detector, so it is the
     // one most likely to be mis-declared `findings` by analogy — which would
     // invert its health check and page on every busy hour.

@@ -24,6 +24,7 @@ import { tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { fetchSplitPrStats } from './supersession-check';
 import { conformanceManifest } from './path-declaration';
+import { scheduleFailurePatternSentinel } from './failure-pattern-sentinel-trigger';
 import {
   derivePrReviewStatus,
   MAX_REVIEW_WAIT_SECONDS,
@@ -456,6 +457,11 @@ export async function deliverPrReviewCallback(params: {
       waitFor: callback.on,
     });
     if (!status.terminal) return 'skipped';
+
+    // Bounded, deferred — never waits on and never fails this callback. See
+    // failure-pattern-sweep.ts for why duplicate coverage with the 30-minute
+    // cron backstop is safe.
+    scheduleFailurePatternSentinel(params.workspaceId);
 
     if (!(await claimReviewCallback(reviewTask.id))) return 'already';
 

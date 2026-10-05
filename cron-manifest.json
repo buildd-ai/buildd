@@ -218,6 +218,13 @@
       "path": "/api/cron/memory-digest-guardrail",
       "schedule": "5 9 * * *",
       "method": "POST"
+    },
+    {
+      "$comment": "Failure Pattern Sentinel backstop sweep (apps/web/src/lib/failure-pattern-sweep.ts). The same sweep also runs right after a worker terminal transition, a PR review verdict, or a CI-retry exhaustion (deferred via after(), debounced per workspace) — this is what guarantees every workspace still gets evaluated when no transition fires it, or a triggered sweep was lost/suppressed. A durable per-workspace watermark in system_cache means a quiet workspace costs one cheap query; duplicate coverage between a trigger and this backstop is a no-op through the incident store's own idempotent upsert, never a duplicate incident. Every 30 minutes, all 24 hours: a stall or a retry fork can start overnight, and the route is pure DB reads/writes with no network egress, so there is no connector-probe cost to restrict to daytime (unlike queue-stall). Must stay genuinely 30-minute, not folded into the hourly schedules-tick window: this is the TEMPORARY researcher-only shadow backstop schedule's native replacement (buildd task 7b7962d0) — once this is verified in production, the shadow schedule is disabled.",
+      "title": "Buildd: Failure Pattern Sentinel",
+      "path": "/api/cron/failure-pattern-sentinel",
+      "schedule": "*/30 * * * *",
+      "method": "POST"
     }
   ]
 }
