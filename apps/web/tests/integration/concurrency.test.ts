@@ -44,6 +44,21 @@ async function failWorker(workerId: string) {
   }
 }
 
+/** Map items through fn with at most `limit` calls in flight; preserves order. */
+async function mapPool<T, R>(items: T[], fn: (item: T) => Promise<R>, limit = 10): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        results[i] = await fn(items[i]);
+      }
+    }),
+  );
+  return results;
+}
+
 function assert(condition: boolean, msg: string) {
   if (!condition) throw new Error(`ASSERTION FAILED: ${msg}`);
   console.log(`  ✓ ${msg}`);
@@ -111,11 +126,15 @@ describe('Concurrency Control', () => {
       return;
     }
 
-    // Create tasks (more than available slots)
+    // Create tasks (more than available slots). Filling the cap takes
+    // ~2 × maxConcurrentWorkers requests (the test account's cap is 50), and at
+    // a few hundred ms each a serial loop overran the 30s budget. Once the test
+    // timed out, afterEach failed the already-claimed workers while the loop was
+    // still claiming, freeing capacity mid-loop and producing a bogus
+    // "Claimed workers (51) <= 50" on top of the timeout. Run both phases
+    // through a bounded pool instead.
     const taskCount = availableSlots + 2;
-    const taskIds: string[] = [];
-
-    for (let i = 0; i < taskCount; i++) {
+    const taskIds = await mapPool(Array.from({ length: taskCount }, (_, i) => i), async (i) => {
       const task = await api('/api/tasks', {
         method: 'POST',
         body: JSON.stringify({
@@ -124,43 +143,35 @@ describe('Concurrency Control', () => {
           description: 'Test task for concurrency limits',
         }),
       });
-      taskIds.push(task.id);
       cleanup.trackTask(task.id);
-    }
+      return task.id as string;
+    });
 
     assert(taskIds.length === taskCount, `Created ${taskCount} tasks`);
 
-    // Try to claim all tasks (should only succeed up to available slots)
-    const claimedWorkerIds: string[] = [];
-
-    for (const taskId of taskIds) {
+    // Claim every task concurrently. This is the race the claim route's
+    // per-account advisory lock exists for: concurrent claims must never push
+    // the account past maxConcurrentWorkers. A refused claim surfaces either as
+    // the 429 pre-check or as a 200 with no worker (cap hit under the lock).
+    const outcomes = await mapPool(taskIds, async (taskId) => {
       try {
         const worker = await serverClaim(taskId);
-        claimedWorkerIds.push(worker.id);
         cleanupWorkerIds.push(worker.id);
         cleanup.trackWorker(worker.id);
+        return worker.id as string;
       } catch (err: any) {
-        // Expected to fail after filling available slots
-        if (claimedWorkerIds.length >= availableSlots) {
-          console.log(`  ✓ Claim rejected after filling ${availableSlots} available slots (expected)`);
-        } else if (err.message?.includes('Max concurrent workers limit reached')) {
-          // Server-side count may differ from our pre-flight check (e.g., stale worker
-          // cleanup runs on claim, or concurrent CI runs add workers between our check
-          // and this attempt). Treat as valid enforcement and stop claiming.
-          console.log(`  ✓ Claim rejected by server concurrency limit after ${claimedWorkerIds.length} claims (server-side enforcement working)`);
-          break;
-        } else if (err.message?.includes('Claim returned no worker') && claimedWorkerIds.length > 0) {
-          // Single-writer-per-repo enforcement: the server won't issue a second worker
-          // for the same workspace (with a repo) while an active worker exists there.
-          // This returns a 200 with empty workers (not a 429), so we handle it separately.
-          // Treat as valid workspace-level enforcement and stop claiming.
-          console.log(`  ✓ Claim blocked (workspace single-writer or race constraint) after ${claimedWorkerIds.length} claims`);
-          break;
-        } else {
-          throw err;
+        if (
+          err.message?.includes('Max concurrent workers limit reached') ||
+          err.message?.includes('Claim returned no worker')
+        ) {
+          return null;
         }
+        throw err;
       }
-    }
+    });
+    const claimedWorkerIds = outcomes.filter((id): id is string => id !== null);
+    console.log(`  Claimed ${claimedWorkerIds.length}, refused ${outcomes.length - claimedWorkerIds.length} of ${taskCount}`);
+    assert(claimedWorkerIds.length > 0, 'At least one claim succeeded');
 
     // availableSlots is a pre-flight snapshot. The test account is shared by every
     // integration run on the test machine, so another run can free a slot during
