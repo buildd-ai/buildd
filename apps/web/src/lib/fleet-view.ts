@@ -184,7 +184,7 @@ export function buildFleetSnapshot(
         label, rest, roleSlug: t?.roleSlug ?? null, roleName: role?.name ?? null, roleColor: role?.color ?? null,
         status: w.status, progress: w.progress ?? null,
         startedAt: new Date(iv.start).toISOString(),
-        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Waiting on you' : null,
+        question: w.status === 'waiting_input' ? w.waitingFor?.prompt ?? 'Needs input' : null,
       };
     } else {
       slot.last = {
@@ -342,10 +342,10 @@ export function homeHeadline(input: { live: number; needsYou: number; shipped?: 
   const { live, needsYou, shipped } = input;
   const needs: HeadlinePart = { text: `${needsYou} need${needsYou === 1 ? 's' : ''} you.`, tone: 'accent' };
   if (live > 0) {
-    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs you.' }];
+    return [{ text: `${live} agent${live === 1 ? '' : 's'} working. ` }, needsYou > 0 ? needs : { text: 'Nothing needs input.' }];
   }
   if (shipped) return [{ text: `Fleet idle. ${shipped} ` }, { text: 'shipped', tone: 'success' }, { text: '.' }];
-  return needsYou > 0 ? [{ text: 'Fleet idle. ' }, needs] : [{ text: 'Fleet idle. Nothing needs you.' }];
+  return needsYou > 0 ? [{ text: 'Fleet idle. ' }, needs] : [{ text: 'Fleet idle. Nothing needs input.' }];
 }
 
 /** Midnight of `now`'s calendar day in `tz` (IANA), epoch ms. Invalid zone → UTC. */

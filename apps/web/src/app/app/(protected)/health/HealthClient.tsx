@@ -692,7 +692,6 @@ export function HealthClient({
           {runners.length === 0 ? (
             <div className="p-4 text-center">
               <p className="text-sm text-text-muted">No runners connected</p>
-              <p className="text-xs text-text-muted mt-1">Runners appear here when they send heartbeats.</p>
             </div>
           ) : (
             <div className="divide-y divide-border-default">
@@ -1262,6 +1261,14 @@ function ConsumptionSection({
         >
           <span>Cost per task: tokens, turns, tool calls, cost</span>
           <span className="text-primary shrink-0">usage →</span>
+        </a>
+        <a
+          data-testid="insights-link"
+          href="/app/insights"
+          className="flex items-baseline justify-between gap-3 text-xs text-text-secondary hover:text-text-primary transition-colors"
+        >
+          <span>How work moves to production, and how much agent time shipped</span>
+          <span className="text-primary shrink-0">insights →</span>
         </a>
 
         {topTools.length > 0 && (

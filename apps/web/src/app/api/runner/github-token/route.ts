@@ -19,7 +19,8 @@
  * workspace's github_repos link, never from the free-text workspaces.repo.
  *
  * The response also carries the task's workspaceId, which the dispatcher uses
- * to key its per-workspace snapshot store (Phase 2, warm repos).
+ * to key its per-workspace snapshot store (Phase 2, warm repos), and, when the
+ * workspace sets one, its warm snapshot cap (lib/warm-snapshot-cap.ts).
  *
  * The checks are the agent-run principal's (lib/agent-capabilities): this route
  * parses the request and shapes the response.
@@ -30,6 +31,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
 import { authorizeGithubRepoGrant, mintGithubRepoGrant, repoProtectedBranches } from '@/lib/agent-capabilities/github';
+import { resolveWarmSnapshotMaxBytes } from '@/lib/warm-snapshot-cap';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
 const DISPATCH_TOKEN_HEADER = 'x-buildd-dispatch-token';
@@ -74,6 +76,9 @@ export async function POST(req: NextRequest) {
     // Branches the cloud egress merge guard (apps/cloud-runner/src/outbound.ts
     // pushedProtectedBranch) must refuse a direct `git push` to.
     const protectedBranches = repoProtectedBranches(ws, ws.githubRepo?.defaultBranch);
+    // The workspace's warm snapshot cap (gitConfig.warmSnapshot.maxBytes,
+    // bounded here). Absent: the dispatcher's own default applies.
+    const warmSnapshotMaxBytes = resolveWarmSnapshotMaxBytes(ws.gitConfig);
     return NextResponse.json({
       token: minted.token,
       expiresAt: minted.expiresAt.toISOString(),
@@ -83,6 +88,7 @@ export async function POST(req: NextRequest) {
       // container nor the webhook body chooses it.
       workspaceId: ws.id,
       protectedBranches,
+      ...(warmSnapshotMaxBytes !== null ? { warmSnapshotMaxBytes } : {}),
     }, { headers: NO_STORE });
   } catch (err) {
     console.error(`[github-token] mint failed for task ${taskId}:`, err instanceof Error ? err.message : String(err));

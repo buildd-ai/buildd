@@ -45,7 +45,7 @@ function RunnerRow({ runner }: { runner: FleetRunner }) {
         </div>
         <div className="mt-1 truncate font-mono text-[11px] text-text-muted">
           {runner.machine ?? 'Host runner'}
-          {waiting > 0 && <span className="text-status-warning"> · {waiting} waiting on you</span>}
+          {waiting > 0 && <span className="text-status-warning"> · {waiting} need input</span>}
         </div>
       </div>
       {runner.elastic ? (

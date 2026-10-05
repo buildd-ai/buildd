@@ -2859,8 +2859,9 @@ export async function handleBuilddAction(
         try {
           const taskData = await api(`/api/tasks/${params.taskId}?include=workers`);
           const activeStatuses = ['running', 'assigned', 'waiting_input'];
+          // The caller's own worker is not told about its own edit: it made it.
           const activeWorker = (taskData.workers || []).find(
-            (w: { id: string; status: string }) => activeStatuses.includes(w.status),
+            (w: { id: string; status: string }) => activeStatuses.includes(w.status) && w.id !== ctx.workerId,
           );
           if (activeWorker) {
             const noteEndpoint = updated.missionId

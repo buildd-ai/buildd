@@ -19,8 +19,9 @@ import type { CrashReport, RunOutcome } from './lifecycle';
  * 3: adds `resume` (a parked run continued in a new container) and the park durations.
  * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
  * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
+ * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
  */
-export const RUN_REPORT_VERSION = 5;
+export const RUN_REPORT_VERSION = 6;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -47,6 +48,7 @@ export const RUN_PHASES = [
   'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+  'restore_cache_start', 'restore_cache_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
@@ -66,7 +68,7 @@ export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
-  'park_bytes', 'resume_layer', 'warm_repo_bytes',
+  'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
@@ -82,6 +84,32 @@ export function parseWarmUploadLine(line: string): WarmUploadLine | null {
   const m = WARM_UPLOAD_LINE_RE.exec(line.trim());
   const reason = m?.[1] as WarmUploadSkipReason | undefined;
   return reason && WARM_UPLOAD_SKIP_REASONS.includes(reason) ? { skipped: reason } : null;
+}
+
+/**
+ * `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>`: a subtree of the dependency
+ * cache (or the whole cache tarball) was left out of the warm upload for
+ * size. `bytes` is its size on disk, `cap` the workspace's warm cap.
+ */
+export const CACHE_SKIPPED_LINE_PREFIX = 'BUILDD_CACHE_SKIPPED=';
+export const CACHE_SKIP_PARTS = ['pnpm-store', 'cache'] as const;
+export type CacheSkipPart = typeof CACHE_SKIP_PARTS[number];
+export type CacheSkippedLine = { part: CacheSkipPart; bytes: number; cap: number };
+const CACHE_SKIPPED_LINE_RE = /^BUILDD_CACHE_SKIPPED=([a-z-]+) (\d{1,16}) (\d{1,16})$/;
+
+/** From a `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>` line, or null. */
+export function parseCacheSkippedLine(line: string): CacheSkippedLine | null {
+  const m = CACHE_SKIPPED_LINE_RE.exec(line.trim());
+  if (!m || !CACHE_SKIP_PARTS.includes(m[1] as CacheSkipPart)) return null;
+  const bytes = Number(m[2]), cap = Number(m[3]);
+  return Number.isSafeInteger(bytes) && Number.isSafeInteger(cap) ? { part: m[1] as CacheSkipPart, bytes, cap } : null;
+}
+
+function cacheSkipped(v: unknown): CacheSkippedLine | null {
+  const c = v as Partial<CacheSkippedLine> | undefined;
+  if (!c || !CACHE_SKIP_PARTS.includes(c.part as CacheSkipPart)) return null;
+  const ok = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  return ok(c.bytes) && ok(c.cap) ? { part: c.part as CacheSkipPart, bytes: c.bytes!, cap: c.cap! } : null;
 }
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
@@ -578,6 +606,8 @@ export interface RunTimings {
   repoSource?: RepoSourceLine;
   /** From a `BUILDD_WARM_UPLOAD=skipped` line. */
   warmUpload?: WarmUploadLine;
+  /** From a `BUILDD_CACHE_SKIPPED=` line. */
+  cacheSkipped?: CacheSkippedLine;
   /** A `task.scheduled` start: the time the wake was scheduled for. */
   scheduledFor?: number;
 }
@@ -624,6 +654,8 @@ export interface RunReport {
     park: number | null;
     /** Downloading and applying the park bundle in a resumed run. */
     restorePark: number | null;
+    /** Downloading and extracting the dependency cache of a warm restore (streamed). */
+    restoreCache: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
@@ -642,8 +674,18 @@ export interface RunReport {
      * Null: uploaded, or no upload was due.
      */
     warmUploadSkipReason: WarmUploadSkipReason | null;
-    /** `warmRepo`: the clone's object store as measured against the cap. */
-    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null; warmRepo: number | null };
+    /**
+     * A part of the dependency cache the upload left out for size (the pnpm
+     * store, or the whole cache tarball), its size on disk and the cap.
+     * Null: nothing was left out, or no upload was due.
+     */
+    cacheSkipped: CacheSkippedLine | null;
+    /**
+     * `warmRepo`: the clone's object store as measured against the cap.
+     * `cache`: the cache tarball as stored (zstd-compressed when the image
+     * has zstd); `cacheRaw`: the same tarball before compression, on upload.
+     */
+    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; cacheRaw: number | null; upload: number | null; warmRepo: number | null };
   };
   /**
    * Resumable runs. `resumed`: this attempt continued a parked worker.
@@ -772,6 +814,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
       park: span(phase('park_start'), phase('park_end')),
       restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
+      restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
       toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
       total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
     },
@@ -781,11 +824,13 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       fallbackReason,
       snapshotAgeMs: metric('snapshot_age_ms'),
       warmUploadSkipReason,
+      cacheSkipped: cacheSkipped(t.cacheSkipped),
       bytes: {
         clone: metric('clone_bytes'),
         restore: metric('restore_bytes'),
         fetch: metric('fetch_bytes'),
         cache: metric('cache_bytes'),
+        cacheRaw: metric('cache_raw_bytes'),
         upload: metric('warm_upload_bytes'),
         warmRepo: metric('warm_repo_bytes'),
       },

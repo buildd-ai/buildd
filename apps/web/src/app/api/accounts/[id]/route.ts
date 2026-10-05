@@ -8,6 +8,7 @@ import { canAdministerTeamKeys } from '@/lib/key-level-policy';
 import { invalidateAccountCacheByHash } from '@/lib/api-auth';
 import { invalidateAccountWorkspaceCache } from '@/lib/account-workspace-cache';
 import { isUuid } from '@/lib/uuid';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export async function GET(
   req: NextRequest,
@@ -128,7 +129,7 @@ export async function PATCH(
     }
 
     const role = await getUserTeamRole(user.id, account.teamId);
-    if (!canAdministerTeamKeys(role)) {
+    if (!canAdministerTeamKeys(role, await getTeamPermissionOverrides(account.teamId))) {
       return NextResponse.json(
         { error: 'Only team owners and admins can edit runner tokens' },
         { status: 403 },

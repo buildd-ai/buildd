@@ -120,6 +120,21 @@ describe('POST /api/runner/github-token', () => {
     expect(new Set(body.protectedBranches)).toEqual(new Set(['main', 'dev', 'master']));
   });
 
+  it('carries the workspace warm snapshot cap from gitConfig.warmSnapshot.maxBytes, bounded server-side', async () => {
+    const withCap = (maxBytes: unknown) => taskRow({
+      workspace: {
+        gitConfig: { defaultBranch: 'main', branchingStrategy: 'trunk', commitStyle: 'conventional', requiresPR: true, autoCreatePR: true, useClaudeMd: true, warmSnapshot: { maxBytes } },
+        githubRepo: { id: 'repo-row-1', repoId: 4242, owner: 'acme', name: 'widget', fullName: 'acme/widget', defaultBranch: 'main', installation: { installationId: 99, suspendedAt: null, permissions: { contents: 'write' } } },
+      },
+    });
+    mockTasksFindFirst.mockResolvedValue(withCap(3 * 1024 ** 3));
+    expect((await (await POST(req())).json()).warmSnapshotMaxBytes).toBe(3 * 1024 ** 3);
+    mockTasksFindFirst.mockResolvedValue(withCap(100 * 1024 ** 3));
+    expect((await (await POST(req())).json()).warmSnapshotMaxBytes).toBe(8 * 1024 ** 3);
+    mockTasksFindFirst.mockResolvedValue(withCap('lots'));
+    expect('warmSnapshotMaxBytes' in (await (await POST(req())).json())).toBe(false);
+  });
+
   it('401 without an API key, 401 with a bad one', async () => {
     expect((await POST(req({ apiKey: null }))).status).toBe(401);
     mockAuthenticateApiKey.mockResolvedValue(null);

@@ -5,7 +5,7 @@
 import { after } from 'next/server';
 import { isActionableChip, type ActionQueueItem } from '@/lib/action-queue';
 import type { Stage } from '@/lib/stage';
-import { roleHas } from '@/lib/permission-registry';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
 /**
  * Split the Waiting-on-You queue into what needs the human and what an agent
@@ -111,8 +111,8 @@ export type HomeAudience = 'operator' | 'member';
  * first, and the fleet as one expandable line. A personal team resolves to
  * `owner` (getUserTeamRole), which covers a solo user and their own runners.
  */
-export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined): HomeAudience {
-  return roleHas(role, 'view_team_usage') ? 'operator' : 'member';
+export function homeAudience(role: 'owner' | 'admin' | 'member' | null | undefined, overrides: PermissionOverrides | null): HomeAudience {
+  return roleHas(role, 'view_team_usage', overrides) ? 'operator' : 'member';
 }
 
 export type HomeChatPlacement =
@@ -157,7 +157,7 @@ export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number
  */
 export function homeSubheading(shipClause: string | null, needsYouCount: number): string {
   const parts = [shipClause, waitingOnYouSummary(needsYouCount, 0)].filter(Boolean) as string[];
-  return parts.length > 0 ? parts.join(' · ') : 'Nothing waiting on you';
+  return parts.length > 0 ? parts.join(' · ') : 'Nothing needs input';
 }
 
 export type RightNowState = 'active' | 'create-workspace' | 'get-started' | 'idle';

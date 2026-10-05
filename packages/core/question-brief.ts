@@ -305,9 +305,9 @@ export function questionNotificationText(
   q: BriefedQuestion | null | undefined,
   opts: { sensitive?: boolean } = {},
 ): { title: string; message: string } {
-  const title = 'Agent needs your input';
+  const title = 'Agent needs input';
   if (opts.sensitive) return { title, message: 'Agent waiting for input' };
-  const prompt = clean(q?.prompt, 160) ?? 'A task needs your response';
+  const prompt = clean(q?.prompt, 160) ?? 'A task needs a response';
   const lines = [prompt];
   const context = q?.context
     ? firstSentence(q.context, 140)

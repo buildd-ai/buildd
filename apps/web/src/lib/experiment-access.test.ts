@@ -25,7 +25,7 @@ mock.module('@buildd/core/db', () => ({
   db: { query: { teamMembers: { findFirst: mockMemberFindFirst }, workspaces: { findFirst: mockWorkspaceFindFirst } } },
 }));
 
-import { resolveExperimentViewer } from './experiment-access';
+import { resolveExperimentViewer, taskTokenExperimentViewer } from './experiment-access';
 
 function req(opts: { bearer?: string; cookie?: string } = {}) {
   const headers: Record<string, string> = {};
@@ -111,5 +111,18 @@ describe('resolveExperimentViewer — API key', () => {
     mockMemberFindFirst.mockResolvedValue({ role: 'member' });
     const r = await resolveExperimentViewer(req({ bearer: 'aaa.bbb.ccc' }), null);
     expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: 'u-9', accountId: 'acct' } });
+  });
+});
+
+describe('taskTokenExperimentViewer', () => {
+  it('is a member of its own workspace\'s team, never more', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue({ teamId: 'team-a' });
+    const r = await taskTokenExperimentViewer('ws-own', 'acct-1');
+    expect(r).toEqual({ ok: true, viewer: { teamId: 'team-a', role: 'member', userId: null, accountId: 'acct-1' } });
+  });
+
+  it('404s when the workspace has no team', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue(null);
+    expect(await taskTokenExperimentViewer('ws-gone', 'acct-1')).toEqual({ ok: false, status: 404, error: 'Team not found' });
   });
 });

@@ -4,15 +4,18 @@ import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import SettingsPage from '../_components/SettingsPage';
 import TimezoneSection from '../TimezoneSection';
+import TeamPermissionsSection from './TeamPermissionsSection';
 import TeamDetailClient from '../../teams/[id]/TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
 import { roleHas } from '@/lib/permission-registry';
 import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team → Members: the active team's people, plus the team timezone.
+ * Settings → Team → Members: the active team's people, the team timezone, and
+ * who can do what (team permission overrides).
  * Other teams stay reachable from Profile → Your teams (/app/teams/[id]).
  * `?state=multi-member` (dev server only) adds a synthetic member row — see ./qa-state.ts.
  */
@@ -67,7 +70,7 @@ export default async function TeamSettingsPage({
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={roleHas(role, 'manage_team_members')}
+          canManage={roleHas(role, 'manage_team_members', await getTeamPermissionOverrides(team.id))}
         />
       ) : (
         <p className="text-sm text-text-secondary">Could not load the team.</p>
@@ -77,6 +80,9 @@ export default async function TeamSettingsPage({
         teams={userTeams.map((t) => ({ id: t.id, name: t.name }))}
         currentTeamId={currentTeam.id}
       />
+
+      {/* A personal team has one member, its owner: there is nothing to grant. */}
+      {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
     </SettingsPage>
   );
 }

@@ -83,29 +83,29 @@ describe('formatVisualReview for MCP', () => {
 
   it('gives per cell: viewport, round, verdict, finding, decision and fix with status', () => {
     const text = formatVisualReview(model(), 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toMatch(/phone; round 2; agent: unsure; "Header may overlap\."; human: not reviewed yet, needs review/);
+    expect(text).toMatch(/phone; round 2; agent: unsure; "Header may overlap\."; human: not reviewed, needs review/);
     expect(text).toMatch(new RegExp(`fix: in progress, PR #12 \\(task ${FIX}\\)`));
-    expect(text).toContain('1 screen needs your review.');
+    expect(text).toContain('1 screen to review.');
   });
 
   it('round cap: says a decision is needed and never "0 need your review"', () => {
     const m = model({ needsYou: { reason: 'round_cap' }, roundCapOpen: true, cells: [model().cells[1]], summary: { ...model().summary, unsure: 0, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
     expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
-    expect(text).toContain('Needs your decision: issues remain after 2 rounds (fix or waive).');
+    expect(text).toContain('Decision needed: issues remain after 2 rounds (fix or waive).');
   });
 
   it('question: the closing line carries the prompt', () => {
     const m = model({ needsYou: { reason: 'question', prompt: 'Is the old header intended?' } as never, summary: { ...model().summary, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toContain('Needs your answer: Is the old header intended?');
+    expect(text).toContain('Question: Is the old header intended?');
     expect(text).not.toMatch(/\b0 (screens? )?needs? your review/);
   });
 
   it('nothing pending: says nobody is needed', () => {
     const m = model({ phase: 'reviewed', needsYou: null, summary: { ...model().summary, awaitingHuman: 0 } });
     const text = formatVisualReview(m, 'Example', { audience: 'mcp', baseUrl: BASE, missionId: 'mission-1' });
-    expect(text).toContain('Nothing needs your review.');
+    expect(text).toContain('Nothing to review.');
   });
 
   describe('checked before the mission was completed (Q3)', () => {

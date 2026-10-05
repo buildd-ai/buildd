@@ -6,6 +6,7 @@ const mockArtifactsFindFirst = mock(() => null as any);
 const mockVerifyAccountWorkspaceAccess = mock(() => false as any);
 const mockGetCurrentUser = mock(async () => null as any);
 const mockVerifyWorkspaceAccess = mock(async () => null as any);
+const mockTasksFindFirst = mock(async () => null as any);
 
 // What the PATCH UPDATE ... RETURNING hands back; per-test overridable.
 let updatedRow: Record<string, unknown> = { id: 'artifact-1', shareToken: 'test-token' };
@@ -36,6 +37,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       artifacts: { findFirst: mockArtifactsFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
     },
     update: () => ({
       set: mock((fields: Record<string, unknown>) => (lastSet = fields, {
@@ -571,5 +573,77 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
       await PATCH(createMockPatchRequest({ title: 'x' }, 'bld_test'), { params: mockParams });
       expect(mockTriggerEvent).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('/api/artifacts/[artifactId] — per-task token', () => {
+  const SCOPED = { id: 'account-1', level: 'worker', scopes: null, taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const base = { id: ARTIFACT_ID, type: 'report', title: 'T', content: 'c', shareToken: null, visibility: 'private', metadata: {}, initiativeId: null, storageKey: null };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockArtifactsFindFirst.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockReset();
+    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-own', workspaceId: 'ws-1', mission: { initiativeId: null } });
+    lastSet = null;
+    updatedRow = { id: ARTIFACT_ID, shareToken: null };
+  });
+
+  it('reads an artifact in its own workspace', async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: null, workspaceId: 'ws-1', missionId: 'mission-x', worker: null });
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+  });
+
+  it("reads its account's own worker's artifact in another workspace as not found", async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: 'w-2', workspaceId: 'ws-2', missionId: null, worker: { accountId: 'account-1', taskId: 'task-other', workspaceId: 'ws-2' } });
+    const res = await GET(createMockGetRequest('bld_test'), { params: mockParams });
+    expect(res.status).toBe(404);
+  });
+
+  it("updates its own task's artifact", async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: 'w-1', workspaceId: 'ws-1', missionId: 'mission-own', worker: { accountId: 'account-1', taskId: 'task-own', workspaceId: 'ws-1' } });
+    const res = await PATCH(createMockPatchRequest({ title: 'New' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(lastSet?.title).toBe('New');
+  });
+
+  it("updates its own mission's mission-level artifact", async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: null, workspaceId: 'ws-1', missionId: 'mission-own', worker: null });
+    const res = await PATCH(createMockPatchRequest({ content: 'x' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(lastSet?.content).toBe('x');
+  });
+
+  it("is refused a sibling task's artifact on its own mission, before writing", async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: 'w-2', workspaceId: 'ws-1', missionId: 'mission-own', worker: { accountId: 'account-1', taskId: 'task-other', workspaceId: 'ws-1' } });
+    const res = await PATCH(createMockPatchRequest({ title: 'New' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(lastSet).toBeNull();
+  });
+
+  it("is refused another mission's artifact in its workspace, before writing", async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: null, workspaceId: 'ws-1', missionId: 'mission-other', worker: null });
+    const res = await PATCH(createMockPatchRequest({ title: 'New' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(lastSet).toBeNull();
+  });
+
+  it('reads an artifact in another workspace as not found on PATCH, before writing', async () => {
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: null, workspaceId: 'ws-2', missionId: 'mission-own', worker: null });
+    const res = await PATCH(createMockPatchRequest({ title: 'New' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(404);
+    expect(lastSet).toBeNull();
+  });
+
+  it('an account key still updates any artifact in a workspace it can reach', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker' });
+    mockArtifactsFindFirst.mockResolvedValue({ ...base, workerId: null, workspaceId: 'ws-2', missionId: 'mission-other', worker: null });
+    const res = await PATCH(createMockPatchRequest({ title: 'New' }, 'bld_test'), { params: mockParams });
+    expect(res.status).toBe(200);
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
   });
 });

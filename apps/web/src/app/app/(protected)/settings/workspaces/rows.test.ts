@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import { buildWorkspaceRows, moveTargets } from './rows';
 
+/** No team has stored grants: every check uses the registry defaults. */
+const NO_OVERRIDES = new Map();
+
 // Illustrative fixtures only.
 const USER = 'user-1';
 const team = (id: string, role: string, slug = id) => ({ id, name: `Name ${id}`, slug, role, memberCount: 1 });
@@ -8,6 +11,7 @@ const team = (id: string, role: string, slug = id) => ({ id, name: `Name ${id}`,
 describe('buildWorkspaceRows', () => {
   it('labels the git workflow and merge policy from gitConfig, with the server defaults', () => {
     const { rows } = buildWorkspaceRows({
+      overrides: NO_OVERRIDES,
       userId: USER,
       teams: [team('t1', 'owner')],
       workspaces: [
@@ -23,6 +27,7 @@ describe('buildWorkspaceRows', () => {
 
   it('allows a move only when the user administers the workspace team and at least one other team', () => {
     const { rows, moveTeams } = buildWorkspaceRows({
+      overrides: NO_OVERRIDES,
       userId: USER,
       teams: [team('t1', 'owner'), team('t2', 'admin'), team('t3', 'member')],
       workspaces: [
@@ -36,6 +41,7 @@ describe('buildWorkspaceRows', () => {
 
   it('counts the personal team as administered, and no move with a single admin team', () => {
     const { rows } = buildWorkspaceRows({
+      overrides: NO_OVERRIDES,
       userId: USER,
       teams: [team('p', 'member', `personal-${USER}`), team('t3', 'member')],
       workspaces: [{ id: 'w1', name: 'a', teamId: 'p', gitConfig: null }],
@@ -47,8 +53,8 @@ describe('buildWorkspaceRows', () => {
 describe('moveTargets', () => {
   it('returns the administered teams when the workspace can move, else null', () => {
     const teams = [team('t1', 'owner'), team('t2', 'admin'), team('t3', 'member')];
-    expect(moveTargets(USER, teams, 't1')?.map((t) => t.id)).toEqual(['t1', 't2']);
-    expect(moveTargets(USER, teams, 't3')).toBeNull();
-    expect(moveTargets(USER, [team('t1', 'owner'), team('t3', 'member')], 't1')).toBeNull();
+    expect(moveTargets(USER, teams, 't1', NO_OVERRIDES)?.map((t) => t.id)).toEqual(['t1', 't2']);
+    expect(moveTargets(USER, teams, 't3', NO_OVERRIDES)).toBeNull();
+    expect(moveTargets(USER, [team('t1', 'owner'), team('t3', 'member')], 't1', NO_OVERRIDES)).toBeNull();
   });
 });

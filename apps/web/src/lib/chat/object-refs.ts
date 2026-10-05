@@ -69,7 +69,7 @@ function questionRefsFromWorkers(task: Obj): BuilddObjectRef[] {
   for (const w of workers) {
     const wf = isObj(w.waitingFor) ? w.waitingFor : null;
     if (str(w.status) !== 'waiting_input' || !wf || str(w.id) === undefined) continue;
-    const prompt = str(wf.prompt) ?? 'A worker is waiting for your answer';
+    const prompt = str(wf.prompt) ?? 'A worker asked a question';
     out.push({
       kind: 'question', id: str(w.id)!, taskId: str(task.id)!, missionId: str(task.missionId) ?? null,
       workspaceId: wsOf(task), title: prompt.slice(0, 120), fallbackText: `Question: ${prompt.slice(0, 280)}`,

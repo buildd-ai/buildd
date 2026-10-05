@@ -5,7 +5,11 @@
  *
  *   - a `git bundle` of the clone's remote-tracking refs (objects and refs
  *     only: no config, no hooks, no local branches, no working tree), and
- *   - a tarball of the bun install cache, so worktree installs link from it.
+ *   - a tarball of the bun install cache (and the pnpm store nested in it),
+ *     so worktree installs link from it. zstd-compressed when the image has
+ *     zstd, streamed both ways (tar | zstd into the upload, the download into
+ *     zstd -d | tar): neither direction keeps a copy of it on disk. A plain
+ *     tarball from an older snapshot still restores (zstd -f passes it through).
  *
  * The container reaches the store only through a reserved pseudo-host that
  * the Worker's egress handler serves (apps/cloud-runner/src/snapshots.ts).
@@ -25,12 +29,15 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, sta
 import { homedir } from 'os';
 import { dirname, join, relative } from 'path';
 import {
+  emitCacheSkipped,
   emitMetric,
   emitPhase,
   emitRepoSource,
   emitWarmUploadSkipped,
+  emitWarmRefresh,
   type RepoFallbackReason,
   type RunMetric,
+  type WarmRefreshReason,
 } from './phase-lines';
 import { fetchOriginWithRetry } from './git-clone';
 
@@ -51,8 +58,21 @@ export const WARM_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const WARM_FETCH_REFRESH_BYTES = 64 * 1024 * 1024;
 /** Skip the warm path when the snapshot is larger than this fraction of free disk. */
 export const WARM_DISK_FRACTION = 0.25;
-/** Single-part R2 uploads top out near 5 GiB; stay under it. */
-export const WARM_MAX_UPLOAD_BYTES = 4 * 1024 ** 3;
+/**
+ * The most any one part (bundle or cache tarball) may stream, whatever the
+ * cap says. Uploads are multipart, so R2's single-PUT limit does not apply;
+ * this mirrors the upper bound buildd puts on a workspace's
+ * gitConfig.warmSnapshot.maxBytes (apps/web/src/lib/warm-snapshot-cap.ts).
+ */
+export const WARM_MAX_UPLOAD_BYTES = 8 * 1024 ** 3;
+/**
+ * Before tarring, the pnpm store is left out only when the cache on disk is
+ * more than this many times the cap: zstd does about 4:1 on a real
+ * package store, so anything above this cannot fit. Below it the store is
+ * tried; if it still compresses past the cap the cache is sent again without
+ * it (refreshOrThrow).
+ */
+export const WARM_CACHE_COMPRESSION_HEADROOM = 6;
 /**
  * The largest warm bundle (or cache tarball) this container uploads, unless
  * the Worker sets BUILDD_WARM_MAX_BUNDLE_BYTES. Measured before anything is
@@ -76,6 +96,26 @@ export function warmMaxBundleBytes(env: Record<string, string | undefined>): num
   const raw = env[WARM_MAX_BUNDLE_ENV]?.trim() ?? '';
   const n = /^\d{1,16}$/.test(raw) ? Number(raw) : NaN;
   return Number.isSafeInteger(n) && n > 0 ? n : WARM_DEFAULT_MAX_BUNDLE_BYTES;
+}
+
+/**
+ * The cap for this run: what the Worker answers on `GET /warm/limits` (the
+ * workspace's gitConfig.warmSnapshot.maxBytes, bounded by buildd, else the
+ * Worker's own default), or `fallback` when it gives no usable number.
+ */
+export function resolveWarmCap(res: { status: number; body: unknown }, fallback: number): number {
+  const n = (res.body as { maxBytes?: unknown } | null)?.maxBytes;
+  return res.status === 200 && typeof n === 'number' && Number.isSafeInteger(n) && n > 0 ? n : fallback;
+}
+
+let zstdProbe: boolean | undefined;
+/** Whether `zstd` runs in this image (apps/runner/Dockerfile.once installs it). */
+export function zstdAvailable(): boolean {
+  if (zstdProbe === undefined) {
+    const r = spawnSync('zstd', ['--version'], { stdio: 'ignore', timeout: 10_000 });
+    zstdProbe = r.status === 0;
+  }
+  return zstdProbe;
 }
 
 const GIT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -155,6 +195,12 @@ export interface SnapshotTransport {
   post(path: string, body?: unknown, headers?: Record<string, string>): { status: number; body: unknown };
   /** DELETE (park bundles, an aborted multipart upload). */
   remove?(path: string, headers?: Record<string, string>): { status: number };
+  /**
+   * GET `path` straight into `command`'s stdin: nothing lands on disk but
+   * what the command writes. `ok`: the command exited 0. `detail`: its
+   * stderr, for the log.
+   */
+  pipeTo(path: string, command: string, args: string[]): { status: number; bytes: number; ok: boolean; detail: string };
 }
 
 function headerArgs(headers?: Record<string, string>): string[] {
@@ -207,6 +253,19 @@ export function curlTransport(baseUrl: string): SnapshotTransport {
         '-w', '\n%{http_code}', `${base}${path}`,
       ], data));
       return { status, body: parseJson(text) };
+    },
+    pipeTo(path, command, args) {
+      // POSIX sh: a pipeline's status is its last command's. curl's own
+      // status line goes to stderr (`%{stderr}`), so stdout is the body only.
+      const script = 'curl -s --max-time "$1" -o - -w "%{stderr}\\nBUILDD_HTTP %{http_code} %{size_download}\\n" "$2" | { shift 2; exec "$@"; }';
+      const r = spawnSync('sh', ['-c', script, 'sh', String(TRANSFER_TIMEOUT_S), `${base}${path}`, command, ...args], {
+        encoding: 'utf-8', stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 16 * 1024 * 1024, timeout: TRANSFER_TIMEOUT_S * 1000,
+      });
+      const err = r.stderr ?? '';
+      const m = /BUILDD_HTTP (\d+) (\d+)/.exec(err);
+      const status = m ? Number(m[1]) : 0;
+      const detail = err.replace(/\n?BUILDD_HTTP \d+ \d+\n?/, '\n').trim().slice(-2000);
+      return { status, bytes: status === 200 && m ? Number(m[2]) : 0, ok: r.status === 0, detail };
     },
     remove(path, headers) {
       const { status } = splitStatus(curl(['--max-time', String(CONTROL_TIMEOUT_S), '-X', 'DELETE', ...headerArgs(headers), '-w', '\n%{http_code}', `${base}${path}`]));
@@ -320,7 +379,13 @@ export function createCacheTarball(cacheDir: string, outFile: string): boolean {
 // ── Refresh rules ─────────────────────────────────────────────────────────────
 
 export type WarmResult =
-  | { source: 'warm'; ageMs: number; fetchBytes: number }
+  /**
+   * `restoredCacheBytes`: the cache on disk right after the restore (not the
+   * tarball, which is compressed). `restoredPnpmStore`: whether that restore
+   * brought a pnpm store back; one that was left out for size is not counted
+   * as growth when the run rebuilds it (refreshOrThrow).
+   */
+  | { source: 'warm'; ageMs: number; fetchBytes: number; restoredCacheBytes: number; restoredPnpmStore?: boolean }
   | { source: 'clone'; reason: RepoFallbackReason };
 
 export type RunEnd = 'completed' | 'failed' | 'wait_timeout' | 'parked';
@@ -330,17 +395,41 @@ export type RunEnd = 'completed' | 'failed' | 'wait_timeout' | 'parked';
  *   Uploaded whatever the outcome: the bundle holds origin's refs only, so it
  *   does not depend on how the task went, and a workspace whose first tasks
  *   fail still gets warm.
- * - refresh: a warm restore that is old, or whose fetch was large, after a
- *   task that completed.
+ * - refresh: a warm restore that is old, or whose fetch was large, or whose
+ *   cache grew materially, after a task that completed.
  * - none: everything else, including a store that was unreachable or a disk
  *   too small, where an upload would fail the same way.
  */
-export function decideWarmRefresh(result: WarmResult, end: RunEnd): 'seed' | 'refresh' | 'none' {
+export interface DecideWarmRefreshInput {
+  result: WarmResult;
+  end: RunEnd;
+  currentCacheBytes?: number;
+}
+
+export type WarmRefreshDecision = { decision: 'seed' | 'refresh' | 'none'; reason?: WarmRefreshReason };
+
+/** Threshold for cache growth trigger: 64 MiB or 25%, whichever is smaller. */
+export const WARM_CACHE_GROWTH_BYTES = 64 * 1024 * 1024;
+export const WARM_CACHE_GROWTH_PERCENT = 0.25;
+
+export function decideWarmRefresh(input: DecideWarmRefreshInput): WarmRefreshDecision {
+  const { result, end, currentCacheBytes } = input;
   if (result.source === 'clone') {
-    return result.reason === 'no_snapshot' || result.reason === 'restore_failed' ? 'seed' : 'none';
+    return { decision: result.reason === 'no_snapshot' || result.reason === 'restore_failed' ? 'seed' : 'none' };
   }
-  if (end !== 'completed') return 'none';
-  return result.ageMs > WARM_MAX_AGE_MS || result.fetchBytes > WARM_FETCH_REFRESH_BYTES ? 'refresh' : 'none';
+  if (end !== 'completed') return { decision: 'none' };
+
+  if (result.ageMs > WARM_MAX_AGE_MS) return { decision: 'refresh', reason: 'age' };
+  if (result.fetchBytes > WARM_FETCH_REFRESH_BYTES) return { decision: 'refresh', reason: 'fetch' };
+
+  if (currentCacheBytes !== undefined && currentCacheBytes > result.restoredCacheBytes) {
+    const growthBytes = currentCacheBytes - result.restoredCacheBytes;
+    const growthPercent = result.restoredCacheBytes > 0 ? growthBytes / result.restoredCacheBytes : 1;
+    const threshold = Math.min(WARM_CACHE_GROWTH_BYTES, result.restoredCacheBytes * WARM_CACHE_GROWTH_PERCENT);
+    if (growthBytes > threshold) return { decision: 'refresh', reason: 'cache_growth' };
+  }
+
+  return { decision: 'none' };
 }
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -365,6 +454,8 @@ export interface WarmRepoDeps {
   partBytes?: number;
   /** The clone's size as the cap sees it before bundling; objectBytes when absent. */
   measureRepoBytes?(clonePath: string): number;
+  /** Compress the cache tarball with zstd (and expect it on restore); probed when absent. */
+  zstd?: boolean;
 }
 
 export interface CloneHooks {
@@ -489,7 +580,8 @@ export function bundleRemotes(clonePath: string, bundle: string): void {
 // ── Streamed multipart upload ─────────────────────────────────────────────────
 
 export type StreamUploadResult =
-  | { ok: true; bytes: number }
+  /** `bytes`: what was uploaded; `inputBytes`: what the producer wrote (the same without a filter). */
+  | { ok: true; bytes: number; inputBytes: number }
   | { ok: false; reason: 'too_large' | 'failed'; detail: string };
 
 /**
@@ -499,7 +591,9 @@ export type StreamUploadResult =
  * Every part but the last is exactly `partBytes`, and no more than one part
  * is held in memory: the producer waits on its pipe while a part uploads.
  * Past `maxBytes` the producer is killed and the upload aborted, as on any
- * failure. Never throws.
+ * failure. With `filter`, the producer's stdout is piped through it (e.g.
+ * `zstd -c`) and the filter's output is what is uploaded and capped; either
+ * process failing fails the upload. Never throws.
  */
 export async function streamToMultipart(o: {
   command: string;
@@ -510,6 +604,7 @@ export async function streamToMultipart(o: {
   partBytes: number;
   maxBytes: number;
   timeoutMs?: number;
+  filter?: { command: string; args: string[] };
 }): Promise<StreamUploadResult> {
   const created = o.transport.post(`${o.path}/multipart`, {});
   const uploadId = (created.body as { uploadId?: unknown } | null)?.uploadId;
@@ -519,20 +614,35 @@ export async function streamToMultipart(o: {
   const headers = { [UPLOAD_ID_HEADER]: uploadId };
   const abort = () => { try { o.transport.remove?.(`${o.path}/multipart`, headers); } catch { /* the bucket's lifecycle rule expires it */ } };
 
+  type Exit = { code: number | null; signal: NodeJS.Signals | null; error?: Error };
   const child = spawn(o.command, o.args, { cwd: o.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const filter = o.filter ? spawn(o.filter.command, o.filter.args, { stdio: ['pipe', 'pipe', 'pipe'] }) : null;
   let stderr = '';
-  child.stderr!.on('data', (d: Buffer) => { stderr = (stderr + d.toString('utf-8')).slice(-8000); });
-  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>((resolve) => {
-    child.on('error', (error) => resolve({ code: null, signal: null, error }));
-    child.on('close', (code, signal) => resolve({ code, signal }));
+  const onErr = (d: Buffer) => { stderr = (stderr + d.toString('utf-8')).slice(-8000); };
+  child.stderr!.on('data', onErr);
+  filter?.stderr!.on('data', onErr);
+  const exitOf = (p: typeof child) => new Promise<Exit>((resolve) => {
+    p.on('error', (error) => resolve({ code: null, signal: null, error }));
+    p.on('close', (code, signal) => resolve({ code, signal }));
   });
-  const timer = setTimeout(() => child.kill('SIGKILL'), o.timeoutMs ?? TRANSFER_TIMEOUT_S * 1000);
+  const exited = exitOf(child);
+  const filterExited = filter ? exitOf(filter) : null;
+  let inputBytes = 0;
+  if (filter) {
+    child.stdout!.on('data', (c: Buffer) => { inputBytes += c.length; });
+    child.stdout!.pipe(filter.stdin!);
+    // A filter that dies first closes its stdin; its own exit is the error.
+    filter.stdin!.on('error', () => {});
+  }
+  const output = (filter ? filter.stdout! : child.stdout!) as AsyncIterable<Buffer>;
+  const killAll = () => { child.kill('SIGKILL'); filter?.kill('SIGKILL'); };
+  const timer = setTimeout(killAll, o.timeoutMs ?? TRANSFER_TIMEOUT_S * 1000);
   const parts: Array<{ partNumber: number; etag: string }> = [];
   let pending: Buffer[] = [];
   let pendingBytes = 0;
   let total = 0;
   const fail = (reason: 'too_large' | 'failed', detail: string): StreamUploadResult => {
-    child.kill('SIGKILL');
+    killAll();
     abort();
     return { ok: false, reason, detail };
   };
@@ -545,7 +655,7 @@ export async function streamToMultipart(o: {
     return null;
   };
   try {
-    for await (const chunk of child.stdout! as AsyncIterable<Buffer>) {
+    for await (const chunk of output) {
       total += chunk.length;
       if (total > o.maxBytes) return fail('too_large', `over ${o.maxBytes} bytes`);
       pending.push(chunk);
@@ -559,10 +669,13 @@ export async function streamToMultipart(o: {
         pendingBytes = rest.length;
       }
     }
-    const end = await exited;
-    if (end.error || end.code !== 0) {
-      const why = stderr.split('\n').map(l => l.trim()).filter(Boolean).slice(-4).join('; ') || end.error?.message || (end.signal ? `killed by ${end.signal}` : `exit ${end.code}`);
-      return fail('failed', `${o.command} failed: ${why.slice(0, 500)}`);
+    const ends: Array<[string, Exit]> = [[o.command, await exited]];
+    if (filter && filterExited) ends.push([o.filter!.command, await filterExited]);
+    for (const [name, end] of ends) {
+      if (end.error || end.code !== 0) {
+        const why = stderr.split('\n').map(l => l.trim()).filter(Boolean).slice(-4).join('; ') || end.error?.message || (end.signal ? `killed by ${end.signal}` : `exit ${end.code}`);
+        return fail('failed', `${name} failed: ${why.slice(0, 500)}`);
+      }
     }
     if (total === 0) return fail('failed', `${o.command} wrote nothing`);
     if (pendingBytes > 0) {
@@ -571,7 +684,7 @@ export async function streamToMultipart(o: {
     }
     const done = o.transport.post(`${o.path}/multipart/complete`, { parts }, headers);
     if (done.status !== 201) return fail('failed', `multipart complete answered ${done.status || 'nothing'}`);
-    return { ok: true, bytes: total };
+    return { ok: true, bytes: total, inputBytes: filter ? inputBytes : total };
   } catch (err) {
     return fail('failed', err instanceof Error ? err.message : String(err));
   } finally {
@@ -677,6 +790,8 @@ export class WarmRepoSession {
     }
 
     this.restoreCache(manifest);
+    const restoredCacheBytes = dirSizeBytes(this.d.cacheDir);
+    const restoredPnpmStore = existsSync(pnpmStoreDir(this.d.cacheDir));
 
     emitPhase('fetch_start', this.d.lineOpts);
     const before = objectBytes(clonePath);
@@ -695,26 +810,38 @@ export class WarmRepoSession {
     this.metric('fetch_bytes', fetchBytes);
     const ageMs = Math.max(0, this.d.now() - manifest.createdAt);
     this.metric('snapshot_age_ms', ageMs);
-    this.result = { source: 'warm', ageMs, fetchBytes };
+    this.result = { source: 'warm', ageMs, fetchBytes, restoredCacheBytes, restoredPnpmStore };
     emitRepoSource('warm', undefined, this.d.lineOpts);
     this.d.log(`[warm] restored generation ${manifest.generation} (${ageMs} ms old, fetched ${fetchBytes} bytes)`);
     return true;
   }
 
+  private useZstd(): boolean {
+    return this.d.zstd ?? zstdAvailable();
+  }
+
+  /**
+   * Streamed: the download goes straight into `zstd -d | tar -x` (or plain
+   * `tar -x` without zstd), so restoring a multi-gigabyte cache never needs
+   * a second copy of it on disk. `zstd -f` passes an uncompressed tarball
+   * from an older snapshot through unchanged.
+   */
   private restoreCache(manifest: WarmManifest): void {
     if (manifest.cacheBytes === 0) return;
-    const tarball = join(this.d.tmpDir, `warm-${manifest.generation}.tar`);
+    emitPhase('restore_cache_start', this.d.lineOpts);
     try {
-      const dl = this.d.transport.download(`/warm/${manifest.generation}/cache`, tarball);
-      if (dl.status !== 200) throw new Error(`cache download answered ${dl.status || 'nothing'}`);
       mkdirSync(this.d.cacheDir, { recursive: true });
-      const r = spawnSync('tar', ['-xf', tarball, '-C', this.d.cacheDir, '--no-same-owner'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS });
-      if (r.status !== 0) throw new Error('cache extract failed');
-      this.metric('cache_bytes', dl.bytes);
+      const [command, args] = this.useZstd()
+        ? ['sh', ['-c', 'zstd -d -c -f -q | tar -xf - -C "$1" --no-same-owner', 'sh', this.d.cacheDir]] as const
+        : ['tar', ['-xf', '-', '-C', this.d.cacheDir, '--no-same-owner']] as const;
+      const r = this.d.transport.pipeTo(`/warm/${manifest.generation}/cache`, command, [...args]);
+      if (r.status !== 200) throw new Error(`cache download answered ${r.status || 'nothing'}`);
+      if (!r.ok) throw new Error(`cache extract failed${r.detail ? `: ${r.detail.slice(0, 300)}` : ''}`);
+      this.metric('cache_bytes', r.bytes);
     } catch (err) {
       this.d.log(`[warm] bun cache not restored: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
-      rmSync(tarball, { force: true });
+      emitPhase('restore_cache_end', this.d.lineOpts);
     }
   }
 
@@ -732,11 +859,78 @@ export class WarmRepoSession {
     this.d.log(`[warm] snapshot upload skipped: ${why}; this workspace clones instead`);
   }
 
+  /**
+   * Stream the cache tarball (zstd-compressed when available) to the cache
+   * part; returns the bytes uploaded. The cap applies to what is uploaded,
+   * i.e. the compressed size. The pnpm store (nested in cacheDir, see
+   * pnpmStoreDir) can alone be bigger than the cap: it is left out before
+   * tarring when the cache could not fit even compressed
+   * (WARM_CACHE_COMPRESSION_HEADROOM), and the cache is sent again without
+   * it when it compresses past the cap anyway, so the rest of the cache is
+   * kept. Any part left out is reported (BUILDD_CACHE_SKIPPED) and logged.
+   */
+  private async uploadCache(generation: string, cap: number, cacheBytes: number, partBytes: number, maxBytes: number): Promise<number> {
+    const compress = this.useZstd();
+    const pnpmDir = pnpmStoreDir(this.d.cacheDir);
+    const storeBytes = existsSync(pnpmDir) ? dirSizeBytes(pnpmDir) : 0;
+    const fitsRaw = compress ? cap * WARM_CACHE_COMPRESSION_HEADROOM : cap;
+    const skipStore = (why: string) => {
+      emitCacheSkipped('pnpm-store', storeBytes, cap, this.d.lineOpts);
+      this.d.log(`[warm] pnpm store (${storeBytes} bytes) left out of the cache upload: ${why}, over the ${cap}-byte warm snapshot cap`);
+    };
+    let withoutStore = storeBytes > 0 && cacheBytes > fitsRaw;
+    if (withoutStore) skipStore(`the cache is ${cacheBytes} bytes on disk`);
+
+    const attempt = async (skip: boolean): Promise<StreamUploadResult | null> => {
+      const list = writeCacheFileList(this.d.cacheDir, join(this.d.tmpDir, `upload-${generation}.list`), skip ? new Set([PNPM_STORE_DIRNAME]) : undefined);
+      if (!list) return null;
+      try {
+        return await streamToMultipart({
+          command: 'tar', args: ['-cf', '-', '-C', this.d.cacheDir, '-T', list], transport: this.d.transport,
+          path: `/warm/${generation}/cache`, partBytes, maxBytes,
+          ...(compress ? { filter: { command: 'zstd', args: ['-q', '-c', '-T0'] } } : {}),
+        });
+      } finally {
+        rmSync(list, { force: true });
+      }
+    };
+
+    let cache = await attempt(withoutStore);
+    if (cache && !cache.ok && cache.reason === 'too_large' && !withoutStore && storeBytes > 0) {
+      withoutStore = true;
+      skipStore(`the cache tarball grew past ${maxBytes} bytes${compress ? ' compressed' : ''} while streaming`);
+      cache = await attempt(true);
+    }
+    if (!cache) return 0;
+    if (!cache.ok) {
+      if (cache.reason === 'too_large') {
+        const rest = withoutStore ? Math.max(0, cacheBytes - storeBytes) : cacheBytes;
+        emitCacheSkipped('cache', rest, cap, this.d.lineOpts);
+        this.d.log(`[warm] bun cache (${rest} bytes) not uploaded: over the ${cap}-byte warm snapshot cap${compress ? ' compressed' : ''}`);
+      } else {
+        this.d.log(`[warm] bun cache not uploaded: ${cache.detail}`);
+      }
+      return 0;
+    }
+    this.metric('cache_raw_bytes', cache.inputBytes);
+    if (compress) this.d.log(`[warm] cache tarball ${cache.inputBytes} bytes, ${cache.bytes} compressed`);
+    return cache.bytes;
+  }
+
   private async refreshOrThrow(end: RunEnd): Promise<void> {
     const clonePath = this.clonePath;
     if (!this.result || !clonePath || !existsSync(join(clonePath, '.git'))) return;
-    const decision = decideWarmRefresh(this.result, end);
+    const currentCacheBytes = dirSizeBytes(this.d.cacheDir);
+    // A pnpm store the restore did not bring back was (most likely) left
+    // out for size; the install rebuilt it. Counting it as growth would
+    // re-upload, and leave it out again, after every run. A store that is
+    // genuinely new is picked up by the age refresh.
+    const grownBytes = this.result.source === 'warm' && this.result.restoredPnpmStore === false
+      ? currentCacheBytes - dirSizeBytes(pnpmStoreDir(this.d.cacheDir))
+      : currentCacheBytes;
+    const { decision, reason } = decideWarmRefresh({ result: this.result, end, currentCacheBytes: grownBytes });
     if (decision === 'none') return;
+    if (reason) emitWarmRefresh(reason, this.d.lineOpts);
     assertSnapshotSafe(clonePath);
 
     const defaultBranch = gitOut(clonePath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '')
@@ -747,7 +941,7 @@ export class WarmRepoSession {
     // minutes of CPU and a large pack-objects working set on a small
     // instance. The clone's object store is what a `--remotes` bundle of it
     // holds (or a little more), so it stands in for the bundle's size.
-    const cap = this.d.maxBundleBytes ?? WARM_DEFAULT_MAX_BUNDLE_BYTES;
+    const cap = resolveWarmCap(this.d.transport.getJson('/warm/limits'), this.d.maxBundleBytes ?? WARM_DEFAULT_MAX_BUNDLE_BYTES);
     const measured = (this.d.measureRepoBytes ?? objectBytes)(clonePath);
     this.metric('warm_repo_bytes', measured);
     if (measured > cap) {
@@ -787,33 +981,7 @@ export class WarmRepoSession {
         throw new Error(`bundle upload failed: ${repo.detail}`);
       }
       uploaded += repo.bytes;
-      // The pnpm store (nested in cacheDir, see pnpmStoreDir) can alone be
-      // bigger than the whole cap. Measured against the same cap as the repo
-      // bundle, before tarring: skip just the store and keep the rest of the
-      // cache, rather than let the mid-stream abort (streamToMultipart's
-      // `maxBytes`) throw the entire cache tarball away.
-      const pnpmDir = pnpmStoreDir(this.d.cacheDir);
-      let skipTopLevel: Set<string> | undefined;
-      if (existsSync(pnpmDir)) {
-        const cacheBytesTotal = dirSizeBytes(this.d.cacheDir);
-        if (cacheBytesTotal > cap) {
-          skipTopLevel = new Set([PNPM_STORE_DIRNAME]);
-          this.d.log(`[warm] pnpm store left out of the cache upload: cache is ${cacheBytesTotal} bytes, over the ${cap}-byte warm snapshot cap`);
-        }
-      }
-      const list = writeCacheFileList(this.d.cacheDir, join(this.d.tmpDir, `upload-${generation}.list`), skipTopLevel);
-      if (list) {
-        try {
-          const cache = await streamToMultipart({
-            command: 'tar', args: ['-cf', '-', '-C', this.d.cacheDir, '-T', list], transport: this.d.transport,
-            path: `/warm/${generation}/cache`, partBytes, maxBytes,
-          });
-          if (cache.ok) uploaded += cache.bytes;
-          else this.d.log(`[warm] bun cache not uploaded: ${cache.detail}`);
-        } finally {
-          rmSync(list, { force: true });
-        }
-      }
+      uploaded += await this.uploadCache(generation, cap, currentCacheBytes, partBytes, maxBytes);
       const commit = this.d.transport.post(`/warm/${generation}/commit`, { defaultBranch });
       if (commit.status !== 201) throw new Error(`commit answered ${commit.status || 'nothing'}`);
       this.d.log(`[warm] ${decision === 'seed' ? 'seeded' : 'refreshed'} generation ${generation} (${uploaded} bytes)`);

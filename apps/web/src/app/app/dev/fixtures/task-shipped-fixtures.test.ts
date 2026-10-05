@@ -21,7 +21,7 @@ describe('task-shipped fixtures', () => {
   it('each variant shows the state it is named for', () => {
     const open = taskShippedFixtureView('open');
     expect(open.action?.label).toBe('Review & merge');
-    expect(open.chips.map(c => c.label)).toContain('Waiting on your merge');
+    expect(open.chips.map(c => c.label)).toContain('Ready to merge');
 
     const merged = taskShippedFixtureView('merged-shots');
     expect(merged.action).toBeNull();

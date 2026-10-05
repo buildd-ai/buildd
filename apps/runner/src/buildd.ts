@@ -705,6 +705,20 @@ export class BuilddClient {
    * (403 sensitive / 409 already uploaded / 503 storage off / 413 too big) is a
    * normal outcome, not an error — we return null and the caller skips quietly.
    */
+  /**
+   * Mint a per-task token (`bldt_…`) for the agent session of `taskId`, using
+   * this client's runner key. Returns the raw JSON body; parse it with
+   * parseAgentTaskTokenResponse (agent-task-token.ts). A non-2xx rejects with
+   * a ServerRefusalError carrying `status`. Never queued to the outbox.
+   */
+  async mintTaskToken(taskId: string, ttlMs: number, signal?: AbortSignal): Promise<unknown> {
+    return this.fetch('/api/runner/task-token', {
+      method: 'POST',
+      body: JSON.stringify({ taskId, ttlMs }),
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   async requestSessionUploadUrl(
     workerId: string,
     kind: 'transcript' | 'session-log',

@@ -192,7 +192,7 @@ describe('homeHeadline', () => {
   it('says how many agents work and how many things need you', () => {
     expect(text(homeHeadline({ live: 5, needsYou: 2 }))).toBe('5 agents working. 2 need you.');
     expect(text(homeHeadline({ live: 6, needsYou: 1 }))).toBe('6 agents working. 1 needs you.');
-    expect(text(homeHeadline({ live: 1, needsYou: 0 }))).toBe('1 agent working. Nothing needs you.');
+    expect(text(homeHeadline({ live: 1, needsYou: 0 }))).toBe('1 agent working. Nothing needs input.');
   });
   it('an idle fleet names what just shipped', () => {
     const parts = homeHeadline({ live: 0, needsYou: 1, shipped: 'Example mission' });

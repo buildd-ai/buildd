@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 const mockGetGrants = mock(() => Promise.resolve([] as any[]));
 
-import { authorizeWorkerPrCapability } from './worker-pr';
+import { agentRunMayActOnPr, authorizeWorkerPrCapability } from './worker-pr';
 
 // ── fixtures (illustrative) ───────────────────────────────────────────────────
 
@@ -81,5 +81,53 @@ describe('authorizeWorkerPrCapability', () => {
   it('carries the requested capability on the decision', async () => {
     const d = await authorize(RUNNER, WORKER, 'pr.adopt');
     expect(d.allowed && d.capability).toBe('pr.adopt');
+  });
+});
+
+describe('agentRunMayActOnPr', () => {
+  const RUN = { id: 'runner-1', teamId: 'team-1' };
+  const worker = (o: Record<string, unknown> = {}, task: Record<string, unknown> = {}) => ({
+    accountId: 'runner-1', taskId: 'task-1', prNumber: 42,
+    task: { id: 'task-1', title: 'feat: own thing', description: '', context: {}, roleSlug: 'builder', mode: 'execution', ...task },
+    ...o,
+  });
+
+  it('lets a run act on its own worker’s PR', () => {
+    expect(agentRunMayActOnPr(RUN, worker(), 42)).toBe(true);
+  });
+  it('refuses another PR through its own worker', () => {
+    expect(agentRunMayActOnPr(RUN, worker(), 7)).toBe(false);
+  });
+  it.each([
+    ['title', { title: 'Resolve conflicts and land PR #7' }],
+    ['description', { description: 'merge https://github.com/acme/widget/pull/7 once green' }],
+    ['context', { context: { prNumber: 7 } }],
+    ['retry subject', { ciRetryPrNumber: 7 }],
+  ])('lets a run act on a PR its task names in its %s', (_l, task) => {
+    expect(agentRunMayActOnPr(RUN, worker({}, task), 7)).toBe(true);
+  });
+  it.each([
+    ['organizer role', { roleSlug: 'organizer' }],
+    ['planning mode', { mode: 'planning' }],
+    ['heartbeat', { context: { heartbeat: true } }],
+  ])('exempts an orchestration task (%s)', (_l, task) => {
+    expect(agentRunMayActOnPr(RUN, worker({}, task), 7)).toBe(true);
+  });
+  it('leaves teammates and people alone', () => {
+    expect(agentRunMayActOnPr({ id: 'person-1', teamId: 'team-1' }, worker(), 7)).toBe(true);
+    expect(agentRunMayActOnPr({ ...RUN, sessionUserId: 'user-1' } as any, worker(), 7)).toBe(true);
+  });
+
+  describe('per-task token', () => {
+    const token = (taskId = 'task-1') => ({ ...RUN, taskScope: { taskId, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } });
+    it('acts on a PR its own task names', () => {
+      expect(agentRunMayActOnPr(token(), worker({}, { title: 'land #7' }), 7)).toBe(true);
+    });
+    it('refuses through another task’s worker, even one its account claimed', () => {
+      expect(agentRunMayActOnPr(token('task-2'), worker({}, { title: 'land #7' }), 7)).toBe(false);
+    });
+    it('refuses through a worker another account claimed', () => {
+      expect(agentRunMayActOnPr(token(), worker({ accountId: 'runner-2' }), 42)).toBe(false);
+    });
   });
 });

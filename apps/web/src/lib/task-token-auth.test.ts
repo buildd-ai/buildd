@@ -2,15 +2,20 @@ import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 
 const mockAuthenticateApiKey = mock((_key: string | null) => Promise.resolve(null as any));
 const mockAccountsFindFirst = mock(() => Promise.resolve(null as any));
+const mockTasksFindFirst = mock((_args: any) => Promise.resolve(null as any));
+const mockWorkersFindFirst = mock((_args: any) => Promise.resolve(null as any));
 
 mock.module('./api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@buildd/core/db', () => ({
-  db: { query: { accounts: { findFirst: mockAccountsFindFirst } } },
+  db: { query: { accounts: { findFirst: mockAccountsFindFirst }, tasks: { findFirst: mockTasksFindFirst }, workers: { findFirst: mockWorkersFindFirst } } },
 }));
 mock.module('@buildd/core/db/schema', () => ({ accounts: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 
-import { authenticateTaskScopedCaller, taskScopeAllowsTask, taskScopeAllowsWorker, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from './task-token-auth';
+import {
+  authenticateTaskScopedCaller, taskScopeAllowsInitiative, taskScopeAllowsMission, taskScopeAllowsTask,
+  taskScopeAllowsWorker, taskScopeAllowsWorkerId, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace,
+} from './task-token-auth';
 import { mintTaskToken } from './task-token';
 
 const savedSecret = process.env.AUTH_SECRET;
@@ -157,5 +162,58 @@ describe('taskScopeAllowsWorkerPr', () => {
   });
   it('refuses a worker with no PR recorded', () => {
     expect(taskScopeAllowsWorkerPr(scoped, { ...own, prNumber: null }, 42)).toBe(false);
+  });
+});
+
+describe('taskScopeAllowsMission / taskScopeAllowsInitiative', () => {
+  const scoped = { id: 'acct-1', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  beforeEach(() => {
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: 'i-1' } });
+  });
+
+  it('does not restrict an account key, and reads nothing for it', async () => {
+    expect(await taskScopeAllowsMission({}, 'm-9')).toBe(true);
+    expect(await taskScopeAllowsInitiative({}, 'i-9')).toBe(true);
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+  it("allows its own task's mission and that mission's initiative", async () => {
+    expect(await taskScopeAllowsMission(scoped, 'm-1')).toBe(true);
+    expect(await taskScopeAllowsInitiative(scoped, 'i-1')).toBe(true);
+  });
+  it('refuses another mission or initiative, and a missing id', async () => {
+    expect(await taskScopeAllowsMission(scoped, 'm-2')).toBe(false);
+    expect(await taskScopeAllowsInitiative(scoped, 'i-2')).toBe(false);
+    expect(await taskScopeAllowsMission(scoped, null)).toBe(false);
+  });
+  it('refuses everything when its task has no mission', async () => {
+    mockTasksFindFirst.mockResolvedValue({ missionId: null, workspaceId: 'ws-1', mission: null });
+    expect(await taskScopeAllowsMission(scoped, 'm-1')).toBe(false);
+    expect(await taskScopeAllowsInitiative(scoped, 'i-1')).toBe(false);
+  });
+  it('refuses when its task is no longer in the token workspace', async () => {
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'm-1', workspaceId: 'ws-2', mission: { initiativeId: 'i-1' } });
+    expect(await taskScopeAllowsMission(scoped, 'm-1')).toBe(false);
+  });
+});
+
+describe('taskScopeAllowsWorkerId', () => {
+  const scoped = { id: 'acct-1', taskScope: { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  beforeEach(() => mockWorkersFindFirst.mockReset());
+
+  it('allows an account key and an absent id without a read', async () => {
+    expect(await taskScopeAllowsWorkerId({ id: 'acct-1' }, 'w-9')).toBe(true);
+    expect(await taskScopeAllowsWorkerId(scoped, undefined)).toBe(true);
+    expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+  });
+  it('allows its own worker only', async () => {
+    mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-1', accountId: 'acct-1' });
+    expect(await taskScopeAllowsWorkerId(scoped, 'w-1')).toBe(true);
+    mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-2', accountId: 'acct-1' });
+    expect(await taskScopeAllowsWorkerId(scoped, 'w-2')).toBe(false);
+    mockWorkersFindFirst.mockResolvedValue({ taskId: 'task-1', accountId: 'acct-2' });
+    expect(await taskScopeAllowsWorkerId(scoped, 'w-3')).toBe(false);
+    mockWorkersFindFirst.mockResolvedValue(null);
+    expect(await taskScopeAllowsWorkerId(scoped, 'w-gone')).toBe(false);
   });
 });

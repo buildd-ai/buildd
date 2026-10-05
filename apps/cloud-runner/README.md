@@ -106,7 +106,7 @@ it as above).
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
-| `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or cache tarball, in bytes. Default 1 GiB. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
+| `WARM_MAX_BUNDLE_BYTES` | var | no | Largest warm bundle or (compressed) cache tarball, in bytes, for workspaces that set no cap of their own. Default 1 GiB. A workspace's `gitConfig.warmSnapshot.maxBytes` (bounded at 8 GiB by buildd, delivered with the GitHub grant) overrides it for that workspace. Passed to the container (which skips the upload past it) and enforced by the snapshot route |
 | `ALLOW_DEBUG_KILL` | var / secret | no | `1` enables `POST /tasks/:taskId/kill` (dispatch token required): destroys that task's container as an OOM kill or platform stop would, for recovery testing. Default off (the route is 404) |
 | `RESUMABLE_RUNS` | var | no | `1` turns on resumable runs (below). Default off. Needs the `SNAPSHOTS` R2 binding and a webhook that lists `task.resume` |
 | `SNAPSHOTS` | R2 binding | for warm repos / resumable runs | Bucket `buildd-cloud-runner-snapshots` (`wrangler.jsonc`); `deploy.ts` creates it and its lifecycle rule |
@@ -158,12 +158,16 @@ The `repo` section (report version 2) says how the repo got onto the disk:
 `source` `warm` or `clone`, `fallbackReason` for a clone (`disabled`,
 `no_snapshot`, `unavailable`, `disk`, `restore_failed`), `snapshotAgeMs`,
 `warmUploadSkipReason` (`too_large` when a warm upload was due but the repo was
-over `WARM_MAX_BUNDLE_BYTES`, else null), and
-`bytes.{clone,restore,fetch,cache,upload,warmRepo}` (`warmRepo`: the clone's
-size as measured against the cap). `durationsMs.restoreWarm`,
-`durationsMs.fetch` and `durationsMs.warmUpload` time the warm path the way
-`durationsMs.clone` times a clone. All come from the runner's `BUILDD_PHASE=`,
-`BUILDD_METRIC=`, `BUILDD_REPO_SOURCE=` and `BUILDD_WARM_UPLOAD=` lines
+over the cap, else null), `cacheSkipped` (version 6: `{ part, bytes, cap }`
+when the pnpm store, `part: 'pnpm-store'`, or the whole cache tarball,
+`part: 'cache'`, was left out of the upload for size, else null), and
+`bytes.{clone,restore,fetch,cache,cacheRaw,upload,warmRepo}` (`warmRepo`: the
+clone's size as measured against the cap; `cache`: the cache tarball as
+stored, zstd-compressed; `cacheRaw`: the same tarball before compression).
+`durationsMs.restoreWarm`, `durationsMs.restoreCache`, `durationsMs.fetch`
+and `durationsMs.warmUpload` time the warm path the way `durationsMs.clone`
+times a clone. All come from the runner's `BUILDD_PHASE=`, `BUILDD_METRIC=`,
+`BUILDD_REPO_SOURCE=`, `BUILDD_WARM_UPLOAD=` and `BUILDD_CACHE_SKIPPED=` lines
 (`docs/runner-container.md`).
 
 ### Eval report
@@ -417,6 +421,9 @@ binding, streaming bodies both ways.
   the query string is ignored. No grant (no GitHub App link, token refused):
   `503`, and the runner clones as usual.
 - **Layout.** `warm/<workspaceId>/<generation>/{repo.bundle,bun-cache.tar,manifest.json}`
+  (`bun-cache.tar` keeps its name but holds a zstd-compressed tarball when
+  the image has zstd; the restore's `zstd -d -f` passes an older plain
+  tarball through unchanged)
   plus `warm/<workspaceId>/lock`. The kind comes first so a prefix-only R2
   lifecycle rule can cover it.
 - **Refresh.** One in flight per workspace: `POST /warm/begin` takes the lock
@@ -436,8 +443,9 @@ binding, streaming bodies both ways.
   Every body, single or part, is piped into R2 through a `FixedLengthStream`,
   never read into Worker memory.
 - **Limits.** `content-length` is required on every PUT (a single PUT at most
-  5 GB, a part at most 512 MiB). `WARM_MAX_BUNDLE_BYTES` (default 1 GiB) caps
-  a warm part: a single PUT past it is refused, a completed multipart object
+  5 GB, a part at most 512 MiB). The workspace's `gitConfig.warmSnapshot.maxBytes`
+  (from the grant, at most 8 GiB), else `WARM_MAX_BUNDLE_BYTES` (default
+  1 GiB), caps a warm part, and `GET /warm/limits` tells the runner which: a single PUT past it is refused, a completed multipart object
   past it is deleted (413). The runner measures the clone before bundling and
   skips the upload past the same cap (`warmUploadSkipReason: too_large` in
   the run report), so a repo too big to snapshot clones every time instead of

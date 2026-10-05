@@ -43,8 +43,15 @@ mock.module('@/lib/api-auth', () => ({
 }));
 
 // Mock team-access
+const mockHoldsInWorkspace = mock(async (u: string, w: string, _permission: string) => {
+  const access: any = await (mockVerifyWorkspaceAccess as any)(u, w);
+  return !!access && (access.role === 'owner' || access.role === 'admin');
+});
 mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
+  // The route asks for a named permission in the workspace's team; mirror the
+  // registry default (owner, admin) over this file's access mock.
+  holdsInWorkspace: mockHoldsInWorkspace,
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
@@ -79,7 +86,7 @@ let currentUpdateTable: 'tasks' | 'workers' = 'tasks';
 // Mock database
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       accounts: { findFirst: mockAccountsFindFirst },
       tasks: { findFirst: mockTasksFindFirst },
       workers: { findMany: mockWorkersFindMany },
@@ -112,7 +119,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 // Mock schema
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   accounts: { apiKey: 'apiKey', id: 'id' },
   tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   workers: { id: 'id', taskId: 'taskId', status: 'status' },
