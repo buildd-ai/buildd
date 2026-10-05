@@ -13,7 +13,7 @@ mock.module('@buildd/core/db/schema', () => ({ accounts: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (f: unknown, v: unknown) => ({ f, v }) }));
 
 import {
-  authenticateTaskScopedCaller, taskScopeAllowsInitiative, taskScopeAllowsMission, taskScopeAllowsTask,
+  authenticateTaskScopedCaller, isOrchestrationTaskToken, taskScopeAllowsMissionTask, taskScopeAllowsInitiative, taskScopeAllowsMission, taskScopeAllowsTask,
   taskScopeAllowsWorker, taskScopeAllowsWorkerId, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace,
 } from './task-token-auth';
 import { mintTaskToken } from './task-token';
@@ -101,6 +101,45 @@ describe('authenticateTaskScopedCaller', () => {
     mockAccountsFindFirst.mockResolvedValue(null);
     const { token } = mintTaskToken(MINT)!;
     expect(await authenticateTaskScopedCaller(token)).toBeNull();
+  });
+});
+
+describe('authenticateTaskScopedCaller — admin (orchestration) tokens', () => {
+  beforeEach(() => {
+    process.env.AUTH_SECRET = 'test-secret';
+    mockAuthenticateApiKey.mockReset();
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue(ACCOUNT);
+  });
+
+  it('resolves an admin token at admin level, still with no scopes, no workspace list and its task scope', async () => {
+    const { token } = mintTaskToken({ ...MINT, level: 'admin' })!;
+    const account = await authenticateTaskScopedCaller(token);
+    expect(account?.level).toBe('admin');
+    expect(account?.scopes).toBeNull();
+    expect(account?.workspaceIds).toBeNull();
+    expect(account?.hostRunner).toBe(false);
+    expect(account?.taskScope).toMatchObject({ taskId: 'task-1', workspaceId: 'ws-1' });
+    expect(isOrchestrationTaskToken(account!)).toBe(true);
+  });
+
+  it('resolves a token without a level at worker level even when the minting key is admin', async () => {
+    const { token } = mintTaskToken(MINT)!;
+    const account = await authenticateTaskScopedCaller(token);
+    expect(account?.level).toBe('worker');
+    expect(isOrchestrationTaskToken(account!)).toBe(false);
+  });
+
+  it('refuses an admin token once its minting key is no longer admin', async () => {
+    const { token } = mintTaskToken({ ...MINT, level: 'admin' })!;
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, level: 'worker' });
+    expect(await authenticateTaskScopedCaller(token)).toBeNull();
+    mockAccountsFindFirst.mockResolvedValue({
+      ...ACCOUNT, scopes: ['tasks:read', 'tasks:write', 'workers:write', 'analytics:read', 'knowledge:write', 'missions:admin'],
+    });
+    expect(await authenticateTaskScopedCaller(token)).toBeNull();
+    mockAccountsFindFirst.mockResolvedValue({ ...ACCOUNT, scopes: ['admin'], workspaceIds: null });
+    expect((await authenticateTaskScopedCaller(token))?.level).toBe('admin');
   });
 });
 
@@ -215,5 +254,45 @@ describe('taskScopeAllowsWorkerId', () => {
     expect(await taskScopeAllowsWorkerId(scoped, 'w-3')).toBe(false);
     mockWorkersFindFirst.mockResolvedValue(null);
     expect(await taskScopeAllowsWorkerId(scoped, 'w-gone')).toBe(false);
+  });
+});
+
+describe('taskScopeAllowsMissionTask', () => {
+  const scope = { taskId: 'task-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+  const admin = { level: 'admin', taskScope: scope };
+  const worker = { level: 'worker', taskScope: scope };
+  const sibling = { id: 'task-2', workspaceId: 'ws-1', missionId: 'm-1' };
+  beforeEach(() => {
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } });
+  });
+
+  it('does not restrict an account key, of any level', async () => {
+    expect(await taskScopeAllowsMissionTask({ level: 'admin' }, sibling)).toBe(true);
+    expect(await taskScopeAllowsMissionTask({ level: 'worker' }, { ...sibling, missionId: null })).toBe(true);
+  });
+
+  it('allows any task token its own task', async () => {
+    expect(await taskScopeAllowsMissionTask(worker, { id: 'task-1', workspaceId: 'ws-1', missionId: null })).toBe(true);
+  });
+
+  it("allows an admin token a task on its own task's mission", async () => {
+    expect(await taskScopeAllowsMissionTask(admin, sibling)).toBe(true);
+  });
+
+  it("refuses a worker token its own mission's other tasks, without reading anything", async () => {
+    expect(await taskScopeAllowsMissionTask(worker, sibling)).toBe(false);
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('refuses an admin token another mission, another workspace, and a task on no mission', async () => {
+    expect(await taskScopeAllowsMissionTask(admin, { ...sibling, missionId: 'm-2' })).toBe(false);
+    expect(await taskScopeAllowsMissionTask(admin, { ...sibling, workspaceId: 'ws-2' })).toBe(false);
+    expect(await taskScopeAllowsMissionTask(admin, { ...sibling, missionId: null })).toBe(false);
+  });
+
+  it('refuses an admin token whose own task has no mission', async () => {
+    mockTasksFindFirst.mockResolvedValue({ missionId: null, workspaceId: 'ws-1', mission: null });
+    expect(await taskScopeAllowsMissionTask(admin, sibling)).toBe(false);
   });
 });

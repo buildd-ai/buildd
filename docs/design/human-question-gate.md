@@ -1,5 +1,5 @@
 ---
-status: partially
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "question-check-route"
@@ -15,12 +15,17 @@ assertions:
     type: "config_key"
     key: "jevQuestionGate"
     file: "packages/core/db/schema.ts"
-  # Unbuilt: a hold still parks and notifies exactly like ask; nothing reads
-  # resurfaceAt yet (see HOLD_RESURFACE_MS in packages/core/question-gate.ts).
+  # A hold parks without a notification (the park path resolves it), and a
+  # sweep surfaces it at its deadline (lib/question-hold.ts).
   - id: "hold-resurface-read-by-park-path"
     type: "symbol_reachable"
-    symbol: "resurfaceAt"
+    symbol: "resolveHold"
     entry: "apps/web/src/app/api/workers/[id]/route.ts"
+    as: "read"
+  - id: "hold-resurface-sweep"
+    type: "symbol_reachable"
+    symbol: "resurfaceHeldQuestions"
+    entry: "apps/web/src/app/api/cron/notify-away/route.ts"
     as: "read"
 ---
 

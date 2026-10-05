@@ -281,9 +281,8 @@ export interface WorkspaceGitConfig {
   // `integrationBranchEnabled`; an existing mission's flag is the runtime truth
   // from then on (see `missionIntegrationBase()` in mission-integration.ts).
   //
-  // Absent ⇒ 'mission-branch' (opt-OUT) — the same shape as `autoMergeOnGreenCI`
-  // replacing `autoMergePR` below: an unconfigured workspace gets the newer,
-  // batched-PR default, not the legacy per-task one.
+  // Absent ⇒ 'mission-branch' (opt-OUT): an unconfigured workspace gets the
+  // newer, batched-PR default, not the legacy per-task one.
   branchStrategy?: BranchStrategy;
 
   // Other same-team workspaces whose `docs` corpus this workspace's agents may
@@ -479,12 +478,18 @@ export interface WorkspaceGitConfig {
   // at task-creation time. The existing loop machinery handles re-queuing.
   enforceGreenCI?: boolean;
 
-  // Auto-merge PRs via GitHub's auto-merge feature (requires branch protection + CI)
-  // When enabled, PRs created by workers will have auto-merge enabled with squash method
+  /**
+   * @deprecated Inert. No merge gate reads it: `resolvePolicy` decides from
+   * `mergePolicy` (migration 0113 converted these flags to a mergePolicy and
+   * stripped them). Kept in the type only so old stored rows still parse.
+   */
   autoMergePR?: boolean;
 
-  // Replaces autoMergePR — defaults to TRUE when neither field is set, making auto-merge opt-OUT.
-  // Takes precedence over autoMergePR when present.
+  /**
+   * @deprecated Inert, same as `autoMergePR`. The dashboard used to write it from
+   * an "Auto-merge on green CI" checkbox that changed nothing; the config route
+   * no longer writes it. Use `mergePolicy.tier` (auto-threshold = merge on green CI).
+   */
   autoMergeOnGreenCI?: boolean;
 
   // Safety rails for autoMergePR — legacy, no longer consulted.

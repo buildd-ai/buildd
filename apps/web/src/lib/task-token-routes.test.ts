@@ -5,7 +5,8 @@
  * `taskScope`; nothing stops a route from then treating it like the account
  * key. So each route file that calls it must also apply a scope check
  * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
- * `taskScopeAllowsWorkerPr` / `taskScopeAllowsMission` / `taskScopeAllowsInitiative`,
+ * `taskScopeAllowsWorkerPr` / `taskScopeAllowsMission` / `taskScopeAllowsInitiative` /
+ * `taskScopeAllowsMissionTask`,
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
  * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it
@@ -18,7 +19,7 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
@@ -38,22 +39,27 @@ const OPTED_IN = [
   'apps/web/src/app/api/initiatives/[id]/artifacts/route.ts',
   'apps/web/src/app/api/mcp/route.ts',
   'apps/web/src/app/api/missions/[id]/artifacts/route.ts',
+  'apps/web/src/app/api/missions/[id]/evaluate/route.ts',
   'apps/web/src/app/api/missions/[id]/notes/route.ts',
+  'apps/web/src/app/api/missions/[id]/route.ts',
   'apps/web/src/app/api/prs/route.ts',
   'apps/web/src/app/api/releases/[id]/route.ts',
   'apps/web/src/app/api/releases/route.ts',
   'apps/web/src/app/api/stats/coordination/route.ts',
   'apps/web/src/app/api/stats/usage/route.ts',
+  'apps/web/src/app/api/tasks/[id]/approve-plan/route.ts',
   'apps/web/src/app/api/tasks/[id]/error-traces/route.ts',
   'apps/web/src/app/api/tasks/[id]/evidence/route.ts',
   'apps/web/src/app/api/tasks/[id]/messages/route.ts',
   'apps/web/src/app/api/tasks/[id]/notes/route.ts',
+  'apps/web/src/app/api/tasks/[id]/reject-plan/route.ts',
   'apps/web/src/app/api/tasks/[id]/route.ts',
   'apps/web/src/app/api/tasks/route.ts',
   'apps/web/src/app/api/workers/[id]/artifacts/route.ts',
   'apps/web/src/app/api/workers/[id]/error-traces/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts',
   'apps/web/src/app/api/workers/[id]/evidence/[evidenceId]/confirm/route.ts',
+  'apps/web/src/app/api/workers/[id]/instruct/route.ts',
   'apps/web/src/app/api/workers/[id]/page-source/route.ts',
   'apps/web/src/app/api/workers/[id]/park/route.ts',
   'apps/web/src/app/api/workers/[id]/prompt-bundles/route.ts',

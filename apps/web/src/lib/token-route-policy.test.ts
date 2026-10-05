@@ -60,6 +60,15 @@ describe('REST token scope policy', () => {
     expect(hasTokenRouteAdminAccess({ level: 'admin' }, request('/api/secrets'))).toBe(true);
     expect(hasTokenRouteAdminAccess({ level: 'worker' }, request('/api/secrets'))).toBe(false);
   });
+  test("a per-task token never passes a route's admin gate, even at admin level", () => {
+    const taskScope = { taskId: 't', workspaceId: 'w', expiresAt: Date.now() + 60_000 };
+    for (const path of ['/api/secrets', '/api/missions/m', '/api/workers/w/instruct', '/api/workspaces/w/config']) {
+      expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: null, taskScope }, request(path, 'POST'))).toBe(false);
+      expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: null, taskScope }, request(path, 'POST'), 'admin')).toBe(false);
+    }
+    // The same account without a task scope is an admin key.
+    expect(hasTokenRouteAdminAccess({ level: 'admin', scopes: null }, request('/api/secrets', 'POST'))).toBe(true);
+  });
   test('nested workspace capabilities take precedence over workspace administration', () => {
     expect(requiredTokenScope('/api/workspaces/demo/skills', 'POST')).toBe('skills:admin');
     expect(requiredTokenScope('/api/workspaces/demo/schedules', 'POST')).toBe('schedules:write');

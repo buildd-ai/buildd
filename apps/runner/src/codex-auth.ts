@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { stableCodexHomeIsolatedPath as _stableCodexHomeIsolatedPath } from './isolation-paths.js';
 
@@ -75,6 +75,40 @@ export function ensureStableCodexHome(workerId: string, explicitPath?: string): 
 }
 
 /**
+ * Point a per-worker CODEX_HOME's auth.json at the machine's own Codex login
+ * (`codex login` on the runner host) with a symlink, so the Codex CLI reads
+ * the real login and its token refreshes land back in the user's file instead
+ * of in a copy that goes stale. Replaces whatever auth.json was there.
+ */
+export function linkMachineCodexAuth(codexHome: string, machineAuthPath: string): void {
+  fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+  const authPath = join(codexHome, 'auth.json');
+  const target = resolve(machineAuthPath);
+  // The machine login already IS this file (CODEX_HOME points here): nothing to link.
+  if (target === resolve(authPath)) return;
+  try {
+    const st = fs.lstatSync(authPath);
+    if (st.isSymbolicLink() && resolve(dirname(authPath), fs.readlinkSync(authPath)) === target) return;
+    fs.rmSync(authPath, { force: true });
+  } catch { /* absent */ }
+  fs.symlinkSync(target, authPath);
+}
+
+/** True when `<codexHome>/auth.json` is a link to a machine login (linkMachineCodexAuth). */
+export function codexAuthIsMachineLink(codexHome: string): boolean {
+  try { return fs.lstatSync(join(codexHome, 'auth.json')).isSymbolicLink(); } catch { return false; }
+}
+
+/**
+ * Remove an auth.json symlink before a server credential is written into this
+ * home, so the write lands in the per-worker file and never through the link
+ * into the machine's own login.
+ */
+function detachMachineCodexAuth(codexHome: string): void {
+  if (codexAuthIsMachineLink(codexHome)) fs.rmSync(join(codexHome, 'auth.json'), { force: true });
+}
+
+/**
  * (Re)write auth.json into an existing CODEX_HOME. Idempotent.
  *
  * OAuth credentials MUST use codex-cli's NESTED shape
@@ -107,6 +141,7 @@ export function writeCodexAuthJson(codexHome: string, credential: CodexCredentia
         },
         last_refresh: new Date().toISOString(),
       };
+  detachMachineCodexAuth(codexHome);
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify(authJson));
   fs.chmodSync(authPath, 0o600);
@@ -118,6 +153,7 @@ export function writeCodexAuthJson(codexHome: string, credential: CodexCredentia
  */
 export function writeCodexApiKeyToHome(codexHome: string, apiKey: string): void {
   fs.mkdirSync(codexHome, { recursive: true });
+  detachMachineCodexAuth(codexHome);
   const authPath = join(codexHome, 'auth.json');
   fs.writeFileSync(authPath, JSON.stringify({ api_key: apiKey }));
   fs.chmodSync(authPath, 0o600);
@@ -133,6 +169,9 @@ export function seedCodexAuthIfMissing(workerId: string, credential: CodexCreden
   const codexHome = explicitPath ?? stableCodexHomePath(workerId);
   fs.mkdirSync(codexHome, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(codexHome, 0o700); } catch {}
+  // A link left by a machine-login run is not a CLI-refreshed copy of this
+  // credential: drop it so the server credential is seeded.
+  detachMachineCodexAuth(codexHome);
   const authPath = join(codexHome, 'auth.json');
   if (!fs.existsSync(authPath)) {
     writeCodexAuthJson(codexHome, credential);
