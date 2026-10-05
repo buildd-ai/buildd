@@ -8,6 +8,11 @@ import {
   needsUpdate,
   updateBody,
   loadManifest,
+  parseProfiles,
+  profileArg,
+  selectJobs,
+  CRON_MODULES,
+  type ManifestJob,
 } from './sync-crons';
 
 describe('parseCronField', () => {
@@ -211,5 +216,81 @@ describe('secret handling — the hazard that made a local run risky', () => {
     const job = mk('local-stale');
     updateBody(job, false, true);
     expect(job.extendedData.headers.Authorization).toBe('Bearer local-stale');
+  });
+});
+
+describe('profiles — an operator schedules only the parts it runs', () => {
+  const m = loadManifest();
+  const byPath = (path: string) => m.jobs.find((j) => j.path === path);
+
+  test('every manifest job declares a known profile', () => {
+    const known = new Set<string>(['core', 'ops', ...CRON_MODULES.map((x) => `module:${x}`)]);
+    for (const job of m.jobs) expect(known.has(job.profile as string), `${job.path}: ${job.profile}`).toBe(true);
+  });
+
+  test('the design classification: core loop, ops, and module jobs', () => {
+    const core = selectJobs(m.jobs, parseProfiles('core')).map((j) => j.path).sort();
+    expect(core).toEqual([
+      '/api/cron/codex-token-refresh',
+      '/api/cron/dispatch-drain',
+      '/api/cron/dispatch-drain?gate=due',
+      '/api/cron/lease-expiry-guard',
+      '/api/cron/lease-expiry-guard?gate=due',
+      '/api/cron/maintenance',
+      '/api/cron/pr-reconcile?scope=landing&gate=due',
+      '/api/cron/pr-reconcile?scope=merge-state',
+      '/api/cron/task-archive',
+      '/api/cron/waiting-input-sweep',
+    ]);
+    const ops = selectJobs(m.jobs, parseProfiles('ops')).map((j) => j.path).sort();
+    expect(ops).toEqual(['/api/cron/queue-stall', '/api/cron/queue-stall?scope=fleet-idle', '/api/cron/role-outcomes']);
+    expect(byPath('/api/cron/schedules')!.profile).toBe('module:schedules');
+    expect(byPath('/api/cron/mission-invariants')!.profile).toBe('module:missions');
+  });
+
+  test('core maintenance has its own job, at the schedules tick\'s exact cadence', () => {
+    // Splitting it out of `schedules` must not change when it runs on buildd.dev.
+    const tick = byPath('/api/cron/schedules')!;
+    const maint = byPath('/api/cron/maintenance')!;
+    expect(maint.schedule).toBe(tick.schedule);
+    expect(maint.enabled).not.toBe(false);
+    expect(maint.method ?? 'GET').toBe('GET');
+  });
+
+  test('no profile list selects every job, so the default behaviour is unchanged', () => {
+    expect(parseProfiles(undefined)).toBeNull();
+    expect(parseProfiles('')).toBeNull();
+    expect(parseProfiles('  ')).toBeNull();
+    expect(selectJobs(m.jobs, null)).toEqual(m.jobs);
+  });
+
+  test('a list selects the union, and module:* selects every module', () => {
+    const jobs: ManifestJob[] = [
+      { title: 'a', path: '/api/cron/a', schedule: '0 * * * *', profile: 'core' },
+      { title: 'b', path: '/api/cron/b', schedule: '0 * * * *', profile: 'ops' },
+      { title: 'c', path: '/api/cron/c', schedule: '0 * * * *', profile: 'module:missions' },
+      { title: 'd', path: '/api/cron/d', schedule: '0 * * * *', profile: 'module:chat' },
+    ];
+    expect(selectJobs(jobs, parseProfiles('core,ops')).map((j) => j.title)).toEqual(['a', 'b']);
+    expect(selectJobs(jobs, parseProfiles('core, module:chat')).map((j) => j.title)).toEqual(['a', 'd']);
+    expect(selectJobs(jobs, parseProfiles('module:*')).map((j) => j.title)).toEqual(['c', 'd']);
+  });
+
+  test('an unknown profile is rejected rather than silently selecting nothing', () => {
+    expect(() => parseProfiles('core,opps')).toThrow(/opps/);
+    expect(() => parseProfiles('module:nope')).toThrow(/module:nope/);
+  });
+
+  test('a job with no profile is rejected when a list is given', () => {
+    const jobs = [{ title: 'x', path: '/api/cron/x', schedule: '0 * * * *' }] as ManifestJob[];
+    expect(() => selectJobs(jobs, parseProfiles('core'))).toThrow(/\/api\/cron\/x/);
+  });
+
+  test('the list comes from --profile, then CRON_PROFILES', () => {
+    expect(profileArg(['--profile', 'core,ops'], {})).toBe('core,ops');
+    expect(profileArg(['--profile=core'], {})).toBe('core');
+    expect(profileArg([], { CRON_PROFILES: 'core,ops' })).toBe('core,ops');
+    expect(profileArg(['--profile', 'ops'], { CRON_PROFILES: 'core' })).toBe('ops');
+    expect(profileArg([], {})).toBeUndefined();
   });
 });

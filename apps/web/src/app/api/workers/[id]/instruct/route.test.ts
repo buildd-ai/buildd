@@ -6,6 +6,8 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
+// The scope helper's read of a per-task token's own task.
+const mockTasksFindFirst = mock(async () => ({ missionId: 'm-1', workspaceId: 'ws-1', mission: { initiativeId: null } }) as any);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
     where: mock(() => ({
@@ -45,6 +47,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: { teams: { findFirst: async () => null },
       workers: { findFirst: mockWorkersFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -159,6 +162,41 @@ describe('POST /api/workers/[id]/instruct', () => {
     const res = await POST(req, { params: mockParams });
 
     expect(res.status).toBe(200);
+  });
+
+  describe("an orchestration task's admin per-task token", () => {
+    const taskScope = { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
+    const workerOn = (over: Record<string, unknown> = {}, task: Record<string, unknown> = {}) => ({
+      id: WORKER_ID, status: 'running', workspaceId: 'ws-1', workspace: { teamId: 'team-1' },
+      task: { id: 'task-sibling', workspaceId: 'ws-1', missionId: 'm-1', ...task },
+      instructionHistory: [], pendingInstructions: null, ...over,
+    });
+    const send = () => POST(createMockRequestWithAuth({ message: 'Rebase onto main' }, 'bld_key'), { params: mockParams });
+
+    it("instructs the worker of a task on its own task's mission", async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin', scopes: null, taskScope });
+      mockWorkersFindFirst.mockResolvedValue(workerOn());
+      expect((await send()).status).toBe(200);
+    });
+
+    it('is refused a worker on another mission, in another workspace, or on a task with no mission, queueing nothing', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'admin', scopes: null, taskScope });
+      for (const w of [workerOn({}, { missionId: 'm-2' }), workerOn({ workspaceId: 'ws-2' }, { workspaceId: 'ws-2' }), workerOn({ workspaceId: 'ws-2' }), workerOn({}, { missionId: null }), workerOn({ task: null })]) {
+        mockWorkersFindFirst.mockResolvedValue(w);
+        expect((await send()).status).toBe(404);
+      }
+      expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    });
+
+    it('a worker-level task token is refused outright, even on its own mission', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1', level: 'worker', scopes: null, taskScope });
+      mockWorkersFindFirst.mockResolvedValue(workerOn());
+      expect((await send()).status).toBe(401);
+      expect(mockWorkersFindFirst).not.toHaveBeenCalled();
+    });
   });
 
   it('returns 404 for an admin-level API token from a different team', async () => {

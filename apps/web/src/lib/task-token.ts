@@ -1,5 +1,5 @@
 import { createHash, createHmac, hkdfSync, timingSafeEqual } from 'crypto';
-import { TOKEN_PRESETS, type TokenScope } from '@buildd/core/token-scopes';
+import { TOKEN_PRESETS, hasTokenScope, type TokenScope } from '@buildd/core/token-scopes';
 
 /**
  * Per-task runner token for a cloud container.
@@ -35,6 +35,18 @@ import { TOKEN_PRESETS, type TokenScope } from '@buildd/core/token-scopes';
  * forecast is not among them: it is team-wide by nature. The set is pinned by
  * task-token-routes.test.ts.
  *
+ * An orchestration task (organizer, planning, heartbeat) may get an
+ * admin-level token instead (`level: 'admin'`): only from an admin key
+ * (`canMintAdminTaskToken`), only for a task whose own row is an orchestration
+ * task, and still confined to that one task. Admin level opens only the few
+ * mission-scoped writes an orchestration run needs, each confined to its own
+ * task's mission in its own workspace: reading and updating that mission and
+ * evaluating its criteria, approving or rejecting that mission's plans,
+ * reading that mission's tasks and instructing their workers. Nothing
+ * team-wide (other missions, workspaces, secrets, schedules, skills, releases,
+ * knowledge maintenance) is reachable, and every route's generic admin gate
+ * (`hasTokenRouteAdminAccess`) stays closed to a task token of either level.
+ *
  * The token also carries the task's workspace (so routes can confine it to
  * that workspace without another lookup) and a binding to the minting key:
  * regenerating or deleting that key ends every token it minted.
@@ -48,8 +60,9 @@ export const TASK_TOKEN_PREFIX = 'bldt_';
  * What a scoped key must hold to mint task tokens, and keep holding for them
  * to authenticate: the runner preset, which covers every route a task token
  * may call. `admin` holds them all. A legacy (unscoped) key always qualifies.
- * The token is worker-level and confined to one task, so it never does more
- * than the key that minted it.
+ * The token is confined to one task and is worker-level unless an admin key
+ * minted it for an orchestration task, so it never does more than the key
+ * that minted it.
  */
 export const TASK_TOKEN_MINTING_SCOPES: readonly TokenScope[] = TOKEN_PRESETS.runner.scopes;
 
@@ -63,6 +76,19 @@ export function missingTaskTokenScopes(scopes: readonly string[] | null | undefi
 export const TASK_TOKEN_DEFAULT_TTL_MS = 8 * 60 * 60 * 1000;
 export const TASK_TOKEN_MAX_TTL_MS = 12 * 60 * 60 * 1000;
 
+export type TaskTokenLevel = 'worker' | 'admin';
+
+/**
+ * May this key mint an admin-level task token? Only an admin key: a legacy
+ * key at `admin` level, or a scoped key holding the full `admin` scope. A
+ * scoped key with only some `:admin` capabilities does not qualify: the token
+ * carries no scopes, so it could not be narrowed to them.
+ */
+export function canMintAdminTaskToken(account: { level?: string | null; scopes?: readonly string[] | null }): boolean {
+  if (account.scopes == null) return account.level === 'admin';
+  return hasTokenScope(account.scopes, 'admin');
+}
+
 export interface TaskTokenClaims {
   /** Account that minted the token; the container acts as this account. */
   accountId: string;
@@ -74,6 +100,8 @@ export interface TaskTokenClaims {
   keyBinding: string;
   /** Expiry, epoch ms. */
   expiresAt: number;
+  /** 'admin' only for an orchestration task minted by an admin key; absent in the payload means 'worker'. */
+  level: TaskTokenLevel;
 }
 
 const KEY_LABEL = 'task-token';
@@ -109,7 +137,7 @@ export function taskTokenKeyBinding(keyHash: string): string {
 
 /** Null when no signing secret is configured. */
 export function mintTaskToken(
-  input: { accountId: string; taskId: string; workspaceId: string; keyHash: string; ttlMs?: number },
+  input: { accountId: string; taskId: string; workspaceId: string; keyHash: string; ttlMs?: number; level?: TaskTokenLevel },
   now: number = Date.now(),
 ): { token: string; expiresAt: number } | null {
   const key = signingKey();
@@ -121,6 +149,9 @@ export function mintTaskToken(
     w: input.workspaceId,
     k: taskTokenKeyBinding(input.keyHash),
     e: expiresAt,
+    // Only an admin token carries a level, so a worker token's payload is
+    // exactly what it was before levels existed.
+    ...(input.level === 'admin' ? { l: 'admin' } : {}),
   })).toString('base64url');
   return { token: `${TASK_TOKEN_PREFIX}${payload}.${mac(key, payload)}`, expiresAt };
 }
@@ -137,7 +168,7 @@ export function verifyTaskToken(token: string | null | undefined, now: number = 
   const given = Buffer.from(body.slice(dot + 1));
   const expected = Buffer.from(mac(key, payload));
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
-  let parsed: { a?: unknown; t?: unknown; w?: unknown; k?: unknown; e?: unknown };
+  let parsed: { a?: unknown; t?: unknown; w?: unknown; k?: unknown; e?: unknown; l?: unknown };
   try {
     parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
   } catch {
@@ -147,6 +178,11 @@ export function verifyTaskToken(token: string | null | undefined, now: number = 
     typeof parsed.a !== 'string' || typeof parsed.t !== 'string' || typeof parsed.w !== 'string'
     || typeof parsed.k !== 'string' || typeof parsed.e !== 'number'
   ) return null;
+  // An unknown level is refused rather than read as worker.
+  if (parsed.l !== undefined && parsed.l !== 'admin') return null;
   if (parsed.e <= now) return null;
-  return { accountId: parsed.a, taskId: parsed.t, workspaceId: parsed.w, keyBinding: parsed.k, expiresAt: parsed.e };
+  return {
+    accountId: parsed.a, taskId: parsed.t, workspaceId: parsed.w, keyBinding: parsed.k, expiresAt: parsed.e,
+    level: parsed.l === 'admin' ? 'admin' : 'worker',
+  };
 }

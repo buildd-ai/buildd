@@ -306,7 +306,9 @@ export async function POST(req: NextRequest) {
     const mission = worker.task?.missionId
       ? await db.query.missions.findFirst({
           where: eq(missions.id, worker.task.missionId),
-          columns: { workingBranch: true, integrationBranchEnabled: true },
+          // Superset of what the base guard needs: the merge-policy columns let
+          // the response's `autoMergeEnabled` come from resolvePolicy below.
+          columns: RESOLVE_POLICY_MISSION_COLUMNS,
         })
       : null;
     // The same guard object every other door uses (completion auto-detect,
@@ -1210,8 +1212,16 @@ export async function POST(req: NextRequest) {
       console.error('[changeIntent] PR conflict detection failed (non-fatal):', err);
     }
 
-    // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
-    const autoMergeEnabled = !!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR);
+    // Auto-merge intent flag: true when the resolved merge policy lets buildd merge
+    // this PR unattended once CI is green (tier auto-threshold; the safety check
+    // still runs). Derived from resolvePolicy — the same chain the merge gate uses —
+    // never from the legacy autoMergeOnGreenCI / autoMergePR flags, which no gate reads.
+    const autoMergeEnabled = resolvePolicy(
+      workspace as never,
+      mission,
+      { requiresReview: worker.task?.requiresReview ?? false },
+      { baseRef: prData.base?.ref ?? null },
+    ).tier === 'auto-threshold';
 
     // Task PRs based on a mission integration branch have no heartbeat loop to
     // notice them sitting open — request a review now rather than leaving them
@@ -1283,7 +1293,7 @@ export async function PATCH(req: NextRequest) {
 
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
+      with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
     });
 
     if (!worker) {
@@ -1295,11 +1305,11 @@ export async function PATCH(req: NextRequest) {
     }
     // A per-task token, and an agent run on its runner's key, may close only a
     // PR its task owns: its own worker's PR or one the task names.
-    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !agentRunMayActOnPr(account, worker, prNumber)) {
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: 'A task token may close only its own PR' }, { status: 403 });
     }
-    if (!account.taskScope && !agentRunMayActOnPr(account, worker, prNumber)) {
+    if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability: 'pr.close', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: `An agent run may close only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
     }
@@ -1472,7 +1482,7 @@ export async function PUT(req: NextRequest) {
     if (workerId) {
       worker = await db.query.workers.findFirst({
         where: eq(workers.id, workerId),
-        with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
+        with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, missionId: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
       });
       if (!worker) {
         return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
@@ -1481,7 +1491,7 @@ export async function PUT(req: NextRequest) {
         return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
       }
       // A per-task token is held to the same rule below, with its own message.
-      if (!account.taskScope && !agentRunMayActOnPr(account, worker, prNumber)) {
+      if (!account.taskScope && !(await agentRunMayActOnPr(account, worker, prNumber))) {
         void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
         return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
       }
@@ -1499,7 +1509,7 @@ export async function PUT(req: NextRequest) {
     }
     // A per-task token, and an agent run on its runner's key, may merge only a
     // PR its task owns: its own worker's PR or one the task names.
-    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !agentRunMayActOnPr(account, worker, prNumber)) {
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !(await agentRunMayActOnPr(account, worker, prNumber))) {
       void recordCapabilityDecision({ capability: 'pr.merge', decision: 'refused', workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: worker.id, accountId: account.id, principalVia: auditVia(account, worker), resource: `pr:${prNumber}`, reasonCode: 'pr_not_owned' });
       return NextResponse.json({ error: 'A task token may merge only its own PR' }, { status: 403 });
     }

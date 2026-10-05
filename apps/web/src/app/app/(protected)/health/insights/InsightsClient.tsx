@@ -20,11 +20,10 @@ export function InsightsClient({ series, window }: Props) {
   const settled = headline.shippedHours + headline.lostHours;
 
   return (
-    <div className="max-w-3xl mx-auto px-4 pt-4 pb-24 md:pt-6" data-testid="insights-page">
+    <div className="max-w-3xl mx-auto px-4 pt-14 pb-24 md:pt-6" data-testid="insights-page">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <a href="/app/health" className="text-meta text-text-muted hover:text-text-secondary">← Health</a>
-          <h1 className="text-heading font-bold">Insights</h1>
+          <h1 className="hidden md:block text-heading font-bold">Insights</h1>
           <p className="mt-1 text-lede text-text-secondary">How your agents&apos; work moved to production.</p>
         </div>
         <WindowPicker window={window} />

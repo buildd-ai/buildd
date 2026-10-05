@@ -438,7 +438,9 @@ export async function POST(
         if (typeof body.extendedContext === 'boolean') gitConfig.extendedContext = body.extendedContext;
         // enforceGreenCI — surfaced via the workspace CI policy toggle
         if (typeof body.enforceGreenCI === 'boolean') gitConfig.enforceGreenCI = body.enforceGreenCI;
-        if (typeof body.autoMergeOnGreenCI === 'boolean') gitConfig.autoMergeOnGreenCI = body.autoMergeOnGreenCI;
+        // `autoMergeOnGreenCI` is deliberately NOT written. No merge gate reads it —
+        // `resolvePolicy` decides from mergePolicy — so accepting it would let a
+        // save record a setting that does nothing. A stored value stays as-is.
         // Prose goal-criteria grader (validated above). Absent keeps the existing
         // value; 'auto' and null clear it, because missing already means auto.
         if (body.criteriaGrader !== undefined) {
