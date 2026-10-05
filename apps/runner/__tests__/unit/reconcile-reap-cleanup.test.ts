@@ -15,12 +15,6 @@ import type { LocalUIConfig } from '../../src/types';
 import * as realGitOps from '../../src/git-operations';
 import * as realBootstrap from '../../src/cbm-bootstrap';
 
-// These sessions must take the server-delivered Claude credential path (it is
-// what creates the per-worker CLAUDE_CONFIG_DIR under test). A machine login on
-// the host running the suite (host-seat.ts: an env token, or a keychain login
-// on a dev Mac) would win over it, so switch host-seat detection off.
-process.env.BUILDD_HOST_SEAT = 'off';
-
 // An SDK stream that stays open until its abort controller fires — a session
 // that is still running when reconcile/purge reaches it.
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({

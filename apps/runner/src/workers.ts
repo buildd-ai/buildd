@@ -80,7 +80,7 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
-import { applyHostSeatPolicy, describeHostSeat, detectHostSeat, hostModelCredentialValues } from './host-seat';
+import { applyHostSeatPolicy, describeHostSeat, hostModelCredentialValues } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
@@ -3494,10 +3494,14 @@ export class WorkerManager {
           this.addMilestone(worker, { type: 'status', label: 'Tenant token decryption failed', ts: Date.now() });
         }
       }
-      // The machine's own Claude login wins over a server-delivered seat
-      // (host-seat.ts). BUILDD_HOST_SEAT=off restores the old order.
-      applyHostSeatPolicy(cleanEnv);
-      const hostSeat = isCodexTask ? null : detectHostSeat();
+      // The machine's own Claude login (host-seat.ts): used when the claim
+      // delivers no stored seat, or over one under BUILDD_HOST_SEAT=prefer.
+      // With a stored seat under the default, the env is the pre-passthrough one.
+      const seatDecision = applyHostSeatPolicy(cleanEnv, {
+        serverSeatDelivered: !!(worker.serverOauthToken || worker.claudeAccessToken || worker.claudeCredentialId),
+        isCodexTask,
+      });
+      const hostSeat = seatDecision.hostSeat;
       const modelEnv = applyModelEnv(cleanEnv, {
         hostSeat,
         llmProvider: this.config.llmProvider,
@@ -3540,7 +3544,10 @@ export class WorkerManager {
         console.log(`[Worker ${worker.id}] Claude seat: ${describeHostSeat(hostSeat)}${skipped}`);
         sessionLog(worker.id, 'info', 'claude_seat_source', `source=machine-${hostSeat}${skipped ? ' server_seat=skipped' : ''}`, task.id);
       } else if (modelEnv.injected.includes('serverOauthToken') || shouldUseClaudeCredential(modelEnv, worker)) {
-        sessionLog(worker.id, 'info', 'claude_seat_source', 'source=server-managed', task.id);
+        if (seatDecision.deferredTo === 'server' && seatDecision.detected) {
+          console.log(`[Worker ${worker.id}] Claude seat: the seat stored in buildd; ${describeHostSeat(seatDecision.detected)} is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
+        }
+        sessionLog(worker.id, 'info', 'claude_seat_source', `source=server-managed${seatDecision.deferredTo ? ` machine_seat=${seatDecision.detected}` : ''}`, task.id);
       }
       if (modelEnv.injected.includes('tenantOauthToken') && tenantCtx) {
         console.log(`[Worker ${worker.id}] Injected tenant OAuth token for tenant ${tenantCtx.tenantId} (${tenantCtx.displayName || 'unnamed'})`);

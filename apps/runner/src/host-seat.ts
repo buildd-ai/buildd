@@ -2,8 +2,8 @@
  * The runner machine's own Claude subscription login ("host seat").
  *
  * A runner whose machine is configured with its own model login gives that
- * login to its agents, and it wins over a seat the server delivers on the
- * claim. Two shapes count:
+ * login to its agents (when it wins over a seat stored in buildd: see
+ * "Precedence" below). Two shapes count:
  *
  * - `env`: `CLAUDE_CODE_OAUTH_TOKEN` is set in the runner's environment (a
  *   `claude setup-token` value exported in the service env, a container env, a
@@ -16,11 +16,18 @@
  * A stub `~/.claude.json` `oauthAccount` or a credentials file holding only
  * MCP OAuth entries is NOT a login, so neither counts.
  *
- * Escape hatch: `BUILDD_HOST_SEAT=off` on the runner restores the old order (a
- * server-delivered seat is used and the machine's env token is not given to the
- * agent). It exists so an operator whose machine login turns out to be stale
- * can switch back with a restart instead of waiting for a release.
+ * Precedence, set by `BUILDD_HOST_SEAT` on the runner:
  *
+ * - unset / `auto` (default): the machine's seat is used whenever the claim
+ *   delivers no stored seat. When the claim does deliver one, the stored seat
+ *   is used and the agent env is exactly what it was before this module
+ *   existed, so a runner that relies on a stored seat sees no change.
+ * - `prefer`: the machine's seat wins over a stored seat. Set it once the
+ *   machine's login is known to work (run one real `claude -p` with it).
+ * - `off`: the machine's env token is never given to the agent; a stored seat
+ *   is used as before.
+ *
+
  * This module never reads or returns a token value. It only says whether one
  * is present.
  */
@@ -43,8 +50,15 @@ export interface HostSeatProbe {
   macKeychainHasLogin?: () => boolean;
 }
 
+export type HostSeatMode = 'auto' | 'prefer' | 'off';
+
+export function hostSeatMode(env: Record<string, string | undefined> = process.env): HostSeatMode {
+  const v = (env[HOST_SEAT_ENV] ?? '').trim().toLowerCase();
+  return v === 'off' || v === 'prefer' ? v : 'auto';
+}
+
 export function hostSeatDisabled(env: Record<string, string | undefined> = process.env): boolean {
-  return (env[HOST_SEAT_ENV] ?? '').trim().toLowerCase() === 'off';
+  return hostSeatMode(env) === 'off';
 }
 
 /** True when `~/.claude/.credentials.json` holds a Claude subscription login (not just MCP OAuth). */
@@ -98,17 +112,37 @@ export function detectHostSeat(probe: HostSeatProbe = {}): HostSeat | null {
   return null;
 }
 
+export interface HostSeatDecision {
+  /** The machine's seat, when it is the one the agent gets. Pass to applyModelEnv. */
+  hostSeat: HostSeat | null;
+  /** The machine has a seat but a stored seat was used instead (mode `auto`). */
+  deferredTo: 'server' | null;
+  /** The machine's seat that was detected, used or not. */
+  detected: HostSeat | null;
+  mode: HostSeatMode;
+}
+
 /**
- * Apply the escape hatch to an agent env built from the passthrough: with
- * `BUILDD_HOST_SEAT=off`, the machine's env token is not given to the agent.
- * Mutates and returns `env`.
+ * Decide whose Claude seat the agent gets, and make the agent env match.
+ * Mutates `env` (built from the passthrough): the machine's env token is
+ * removed unless the machine's seat is the one being used, so with a stored
+ * seat under `auto` the env is identical to the pre-passthrough one.
  */
 export function applyHostSeatPolicy(
   env: Record<string, string>,
-  runnerEnv: Record<string, string | undefined> = process.env,
-): Record<string, string> {
-  if (hostSeatDisabled(runnerEnv)) delete env[HOST_SEAT_TOKEN_VAR];
-  return env;
+  opts: { serverSeatDelivered: boolean; isCodexTask?: boolean; probe?: HostSeatProbe },
+): HostSeatDecision {
+  const runnerEnv = opts.probe?.env ?? process.env;
+  const mode = hostSeatMode(runnerEnv);
+  const detected = mode === 'off' ? null : detectHostSeat(opts.probe ?? {});
+  const use = !opts.isCodexTask && !!detected && (mode === 'prefer' || !opts.serverSeatDelivered);
+  if (!use && (mode === 'off' || opts.serverSeatDelivered)) delete env[HOST_SEAT_TOKEN_VAR];
+  return {
+    hostSeat: use ? detected : null,
+    deferredTo: !use && detected && opts.serverSeatDelivered && !opts.isCodexTask ? 'server' : null,
+    detected,
+    mode,
+  };
 }
 
 /** Human-readable source label for the runner log. Never includes a value. */

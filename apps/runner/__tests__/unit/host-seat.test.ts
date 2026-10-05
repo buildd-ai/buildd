@@ -40,11 +40,65 @@ describe('passthrough: the host env token reaches the agent', () => {
     expect(env.BUILDD_API_KEY).toBeUndefined();
   });
 
-  test('BUILDD_HOST_SEAT=off drops it again (escape hatch)', () => {
-    const env = applyHostSeatPolicy({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, { BUILDD_HOST_SEAT: 'off' });
+});
+
+describe('applyHostSeatPolicy: whose seat the agent gets', () => {
+  const home = tmpHome();
+  const probe = (env: Record<string, string>) => ({ env, home, platform: 'linux' as const });
+
+  test('auto, no stored seat: the machine env token is used', () => {
+    const env = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
+    const d = applyHostSeatPolicy(env, { serverSeatDelivered: false, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
+    expect(d.hostSeat).toBe('env');
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
+  });
+
+  test('auto, stored seat delivered: the stored seat wins and the env matches the pre-passthrough env', () => {
+    const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
+    const d = applyHostSeatPolicy(env, { serverSeatDelivered: true, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
+    expect(d.hostSeat).toBeNull();
+    expect(d.deferredTo).toBe('server');
+    expect(d.detected).toBe('env');
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
-    const kept = applyHostSeatPolicy({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }, {});
-    expect(kept.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
+    const r = applyModelEnv(env, { isCodexTask: false, hostSeat: d.hostSeat, serverOauthToken: SERVER_OAUTH });
+    expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(SERVER_OAUTH);
+    expect(r.hostSeatUsed).toBeUndefined();
+  });
+
+  test('prefer: the machine seat wins over a stored seat', () => {
+    const runnerEnv = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, BUILDD_HOST_SEAT: 'prefer' };
+    const env = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
+    const d = applyHostSeatPolicy(env, { serverSeatDelivered: true, probe: probe(runnerEnv) });
+    expect(d.hostSeat).toBe('env');
+    const r = applyModelEnv(env, { isCodexTask: false, hostSeat: d.hostSeat, serverOauthToken: SERVER_OAUTH });
+    expect(r.env.CLAUDE_CODE_OAUTH_TOKEN).toBe(HOST_TOKEN);
+  });
+
+  test('off: the env token never reaches the agent, stored seat or not', () => {
+    for (const serverSeatDelivered of [true, false]) {
+      const env: Record<string, string> = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
+      const d = applyHostSeatPolicy(env, { serverSeatDelivered, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN, BUILDD_HOST_SEAT: 'off' }) });
+      expect(d.hostSeat).toBeNull();
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    }
+  });
+
+  test('Codex task: no Claude seat decision is made', () => {
+    const env = { CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN };
+    const d = applyHostSeatPolicy(env, { serverSeatDelivered: false, isCodexTask: true, probe: probe({ CLAUDE_CODE_OAUTH_TOKEN: HOST_TOKEN }) });
+    expect(d.hostSeat).toBeNull();
+    expect(d.deferredTo).toBeNull();
+  });
+
+  test('auto, stored seat, host claude login: stored seat used; prefer flips it', () => {
+    const loginHome = tmpHome({ claudeAiOauth: { accessToken: 'a' } });
+    try {
+      const auto = applyHostSeatPolicy({}, { serverSeatDelivered: true, probe: { env: {}, home: loginHome, platform: 'linux' } });
+      expect(auto.hostSeat).toBeNull();
+      expect(auto.deferredTo).toBe('server');
+      const pref = applyHostSeatPolicy({}, { serverSeatDelivered: true, probe: { env: { BUILDD_HOST_SEAT: 'prefer' }, home: loginHome, platform: 'linux' } });
+      expect(pref.hostSeat).toBe('login');
+    } finally { rmSync(loginHome, { recursive: true, force: true }); }
   });
 });
 

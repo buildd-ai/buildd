@@ -200,14 +200,23 @@ flag ahead of `MODEL_PROXY_URL`:
 ## The runner machine's own model login
 
 A self-hosted runner whose machine has its own Claude login gives that login to
-its agents, and it wins over a subscription seat delivered on the claim
-(`oauth_token`, `claude_credential`). "Its own login" means
-`CLAUDE_CODE_OAUTH_TOKEN` in the runner's environment (on
-`RUNNER_ENV_PASSTHROUGH`, `apps/runner/src/agent-env.ts`) or a `claude login`
-under the runner user's `$HOME`; a stub `~/.claude.json` does not count.
-Detection is `detectHostSeat` in `apps/runner/src/host-seat.ts`; precedence is
-`applyModelEnv` / `shouldUseClaudeCredential` in
-`apps/runner/src/agent-model-env.ts`.
+its agents. "Its own login" means `CLAUDE_CODE_OAUTH_TOKEN` in the runner's
+environment (on `RUNNER_ENV_PASSTHROUGH`, `apps/runner/src/agent-env.ts`) or a
+`claude login` under the runner user's `$HOME`; a stub `~/.claude.json` does not
+count. Detection and precedence: `applyHostSeatPolicy` in
+`apps/runner/src/host-seat.ts`, then `applyModelEnv` /
+`shouldUseClaudeCredential` in `apps/runner/src/agent-model-env.ts`.
+
+Against a subscription seat delivered on the claim (`oauth_token`,
+`claude_credential`), `BUILDD_HOST_SEAT` on the runner decides:
+
+- unset / `auto`: the machine's login when the claim delivers no stored seat;
+  otherwise the stored seat, with the agent env exactly as it was before the
+  passthrough existed.
+- `prefer`: the machine's login wins.
+- `off`: the machine's env token never reaches the agent.
+
+In every mode:
 
 - A delivered metered key (`anthropic_api_key`) still fills an unset
   `ANTHROPIC_API_KEY`.
@@ -215,7 +224,6 @@ Detection is `detectHostSeat` in `apps/runner/src/host-seat.ts`; precedence is
   a seat never goes to a third-party host.
 - Codex tasks are unaffected.
 - The value is never logged and is exact-value redacted from worker output.
-- `BUILDD_HOST_SEAT=off` on the runner restores the old order.
 
 Setup per environment (local, service, container): `apps/runner/README.md`,
 "Model login on the runner machine".
