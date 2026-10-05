@@ -21,8 +21,10 @@ import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import AgentAccessFixture from './AgentAccessFixture';
+import ToolBreakdownFixture from './ToolBreakdownFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
@@ -113,6 +115,9 @@ export default function DevFixturesPage() {
         return <AnswerStatesFixture />;
     }
 
+    if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {
+        return <ToolBreakdownFixture />;
+    }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
     }

@@ -340,6 +340,47 @@ describe('bash command classification reaches the server', () => {
   });
 });
 
+describe('tool names and file areas are canonical at capture', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(resetAll);
+  afterEach(() => { manager?.destroy(); });
+
+  test('aliases count as one tool, and file tools record their repo area only', async () => {
+    mockMessages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 't-1', name: 'bash', input: { command: 'git status' } },
+            { type: 'tool_use', id: 't-2', name: 'Bash', input: { command: 'git log -1' } },
+            { type: 'tool_use', id: 't-3', name: 'mcp__codex_apps__buildd.recall', input: { query: 'x' } },
+            { type: 'tool_use', id: 't-4', name: 'Read', input: { file_path: '/tmp/scratch/secret-name.txt' } },
+            { type: 'tool_use', id: 't-5', name: 'Edit', input: { file_path: 'apps/web/src/lib/a.ts' } },
+            { type: 'tool_use', id: 't-6', name: 'Edit', input: { file_path: 'apps/web/src/lib/b.ts' } },
+          ],
+        },
+      },
+      successResult(),
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-area-1');
+
+    const meta = completionCall()!.payload.resultMeta as any;
+    expect(meta.toolCounts.Bash).toBe(2);
+    expect(meta.toolCounts.bash).toBeUndefined();
+    expect(meta.bashCommandCounts.total).toBe(2);
+    expect(meta.toolCounts.mcp__buildd__recall).toBe(1);
+    expect(meta.toolCounts['mcp__codex_apps__buildd.recall']).toBeUndefined();
+    expect(meta.fileToolAreas.Edit).toEqual({ 'apps/web': 2 });
+    expect(meta.fileToolAreas.Read).toEqual({ '(outside the repo)': 1 });
+    // Areas only: no path or file name ever leaves the runner.
+    expect(JSON.stringify(meta.fileToolAreas)).not.toContain('secret-name');
+    expect(JSON.stringify(meta.fileToolAreas)).not.toContain('a.ts');
+  });
+});
+
 // ─── Defect 1: the server already terminalised the worker ────────────────────
 
 describe('terminal metrics after a server-side completion', () => {
