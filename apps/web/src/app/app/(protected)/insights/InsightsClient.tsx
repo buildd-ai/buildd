@@ -81,7 +81,7 @@ export function InsightsClient({ series, window }: Props) {
       )}
 
       <p className="mt-5 text-meta text-text-muted">
-        &ldquo;Waiting on you&rdquo; counts agents parked on a question right now; earlier waits aren&apos;t recorded, so they show as running.
+        &ldquo;Needs input&rdquo; counts open questions now. Earlier waits show as running.
       </p>
     </div>
   );

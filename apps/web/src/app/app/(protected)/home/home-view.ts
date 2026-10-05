@@ -157,7 +157,7 @@ export function waitingOnYouSummary(needsYouCount: number, inFlightCount: number
  */
 export function homeSubheading(shipClause: string | null, needsYouCount: number): string {
   const parts = [shipClause, waitingOnYouSummary(needsYouCount, 0)].filter(Boolean) as string[];
-  return parts.length > 0 ? parts.join(' · ') : 'Nothing waiting on you';
+  return parts.length > 0 ? parts.join(' · ') : 'Nothing needs input';
 }
 
 export type RightNowState = 'active' | 'create-workspace' | 'get-started' | 'idle';

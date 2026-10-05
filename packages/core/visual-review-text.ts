@@ -62,7 +62,7 @@ export function describeVisualPhase(
         return { label: 'Question', detail: prompt ? `The visual audit has a question for you: ${prompt}` : 'The visual audit has a question for you.' };
       }
       if (reason === 'unsure' && n > 0) {
-        return { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} your call.` };
+        return { label: `${n} to review`, detail: `${plural(n, 'screen')} the agent was unsure about ${n === 1 ? 'needs' : 'need'} a decision.` };
       }
       return { label: 'Your call', detail: `Issues remain after ${plural(s.rounds, 'round')} of fixes. Decide whether to fix or waive them.` };
     }
@@ -258,7 +258,7 @@ function cellLine(c: VisualReviewCell, o: FormatVisualReviewOptions): string {
       : e.review
         ? `${who}: ${DECISION_WORD[e.review.decision]} (${RELATION_WORD[e.review.relation]})${e.review.note ? `, note "${one(e.review.note)}"` : ''}`
         : c.fixCheck?.state === 'check' ? `fix merged, new screenshot to check: fixed or still broken`
-        : c.needsHuman ? `${who}: not reviewed yet, ${mcp ? 'needs review' : 'needs your call'}` : `${who}: not reviewed yet`,
+        : c.needsHuman ? `${who}: not reviewed, ${mcp ? 'needs review' : 'needs a decision'}` : `${who}: not reviewed`,
   ];
   const fix = e.fixTask ?? c.fixCheck?.fix ?? null;
   if (fix) {
@@ -344,13 +344,13 @@ function needsYouLine(model: VisualReviewModel): string {
   const reason = model.needsYou?.reason;
   if (reason === 'question') {
     const prompt = model.needsYou?.prompt?.trim();
-    return `Needs your answer: ${prompt ? one(prompt) : 'the visual audit asked a question (see the mission page).'}`;
+    return `Question: ${prompt ? one(prompt) : 'the visual audit asked a question (see the mission page).'}`;
   }
-  if (n > 0) return `${plural(n, 'screen needs', 'screens need')} your review.`;
+  if (n > 0) return `${plural(n, 'screen', 'screens')} to review.`;
   if (reason === 'round_cap' || (model.phase === 'needs_you' && !reason)) {
-    return `Needs your decision: issues remain after ${plural(model.summary.rounds, 'round')} (fix or waive).`;
+    return `Decision needed: issues remain after ${plural(model.summary.rounds, 'round')} (fix or waive).`;
   }
-  return 'Nothing needs your review.';
+  return 'Nothing to review.';
 }
 
 export function formatVisualReview(

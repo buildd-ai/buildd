@@ -15,7 +15,7 @@ export const STACK: readonly Exclude<BandKey, 'lost'>[] = ['running', 'waiting',
 
 export const BAND_LABEL: Record<BandKey, string> = {
   running: 'Agents running',
-  waiting: 'Waiting on you',
+  waiting: 'Needs input',
   review: 'In review / CI',
   merged: 'Merged, not released',
   released: 'Released',

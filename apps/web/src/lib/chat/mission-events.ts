@@ -66,7 +66,7 @@ export async function postQuestionEvent(input: { taskId: string; workerId: strin
   try {
     const found = await conversationForTask(input.taskId);
     if (!found) return;
-    const prompt = input.sensitive ? 'A worker is waiting for your answer' : (input.prompt || 'A worker is waiting for your answer');
+    const prompt = input.sensitive ? 'A worker asked a question' : (input.prompt || 'A worker asked a question');
     const question: BuilddObjectRef = {
       kind: 'question', id: input.workerId, taskId: input.taskId, missionId: found.mission.id,
       workspaceId: found.task.workspaceId ?? null, title: prompt.slice(0, 120), fallbackText: `Question: ${prompt.slice(0, 280)}`,

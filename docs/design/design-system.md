@@ -412,7 +412,10 @@ notification text) follows the same rules as a PR lede:
    placeholder; render nothing or a muted value instead
    (`scripts/no-em-dash-copy.test.ts`, `docs/design/derived-metric-availability.md`).
 6. **State words come from one vocabulary.** A status reads the same on every
-   surface (`StatusBadge`'s labels today; `Chip` callers after §4).
+   surface (`StatusBadge`'s labels today; `Chip` callers after §4). A task an
+   agent can't continue without you reads **Needs input**, never "Waiting on
+   you"; a PR you can merge reads **Ready to merge**. Name what is needed, not
+   the person. The Home **Needs you** section heading is the one exception.
 7. **The UI doesn't explain itself.** Would GitHub, Linear or Claude Code say
    it? A setting gets a label and at most one fact the label can't carry. No
    page blurb restating the title ("Where run evidence is kept"), no "yet" on

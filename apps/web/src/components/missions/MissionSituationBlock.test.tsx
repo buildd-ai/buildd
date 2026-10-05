@@ -51,7 +51,7 @@ describe('mission header — all tasks merged, mission PR open', () => {
   it('states waiting on you and offers merge as the primary action', () => {
     const { html } = render(missionPrOpen);
 
-    expect(html).toContain('Waiting on you to merge the mission PR #4242.');
+    expect(html).toContain('Mission PR #4242 ready to merge.');
     expect(html).toContain('data-testid="mission-primary-action"');
     expect(html).toContain('https://example.invalid/pr/4242');
   });
@@ -72,7 +72,7 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
     const { view, html } = render({ ...missionPrOpen, activeAgents: 1 });
 
     expect(view.kind).toBe('running');
-    expect(html).toContain('Running (1 agent). Waiting on you to merge the mission PR #4242.');
+    expect(html).toContain('Running (1 agent). Mission PR #4242 ready to merge.');
     expect(html).toContain('data-testid="mission-primary-action"');
   });
 

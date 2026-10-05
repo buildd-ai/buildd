@@ -144,6 +144,6 @@ export async function loadAboutRef(
  */
 export function focusRefFrom(q: { focus?: string; worker?: string; task?: string }, workspaceId: string | null): BuilddObjectRef | null {
   if (q.focus !== 'question' || !q.worker || !q.task || !isUuid(q.worker) || !isUuid(q.task)) return null;
-  return { kind: 'question', id: q.worker, taskId: q.task, workspaceId, fallbackText: 'A question is waiting on you' };
+  return { kind: 'question', id: q.worker, taskId: q.task, workspaceId, fallbackText: 'Question open' };
 }
 

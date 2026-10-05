@@ -254,7 +254,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   }
 
   if (rt.status === 'failed' || rt.status === 'cancelled') {
-    return { actor: 'human', reason: `Reviewer task ${rt.status} · needs your review` };
+    return { actor: 'human', reason: `Reviewer task ${rt.status} · review needed` };
   }
 
   if (rt.hasLiveWorker) {
@@ -276,7 +276,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   // human rather than silently stranding it.
   return {
     actor: 'human',
-    reason: 'Review finished with no recorded verdict · needs your review',
+    reason: 'Review finished with no recorded verdict · review needed',
   };
 }
 

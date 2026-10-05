@@ -57,7 +57,7 @@ export function staleAnswerNotice(data: unknown, taskId: string): StaleAnswerNot
   if (!data || typeof data !== 'object') return null;
   const d = data as { error?: unknown; reasonCode?: unknown; nextAction?: { kind?: string; taskId?: string } };
   if (typeof d.reasonCode !== 'string' || !STALE_REASONS.has(d.reasonCode)) return null;
-  const message = typeof d.error === 'string' ? d.error : 'This is no longer waiting on you.';
+  const message = typeof d.error === 'string' ? d.error : 'Already answered.';
   const next = d.nextAction;
   if (next?.kind === 'open_task' && typeof next.taskId === 'string') {
     return { message, href: `/app/tasks/${next.taskId}`, linkLabel: 'Open the follow-up task' };

@@ -1138,7 +1138,7 @@ export default async function MissionDetailPage({
           <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
             <div className="flex items-start gap-2">
               <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Needs your decision
+                Decision needed
               </span>
               <span className="min-w-0 text-[12px] text-text-secondary [overflow-wrap:anywhere]">
                 {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
