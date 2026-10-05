@@ -17,7 +17,7 @@ import { looksLikeMissionIntegrationBranch, resolveTaskPrBase } from '@buildd/co
 import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
-import { authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
+import { agentRunMayActOnPr, authorizeWorkerPrCapability } from '@/lib/agent-capabilities/worker-pr';
 import { ownershipApplies, verifyPrOwnership, type PrOwnershipVerdict } from '@/lib/agent-capabilities/pr-ownership';
 import { repoProtectedBranches } from '@/lib/agent-capabilities/github';
 import { getTeamWorkspaceIds, verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
@@ -1217,7 +1217,7 @@ export async function PATCH(req: NextRequest) {
 
     const worker = await db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      with: { workspace: true },
+      with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
     });
 
     if (!worker) {
@@ -1227,8 +1227,13 @@ export async function PATCH(req: NextRequest) {
     if (!(await canActOnWorkerPr(account, worker))) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
-    if (!taskScopeAllowsWorkerPr(account, worker, prNumber)) {
+    // A per-task token, and an agent run on its runner's key, may close only a
+    // PR its task owns: its own worker's PR or one the task names.
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !agentRunMayActOnPr(account, worker, prNumber)) {
       return NextResponse.json({ error: 'A task token may close only its own PR' }, { status: 403 });
+    }
+    if (!account.taskScope && !agentRunMayActOnPr(account, worker, prNumber)) {
+      return NextResponse.json({ error: `An agent run may close only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
     }
 
     const workspace = worker.workspace;
@@ -1398,13 +1403,17 @@ export async function PUT(req: NextRequest) {
     if (workerId) {
       worker = await db.query.workers.findFirst({
         where: eq(workers.id, workerId),
-        with: { workspace: true },
+        with: { workspace: true, task: { columns: { id: true, roleSlug: true, mode: true, context: true, title: true, description: true, reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true } } },
       });
       if (!worker) {
         return NextResponse.json({ error: 'Worker not found' }, { status: 404 });
       }
       if (!(await canActOnWorkerPr(account, worker))) {
         return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
+      }
+      // A per-task token is held to the same rule below, with its own message.
+      if (!account.taskScope && !agentRunMayActOnPr(account, worker, prNumber)) {
+        return NextResponse.json({ error: `An agent run may merge only its own PR (#${worker.prNumber ?? 'none'}) or one its task names` }, { status: 403 });
       }
     } else {
       // workerId absent — resolve worker from prNumber across the account's workspaces.
@@ -1418,7 +1427,9 @@ export async function PUT(req: NextRequest) {
       }
       worker = resolved;
     }
-    if (!taskScopeAllowsWorkerPr(account, worker, prNumber)) {
+    // A per-task token, and an agent run on its runner's key, may merge only a
+    // PR its task owns: its own worker's PR or one the task names.
+    if (!taskScopeAllowsWorkerPr(account, worker, prNumber) && !agentRunMayActOnPr(account, worker, prNumber)) {
       return NextResponse.json({ error: 'A task token may merge only its own PR' }, { status: 403 });
     }
 

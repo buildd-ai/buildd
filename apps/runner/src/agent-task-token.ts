@@ -37,20 +37,10 @@ export function agentTaskTokenEnabled(env: Record<string, string | undefined> = 
 
 /**
  * Orchestration tasks keep the runner key for the agent's buildd MCP: they use
- * admin-level actions (manage_missions, approve_plan/reject_plan, ...) and a
- * task token is worker level, so on an admin-key runner a token would break
- * them. Signals, all present on the claimed task:
- *  - roleSlug 'organizer' (the default mission orchestrator role);
- *  - mode 'planning' (planning tasks feed approve_plan/reject_plan);
- *  - context.heartbeat (an organizer check-in; mission-run can swap its role
- *    away from 'organizer', see prompt-builder.ts heartbeat-protocol).
+ * admin-level actions and a task token is worker level, so on an admin-key
+ * runner a token would break them. The rule lives in @buildd/shared.
  */
-export function isOrchestrationTask(task: { roleSlug?: string | null; mode?: string | null; context?: unknown } | null | undefined): boolean {
-  if (!task) return false;
-  if (task.roleSlug === 'organizer') return true;
-  if (task.mode === 'planning') return true;
-  return (task.context as { heartbeat?: unknown } | null | undefined)?.heartbeat === true;
-}
+export { isOrchestrationTask } from '@buildd/shared';
 
 export interface ParsedTaskToken {
   token: string;

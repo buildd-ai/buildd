@@ -28,6 +28,8 @@
 import { canActOnWorkerPr } from '@/lib/worker-pr-access';
 import { taskScopeAllowsWorker, type TaskScope } from '@/lib/task-token-auth';
 import type { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
+import { isOrchestrationTask } from '@buildd/shared';
+import { taskNamesPr, type PrOwnershipTask } from './pr-ownership';
 import type { AgentPrincipal } from './principal';
 import type { GithubCapability } from './github';
 
@@ -107,4 +109,35 @@ export async function authorizeWorkerPrCapability(
     actor: actorFor(caller, worker),
     resource: { type: 'worker_pr', workerId: worker.id },
   };
+}
+
+/**
+ * May this caller close or merge `prNumber` through this worker?
+ *
+ * An agent run acting for itself may act on a PR its task owns: its own
+ * worker's PR, or a PR the task names ("land PR #42", a retry's subject).
+ * Applies to a per-task token and to a run still on its runner's key alike.
+ * Exempt, unchanged: people (a session user on the shared account),
+ * teammates on other accounts, and orchestration tasks (organizer, planning,
+ * heartbeat), whose job includes tidying sibling tasks' PRs.
+ *
+ * What this cannot see: a shared runner key naming a worker it also claimed.
+ * merge_pr without workerId resolves the PR's own worker, which a shared key
+ * cannot be told apart from. Per-task tokens close that; this does not try.
+ */
+export function agentRunMayActOnPr(
+  caller: { id: string; taskScope?: TaskScope } & object,
+  worker: {
+    accountId: string | null;
+    taskId?: string | null;
+    prNumber?: number | null;
+    task?: (PrOwnershipTask & { roleSlug?: string | null; mode?: string | null }) | null;
+  },
+  prNumber: number,
+): boolean {
+  if ((caller as { sessionUserId?: string | null }).sessionUserId) return true;
+  if (worker.accountId !== caller.id) return !caller.taskScope;
+  if (caller.taskScope && worker.taskId !== caller.taskScope.taskId) return false;
+  if (isOrchestrationTask(worker.task)) return true;
+  return worker.prNumber === prNumber || taskNamesPr(worker.task, prNumber);
 }
