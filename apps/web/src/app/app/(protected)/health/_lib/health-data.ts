@@ -186,8 +186,9 @@ export type HealthPageKey = 'overview' | 'failures' | 'runners' | 'operator';
 
 export const HEALTH_PAGE_DATA: Record<HealthPageKey, ReadonlySet<HealthDataKey>> = {
   // Problems: broken credentials, stranded backends, offline runners, failing schedules, 24h failures.
-  // failureGroups feeds the Overview's top failures (TopFailureGroups).
-  overview: new Set(['runners', 'schedules', 'recentFailures', 'credentials', 'strandedBackends', 'failureGroups']),
+  // failureGroups feeds the Overview's top failures (TopFailureGroups);
+  // budgetForecast feeds its at-a-glance Budget row.
+  overview: new Set(['runners', 'schedules', 'recentFailures', 'credentials', 'strandedBackends', 'failureGroups', 'budgetForecast']),
   // failureAnalytics stays for the headline rate (failed / finished).
   failures: new Set(['failureAnalytics', 'failureGroups']),
   runners: new Set(['runners', 'budgetForecast', 'credentials', 'schedules']),
