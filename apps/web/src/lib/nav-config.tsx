@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
 import { settingsBackHref, settingsItemFor } from './settings-nav';
-import { healthItemFor } from './health-nav';
 
 /**
  * Single source of truth for primary navigation (unified-app-ia §D.2).
@@ -103,6 +102,44 @@ export const NAV_ITEMS: NavItem[] = [
     ),
   },
 ];
+
+/**
+ * Health's sections, in sidebar order: the one list behind the Health sub-nav,
+ * its phone link row and the mobile header title. Kept here, in core
+ * navigation, because the mobile header (core) names these pages; the Health
+ * module reads it through lib/health-nav.ts. Operator is buildd's own tooling
+ * and only platform operators see it (lib/platform-operator.ts).
+ */
+export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'usage' | 'insights' | 'operator';
+
+export interface HealthNavItem {
+  id: HealthSectionId;
+  label: string;
+  href: string;
+  /** Only buildd platform operators see this item and its route. */
+  operatorOnly?: boolean;
+}
+
+export const HEALTH_INDEX_HREF = '/app/health';
+
+export const HEALTH_NAV: readonly HealthNavItem[] = [
+  { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF },
+  { id: 'failures', label: 'Failures', href: '/app/health/failures' },
+  { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners' },
+  { id: 'usage', label: 'Usage', href: '/app/health/usage' },
+  { id: 'insights', label: 'Insights', href: '/app/health/insights' },
+  { id: 'operator', label: 'Operator', href: '/app/health/operator', operatorOnly: true },
+];
+
+/** The Health section a path belongs to, or null outside Health. */
+export function healthItemFor(pathname: string): HealthNavItem | null {
+  if (pathname === HEALTH_INDEX_HREF) return HEALTH_NAV[0];
+  for (const item of HEALTH_NAV) {
+    if (item.href === HEALTH_INDEX_HREF) continue;
+    if (pathname === item.href || pathname.startsWith(`${item.href}/`)) return item;
+  }
+  return null;
+}
 
 export interface NavContext {
   /** Members get Chat first; operators keep Home (the fleet) first. */

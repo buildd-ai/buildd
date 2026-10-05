@@ -1,40 +1,12 @@
 /**
- * Health information architecture: one list for the Health sub-nav (desktop
- * column), the phone link row, and the mobile header title. Every item is its
- * own route so a section is linkable. Operator is buildd's own tooling and
- * exists only for platform operators (lib/platform-operator.ts).
+ * The Health sub-nav, for the Health module. The list itself lives in core
+ * navigation (lib/nav-config.tsx: HEALTH_NAV), because the mobile header names
+ * these pages; this file adds the operator filter the sub-nav applies.
  */
+import { HEALTH_NAV, type HealthNavItem } from './nav-config';
 
-export type HealthSectionId = 'overview' | 'failures' | 'runners' | 'usage' | 'insights' | 'operator';
-
-export interface HealthNavItem {
-  id: HealthSectionId;
-  label: string;
-  href: string;
-  /** Only buildd platform operators see this item and its route. */
-  operatorOnly?: boolean;
-}
-
-export const HEALTH_INDEX_HREF = '/app/health';
-
-export const HEALTH_NAV: readonly HealthNavItem[] = [
-  { id: 'overview', label: 'Overview', href: HEALTH_INDEX_HREF },
-  { id: 'failures', label: 'Failures', href: '/app/health/failures' },
-  { id: 'runners', label: 'Runners & capacity', href: '/app/health/runners' },
-  { id: 'usage', label: 'Usage', href: '/app/health/usage' },
-  { id: 'insights', label: 'Insights', href: '/app/health/insights' },
-  { id: 'operator', label: 'Operator', href: '/app/health/operator', operatorOnly: true },
-];
+export { HEALTH_INDEX_HREF, HEALTH_NAV, healthItemFor, type HealthNavItem, type HealthSectionId } from './nav-config';
 
 export function healthNavFor(isOperator: boolean): HealthNavItem[] {
   return HEALTH_NAV.filter(item => isOperator || !item.operatorOnly);
-}
-
-export function healthItemFor(pathname: string): HealthNavItem | null {
-  if (pathname === HEALTH_INDEX_HREF) return HEALTH_NAV[0];
-  for (const item of HEALTH_NAV) {
-    if (item.href === HEALTH_INDEX_HREF) continue;
-    if (pathname === item.href || pathname.startsWith(`${item.href}/`)) return item;
-  }
-  return null;
 }
