@@ -171,7 +171,7 @@
       "method": "GET"
     },
     {
-      "$comment": "Away delivery floor tick: pushes pending watch events to a person's own Pushover key when they are not in buildd (apps/web/src/lib/away-delivery.ts). Runs regardless of the due-queue, so a lost queue write costs at most an hour, and rows left pending while their owner was present are pushed once they have gone. At :13, inside the wake window the :00 schedules tick and the :10 PR sweep already open, so it adds no Neon wake. Odd minute on purpose: the */2 gated tick fires on even minutes, and a shared minute would run two passes over the same rows at once (a per-person lock also guards that). All 24 hours: people are away at night too, and the job is per-person rate limited.",
+      "$comment": "Away delivery floor tick: pushes pending watch events to a person's own Pushover key when they are not in buildd (apps/web/src/lib/away-delivery.ts), and surfaces held agent questions whose resurfaceAt passed while still unanswered (apps/web/src/lib/question-hold.ts), re-seeding their due-queue. Runs regardless of the due-queue, so a lost queue write costs at most an hour, and rows left pending while their owner was present are pushed once they have gone. At :13, inside the wake window the :00 schedules tick and the :10 PR sweep already open, so it adds no Neon wake. Odd minute on purpose: the */2 gated tick fires on even minutes, and a shared minute would run two passes over the same rows at once (a per-person lock also guards that). All 24 hours: people are away at night too, and the job is per-person rate limited.",
       "title": "Buildd: Notify Away",
       "profile": "module:notifications",
       "path": "/api/cron/notify-away",
@@ -179,7 +179,7 @@
       "method": "GET"
     },
     {
-      "$comment": "Redis-gated fast tick for the same route. Reads buildd:due:notify-away (written by recordEvent for each new ledger row, due one 60s coalesce window later) and returns without touching Postgres unless a row is due, so */2 costs Redis reads and no extra Neon wake while nothing happens. This is the latency path for 'tell me when X' while you are away. Fail-open: with Redis unconfigured or erroring the gate proceeds to the DB. See apps/web/src/lib/cron-due-queue.ts.",
+      "$comment": "Redis-gated fast tick for the same route. Reads buildd:due:notify-away (written by recordEvent for each new ledger row, due one 60s coalesce window later) and buildd:due:question-hold (written by the worker PATCH route when a question parks on hold, due at its resurfaceAt), running only the pass whose queue has something due, and returns without touching Postgres unless a row is due, so */2 costs Redis reads and no extra Neon wake while nothing happens. This is the latency path for 'tell me when X' while you are away. Fail-open: with Redis unconfigured or erroring the gate proceeds to the DB. See apps/web/src/lib/cron-due-queue.ts.",
       "title": "Buildd: Notify Away (gated)",
       "profile": "module:notifications",
       "path": "/api/cron/notify-away?gate=due",

@@ -2652,6 +2652,59 @@ describe('PATCH /api/workers/[id]', () => {
     ]);
   });
 
+  // Held questions (lib/question-hold.ts): the gate said `hold`, so nobody is
+  // pinged when it parks — the resurface sweep pings at the deadline. A hard
+  // rail overrides whatever the runner sent: that question always notifies.
+  describe('held questions', () => {
+    const heldQuestion = {
+      type: 'question',
+      prompt: 'Should the export use CSV or JSON?',
+      options: [{ label: 'CSV' }, { label: 'JSON' }],
+      disposition: 'hold',
+      holdReason: 'Held.',
+      resurfaceAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+    };
+    let capturedSet: any;
+    async function park(pathManifest: string[]) {
+      capturedSet = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) };
+        }),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', pathManifest } as any);
+      mockNotify.mockClear();
+      mockNotifySubject.mockClear();
+      mockRecordEvent.mockClear();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'waiting_input', waitingFor: heldQuestion },
+      }), { params: mockParams });
+      expect(res.status).toBe(200);
+    }
+    const askedSomeone = () => mockNotifySubject.mock.calls.some((c: any) => c[1] === 'needsAttention');
+    const ledgered = () => mockRecordEvent.mock.calls.some((c: any) => c[0]?.type === 'task.needs_input');
+
+    it('a hold parks without notifying anyone', async () => {
+      await park(['apps/web/src/lib/export.ts']);
+      expect(capturedSet.waitingFor).toMatchObject({ type: 'question', disposition: 'hold', resurfaceAt: heldQuestion.resurfaceAt });
+      expect(askedSomeone()).toBe(false);
+      expect(ledgered()).toBe(false);
+    });
+
+    it('a hold on a rail-hit task (a migration) always notifies, and is stored as an ask', async () => {
+      await park(['packages/core/drizzle/0001_add_column.sql']);
+      expect(askedSomeone()).toBe(true);
+      expect(ledgered()).toBe(true);
+      expect(capturedSet.waitingFor.disposition).toBeUndefined();
+      expect(capturedSet.waitingFor.resurfaceAt).toBeUndefined();
+    });
+  });
+
   it('clears waitingFor when worker resumes running', async () => {
     let capturedSet: any = null;
     mockWorkersUpdate.mockReturnValue({

@@ -2929,8 +2929,9 @@ export class WorkerManager {
    * Park with the classified reason recorded and visible on the task page —
    * reusing the same `waitingFor`/`waiting_input` surface a live
    * `AskUserQuestion` already renders, so no new UI is needed. `disposition`
-   * 'hold' tags it the same way the Jev gate tags a live held question
-   * (parks exactly like 'ask' today; see question-gate.ts HOLD_RESURFACE_MS).
+   * 'hold' tags it the same way the Jev gate tags a live held question (the
+   * server parks it without a notification until its deadline; see
+   * apps/web/src/lib/question-hold.ts).
    */
   private async parkSessionEnd(
     worker: LocalWorker,

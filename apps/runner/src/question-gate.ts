@@ -16,8 +16,8 @@
  *    tool result and the agent continues — this does NOT count against the
  *    pushback cap, it is a final answer, not a request to rewrite.
  *  - `send` — park as `waiting_input`, same as always; a `hold` disposition
- *    tags the parked `waitingFor` so a quieter notification path can be built
- *    on top later (see question-gate.ts `HOLD_RESURFACE_MS`).
+ *    tags the parked `waitingFor`, and the server then parks it without a
+ *    notification until its deadline (apps/web/src/lib/question-hold.ts).
  * Any failure sends the question unchanged.
  */
 import { deriveQuestionBrief } from '@buildd/core/question-brief';
