@@ -389,8 +389,12 @@ mock.module('@/lib/pushover', () => ({
 // escalations) go to the owning team's channel. mockNotify still sees every
 // payload; mockNotifySubject records where each one was routed.
 const mockNotifySubject = mock((_subject: any, _event: any) => {});
+// Every module reaction a worker completion fans out to, recorded in call order.
+// The characterization block at the end of this file pins the sequence.
+const fanout: Array<[string, ...unknown[]]> = [];
+const mockNotifyTeam = mock(async (...args: unknown[]) => { fanout.push(['notifyTeam', ...args]); });
 mock.module('@/lib/notify', () => ({
-  notifyTeam: mock(async () => {}),
+  notifyTeam: mockNotifyTeam,
   notifyTeamOf: async (subject: any, event: any, payload: any) => {
     mockNotifySubject(subject, event);
     mockNotify(payload);
@@ -404,7 +408,7 @@ mock.module('@/lib/task-callback', () => ({
 
 // Subscriptions ledger: builders stood in by tagged objects so a test reads
 // exactly which event the route recorded. Real builders: lib/subscriptions.test.ts.
-const mockRecordEvent = mock((_e: any) => Promise.resolve({ recorded: 0 }));
+const mockRecordEvent = mock((e: any) => { fanout.push(['recordEvent', e]); return Promise.resolve({ recorded: 0 }); });
 mock.module('@/lib/subscriptions', () => ({
   recordEvent: mockRecordEvent,
   taskCompletedEvent: (a: any) => ({ type: 'task.completed', ...a }),
@@ -710,6 +714,64 @@ const mockLoadVisualAuditEvidence = mock((_opts: any) => Promise.resolve(okEvide
 mock.module('@/lib/visual-audit-evidence', () => ({
   loadVisualAuditEvidence: mockLoadVisualAuditEvidence,
   formatVisualEvidenceRejection: (v: any) => `Visual audit evidence incomplete. Missing: ${v.missing.join(', ')}`,
+}));
+
+// Module reactions to a completion (missions, knowledge, chat). Real
+// implementations are covered in their own files; here each records its call
+// into `fanout` so the order and arguments of the fan-out are observable. The
+// real module is spread in so other importers keep every export.
+import * as realMissionCompletion from '@/lib/mission-completion';
+import * as realCriteriaVerify from '@/lib/mission-criteria-verify';
+import * as realCriteriaProse from '@/lib/mission-criteria-prose';
+import * as realCriteriaWorkerEval from '@/lib/mission-criteria-worker-eval';
+import * as realSubjectSweep from '@/lib/subject-sweep';
+import * as realTaskEvidenceStore from '@/lib/task-evidence-store';
+import * as realMemoryDecisions from '@/lib/memory-decisions';
+import * as realChatMissionEvents from '@/lib/chat/mission-events';
+/** Which criteria-task kinds the next completion claims to be (default: none). */
+let criteriaKinds = { verification: false, prose: false, workerEval: false };
+/** When set, completeMissionIfVerified throws it (error-isolation characterization). */
+let missionCompletionError: Error | null = null;
+let labelMemoryUses = false;
+mock.module('@/lib/mission-completion', () => ({
+  ...realMissionCompletion,
+  completeMissionIfVerified: mock(async (...args: unknown[]) => {
+    fanout.push(['completeMissionIfVerified', ...args]);
+    if (missionCompletionError) throw missionCompletionError;
+  }),
+}));
+mock.module('@/lib/mission-criteria-verify', () => ({
+  ...realCriteriaVerify,
+  isCriteriaVerificationTask: () => criteriaKinds.verification,
+  handleCriteriaVerificationOutcome: mock(async (...args: unknown[]) => { fanout.push(['handleCriteriaVerificationOutcome', ...args]); }),
+}));
+mock.module('@/lib/mission-criteria-prose', () => ({
+  ...realCriteriaProse,
+  isProseEvalTask: () => criteriaKinds.prose,
+  handleProseEvalOutcome: mock(async (...args: unknown[]) => { fanout.push(['handleProseEvalOutcome', ...args]); }),
+}));
+mock.module('@/lib/mission-criteria-worker-eval', () => ({
+  ...realCriteriaWorkerEval,
+  isCriteriaWorkerEvalTask: () => criteriaKinds.workerEval,
+  handleCriteriaWorkerEvalOutcome: mock(async (...args: unknown[]) => { fanout.push(['handleCriteriaWorkerEvalOutcome', ...args]); }),
+}));
+mock.module('@/lib/subject-sweep', () => ({
+  ...realSubjectSweep,
+  sweepSubjectAnchoredTasks: mock(async (...args: unknown[]) => { fanout.push(['sweepSubjectAnchoredTasks', ...args]); }),
+}));
+mock.module('@/lib/task-evidence-store', () => ({
+  ...realTaskEvidenceStore,
+  persistTaskEvidence: mock(async (...args: unknown[]) => { fanout.push(['persistTaskEvidence', ...args]); }),
+}));
+mock.module('@/lib/memory-decisions', () => ({
+  ...realMemoryDecisions,
+  shouldLabelMemoryUses: () => labelMemoryUses,
+  scheduleMemoryUseLabels: mock((...args: unknown[]) => { fanout.push(['scheduleMemoryUseLabels', ...args]); }),
+}));
+mock.module('@/lib/chat/mission-events', () => ({
+  ...realChatMissionEvents,
+  postTaskCompletedEvent: mock(async (...args: unknown[]) => { fanout.push(['postTaskCompletedEvent', ...args]); }),
+  postQuestionEvent: mock(async (...args: unknown[]) => { fanout.push(['postQuestionEvent', ...args]); }),
 }));
 
 import { GET, PATCH } from './route';
@@ -15595,5 +15657,144 @@ describe('PATCH /api/workers/[id] — mission note delivery', () => {
 
     const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
     expect((await res.json()).instructions).toContain('Use the device flow');
+  });
+});
+
+// ── Characterization: what a worker completion fans out to ────────────────────
+// Pins, in order and with arguments, every module reaction the completion path
+// runs today (missions, knowledge, chat, notifications). The emit() seam moves
+// these behind subscribers; this block must stay green across that move.
+describe('PATCH /api/workers/[id] — completion fan-out (characterization)', () => {
+  const VERIFICATION = { workerId: WORKER_ID, iteration: 0, conditionType: 'command', exitCode: 0, outcome: 'ok' };
+  const STRUCTURED = { verdicts: [{ criterionId: 'c-1', pass: true }] };
+  const names = () => fanout.map(c => c[0]);
+  const call = (name: string) => fanout.find(c => c[0] === name);
+
+  function setup(task: Record<string, unknown> = {}, worker: Record<string, unknown> = {}) {
+    fanout.length = 0;
+    criteriaKinds = { verification: false, prose: false, workerEval: false };
+    missionCompletionError = null;
+    labelMemoryUses = false;
+    mockWakeTask.mockClear();
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1',
+      branch: 'feature/test', milestones: [], pendingInstructions: null, ...worker,
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', outputRequirement: 'none', missionId: 'mission-1',
+      title: 'Fix the cursor', subjectPrNumber: 42, context: {}, startAt: null,
+      workspace: { id: 'ws-1', name: 'W', teamId: 'team-1' }, ...task,
+    });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) })),
+    });
+  }
+  const patch = (body: Record<string, unknown>) => PATCH(createMockRequest({
+    method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body,
+  }), { params: mockParams });
+
+  it('a completed mission task: evidence, criteria verdicts, mission completion, subject sweep, ledger, team push, memory labels — in that order', async () => {
+    setup();
+    criteriaKinds = { verification: true, prose: true, workerEval: true };
+    labelMemoryUses = true;
+    const res = await patch({
+      status: 'completed', summary: 'Fixed the off-by-one error.', summarySource: 'agent',
+      structuredOutput: STRUCTURED, verificationEvidence: VERIFICATION,
+    });
+    expect(res.status).toBe(200);
+    // The chat post is a lazy import kicked off before the ledger write; its
+    // promise settles later, so it is asserted apart from the ordered list.
+    expect(names().filter(n => n !== 'postTaskCompletedEvent')).toEqual([
+      'persistTaskEvidence',
+      'handleCriteriaVerificationOutcome',
+      'handleProseEvalOutcome',
+      'handleCriteriaWorkerEvalOutcome',
+      'completeMissionIfVerified',
+      'sweepSubjectAnchoredTasks',
+      'recordEvent',
+      'notifyTeam',
+      'scheduleMemoryUseLabels',
+    ]);
+    expect(call('persistTaskEvidence')).toEqual(['persistTaskEvidence', 'task-1', WORKER_ID, { isSensitive: false }]);
+    expect(call('handleCriteriaVerificationOutcome')).toEqual(['handleCriteriaVerificationOutcome', 'task-1', VERIFICATION]);
+    expect(call('handleProseEvalOutcome')).toEqual(['handleProseEvalOutcome', 'task-1', STRUCTURED]);
+    expect(call('handleCriteriaWorkerEvalOutcome')).toEqual(['handleCriteriaWorkerEvalOutcome', 'task-1', STRUCTURED]);
+    expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached completed' }]);
+    expect(call('sweepSubjectAnchoredTasks')).toEqual(['sweepSubjectAnchoredTasks', 'ws-1', 42]);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1' }]);
+    expect(call('notifyTeam')).toEqual(['notifyTeam', 'team-1', 'taskCompleted', {
+      title: 'Task done', message: 'Fix the cursor\nW', url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: -1,
+    }]);
+    expect(call('scheduleMemoryUseLabels')).toEqual(['scheduleMemoryUseLabels', { taskId: 'task-1', accountId: 'account-1', summary: 'Fixed the off-by-one error.' }]);
+    await new Promise(r => setTimeout(r, 0));
+    expect(call('postTaskCompletedEvent')).toEqual(['postTaskCompletedEvent', { taskId: 'task-1' }]);
+  });
+
+  it('a task that is not a criteria task, with no mission or subject, still gets evidence, ledger and push only', async () => {
+    setup({ missionId: null, subjectPrNumber: null });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(names().filter(n => n !== 'postTaskCompletedEvent')).toEqual(['persistTaskEvidence', 'recordEvent', 'notifyTeam']);
+  });
+
+  it('a permanent failure: evidence, mission completion attempt, task.failed ledger and a failure push', async () => {
+    // retryCount 1 = the mission task's one automatic retry is spent.
+    setup({ context: { retryCount: 1 } });
+    await patch({ status: 'failed', error: 'Tests failed: 3 of 120' });
+    expect(names()).toEqual([
+      'persistTaskEvidence', 'completeMissionIfVerified', 'sweepSubjectAnchoredTasks', 'recordEvent', 'notifyTeam',
+    ]);
+    expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1' }]);
+    expect(call('notifyTeam')).toEqual(['notifyTeam', 'team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Fix the cursor\nW', url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: 0,
+    }]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+    expect(names()).not.toContain('scheduleMemoryUseLabels');
+  });
+
+  it('an auto-retried failure: no evidence, no ledger row, a retry push after the requeue wake; mission completion still attempted', async () => {
+    setup({ context: { retryCount: 0 } });
+    await patch({ status: 'failed', error: 'process exited' });
+    expect(names()).not.toContain('persistTaskEvidence');
+    expect(names()).not.toContain('recordEvent');
+    expect(call('completeMissionIfVerified')).toEqual(['completeMissionIfVerified', 'mission-1', { path: 'criteria_eval', predicate: 'task task-1 reached failed' }]);
+    const push = fanout.filter(c => c[0] === 'notifyTeam');
+    expect(push).toHaveLength(1);
+    expect(push[0]![2]).toBe('taskFailed');
+    expect((push[0]![3] as any).title).toBe('Task retrying');
+    expect(wakeCausesFor('task-1')).toContain('task.requeued');
+  });
+
+  it('a throwing mission step is isolated: it pages once under its own label and the sweep after it still runs', async () => {
+    setup();
+    missionCompletionError = new Error('mission store down');
+    const res = await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    expect(res.status).toBe(200);
+    const after = names().slice(names().indexOf('completeMissionIfVerified') + 1);
+    expect(after).toContain('sweepSubjectAnchoredTasks');
+    expect(after).toContain('recordEvent');
+    expect(after).toContain('notifyTeam');
+  });
+
+  it('a sensitive workspace keeps prose out of the ledger and the push', async () => {
+    setup({ missionId: null, subjectPrNumber: null, workspace: { id: 'ws-1', name: 'W', teamId: 'team-1', dataClass: 'sensitive' } });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', dataClass: 'sensitive', gitConfig: null } as any);
+    await patch({ status: 'completed', summary: 'Secret plan.', summarySource: 'agent' });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: null, workspaceId: 'ws-1' }]);
+    expect((call('notifyTeam')![3] as any).message).toBe('Task completed (content redacted)');
+    expect(call('persistTaskEvidence')).toEqual(['persistTaskEvidence', 'task-1', WORKER_ID, { isSensitive: true }]);
+  });
+
+  it('a question records task.needs_input after the worker write, and nothing from the completion path', async () => {
+    setup();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1' }]) })) })),
+    });
+    await patch({ status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Which region?' } });
+    expect(names().filter(n => n === 'recordEvent' || n === 'persistTaskEvidence' || n === 'completeMissionIfVerified')).toEqual(['recordEvent']);
+    expect(call('recordEvent')).toEqual(['recordEvent', { type: 'task.needs_input', taskId: 'task-1', workerId: WORKER_ID, prompt: 'Which region?' }]);
   });
 });
