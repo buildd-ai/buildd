@@ -29,6 +29,8 @@
  * Client-safe: no imports with runtime side effects.
  */
 
+import { LIVE_WORKER_STATUSES, TERMINAL_TASK_STATUSES } from '@buildd/shared';
+
 export type FlowWindow = '7d' | '30d';
 export const FLOW_WINDOWS: readonly FlowWindow[] = ['7d', '30d'];
 
@@ -154,10 +156,11 @@ export interface FlowSeries {
 }
 
 export const UNASSIGNED_ROLE = 'unassigned';
-const LIVE = new Set(['idle', 'starting', 'running', 'waiting_input']);
+const LIVE = new Set<string>(LIVE_WORKER_STATUSES);
 const SHIPPED_RELEASE_STATES = new Set(['healthy', 'degraded']);
 const CLOSED_PR = new Set(['closed', 'unresolvable']);
-const LOST_TASK = new Set(['failed', 'cancelled']);
+// Terminal task statuses that mean the work did not land (`completed` is the other one).
+const LOST_TASK = new Set<string>(TERMINAL_TASK_STATUSES.filter(s => s !== 'completed'));
 
 interface Interval { from: number; to: number; role?: string }
 
