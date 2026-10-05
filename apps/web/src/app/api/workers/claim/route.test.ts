@@ -428,6 +428,7 @@ mock.module('./hold-start-shadow', () => ({
 }));
 
 import { POST } from './route';
+import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { claimHoldIdentity } from '@buildd/core/orchestration-promotion';
@@ -1008,6 +1009,83 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(res.status).toBe(200);
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+  });
+
+  // A new user's first task sat at "Waiting for a runner" forever: sign-in
+  // creates "My Workspace" restricted, and the account `buildd login` minted
+  // had no link to it. The links come from the same planner the login paths
+  // apply (lib/personal-workspace-links), so these prove the end-to-end rule.
+  describe("fresh user's login token and their auto-created workspace", () => {
+    const userId = 'user-fresh';
+    const personalTeam = { id: 'team-personal', slug: personalTeamSlug(userId) };
+    const myWorkspace = { id: 'ws-mine', teamId: 'team-personal', accessMode: 'restricted' };
+    const pendingTask = () => ({
+      id: 'task-1',
+      workspaceId: 'ws-mine',
+      title: 'First task',
+      dependsOn: [],
+      workspace: { id: 'ws-mine', gitConfig: null, teamId: 'team-personal' },
+    });
+    const linksFor = (account: { id: string; type: string; teamId: string }) =>
+      planPersonalWorkspaceLinks({
+        userId,
+        canManageTeamKeys: account.teamId === personalTeam.id,
+        team: personalTeam,
+        account: { ...account, workspaceIds: null },
+        teamWorkspaces: [myWorkspace],
+      }).map(({ workspaceId, canClaim, canCreate }) => ({ workspaceId, canClaim, canCreate }));
+
+    function setupClaimWrites() {
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+    }
+
+    it('claims a task in My Workspace with the login token', async () => {
+      const loginAccount = { id: 'acct-login', type: 'user', teamId: 'team-personal' };
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...loginAccount, authType: 'api', level: 'worker', maxConcurrentWorkers: 3, workspaceIds: null,
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue(linksFor(loginAccount));
+      // Restricted: the team's open-workspace query finds nothing; the link
+      // lookup resolves the workspace.
+      mockWorkspacesFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-mine' }]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingTask()]);
+      setupClaimWrites();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it("another team's token still cannot claim there", async () => {
+      const outsider = { id: 'acct-outsider', type: 'user', teamId: 'team-other' };
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...outsider, authType: 'api', level: 'worker', maxConcurrentWorkers: 3, workspaceIds: null,
+      });
+      expect(linksFor(outsider)).toEqual([]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue(linksFor(outsider));
+      mockWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([pendingTask()]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', workspaceId: 'ws-mine' },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers ?? []).toHaveLength(0);
+      expect(data.diagnostics?.reason).toBe('no_workspaces');
+    });
   });
 
   describe('budget failover to Codex', () => {
