@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
-import { FailureGroupsSection } from './_components/FailureGroups';
+import { FailureGroupsSection, TopFailureGroups } from './_components/FailureGroups';
 import type { FailureGroupsView } from '@/lib/health-failure-groups';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
@@ -481,13 +481,17 @@ export function HealthClient({
   }, [consumption]);
 
   const failedSchedules = schedules.filter(isScheduleErrorLive);
-  const hasProblems =
+  // On Overview the failures come from the merged failure groups (the same ones
+  // TopFailureGroups renders), so the status sentence and the list can't disagree.
+  const overviewFailureGroups = page === 'overview' ? (failureGroupsView?.groups.length ?? 0) : 0;
+  const nonFailureProblems =
     brokenCredentials.length > 0 ||
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
     degradedSandboxRunners.length > 0 ||
-    failedSchedules.length > 0 ||
-    recentFailures.length > 0;
+    failedSchedules.length > 0;
+  const hasProblems =
+    nonFailureProblems || (page === 'overview' ? overviewFailureGroups > 0 : recentFailures.length > 0);
 
   // Overview: one status sentence first, short status rows after the attention list.
   const overview = page === 'overview'
@@ -499,7 +503,7 @@ export function HealthClient({
           brokenCredentials: brokenCredentials.length,
           strandedBackends: strandedBackends.length,
           failingSchedules: failedSchedules.length,
-          failureGroups: failureGroups.groups.length + failureGroups.hiddenGroups,
+          failureGroups: overviewFailureGroups,
         }),
         rows: overviewStatusRows({
           runners: {
@@ -547,7 +551,7 @@ export function HealthClient({
       <section data-testid="health-section-problems" className="mb-6">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <h2 className="section-label">Problems</h2>
-          {failureGroups.total > 0 && (
+          {page !== 'overview' && failureGroups.total > 0 && (
             <span data-testid="problems-denominator" className="text-[11px] text-text-muted">
               {sectionDenominator(
                 failureGroups.total,
@@ -562,7 +566,9 @@ export function HealthClient({
             <span className="text-sm text-status-success font-medium">All systems healthy</span>
           </div>
         ) : (
-          <div className="card divide-y divide-border-default">
+          <>
+          {(page !== 'overview' || nonFailureProblems) && (
+          <div className={`card divide-y divide-border-default ${page === 'overview' ? 'mb-4' : ''}`}>
             {/* Revoked / degraded credentials */}
             {brokenCredentials.map((cred) => {
               const purposeLabel =
@@ -705,7 +711,7 @@ export function HealthClient({
                 Fixed 24h regardless of `?window=` — documented exception (spec
                 §2.3): this is a triage feed, not a trend, and at 30d it would be
                 a 20-row-capped dump of month-old failures. */}
-            {failureGroups.groups.map((g) => {
+            {page !== 'overview' && failureGroups.groups.map((g) => {
               const sample = g.sample;
               return (
                 <div key={g.signature} className="px-4 py-3" data-testid="problem-failure-group">
@@ -742,7 +748,7 @@ export function HealthClient({
               );
             })}
 
-            {failureGroups.hiddenFailures > 0 && (
+            {page !== 'overview' && failureGroups.hiddenFailures > 0 && (
               <div className="px-4 py-2.5">
                 <span className="text-xs text-text-muted">
                   +{failureGroups.hiddenFailures} more failure
@@ -754,6 +760,9 @@ export function HealthClient({
               </div>
             )}
           </div>
+          )}
+          {page === 'overview' && <TopFailureGroups groups={failureGroupsView} now={now} />}
+          </>
         )}
       </section>
       )}
