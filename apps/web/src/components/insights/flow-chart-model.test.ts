@@ -11,7 +11,7 @@ import {
   roleHours,
   tasksInBand,
 } from './flow-chart-model';
-import { dailyRows } from './FlowChart';
+import { dailyRows, fmtCount } from './FlowChart';
 import { resolveInsightsQaState, sampleFlowSeries } from '@/app/app/(protected)/insights/sample-series';
 
 const H = 3_600_000;
@@ -139,6 +139,16 @@ describe('formatting', () => {
     expect(formatDuration(72 * H)).toBe('3.0d');
     expect(formatShare(null)).toBe('—');
     expect(formatShare(0.614)).toBe('61%');
+  });
+});
+
+describe('fmtCount', () => {
+  it('keeps whole numbers whole and shows a decimal only below one', () => {
+    expect(fmtCount(0)).toBe('0');
+    expect(fmtCount(0.3)).toBe('0.3');
+    expect(fmtCount(0.97)).toBe('1');
+    expect(fmtCount(1)).toBe('1');
+    expect(fmtCount(6.4)).toBe('6');
   });
 });
 

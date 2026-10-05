@@ -28,9 +28,10 @@ const BANDS: BandKey[] = [...STACK, 'lost'];
 
 const fill = (k: BandKey) => `var(--flow-${k})`;
 
-function fmtCount(v: number): string {
+/** Whole numbers stay whole ("1", not "1.0"); only a value that rounds to less than 1 shows a decimal. */
+export function fmtCount(v: number): string {
   if (v === 0) return '0';
-  if (v < 1) return v.toFixed(1);
+  if (v < 0.95) return v.toFixed(1);
   return Math.round(v).toString();
 }
 
@@ -58,6 +59,9 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
   const geo = useMemo(() => buildGeometry(series, VIEW_W, VIEW_H), [series, VIEW_W, VIEW_H]);
   const svgRef = useRef<SVGSVGElement>(null);
   const [hover, setHover] = useState<number | null>(null);
+  // Touch has no pointerleave, so a hover tooltip opened by a tap would stay on
+  // top of the chart. On touch the picked panel below carries the same numbers.
+  const [touch, setTouch] = useState(false);
   const [picked, setPicked] = useState<{ i: number; band: BandKey } | null>(null);
   const last = series.buckets.length - 1;
 
@@ -98,6 +102,9 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
   };
 
   const hb = hover != null ? series.buckets[hover] : null;
+  // The crosshair follows the pointer, or marks the picked time on touch.
+  const markIndex = hover ?? (touch && picked ? picked.i : null);
+  const mb = markIndex != null ? series.buckets[markIndex] : null;
   const pickedTasks = picked ? tasksInBand(series, picked.i, picked.band) : [];
   const pickedBucket = picked ? series.buckets[picked.i] : null;
 
@@ -111,12 +118,18 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
           role="img"
           aria-label="Tasks by stage over time. Use left and right arrows to move, Enter to list the tasks."
           tabIndex={0}
-          onPointerMove={e => setHover(indexFromPointer(e))}
+          onPointerMove={e => {
+            if (e.pointerType === 'touch') return;
+            setTouch(false);
+            setHover(indexFromPointer(e));
+          }}
           onPointerLeave={() => setHover(null)}
           onPointerDown={e => {
             const i = indexFromPointer(e);
             if (i < 0) return;
-            setHover(i);
+            const isTouch = e.pointerType === 'touch';
+            setTouch(isTouch);
+            setHover(isTouch ? null : i);
             setPicked({ i, band: bandAt(e, i) });
           }}
           onKeyDown={onKey}
@@ -150,12 +163,12 @@ export function FlowChart({ series, taskHref }: { series: FlowSeries; taskHref: 
             </g>
           ))}
 
-          {hover != null && hb && (
-            <line x1={geo.xOf((hb.start + hb.end) / 2)} x2={geo.xOf((hb.start + hb.end) / 2)} y1={geo.plot.top} y2={geo.plot.bottom} stroke="var(--text-primary)" strokeWidth={1} />
+          {mb && (
+            <line x1={geo.xOf((mb.start + mb.end) / 2)} x2={geo.xOf((mb.start + mb.end) / 2)} y1={geo.plot.top} y2={geo.plot.bottom} stroke="var(--text-primary)" strokeWidth={1} />
           )}
         </svg>
 
-        {hover != null && hb && (
+        {hover != null && hb && !touch && (
           <div
             data-testid="flow-tooltip"
             className="pointer-events-none absolute top-1 z-10 border-2 border-border-strong bg-surface-2 px-3 py-2 text-meta shadow-md min-w-[11rem]"
