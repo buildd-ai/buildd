@@ -14,6 +14,7 @@ import MissionBoardVisualFixture from './MissionBoardVisualFixture';
 import MissionListExecutorFixture from './MissionListExecutorFixture';
 import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
+import GoalCriteriaFixture from './GoalCriteriaFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
@@ -26,6 +27,7 @@ import {
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
     MISSION_TASK_STRIP_FIXTURE_STATE,
     MISSION_CHECK_INS_FIXTURE_STATE,
+    GOAL_CRITERIA_FIXTURE_STATE,
     ONBOARDING_FIXTURE_STATE,
     TASK_EVIDENCE_FIXTURE_STATE,
     TASK_SHIPPED_FIXTURE_STATE,
@@ -95,6 +97,10 @@ export default function DevFixturesPage() {
 
     if (state === MISSION_CHECK_INS_FIXTURE_STATE) {
         return <MissionCheckInsFixture />;
+    }
+
+    if (state === GOAL_CRITERIA_FIXTURE_STATE) {
+        return <GoalCriteriaFixture />;
     }
 
     if (state === ANSWER_STATES_FIXTURE_STATE) {
