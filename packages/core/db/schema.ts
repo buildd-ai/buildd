@@ -499,6 +499,16 @@ export interface WorkspaceGitConfig {
   // Paths are derived by init scan (re-scan to refresh); never hand-typed. Reviewer sees class intent, not raw globs.
   policyConfig?: import('@buildd/shared').WorkspacePolicyConfig;
 
+  // Early release of dependent tasks before their upstream's PR merges
+  // (knowledge-base: buildd/design/early-release.md). Absent / 'off' = no
+  // early release — today's merge-gated behaviour. 'rule_only' runs just the
+  // Layer 1 deterministic override (early-release-rules.ts) on the upstream
+  // PR's diff and never calls the decision model. 'rule_and_jev' runs the
+  // full `buildd.early_release` kind (early-release-decision.ts), asking Jev
+  // when no rule fires. Read only through resolveEarlyReleaseMode() in
+  // apps/web/src/lib/early-release-dispatch.ts.
+  earlyRelease?: { mode?: 'off' | 'rule_only' | 'rule_and_jev' };
+
   // Auto-resolve merge conflicts by dispatching a same-branch needs-work retry.
   // Absent / true = ON (default). Set to false to disable auto-dispatch and let
   // the human trigger resolution manually from the escalation card.
