@@ -46,7 +46,14 @@ describe('composition root', () => {
     expect(byEvent('worker.finished')).toEqual(['knowledge:memory-use-labels']);
     expect(byEvent('task.needs_input')).toEqual(['notifications:ledger-task-needs-input']);
     expect(byEvent('pr.merged')).toEqual(['releases:release-record-prod-merge', 'notifications:ledger-pr-merged']);
-    expect(byEvent('task.pr_merged')).toEqual(['releases:release-path-b-trigger']);
+    expect(byEvent('task.pr_merge_delivered')).toEqual(['missions:loop-advance-on-merge', 'missions:open-mission-integration-pr']);
+    // The mission wakes and dependents unblock before the release trigger.
+    expect(byEvent('task.pr_merged')).toEqual([
+      'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
+    ]);
+    expect(byEvent('pr.closed')).toEqual(['missions:settle-surface-intents']);
+    expect(byEvent('pr.base_changed')).toEqual(['missions:retarget-surface-intents']);
+    expect(byEvent('pr.needs_human')).toEqual(['missions:notify-mission-pr-ready']);
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
     expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed']);
   });

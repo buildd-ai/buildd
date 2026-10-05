@@ -7,7 +7,6 @@ import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
-import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
 import {
   reviewRowFromEvent,
@@ -18,12 +17,9 @@ import {
 } from '@/lib/review-feedback';
 import { notifyOperator } from '@/lib/pushover';
 import { notifyTeamOf } from '@/lib/notify';
-import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
-import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
-import { wakeMissionAfterResponse } from '@/lib/mission-wake';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
@@ -42,7 +38,6 @@ import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@
 import { emit } from '@/lib/core-emit';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
-import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import { conformanceManifest } from '@/lib/path-declaration';
@@ -522,7 +517,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         if (policy.tier === 'human') {
           console.log(`PR held for human review (policy.tier=human) — ${repository.full_name}#${pr.number}`);
           if (workerTask?.missionId) {
-            await notifyMissionPrReady(workerTask.missionId, {
+            await emit({ type: 'pr.needs_human', missionId: workerTask.missionId,
               title: 'PR ready — awaiting human review',
               prUrl: `https://github.com/${repository.full_name}/pull/${pr.number}`,
               prNumber: pr.number,
@@ -789,15 +784,7 @@ async function handlePullRequestEvent(event: {
         action === 'edited' && typeof retargetFrom === 'string' && retargetFrom
         && retargetFrom !== settledBaseRef && !pr.merged && intentWorkspaceId
       ) {
-        const toBase = settledBaseRef;
-        const retargetIntents = () => import('@/lib/surface-ordering')
-          .then((m) => m.retargetSurfaceIntents({ workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase }))
-          .then(() => {}, (e) => console.error(`[webhook] surface intent retarget failed for PR #${pr.number}:`, e));
-        try {
-          after(retargetIntents);
-        } catch {
-          await retargetIntents();
-        }
+        await emit({ type: 'pr.base_changed', workspaceId: intentWorkspaceId, prNumber: pr.number, fromBase: retargetFrom, toBase: settledBaseRef });
       }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the
@@ -1153,19 +1140,9 @@ async function handlePullRequestEvent(event: {
 
     // Close any open changeIntent rows for this PR — surfaces are now free —
     // drop its merge reservations, and re-drive the PR that was waiting behind
-    // it on each serialized surface (conflict-aware-orchestration.md §3). The
-    // wake is network work, so it runs in after(); settle never throws.
-    {
-      const settleWorkspaceId = worker.workspaceId;
-      const settle = () => import('@/lib/surface-ordering')
-        .then((m) => m.settleSurfaceIntentsOnClose({ workspaceId: settleWorkspaceId, prNumber: pr.number }))
-        .then(() => {}, (e) => console.error(`[webhook] surface settle failed for PR #${pr.number}:`, e));
-      try {
-        after(settle);
-      } catch {
-        await settle();
-      }
-    }
+    // it on each serialized surface (conflict-aware-orchestration.md §3): the
+    // missions module's business, network work in after().
+    await emit({ type: 'pr.closed', workspaceId: worker.workspaceId, prNumber: pr.number, merged: !!pr.merged });
 
     // Supersession: the PR merged or closed, so the reconciler cancels what
     // that made obsolete — a live reviewer and open fixes on a merge, unstarted
@@ -1204,47 +1181,17 @@ async function handlePullRequestEvent(event: {
       console.error(`[webhook] checkDependsOnResolved failed for task ${worker.task!.id}:`, e)
     );
 
-    // Advance any task waiting on a pr_merged loop condition for this PR.
-    // The worker's mergedAt was stamped above; evaluateAndAdvanceLoopOnMerge
-    // reads it and marks the task completed if the condition is now satisfied.
-    if (worker.taskId && worker.workspaceId) {
-      evaluateAndAdvanceLoopOnMerge(worker.id, worker.taskId, worker.workspaceId).catch((e) =>
-        console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${worker.taskId}:`, e)
-      );
-    }
-
-    // Option A′: a task PR landing on the mission's integration branch is the
-    // event that can make the mission's work complete, so it is where the one
-    // mission PR gets opened. Awaited, not fire-and-forget: this opens a PR,
-    // and a detached promise in a serverless handler can be killed mid-call,
-    // which would leave a mission whose work is done and whose PR never
-    // appeared — the exact silent stall A′ exists to remove.
-    //
-    // `assumeCompletedTaskIds` because `tasks.status` for THIS task is stamped
-    // further down; `workers.mergedAt` is already stamped above.
-    if (worker.task.missionId && pr.base?.ref) {
-      const opened = await maybeOpenMissionIntegrationPr(worker.task.missionId, {
-        assumeCompletedTaskIds: [worker.task.id],
-      }).catch(e => {
-        console.error(`[webhook] mission PR open failed for mission ${worker.task!.missionId}:`, e);
-        return null;
-      });
-      if (opened && !opened.ok && opened.reason !== 'work_incomplete') {
-        // `work_incomplete` is the normal answer on all but the last merge and
-        // is not worth a line. Anything else means an opted-in mission finished
-        // its work and still has no PR, which must not be silent.
-        console.error(
-          `[webhook] mission ${worker.task.missionId} work is done but its PR did not open: `
-          + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
-        );
-        // Console-only was the silence the comment above already names: a
-        // no-op for every reason but the two that can recur forever with no
-        // self-correction (see `noteMissionPrOpenFailure`).
-        noteMissionPrOpenFailure(worker.task.missionId, opened).catch(e =>
-          console.error(`[webhook] mission PR failure note failed for ${worker.task!.missionId}:`, e),
-        );
-      }
-    }
+    // Every merged delivery: the missions module advances a loop waiting on
+    // this merge and, for a task PR landing on a mission integration branch,
+    // opens the one mission PR (awaited inside its subscriber).
+    await emit({
+      type: 'task.pr_merge_delivered',
+      taskId: worker.task.id,
+      workerId: worker.id,
+      workspaceId: worker.workspaceId,
+      missionId: worker.task.missionId ?? null,
+      baseRef: pr.base?.ref ?? null,
+    });
   }
 
   if (pr.merged && worker?.task) {
@@ -1263,6 +1210,7 @@ async function handlePullRequestEvent(event: {
     // gate — nor the Path-B release trigger. A downstream mission waited
     // forever, and only when the human clicked Merge on GitHub rather than in
     // buildd, because the dashboard merge route raises the signal itself.
+    let transition: 'flipped' | 'already_completed' | 'not_flipped' = 'already_completed';
     if (worker.task.status !== 'completed') {
       // Guarded on the row, not only on the copy read above: the worker's own
       // completion (PATCH /api/workers/[id]) can land between that read and
@@ -1273,6 +1221,7 @@ async function handlePullRequestEvent(event: {
         .set({ status: 'completed', updatedAt: new Date() })
         .where(and(eq(tasks.id, worker.task.id), ne(tasks.status, 'completed')))
         .returning({ id: tasks.id });
+      transition = flipped ? 'flipped' : 'not_flipped';
       if (flipped) {
         console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
         // Same fact as the worker route's completion, same dedupe key: one row.
@@ -1295,17 +1244,7 @@ async function handlePullRequestEvent(event: {
             console.error(`[webhook] resolveCompletedTask failed for task ${worker.task!.id}:`, e),
           );
         }
-        // An attempt task's completion deliberately does not re-plan
-        // (mission-loop.ts). The merge it carried still should.
-        if (worker.task.taskClass === 'attempt' && worker.task.missionId && mergeIsNew) {
-          wakeMissionAfterResponse(worker.task.missionId, 'pr_merged');
-        }
       }
-    } else if (mergeIsNew && worker.task.missionId) {
-      // The task was already completed (its worker finished with the PR open),
-      // so no completion fires now — but the mission's loop may be paused on
-      // exactly this open PR (evaluateMissionOpenPrGate). Wake it.
-      wakeMissionAfterResponse(worker.task.missionId, 'pr_merged');
     }
 
     // ── Effects of the merge itself ──────────────────────────────────────────
@@ -1315,19 +1254,14 @@ async function handlePullRequestEvent(event: {
     // that by accident, and `workers.mergedAt` (captured before this handler
     // stamped it) is the honest version of the same question.
     if (mergeIsNew) {
-      // PR merged: unblock any missions waiting on this mission's PRs to merge.
-      // Safe to run for an already-completed task: the helper re-checks the
-      // mission-wide predicate itself and its write is guarded on
-      // `dependencyMetAt IS NULL`, so it is idempotent by construction.
-      if (worker.task.missionId) {
-        checkAndUnblockDependentMissions(worker.task.missionId, 'merged').catch(e =>
-          console.error(`[webhook] unblock failed for merged PR mission ${worker.task!.missionId}:`, e)
-        );
-      }
-
-      // Post-merge release trigger (Path B): the releases module's business.
+      // Effects of the merge itself, once per merge: the missions module wakes
+      // the mission and unblocks missions gated on this one's merges; the
+      // releases module runs the post-merge release trigger (Path B).
       await emit({
         type: 'task.pr_merged',
+        via: 'worker',
+        transition,
+        taskClass: worker.task.taskClass ?? null,
         taskId: worker.task.id,
         workerId: worker.id,
         workspaceId: worker.task.workspaceId,
@@ -1365,11 +1299,20 @@ async function handlePullRequestEvent(event: {
       if (!flipped) return;
       console.log(`Auto-completed task ${matchingTask.id} via branch match on merged PR #${pr.number}`);
 
-      if (matchingTask.missionId) {
-        checkAndUnblockDependentMissions(matchingTask.missionId, 'merged').catch(e =>
-          console.error(`[webhook] unblock failed for branch-match merged PR mission ${matchingTask.missionId}:`, e)
-        );
-      }
+      await emit({
+        type: 'task.pr_merged',
+        via: 'branch_match',
+        transition: 'flipped',
+        taskClass: matchingTask.taskClass ?? null,
+        taskId: matchingTask.id,
+        workerId: null,
+        workspaceId: matchingTask.workspaceId,
+        missionId: matchingTask.missionId ?? null,
+        release: matchingTask.release ?? null,
+        repoFullName: repository.full_name,
+        baseRef: pr.base?.ref ?? null,
+        installationId: event.installation?.id ?? null,
+      });
 
       // Dependents, mission completion and re-planning, as for any completion.
       await resolveCompletedTask(matchingTask.id, matchingTask.workspaceId).catch(e =>
@@ -1422,7 +1365,9 @@ async function reportMissionGateRetarget(opts: {
   } catch (err) {
     console.error(`[webhook] failed to record gate-retarget note for PR #${opts.prNumber}:`, err);
   }
-  await notifyMissionPrReady(opts.missionId, {
+  await emit({
+    type: 'pr.needs_human',
+    missionId: opts.missionId,
     title: opts.restored
       ? `PR #${opts.prNumber} restored to the mission integration branch`
       : `PR #${opts.prNumber} retargeted off the mission integration branch`,
@@ -1431,9 +1376,7 @@ async function reportMissionGateRetarget(opts: {
     headSha: opts.headSha,
     reason: 'base_retargeted',
     message,
-  }).catch(err =>
-    console.error(`[webhook] failed to notify gate-retarget for PR #${opts.prNumber}:`, err),
-  );
+  });
   console.error(
     `[webhook] PR #${opts.prNumber} (mission ${opts.missionId}) based on '${opts.toBase}' `
     + `instead of integration branch '${opts.fromBase}' — `
@@ -1670,7 +1613,7 @@ async function maybeDispatchReviewer(
           body: reason,
           status: 'open',
         });
-        await notifyMissionPrReady(task.missionId, {
+        await emit({ type: 'pr.needs_human', missionId: task.missionId,
           title: `PR #${pr.number} requires human review`,
           prUrl: pr.html_url,
           prNumber: pr.number,
