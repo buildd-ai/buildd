@@ -26,7 +26,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### integrations (4)
 
-- [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-08-28
+- [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-10-05
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
 - [Standalone Model Policy](./model-policy.md) · @max — verified 2026-10-05
   A caller MUST get provider, model and effort from surface (chat or coding) plus tier alone, locally or from the policy service, with a fallback answer always and no provider secret ever crossing the boundary.

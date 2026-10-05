@@ -16,9 +16,6 @@
       "apps/web/src/lib/mcp-connector-refresh.ts": "connectors",
       "apps/web/src/lib/notify.ts": "notifications"
     },
-    "apps/web/src/app/api/cron/jwks-rotation/route.ts": {
-      "packages/core/report-ops.ts": "health-quality"
-    },
     "apps/web/src/app/api/cron/lease-expiry-guard/route.ts": {
       "apps/web/src/lib/notify.ts": "notifications"
     },
@@ -242,7 +239,6 @@
       "packages/core/bash-failure-trace.ts": "health-quality",
       "packages/core/cbm-health.ts": "knowledge",
       "packages/core/orchestration-ledger-source.ts": "missions",
-      "packages/core/report-ops.ts": "health-quality",
       "packages/core/routing-analytics.ts": "health-quality",
       "packages/core/runner-health.ts": "health-quality"
     },
@@ -338,9 +334,6 @@
       "packages/core/inference-keys.ts": "jev-decisions",
       "packages/core/litellm-gateway.ts": "model-tiers",
       "packages/core/model-tier-defaults.ts": "model-tiers"
-    },
-    "apps/web/src/lib/api-response.ts": {
-      "packages/core/report-ops.ts": "health-quality"
     },
     "apps/web/src/lib/approval-carry-forward.ts": {
       "apps/web/src/lib/pr-review-request.ts": "reviews-merge"

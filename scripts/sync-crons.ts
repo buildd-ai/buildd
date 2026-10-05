@@ -26,6 +26,13 @@
  *   --dry-run   print the plan, write nothing, exit 0
  *   --check     report drift, write nothing, exit 1 if out of sync (CI gate)
  *   --prune     also delete managed jobs absent from the manifest (opt-in)
+ *   --profile core,ops
+ *               schedule only jobs in these profiles (also CRON_PROFILES).
+ *               Every job carries one: `core` (the coordination loop),
+ *               `ops` (operator alarms) or `module:<name>`. `module:*`
+ *               selects every module. Unset = every job, which is what
+ *               buildd.dev runs. A job outside the list is not desired, so it
+ *               is never created and is left alone unless --prune.
  *
  * Env:
  *   CRONJOB_API_KEY       provider API key (console -> Settings -> API)
@@ -33,6 +40,7 @@
  *                         MUST match Vercel production's CRON_SECRET, or the
  *                         synced jobs will start getting 401s.
  *   CRON_TARGET_BASE_URL  prod origin (default https://buildd.dev)
+ *   CRON_PROFILES         comma-separated profile list; --profile wins
  */
 
 import { readFileSync } from 'node:fs';
@@ -49,8 +57,23 @@ const METHOD_CODES = { GET: 0, POST: 1 } as const;
 
 export type HttpMethod = keyof typeof METHOD_CODES;
 
+/**
+ * Modules that own cron jobs. A module's jobs are optional: with the module
+ * dormant (its tables empty) they are no-ops, and an operator can leave them
+ * unscheduled.
+ */
+export const CRON_MODULES = [
+  'missions', 'reviews', 'releases', 'knowledge', 'notifications', 'schedules',
+  'connectors', 'experiments', 'tiers', 'health', 'chat',
+] as const;
+export type CronModule = (typeof CRON_MODULES)[number];
+
+/** `core`: the coordination loop needs it. `ops`: operator alarms. `module:<name>`: optional. */
+export type CronProfile = 'core' | 'ops' | `module:${CronModule}`;
+
 export interface ManifestJob {
   title: string;
+  profile?: CronProfile;
   /** e.g. "/api/cron/foo?mode=bar" */
   path: string;
   /** 5-field cron expression, evaluated in the job's timezone */
@@ -92,6 +115,38 @@ export interface JobBody {
 
 export function loadManifest(): Manifest {
   return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as Manifest;
+}
+
+// --- profiles ---------------------------------------------------------------
+
+/** The raw profile list: `--profile a,b` / `--profile=a,b`, else CRON_PROFILES. */
+export function profileArg(argv: string[], env: Record<string, string | undefined>): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--profile') return argv[i + 1];
+    if (argv[i].startsWith('--profile=')) return argv[i].slice('--profile='.length);
+  }
+  return env.CRON_PROFILES;
+}
+
+/** Parse a profile list. `null` means no filter (every job). Unknown names throw. */
+export function parseProfiles(raw: string | undefined): Set<string> | null {
+  const names = (raw ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (names.length === 0) return null;
+  const known = new Set<string>(['core', 'ops', 'module:*', ...CRON_MODULES.map((m) => `module:${m}`)]);
+  const unknown = names.filter((n) => !known.has(n));
+  if (unknown.length > 0) {
+    throw new Error(`Unknown cron profile(s): ${unknown.join(', ')}. Known: ${[...known].join(', ')}`);
+  }
+  return new Set(names);
+}
+
+/** Jobs in the selected profiles, manifest order kept. */
+export function selectJobs(jobs: ManifestJob[], profiles: Set<string> | null): ManifestJob[] {
+  if (!profiles) return jobs;
+  return jobs.filter((j) => {
+    if (!j.profile) throw new Error(`Manifest job ${j.path} has no profile; cannot filter by profile`);
+    return profiles.has(j.profile) || (j.profile.startsWith('module:') && profiles.has('module:*'));
+  });
 }
 
 // --- cron parsing -----------------------------------------------------------
@@ -277,11 +332,14 @@ async function main() {
 
   const manifest = loadManifest();
   const defaultTz = manifest.timezone || 'UTC';
-  const desired = manifest.jobs.map((m) => buildJob(m, defaultTz, baseUrl, cronSecret));
+  const profiles = parseProfiles(profileArg(process.argv.slice(2), process.env));
+  const selected = selectJobs(manifest.jobs, profiles);
+  const desired = selected.map((m) => buildJob(m, defaultTz, baseUrl, cronSecret));
   const desiredUrls = new Set(desired.map((d) => d.url));
   const managedPrefix = `${baseUrl}/api/cron/`;
 
-  console.log(`cron-sync [${MODE}] -> ${baseUrl}  (${desired.length} job(s) in manifest, tz ${defaultTz})\n`);
+  const scope = profiles ? `profiles ${[...profiles].join(',')}: ${desired.length} of ${manifest.jobs.length} job(s)` : `${desired.length} job(s) in manifest`;
+  console.log(`cron-sync [${MODE}] -> ${baseUrl}  (${scope}, tz ${defaultTz})\n`);
 
   const list = await api(apiKey, '/jobs');
   const existing: Array<{ jobId: number; url: string }> = (list.jobs || []).map((j: any) => ({
@@ -341,7 +399,7 @@ async function main() {
   for (const u of unmanaged) {
     if (PRUNE) plan.delete.push({ jobId: u.jobId, url: u.url, reason: 'not in manifest (--prune)' });
     console.log(
-      `  ${PRUNE ? '- DELETE' : '. KEEP  '}  ${short(u.url)}  (jobId ${u.jobId}, not in manifest${PRUNE ? ', pruning' : ' — left alone; --prune to remove'})`,
+      `  ${PRUNE ? '- DELETE' : '. KEEP  '}  ${short(u.url)}  (jobId ${u.jobId}, ${profiles ? 'not in the selected profiles' : 'not in manifest'}${PRUNE ? ', pruning' : ' — left alone; --prune to remove'})`,
     );
   }
   if (foreign > 0) console.log(`  . ${foreign} job(s) on other origins — out of scope, untouched`);

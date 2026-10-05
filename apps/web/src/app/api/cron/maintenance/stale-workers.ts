@@ -8,12 +8,12 @@ import { HEARTBEAT_STALE_MS, failWorkersOfOfflineRunners, notifyStalledVisualAud
  * Lightweight stale-worker cleanup: find heartbeat rows past the "not dead"
  * cutoff (HEARTBEAT_STALE_MS) and hand their accounts to the shared
  * offline-runner rule (failWorkersOfOfflineRunners), which fails an account's
- * runner workers only when no runner on it is alive. Runs every cron tick
- * (~1 min) so orphans are caught without waiting for a runner to call
- * /api/tasks/cleanup — a dead runner never will.
+ * runner workers only when no runner on it is alive. Runs on the hourly
+ * `maintenance` cron tick so orphans are caught without waiting for a runner
+ * to call /api/tasks/cleanup — a dead runner never will.
  *
  * Best-effort: every failure is swallowed (logged only) so the cron tick still
- * returns 200 and the scheduling work it already did is reported.
+ * returns 200 and the other maintenance sweep still runs.
  *
  * Returns the number of orphaned workers that were failed.
  */
