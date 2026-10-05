@@ -3523,6 +3523,30 @@ export interface WorkspaceQualityScoutConfig {
     /** A probe command containing any of these substrings is never run. */
     forbiddenPatterns?: string[];
   };
+  /**
+   * Follow-up thresholds (`propose` mode). Read only through
+   * `resolveScoutActionPolicy` (apps/web/src/lib/quality-scout-actions.ts);
+   * an out-of-range value falls back to the default rather than being clamped.
+   */
+  policy?: {
+    /** critical/high/medium file only at or above this confidence. Default 0.7. */
+    minConfidence?: number;
+    /** A medium finding files once seen `count` times, the last within `windowDays`. Default 2 in 7. */
+    mediumRecurrence?: { count?: number; windowDays?: number };
+  };
+  /**
+   * When runs start on their own. Read only through `resolveScoutTriggerConfig`
+   * (apps/web/src/lib/quality-scout-trigger.ts). A manual run is always allowed
+   * unless the mode is `off`.
+   */
+  triggers?: {
+    /** Run when a mission's integration branch becomes a candidate. Default true. */
+    missionCandidate?: boolean;
+    /** Optional periodic run on the default branch. Absent: never periodic. */
+    periodicHours?: number;
+  };
+  /** Per-run bounds. */
+  budget?: { maxProbes?: number; maxCostUsd?: number; maxDurationMs?: number };
 }
 
 export interface WorkspaceReadinessItem {

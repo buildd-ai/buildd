@@ -5154,6 +5154,8 @@ export const qualityScoutRuns = pgTable('quality_scout_runs', {
   // { total, pass, fail, inconclusive, unsupported } — written when the run ends.
   verdicts: jsonb('verdicts').$type<import('../quality-scout/types').ScoutRunTotals['verdicts'] | null>(),
   costUsd: decimal('cost_usd', { precision: 10, scale: 4 }),
+  // Full operational readout (stage cost, actions, dedupe, staleness) — written when the run ends.
+  metrics: jsonb('metrics').$type<import('../quality-scout/types').ScoutRunMetrics | null>(),
   error: text('error'),
   startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
   completedAt: timestamp('completed_at', { withTimezone: true }),

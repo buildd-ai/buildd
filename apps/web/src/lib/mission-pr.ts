@@ -609,7 +609,7 @@ export async function openMissionIntegrationPr(
     missionId, missionTitle: mission.title, workspaceId: workspace.id, branch, base,
   });
 
-  let prData: { number?: number; html_url?: string; base?: { ref?: string } } | null = adoptable;
+  let prData: { number?: number; html_url?: string; base?: { ref?: string }; head?: { sha?: string } } | null = adoptable;
   if (!prData) {
     try {
       const topology = await describeMissionIntegrationTopology(missionId);
@@ -687,6 +687,17 @@ export async function openMissionIntegrationPr(
   });
 
   console.log(`[mission-pr] opened mission PR #${prNumber} (${branch} → ${base}) for mission ${missionId}`);
+
+  // The integration branch is now a candidate: Quality Scout may exercise it
+  // (workspace opt-in). Fire-and-forget and fail-open — the mission PR never
+  // waits for, or fails on, a Scout run.
+  try {
+    const { scheduleMissionCandidateScout } = await import('@/lib/quality-scout-trigger');
+    scheduleMissionCandidateScout({ missionId, workspaceId: workspace.id, ref: branch, sha: prData.head?.sha ?? null });
+  } catch (err) {
+    console.warn('[mission-pr] quality scout trigger skipped:', err instanceof Error ? err.message : err);
+  }
+
   return { ok: true, prNumber, prUrl, created: true };
 }
 

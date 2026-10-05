@@ -11,7 +11,10 @@ import {
   resolveScoutFinding,
   resolveScoutMode,
   scoutCheckId,
+  scoutFindingLedgerSet,
+  scoutFindingRow,
   scoutProbeRecord,
+  scoutRunRow,
   scoutRunStaleness,
   startScoutRun,
   type ScoutCandidateLike,
@@ -355,6 +358,36 @@ describe('findings — dedupe by signature, recurrence across runs', () => {
   });
 });
 
+describe('findings — reproducibility', () => {
+  it('a known reproducibility from the executor is stored; unknown never overwrites a known one', () => {
+    const r1 = run();
+    const created = applyScoutFailure(null, r1, executed(r1, { exit: 0 }), T0, 'deterministic').finding!;
+    expect(created.reproducibility).toBe('deterministic');
+    const r2 = run({ id: 'run-2' });
+    expect(applyScoutFailure(created, r2, executed(r2, { exit: 0 }), T1, 'unknown').finding!.reproducibility).toBe('deterministic');
+    const r3 = run({ id: 'run-3' });
+    expect(applyScoutFailure(created, r3, executed(r3, { exit: 0 }), T1, 'intermittent').finding!.reproducibility).toBe('intermittent');
+  });
+
+  it('defaults to unknown when the caller does not say', () => {
+    const r = run();
+    expect(applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding!.reproducibility).toBe('unknown');
+  });
+});
+
+describe('ledger writes never touch the action columns', () => {
+  it('the recurrence update omits action_state and action_task_id, which the action claim owns', () => {
+    const r = run();
+    const f = { ...applyScoutFailure(null, r, executed(r, { exit: 0 }), T0).finding!, actionState: 'filed' as const, actionTaskId: 'task-1' };
+    const set = scoutFindingLedgerSet(f);
+    expect(set).not.toHaveProperty('actionState');
+    expect(set).not.toHaveProperty('actionTaskId');
+    expect(set.occurrenceCount).toBe(1);
+    // The insert of a new row still carries them (their defaults).
+    expect(scoutFindingRow(f)).toHaveProperty('actionState', 'filed');
+  });
+});
+
 describe('recordScoutFailure — compare-and-set on occurrence count', () => {
   function memoryStore(initial: ScoutFinding | null, opts: { raceOnce?: boolean } = {}) {
     let row = initial;
@@ -424,6 +457,12 @@ describe('schema', () => {
     for (const c of ['candidate_ref', 'candidate_sha', 'prior_run_id', 'prior_sha', 'mode', 'status', 'budget', 'policy_version']) {
       expect(cols).toContain(c);
     }
+  });
+
+  it('runs carry the operational metrics readout', () => {
+    expect(getTableConfig(qualityScoutRuns).columns.map(c => c.name)).toContain('metrics');
+    const r = run();
+    expect(scoutRunRow(r).metrics).toBeNull();
   });
 
   it('one probe row per candidate per run', () => {
