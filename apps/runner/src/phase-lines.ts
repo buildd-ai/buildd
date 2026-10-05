@@ -41,6 +41,15 @@ export const WARM_UPLOAD_LINE_PREFIX = 'BUILDD_WARM_UPLOAD=';
 export const WARM_UPLOAD_SKIP_REASONS = ['too_large'] as const;
 export type WarmUploadSkipReason = typeof WARM_UPLOAD_SKIP_REASONS[number];
 
+/**
+ * `BUILDD_WARM_REFRESH=<reason>`: why a warm snapshot was refreshed (uploaded).
+ * `age`: older than WARM_MAX_AGE_MS. `fetch`: post-restore fetch was large.
+ * `cache_growth`: cache grew materially during the run.
+ */
+export const WARM_REFRESH_LINE_PREFIX = 'BUILDD_WARM_REFRESH=';
+export const WARM_REFRESH_REASONS = ['age', 'fetch', 'cache_growth'] as const;
+export type WarmRefreshReason = typeof WARM_REFRESH_REASONS[number];
+
 export function formatWarmUploadSkippedLine(reason: WarmUploadSkipReason): string {
   return `${WARM_UPLOAD_LINE_PREFIX}skipped ${reason}`;
 }
@@ -91,6 +100,11 @@ export function emitRepoSource(source: RepoSource, reason?: RepoFallbackReason, 
 export function emitWarmUploadSkipped(reason: WarmUploadSkipReason, opts: EmitOpts = {}): void {
   if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
   (opts?.log ?? console.log)(formatWarmUploadSkippedLine(reason));
+}
+
+export function emitWarmRefresh(reason: WarmRefreshReason, opts: EmitOpts = {}): void {
+  if (!phaseLinesEnabled(opts?.env ?? process.env)) return;
+  (opts?.log ?? console.log)(`${WARM_REFRESH_LINE_PREFIX}${reason}`);
 }
 
 /** Run `fn` between `<step>_start` and `<step>_end`; the end is printed even if it throws. */

@@ -29,8 +29,10 @@ import {
   emitPhase,
   emitRepoSource,
   emitWarmUploadSkipped,
+  emitWarmRefresh,
   type RepoFallbackReason,
   type RunMetric,
+  type WarmRefreshReason,
 } from './phase-lines';
 import { fetchOriginWithRetry } from './git-clone';
 
@@ -320,7 +322,7 @@ export function createCacheTarball(cacheDir: string, outFile: string): boolean {
 // ── Refresh rules ─────────────────────────────────────────────────────────────
 
 export type WarmResult =
-  | { source: 'warm'; ageMs: number; fetchBytes: number }
+  | { source: 'warm'; ageMs: number; fetchBytes: number; restoredCacheBytes: number }
   | { source: 'clone'; reason: RepoFallbackReason };
 
 export type RunEnd = 'completed' | 'failed' | 'wait_timeout' | 'parked';
@@ -330,17 +332,41 @@ export type RunEnd = 'completed' | 'failed' | 'wait_timeout' | 'parked';
  *   Uploaded whatever the outcome: the bundle holds origin's refs only, so it
  *   does not depend on how the task went, and a workspace whose first tasks
  *   fail still gets warm.
- * - refresh: a warm restore that is old, or whose fetch was large, after a
- *   task that completed.
+ * - refresh: a warm restore that is old, or whose fetch was large, or whose
+ *   cache grew materially, after a task that completed.
  * - none: everything else, including a store that was unreachable or a disk
  *   too small, where an upload would fail the same way.
  */
-export function decideWarmRefresh(result: WarmResult, end: RunEnd): 'seed' | 'refresh' | 'none' {
+export interface DecideWarmRefreshInput {
+  result: WarmResult;
+  end: RunEnd;
+  currentCacheBytes?: number;
+}
+
+export type WarmRefreshDecision = { decision: 'seed' | 'refresh' | 'none'; reason?: WarmRefreshReason };
+
+/** Threshold for cache growth trigger: 64 MiB or 25%, whichever is smaller. */
+export const WARM_CACHE_GROWTH_BYTES = 64 * 1024 * 1024;
+export const WARM_CACHE_GROWTH_PERCENT = 0.25;
+
+export function decideWarmRefresh(input: DecideWarmRefreshInput): WarmRefreshDecision {
+  const { result, end, currentCacheBytes } = input;
   if (result.source === 'clone') {
-    return result.reason === 'no_snapshot' || result.reason === 'restore_failed' ? 'seed' : 'none';
+    return { decision: result.reason === 'no_snapshot' || result.reason === 'restore_failed' ? 'seed' : 'none' };
   }
-  if (end !== 'completed') return 'none';
-  return result.ageMs > WARM_MAX_AGE_MS || result.fetchBytes > WARM_FETCH_REFRESH_BYTES ? 'refresh' : 'none';
+  if (end !== 'completed') return { decision: 'none' };
+
+  if (result.ageMs > WARM_MAX_AGE_MS) return { decision: 'refresh', reason: 'age' };
+  if (result.fetchBytes > WARM_FETCH_REFRESH_BYTES) return { decision: 'refresh', reason: 'fetch' };
+
+  if (currentCacheBytes !== undefined && currentCacheBytes > result.restoredCacheBytes) {
+    const growthBytes = currentCacheBytes - result.restoredCacheBytes;
+    const growthPercent = result.restoredCacheBytes > 0 ? growthBytes / result.restoredCacheBytes : 1;
+    const threshold = Math.min(WARM_CACHE_GROWTH_BYTES, result.restoredCacheBytes * WARM_CACHE_GROWTH_PERCENT);
+    if (growthBytes > threshold) return { decision: 'refresh', reason: 'cache_growth' };
+  }
+
+  return { decision: 'none' };
 }
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -695,7 +721,7 @@ export class WarmRepoSession {
     this.metric('fetch_bytes', fetchBytes);
     const ageMs = Math.max(0, this.d.now() - manifest.createdAt);
     this.metric('snapshot_age_ms', ageMs);
-    this.result = { source: 'warm', ageMs, fetchBytes };
+    this.result = { source: 'warm', ageMs, fetchBytes, restoredCacheBytes: manifest.cacheBytes };
     emitRepoSource('warm', undefined, this.d.lineOpts);
     this.d.log(`[warm] restored generation ${manifest.generation} (${ageMs} ms old, fetched ${fetchBytes} bytes)`);
     return true;
@@ -735,8 +761,10 @@ export class WarmRepoSession {
   private async refreshOrThrow(end: RunEnd): Promise<void> {
     const clonePath = this.clonePath;
     if (!this.result || !clonePath || !existsSync(join(clonePath, '.git'))) return;
-    const decision = decideWarmRefresh(this.result, end);
+    const currentCacheBytes = dirSizeBytes(this.d.cacheDir);
+    const { decision, reason } = decideWarmRefresh({ result: this.result, end, currentCacheBytes });
     if (decision === 'none') return;
+    if (reason) emitWarmRefresh(reason, this.d.lineOpts);
     assertSnapshotSafe(clonePath);
 
     const defaultBranch = gitOut(clonePath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '')
