@@ -127,7 +127,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A decision call site MUST target a typed decision kind that owns its features, override, fallback and objective, while routes, ledger rows, outcomes and the readout come from one shared substrate.
 - [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-10-02
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
-- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-09-27
+- [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-10-05
   A claimed task MUST resolve to one model id at claim time under a fixed precedence — pin, task tier, role pin, then kind×complexity under budget gates and role floor — recorded on tasks.predicted_model.
 - [Orchestration Decisions (Shadow and Promotion Guard)](./orchestration-decisions-shadow.md) · @max — verified 2026-10-03
   Creation-manifest and claim hold/start decisions MUST only record suggestions unless a committed readout promotion grants a cohort, and MUST fall back to the deterministic rule on every failure.

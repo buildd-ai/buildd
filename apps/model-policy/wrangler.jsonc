@@ -10,8 +10,10 @@
   // (`bunx wrangler auth activate <profile> apps/model-policy`), so a deploy
   // can never land on whichever account the shell happens to be logged in to.
   //
-  // No public route yet. Add a Custom Domain here when there is a first
-  // consumer outside buildd; until then `wrangler dev` is the way in.
+  // Served on a Custom Domain in the same account's zone, like Dispatch.
+  // buildd is the first consumer (its web app points at this host). workers.dev stays
+  // off: one public hostname, gated by policy tokens.
+  "routes": [{ "pattern": "policy.buildd.dev", "custom_domain": true }],
   "workers_dev": false,
 
   // Secret (wrangler secret put POLICY_TOKENS): `id:token[,id:token]`, each

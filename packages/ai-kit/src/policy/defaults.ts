@@ -3,9 +3,9 @@
  * service and nothing configured for a tier. Every tier is set, so resolution
  * always ends in a callable model.
  *
- * Mirrors buildd's code-level tier defaults (`TIER_DEFAULTS`,
- * packages/core/model-tier-defaults.ts); `contract.test.ts` fails if the two
- * drift. An app that cannot call Anthropic directly should pass its own
+ * This is buildd's one list of tier models: its code-level defaults
+ * (`TIER_DEFAULTS`, packages/core/model-tier-defaults.ts) and alias map are
+ * derived from it, and `contract.test.ts` pins the two together. An app that cannot call Anthropic directly should pass its own
  * `fallback`.
  */
 

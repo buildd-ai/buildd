@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
+import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
+import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, isNotNull, not, sql } from 'drizzle-orm';
@@ -3706,6 +3708,12 @@ export async function PATCH(
           exitCause: (updates.exitCause as string | null | undefined) ?? worker.exitCause ?? null,
           workerId: id,
         }).catch(() => {});
+        // Model policy: the run's duration and cost against the policy decision
+        // the claim stored. A no-op unless a policy service issued it.
+        await reportTaskPolicyOutcome(worker.taskId, codingRunObservations({
+          durationMs,
+          costUsd: updates.costUsd ?? worker.costUsd ?? null,
+        }));
         // Systemic-failure detector: pages (critical) when tasks start failing
         // in a row, so an "all tasks failing on the runner" outage is caught fast.
         recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
@@ -5057,6 +5065,9 @@ async function handleReviewerOutcomeIfNeeded(
       status: 'open',
     });
   }
+
+  // Model policy: the verdict on the builder's run, as typed observations.
+  await reportTaskPolicyOutcome(originalTaskId, reviewVerdictObservations(effectiveVerdict));
 
   // Post the verdict to GitHub as a real review — mission-scoped or not. Without
   // this, buildd's own store is the only place the verdict ever existed: GitHub

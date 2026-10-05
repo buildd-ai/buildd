@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
@@ -490,7 +490,7 @@ const config: LocalUIConfig = {
   builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
-  model: process.env.MODEL || savedConfig.model || TIER_DEFAULTS.standard.model,
+  model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,
   // LLM provider (OpenRouter, etc.)
   llmProvider: buildProviderConfig(),
   // Serverless only if no API key configured

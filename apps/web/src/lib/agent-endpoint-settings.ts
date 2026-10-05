@@ -14,7 +14,7 @@ import { maskKeyLast4 } from '@buildd/core/inference-keys';
 import type { LookupAll } from '@buildd/core/net/public-address';
 import { normalizeGatewayUrl, resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { TIER_DEFAULTS, TIERS } from '@buildd/core/model-tier-defaults';
+import { TIERS, bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import {
   buildEndpointModelRows,
   deriveModelAliases,
@@ -78,7 +78,7 @@ type VerifyDeps = { fetcher?: Fetcher; lookup?: LookupAll };
  * into the name actually sent, from the alias table and the endpoint's own
  * `/v1/models` list.
  */
-export const VERIFY_MODEL = TIER_DEFAULTS.budget.model;
+export const VERIFY_MODEL = bundledTierEntry('budget').model;
 
 /** Listed models a refusal message names, at most. */
 const USABLE_SHOWN = 3;
@@ -92,7 +92,10 @@ const USABLE_SHOWN = 3;
  */
 async function agentTierModels(teamId: string): Promise<{ wanted: Array<{ model: string; tiers: string[] }>; hints: Record<string, string[]> }> {
   const wanted: Array<{ model: string; tiers: string[] }> = [];
-  for (const t of TIERS) if (TIER_DEFAULTS[t].provider === 'anthropic') wanted.push({ model: TIER_DEFAULTS[t].model, tiers: [t] });
+  for (const t of TIERS) {
+    const d = bundledTierEntry(t);
+    if (d.provider === 'anthropic') wanted.push({ model: d.model, tiers: [t] });
+  }
   let rows: Array<{ tier: string; provider: string; model: string; surface: string | null }> = [];
   try {
     rows = (await db.query.modelTierRegistry.findMany({
