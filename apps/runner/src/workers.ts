@@ -554,7 +554,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
-import { resolveEffectiveThinking } from '@buildd/core/model-aliases';
+import { resolveEffectiveThinking } from '@buildd/core/model-thinking';
 
 function hasClaudeCredentials(): boolean {
   // Check for OAuth credentials from `claude login` (.credentials.json)
