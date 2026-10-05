@@ -28,10 +28,12 @@ const holdRuns: Array<{ floor: boolean }> = [];
 mock.module('@/lib/question-hold', () => ({
   HOLD_QUEUE: 'question-hold',
   resurfaceHeldQuestions: async (opts: { floor: boolean }) => {
-    holdRuns.push(opts);
+    holdRuns.push({ floor: opts.floor });
     return { held: 1, resurfaced: 1, dropped: 0, ahead: 0, lost: 0, failed: 0 };
   },
 }));
+
+mock.module('@/lib/question-hold-notify', () => ({ notifyParkedQuestion: () => {} }));
 
 let runs = 0;
 mock.module('@/lib/away-delivery', () => ({

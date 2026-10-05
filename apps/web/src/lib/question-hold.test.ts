@@ -111,8 +111,8 @@ describe('resurfaceHeldQuestions', () => {
     const { q } = queue();
     const deps = { exec, now: () => new Date(NOW), notify: (p: ParkedQuestion) => notified.push(p), queue: q };
 
-    const first = await resurfaceHeldQuestions({ floor: false }, deps);
-    const second = await resurfaceHeldQuestions({ floor: false }, deps);
+    const first = await resurfaceHeldQuestions({ floor: false, notify: deps.notify }, deps);
+    const second = await resurfaceHeldQuestions({ floor: false, notify: deps.notify }, deps);
 
     expect(first.resurfaced).toBe(1);
     expect(second).toMatchObject({ resurfaced: 0, lost: 1 });
@@ -127,7 +127,7 @@ describe('resurfaceHeldQuestions', () => {
   it('only reads questions still parked on a waiting worker — a worker that moved on is never selected', async () => {
     const { exec, statements } = fakeDb([], () => true);
     const { q } = queue();
-    await resurfaceHeldQuestions({ floor: false }, { exec, now: () => new Date(NOW), notify: () => {}, queue: q });
+    await resurfaceHeldQuestions({ floor: false, notify: () => {} }, { exec, now: () => new Date(NOW), queue: q });
     const select = statements[0];
     expect(select).toContain("w.status = 'waiting_input'");
     expect(select).toContain("w.waiting_for->>'disposition' = 'hold'");
@@ -138,7 +138,7 @@ describe('resurfaceHeldQuestions', () => {
     const notified: ParkedQuestion[] = [];
     const { exec } = fakeDb([row({ taskStatus: 'cancelled' })], () => true);
     const { q } = queue();
-    const s = await resurfaceHeldQuestions({ floor: false }, { exec, now: () => new Date(NOW), notify: p => notified.push(p), queue: q });
+    const s = await resurfaceHeldQuestions({ floor: false, notify: p => notified.push(p) }, { exec, now: () => new Date(NOW), queue: q });
     expect(s.dropped).toBe(1);
     expect(notified).toHaveLength(0);
   });
@@ -148,7 +148,7 @@ describe('resurfaceHeldQuestions', () => {
     const aheadAt = NOW + 5 * 60_000;
     const { exec } = fakeDb([row({ id: 'worker-2', resurfaceAt: new Date(aheadAt).toISOString() })], () => true);
     const { q, calls } = queue();
-    const s = await resurfaceHeldQuestions({ floor: true }, { exec, now: () => new Date(NOW), notify: p => notified.push(p), queue: q });
+    const s = await resurfaceHeldQuestions({ floor: true, notify: p => notified.push(p) }, { exec, now: () => new Date(NOW), queue: q });
     expect(s).toMatchObject({ ahead: 1, resurfaced: 0 });
     expect(notified).toHaveLength(0);
     expect(calls).toEqual([['reseed', [{ member: 'worker-2', dueAtMs: aheadAt }]]]);
@@ -157,7 +157,7 @@ describe('resurfaceHeldQuestions', () => {
   it('the gated tick clears what it answered for', async () => {
     const { exec } = fakeDb([row()], () => true);
     const { q, calls } = queue();
-    await resurfaceHeldQuestions({ floor: false }, { exec, now: () => new Date(NOW), notify: () => {}, queue: q });
+    await resurfaceHeldQuestions({ floor: false, notify: () => {} }, { exec, now: () => new Date(NOW), queue: q });
     expect(calls).toEqual([['clear', NOW]]);
   });
 });

@@ -37,11 +37,9 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { HOLD_RESURFACE_MS, detectHardRail } from '@buildd/core/question-gate';
-import { briefedQuestionText, questionNotificationText, withSanitizedBrief, type BriefedQuestion } from '@buildd/core/question-brief';
+import { briefedQuestionText, type BriefedQuestion } from '@buildd/core/question-brief';
 import type { WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { gateEnabledFromGitConfig, hardRailContextFromGitConfig } from './question-gate-check';
-import { notifyTeamOf } from './notify';
-import { recordEvent, taskNeedsInputEvent } from './subscriptions';
 
 /** Redis due-queue (`buildd:due:<name>`) of held questions; member = worker id, score = resurfaceAt. */
 export const HOLD_QUEUE = 'question-hold';
@@ -125,40 +123,11 @@ export interface ParkedQuestion {
   sensitive: boolean;
 }
 
-/**
- * Tell a person a question is waiting: the team's Pushover channel, the
- * originating chat conversation, and the subscriptions ledger. The one notify
- * path for a parked question, shared by an immediate `ask` and a resurfaced
- * `hold`. Fire-and-forget: never throws, never awaits delivery.
- */
-export function notifyParkedQuestion(p: ParkedQuestion, opts: { recordLedger: boolean }): void {
-  const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
-  const note = questionNotificationText(withSanitizedBrief(p.waitingFor) as unknown as BriefedQuestion, { sensitive: p.sensitive });
-  const prompt = typeof p.waitingFor.prompt === 'string' ? p.waitingFor.prompt : undefined;
-  void notifyTeamOf({ workspaceId: p.workspaceId }, 'needsAttention', {
-    title: note.title,
-    message: note.message,
-    url: `${appBaseUrl}/app/tasks/${p.taskId}/respond`,
-    urlTitle: 'Respond',
-    priority: 0,
-  });
-  if (!p.taskId) return;
-  const taskId = p.taskId;
-  void import('./chat/mission-events')
-    .then(m => m.postQuestionEvent({ taskId, workerId: p.workerId, prompt, sensitive: p.sensitive }))
-    .catch(() => {});
-  // recordEvent catches its own errors. The PATCH route records the ledger
-  // row itself, after its worker write lands; the resurface sweep has already
-  // won its claim, so it records here.
-  if (opts.recordLedger) void recordEvent(taskNeedsInputEvent({ taskId, workerId: p.workerId, prompt }));
-}
-
 type Exec = (q: SQL) => Promise<{ rows?: unknown[] }>;
 
 export interface ResurfaceDeps {
   exec?: Exec;
   now?: () => Date;
-  notify?: (p: ParkedQuestion) => void;
   queue?: {
     clearThrough(nowMs: number): Promise<void>;
     reseed(entries: Array<{ member: string; dueAtMs: number }>): Promise<void>;
@@ -244,13 +213,18 @@ const defaultQueue: NonNullable<ResurfaceDeps['queue']> = {
 };
 
 /**
- * Surface every held question whose deadline passed. `floor` (the hourly
+ * Surface every held question whose deadline passed. `notify` is injected
+ * (lib/question-hold-notify.ts in production): this file is core and must not
+ * import the notifications module (scripts/module-boundaries.ts). `floor` (the hourly
  * tick) also reads the holds still ahead and re-seeds the due-queue with them.
  */
-export async function resurfaceHeldQuestions(opts: { floor: boolean }, deps: ResurfaceDeps = {}): Promise<ResurfaceSummary> {
+export async function resurfaceHeldQuestions(
+  opts: { floor: boolean; notify: (p: ParkedQuestion) => void },
+  deps: ResurfaceDeps = {},
+): Promise<ResurfaceSummary> {
   const exec = deps.exec ?? dbExec;
   const now = (deps.now ?? (() => new Date()))();
-  const notify = deps.notify ?? (p => notifyParkedQuestion(p, { recordLedger: true }));
+  const notify = opts.notify;
   const queue = deps.queue ?? defaultQueue;
   const summary: ResurfaceSummary = { held: 0, resurfaced: 0, dropped: 0, ahead: 0, lost: 0, failed: 0 };
 

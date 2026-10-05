@@ -25,6 +25,7 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { gateOnDueQueue } from '@/lib/cron-due-queue';
 import { AWAY_QUEUE, deliverAwayNotifications } from '@/lib/away-delivery';
 import { HOLD_QUEUE, resurfaceHeldQuestions } from '@/lib/question-hold';
+import { notifyParkedQuestion } from '@/lib/question-hold-notify';
 
 export const maxDuration = 60;
 
@@ -41,7 +42,10 @@ async function run(req: NextRequest, report: CronReport): Promise<NextResponse> 
   if (!gate.proceed && !holdGate.proceed) return NextResponse.json({ gated: true, reason: gate.reason });
 
   const hold = holdGate.proceed
-    ? await resurfaceHeldQuestions({ floor: holdGate.reason === 'floor' }).catch(err => {
+    ? await resurfaceHeldQuestions({
+        floor: holdGate.reason === 'floor',
+        notify: p => notifyParkedQuestion(p, { recordLedger: true }),
+      }).catch(err => {
         console.error('[Cron] notify-away: held-question pass failed:', err instanceof Error ? err.message : 'unknown');
         return null;
       })

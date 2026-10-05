@@ -1,6 +1,6 @@
 import { isSilentCompletion, silentCompletionRetryContext } from '@/lib/silent-completion';
 import { NextRequest, NextResponse } from 'next/server';
-import { withSanitizedBrief } from '@buildd/core/question-brief';
+import { questionNotificationText, withSanitizedBrief } from '@buildd/core/question-brief';
 import { isUuid } from '@/lib/uuid';
 import { db } from '@buildd/core/db';
 import { codingRunObservations, reviewVerdictObservations } from '@buildd/core/model-policy';
@@ -18,7 +18,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
-import { markHoldDue, notifyParkedQuestion, resolveHold, type HoldResolution } from '@/lib/question-hold';
+import { markHoldDue, resolveHold, type HoldResolution } from '@/lib/question-hold';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { emit } from '@/lib/core-emit';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
@@ -1115,10 +1115,27 @@ export async function PATCH(
   // is not notified now: the resurface sweep notifies it at its deadline if it
   // is still unanswered (lib/question-hold.ts).
   if (waitingFor?.type === 'question' && !hold?.held) {
-    notifyParkedQuestion(
-      { workspaceId: worker.workspaceId, taskId: worker.taskId, workerId: id, waitingFor, sensitive: isSensitive },
-      { recordLedger: false },
+    const appBaseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
+    // Short by design: the question, one line of context, the recommended default.
+    const note = questionNotificationText(
+      withSanitizedBrief(waitingFor),
+      { sensitive: isSensitive },
     );
+    void notifyTeamOf({ workspaceId: worker.workspaceId }, 'needsAttention', {
+      title: note.title,
+      message: note.message,
+      url: `${appBaseUrl}/app/tasks/${worker.taskId}/respond`,
+      urlTitle: 'Respond',
+      priority: 0,
+    });
+    // Agent chat: a mission filed from a conversation gets the question posted
+    // back into it. Lazy + best-effort: never on this PATCH's critical path.
+    if (worker.taskId) {
+      const taskId = worker.taskId;
+      void import('@/lib/chat/mission-events')
+        .then(m => m.postQuestionEvent({ taskId, workerId: id, prompt: waitingFor.prompt, sensitive: isSensitive }))
+        .catch(() => {});
+    }
   }
   // Auto-clear waitingFor when worker resumes running
   if (status === 'running' && waitingFor === undefined) updates.waitingFor = null;
