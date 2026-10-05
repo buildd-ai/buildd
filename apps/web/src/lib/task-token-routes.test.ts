@@ -33,6 +33,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/github/pr/review/route.ts',
   'apps/web/src/app/api/github/pr/route.ts',
   'apps/web/src/app/api/github/pr/supersede/route.ts',
+  'apps/web/src/app/api/health/dispatch/route.ts',
   'apps/web/src/app/api/health/failures/route.ts',
   'apps/web/src/app/api/initiatives/[id]/artifacts/route.ts',
   'apps/web/src/app/api/mcp/route.ts',

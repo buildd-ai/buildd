@@ -16,7 +16,7 @@ const mockFindMany = mock(async (_q?: unknown) => [] as any[]);
 mock.module('@buildd/core/db', () => ({
   db: { query: { workspaces: { findFirst: mockFindFirst, findMany: mockFindMany } } },
 }));
-mock.module('@buildd/core/db/schema', () => ({ workspaces: { id: 'id', teamId: 'teamId' } }));
+mock.module('@buildd/core/db/schema', () => ({ workspaces: { id: 'id', teamId: 'teamId' }, accounts: { id: 'id' } }));
 mock.module('drizzle-orm', () => ({ eq: (field: unknown, value: unknown) => ({ field, value, type: 'eq' }) }));
 
 const mockResolveSessionTeamIds = mock(async (_u: string, _pin: string | null) => null as string[] | null);
@@ -96,5 +96,31 @@ describe('GET /api/health/dispatch', () => {
     const res = await call();
     expect(res.status).toBe(500);
     expect(JSON.stringify(await res.json())).not.toContain('10.0.0.1');
+  });
+});
+
+describe('GET /api/health/dispatch — per-task token', () => {
+  const scoped = { id: 'acct', teamId: TEAM, level: 'worker', taskScope: { taskId: 't-1', workspaceId: WS_1, expiresAt: Date.now() + 60_000 } };
+  beforeEach(() => mockAuthenticateApiKey.mockImplementation(async () => scoped));
+
+  it('narrows a team-wide read to its own workspace', async () => {
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(mockGetDispatchHealth).toHaveBeenCalledWith([WS_1]);
+    expect(mockFindMany).not.toHaveBeenCalled();
+  });
+
+  it('404s another workspace of its team, before reading health', async () => {
+    mockFindFirst.mockImplementation(async () => ({ id: WS_2, teamId: TEAM }));
+    const res = await call(`?workspaceId=${WS_2}`);
+    expect(res.status).toBe(404);
+    expect(mockGetDispatchHealth).not.toHaveBeenCalled();
+  });
+
+  it('reads its own workspace when named', async () => {
+    mockFindFirst.mockImplementation(async () => ({ id: WS_1, teamId: TEAM }));
+    const res = await call(`?workspaceId=${WS_1}`);
+    expect(res.status).toBe(200);
+    expect(mockGetDispatchHealth).toHaveBeenCalledWith([WS_1]);
   });
 });
