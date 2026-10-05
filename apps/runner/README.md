@@ -79,6 +79,55 @@ as the foreground loop: an update still exits 75, and the service supervisor
 (not the launcher's own `while` loop) brings it back up for anything else,
 e.g. a real crash.
 
+## Model login on the runner machine
+
+The runner gives its agents its own machine's Claude login. Two ways to set
+one up, both as the user the runner runs as:
+
+- **`claude login`** (interactive). Run it once on the machine. The Claude CLI
+  keeps the login under `$HOME` (`~/.claude/.credentials.json` on Linux, the
+  login keychain on macOS) and refreshes it itself.
+- **`claude setup-token`** (headless). Run it anywhere you can open a browser,
+  and put the printed value in the runner's environment as
+  `CLAUDE_CODE_OAUTH_TOKEN`. It is a long-lived token with no refresh, so it
+  suits servers and containers.
+
+Which seat an agent gets is set by `BUILDD_HOST_SEAT` in the runner's
+environment:
+
+| Value | Agent gets |
+|---|---|
+| unset or `auto` | The machine's login, unless the team also stores a subscription seat in buildd Settings. Then the stored seat is used, exactly as before. |
+| `prefer` | The machine's login, even when a seat is stored in buildd. |
+| `off` | Never the machine's env token; a stored seat as before. |
+
+Before you switch a runner that uses a stored seat to `prefer`, check the
+machine's login with one real session as the runner user, for example
+`claude -p 'reply ok'` with the same environment the runner has. A check
+against the models endpoint is not enough: it can pass for a token that a
+session rejects.
+
+A metered key or endpoint the team configured still applies: a delivered
+`ANTHROPIC_API_KEY` fills that variable when the machine has not set it, and a
+team agent model endpoint or a non-Anthropic `ANTHROPIC_BASE_URL` replaces the
+login (a seat is never sent to a third-party host).
+
+Per setup:
+
+| Where the runner runs | What to do |
+|---|---|
+| Your own Mac or Linux box, in a terminal | `claude login`, then start `buildd`. Or `export CLAUDE_CODE_OAUTH_TOKEN=...` in the shell that starts it. |
+| macOS service (`buildd service install`) | `claude login` as the same user; the LaunchAgent runs as you and sees the keychain login. |
+| Linux service (`systemd --user`) | `claude login` as the same user, or put the token in a file only you can read and point the unit at it: `install -m 600 /dev/null ~/.config/buildd/seat.env`, write `CLAUDE_CODE_OAUTH_TOKEN=...` into it, then `systemctl --user edit buildd-runner` and add `[Service]` / `EnvironmentFile=%h/.config/buildd/seat.env`, then `systemctl --user restart buildd-runner`. Add `Environment=BUILDD_HOST_SEAT=prefer` the same way if a seat is also stored in buildd. |
+| Coder, Docker or a similar container | Set `CLAUDE_CODE_OAUTH_TOKEN` (and `BUILDD_HOST_SEAT=prefer` if a seat is also stored in buildd) in the container or workspace environment the runner process inherits (a workspace parameter or secret, not a file baked into the image), and restart the runner. |
+
+Check which one a worker used in its log: `Claude seat: this machine's own
+login (...)` means the machine's login; `Claude seat: the seat stored in
+buildd; ... is present but not used` and `Injected server-managed
+CLAUDE_CODE_OAUTH_TOKEN` mean the stored seat. The token value is never
+logged, and it is redacted from milestones, error traces and evidence like any
+other credential.
+
 ## CLI reference
 
 | Command | Purpose |
