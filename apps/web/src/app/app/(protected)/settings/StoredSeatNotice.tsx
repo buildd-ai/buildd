@@ -44,12 +44,9 @@ export default function StoredSeatNotice({ kinds }: { kinds: StoredSeatKind[] })
         stored ones will be removed. Your runners keep working until then.
       </p>
       <p className="text-xs text-text-secondary">
-        To move: sign in on each runner machine ({kinds.includes('claude') ? <code>claude login</code> : null}
-        {kinds.length === 2 ? ' and ' : null}
-        {kinds.includes('codex') ? <code>codex login</code> : null}
-        {kinds.includes('claude') ? <>, or put a <code>claude setup-token</code> value in the runner&apos;s environment</> : null}),
-        set <code>BUILDD_HOST_SEAT=prefer</code>, restart the runner and check one task. API keys and
-        model endpoints stay here and are not affected.
+        Sign in on each runner ({kinds.map((k, i) => (
+          <span key={k}>{i > 0 ? ' and ' : ''}<code>{k === 'claude' ? 'claude login' : 'codex login'}</code></span>
+        ))}), then set <code>BUILDD_HOST_SEAT=prefer</code>. API keys are not affected.
       </p>
       <a href={RUNNER_LOGIN_DOCS_URL} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
         How to set up a login on the runner
