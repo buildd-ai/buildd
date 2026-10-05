@@ -177,6 +177,17 @@ export const PERMISSIONS = {
 
 export type Permission = keyof typeof PERMISSIONS;
 
+/** How the settings matrix groups permissions, in registry order. Every permission is in exactly one. */
+export const PERMISSION_GROUPS: ReadonlyArray<{ title: string; permissions: readonly Permission[] }> = [
+  { title: 'Team membership', permissions: ['manage_team_members', 'assign_team_owner'] },
+  { title: 'Team settings', permissions: ['manage_team_settings', 'delete_team', 'manage_team_permissions', 'seed_team_timezone', 'manage_chat_retro', 'view_team_usage'] },
+  { title: 'API keys and runners', permissions: ['manage_team_keys'] },
+  { title: 'Model access and spend', permissions: ['manage_team_model_keys', 'manage_inference_providers', 'manage_model_tiers', 'manage_ai_budget', 'use_chat_admin_tools'] },
+  { title: 'Workspaces', permissions: ['manage_workspace_settings', 'delete_workspace', 'migrate_workspace', 'manage_github_installation', 'review_memory'] },
+  { title: 'Work in flight', permissions: ['steer_workers', 'force_reassign_task', 'manage_releases'] },
+  { title: 'Team infrastructure', permissions: ['manage_connectors', 'manage_evidence_backends', 'run_experiments'] },
+];
+
 export function isTeamRole(value: unknown): value is TeamRole {
   return typeof value === 'string' && (TEAM_ROLES as readonly string[]).includes(value);
 }
