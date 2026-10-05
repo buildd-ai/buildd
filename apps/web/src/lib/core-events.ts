@@ -25,9 +25,27 @@
  * a ledger event is recorded with no emitter knowing the ledger exists.
  */
 
-/** The task's outcome as people are told it, reported by its worker. */
+/**
+ * Why core failed a task whose worker reported it completed: a
+ * completion-policy slot's verdict (lib/completion-policy.ts), or the held
+ * release resolving red. `label` is fixed copy, safe in a sensitive
+ * workspace; `reason` is the slot's own detail and is not.
+ */
+export interface SlotFailure {
+  slot: 'loop' | 'release';
+  label: 'Loop attempts exhausted' | 'Release failed' | 'Release CI failed' | 'Release merge failed';
+  reason: string;
+}
+
+/**
+ * The task's outcome as people are told it. The type is the task's FINAL
+ * status, as core decided it, never just the status the worker reported.
+ * `via: 'worker'`: settled by the worker PATCH. `via: 'release'`: a release
+ * held for CI, settled later by the release PR's CI (GitHub webhook); the
+ * PATCH emitted no outcome while it was held.
+ */
 export interface WorkerTaskOutcome {
-  via: 'worker';
+  via: 'worker' | 'release';
   taskId: string;
   workerId: string;
   workspaceId: string | null;
@@ -38,6 +56,8 @@ export interface WorkerTaskOutcome {
   workspaceName: string | null;
   /** The worker's error text, for failures. */
   error: string | null;
+  /** Set on `task.failed` when a slot, not the worker, failed the task. */
+  failure?: SlotFailure | null;
 }
 
 type WorkerOutcomeType = 'task.completed' | 'task.failed' | 'task.retrying';

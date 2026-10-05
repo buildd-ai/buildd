@@ -69,7 +69,11 @@ mock.module('@/lib/subscriptions', () => ({
   prMergedEvent: (a: any) => ({ type: 'pr.merged', ...a }),
   prCiFailedEvent: (a: any) => ({ type: 'pr.ci_failed', ...a }),
   taskCompletedEvent: (a: any) => ({ type: 'task.completed', ...a }),
+  taskFailedEvent: (a: any) => ({ type: 'task.failed', ...a }),
 }));
+// The chat module's "task done" post, reached lazily by its subscriber.
+const mockPostTaskCompletedEvent = mock(async (_a: any) => {});
+mock.module('@/lib/chat/mission-events', () => ({ postTaskCompletedEvent: mockPostTaskCompletedEvent }));
 // Revert ledger: the writer is stood in; what it parses and writes is covered
 // in packages/core/__tests__/pr-reverts.test.ts and lib/pr-reverts.test.ts.
 const mockRecordPrReverts = mock((_a: any) => Promise.resolve(0));
@@ -115,8 +119,9 @@ mock.module('@/lib/pushover', () => ({
 // Tenant alerts go to the owning team's channel: mockNotifyTeamOf records the
 // subject and event so a test reads where each one was routed.
 const mockNotifyTeamOf = mock((_subject: any, _event: any, _payload: any) => {});
+const mockNotifyTeam = mock(async (..._a: any[]) => {});
 mock.module('@/lib/notify', () => ({
-  notifyTeam: mock(async () => {}),
+  notifyTeam: mockNotifyTeam,
   notifyTeamOf: async (subject: any, event: any, payload: any) => {
     mockNotifyTeamOf(subject, event, payload);
   },
@@ -5874,6 +5879,92 @@ describe('release PR CI success pins the live head', () => {
     await deliverSuccess();
     expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
     expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+  });
+});
+
+// A release the worker PATCH held for CI has had no outcome event yet; the
+// release PR's CI settles it here, and this is where its one task.completed
+// or task.failed is emitted (the PATCH emits neither while held).
+describe('held release: the release PR\'s CI emits the task\'s terminal event', () => {
+  const HEAD = 'a'.repeat(40);
+  beforeEach(() => {
+    resetAll();
+    mockRecordEvent.mockClear();
+    mockNotifyTeam.mockClear();
+    mockPostTaskCompletedEvent.mockClear();
+    selectTableResults = (table) => {
+      if (table === schemaMock.tasks) {
+        return [{ id: 'release-task', title: 'Ship it', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42, releasePrUrl: 'https://example.test/pr/42' } }];
+      }
+      if (table === schemaMock.workers) return [{ id: 'w-rel' }];
+      return null;
+    };
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'release-task', title: 'Ship it', workspaceId: 'ws-release',
+      workspace: { name: 'W', teamId: 'team-1', dataClass: null },
+    });
+  });
+
+  const ledger = () => mockRecordEvent.mock.calls.map(c => c[0]).filter((e: any) => e.type?.startsWith('task.'));
+  const pushes = () => mockNotifyTeam.mock.calls.map(c => c.slice(0, 3));
+  const deliverSuccess = () => POST(createWebhookRequest('check_suite',
+    makeCheckSuitePayload({ check_suite: { conclusion: 'success', head_sha: HEAD } })));
+
+  it('resolved green: task.completed for the task\'s worker, the done push and the chat post', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: HEAD } });
+    mockAllCheckSuitesPassed.mockResolvedValue(true);
+    mockMergePullRequest.mockResolvedValue({ merged: true });
+    await deliverSuccess();
+    await new Promise(r => setTimeout(r, 0));
+    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+    expect(ledger()).toEqual([{ type: 'task.completed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release' }]);
+    expect(pushes()).toEqual([['team-1', 'taskCompleted', {
+      title: 'Task done', message: 'Ship it\nW', url: 'https://buildd.dev/app/tasks/release-task', urlTitle: 'View task', priority: -1,
+    }]]);
+    expect(mockPostTaskCompletedEvent).toHaveBeenCalledWith({ taskId: 'release-task' });
+  });
+
+  it('resolved green but the merge is rejected: task.failed naming the release merge', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: HEAD } });
+    mockAllCheckSuitesPassed.mockResolvedValue(true);
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Base branch was modified' });
+    await deliverSuccess();
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release',
+      reason: 'Release merge failed: Base branch was modified',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Ship it\nW\nRelease merge failed: Base branch was modified',
+      url: 'https://buildd.dev/app/tasks/release-task', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(mockPostTaskCompletedEvent).not.toHaveBeenCalled();
+  });
+
+  it('resolved red: task.failed naming the release CI; no done push, no chat post', async () => {
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    await new Promise(r => setTimeout(r, 0));
+    expect(updateCalls.some(c => c.setValues.status === 'failed')).toBe(true);
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: 'Ship it', workspaceId: 'ws-release',
+      reason: 'Release CI failed: CI failed on PR #42',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Ship it\nW\nRelease CI failed: CI failed on PR #42',
+      url: 'https://buildd.dev/app/tasks/release-task', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(mockPostTaskCompletedEvent).not.toHaveBeenCalled();
+  });
+
+  it('resolved red in a sensitive workspace: no title in the ledger, the redacted push with the fixed label', async () => {
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'release-task', title: 'Ship it', workspaceId: 'ws-release',
+      workspace: { name: 'W', teamId: 'team-1', dataClass: 'sensitive' },
+    });
+    await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'release-task', workerId: 'w-rel', title: null, workspaceId: 'ws-release', reason: 'Release CI failed',
+    }]);
+    expect((pushes()[0]![2] as any).message).toBe('Task failed (content redacted)\nRelease CI failed');
   });
 });
 

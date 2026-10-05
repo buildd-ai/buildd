@@ -131,9 +131,15 @@ export function taskCompletedEvent(e: { taskId: string; workerId?: string | null
   return taskEvent('task.completed', e.taskId, `task:${e.taskId}:completed`, e);
 }
 
-/** Keyed per attempt: a retry that fails again is a new failure. */
-export function taskFailedEvent(e: { taskId: string; workerId?: string | null } & TaskPayload): NotifyEvent {
-  return taskEvent('task.failed', e.taskId, `task:${e.taskId}:failed:${e.workerId ?? 'unknown'}`, e);
+/**
+ * Keyed per attempt: a retry that fails again is a new failure. `reason`: why
+ * core failed it when the worker did not (a completion-policy slot), as short
+ * text; the emitter keeps prose out of it for a sensitive workspace.
+ */
+export function taskFailedEvent(e: { taskId: string; workerId?: string | null; reason?: string | null } & TaskPayload): NotifyEvent {
+  const event = taskEvent('task.failed', e.taskId, `task:${e.taskId}:failed:${e.workerId ?? 'unknown'}`, e);
+  if (e.reason) event.payload.reason = e.reason.slice(0, 200);
+  return event;
 }
 
 /** Keyed per attempt and question; the question text itself never enters the key. */
