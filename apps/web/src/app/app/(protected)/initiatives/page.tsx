@@ -41,10 +41,7 @@ export default async function InitiativesListPage() {
     return (
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-[1180px]">
         <div className="card p-8 text-center max-w-md mx-auto mt-10">
-          <p className="text-sm text-text-secondary mb-1">No initiatives.</p>
-          <p className="text-xs text-text-muted mb-4">
-            Groups missions behind one goal, with an owner and a target date.
-          </p>
+          <p className="text-sm text-text-secondary mb-4">No initiatives.</p>
           <Link
             href="/app/initiatives/new"
             className="inline-flex min-h-11 items-center border-2 border-primary bg-primary px-3.5 font-mono text-[12.5px] font-semibold text-white shadow-sm hover:bg-primary-hover md:min-h-9"

@@ -151,7 +151,6 @@ The workflow should:
       ) : (
         <div className="border border-dashed border-border-default p-4 mb-6">
           <p className="text-[13px] text-text-secondary">No runners connected.</p>
-          <p className="text-[12px] text-text-muted mt-0.5">Connect one below and it starts claiming this workspace&apos;s tasks.</p>
         </div>
       )}
 
