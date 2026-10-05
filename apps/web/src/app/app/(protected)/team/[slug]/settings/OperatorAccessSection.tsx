@@ -251,8 +251,7 @@ function TeamCeilingCard({ roleId, metadata }: { roleId: string; metadata: unkno
         </label>
       </div>
       <p className="text-meta text-text-muted mb-3">
-        A kill switch and a capability/scope ceiling for every workspace. Turning it off disables Operator everywhere,
-        even a workspace that already opted in. Nothing here enables Operator by itself — each workspace still opts in below.
+        Turning this off disables Operator for every workspace, including ones already opted in.
       </p>
 
       <div className={killSwitchOff ? 'opacity-50 pointer-events-none' : ''}>
@@ -441,11 +440,10 @@ function WorkspaceGrantRow({
 
           <div className="p-3 rounded-md border border-status-warning/30 bg-status-warning/5">
             <span className="block text-meta font-medium text-status-warning mb-1.5">
-              Secret management &amp; reveal — off by default
+              Secret management &amp; reveal: off by default
             </span>
             <p className="text-meta text-text-muted mb-2">
-              Separate from deploy/use above: this lets the agent change or read a credential's plaintext, not just use
-              it server-side. Grant it only when a workspace specifically needs it.
+              Lets the agent change or read a credential's plaintext, not just use it server-side.
             </p>
             <div className="space-y-2">
               {ELEVATED_CAPS.map(c => (
@@ -513,16 +511,14 @@ export function OperatorAccessSection({
       <div>
         <h2 className="text-title font-semibold text-text-primary">Platform Operator access</h2>
         <p className="text-meta text-text-muted mt-0.5">
-          What the Operator role may do, per workspace. Deploy/use capabilities are separate from secret
-          management/reveal authority, which is off by default and must be granted explicitly per workspace. No
-          credential value is ever shown here — only the reference it was registered under.
+          Deploy/use capabilities are separate from secret management and reveal, which stays off by default.
         </p>
       </div>
 
       <TeamCeilingCard roleId={roleId} metadata={teamMetadata} />
 
       {workspaces.length === 0 ? (
-        <p className="text-body text-text-muted">No workspaces to configure yet.</p>
+        <p className="text-body text-text-muted">No workspaces to configure.</p>
       ) : (
         <div className="space-y-3">
           {workspaces.map(ws => (
