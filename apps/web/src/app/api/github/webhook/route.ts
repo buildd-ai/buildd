@@ -1,6 +1,7 @@
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
+import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
@@ -450,6 +451,8 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
+        // Model policy: CI on the run's PR is its tests observation.
+        await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: false }]);
       }
     }
     // Subscriptions ledger: "tell me if CI goes red on PR N". One row per head SHA.
@@ -505,6 +508,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             .update(workers)
             .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
             .where(eq(workers.id, worker.id));
+          // Model policy: every check suite passed on the run's PR.
+          if (worker.prLifecycleStatus !== 'ci_green') {
+            await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
+          }
         }
 
         // Resolve merge policy via the single precedence chain:
@@ -1114,6 +1121,12 @@ async function handlePullRequestEvent(event: {
         prNumber: pr.number,
         mergedAt: new Date(),
       });
+      // Model policy: the merge, once (a redelivery is not a second merge).
+      // A close without merge is not reported: superseded and abandoned PRs
+      // close too, and that is not evidence about the model.
+      if (mergeIsNew) {
+        await reportTaskPolicyOutcome(worker.taskId, [{ type: 'merged', merged: true }]);
+      }
       // A merged doc fix gets its conformance re-run now, not whenever the
       // next dev push happens to evaluate the doc (spec-conformance.md §9).
       // Best-effort; the hourly pr-reconcile sweep is the backstop.

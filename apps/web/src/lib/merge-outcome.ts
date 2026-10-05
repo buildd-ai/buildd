@@ -30,6 +30,13 @@ export type MergeOutcome =
    * `override: true`, which is recorded as a bypass server-side.
    */
   | { kind: 'review_blocked'; message: string; clearedBy: string | null }
+  /**
+   * The landing function answered `waiting_ci`: checks or a review round are
+   * still running on the PR head. A machine-owned wait, not a failure — there
+   * is nothing to retry and nothing to dismiss; the card re-derives on refresh
+   * and moves out of "Needs you" (resolveMergeChip).
+   */
+  | { kind: 'pending'; message: string }
   | { kind: 'error'; message: string };
 
 /** `/api/prs/[prNumber]/merge` returns this 404 when no unmerged worker matches. */
@@ -50,6 +57,11 @@ export function resolveMergeOutcome(
 
   const message = typeof body?.error === 'string' ? body.error : '';
   if (status === 404 && ALREADY_MERGED_RE.test(message)) return { kind: 'stale' };
+
+  const landing = body?.landing;
+  if (landing && typeof landing === 'object' && (landing as { kind?: unknown }).kind === 'waiting_ci') {
+    return { kind: 'pending', message: message || 'Checks or the review are still running on the PR head.' };
+  }
 
   if (body?.reviewGateBlocked) {
     return {

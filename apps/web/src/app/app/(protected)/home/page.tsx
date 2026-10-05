@@ -53,7 +53,7 @@ import {
 import { loadMissionCardViews, MISSION_CARD_TASK_COLUMNS, MISSION_CARD_WORKERS_WITH } from '@/lib/mission-card-views';
 import type { HomeMissionSummary } from './HomeMissions';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
-import { resolveReviewerGate, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
+import { resolveReviewerGate, resolveReviewInFlight, deriveStoredVerdictFallback, gateReachesActionQueue } from '@/lib/reviewer-gate';
 import type { ReviewerTaskStatus } from '@/lib/reviewer-gate';
 import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
@@ -239,6 +239,10 @@ export default async function HomePage({
   // (PR blockers) section so a PR under active/queued review never gets a
   // second, human-facing MERGE card there.
   let reviewerGateMap = new Map<string, import('@/lib/reviewer-gate').ReviewerGateResult>();
+  // Per original task: a review round still in flight on the PR's current
+  // head (resolveReviewInFlight). Keeps a human-gated PR out of "Needs you"
+  // while the reviewer owns the next step.
+  const reviewInFlightByTaskId = new Map<string, 'queued' | 'reviewing'>();
 
   let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
   // Open discrepancy rows beyond each workspace's visible top-10 (§12) — never
@@ -929,6 +933,15 @@ export default async function HomePage({
               });
               if (fallback.escalationReason != null) escalatedMap.set(w.taskId, fallback.escalationReason);
               if (fallback.approvalSummary != null) approvedMap.set(w.taskId, fallback.approvalSummary);
+              const reviewInFlight = resolveReviewInFlight({
+                reviewerTask: rt
+                  ? { status: rt.status as ReviewerTaskStatus, hasLiveWorker: rt.hasLiveWorker, createdAt: rt.createdAt, result: rt.result, context: rt.context }
+                  : null,
+                currentHeadSha: w.lastCommitSha ?? null,
+                now: gateNow,
+                queuedThresholdMinutes: policy.stallNotifyMinutes,
+              });
+              if (reviewInFlight) reviewInFlightByTaskId.set(w.taskId, reviewInFlight);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({
                 policyTier: policy.tier,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
@@ -1274,13 +1287,15 @@ export default async function HomePage({
                   prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
                   prIsDraft: w.prIsDraft ?? null,
                   missionMergeBlockedReason: w.taskId ? missionPrGateMap.get(w.taskId) ?? null : null,
+                  reviewInFlight: w.taskId ? reviewInFlightByTaskId.get(w.taskId) ?? null : null,
+                  prLifecycleUpdatedAt: w.updatedAt ?? null,
                 };
               })
               .sort((a, b) => {
                 // In-flight cards sort last so the slice below never drops a
                 // card that needs the human in favour of one that does not.
-                const handled = (i: { ciGate?: { kind: string } | null; autoMerge?: boolean }) =>
-                  (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running' || (i.autoMerge && !i.ciGate) ? 1 : 0);
+                const handled = (i: { ciGate?: { kind: string } | null; autoMerge?: boolean; reviewInFlight?: string | null }) =>
+                  (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running' || i.reviewInFlight || (i.autoMerge && !i.ciGate) ? 1 : 0);
                 const handledDiff = handled(a) - handled(b);
                 if (handledDiff !== 0) return handledDiff;
                 const arcDiff = Number(!!b.missionId) - Number(!!a.missionId);
@@ -1394,6 +1409,9 @@ export default async function HomePage({
                       // Freshness inputs — a blocker-derived merge card is still
                       // a claim that this PR is open right now.
                       completedAt: true, createdAt: true, prLastVerifiedAt: true,
+                      // Pending-gate inputs: a merge card is also a claim that
+                      // CI and the review have finished (resolveMergeChip).
+                      updatedAt: true,
                     },
                     orderBy: desc(workers.createdAt),
                     limit: 1,
@@ -1461,6 +1479,8 @@ export default async function HomePage({
                   prLifecycleStatus: (w.prLifecycleStatus as 'open' | 'merged' | 'closed' | 'unresolvable' | null) ?? null,
                   prOpenedAt: w.completedAt ?? w.createdAt ?? null,
                   prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
+                  prLifecycleUpdatedAt: w.updatedAt ?? null,
+                  reviewInFlight: reviewInFlightByTaskId.get(upstream.id) ?? null,
                   upstreamTaskId: upstream.id,
                   upstreamTaskTitle: upstream.title,
                   unblockCount: blockedTasks.length,

@@ -26,9 +26,18 @@ export type PolicySurface = (typeof POLICY_SURFACES)[number];
 
 export const POLICY_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const satisfies readonly PlanEffort[];
 
+/**
+ * Who serves a route: the kit's API providers, plus `openai-codex`, a
+ * subscription-backed coding runtime (an agent runner signed in to Codex, not
+ * an API key). It only makes sense on the `coding` surface; a chat app that
+ * gets one back should treat it as unreachable and use its fallback.
+ */
+export const POLICY_PROVIDERS = [...KIT_PROVIDERS, 'openai-codex'] as const;
+export type PolicyProvider = (typeof POLICY_PROVIDERS)[number];
+
 /** One concrete model choice. */
 export interface PolicyRoute {
-  provider: KitProvider;
+  provider: PolicyProvider;
   model: string;
   effort?: PlanEffort;
 }
@@ -137,7 +146,7 @@ export interface DecisionExperiment {
 
 /** The `POST /v1/resolve` answer. */
 export interface PolicyDecision {
-  provider: KitProvider;
+  provider: PolicyProvider;
   model: string;
   effort: PlanEffort | null;
   policyVersion: string;

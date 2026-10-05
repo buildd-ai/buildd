@@ -86,3 +86,24 @@ describe('AgentHandledCard', () => {
     expect(pr.slice(pr.lastIndexOf('<a'))).toContain('min-h-11');
   });
 });
+
+describe('AgentHandledCard — pending CI / review gates', () => {
+  it('names what is pending and offers no merge, Retry or Dismiss', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'REVIEW_RUNNING', pendingGates: { ci: 'passed', review: 'reviewing' } })} />,
+    );
+    expect(html).toContain('CI passed · reviewer checking the latest commit');
+    expect(html).not.toContain('Merge');
+    expect(html).not.toContain('Retry');
+    expect(html).not.toContain('Dismiss');
+    expect(html).not.toContain('still running');
+  });
+
+  it('a CI wait reads as CI, not as a generic agent label', () => {
+    const html = renderToStaticMarkup(
+      <AgentHandledCard item={item({ chip: 'CI_RUNNING', ciGate: { kind: 'running', label: 'CI running' }, pendingGates: { ci: 'running', review: null } })} />,
+    );
+    expect(html).toContain('CI running');
+    expect(html).not.toContain('Retry');
+  });
+});
