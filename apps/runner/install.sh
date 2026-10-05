@@ -359,12 +359,12 @@ GLOBALEOF
 
   skill)
     shift
-    exec bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
+    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
     ;;
 
   login)
     shift
-    exec bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/login.ts" "$@"
+    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
     ;;
 
   logout)
@@ -408,13 +408,13 @@ GLOBALEOF
 
   service)
     shift
-    exec bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/service.ts" "$@"
+    exec bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"
     ;;
 esac
 
 # Run with restart loop (exit code 75 = update applied, restart)
 while true; do
-  bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/index.ts" "$@"
+  bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"
   EXIT_CODE=$?
   if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi
   echo "Restarting after update..."

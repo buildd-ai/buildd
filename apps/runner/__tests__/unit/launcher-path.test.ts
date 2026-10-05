@@ -28,7 +28,7 @@ describe('launcher script PATH', () => {
 
   test('adds $HOME/.bun/bin to PATH before any bun invocation', () => {
     const pathExportIndex = launcher.indexOf('export PATH="$HOME/.bun/bin');
-    const firstBunCallIndex = launcher.indexOf('bun --preload');
+    const firstBunCallIndex = launcher.indexOf('bun run --preload');
     expect(pathExportIndex).toBeGreaterThan(-1);
     expect(firstBunCallIndex).toBeGreaterThan(-1);
     expect(pathExportIndex).toBeLessThan(firstBunCallIndex);
@@ -46,7 +46,7 @@ describe('launcher script PATH', () => {
       if (line.includes('export PATH=') && line.includes('.bun/bin')) {
         pathSet = true;
       }
-      if (pathSet && line.includes('bun --preload') && line.includes('index.ts')) {
+      if (pathSet && line.includes('bun run --preload') && line.includes('index.ts')) {
         bunAfterPath = true;
         break;
       }
@@ -56,6 +56,6 @@ describe('launcher script PATH', () => {
 
   test('dispatches `service` subcommands to service.ts', () => {
     expect(launcher).toContain('service)');
-    expect(launcher).toContain('bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/service.ts" "$@"');
+    expect(launcher).toContain('bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"');
   });
 });

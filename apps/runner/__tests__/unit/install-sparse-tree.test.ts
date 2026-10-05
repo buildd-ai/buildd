@@ -73,7 +73,7 @@ describe('install.sh sparse tree', () => {
     // The updater's health probe boots from the install dir and relies on the root bunfig.
     expect(sparse).toContain('bunfig.toml');
     expect(installSh).toContain('BUILDD_PRELOAD="$HOME/.buildd/scripts/stub-server-only.ts"');
-    expect(installSh).toContain('bun --preload "$BUILDD_PRELOAD" run "$HOME/.buildd/apps/runner/src/index.ts" "$@"');
+    expect(installSh).toContain('bun run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/index.ts" "$@"');
   });
 
   test('the installed ref is selectable (CI installs the commit under test)', () => {
