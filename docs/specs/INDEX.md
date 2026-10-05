@@ -14,7 +14,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 - [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-09-30
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
-- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-09-05
+- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-10-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
 - [Team Permissions](./team-permissions.md) · @max — verified 2026-10-04
   Every team-scoped permission decision MUST resolve through one named-permission registry that maps each permission to its team roles and minimum API-key level, failing closed.
