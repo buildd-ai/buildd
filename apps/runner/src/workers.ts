@@ -147,7 +147,8 @@ import {
   SESSION_END_PUSH_TEXT,
   type SessionEndLabel,
 } from './session-end-classification.js';
-import { buildCodexMcpServers, resolveMcpJsonHttpServers } from './mcp-json.js';
+import { withoutRunnerKeyValues } from './runner-key-guard.js';
+import { buildCodexMcpServers, describeSkippedMcpServer, resolveMcpJsonHttpServers, urlOrigin, type BuilddCredentialExpansion } from './mcp-json.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -3064,9 +3065,20 @@ export class WorkerManager {
     const fileBased = worker.roleBundle
       ? resolveRoleEnvMapping(worker.roleBundle.envMapping, process.env as Record<string, string>)
       : { resolved: {}, missing: [] };
+    // Role env lands in the agent's env (and the install env). The file-based
+    // mapping reads the runner's own process.env, so a label naming the
+    // runner's key variable would hand the agent that key; drop any value equal
+    // to the runner key, whatever the label or source.
+    const { env: resolved, dropped } = withoutRunnerKeyValues(
+      { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
+      this.config.apiKey,
+    );
+    if (dropped.length > 0) {
+      console.warn(`[roles] role env ${dropped.join(', ')} not given to the agent: the value is this runner's own key`);
+    }
     return {
-      resolved: { ...fileBased.resolved, ...(worker.roleEnvSecrets ?? {}) },
-      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? [])],
+      resolved,
+      missing: [...fileBased.missing, ...(worker.roleEnvMissing ?? []), ...dropped],
     };
   }
 
@@ -3519,14 +3531,20 @@ export class WorkerManager {
       }
 
       // Build a separate expansion env for resolving ${VAR} references in .mcp.json
-      // HTTP server headers. This env is NEVER passed to the agent subprocess — it
-      // exists only so the header-resolution code below can bake credentials into
-      // the MCP server entries before mounting them. The agent only sees the already-
-      // resolved Authorization headers inside queryOptions.mcpServers, not the raw keys.
+      // HTTP server headers. This env is never the agent's env, but what it
+      // resolves is agent-visible: resolved headers go to the Claude CLI on its
+      // argv, and Codex bearer tokens go into the agent env. So the runner key is
+      // NOT in it. `${BUILDD_API_KEY}` resolves through `builddMcpCredential`
+      // instead: to the agent's own buildd credential (the per-task token when
+      // minted), and only for a server on this runner's buildd origin. A server
+      // anywhere else asking for it is refused with a warning (mcp-json.ts).
       const headerExpansionEnv: Record<string, string> = {
         ...cleanEnv,
-        ...(this.config.apiKey ? { BUILDD_API_KEY: this.config.apiKey } : {}),
         ...(worker.mcpSecrets ?? {}),
+      };
+      const builddMcpCredential: BuilddCredentialExpansion = {
+        origin: urlOrigin(this.config.builddServer) ?? '',
+        token: agentBuilddToken ?? '',
       };
       if (worker.mcpSecrets && Object.keys(worker.mcpSecrets).length > 0) {
         console.log(`[Worker ${worker.id}] MCP credential secrets available for header resolution (NOT in agent env): ${Object.keys(worker.mcpSecrets).join(', ')}`);
@@ -3631,6 +3649,7 @@ export class WorkerManager {
           mcpJson: codexMcpJson,
           connectors: (worker as any).mcpConnectors as ResolvedMcpConnector[] | undefined,
           env: headerExpansionEnv,
+          builddCredential: builddMcpCredential,
         });
         Object.assign(cleanEnv, codexMcp.bearerEnv);
         for (const w of codexMcp.warnings) console.warn(`[Worker ${worker.id}] Codex: ${w}`);
@@ -4463,7 +4482,7 @@ export class WorkerManager {
 
       // Inject HTTP MCP servers from .mcp.json in cwd into queryOptions.mcpServers,
       // resolving ${VAR} references (url and headers) using headerExpansionEnv
-      // (which includes BUILDD_API_KEY + mcpSecrets). Claude Code SDK does not
+      // (mcpSecrets; ${BUILDD_API_KEY} via builddMcpCredential). Claude Code SDK does not
       // expand ${VAR} in HTTP server headers when reading .mcp.json — servers with
       // unresolved refs would connect without auth and receive 401 (which the
       // agent sees as "OAuth required"), so they are skipped and warned instead.
@@ -4478,13 +4497,14 @@ export class WorkerManager {
             const { servers, skipped } = resolveMcpJsonHttpServers(cwdMcpData, headerExpansionEnv, {
               requireHttpType: true,
               isTaken: name => Boolean(queryOptions.mcpServers[name]),
+              builddCredential: builddMcpCredential,
             });
             for (const srv of servers) {
               queryOptions.mcpServers[srv.name] = { type: 'http', url: srv.url, headers: srv.headers };
               console.log(`[Worker ${worker.id}] Injected .mcp.json server "${srv.name}" into queryOptions (${Object.keys(srv.headers).length} header(s))`);
             }
             for (const sk of skipped) {
-              console.warn(`[Worker ${worker.id}] MCP server "${sk.name}" not mounted: unresolved \${${sk.unresolved.join('}, ${')}} — mcpSecrets not delivered by claim route?`);
+              console.warn(`[Worker ${worker.id}] ${describeSkippedMcpServer(sk)}`);
             }
           } catch {
             console.warn(`[Worker ${worker.id}] Failed to read .mcp.json for MCP injection`);
