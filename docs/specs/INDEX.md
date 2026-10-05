@@ -10,7 +10,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
-- [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-04
+- [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-05
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
 - [Credential Refresh Lifecycle](./credential-refresh-lifecycle.md) · @max — verified 2026-09-30
   A rotating OAuth credential MUST be refreshed by one holder at a time from the runner, not the control plane, and a rotation whose outcome was never learned MUST end in one reconnect signal, not a retry loop.
@@ -75,8 +75,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   Answering a parked worker's question MUST resume that worker's own session when the runner still holds it, and MUST fall back to a cold continuation only for a recorded, owner-visible reason.
 - [Checkpoint Sweeps and Edit-Claim Enforcement](./checkpoint-sweeps.md) · @max — verified 2026-10-01
   Runners MUST sweep worktree changes against the resolved PR base at checkpoints and offer them for exclusive acquisition; under enforcement a confirmed collision MUST deny or defer.
-- [Cloud Egress Merge Guard](./cloud-egress-merge-guard.md) · @max — verified 2026-10-04
-  The cloud runner's egress handler MUST refuse a direct GitHub PR merge or a push to a protected branch before attaching its installation token, independent of buildd's own merge-policy code paths.
+- [Cloud Egress Merge Guard](./cloud-egress-merge-guard.md) · @max — verified 2026-10-05
+  The cloud egress handler MUST refuse a direct GitHub PR merge, a push to a protected branch, and (under an allow-list) any ref move outside the task's own branch, before attaching its token.
 - [Codebase Memory Graph](./codebase-memory-graph.md) · @max — verified 2026-09-12
   Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through five named reasons, and MUST never fail a task.
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-09-11

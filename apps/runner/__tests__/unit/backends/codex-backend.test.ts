@@ -272,6 +272,28 @@ describe('CodexBackend SDK options', () => {
     expect(mockCodexConstructor.mock.calls[0]?.[0]?.codexPathOverride).toBeUndefined();
   });
 
+  test('the codex CLI gets exactly the task env, never the runner process env', async () => {
+    // Without `env` the Codex SDK copies the runner's whole process.env into
+    // the CLI — the runner key among it when the runner was started with one.
+    process.env.BUILDD_API_KEY = 'bld_runner_process_key';
+    try {
+      for await (const _ of new CodexBackend({}).runStreamed({
+        ...BASE_RUN_OPTS,
+        env: { OPENAI_API_KEY: 'sk-test', PATH: '/usr/bin' },
+      })) {}
+      const env = mockCodexConstructor.mock.calls[0]?.[0]?.env;
+      expect(env).toEqual({ OPENAI_API_KEY: 'sk-test', PATH: '/usr/bin' });
+      expect(JSON.stringify(mockCodexConstructor.mock.calls[0]?.[0])).not.toContain('bld_runner_process_key');
+    } finally {
+      delete process.env.BUILDD_API_KEY;
+    }
+  });
+
+  test('no task env keeps the SDK default (no env override)', async () => {
+    for await (const _ of new CodexBackend({}).runStreamed(BASE_RUN_OPTS)) {}
+    expect(mockCodexConstructor.mock.calls[0]?.[0]?.env).toBeUndefined();
+  });
+
   test('task env is present when Codex generator starts', async () => {
     mockRunStreamed.mockImplementationOnce(async (_prompt: string) => ({
       events: (async function* () {

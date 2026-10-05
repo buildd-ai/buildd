@@ -70,7 +70,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     // branch name). The original `request.body` stream is untouched, so the
     // eventual forward below is unaffected whether or not this ran.
     const bodyPeek = kind === 'github' && needsGithubBodyPeek(host, request.method, reqUrl.pathname)
-      ? await peekRequestBodyPrefix(request, GITHUB_BODY_PEEK_MAX_BYTES)
+      ? await peekRequestBodyPrefix(request, host.toLowerCase() === 'api.github.com' ? GITHUB_JSON_PEEK_MAX_BYTES : GITHUB_BODY_PEEK_MAX_BYTES)
       : undefined;
     const decision = rewriteOutbound(
       { url: request.url, method: request.method, headers: request.headers, ...(bodyPeek !== undefined ? { bodyPeek } : {}) },
@@ -250,6 +250,14 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
 
 /** How much of a peeked GitHub request body to read, at most. Bounds both checks: a GraphQL mutation name and the pkt-line ref list ahead of a push's pack data. */
 const GITHUB_BODY_PEEK_MAX_BYTES = 16 * 1024;
+
+/**
+ * The same bound for a JSON body to api.github.com (GraphQL, and REST ref
+ * writes under the push allow-list). Larger, because the push allow-list
+ * refuses a JSON body it cannot parse, and a cut-off prefix never parses: a
+ * PR body or file content past this size is refused rather than guessed at.
+ */
+const GITHUB_JSON_PEEK_MAX_BYTES = 1024 * 1024;
 
 /**
  * A bounded prefix of `request`'s body, read from an independent

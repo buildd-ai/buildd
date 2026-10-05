@@ -114,3 +114,45 @@ the runner logs one `[agent-task-token]` warning with the reason.
 | Variable | Default | Effect |
 |---|---|---|
 | `BUILDD_AGENT_TASK_TOKEN` | on | `0` keeps the old behaviour: the agent's buildd MCP uses the runner key and no token is minted. |
+
+## What the agent can and cannot reach on a self-hosted runner
+
+The runner key is a runner credential. On a self-hosted runner the runner keeps
+it out of everything it hands an agent session:
+
+- **Environment.** The agent's env is built from an allowlist
+  (`src/agent-env.ts`); the runner key is not on it. That holds for Codex too:
+  the `codex` CLI gets exactly the task env, not the runner's process env. Role
+  env that would resolve to the runner key's value is dropped, with a warning
+  naming the variable.
+- **buildd MCP.** The agent's own `buildd` server carries its per-task token
+  (see above). It shadows any `buildd` entry in the operator's
+  `~/.claude.json`, so the operator's own entry never reaches an agent session.
+- **`${BUILDD_API_KEY}` in a `.mcp.json`.** It never expands to the runner key.
+  For a server on this runner's buildd origin (`builddServer`) it expands to the
+  agent's buildd credential, the same one its `buildd` entry carries. A server
+  on any other host that asks for it is not mounted, and the runner logs one
+  warning naming the server and host. It is never expanded inside a URL. The
+  documented use, a role's `buildd` entry with `Bearer ${BUILDD_API_KEY}`, is
+  unaffected: that name is reserved and the runner's own entry wins.
+- **Connector auth.** Assertion-mode connectors are minted with the runner key
+  inside the runner process; the agent's MCP entry carries only the exchanged
+  access token.
+- **Files.** The agent's file tools are refused under `~/.buildd/` and
+  `~/.claude.json`. `buildd login` and `buildd install --global` write
+  `~/.claude.json` with mode 0600, like `~/.buildd/config.json`.
+
+What remains:
+
+- Orchestration sessions (organizer, planning, heartbeat check-ins), and any
+  session whose task-token mint failed, run their `buildd` MCP on the runner
+  key. The MCP config, header included, is passed to the agent's CLI process on
+  its command line, which the same OS user can read. For every other session
+  that header is the per-task token.
+- The agent runs as the same OS user as the runner. The runner's own files
+  (`~/.buildd/config.json`, and `~/.claude.json` if you used `buildd login`)
+  are readable by that user; the file-tool refusals above do not stop a shell
+  command. Process-level isolation is the boundary for that: on Linux, the
+  bwrap mount allowlist (`BUILDD_SANDBOX_MOUNT_ALLOWLIST=1`, Claude sessions)
+  binds neither file into the agent's namespace; otherwise use a hosted or
+  container runner, where the runner key never enters the agent's machine.

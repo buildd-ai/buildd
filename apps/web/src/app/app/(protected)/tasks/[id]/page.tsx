@@ -1203,7 +1203,7 @@ export default async function TaskDetailPage({
               isBlocked={isBlocked}
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
-              lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}
+              lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
               roleSlug={task.roleSlug}
               missionExecutor={missionExecutorOf(missionContextRow)}
