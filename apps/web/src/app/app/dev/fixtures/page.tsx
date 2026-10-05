@@ -16,11 +16,13 @@ import MissionTaskStripFixture from './MissionTaskStripFixture';
 import MissionCheckInsFixture from './MissionCheckInsFixture';
 import OnboardingFixture, { ONBOARDING_FIXTURE_VIEWS, type OnboardingFixtureView } from './OnboardingFixture';
 import EvidenceStorageFixture from './EvidenceStorageFixture';
+import OperatorAccessFixture from './OperatorAccessFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    OPERATOR_ACCESS_FIXTURE_STATE,
     FIXTURE_VIEWS,
     MISSION_BOARD_VISUAL_FIXTURE_STATE,
     MISSION_LIST_EXECUTOR_FIXTURE_STATE,
@@ -103,6 +105,10 @@ export default function DevFixturesPage() {
 
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+
+    if (state === OPERATOR_ACCESS_FIXTURE_STATE) {
+        return <OperatorAccessFixture />;
     }
 
     if (state === VISUAL_REVIEW_FIXTURE_STATE) {
