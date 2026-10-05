@@ -58,7 +58,6 @@ export default async function WorkspaceDetailPage({
 
   const connectedAccounts = workspace.accountWorkspaces || [];
   const runners = {
-    action: connectedAccounts.filter((aw) => aw.account?.type === 'action' && aw.canClaim),
     service: connectedAccounts.filter((aw) => aw.account?.type === 'service' && aw.canClaim),
     user: connectedAccounts.filter((aw) => aw.account?.type === 'user' && aw.canClaim),
   };
@@ -237,9 +236,7 @@ export default async function WorkspaceDetailPage({
         {/* Runners */}
         <ConnectRunnerSection
           workspaceId={workspace.id}
-          workspaceName={workspace.name}
           runners={{
-            action: runners.action.map(r => r.account?.name || 'Unknown'),
             service: runners.service.map(r => r.account?.name || 'Unknown'),
             user: runners.user.map(r => r.account?.name || 'Unknown'),
           }}

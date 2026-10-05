@@ -59,7 +59,7 @@ export default function NewAccountPage() {
   function choosePreset(value: Preset) {
     setPreset(value);
     setScopes([...TOKEN_PRESETS[value].scopes]);
-    setAccountType(value === 'ci' ? 'action' : 'user');
+    setAccountType(value === 'ci' ? 'service' : 'user');
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -122,7 +122,7 @@ export default function NewAccountPage() {
             <div><label htmlFor="expiry" className="block text-sm mb-2">Expiry</label><Select id="expiry" value={expiry} onChange={setExpiry} options={[{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }, { value: 'custom', label: 'Choose date and time' }, { value: 'never', label: 'No expiry' }]} />
               {expiry === 'custom' && <input aria-label="Expiry date and time" type="datetime-local" required value={customExpiry} onChange={e => setCustomExpiry(e.target.value)} className={`${inputClass} mt-2`} />}
             </div>
-            <details><summary className="min-h-11 flex items-center text-sm cursor-pointer">Runner options</summary><div className="space-y-3"><label className="block text-sm">Account type<Select value={accountType} onChange={setAccountType} options={[{ value: 'user', label: 'Personal runner' }, { value: 'service', label: 'Always-on service' }, { value: 'action', label: 'GitHub Actions' }]} /></label><label className="block text-sm">Concurrent workers<input type="number" min="1" max="10" required value={maxConcurrent} onChange={e => setMaxConcurrent(e.target.value)} className={inputClass} /></label></div></details>
+            <details><summary className="min-h-11 flex items-center text-sm cursor-pointer">Runner options</summary><div className="space-y-3"><label className="block text-sm">Account type<Select value={accountType} onChange={setAccountType} options={[{ value: 'user', label: 'Personal runner' }, { value: 'service', label: 'Always-on service' }]} /></label><label className="block text-sm">Concurrent workers<input type="number" min="1" max="10" required value={maxConcurrent} onChange={e => setMaxConcurrent(e.target.value)} className={inputClass} /></label></div></details>
           </div>
           <section aria-label="Permission preview" className="card p-4">
             {limited && <p className="text-xs text-text-secondary mb-3">Workspace restrictions also apply to admin access. Team-wide credentials, account administration and reports without workspace filters are unavailable.</p>}

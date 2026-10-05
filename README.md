@@ -36,15 +36,16 @@ For headless/SSH environments: `buildd login --device`
              ┌───────────────┼───────────────┐
              │               │               │
     ┌────────┴───────┐ ┌─────┴──────┐ ┌──────┴───────┐
-    │  Claude Code   │ │ buildd CLI │ │    GitHub    │
-    │    + MCP       │ │   runner   │ │   Actions    │
-    │  your laptop   │ │  laptop/VM │ │  CI runner   │
+    │  Claude Code   │ │ buildd CLI │ │ cloud runner │
+    │    + MCP       │ │   runner   │ │  your own    │
+    │  your laptop   │ │  laptop/VM │ │  Cloudflare  │
     └────────────────┘ └────────────┘ └──────────────┘
 ```
 
 Buildd separates **coordination** from **execution**. The server owns tasks, auth,
 and state; it never runs an agent. Workers run wherever you want — your laptop, a
-VM, CI — claim work over the REST API, and report back.
+VM, a cloud runner on your own Cloudflare account — claim work over the REST
+API, and report back.
 
 That split is deliberate: agent runs take minutes to hours, which no serverless
 request budget survives. It also means buildd works *with* whatever agent you

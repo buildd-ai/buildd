@@ -32,7 +32,7 @@ type Props = Parameters<typeof WorkspaceList>[0];
 const ws = (id: string, name: string, canMove: boolean) => ({
   id, name, repo: null, localPath: null, createdAt: new Date('2026-01-01T00:00:00Z'),
   teamId: 'team-a', teamName: 'Team A', canMove,
-  runners: { action: false, service: false, user: false },
+  runners: { service: false, user: false },
 });
 const props: Props = {
   workspaces: [ws('ws-1', 'Example Workspace', true), ws('ws-2', 'Read Only Workspace', false)],

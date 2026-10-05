@@ -76,7 +76,7 @@ assertions:
 **Capability statement**: When a write may make a task runnable, the system
 MUST record why in `task_dispatch_outbox` as part of that write, and the
 dispatch authority MUST turn that intent into a wake for the task's consumers
-(workspace webhook, GitHub Actions, Pusher-connected runners). A wake means
+(workspace webhook, Pusher-connected runners). A wake means
 "re-evaluate this task now". It never assigns the task: the claim route decides.
 
 State changes create work; time does not. Cron repairs; it does not drive
@@ -181,27 +181,29 @@ closes as `skipped:no_destination`. The runner chain today:
 1. Task gone → `skipped:task_gone`. Not `pending` → `skipped:status_<status>`.
    Future `start_at` → `skipped:start_at_future`.
 2. A `targetLocalUiUrl` hint (manual start on a chosen runner) → only a
-   targeted `TASK_ASSIGNED`. No webhook, no GitHub Actions.
+   targeted `TASK_ASSIGNED`. No webhook.
 3. Workspace webhook, when `webhookWants` passes: enabled with a url,
    subscribed (see invariant 9), `runnerPreference` matches, `start_at` not
    in the future, and `isTaskNotHeldOrLocal`. The held gate is asked only
    after the other checks pass, and a gate error keeps the task off the
    webhook. The body is `buildWebhookPayload` plus `cause` and `dispatchId`.
-4. GitHub Actions repository_dispatch, only for `routeForCause(...).githubActions`
-   causes, as a supplement.
-5. Pusher `TASK_ASSIGNED` broadcast with `targetLocalUiUrl: null`.
+4. Pusher `TASK_ASSIGNED` broadcast with `targetLocalUiUrl: null`.
+
+There is no GitHub Actions destination: no `repository_dispatch` is sent for
+any cause, on either transport, whether or not the workspace is linked to a
+GitHub repo.
 
 Pusher `failed` throws, so the row retries. Pusher `unconfigured` counts as
 delivered (`pusher:unconfigured`).
 
-| Cause | Webhook event | Legacy webhook (no `events`) | GitHub Actions |
-|---|---|---|---|
-| task.created, review.fix_requested, ci.retry, conflict.retry | task.created | yes | yes |
-| plan_child.ready | task.created | no | no |
-| dependency.satisfied | task.unblocked | yes, runnerPreference unfiltered | yes |
-| manual.start | task.retry | yes, runnerPreference unfiltered | yes |
-| path_claim.released, budget.available, credential.restored, mission.released, task.unblocked, start_at.reached | task.unblocked | no | no |
-| task.requeued, task.reassigned | task.retry | no | no |
+| Cause | Webhook event | Legacy webhook (no `events`) |
+|---|---|---|
+| task.created, review.fix_requested, ci.retry, conflict.retry | task.created | yes |
+| plan_child.ready | task.created | no |
+| dependency.satisfied | task.unblocked | yes, runnerPreference unfiltered |
+| manual.start | task.retry | yes, runnerPreference unfiltered |
+| path_claim.released, budget.available, credential.restored, mission.released, task.unblocked, start_at.reached | task.unblocked | no |
+| task.requeued, task.reassigned | task.retry | no |
 
 The "unfiltered" quirk is how the pre-outbox unblock path behaved for a
 legacy webhook. It is kept so an existing consumer sees no change.
@@ -254,7 +256,7 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
 - AC-14: GIVEN the webhook returns non-2xx or times out THEN the Pusher
   broadcast is sent and the row is marked delivered via `pusher`.
 - AC-15: GIVEN a delivery hint `targetLocalUiUrl` THEN exactly one targeted
-  `TASK_ASSIGNED` is sent, with no webhook and no GitHub Actions run.
+  `TASK_ASSIGNED` is sent, with no webhook.
 - AC-16: WHEN Pusher reports `failed` THEN delivery throws and the drain calls
   `markDispatchFailed` with the row's attempt count. WHEN Pusher is
   unconfigured THEN the row counts as delivered.
@@ -271,11 +273,11 @@ Real-SQL criteria are asserted in `apps/web/tests/db/dispatch-outbox.test.ts`
   `scripts/dispatch-authority-guard.test.ts` fails.
 - AC-21: GIVEN an adapter chain with a non-runner destination WHEN an intent
   is delivered THEN that destination receives the stable context and no
-  runner, webhook or GitHub Actions dispatch fires; "only pending tasks" is
+  runner or webhook dispatch fires; "only pending tasks" is
   enforced by the runner chain's `runnerClaimability`, not by the dispatcher
   (`apps/web/src/lib/dispatch-authority.test.ts`).
 - AC-23: GIVEN an intent other than `work_execution` WHEN it is delivered
-  THEN no runner, webhook or GitHub Actions dispatch fires; with no adapter
+  THEN no runner or webhook dispatch fires; with no adapter
   registered for its kind it is parked as failed in one attempt; a
   `human_action` and a runner wake for the same task stay separate rows
   (`apps/web/src/lib/dispatch-authority.test.ts`,
@@ -315,9 +317,9 @@ signed callbacks. Wire contract: `@buildd/dispatch-contract`.
   always safe.
 - **Route.** `routeFor` uses the in-app chain's own policy: a targeted local
   runner gets only `runner-wake`; otherwise the webhook (`first`, resolve)
-  when `webhookWants` would take the cause, GitHub Actions (`also`, resolve)
-  for the legacy causes on a first attempt in a linked workspace, and
-  `runner-wake` last. Non-work intents are never published. They have no
+  when `webhookWants` would take the cause, and `runner-wake` last. No route
+  has an `also` step; the contract keeps the mode (it is generic), and the
+  Worker runs one on the first attempt only. Non-work intents are never published. They have no
   adapter, and the in-app drain parks them as `no_adapter` as before.
 - **Ack.** One statement per outcome. `accepted`/`duplicate`: a `dispatch`
   row becomes `handed_off` (only from `pending`). A `shadow` row only gains
@@ -328,12 +330,14 @@ signed callbacks. Wire contract: `@buildd/dispatch-contract`.
   `/api/dispatch/v1/receipts`) are signed with
   `DISPATCH_CALLBACK_SECRET`. Resolve runs the same decision functions as
   the in-app adapters (`claimabilitySkip`, `webhookEligible`,
-  `githubActionsWanted`, `webhookPayloadFor`) and returns
+  `webhookPayloadFor`) and returns
   `deliver{payload, grant}`, `decline` or `skip`. A future `start_at` skips,
   as in-app does, because the trigger's `start_at:<ms>` row delivers it at
   that time. A webhook grant is the
-  bearer token. A GitHub Actions grant is a repo-scoped installation token
-  for `repository_dispatch`. Relay sends the runner wake through
+  bearer token. Resolve serves only `webhook` targets: a `github-actions`
+  target is a 400 `unknown target`, and the Worker never asks, because it
+  declines that type as `unknown_target` (an intent queued before GitHub
+  Actions was removed skips that step). Relay sends the runner wake through
   `sendRunnerWake`: `relay:pusher` when sent, `skipped` when Pusher is
   unconfigured, 502 when Pusher failed so Dispatch retries.
 - **Receipts** project onto `handed_off` rows of `dispatch` workspaces:
@@ -454,9 +458,8 @@ policy in `apps/web/src/lib/dispatch-resolve.test.ts`):
   claimed. `in_app` and `shadow` rows, and non-work intents, are claimed as
   before.
 - AC-27: For every AC-10…AC-18 case, the Dispatch route plus resolve and relay
-  reach the same outcome as `deliverTaskDispatch`. The documented
-  difference is GitHub Actions after an eligible webhook's failed POST
-  (in-app fires it, Dispatch does not).
+  reach the same outcome as `deliverTaskDispatch`, and neither sends any
+  request but the webhook's, a GitHub-linked workspace included.
 - AC-28: Callbacks answer 503 with no secret, and 401 on a missing, wrong,
   stale, path-mismatched or body-tampered signature.
 - AC-29: Re-applying a receipt batch is a no-op. Shadow rows and unknown ids
