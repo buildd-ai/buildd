@@ -18,9 +18,8 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerDeliverableArtifactCount } from '@/lib/worker-deliverables';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam, notifyTeamOf } from '@/lib/notify';
-import { isCredentialExpiredError } from '@/lib/notify-rules';
 import { sendTaskCallback } from '@/lib/task-callback';
-import { recordEvent, taskCompletedEvent, taskFailedEvent, taskNeedsInputEvent } from '@/lib/subscriptions';
+import { emit } from '@/lib/core-emit';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
@@ -32,12 +31,7 @@ import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-p
 import { applyBudgetUsage, countsTowardAgentSdkCreditPool } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { lineageStamp } from '@/lib/attempt-lineage';
-import { persistTaskEvidence } from '@/lib/task-evidence-store';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
-import { completeMissionIfVerified } from '@/lib/mission-completion';
-import { handleCriteriaVerificationOutcome, isCriteriaVerificationTask } from '@/lib/mission-criteria-verify';
-import { handleProseEvalOutcome, isProseEvalTask } from '@/lib/mission-criteria-prose';
-import { handleCriteriaWorkerEvalOutcome, isCriteriaWorkerEvalTask } from '@/lib/mission-criteria-worker-eval';
 import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
@@ -77,7 +71,6 @@ import { announceFixEnded } from '@/lib/pr-activity-fix-claimed';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { dependencyBotPushRefusal, isDependencyBotPrContext } from '@/lib/dependency-bot-pr';
 import { fireTerminalRecord } from '@/lib/terminal-record-ledger';
-import { scheduleMemoryUseLabels, shouldLabelMemoryUses } from '@/lib/memory-decisions';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -90,7 +83,6 @@ import type { LoopHistoryEntry, TaskHandoff, PathCollisionNotice } from '@buildd
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
 import { loadVisualAuditEvidence, formatVisualEvidenceRejection } from '@/lib/visual-audit-evidence';
 import { classifyReportedFailure, isConcurrencyConflictError, isModelIdRejectedError, isSilentStartShape, isUnrecognizedModelError, MODEL_REJECTION_CONTEXT_KEY, rejectedModelId, SILENT_START_ERROR, TASK_CANCELLED_UNDER_SESSION_ERROR } from '@/lib/worker-exit-taxonomy';
-import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { hasUnfinishedDependent } from '@/lib/handoff-gate';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -3676,13 +3668,11 @@ export async function PATCH(
         }
       }
 
-      // Evidence: a compact record of why the task failed, or of the caveat on a
-      // success, so "did it fail, why" is answerable from buildd alone. Skipped
-      // when the task is going back to the queue (no terminal outcome yet).
-      // Awaited — a serverless function may freeze an un-awaited write — and
-      // contained: it never throws.
+      // The outcome is settled: not going back to the queue. Subscribers (the
+      // evidence record) are awaited — a serverless function may freeze an
+      // un-awaited write — and isolated by emit, which never throws.
       if (!shouldAutoRetry && loopDispatchResult?.kind !== 'requeue') {
-        await persistTaskEvidence(worker.taskId, id, { isSensitive });
+        await emit({ type: 'task.terminal', taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
@@ -3817,71 +3807,20 @@ export async function PATCH(
         }
       });
 
-      // A finished goal-criterion verification task owns one criterion's verdict.
-      // Hand the runner's evidence back before the completion attempt below, so a
-      // criterion turning green completes the mission in the same request.
-      await runStep('criteria-verification-outcome', async () => {
-        const [taskForCriteria] = await db
-          .select({ context: tasks.context })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (!isCriteriaVerificationTask(taskForCriteria?.context)) return;
-        await handleCriteriaVerificationOutcome(taskId, verificationEvidence);
-      });
-
-      // A finished prose grading task owns the verdicts for the criteria it was
-      // asked about. Same ordering rationale: apply before the completion attempt
-      // below so criteria turning green complete the mission in this request.
-      await runStep('criteria-prose-outcome', async () => {
-        const [taskForProse] = await db
-          .select({ context: tasks.context })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (!isProseEvalTask(taskForProse?.context)) return;
-        await handleProseEvalOutcome(taskId, body.structuredOutput);
-      });
-
-      // A finished worker-eval task owns verdicts for all LLM-eligible + command
-      // criteria it was asked about. Apply before the completion attempt so criteria
-      // turning green complete the mission in this request.
-      await runStep('criteria-worker-eval-outcome', async () => {
-        const [taskForWorkerEval] = await db
-          .select({ context: tasks.context })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (!isCriteriaWorkerEvalTask(taskForWorkerEval?.context)) return;
-        await handleCriteriaWorkerEvalOutcome(taskId, body.structuredOutput);
-      });
-
-      // Attempt mission completion. The predicate pulls a goal-criteria verdict
-      // when the work is done, refuses when it cannot get one, and is a cheap
-      // no-op while deliverables are still open — so this is safe to run on every
-      // task completion and is what makes the verdict a precondition rather than
-      // a side effect. `proposed: false`: nothing asserted completion here, so a
-      // still-working mission does not post a note.
-      await runStep('mission-completion-attempt', async () => {
-        if (taskMissionId) {
-          await completeMissionIfVerified(taskMissionId, { path: 'criteria_eval', predicate: `task ${taskId} reached ${status}` });
-        }
-      });
-
-      // Reconciliation sweep on retry completion: if this task had a subject
-      // PR anchor, sweep all tasks anchored to that PR to update their subject
-      // state now that a retry has completed. Best-effort, error-isolated.
-      await runStep('subject-anchor-sweep', async () => {
-        if (!worker.workspaceId) return;
-        const [taskForSweep] = await db
-          .select({ subjectPrNumber: tasks.subjectPrNumber })
-          .from(tasks)
-          .where(eq(tasks.id, taskId))
-          .limit(1);
-        if (taskForSweep?.subjectPrNumber) {
-          await sweepSubjectAnchoredTasks(worker.workspaceId, taskForSweep.subjectPrNumber);
-        }
-      });
+      // Module reactions to the report: the criteria verdict handlers, the
+      // mission completion attempt and the subject-anchor sweep
+      // (lib/mission-subscribers.ts), in that order. Each runs under runStep,
+      // so a failure pages under its own label and the next one still runs.
+      await emit({
+        type: 'worker.reported',
+        taskId,
+        workerId: id,
+        workspaceId: worker.workspaceId,
+        missionId: taskMissionId,
+        status,
+        structuredOutput: body.structuredOutput,
+        verificationEvidence,
+      }, { isolate: runStep });
 
       // Dead-PR shutdown on retry completion: if this worker's PR was merged,
       // close any competing buildd-authored PRs for the same subject.
@@ -4030,56 +3969,20 @@ export async function PATCH(
           // "Task done" (see recordTaskOutcome's `effectiveOutcome`, which
           // already applies this same correction).
           const isDone = status === 'completed' && !contractViolation;
-          if (shouldAutoRetry) {
-            // A retry is a (transient) failure — gate it on the taskFailed toggle.
-            void notifyTeam(notifyTeamId, 'taskFailed', {
-              title: 'Task retrying',
-              message: `Auto-retrying: ${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
-              urlTitle: 'View task',
-              priority: 0,
-            });
-          } else {
-            // Sensitive: send a redacted stub — event type only, no task title/workspace prose
-            if (isDone) {
-              // Agent chat: "plan ready" for a chat-filed mission, posted back
-              // into its conversation. Lazy + best-effort.
-              void import('@/lib/chat/mission-events')
-                .then(m => m.postTaskCompletedEvent({ taskId }))
-                .catch(() => {});
-            }
-            // Subscriptions ledger. Fire-and-forget; never throws. Title omitted for sensitive workspaces.
-            void recordEvent((isDone ? taskCompletedEvent : taskFailedEvent)({
-              taskId,
-              workerId: id,
-              title: isSensitive ? null : taskRecord.title,
-              workspaceId: worker.workspaceId,
-            }));
-            void notifyTeam(notifyTeamId, isDone ? 'taskCompleted' : 'taskFailed', {
-              title: isDone ? 'Task done' : 'Task failed',
-              message: isSensitive
-                ? `Task ${isDone ? 'completed' : 'failed'} (content redacted)`
-                : `${taskRecord.title}\n${taskRecord.workspace?.name || 'unknown'}`,
-              url: `https://buildd.dev/app/tasks/${worker.taskId}`,
-              urlTitle: 'View task',
-              priority: isDone ? -1 : 0,
-            });
-
-            // Credential-expiry alert: a failure caused by an invalid/expired
-            // agent-backend credential (e.g. "401 Invalid authentication
-            // credentials") gets its own actionable alert so the owner re-sets
-            // the credential before more tasks burn. Distinct from a generic
-            // failure and from a budget/rate-limit pause (handled separately above).
-            if (!isDone && isCredentialExpiredError(error)) {
-              void notifyTeam(notifyTeamId, 'credentialExpired', {
-                title: '🔑 Agent credential expired',
-                message: `Your Claude credential is expired or invalid — set it again under Settings, Runners.\nTask: ${taskRecord.title}`,
-                url: `https://buildd.dev/app/settings/runners`,
-                urlTitle: 'Open settings',
-                priority: 1,
-              });
-            }
-          }
+          // Who hears about it (the team's channel, the subscriptions ledger,
+          // a chat-filed mission's conversation) is the modules' business.
+          await emit({
+            type: shouldAutoRetry ? 'task.retrying' : isDone ? 'task.completed' : 'task.failed',
+            via: 'worker',
+            taskId,
+            workerId: id,
+            workspaceId: worker.workspaceId,
+            title: taskRecord.title,
+            sensitive: isSensitive,
+            teamId: notifyTeamId,
+            workspaceName: taskRecord.workspace?.name ?? null,
+            error: error ?? null,
+          }, { isolate: (_label, fn) => runStep('notify', fn) });
         }
       });
 
@@ -4161,9 +4064,9 @@ export async function PATCH(
   // Subscriptions ledger: "tell me when this task needs input". Only after the
   // worker write landed, so a conflicted PATCH records nothing. The key is per
   // question, so the runner re-sending the same waitingFor writes one row.
-  // Fire-and-forget: recordEvent catches its own errors and adds no latency.
+  // Fire-and-forget: emit never throws, and the ledger write adds no latency.
   if (waitingFor?.type === 'question' && worker.taskId) {
-    void recordEvent(taskNeedsInputEvent({ taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt }));
+    void emit({ type: 'task.needs_input', taskId: worker.taskId, workerId: id, prompt: waitingFor.prompt });
   }
 
   // One terminal record per worker, on every path that lands here: a real
@@ -4203,20 +4106,21 @@ export async function PATCH(
     });
   }
 
-  // Memory use labels (Jev, knowledge-base: buildd/design/memory-done-right.md): did the final
-  // summary act on each memory this task was shown? Writes memory_uses.outcome
-  // after the response, at most a bounded handful of calls, never on the claim
-  // path. Only on the transition into completed, and only for a standard
-  // workspace by the shared predicate (either sensitivity marker, or a missing
-  // workspace, skips): a sensitive summary is never sent out.
-  if (worker.taskId && shouldLabelMemoryUses({
-    status,
-    previousStatus: worker.status,
-    taskId: worker.taskId,
-    workspace: wsForSensitivity ? { dataClass: wsForSensitivity.dataClass, gitConfig: wsForSensitivity.gitConfig as { dataClass?: string } | null } : null,
-    serverRefusal: isServerRefusal,
-  })) {
-    scheduleMemoryUseLabels({ taskId: worker.taskId, accountId: account.id, summary: typeof body.summary === 'string' ? body.summary : null });
+  // The worker's terminal write landed. Module reactions: memory use labels
+  // (lib/knowledge-subscribers.ts), scheduled after the response. The first
+  // subscriber starts synchronously, so its after() is inside this request.
+  if (isTerminalStatus && worker.taskId) {
+    void emit({
+      type: 'worker.finished',
+      taskId: worker.taskId,
+      workerId: id,
+      accountId: account.id,
+      status,
+      previousStatus: worker.status,
+      serverRefusal: isServerRefusal,
+      summary: typeof body.summary === 'string' ? body.summary : null,
+      workspace: wsForSensitivity ? { dataClass: wsForSensitivity.dataClass, gitConfig: wsForSensitivity.gitConfig as { dataClass?: string } | null } : null,
+    });
   }
 
   // Release the concurrency seat for OAuth accounts on terminal worker transitions.

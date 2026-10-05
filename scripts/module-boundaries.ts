@@ -65,7 +65,10 @@ export function moduleOf(path: string): Owner {
  * Core code reaches modules only through hook points; this list is where the
  * hooks are filled. Keep it short.
  */
-export const COMPOSITION_ROOTS: ReadonlySet<string> = new Set<string>([]);
+export const COMPOSITION_ROOTS: ReadonlySet<string> = new Set<string>([
+  // Core-event subscribers (lib/core-events.ts); core emits, this lists who reacts.
+  'apps/web/src/modules.ts',
+]);
 
 const SCAN_ROOTS = ['apps/web/src', 'packages/core', 'packages/shared/src'];
 const EXCLUDED = /(^|\/)(node_modules|__tests__|tests|__fixtures__)\/|^packages\/core\/drizzle\/|\.(test|spec)\.tsx?$|\.d\.ts$|fixtures?\.tsx?$|fake-db/;

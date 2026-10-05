@@ -57,7 +57,7 @@ import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
-import { recordEvent, prMergedEvent, prCiFailedEvent, taskCompletedEvent } from '@/lib/subscriptions';
+import { emit } from '@/lib/core-emit';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
@@ -457,7 +457,7 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     }
     // Subscriptions ledger: "tell me if CI goes red on PR N". One row per head SHA.
     for (const pr of check_suite.pull_requests) {
-      await recordEvent(prCiFailedEvent({ repoFullName: repository.full_name, prNumber: pr.number, headSha }));
+      await emit({ type: 'pr.ci_failed', repoFullName: repository.full_name, prNumber: pr.number, headSha });
     }
     await handleCheckSuiteFailure(check_suite, repository, installation.id);
     await handleReleasePrCiFailure(check_suite.pull_requests, repository.full_name);
@@ -1077,7 +1077,7 @@ async function handlePullRequestEvent(event: {
   // Subscriptions ledger: any merged PR, buildd-opened or not. Idempotent on
   // the dedupe key, so a redelivery or the reconcile sweep writes nothing new.
   if (pr.merged) {
-    await recordEvent(prMergedEvent({ repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url }));
+    await emit({ type: 'pr.merged', repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url });
   }
 
   // Resolve the sticky activity comment: the PR closing is the last word, so a
@@ -1345,7 +1345,7 @@ async function handlePullRequestEvent(event: {
       if (flipped) {
         console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
         // Same fact as the worker route's completion, same dedupe key: one row.
-        await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
+        await emit({ type: 'task.completed', via: 'merge', taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId });
 
         // Work-tracker: post completion comment and transition issue to "Done".
         // Stays inside the transition guard deliberately: a "Done" comment is a
