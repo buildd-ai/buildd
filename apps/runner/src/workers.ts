@@ -11,7 +11,7 @@ import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath } from './codex-auth.js';
+import { materializeCodexAuth, writeCodexMcpConfig, cleanupCodexAuth, materializeStableCodexHome, seedCodexAuthIfMissing, ensureStableCodexHome, teardownStableCodexHome, readCodexAuthJson, writeCodexApiKeyToHome, checkCodexCredentialExpiry, stableCodexHomePath, stableCodexHomeIsolatedPath, linkMachineCodexAuth } from './codex-auth.js';
 import { materializeClaudeConfigDir, cleanupClaudeConfigDir, staleResumeCredentialError } from './claude-auth.js';
 import { resolveRoleEnvMapping, unmetRoleEnv, RoleEnvGapLog, overlayRoleFiles, resolveRoleCwd, buildRoleSystemPromptSection, type RoleBundle, type RoleConfig, type RoleInstructions } from './roles.js';
 import { cleanupSessionPromptFiles, projectMemoryExcludes } from './session-prompt-files.js';
@@ -80,7 +80,7 @@ import { resolveAgentBuilddAuth, isOrchestrationTask, usesAdminBuilddActions } f
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
 import { applyModelEnv, endpointSessionModels, shouldUseClaudeCredential, TRUSTED_MODEL_BASE_URL_ENV } from './agent-model-env';
-import { applyHostSeatPolicy, describeHostSeat, hostModelCredentialValues } from './host-seat';
+import { applyHostSeatPolicy, decideCodexSeat, describeHostSeat, hostModelCredentialValues, hostSeatMode, localCodexAuthPath } from './host-seat';
 import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import type { WorkerEnvironment, ClaimDiagnostics, ClaimModelEndpoint } from '@buildd/shared';
 import { withFleetIdentity } from './fleet-identity';
@@ -3598,8 +3598,28 @@ export class WorkerManager {
           ? stableCodexHomeIsolatedPath(task.workspaceId, worker.id, this.config.workspaceIsolationRoot)
           : undefined;
 
+        // Whose Codex login (host-seat.ts decideCodexSeat): the machine's own
+        // `codex login` ($CODEX_HOME, else ~/.codex) when the claim delivers no
+        // Codex credential, or over a delivered ChatGPT login under
+        // BUILDD_HOST_SEAT=prefer. A delivered API key is still used.
+        const machineCodexAuth = localCodexAuthPath();
+        const codexSeat = decideCodexSeat({
+          mode: hostSeatMode(),
+          serverCredentialType: worker.codexCredential?.credentialType ?? null,
+          localAuthPath: machineCodexAuth,
+          explicitCodexHome: !!process.env.CODEX_HOME,
+        });
+        (worker as any).codexSeatSource = codexSeat;
+
         let _ch: string;
-        if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
+        if (codexSeat === 'machine' && machineCodexAuth) {
+          // The stable per-worker home keeps its own config.toml and sessions/;
+          // auth.json links to the machine's login so CLI refreshes land there.
+          _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
+          linkMachineCodexAuth(_ch, machineCodexAuth);
+          console.log(`[Worker ${worker.id}] Codex login: this machine's own (codex login on the runner host)${worker.codexCredential ? '; the server-delivered Codex login is not used' : ''}`);
+          sessionLog(worker.id, 'info', 'codex_seat_source', `source=machine${worker.codexCredential ? ' server_seat=skipped' : ''}`, task.id);
+        } else if (worker.codexCredential?.credentialType === 'api_key' && worker.codexCredential.apiKey) {
           // A: API key credential — inject as env var. Stable home still needed for
           // config.toml (MCP servers, reasoning effort) but auth.json is not used.
           const { codexHome: home } = ensureStableCodexHome(worker.id, codexIsolatedPath);
@@ -3617,20 +3637,8 @@ export class WorkerManager {
         } else {
           _ch = ensureStableCodexHome(worker.id, codexIsolatedPath).codexHome;
         }
-        // No server-injected credential: fall back to the operator's local Codex
-        // auth (CODEX_HOME/auth.json on the runner host) if present, seeding it into
-        // the stable home so resolveAuth/codex can authenticate. This matches the
-        // claim route, which already advertises CODEX_HOME as a local-auth capability
-        // — without this, a runner with only local OAuth creds passes the claim gate
-        // but dies at the spawn guard below.
-        if (!worker.codexCredential) {
-          const localHome = process.env.CODEX_HOME;
-          if (localHome && localHome !== _ch) {
-            const localAuth = join(localHome, 'auth.json');
-            if (existsSync(localAuth) && !existsSync(join(_ch, 'auth.json'))) {
-              copyFileSync(localAuth, join(_ch, 'auth.json'));
-            }
-          }
+        if (codexSeat === 'server' && machineCodexAuth && worker.codexCredential?.credentialType === 'oauth') {
+          console.log(`[Worker ${worker.id}] Codex login: the one stored in buildd; this machine's own is present but not used (set BUILDD_HOST_SEAT=prefer once it is known to work)`);
         }
         cleanEnv.CODEX_HOME = _ch;
         const session = this.sessions.get(worker.id);
@@ -3798,7 +3806,7 @@ export class WorkerManager {
       // is known-expired. The claim route (criterion D) already attempts a refresh
       // and clears the credential on unrecoverable failure — this is a second guard
       // for the window between claim and spawn (clock skew, race, long queue wait).
-      if (isCodexTask && worker.codexCredential) {
+      if (isCodexTask && worker.codexCredential && (worker as any).codexSeatSource !== 'machine') {
         const expiryError = checkCodexCredentialExpiry(worker.codexCredential);
         if (expiryError) {
           throw new Error(
@@ -5305,7 +5313,9 @@ export class WorkerManager {
         // (seed-if-missing means it was never rewritten from the stale snapshot) and
         // POST the current tokens back so the credential store stays fresh.
         // Best-effort — never throws, never logs token values.
-        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth') {
+        // Never when the machine's own login ran the session: that would upload
+        // the runner host's login into buildd.
+        if (isCodexTask && worker.codexCredential?.credentialType === 'oauth' && (worker as any).codexSeatSource !== 'machine') {
           try {
             const currentAuth = readCodexAuthJson(worker.id);
             if (currentAuth?.access_token && currentAuth?.refresh_token) {

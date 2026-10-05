@@ -222,7 +222,12 @@ In every mode:
   `ANTHROPIC_API_KEY`.
 - A team agent model endpoint or a non-Anthropic base URL replaces the login;
   a seat never goes to a third-party host.
-- Codex tasks are unaffected.
+- Codex tasks follow the same modes with the machine's `codex login`
+  (`$CODEX_HOME`, else `~/.codex`; `decideCodexSeat` in `host-seat.ts`). The
+  per-worker Codex home links `auth.json` to it (`linkMachineCodexAuth` in
+  `codex-auth.ts`), and a delivered credential is never written through the
+  link. `prefer` beats a stored ChatGPT login, never a team `openai_api_key`.
+  No tokens are written back to buildd from a machine-login session.
 - The value is never logged and is exact-value redacted from worker output.
 
 Setup per environment (local, service, container): `apps/runner/README.md`,
