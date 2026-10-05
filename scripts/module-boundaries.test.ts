@@ -92,6 +92,17 @@ describe('seams that have shipped stay cut', () => {
     }
   });
 
+  test('the worker PATCH reaches the loop, evidence and release verdicts only through completion-policy slots', () => {
+    const behindSlots = [
+      'apps/web/src/lib/loop-dispatcher.ts',
+      'apps/web/src/lib/visual-audit-evidence.ts',
+      'apps/web/src/lib/release-executor.ts',
+      'apps/web/src/lib/mission-release.ts',
+    ];
+    const imported = Object.keys(current.backend[PATCH] ?? {});
+    expect(imported.filter(f => behindSlots.includes(f))).toEqual([]);
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);

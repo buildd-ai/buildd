@@ -12,6 +12,10 @@
  */
 import type { AnySubscriber } from '@/lib/core-events';
 import { decisionSubscribers } from '@/lib/decision-subscribers';
+import type { CompletionPolicies } from '@/lib/completion-policy';
+import { visualAuditEvidencePolicy } from '@/lib/visual-audit-evidence-policy';
+import { loopPolicy } from '@/lib/loop-dispatcher-policy';
+import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
@@ -28,3 +32,15 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...notificationSubscribers,
   ...roleSubscribers,
 ];
+
+/**
+ * Completion policies, one per core-declared slot (lib/completion-policy.ts).
+ * Not subscribers: each returns a verdict the worker PATCH applies, so the
+ * PATCH stays the one place a task's terminal status is decided. The slot
+ * order (evidence, loop, release) is core's, not this object's.
+ */
+export const COMPLETION_POLICIES: CompletionPolicies = {
+  evidence: visualAuditEvidencePolicy,
+  loop: loopPolicy,
+  release: releasePolicy,
+};
