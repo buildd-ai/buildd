@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (52)
+## Active (53)
 
 ### auth (5)
 
@@ -88,7 +88,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (11)
+### surfaces (12)
 
 - [Initiatives](./initiatives.md) · @max — verified 2026-09-26
   An initiative MUST be a container above missions with a human-set status, owner and optional target date; progress MUST be missions done over missions, and attention MUST come from its missions.
@@ -100,6 +100,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The mission Landed strip MUST place every dependency left of its dependents, give blocked, queued and ready distinct textures, and mark a selected cell's blockers or unblocked work on the existing tick row.
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
+- [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-05
+  Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-26
   Home, Missions and Initiatives MUST each answer one question (what needs me, what state is each mission in, what do an initiative's missions need) and MUST place release state per §8-10.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
@@ -140,12 +142,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Task Dispatch Authority](./task-dispatch-authority.md) · @max — verified 2026-10-04
   Every state change that may make a task runnable MUST leave a durable dispatch intent, delivered at least once through one authority, while the claim route stays the only scheduling decision.
 
-## Draft (3)
+## Draft (2)
 
 - [BYO Evidence Storage](./byo-evidence-storage.md) · @max — verified 2026-10-01
   Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
-- [QA Capture Interaction Steps](./qa-capture-steps.md) · @builder — verified 2026-10-03
-  Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 
