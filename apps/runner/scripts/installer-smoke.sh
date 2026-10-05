@@ -18,6 +18,8 @@ REPO="${BUILDD_REPO:-buildd-ai/buildd}"
 SMOKE_PORT="${SMOKE_PORT:-18766}"
 
 export HOME="$(mktemp -d)"
+# Nothing from the caller's environment may point outside the temp HOME.
+unset BUN_INSTALL BUILDD_HOME BUILDD_CONFIG BUILDD_SERVER BUILDD_API_KEY BUILDD_BRANCH PORT PROJECTS_ROOT
 # A login shell's PATH must not leak a pre-existing bun/buildd into the check.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 echo "smoke: HOME=$HOME ref=$REF"
