@@ -15,6 +15,7 @@ import {
   parseOperatorGrantInput,
   resolveOperatorGrant,
   sanitizeOperatorGrantConfig,
+  withOperatorGrantMetadata,
   type DeploymentTarget,
 } from './operator-capability';
 import { DEFAULT_ROLES } from './default-roles';
@@ -180,6 +181,24 @@ describe('grant config parsing', () => {
     expect(parseOperatorGrantInput({ scope: { providers: ['*'] } }).ok).toBe(false);
     expect(parseOperatorGrantInput({ enabeld: true }).ok).toBe(false);
     expect(parseOperatorGrantInput({ enabled: true, scope: { providers: ['cloudflare'] } })).toEqual({ ok: true, config: { enabled: true, scope: { providers: ['cloudflare'] } } });
+  });
+});
+
+describe('withOperatorGrantMetadata', () => {
+  it('sets operator alongside other metadata keys, untouched', () => {
+    const out = withOperatorGrantMetadata({ routing: { whenToUse: 'x' } }, { enabled: true, capabilities: ['deployments:read'] });
+    expect(out).toEqual({ routing: { whenToUse: 'x' }, operator: { enabled: true, capabilities: ['deployments:read'] } });
+  });
+
+  it('drops operator when the config is null or empty, keeping other keys', () => {
+    const base = { routing: { whenToUse: 'x' }, operator: { enabled: true } };
+    expect(withOperatorGrantMetadata(base, null)).toEqual({ routing: { whenToUse: 'x' } });
+    expect(withOperatorGrantMetadata(base, {})).toEqual({ routing: { whenToUse: 'x' } });
+  });
+
+  it('tolerates non-object metadata, starting fresh', () => {
+    expect(withOperatorGrantMetadata('garbage', { enabled: false })).toEqual({ operator: { enabled: false } });
+    expect(withOperatorGrantMetadata(undefined, { enabled: false })).toEqual({ operator: { enabled: false } });
   });
 });
 
