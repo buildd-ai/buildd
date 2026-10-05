@@ -288,7 +288,8 @@ export function FleetStrip({
       <section data-testid="home-fleet" className="mb-8">
         <div className="mb-3">{label}</div>
         <div className="border border-dashed border-border-strong px-5 py-4 font-mono text-[12.5px] text-text-secondary">
-          No runners online. Start one with <code className="text-text-primary">buildd</code> on any machine.
+          No runners online. Run <code className="text-text-primary">buildd</code> on a machine where it is installed, or{' '}
+          <Link href="/app/settings/runners" className="text-accent-text hover:underline">install it</Link>.
         </div>
       </section>
     );

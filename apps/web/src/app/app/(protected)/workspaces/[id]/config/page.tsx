@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { appBaseUrl } from '@/lib/app-url';
 import { GitConfigForm } from './GitConfigForm';
 import { WorkspaceHealthCard } from './WorkspaceHealthCard';
 import { ReadinessCard } from './ReadinessCard';
@@ -109,6 +110,7 @@ export default async function WorkspaceConfigPage({
                 <ConnectClaudeSection
                     workspaceId={workspace.id}
                     workspaceName={workspace.name}
+                    serverOrigin={appBaseUrl()}
                 />
 
                 <ReleaseSection

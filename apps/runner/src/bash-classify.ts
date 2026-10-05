@@ -6,9 +6,8 @@
  * string is never inspected. Bash is the most-called tool by a wide margin, so
  * that one bar hides most of what a session does — and specifically it hides
  * every `grep` / `rg` / `git grep` run through a shell. Those are code searches
- * that the `Grep` tool would have counted, which means `cbmFileAccessCounts`
- * (Read/Grep/Glob TOOLS only) and every metric derived from it measures a
- * denominator it does not actually observe.
+ * that the `Grep` tool would have counted, so any search metric built from
+ * the Read/Grep/Glob TOOLS alone measures a denominator it does not observe.
  *
  * This module turns a command string into COUNTS: one bucket per call, plus a
  * coarse pattern SHAPE for code searches. It stores no command text and no
@@ -459,8 +458,7 @@ function searchPatternOf(args: Token[]): { shape: SearchShape; text?: string } {
  * Shape of a pattern string. Never returns or logs the string itself.
  *
  * Exported for the `Grep` TOOL, whose pattern arrives as a field rather than a
- * command line: the same rule decides whether a Grep call is an identifier
- * search (cbm-injection.ts), so the two triggers cannot drift.
+ * command line, so both are shaped by the same rule.
  */
 export function shapeOfSearchPattern(raw: string): SearchShape {
   const text = raw.trim();
@@ -589,12 +587,9 @@ export function classifyBashCommand(command: string): BashClassification {
  * Classify one Bash command AND, when it is an identifier-shaped code search,
  * return the identifier it searched for.
  *
- * The one place the classifier hands back pattern text, for the CBM search
- * injection trigger (cbm-injection.ts), which needs the symbol to ask the graph
- * about it. Same parser, same dominance rule, so the trigger fires on exactly
- * the calls `searchShapes.identifier` counts. The caller holds the identifier
- * for the length of one lookup and stores none of it; `recordBashCommand`
- * never sees this field.
+ * The one place the classifier hands back pattern text. Same parser, same
+ * dominance rule, so it fires on exactly the calls `searchShapes.identifier`
+ * counts. `recordBashCommand` never sees this field.
  */
 export function classifyBashSearch(command: string): { classification: BashClassification; identifier: string | null } {
   if (typeof command !== 'string' || !command.trim()) return { classification: { bucket: 'other' }, identifier: null };

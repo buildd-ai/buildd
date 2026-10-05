@@ -46,7 +46,7 @@ export interface QuestionBriefFields {
   disposition?: 'hold';
   /** Why it was held, in the words a person reads on the parked question. */
   holdReason?: string;
-  /** ISO timestamp. Not yet consulted by any notification path — see question-gate.ts `HOLD_RESURFACE_MS`. */
+  /** ISO timestamp: when a held question is surfaced to a person if still unanswered. See question-gate.ts `HOLD_RESURFACE_MS`. */
   resurfaceAt?: string;
 }
 

@@ -34,7 +34,8 @@ import {
 } from '@buildd/core/oauth-budget';
 import { countLiveSeatWorkers, loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
-import { readModelPin } from '@buildd/core/model-pin';
+import { readModelPin, shorthandPinTier } from '@buildd/core/model-pin';
+import type { TierPolicyMeta } from '@buildd/core/model-policy';
 import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { getCachedOpenRouterCatalog } from '@buildd/core/model-catalog-cache';
 import {
@@ -75,7 +76,6 @@ import { effectiveBudgetResetAt, isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
 import { runConnectorPreFilter } from './connector-prefilter';
 import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
-import { attachCbmExperimentArm } from './cbm-experiment';
 import { attachQuestionGate } from './question-gate';
 import { attachRoleEnvSecrets, runRoleEnvPreFilter } from './role-env-injection';
 import { attachWorkspaceWorkContext } from './workspace-work-context';
@@ -2172,12 +2172,17 @@ export async function POST(req: NextRequest) {
       routerModel: routingDecision.model, roleModel, budgetPressure: dailyBudgetPct,
     });
 
-    // Resolve the concrete model ID via the tier registry.
-    // - explicit override: bypass registry, pass full ID to runner as-is.
-    // - tier path: task.tier → router alias → registry → full model ID.
+    // Resolve the concrete model ID through the model policy (the team's tier
+    // registry is its document — packages/core/model-policy.ts).
+    // - exact-id pin: the escape hatch; bypass tier resolution, pass the full
+    //   ID to the runner as-is.
+    // - shorthand pin (`opus`/`sonnet`/`haiku`): a tier request, resolved like
+    //   any tier so the policy decides which model that is.
+    // - tier path: task.tier → router alias → policy → full model ID.
     // taskTeamId already defined above (line ~619)
+    const pinTier = shorthandPinTier(explicitModel);
     let resolvedModel: string;
-    let resolvedTierMeta: { tier: string; provider: string; source?: string } | undefined;
+    let resolvedTierMeta: { tier: string; provider: string; source?: string; policy?: TierPolicyMeta } | undefined;
     let poolDraw: AgentPoolDraw | null = null;
     // Where `resolvedModel` came from, and the tier entry a rejected model falls
     // back to. The catalog is read once per claim (cached in-process and in
@@ -2200,13 +2205,13 @@ export async function POST(req: NextRequest) {
     const tierModelSource = (s: string | undefined): DispatchModelSource =>
       s === 'catalog' ? 'tier_catalog' : s === 'default' ? 'tier_default' : 'tier_row';
 
-    if (routingDecision.reason === 'explicit_override') {
+    if (routingDecision.reason === 'explicit_override' && !pinTier) {
       resolvedModel = routingDecision.model;
     } else {
-      // Determine the tier to look up: task.tier takes precedence, then a
+      // Determine the tier to look up: a shorthand pin, then task.tier, then a
       // premium-plus role floor (above the router's opus ceiling), then the
       // router alias.
-      const derivedTier = taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
+      const derivedTier = pinTier ?? taskTier ?? roleTierOverride ?? mapRouterAlias(routingDecision.model);
       guardTier = derivedTier;
 
       if (taskTeamId) {
@@ -2218,9 +2223,11 @@ export async function POST(req: NextRequest) {
           runnerCliVersion,
         );
         resolvedModel = entry.model;
-        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source };
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
         modelSource = tierModelSource(entry.source);
         tierEntryModel = { model: entry.model, source: modelSource };
+        // A treatment or pool arm below replaces resolvedTierMeta without the
+        // policy decision: that route is the experiment's, not the policy's.
         if (experimentDraw) {
           const treatment = await applyModelRoutingTreatment(experimentDraw, {
             controlModel: entry.model, routerReason: routingDecision.reason, taskTier, backend: task.backend,
@@ -2255,9 +2262,13 @@ export async function POST(req: NextRequest) {
           }
         }
       } else {
-        // No team — fall back to router alias (resolver would fail without teamId)
-        resolvedModel = routingDecision.model;
-        modelSource = 'router_alias';
+        // No team, so no registry: the policy's default layer still answers,
+        // rather than handing the runner a bare router alias to interpret.
+        const entry = await resolveTierEntry(derivedTier, null, task.workspaceId, 'agent', runnerCliVersion);
+        resolvedModel = entry.model;
+        resolvedTierMeta = { tier: derivedTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
+        modelSource = tierModelSource(entry.source);
+        tierEntryModel = { model: entry.model, source: modelSource };
       }
     }
 
@@ -2274,7 +2285,7 @@ export async function POST(req: NextRequest) {
         // A rejected pin: fall back to the workspace default for its family.
         const entry = await resolveTierEntry(guardTier, taskTeamId, task.workspaceId, 'agent', runnerCliVersion);
         fallbacks = [{ model: entry.model, source: tierModelSource(entry.source) }];
-        resolvedTierMeta = { tier: guardTier, provider: entry.provider, source: entry.source };
+        resolvedTierMeta = { tier: guardTier, provider: entry.provider, source: entry.source, ...(entry.policy ? { policy: entry.policy } : {}) };
       }
       const guarded = guardDispatchModel({
         resolved: resolvedModel,
@@ -2295,7 +2306,10 @@ export async function POST(req: NextRequest) {
         resolvedModel = guarded.model;
         modelSource = guarded.source;
         if (resolvedTierMeta) {
-          resolvedTierMeta = { ...resolvedTierMeta, source: guarded.source === 'tier_default' ? 'default' : resolvedTierMeta.source };
+          // The policy's pick did not run, so its decision no longer describes
+          // this claim: drop it, and no outcome is reported against it.
+          const { policy: _notServed, ...rest } = resolvedTierMeta;
+          resolvedTierMeta = { ...rest, source: guarded.source === 'tier_default' ? 'default' : resolvedTierMeta.source };
         }
       }
     }
@@ -2824,13 +2838,6 @@ export async function POST(req: NextRequest) {
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
   if (!cloudExecutor) await attachRoleEnvSecrets(claimedWorkers, filteredTasks, account.id);
-  // CBM-access experiment: after role config (eligibility reads the role's CBM
-  // opt-out) and before the prompt-context blocks (the task-area hint drops its
-  // graph mention for a withheld task). No-op without a running experiment.
-  await attachCbmExperimentArm(claimedWorkers, {
-    cliVersion: body.environment?.claudeCliVersion,
-    features: Array.isArray(body.runnerFeatures) ? body.runnerFeatures : undefined,
-  });
   // Question gate: marks workers whose questions go through
   // /api/workers/[id]/question-check. No-op for a runner that never sent the feature.
   attachQuestionGate(claimedWorkers, {

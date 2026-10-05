@@ -60,6 +60,12 @@ export interface ModelEnvInput {
   teamEndpointWithheld?: boolean;
   /** Native budget model; mapped through the endpoint into ANTHROPIC_DEFAULT_HAIKU_MODEL. */
   budgetModel?: string;
+  /**
+   * The runner machine's own Claude subscription login (host-seat.ts). When
+   * set, it wins over a server-delivered seat: no `serverOauthToken` is
+   * injected and no claim-delivered Claude credential is materialized.
+   */
+  hostSeat?: 'env' | 'login' | null;
 }
 
 export interface ModelEnvResult {
@@ -76,6 +82,12 @@ export interface ModelEnvResult {
   injected: ServerCredential[];
   /** Server/tenant credentials that were available but not given to the agent. */
   withheld: ServerCredential[];
+  /**
+   * The machine's own login is the agent's Claude seat (Anthropic-bound,
+   * non-Codex, no tenant token). The claim's Claude credential is then not
+   * used either (`shouldUseClaudeCredential`).
+   */
+  hostSeatUsed?: boolean;
   /**
    * Set when a Codex task's team endpoint cannot serve Codex at all (an
    * `anthropic-compatible` endpoint — Anthropic Messages format only, no
@@ -117,10 +129,12 @@ export function endpointSessionModels(
  * third-party host.
  */
 export function shouldUseClaudeCredential(
-  modelEnv: Pick<ModelEnvResult, 'endpoint'>,
+  modelEnv: Pick<ModelEnvResult, 'endpoint'> & { hostSeatUsed?: boolean },
   worker: { claudeAccessToken?: string | null; claudeCredentialId?: string | null },
 ): boolean {
   if (modelEnv.endpoint === 'team') return false;
+  // The machine's own login wins over a server-delivered seat.
+  if (modelEnv.hostSeatUsed) return false;
   return !!(worker.claudeAccessToken || worker.claudeCredentialId);
 }
 
@@ -201,7 +215,10 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
       env.ANTHROPIC_API_KEY = serverApiKey;
       injected.push('serverApiKey');
     }
-    if (!isCodexTask && serverOauthToken && !env.CLAUDE_CODE_OAUTH_TOKEN) {
+    // The machine's own seat (an env token, or `claude login` on the host)
+    // wins: a server-delivered seat only fills in when the machine has none.
+    const hostSeat = !isCodexTask && !tenantOauthToken && (input.hostSeat || (env.CLAUDE_CODE_OAUTH_TOKEN ? 'env' : null));
+    if (!isCodexTask && serverOauthToken && !env.CLAUDE_CODE_OAUTH_TOKEN && !hostSeat) {
       env.CLAUDE_CODE_OAUTH_TOKEN = serverOauthToken;
       injected.push('serverOauthToken');
     }
@@ -209,7 +226,7 @@ export function applyModelEnv(env: Record<string, string>, input: ModelEnvInput)
       env.CLAUDE_CODE_OAUTH_TOKEN = tenantOauthToken;
       injected.push('tenantOauthToken');
     }
-    return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored };
+    return { env, endpoint, baseUrlOrigin, injected, withheld, teamEndpointIgnored, ...(hostSeat ? { hostSeatUsed: true } : {}) };
   }
 
   if (!isCodexTask && serverApiKey) withheld.push('serverApiKey');

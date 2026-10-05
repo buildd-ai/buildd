@@ -16,6 +16,16 @@ mock.module('@buildd/core/gate-events', () => ({
   recordGateEvent: async () => null,
   recordOrCoalesceDeferral: async () => null,
 }));
+// Subject intake runs for real unless a test sets `intakeOverride` (the
+// characterization below needs an 'attached' outcome).
+const realSubjectIntake = await import('@/lib/subject-intake');
+// Captured before mock.module: bun rewrites the live namespace in place.
+const realIntakeSubject = realSubjectIntake.intakeSubject as (...a: any[]) => Promise<any>;
+let intakeOverride: ((...a: any[]) => Promise<any>) | null = null;
+mock.module('@/lib/subject-intake', () => ({
+  ...realSubjectIntake,
+  intakeSubject: (...a: any[]) => (intakeOverride ?? realIntakeSubject)(...a),
+}));
 import { NextRequest } from 'next/server';
 import { canAccessTokenRoute } from '@/lib/token-route-policy';
 
@@ -464,66 +474,69 @@ describe('GET /api/tasks', () => {
   });
 });
 
-describe('POST /api/tasks', () => {
-  beforeEach(() => {
-    mockWorkspaceSkillsFindMany.mockReset();
-    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
-    mockGetCurrentUser.mockReset();
-    mockAccountsFindFirst.mockReset();
-    mockWorkspacesFindFirst.mockReset();
-    mockTasksFindFirst.mockReset();
-    mockTasksFindMany.mockReset();
-    mockTasksInsert.mockReset();
-    mockTasksUpdate.mockReset();
-    mockTasksUpdateSet.mockReset();
-    mockTasksUpdateWhere.mockReset();
-    mockTriggerEvent.mockReset();
-    mockResolveCreatorContext.mockReset();
-    mockVerifyAccountWorkspaceAccess.mockReset();
-    mockAnnounceTaskCreated.mockReset();
-    mockWakeTask.mockReset();
-    mockMissionsFindFirst.mockReset();
-    // Mission links are team-scoped; default to a mission in the test workspace's team.
-    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
-    mockWorkersFindFirst.mockReset();
-    // Default: no calling-worker context — the decomposition re-check guard
-    // (missionId + no parentTaskId + createdByWorkerId resolves to the
-    // mission's own organizer task) stays a no-op unless a test wires it up.
-    mockWorkersFindFirst.mockResolvedValue(null);
-    mockResolveWorkspace.mockReset();
-    mockAutoResolveAccountWorkspace.mockReset();
-    mockFindIntakeWarnings.mockReset();
+// The POST suite's mock defaults; also used by the characterization below.
+function resetPostMocks() {
+  mockWorkspaceSkillsFindMany.mockReset();
+  mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+  mockGetCurrentUser.mockReset();
+  mockAccountsFindFirst.mockReset();
+  mockWorkspacesFindFirst.mockReset();
+  mockTasksFindFirst.mockReset();
+  mockTasksFindMany.mockReset();
+  mockTasksInsert.mockReset();
+  mockTasksUpdate.mockReset();
+  mockTasksUpdateSet.mockReset();
+  mockTasksUpdateWhere.mockReset();
+  mockTriggerEvent.mockReset();
+  mockResolveCreatorContext.mockReset();
+  mockVerifyAccountWorkspaceAccess.mockReset();
+  mockAnnounceTaskCreated.mockReset();
+  mockWakeTask.mockReset();
+  mockMissionsFindFirst.mockReset();
+  // Mission links are team-scoped; default to a mission in the test workspace's team.
+  mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
+  mockWorkersFindFirst.mockReset();
+  // Default: no calling-worker context — the decomposition re-check guard
+  // (missionId + no parentTaskId + createdByWorkerId resolves to the
+  // mission's own organizer task) stays a no-op unless a test wires it up.
+  mockWorkersFindFirst.mockResolvedValue(null);
+  mockResolveWorkspace.mockReset();
+  mockAutoResolveAccountWorkspace.mockReset();
+  mockFindIntakeWarnings.mockReset();
 
-    // Default: no open spec discrepancies to warn about
-    mockFindIntakeWarnings.mockResolvedValue([]);
+  // Default: no open spec discrepancies to warn about
+  mockFindIntakeWarnings.mockResolvedValue([]);
 
-    // Default: no open friction task (miss path)
-    mockTasksFindFirst.mockResolvedValue(null);
-    // Default: no in-flight tasks for path-overlap check
-    mockTasksFindMany.mockResolvedValue([]);
-    // Default: update chain returns cleanly
-    mockTasksUpdateWhere.mockResolvedValue(undefined);
-    mockTasksUpdateSet.mockReturnValue({ where: mockTasksUpdateWhere });
-    mockTasksUpdate.mockReturnValue({ set: mockTasksUpdateSet });
+  // Default: no open friction task (miss path)
+  mockTasksFindFirst.mockResolvedValue(null);
+  // Default: no in-flight tasks for path-overlap check
+  mockTasksFindMany.mockResolvedValue([]);
+  // Default: update chain returns cleanly
+  mockTasksUpdateWhere.mockResolvedValue(undefined);
+  mockTasksUpdateSet.mockReturnValue({ where: mockTasksUpdateWhere });
+  mockTasksUpdate.mockReturnValue({ set: mockTasksUpdateSet });
 
-    // Default: API key auth has workspace access
-    mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
-    // Default: resolveWorkspace returns workspace with matching id, owned by
-    // the session user's team; API accounts reach it through a canCreate link.
-    mockResolveWorkspace.mockImplementation(async (raw: string) => ({ id: raw, teamId: 'team-1', accessMode: 'restricted' }));
-    mockGetUserTeamIds.mockReset();
-    mockGetUserTeamIds.mockResolvedValue(['team-1']);
-    mockAccountWorkspacesFindFirst.mockReset();
-    mockAccountWorkspacesFindFirst.mockResolvedValue({ canClaim: true, canCreate: true });
+  // Default: API key auth has workspace access
+  mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+  // Default: resolveWorkspace returns workspace with matching id, owned by
+  // the session user's team; API accounts reach it through a canCreate link.
+  mockResolveWorkspace.mockImplementation(async (raw: string) => ({ id: raw, teamId: 'team-1', accessMode: 'restricted' }));
+  mockGetUserTeamIds.mockReset();
+  mockGetUserTeamIds.mockResolvedValue(['team-1']);
+  mockAccountWorkspacesFindFirst.mockReset();
+  mockAccountWorkspacesFindFirst.mockResolvedValue({ canClaim: true, canCreate: true });
 
-    // Default mock for resolveCreatorContext
-    mockResolveCreatorContext.mockResolvedValue({
-      createdByAccountId: null,
-      createdByWorkerId: null,
-      creationSource: 'api',
-      parentTaskId: null,
-    });
+  // Default mock for resolveCreatorContext
+  mockResolveCreatorContext.mockResolvedValue({
+    createdByAccountId: null,
+    createdByWorkerId: null,
+    creationSource: 'api',
+    parentTaskId: null,
   });
+}
+
+describe('POST /api/tasks', () => {
+  beforeEach(resetPostMocks);
 
   it('creates a task with a CI write scope and no administrator level', async () => {
     mockAccountsFindFirst.mockResolvedValue({ id: 'account-ci', level: 'worker', scopes: ['tasks:write'], teamId: 'team-1' });
@@ -562,6 +575,32 @@ describe('POST /api/tasks', () => {
       expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace');
       expect(mockTasksInsert).not.toHaveBeenCalled();
     });
+
+    for (const level of ['worker', 'admin']) {
+      it(`a ${level} task token files onto its own task's mission, and is refused another mission on the team`, async () => {
+        const OWN_MISSION = '33333333-3333-4333-8333-333333333333';
+        const OTHER_MISSION = '44444444-4444-4444-8444-444444444444';
+        mockAccountsFindFirst.mockResolvedValue({ ...scoped, level });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+        // Both missions are on the team; the token's own task is on OWN_MISSION.
+        mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1' });
+        mockTasksFindFirst.mockImplementation(async (args: any) =>
+          args?.with?.mission?.columns?.initiativeId ? { missionId: OWN_MISSION, workspaceId: 'ws-1', mission: { initiativeId: null } } : null);
+        mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+
+        const refused = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Elsewhere', missionId: OTHER_MISSION },
+        }));
+        expect(refused.status).toBe(404);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+
+        const filed = await POST(createMockRequest({
+          method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { title: 'Follow-up', missionId: OWN_MISSION },
+        }));
+        expect(filed.status).toBe(200);
+        mockTasksFindFirst.mockReset();
+      });
+    }
   });
 
   it('rejects analytics readers before inserting a task', async () => {
@@ -4449,5 +4488,101 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
       const secondData = await second.json();
       expect(secondData.id).toBe('build-task-2');
     });
+  });
+});
+
+// ── Characterization: what a task creation sets off after the commit ───────
+// Pins today's post-commit side effects, in order and with their arguments,
+// so moving them behind emit('task.created') cannot change them. All of them
+// are fire-and-forget: none may delay or fail the request.
+describe('POST /api/tasks — post-commit side effects (characterization)', () => {
+  const log: Array<[string, ...any[]]> = [];
+  const actor = { kind: 'mcp' as const, id: 'account-123', label: 'account "account-123"' };
+
+  beforeEach(() => {
+    resetPostMocks();
+    log.length = 0;
+    intakeOverride = null;
+    mockScheduleTaskCategorize.mockReset();
+    mockScheduleTaskCategorize.mockImplementation((input: any, schedule: any) => { log.push(['scheduleTaskCategorize', input, typeof schedule]); });
+    mockResolveFeedActor.mockImplementation(async (opts: any) => { log.push(['resolveFeedActor', opts]); return actor; });
+    mockPostMissionFeedEvent.mockImplementation(async (ev: any) => { log.push(['postMissionFeedEvent', ev]); });
+    mockReopenCompletedMission.mockImplementation(async (...a: any[]) => { log.push(['reopenCompletedMission', ...a]); return { reopened: false }; });
+    mockResolveCriteriaEscalation.mockImplementation(async (...a: any[]) => { log.push(['resolveCriteriaEscalation', ...a]); return { cleared: false }; });
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123', createdByWorkerId: null, creationSource: 'api', parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockMissionsFindFirst.mockResolvedValue({ teamId: 'team-1', defaultOutputRequirement: null });
+  });
+
+  function insertReturns(row: Record<string, unknown>) {
+    mockTasksInsert.mockReturnValue({
+      values: mock((values: any) => ({ returning: mock(() => [{ ...values, ...row }]) })),
+    });
+  }
+
+  const post = (body: Record<string, unknown>) => POST(createMockRequest({
+    method: 'POST', headers: { Authorization: 'Bearer bld_xxx' }, body: { workspaceId: 'ws-1', ...body },
+  }));
+
+  it('a mission task: category look first, then feed post, reopen, escalation resolve, with these args', async () => {
+    insertReturns({ id: 'task-1', missionId: 'mission-1', status: 'pending' });
+    const response = await post({ title: 'Fix crash on save', description: 'Throws.', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/foo.ts'] });
+    expect(response.status).toBe(200);
+    // The category look is scheduled before the response returns.
+    expect(log[0]?.[0]).toBe('scheduleTaskCategorize');
+    await settleFireAndForget(() => log.some(l => l[0] === 'resolveCriteriaEscalation'));
+
+    expect(log).toEqual([
+      ['scheduleTaskCategorize', {
+        taskId: 'task-1', teamId: 'team-1', workspaceId: 'ws-1', accountId: 'account-123',
+        title: 'Fix crash on save', description: 'Throws.', stored: 'bug', callerSet: false, dataClass: null,
+      }, 'function'],
+      ['resolveFeedActor', { user: null, apiAccount: { id: 'account-123', apiKey: 'bld_xxx' }, actorWorkerId: null }],
+      ['postMissionFeedEvent', {
+        missionId: 'mission-1', type: 'update', title: 'Task created: Fix crash on save', body: 'Task task-1', actor, taskId: 'task-1',
+      }],
+      ['reopenCompletedMission', 'mission-1', actor],
+      ['resolveCriteriaEscalation', 'mission-1', 'work_filed', actor],
+    ]);
+  });
+
+  it('a reopen failure does not stop the escalation resolve', async () => {
+    insertReturns({ id: 'task-1', missionId: 'mission-1', status: 'pending' });
+    mockReopenCompletedMission.mockImplementation(async () => { log.push(['reopenCompletedMission']); throw new Error('boom'); });
+    expect((await post({ title: 'Quarterly thing', missionId: 'mission-1' })).status).toBe(200);
+    await settleFireAndForget(() => log.some(l => l[0] === 'resolveCriteriaEscalation'));
+    expect(log.map(l => l[0])).toEqual([
+      'scheduleTaskCategorize', 'resolveFeedActor', 'postMissionFeedEvent', 'reopenCompletedMission', 'resolveCriteriaEscalation',
+    ]);
+  });
+
+  it('a mission-feed failure neither fails the request nor reaches reopen', async () => {
+    insertReturns({ id: 'task-1', missionId: 'mission-1', status: 'pending' });
+    mockPostMissionFeedEvent.mockImplementation(async () => { log.push(['postMissionFeedEvent']); throw new Error('boom'); });
+    expect((await post({ title: 'Quarterly thing', missionId: 'mission-1' })).status).toBe(200);
+    await settleFireAndForget();
+    expect(log.map(l => l[0])).toEqual(['scheduleTaskCategorize', 'resolveFeedActor', 'postMissionFeedEvent']);
+  });
+
+  it('a task with no mission: only the category look', async () => {
+    insertReturns({ id: 'task-2', missionId: null, status: 'pending' });
+    expect((await post({ title: 'Quarterly thing' })).status).toBe(200);
+    await settleFireAndForget();
+    expect(log.map(l => l[0])).toEqual(['scheduleTaskCategorize']);
+  });
+
+  it('an attached intake: no category look, but the mission chain still runs for the canonical task', async () => {
+    intakeOverride = async () => ({
+      task: { id: 'canon-1', workspaceId: 'ws-1', title: 'Canonical', missionId: 'mission-1', status: 'pending' },
+      outcome: { action: 'attached', taskId: 'canon-1', reportId: 'r-1' },
+    });
+    await post({ title: 'Duplicate', missionId: 'mission-1' });
+    await settleFireAndForget(() => log.some(l => l[0] === 'resolveCriteriaEscalation'));
+    expect(log.map(l => l[0])).toEqual(['resolveFeedActor', 'postMissionFeedEvent', 'reopenCompletedMission', 'resolveCriteriaEscalation']);
+    expect(log[1][1]).toMatchObject({ missionId: 'mission-1', title: 'Task created: Canonical', body: 'Task canon-1', taskId: 'canon-1' });
   });
 });

@@ -1,6 +1,7 @@
 import { TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
+import { reportTaskPolicyOutcome } from '@/lib/model-policy-outcomes';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
@@ -22,7 +23,6 @@ import { maybeOpenMissionIntegrationPr, noteMissionPrOpenFailure } from '@/lib/m
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
-  shouldAnnounceBaseAdvance,
 } from '@buildd/core/mission-integration';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved, resolveCompletedTask } from '@/lib/task-dependencies';
@@ -56,7 +56,7 @@ import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
-import { recordEvent, prMergedEvent, prCiFailedEvent, taskCompletedEvent } from '@/lib/subscriptions';
+import { emit } from '@/lib/core-emit';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
@@ -450,11 +450,13 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
           taskId: worker.taskId,
         });
+        // Model policy: CI on the run's PR is its tests observation.
+        await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: false }]);
       }
     }
     // Subscriptions ledger: "tell me if CI goes red on PR N". One row per head SHA.
     for (const pr of check_suite.pull_requests) {
-      await recordEvent(prCiFailedEvent({ repoFullName: repository.full_name, prNumber: pr.number, headSha }));
+      await emit({ type: 'pr.ci_failed', repoFullName: repository.full_name, prNumber: pr.number, headSha });
     }
     await handleCheckSuiteFailure(check_suite, repository, installation.id);
     await handleReleasePrCiFailure(check_suite.pull_requests, repository.full_name);
@@ -505,6 +507,10 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
             .update(workers)
             .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
             .where(eq(workers.id, worker.id));
+          // Model policy: every check suite passed on the run's PR.
+          if (worker.prLifecycleStatus !== 'ci_green') {
+            await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: true }]);
+          }
         }
 
         // Resolve merge policy via the single precedence chain:
@@ -1070,7 +1076,7 @@ async function handlePullRequestEvent(event: {
   // Subscriptions ledger: any merged PR, buildd-opened or not. Idempotent on
   // the dedupe key, so a redelivery or the reconcile sweep writes nothing new.
   if (pr.merged) {
-    await recordEvent(prMergedEvent({ repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url }));
+    await emit({ type: 'pr.merged', repoFullName: repository.full_name, prNumber: pr.number, url: pr.html_url });
   }
 
   // Resolve the sticky activity comment: the PR closing is the last word, so a
@@ -1114,6 +1120,12 @@ async function handlePullRequestEvent(event: {
         prNumber: pr.number,
         mergedAt: new Date(),
       });
+      // Model policy: the merge, once (a redelivery is not a second merge).
+      // A close without merge is not reported: superseded and abandoned PRs
+      // close too, and that is not evidence about the model.
+      if (mergeIsNew) {
+        await reportTaskPolicyOutcome(worker.taskId, [{ type: 'merged', merged: true }]);
+      }
       // A merged doc fix gets its conformance re-run now, not whenever the
       // next dev push happens to evaluate the doc (spec-conformance.md §9).
       // Best-effort; the hourly pr-reconcile sweep is the backstop.
@@ -1243,32 +1255,6 @@ async function handlePullRequestEvent(event: {
       );
     }
 
-    // A merge onto a mission integration branch moved the base that every
-    // sibling task's codebase-graph seed is keyed on. Tell the runner, which
-    // owns the seed cache (a directory on its own host) and already has the
-    // keying and the one-refresh-in-flight bound.
-    //
-    // Keyed on the BASE REF alone, deliberately not on `task.missionId`: the
-    // stale thing is a seed keyed on that ref, and it is stale whether or not
-    // the merging task's row happens to carry a mission link. Requiring the
-    // link would make graph freshness depend on task bookkeeping.
-    //
-    // Also deliberately the SHAPE heuristic, where the release guard below uses
-    // the authoritative `isMissionIntegrationBase`. The asymmetry is the cost of
-    // being wrong: a false positive on a release decision suppresses a release
-    // the workspace asked for, while a false positive here costs one no-op
-    // refresh of a slot nobody reads.
-    if (shouldAnnounceBaseAdvance({ merged: pr.merged, baseRef: pr.base?.ref }) && worker.workspaceId) {
-      await triggerEvent(channels.workspace(worker.workspaceId), events.GRAPH_BASE_ADVANCED, {
-        repoFullName: repository.full_name,
-        baseRef: pr.base!.ref,
-      }).catch(e =>
-        // Advisory: the next claim in this mission refreshes the seed anyway, so
-        // a failed publish must never affect the merge path.
-        console.error(`[webhook] graph:base-advanced publish failed for ${repository.full_name}:`, e),
-      );
-    }
-
     // Option A′: a task PR landing on the mission's integration branch is the
     // event that can make the mission's work complete, so it is where the one
     // mission PR gets opened. Awaited, not fire-and-forget: this opens a PR,
@@ -1332,7 +1318,7 @@ async function handlePullRequestEvent(event: {
       if (flipped) {
         console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
         // Same fact as the worker route's completion, same dedupe key: one row.
-        await recordEvent(taskCompletedEvent({ taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId }));
+        await emit({ type: 'task.completed', via: 'merge', taskId: worker.task.id, workerId: worker.id, workspaceId: worker.workspaceId });
 
         // Work-tracker: post completion comment and transition issue to "Done".
         // Stays inside the transition guard deliberately: a "Done" comment is a

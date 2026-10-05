@@ -102,6 +102,41 @@ export interface McpJsonHttpServer {
 export interface McpJsonSkippedServer {
   name: string;
   unresolved: string[];
+  /**
+   * Set when the server was refused because it asked for the agent's buildd
+   * credential (`${BUILDD_API_KEY}`) somewhere it may not go: a host other
+   * than this runner's buildd server, or a URL. Carries the host only.
+   */
+  builddCredentialRefused?: { host: string; where: 'url' | 'foreign-host' };
+}
+
+/**
+ * The name a .mcp.json uses to ask for buildd auth. Reserved: it never expands
+ * to the runner's own key, only to the agent's buildd credential (the per-task
+ * token when one was minted), and only for a server on the runner's own buildd
+ * origin. See BuilddCredentialExpansion.
+ */
+export const BUILDD_CREDENTIAL_VAR = 'BUILDD_API_KEY';
+
+/**
+ * How `${BUILDD_API_KEY}` expands. `origin` is the runner's buildd server
+ * origin; `token` is the credential the agent's own buildd MCP entry carries.
+ * A server whose URL origin is not `origin` gets nothing and is refused, as is
+ * a URL that embeds the ref (URLs end up in logs).
+ */
+export interface BuilddCredentialExpansion {
+  origin: string;
+  token: string;
+}
+
+/** `new URL(url).origin`, or null when it does not parse. */
+export function urlOrigin(url: string): string | null {
+  try {
+    const o = new URL(url).origin;
+    return o && o !== 'null' ? o : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface ResolveMcpJsonOptions {
@@ -112,6 +147,12 @@ export interface ResolveMcpJsonOptions {
    * one remote shape, so it accepts any entry with a url.
    */
   requireHttpType?: boolean;
+  /**
+   * When set, `${BUILDD_API_KEY}` is resolved by origin (see
+   * BuilddCredentialExpansion) and any BUILDD_API_KEY already in `env` is
+   * ignored.
+   */
+  builddCredential?: BuilddCredentialExpansion;
 }
 
 /**
@@ -136,13 +177,35 @@ export function resolveMcpJsonHttpServers(
     if (opts.requireHttpType && cfg.type !== 'http') continue;
     if (opts.isTaken?.(name)) continue;
 
+    let serverEnv = env;
+    if (opts.builddCredential) {
+      const { [BUILDD_CREDENTIAL_VAR]: _ignored, ...withoutKey } = env;
+      const headerValues = Object.values((cfg.headers ?? {}) as Record<string, unknown>)
+        .filter((v): v is string => typeof v === 'string');
+      const inUrl = extractVarReferences(cfg.url).includes(BUILDD_CREDENTIAL_VAR);
+      const inHeaders = headerValues.some(v => extractVarReferences(v).includes(BUILDD_CREDENTIAL_VAR));
+      if (inUrl || inHeaders) {
+        const origin = urlOrigin(expandVarRefs(cfg.url, withoutKey).value);
+        const host = origin ? new URL(origin).host : '(unparseable url)';
+        if (inUrl) {
+          skipped.push({ name, unresolved: [BUILDD_CREDENTIAL_VAR], builddCredentialRefused: { host, where: 'url' } });
+          continue;
+        }
+        if (origin !== opts.builddCredential.origin) {
+          skipped.push({ name, unresolved: [BUILDD_CREDENTIAL_VAR], builddCredentialRefused: { host, where: 'foreign-host' } });
+          continue;
+        }
+        serverEnv = { ...withoutKey, [BUILDD_CREDENTIAL_VAR]: opts.builddCredential.token };
+      }
+    }
+
     const unresolved: string[] = [];
-    const url = expandVarRefs(cfg.url, env);
+    const url = expandVarRefs(cfg.url, serverEnv);
     unresolved.push(...url.unresolved);
     const headers: Record<string, string> = {};
     for (const [hk, hv] of Object.entries((cfg.headers ?? {}) as Record<string, unknown>)) {
       if (typeof hv !== 'string') continue;
-      const h = expandVarRefs(hv, env);
+      const h = expandVarRefs(hv, serverEnv);
       for (const u of h.unresolved) if (!unresolved.includes(u)) unresolved.push(u);
       headers[hk] = h.value;
     }
@@ -192,6 +255,7 @@ export function buildCodexMcpServers(input: {
   mcpJson: unknown;
   connectors: CodexConnectorInput[] | undefined;
   env: Record<string, string | undefined>;
+  builddCredential?: BuilddCredentialExpansion;
 }): { servers: CodexMcpServer[]; bearerEnv: Record<string, string>; warnings: string[] } {
   const servers: CodexMcpServer[] = [];
   const bearerEnv: Record<string, string> = {};
@@ -221,9 +285,10 @@ export function buildCodexMcpServers(input: {
 
   const { servers: fileServers, skipped } = resolveMcpJsonHttpServers(input.mcpJson, input.env, {
     isTaken: name => servers.some(s => s.name === name),
+    ...(input.builddCredential ? { builddCredential: input.builddCredential } : {}),
   });
   for (const s of skipped) {
-    warnings.push(`.mcp.json server "${s.name}" not mounted: unresolved \${${s.unresolved.join('}, ${')}} (secret not delivered by the claim?)`);
+    warnings.push(describeSkippedMcpServer(s));
   }
   for (const s of fileServers) {
     const envVar = `MCP_BEARER_${envSlug(s.name)}`;
@@ -236,4 +301,18 @@ export function buildCodexMcpServers(input: {
     servers.push({ name: s.name, url: s.url, bearerTokenEnvVar: envVar });
   }
   return { servers, bearerEnv, warnings };
+}
+
+/**
+ * One warning line for a server that was not mounted. Names the server and,
+ * for a refused buildd credential, the host. Never a value.
+ */
+export function describeSkippedMcpServer(s: McpJsonSkippedServer): string {
+  if (s.builddCredentialRefused) {
+    const { host, where } = s.builddCredentialRefused;
+    return where === 'url'
+      ? `.mcp.json server "${s.name}" not mounted: \${${BUILDD_CREDENTIAL_VAR}} is expanded in headers only, never in a URL`
+      : `.mcp.json server "${s.name}" not mounted: \${${BUILDD_CREDENTIAL_VAR}} is sent only to this runner's buildd server, not ${host}`;
+  }
+  return `.mcp.json server "${s.name}" not mounted: unresolved \${${s.unresolved.join('}, ${')}} (secret not delivered by the claim?)`;
 }

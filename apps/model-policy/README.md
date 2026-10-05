@@ -25,21 +25,54 @@ own credentials.
 Nothing else. Adding a provider key or a buildd credential here is a design
 change (`src/handler.test.ts` pins the env).
 
-## Run and deploy
+## Run locally
 
 ```bash
 cd apps/model-policy
 bunx wrangler dev --var POLICY_TOKENS:dev:$(openssl rand -hex 16) --var MODEL_POLICY:'{"version":"1","tiers":{}}'
-bunx wrangler auth activate <profile> apps/model-policy   # once per machine
-bunx wrangler secret put POLICY_TOKENS
-bunx wrangler secret put MODEL_POLICY
-bunx wrangler deploy
 ```
 
-Not deployed yet and no public route; add a Custom Domain in `wrangler.jsonc`
-when there is a first consumer.
+## Deploy
 
-Client side:
+`.github/workflows/deploy-model-policy.yml` deploys on a push to `main` that
+touches this Worker or the policy protocol, and on `workflow_dispatch`. It
+serves `https://policy.buildd.dev` (Custom Domain in `wrangler.jsonc`) and
+fails if `/health` is not `ok: true` afterwards.
+
+Everything below is a credential, so it is the manual part, done once:
+
+1. **Deploy token.** Repo secrets `CF_MODEL_POLICY_API_TOKEN` and
+   `CF_MODEL_POLICY_ACCOUNT_ID` (Doppler `buildd/dev_ci`, pushed with
+   gh-secret-push). Unset, the workflow uses Dispatch's `CF_DISPATCH_*`; that
+   token needs Workers Scripts: Edit and Workers Routes: Edit on the
+   `buildd.dev` zone.
+2. **Worker secrets.** Policy tokens, one per consumer (`id:token`, each ≥24
+   characters), and the policy document:
+   ```bash
+   cd apps/model-policy
+   bunx wrangler auth activate <profile> apps/model-policy   # once per machine
+   printf 'buildd:%s' "$(openssl rand -hex 24)" | bunx wrangler secret put POLICY_TOKENS
+   bunx wrangler secret put MODEL_POLICY < policy.json       # a ModelPolicy document
+   ```
+   Then run the workflow (`gh workflow run deploy-model-policy.yml --ref main`).
+3. **buildd as a consumer.** On the web app's Vercel project (production),
+   `BUILDD_MODEL_POLICY_URL=https://policy.buildd.dev` and
+   `BUILDD_MODEL_POLICY_TOKEN=<the buildd token from step 2>`. Unset, buildd
+   runs on its registry and the bundled policy, exactly as before.
+
+What `MODEL_POLICY` should say for buildd: only what a team has not pinned.
+buildd resolves a team's registry rows first (they are the policy document's
+overrides, surfaces and tiers), and asks this service only for a tier the
+team leaves unset. Its answer replaces buildd's catalog/bundled default for
+that tier, and carries the planId buildd reports coding outcomes against
+(CI, review verdict, merge, duration, cost). Start with
+`{"version":"1","tiers":{}}` (every tier unset: the service answers
+`bundled` and buildd keeps its own default), then add tiers or experiments.
+
+A service outage never takes buildd down: a failed resolve backs off for 30s
+and serves the last good answer (no planId), then buildd's own default.
+
+## Client side
 
 ```ts
 import { createPolicyClient, remotePolicy, DEFAULT_MODEL_POLICY } from '@builddai/ai-kit/policy';

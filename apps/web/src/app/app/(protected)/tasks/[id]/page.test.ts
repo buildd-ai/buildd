@@ -141,8 +141,8 @@ describe('mission continuity — tasks/[id]/page.tsx (docs/design/mission-feed-m
     expect(pageSource).toContain('excludeNoteId={questionNote?.id ?? null}');
   });
 
-  it('passes the failed phase a truncated error excerpt, not the full worker error', () => {
-    expect(pageSource).toContain('lastError={failedExcerpt ? { excerpt: failedExcerpt } : null}');
+  it('passes the failed phase a truncated error excerpt to show, and the full error only to classify (and fold)', () => {
+    expect(pageSource).toContain('lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}');
     expect(pageSource).toContain('truncateExcerpt(taskWorkers[0]?.error');
   });
 

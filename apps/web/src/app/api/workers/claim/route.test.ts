@@ -376,20 +376,15 @@ mock.module('@buildd/core/tier-pool-source', () => ({
   recordAgentPoolAssignment: mockRecordAgentPoolAssignment,
 }));
 
-// CBM-access experiment glue. The real module is exercised in
-// packages/core/__tests__/cbm-access-experiment-source.test.ts; here only the
-// call-site wiring is under test. Default: no running experiment.
-const mockEnrolCbmAccessExperiment = mock((_args: any): Promise<any> => Promise.resolve(null));
-mock.module('@buildd/core/cbm-access-experiment-source', () => ({
-  enrolCbmAccessExperiment: mockEnrolCbmAccessExperiment,
-}));
-
 // Records every tier lookup the claim makes and delegates to the real
 // resolver, so tests can check the surface a claim asks for.
 // mock.module rewrites the live namespace, so the real function is captured first.
 const realTierRegistry = { ...(await import('@buildd/core/model-tier-registry')) };
 const realResolveTierEntry = realTierRegistry.resolveTierEntry;
 const tierLookups: unknown[][] = [];
+// With no team registry a claim still resolves through the model policy, so
+// the routed model is the tier's bundled default, never a bare router alias.
+const tierModel = (tier: 'premium' | 'standard' | 'budget') => realTierRegistry.TIER_DEFAULTS[tier].model;
 mock.module('@buildd/core/model-tier-registry', () => ({
   ...realTierRegistry,
   resolveTierEntry: (...args: Parameters<typeof realResolveTierEntry>) => {
@@ -2244,51 +2239,19 @@ describe('POST /api/workers/claim', () => {
       });
     });
 
-    describe('CBM-access experiment wiring', () => {
-      beforeEach(() => {
-        mockEnrolCbmAccessExperiment.mockReset();
-        mockEnrolCbmAccessExperiment.mockResolvedValue(null);
+    // The codebase-memory graph was removed. A runner in the field still sends
+    // the old `cbm_withhold` feature; the claim must ignore it, not refuse it.
+    it('ignores the retired cbm_withhold runner feature', async () => {
+      setup();
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { ...(await claimReq().json()), runnerFeatures: ['cbm_withhold'] },
       });
-
-      it('asks the experiment about every claimed task, with its team and the runner CLI version', async () => {
-        setup();
-        const res = await POST(claimReq());
-        const data = await res.json();
-        expect(data.workers.length).toBe(1);
-        expect(mockEnrolCbmAccessExperiment).toHaveBeenCalledTimes(1);
-        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0]).toMatchObject({
-          teamId: 'team-1', task: { id: 'task-1' }, roleCbmDisabled: false, runnerCliVersion: '2.1.300',
-          // This request declares no runnerFeatures: an old runner, not enrolable.
-          runnerCanWithhold: false,
-        });
-        // Not enrolled: the payload carries no marker, so the runner runs CBM as today.
-        expect(data.workers[0].cbmExperiment).toBeUndefined();
-      });
-
-      it('a runner that declares the withhold feature is enrolable', async () => {
-        setup();
-        const req = createMockRequest({
-          headers: { Authorization: 'Bearer bld_test' },
-          body: { ...(await claimReq().json()), runnerFeatures: ['cbm_withhold'] },
-        });
-        await POST(req);
-        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0].runnerCanWithhold).toBe(true);
-      });
-
-      it('a withheld draw reaches the runner on the claimed worker', async () => {
-        setup();
-        const marker = { experimentId: 'exp-cbm', policyVersion: 1, arm: 'treatment', withheld: true };
-        mockEnrolCbmAccessExperiment.mockResolvedValue(marker);
-        const data = await (await POST(claimReq())).json();
-        expect(data.workers[0].cbmExperiment).toEqual(marker);
-      });
-
-      it('does not enrol a task whose claim lock was lost', async () => {
-        setup();
-        mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
-        await POST(claimReq());
-        expect(mockEnrolCbmAccessExperiment).not.toHaveBeenCalled();
-      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+      expect((data.workers[0] as any).cbmExperiment).toBeUndefined();
     });
   });
 
@@ -3802,8 +3765,8 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers.length).toBe(1);
 
       // engineering/simple → haiku (baseline matrix)
-      expect(lastTaskSetPayload.predictedModel).toBe('haiku');
-      expect(lastTaskSetPayload.context?.model).toBe('haiku');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('budget'));
+      expect(lastTaskSetPayload.context?.model).toBe(tierModel('budget'));
     });
 
     it('downshifts engineering/complex to sonnet when daily budget > 70%', async () => {
@@ -3837,7 +3800,7 @@ describe('POST /api/workers/claim', () => {
       await POST(req);
 
       // baseline=opus, but 70–90% band downshifts engineering → sonnet
-      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('standard'));
     });
 
     it('skips the task when the router returns paused (budget >= 95%, priority 0)', async () => {
@@ -3981,11 +3944,11 @@ describe('POST /api/workers/claim', () => {
 
     it('a requeued task re-routes when its complexity changes (no team registry)', async () => {
       const first = await claimOnce({ complexity: 'simple' });
-      expect(first.predictedModel).toBe('haiku');
+      expect(first.predictedModel).toBe(tierModel('budget'));
 
       const second = await claimOnce({ complexity: 'complex', context: first.context });
       expect(second.context.routingReason).not.toBe('explicit_override');
-      expect(second.predictedModel).toBe('opus');
+      expect(second.predictedModel).toBe(tierModel('premium'));
     });
 
     it('rows claimed before the pin marker shipped (model + non-explicit routingReason) are not pins', async () => {
@@ -3994,7 +3957,7 @@ describe('POST /api/workers/claim', () => {
         context: { model: 'haiku', routingReason: 'baseline' },
       });
       expect(res.context.routingReason).not.toBe('explicit_override');
-      expect(res.predictedModel).toBe('opus');
+      expect(res.predictedModel).toBe(tierModel('premium'));
     });
 
     it('a user pin set at create time survives requeue', async () => {
@@ -4007,13 +3970,33 @@ describe('POST /api/workers/claim', () => {
       expect(second.predictedModel).toBe('claude-opus-4-8');
     });
 
+    it('a shorthand pin is a tier request: the policy resolves which model it is, and the pin stays sticky', async () => {
+      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      tierLookups.length = 0;
+      const res = await claimOnce({ workspace, complexity: 'simple', context: { model: 'opus', modelPinned: true } });
+      expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      expect(res.context.modelPinned).toBe(true);
+      expect(res.context.resolvedTier).toMatchObject({ tier: 'premium' });
+      expect(res.context.resolvedTier.policy).toMatchObject({ surface: 'coding' });
+      expect(tierLookups.some((a) => a[0] === 'premium' && a[3] === 'agent')).toBe(true);
+    });
+
+    it('an exact-id pin is the escape hatch: no tier lookup, no policy decision', async () => {
+      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      tierLookups.length = 0;
+      const res = await claimOnce({ workspace, context: { model: 'claude-opus-4-8', modelPinned: true } });
+      expect(res.predictedModel).toBe('claude-opus-4-8');
+      expect(res.context.resolvedTier).toBeUndefined();
+      expect(tierLookups).toHaveLength(0);
+    });
+
     it('modelPinned: false means routing applies even though context.model is present', async () => {
       const res = await claimOnce({
         complexity: 'complex',
         context: { model: 'claude-opus-4-8', modelPinned: false },
       });
       expect(res.context.routingReason).not.toBe('explicit_override');
-      expect(res.predictedModel).toBe('opus');
+      expect(res.predictedModel).toBe(tierModel('premium'));
       expect(res.context.modelPinned).toBe(false);
     });
 
@@ -4055,7 +4038,7 @@ describe('POST /api/workers/claim', () => {
       await POST(req);
 
       // engineering/complex baseline=opus, spike downshifts → sonnet
-      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('standard'));
     });
 
     it('role floor clamps a simple engineering task up from haiku', async () => {
@@ -4095,7 +4078,7 @@ describe('POST /api/workers/claim', () => {
       await POST(req);
 
       // baseline=haiku, role floor=sonnet → clamped up to sonnet
-      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('standard'));
     });
 
     // --- Role model precedence (docs/design/role-routing.md §3.1, §4) ---
@@ -6803,7 +6786,7 @@ describe('entity catalog injection at claim time', () => {
 
       const data = await res.json();
       expect(data.workers).toHaveLength(1);
-      expect(claimPayload()?.predictedModel).toBe('sonnet');
+      expect(claimPayload()?.predictedModel).toBe(tierModel('standard'));
       // Well under half the window: parallelism is untouched, so no seat count.
       expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
     });
@@ -6822,7 +6805,7 @@ describe('entity catalog injection at claim time', () => {
       expect(data.workers).toHaveLength(1);
       // 80% pressure used to downshift opus → sonnet. The forecast is not
       // trusted to change what runs, only how much runs at once.
-      expect(claimPayload()?.predictedModel).toBe('opus');
+      expect(claimPayload()?.predictedModel).toBe(tierModel('premium'));
     });
 
     // The whole point of the Start button is that it does something. Pacing must

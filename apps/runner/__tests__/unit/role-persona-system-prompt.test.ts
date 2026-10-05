@@ -4,7 +4,7 @@
  * It did not. `overlayRoleFiles` skipped CLAUDE.md on the grounds that "role
  * instructions come via the system prompt", and nothing ever put them there:
  * `systemPrompt.append` carried skills, retry continuity, connector notices,
- * the tool-channel policy and the CBM block — never the role. The only code
+ * and the tool-channel policy — never the role. The only code
  * that read a persona at all was the Codex path, which read the role dir's
  * CLAUDE.md off disk, so a role with no packaged bundle had no persona on
  * either backend.
@@ -19,7 +19,6 @@ import type { LocalUIConfig } from '../../src/types';
 
 import * as realRoles from '../../src/roles';
 import * as realGitOps from '../../src/git-operations';
-import * as realBootstrap from '../../src/cbm-bootstrap';
 import { buildRoleSystemPromptSection } from '../../src/roles';
 
 // ─── Pure: the rendered section ─────────────────────────────────────────────
@@ -170,11 +169,6 @@ mock.module('../../src/env-scan', () => ({
   scanMcpServersRich: () => [],
   checkBwrapSupport: () => true,
   checkBwrapMountIsolationSupport: () => true,
-}));
-
-mock.module('../../src/cbm-bootstrap.js', () => ({
-  ...realBootstrap,
-  runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 
 const { WorkerManager } = await import('../../src/workers');

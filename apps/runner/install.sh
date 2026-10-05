@@ -345,6 +345,8 @@ MCPEOF
 }
 GLOBALEOF
       fi
+      # The entry holds the key: owner-only, like ~/.buildd/config.json.
+      chmod 600 "$CLAUDE_JSON"
 
       echo "Registered buildd MCP server globally in ~/.claude.json"
       echo "Buildd will be available in every Claude Code session."
@@ -436,180 +438,71 @@ if [ -n "$SHELL_RC" ] && ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
   echo -e "${YELLOW}Added ~/.local/bin to PATH in $SHELL_RC${NC}"
 fi
 
-# Install codebase-memory-mcp binary.
+# --- next steps: begin ---
+# What to do after the installer. Kept in two functions between these markers so
+# apps/runner/__tests__/unit/install-next-steps.test.ts can run them as-is.
 #
-# This mirrors the layer in docker/worker/Dockerfile, but that Dockerfile is built
-# in CI and never pushed — running install.sh is what actually provisions binaries
-# on Coder workspaces, so this is the real upgrade path for the fleet. Keep the
-# version and the linux checksums identical to the Dockerfile ARGs (enforced by
-# apps/runner/__tests__/unit/cbm-version-pin.test.ts, and checked against the
-# upstream release by scripts/verify-cbm-pin.sh in CI).
-#
-# A bump needs no remembered side conditions. The one property worth keeping —
-# the graph tools' own descriptions telling the agent to use them instead of
-# grep, which an upstream token-reduction pass deleted — is asserted against the
-# pinned build by scripts/verify-cbm-grep-steering.ts in worker-image.yml, so a
-# version that dropped it fails CI instead of degrading tool routing quietly.
-#
-# Every step is explicitly guarded rather than relying on `set -e`: this function
-# is called from an `if !` test, and POSIX/bash ignore errexit inside a condition,
-# including within a subshell that has its own `set -e`. Depending on errexit here
-# silently disabled the checksum gate and installed an unverified binary.
-CBM_VERSION="0.10.8"
-CBM_BINARY_PATH="/opt/buildd/bin/codebase-memory-mcp"
+# The runner is headless unless started with --debug (or PORT set): nothing
+# listens on localhost:8766, and with no API key it idles. So the next step is
+# always `buildd login`, unless a login already exists.
 
-# One checksum per published archive we may download, from the release checksums.txt.
-CBM_SHA256_LINUX_AMD64="e5cba4cad6ca8254a85f45041fc8a831908d7d5cb64f98fc3f8eb70a58671793"
-CBM_SHA256_LINUX_ARM64="e2804a20f5a6fc392af361525a232703e351b7d1aacb81b88eef806eec5959fa"
-CBM_SHA256_DARWIN_AMD64="2b193085410af3801634a522f4b17dcd6699695e015a068393c87817c1d260d4"
-CBM_SHA256_DARWIN_ARM64="9bd840dfb3ec7eaef4f310382057adaa5b0e904df883104d03ffcf39836afd07"
-
-cbm_verify_archive() { # <expected-sha> <file>
-  # macOS has shasum, not sha256sum.
-  if command -v sha256sum >/dev/null 2>&1; then
-    echo "$1  $2" | sha256sum -c
-  else
-    echo "$1  $2" | shasum -a 256 -c
+# Where the saved login came from, or nothing when there is none.
+buildd_login_source() {
+  if [ -n "${BUILDD_API_KEY:-}" ]; then
+    echo "BUILDD_API_KEY"
+  elif [ -f "$HOME/.buildd/config.json" ] && grep -Eq '"apiKey"[[:space:]]*:[[:space:]]*"[^"]+"' "$HOME/.buildd/config.json"; then
+    echo "~/.buildd/config.json"
   fi
 }
 
-cbm_provision() {
-  # Compare the installed version against the pin. A bare presence check would
-  # make every future version bump a silent no-op on workspaces that already
-  # have CBM.
-  local installed=""
-  if [ -x "$CBM_BINARY_PATH" ]; then
-    installed=$("$CBM_BINARY_PATH" --version 2>/dev/null | head -1 | awk '{print $NF}')
+# print_next_steps <login source, or ""> <1 if the background service is installed>
+print_next_steps() {
+  local login_source="$1" service="$2"
+  echo ""
+  if [ -n "$login_source" ]; then
+    echo -e "${GREEN}Already logged in (${login_source}), so skip 'buildd login'.${NC}"
+    echo ""
+  elif [ "$service" = "1" ]; then
+    echo -e "${YELLOW}The background service is installed, but it has no account yet, so it will not pick up work.${NC}"
+    echo ""
   fi
-
-  if [ "$installed" = "$CBM_VERSION" ]; then
-    echo -e "${GREEN}codebase-memory-mcp already at v${CBM_VERSION}${NC}"
-    return 0
+  echo "Next:"
+  echo '  exec $SHELL              reload your shell so buildd is on your PATH'
+  if [ -z "$login_source" ]; then
+    echo "  buildd login             connect this machine to your buildd account"
+    echo "                           (no browser on this machine? buildd login --device)"
   fi
-  if [ -n "$installed" ]; then
-    echo -e "${GREEN}Upgrading codebase-memory-mcp v${installed} -> v${CBM_VERSION}...${NC}"
+  if [ "$service" = "1" ] && [ -n "$login_source" ]; then
+    echo "  buildd service status    the runner is already running in the background"
+  elif [ "$service" = "1" ]; then
+    echo "  buildd service install   restart the background service with your account"
   else
-    echo -e "${GREEN}Installing codebase-memory-mcp v${CBM_VERSION}...${NC}"
+    echo "  buildd                   start the runner in this terminal"
+    echo "                           (or buildd service install to keep it running in the background)"
   fi
-
-  local os arch
-  case "$(uname -s)" in
-    Linux)  os="linux" ;;
-    Darwin) os="darwin" ;;
-    *)      os="" ;;
-  esac
-  case "$(uname -m)" in
-    x86_64|amd64)  arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    *)             arch="" ;;
-  esac
-  if [ -z "$os" ] || [ -z "$arch" ]; then
-    echo -e "${YELLOW}Unsupported platform $(uname -s)/$(uname -m) — skipping CBM install.${NC}"
-    echo -e "${YELLOW}  Install manually: https://github.com/DeusData/codebase-memory-mcp/releases/tag/v${CBM_VERSION}${NC}"
-    return 0
-  fi
-
-  # /opt/buildd/bin is outside HOME. Use it directly when writable (root, or a
-  # prepared image); otherwise sudo only after saying so, and never a password
-  # prompt nobody can answer. Skipping is fine: workers run without the graph.
-  local cbm_dir
-  cbm_dir=$(dirname "$CBM_BINARY_PATH")
-  CBM_SUDO=""
-  if [ "$(id -u)" -ne 0 ] && ! { mkdir -p "$cbm_dir" 2>/dev/null && [ -w "$cbm_dir" ]; }; then
-    if [ "${BUILDD_NO_SUDO:-}" = "1" ] || ! command -v sudo >/dev/null 2>&1; then
-      echo -e "${YELLOW}Skipping codebase-memory-mcp: ${cbm_dir} is not writable and sudo is unavailable or disabled (BUILDD_NO_SUDO=1).${NC}"
-      return 0
-    fi
-    if sudo -n true 2>/dev/null; then
-      echo -e "${YELLOW}Using sudo (passwordless) to install codebase-memory-mcp into ${cbm_dir}. Set BUILDD_NO_SUDO=1 to skip.${NC}"
-    elif [ -t 1 ] && [ -r /dev/tty ]; then
-      echo -e "${YELLOW}codebase-memory-mcp (the code graph tool) installs into ${cbm_dir}, which needs sudo and may ask for your password.${NC}"
-      local cbm_answer=""
-      printf "%s" "Use sudo for it now? The runner works without it. [y/N] "
-      read -r cbm_answer < /dev/tty || cbm_answer=""
-      case "$cbm_answer" in
-        [yY]*) ;;
-        *) echo "Skipped codebase-memory-mcp. Re-run the installer to add it later."; return 0 ;;
-      esac
-    else
-      echo -e "${YELLOW}Skipping codebase-memory-mcp: ${cbm_dir} needs sudo, which would prompt for a password with no terminal to answer.${NC}"
-      return 0
-    fi
-    CBM_SUDO="sudo"
-  fi
-
-  local sha_var sha tmp
-  sha_var="CBM_SHA256_$(echo "${os}_${arch}" | tr '[:lower:]' '[:upper:]')"
-  eval "sha=\$$sha_var"
-  if [ -z "$sha" ]; then
-    echo -e "${YELLOW}No checksum pinned for ${os}/${arch} — refusing to install.${NC}"
-    return 1
-  fi
-
-  tmp=$(mktemp -d) || return 1
-
-  if ! curl -fsSL \
-      "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CBM_VERSION}/codebase-memory-mcp-${os}-${arch}.tar.gz" \
-      -o "$tmp/cbm.tar.gz"; then
-    rm -rf "$tmp"; return 1
-  fi
-  if ! cbm_verify_archive "$sha" "$tmp/cbm.tar.gz"; then
-    rm -rf "$tmp"; return 1
-  fi
-  # Extract only the binary — the archive also ships its own install.sh, which
-  # rewrites ~/.claude.json and must never run here.
-  if ! tar -xzf "$tmp/cbm.tar.gz" -C "$tmp" codebase-memory-mcp; then
-    rm -rf "$tmp"; return 1
-  fi
-
-  # Retire a default-env daemon from the old build before the swap. This only
-  # reaches a daemon started without CBM_RUNTIME_DIR: worker daemons live under
-  # /tmp/cbm-<workerId>/run and are invisible here by design. They are
-  # short-lived, and `install -m 0755` unlinks the destination rather than
-  # writing through it, so a running worker keeps its own inode.
-  if [ -n "$installed" ]; then
-    "$CBM_BINARY_PATH" daemon stop >/dev/null 2>&1 || true
-  fi
-
-  if ! $CBM_SUDO mkdir -p "$(dirname "$CBM_BINARY_PATH")"; then rm -rf "$tmp"; return 1; fi
-  if ! $CBM_SUDO install -m 0755 "$tmp/codebase-memory-mcp" "$CBM_BINARY_PATH"; then
-    rm -rf "$tmp"; return 1
-  fi
-  rm -rf "$tmp"
-
-  local now
-  now=$("$CBM_BINARY_PATH" --version 2>/dev/null | head -1 | awk '{print $NF}')
-  if [ "$now" != "$CBM_VERSION" ]; then
-    echo -e "${YELLOW}Warning: installed CBM reports '${now}', expected '${CBM_VERSION}'.${NC}"
-    return 1
-  fi
-  echo -e "${GREEN}codebase-memory-mcp installed: ${now}${NC}"
-  return 0
+  echo ""
+  echo "Config is stored in ~/.buildd/config.json"
 }
-
-# A failed provision must not fail the installer: a Coder startup script gates on
-# install.sh's exit code, and the block is on the hot path now that it upgrades on
-# version mismatch instead of skipping whenever any binary is present.
-if ! cbm_provision; then
-  echo -e "${YELLOW}Warning: codebase-memory-mcp install/upgrade failed — continuing.${NC}"
-  echo -e "${YELLOW}  Workers will run without the code graph until this succeeds.${NC}"
-fi
-
+# --- next steps: end ---
 
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"
-echo ""
+
+LOGIN_SOURCE="$(buildd_login_source)"
 
 # Offer to register the launcher loop as a background service (launchd on
 # macOS, systemd --user on Linux) so it survives closing the terminal and
 # reboots — see apps/runner/README.md "Running as a service". --service
 # registers non-interactively (for scripted installs); otherwise, ask when
-# there's a real terminal to ask on. `curl | bash` makes fd 0 the script
-# itself, so the prompt reads from /dev/tty directly rather than stdin.
+# there's a real terminal to ask on and a login to run it with: a service
+# started with no account idles until it is reinstalled after `buildd login`.
+# `curl | bash` makes fd 0 the script itself, so the prompt reads from
+# /dev/tty directly rather than stdin.
 INSTALL_SERVICE=0
 if [ "$WANT_SERVICE" = "1" ]; then
   INSTALL_SERVICE=1
-elif [ -t 1 ] && [ -r /dev/tty ]; then
+elif [ -n "$LOGIN_SOURCE" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+  echo ""
   printf "%s" "Run buildd in the background so it survives closing this terminal and reboots? [Y/n] "
   read -r SERVICE_ANSWER < /dev/tty || SERVICE_ANSWER=""
   case "$SERVICE_ANSWER" in
@@ -618,21 +511,13 @@ elif [ -t 1 ] && [ -r /dev/tty ]; then
   esac
 fi
 
+SERVICE_INSTALLED=0
 if [ "$INSTALL_SERVICE" = "1" ]; then
-  "$BIN_DIR/buildd" service install || echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"
-else
-  echo "Run buildd to start:"
-  echo "  buildd"
-  echo ""
-  echo -e "${YELLOW}Tip: run 'buildd service install' any time to keep it running in the background.${NC}"
+  if "$BIN_DIR/buildd" service install; then
+    SERVICE_INSTALLED=1
+  else
+    echo -e "${YELLOW}Could not install the background service — run 'buildd service install' to retry, or 'buildd' to run it in the foreground.${NC}"
+  fi
 fi
 
-echo ""
-echo "Then open http://localhost:8766 to connect your account."
-echo ""
-echo "Config is stored in ~/.buildd/config.json"
-echo ""
-
-# Reload PATH for current session
-export PATH="$BIN_DIR:$PATH"
-echo -e "${YELLOW}Run 'source $SHELL_RC' or open a new terminal to use 'buildd' command${NC}"
+print_next_steps "$LOGIN_SOURCE" "$SERVICE_INSTALLED"

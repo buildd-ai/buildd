@@ -540,7 +540,6 @@ describe('POST /api/workspaces/[id]/config', () => {
       commitStyle: 'conventional',
       requiresPR: true,
       autoCreatePR: true,
-      autoMergeOnGreenCI: true,
       useClaudeMd: true,
       bypassPermissions: false,
       sandbox: {
@@ -633,13 +632,34 @@ describe('POST /api/workspaces/[id]/config', () => {
       expect(setArgs[0].gitConfig.sandbox.credentials).toEqual(credentials);
     });
 
-    it('persists defaultBackend and autoMergeOnGreenCI', async () => {
-      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { autoMergeOnGreenCI: true } });
+    it('persists defaultBackend', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
 
-      const res = await post({ ...formBody, defaultBackend: 'codex', autoMergeOnGreenCI: false });
+      const res = await post({ ...formBody, defaultBackend: 'codex' });
       expect(res.status).toBe(200);
       expect(setArgs[0].gitConfig.defaultBackend).toBe('codex');
-      expect(setArgs[0].gitConfig.autoMergeOnGreenCI).toBe(false);
+    });
+
+    // `autoMergeOnGreenCI` is inert — no merge gate reads it; the merge policy
+    // decides. A stale client still sending it must neither write it nor
+    // overwrite the stored value, and must not change the merge policy.
+    it('ignores autoMergeOnGreenCI: stored value and mergePolicy are untouched', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({
+        gitConfig: { autoMergeOnGreenCI: true, mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } },
+      });
+
+      const res = await post({ ...formBody, autoMergeOnGreenCI: false });
+      expect(res.status).toBe(200);
+      expect(setArgs[0].gitConfig.autoMergeOnGreenCI).toBe(true);
+      expect(setArgs[0].gitConfig.mergePolicy).toEqual({ tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } });
+    });
+
+    it('does not add autoMergeOnGreenCI to a workspace that never had it', async () => {
+      mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: {} });
+
+      const res = await post({ ...formBody, autoMergeOnGreenCI: false });
+      expect(res.status).toBe(200);
+      expect('autoMergeOnGreenCI' in setArgs[0].gitConfig).toBe(false);
     });
 
     it('clears defaultBackend when the form sends Default (field omitted)', async () => {

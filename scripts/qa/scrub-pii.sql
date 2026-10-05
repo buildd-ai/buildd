@@ -229,6 +229,8 @@ DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
+DELETE FROM agent_capability_decisions;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
 DELETE FROM task_dispatch_outbox;
 DELETE FROM watcher_events;

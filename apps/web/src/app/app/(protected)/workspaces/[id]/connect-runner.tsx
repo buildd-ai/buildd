@@ -1,6 +1,9 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import CopyBlock from '@/components/CopyBlock';
+import RunnerInstallSteps from '@/components/RunnerInstallSteps';
+import { RUNNER_SERVICE_INSTALL } from '@/lib/runner-install';
 
 interface LiveRunner {
   id: string;
@@ -163,37 +166,15 @@ export function ConnectRunnerSection({ workspaceId, runners }: ConnectRunnerSect
             <div>
               <div className="text-sm font-medium mb-2">Step 2: Install and run buildd</div>
               <p className="text-sm text-text-secondary mb-2">
-                On your server, install buildd and log in:
+                On your server, install buildd and start it:
               </p>
-              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`# Install buildd
-curl -fsSL https://raw.githubusercontent.com/buildd-ai/buildd/main/apps/runner/install.sh | bash
-
-# Log in (creates API key)
-buildd login --device
-
-# Start the worker (claims and runs tasks)
-buildd`}
-              </pre>
+              <RunnerInstallSteps />
             </div>
 
             <div>
-              <div className="text-sm font-medium mb-2">Or run it as a systemd service:</div>
-              <pre className="bg-surface-1 text-text-primary p-3 rounded text-xs overflow-x-auto">
-{`# /etc/systemd/system/buildd.service
-[Unit]
-Description=Buildd Worker
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-ExecStart=/home/ubuntu/.local/bin/buildd
-Restart=always
-
-[Install]
-WantedBy=multi-user.target`}
-              </pre>
+              <div className="text-sm font-medium mb-2">Keep it running in the background:</div>
+              <CopyBlock text={RUNNER_SERVICE_INSTALL} />
+              <p className="text-xs text-text-muted mt-2">Registers buildd as a background service (launchd on macOS, systemd on Linux) so it survives closing the terminal and reboots.</p>
             </div>
           </div>
         </div>

@@ -1,32 +1,39 @@
 /**
  * Model tier registry — resolves premium-plus/premium/standard/budget → concrete provider + model.
  *
+ * The resolver is the standalone model policy (`@builddai/ai-kit/policy`, via
+ * model-policy.ts); this module loads a team's registry rows as a policy
+ * document and adds buildd's default layer. There is no second resolver here.
+ *
  * Resolution chain (first match wins). S is the caller's surface: 'agent' for
- * claims, 'chat' for chat turns and inference calls. A row with surface=NULL
- * serves both surfaces.
- *   1. Workspace + surface row (team_id=X, workspace_id=Y, tier=T, surface=S)
- *   2. Workspace row           (team_id=X, workspace_id=Y, tier=T, surface=NULL)
- *   3. Team + surface row      (team_id=X, workspace_id=NULL, tier=T, surface=S)
- *   4. Team row                (team_id=X, workspace_id=NULL, tier=T, surface=NULL)
- *   5. Live catalog pick       (newest release in the tier's price band — see
- *                                model-catalog.ts; self-heals without a deploy)
- *   6. TIER_DEFAULTS           (code-level fallback, last resort — catalog empty/failed)
+ * claims (the policy's `coding`), 'chat' for chat turns and inference calls
+ * (`chat`). A row with surface=NULL serves both surfaces.
+ *   1. Workspace + surface row   ┐
+ *   2. Workspace row             │ the registry as a ModelPolicy: overrides,
+ *   3. Team + surface row        │ surfaces, tiers — the policy's precedence
+ *   4. Team row                  ┘
+ *   5. Remote policy service     (only when BUILDD_MODEL_POLICY_URL/TOKEN are
+ *                                 set; skipped while it is down)
+ *   6. Live catalog pick         (newest release in the tier's price band — see
+ *                                 model-catalog.ts; self-heals without a deploy)
+ *   7. Bundled fallback          (DEFAULT_MODEL_POLICY = TIER_DEFAULTS, last resort)
  *
  * Resolution happens at claim time so a registry update affects already-queued tasks
  * within the next 60-second cache window — no deploy needed. The catalog step
  * carries its own 24h cache (model-catalog-cache.ts), so it self-heals on the
  * same "no deploy" property without hitting OpenRouter on every claim.
  *
- * See docs/design/model-tiers.md for the full spec.
+ * See docs/design/model-tiers.md and docs/specs/model-policy.md.
  */
 
 import { db } from './db/client';
 import { modelTierRegistry } from './db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 export type { Tier, TierProvider, TierEntry, TierSurface } from './model-tier-defaults';
 export { TIER_DEFAULTS, TIERS, TIER_SURFACES } from './model-tier-defaults';
 import type { Tier, TierEntry, TierProvider, TierSurface } from './model-tier-defaults';
-import { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
+import { TIERS, bundledTierEntry } from './model-tier-defaults';
+import { resolveRegistryTier, resolveRemoteTier, tierEntryFromRegistry, tierEntryFromRemote, type TierPolicyMeta } from './model-policy';
 import { pickTierModel } from './model-catalog';
 import { getCachedOpenRouterCatalog } from './model-catalog-cache';
 import { makeCatalogServabilityCheck, type UnrecognizedModelReason } from './model-capability-requirements';
@@ -38,25 +45,19 @@ export function mapRouterAlias(alias: string): Tier {
   return 'standard'; // 'sonnet' and anything else → standard
 }
 
-// In-memory cache keyed by `${teamId}:${workspaceId ?? 'null'}:${surface ?? 'shared'}`.
-// Flushed on any registry write via invalidateTierCache.
+// In-memory cache of each team's registry rows (its policy document), keyed by
+// team. Flushed on any registry write via invalidateTierCache.
 const CACHE_TTL_MS = 60 * 1000; // 60 seconds
-const cache = new Map<string, { entries: Map<Tier, TierEntry>; loadedAt: number }>();
+const cache = new Map<string, { rows: RegistryRow[]; loadedAt: number }>();
 
-function cacheKey(teamId: string, workspaceId: string | null | undefined, surface: TierSurface | null): string {
-  return `${teamId}:${workspaceId ?? 'null'}:${surface ?? 'shared'}`;
-}
+type RegistryRow = typeof modelTierRegistry.$inferSelect;
 
 /**
- * Flush the in-memory cache for a team. Every key of the team goes, whatever
- * `workspaceId` says: a workspace key can hold a team row, so a team-row write
- * must flush it too.
+ * Flush the in-memory cache for a team. A team's rows are one document, so a
+ * workspace write and a team write flush the same entry.
  */
 export function invalidateTierCache(teamId: string, _workspaceId?: string | null): void {
-  const prefix = `${teamId}:`;
-  for (const key of cache.keys()) {
-    if (key.startsWith(prefix)) cache.delete(key);
-  }
+  cache.delete(teamId);
 }
 
 interface RegistryRowLike {
@@ -69,18 +70,18 @@ interface RegistryRowLike {
  * order workspace+surface → workspace → team+surface → team. `surface` null
  * reads the shared (NULL-surface) rows only: the view Settings edits when a
  * tier is not split.
+ *
+ * Answered by the policy resolver over the rows as a policy document, so the
+ * admin views and the runtime agree by construction.
  */
 export function pickRegistryRow<R extends RegistryRowLike>(
   rows: readonly R[],
   workspaceId: string | null | undefined,
   surface: TierSurface | null,
 ): R | undefined {
-  const at = (ws: string | null, s: TierSurface | null) =>
-    rows.find(r => r.workspaceId === ws && (r.surface ?? null) === s);
-  return (workspaceId && surface ? at(workspaceId, surface) : undefined)
-    ?? (workspaceId ? at(workspaceId, null) : undefined)
-    ?? (surface ? at(null, surface) : undefined)
-    ?? at(null, null);
+  // The rows are one tier's; the tier only keys the document.
+  const tagged = rows.map((r) => ({ ...r, tier: 'standard' as const, __row: r }));
+  return resolveRegistryTier(tagged, 'standard', workspaceId, surface)?.row.__row;
 }
 
 /**
@@ -142,8 +143,8 @@ async function resolveFromCatalog(
 /**
  * Resolve the effective tier entry for a given team, optional workspace and
  * surface. Returns the entry + source annotation ('workspace' | 'team' |
- * 'catalog' | 'default'); `surface` is set on the entry when a surface row
- * served it.
+ * 'policy' | 'catalog' | 'default'); `surface` is set on the entry when a
+ * surface row served it, and `policy` names the policy decision behind it.
  *
  * Every caller names its surface: claims pass 'agent', chat and inference
  * calls pass 'chat'. `null` reads the shared rows only.
@@ -158,69 +159,59 @@ async function resolveFromCatalog(
  */
 export async function resolveTierEntry(
   tier: Tier,
-  teamId: string,
+  teamId: string | null,
   workspaceId: string | null | undefined,
   surface: TierSurface | null,
   runnerCliVersion?: string | null,
 ): Promise<TierEntry> {
-  const key = cacheKey(teamId, workspaceId, surface);
-  const now = Date.now();
-
-  // Check cache
-  const cached = cache.get(key);
-  if (cached && now - cached.loadedAt < CACHE_TTL_MS) {
-    const entry = cached.entries.get(tier);
-    if (entry) return entry;
+  // 1–4: the team's registry as a policy document. No team, no registry: the
+  // default layer still answers, so no caller needs a fallback of its own.
+  const rows = teamId ? await loadTeamRows(teamId) : null;
+  if (rows) {
+    const hit = resolveRegistryTier(rows, tier, workspaceId, surface);
+    if (hit) return tierEntryFromRegistry(hit);
   }
 
-  try {
-    // Every row for the tier (workspace, team, each surface) in one query.
-    const rows = await db.query.modelTierRegistry.findMany({
-      where: and(
-        eq(modelTierRegistry.teamId, teamId),
-        eq(modelTierRegistry.tier, tier),
-      ),
-    });
+  // 5: the policy service, for a tier the registry leaves unset. Its answer is
+  // the default layer; an admin's row above always wins.
+  const remote = await resolveRemoteTier(tier, workspaceId, surface);
+  if (remote) return tierEntryFromRemote(remote);
 
-    const row = pickRegistryRow(rows, workspaceId, surface);
-
-    if (row) {
-      const entry: TierEntry = {
-        provider: row.provider as TierProvider,
-        model: row.model,
-        source: row.workspaceId ? 'workspace' : 'team',
-        ...(row.surface ? { surface: row.surface as TierSurface } : {}),
-        ...(row.defaultEffort ? { defaultEffort: row.defaultEffort as TierEntry['defaultEffort'] } : {}),
-        ...(row.defaultMaxTurns != null ? { defaultMaxTurns: row.defaultMaxTurns } : {}),
-      };
-
-      // Update cache
-      let cacheEntry = cache.get(key);
-      if (!cacheEntry || now - cacheEntry.loadedAt >= CACHE_TTL_MS) {
-        cacheEntry = { entries: new Map(), loadedAt: now };
-        cache.set(key, cacheEntry);
-      }
-      cacheEntry.entries.set(tier, entry);
-      return entry;
-    }
-  } catch {
-    // DB unavailable — fall through to the catalog, then defaults.
-  }
-
-  // No explicit registry row (or the DB was unreachable): try the live
+  // 6: no explicit registry row (or the DB was unreachable): try the live
   // catalog before the hand-maintained default. A same-band release is
   // adopted without a registry write only if it was released no later than
   // the newest model in MODEL_MIN_CLI_VERSION; anything newer needs a floor
   // row there (a code change, so a deploy) first — see resolveFromCatalog.
-  // Deliberately NOT cached in `cache` above — the pick can depend on the
-  // claiming runner's CLI version, and `cache` is keyed by team:workspace:surface
-  // only, so caching it there would serve one runner's pick to another.
-  // getCachedOpenRouterCatalog() already caches the expensive part (the
-  // network fetch); pickTierModel is a cheap in-memory scan.
+  // Not cached per team — the pick can depend on the claiming runner's CLI
+  // version. getCachedOpenRouterCatalog() already caches the expensive part
+  // (the network fetch); pickTierModel is a cheap in-memory scan.
+  // The catalog refines the policy's bundled layer, so it reports as one.
   const catalogEntry = await resolveFromCatalog(tier, runnerCliVersion);
-  if (catalogEntry) return catalogEntry;
+  if (catalogEntry) return { ...catalogEntry, policy: bundledMeta('buildd-catalog', surface) };
 
-  return { ...TIER_DEFAULTS[tier] };
+  // 7: the policy's bundled fallback.
+  return { ...bundledTierEntry(tier, surface ?? 'agent'), policy: bundledMeta('bundled', surface) };
+}
+
+function bundledMeta(version: string, surface: TierSurface | null): TierPolicyMeta {
+  return { version, planId: null, source: 'bundled', surface: surface === 'chat' ? 'chat' : 'coding' };
+}
+
+/** One team's registry rows, cached; null when the DB is unreachable. */
+async function loadTeamRows(teamId: string): Promise<RegistryRow[] | null> {
+  const now = Date.now();
+  const cached = cache.get(teamId);
+  if (cached && now - cached.loadedAt < CACHE_TTL_MS) return cached.rows;
+  try {
+    const rows = await db.query.modelTierRegistry.findMany({
+      where: eq(modelTierRegistry.teamId, teamId),
+    });
+    cache.set(teamId, { rows, loadedAt: now });
+    return rows;
+  } catch {
+    // DB unavailable — fall through to the default layer.
+    return null;
+  }
 }
 
 /**
@@ -228,7 +219,7 @@ export async function resolveTierEntry(
  * Used in contexts where async isn't possible (e.g. runner config fallback).
  */
 export function resolveTierEntrySync(tier: Tier): TierEntry {
-  return { ...TIER_DEFAULTS[tier] };
+  return bundledTierEntry(tier);
 }
 
 /**
