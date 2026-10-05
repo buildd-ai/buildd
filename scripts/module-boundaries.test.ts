@@ -108,6 +108,17 @@ describe('seams that have shipped stay cut', () => {
     expect(imported.filter(([, mod]) => mod === 'releases').map(([f]) => f)).toEqual([]);
   });
 
+  test('the GitHub webhook keeps only the mission base guard from the missions module', () => {
+    // The guard repairs a task PR's base when it leaves the mission integration
+    // branch: a review-gate enforcement, so it stays in core (design: module
+    // gates move into core intact). Every other mission reaction is a subscriber.
+    const imported = Object.entries(current.backend['apps/web/src/app/api/github/webhook/route.ts'] ?? {});
+    expect(imported.filter(([, mod]) => mod === 'missions').map(([f]) => f).sort()).toEqual([
+      'apps/web/src/lib/mission-base-guard.ts',
+      'packages/core/mission-integration.ts',
+    ]);
+  });
+
   test('no core file writes the subscriptions ledger directly; it is a notifications subscriber', () => {
     const writers = pairs(current, 'backend').filter(p => p.endsWith('-> apps/web/src/lib/subscriptions.ts'));
     expect(writers).toEqual([]);

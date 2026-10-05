@@ -585,6 +585,24 @@ mock.module('@/lib/surface-ordering', () => ({
 const mockCarryForwardApproval = mock(async (_p: any): Promise<any> => ({ carried: false, reason: 'test' }));
 mock.module('@/lib/approval-carry-forward', () => ({ carryForwardApprovalIfUnchanged: mockCarryForwardApproval }));
 
+// The mission loop-on-merge and integration-PR helpers, recorded in call order
+// for the missions characterization at the end of this file. Real modules are
+// spread in so other importers keep every export; each stub defaults to the
+// no-op answer the real helper gives when there is nothing to do.
+import * as realLoopWebhook from '@/lib/loop-webhook';
+import * as realMissionPr from '@/lib/mission-pr';
+const missionLog: Array<[string, ...unknown[]]> = [];
+let missionPrOpenResult: any = { ok: false, reason: 'work_incomplete' };
+const mockEvaluateAndAdvanceLoopOnMerge = mock(async (...a: unknown[]) => { missionLog.push(['evaluateAndAdvanceLoopOnMerge', ...a]); });
+const mockMaybeOpenMissionIntegrationPr = mock(async (...a: unknown[]) => { missionLog.push(['maybeOpenMissionIntegrationPr', ...a]); return missionPrOpenResult; });
+const mockNoteMissionPrOpenFailure = mock(async (...a: unknown[]) => { missionLog.push(['noteMissionPrOpenFailure', ...a]); });
+mock.module('@/lib/loop-webhook', () => ({ ...realLoopWebhook, evaluateAndAdvanceLoopOnMerge: mockEvaluateAndAdvanceLoopOnMerge }));
+mock.module('@/lib/mission-pr', () => ({
+  ...realMissionPr,
+  maybeOpenMissionIntegrationPr: mockMaybeOpenMissionIntegrationPr,
+  noteMissionPrOpenFailure: mockNoteMissionPrOpenFailure,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
@@ -6274,5 +6292,123 @@ describe('webhook → releases (characterization)', () => {
     const res = await POST(createWebhookRequest('pull_request', mergedPr()));
     expect(res.status).toBe(200);
     expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Characterization: what the webhook does for missions ─────────────────────
+// Pins, in order and with arguments, the mission reactions to a task PR's
+// merge or close: the loop-on-merge advance and the integration-PR open on
+// every merged delivery; the mission wake and the dependency unblock once per
+// merge, after the status transition; the surface-intent settle on any close.
+// The missions module moves behind emit(); this block must stay green.
+describe('webhook → missions (characterization)', () => {
+  const order = () => missionLog.map(c => c[0]);
+  beforeEach(() => {
+    resetAll();
+    missionLog.length = 0;
+    missionPrOpenResult = { ok: false, reason: 'work_incomplete' };
+    mockEvaluateAndAdvanceLoopOnMerge.mockClear();
+    mockMaybeOpenMissionIntegrationPr.mockClear();
+    mockNoteMissionPrOpenFailure.mockClear();
+    mockCheckDependsOnResolved.mockImplementation(async (...a: any[]) => { missionLog.push(['checkDependsOnResolved', ...a]); });
+    mockResolveCompletedTask.mockImplementation(async (...a: any[]) => { missionLog.push(['resolveCompletedTask', ...a]); });
+    mockWakeMissionAfterResponse.mockImplementation((...a: any[]) => { missionLog.push(['wakeMissionAfterResponse', ...a]); });
+    mockCheckAndUnblockDependentMissions.mockImplementation(async (...a: any[]) => { missionLog.push(['checkAndUnblockDependentMissions', ...a]); return []; });
+    mockSettleSurfaceIntentsOnClose.mockImplementation(async (...a: any[]) => { missionLog.push(['settleSurfaceIntentsOnClose', ...a]); return { woke: [] }; });
+    mockNotifyMissionPrReady.mockImplementation(async (...a: any[]) => { missionLog.push(['notifyMissionPrReady', ...a]); });
+  });
+
+  function prEvent(overrides: Record<string, any> = {}) {
+    return {
+      action: 'closed',
+      pull_request: {
+        number: 91, merged: true, draft: false, title: 'feat: x', body: null,
+        head: { ref: 'buildd/abcdef12-feat-x', sha: 'sha-head-91' },
+        base: { ref: 'mission/x-1234abcd', sha: 'sha-base-91' },
+        merge_commit_sha: 'sha-merge-91',
+        html_url: 'https://github.com/test-org/test-repo/pull/91',
+        ...overrides,
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+  }
+  function worker(task: Record<string, any> = {}, w: Record<string, any> = {}) {
+    return {
+      id: 'w-91', workspaceId: 'ws1', taskId: 't-91', prNumber: 91, mergedAt: null,
+      task: {
+        id: 't-91', status: 'in_progress', taskClass: 'attempt', workspaceId: 'ws1',
+        release: 'false', title: 'X', missionId: 'm-91', loopState: null, ...task,
+      },
+      ...w,
+    };
+  }
+  const merged = () => order().filter(n => n !== 'settleSurfaceIntentsOnClose');
+
+  it('first merge of an attempt task: dependents, loop, integration PR, then resolve, wake and unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    const res = await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(res.status).toBe(200);
+    expect(merged()).toEqual([
+      'checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr',
+      'resolveCompletedTask', 'wakeMissionAfterResponse', 'checkAndUnblockDependentMissions',
+    ]);
+    const call = (n: string) => missionLog.find(c => c[0] === n)!.slice(1);
+    expect(call('evaluateAndAdvanceLoopOnMerge')).toEqual(['w-91', 't-91', 'ws1']);
+    expect(call('maybeOpenMissionIntegrationPr')).toEqual(['m-91', { assumeCompletedTaskIds: ['t-91'] }]);
+    expect(call('wakeMissionAfterResponse')).toEqual(['m-91', 'pr_merged']);
+    expect(call('checkAndUnblockDependentMissions')).toEqual(['m-91', 'merged']);
+    expect(call('settleSurfaceIntentsOnClose')).toEqual([{ workspaceId: 'ws1', prNumber: 91 }]);
+  });
+
+  it('first merge of a work task: no wake on the transition, still the unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ taskClass: 'work' }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual([
+      'checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr',
+      'resolveCompletedTask', 'checkAndUnblockDependentMissions',
+    ]);
+  });
+
+  it('first merge of an already-completed task: no resolve; the wake, then the unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ status: 'completed', taskClass: 'work' }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual([
+      'checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr',
+      'wakeMissionAfterResponse', 'checkAndUnblockDependentMissions',
+    ]);
+  });
+
+  it('a redelivered merge: loop and integration PR again; no wake, no unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ status: 'completed' }, { mergedAt: new Date() }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual(['checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'maybeOpenMissionIntegrationPr']);
+  });
+
+  it('a task with no mission: no integration PR, wake or unblock', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker({ missionId: null }));
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(merged()).toEqual(['checkDependsOnResolved', 'evaluateAndAdvanceLoopOnMerge', 'resolveCompletedTask']);
+  });
+
+  it('an integration PR that should have opened and did not leaves a mission note', async () => {
+    missionPrOpenResult = { ok: false, reason: 'branch_missing', detail: 'gone' };
+    mockWorkersFindFirst.mockReturnValue(worker());
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(missionLog.find(c => c[0] === 'noteMissionPrOpenFailure')!.slice(1)).toEqual(['m-91', missionPrOpenResult]);
+  });
+
+  it('a PR closed unmerged: the surface settle only', async () => {
+    mockWorkersFindFirst.mockReturnValue(worker());
+    await POST(createWebhookRequest('pull_request', prEvent({ merged: false })));
+    expect(order()).toEqual(['settleSurfaceIntentsOnClose']);
+  });
+
+  it('a branch-matched merge with no worker: the unblock, then the resolve', async () => {
+    mockWorkersFindFirst.mockReturnValue(null);
+    mockTasksFindFirst.mockReturnValue({ id: 'abcdef12-0000-4000-8000-000000000000', status: 'in_progress', missionId: 'm-91', workspaceId: 'ws1' } as any);
+    await POST(createWebhookRequest('pull_request', prEvent()));
+    expect(order()).toEqual(['checkAndUnblockDependentMissions', 'resolveCompletedTask']);
+    expect(missionLog[0]).toEqual(['checkAndUnblockDependentMissions', 'm-91', 'merged']);
   });
 });
