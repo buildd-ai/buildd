@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { learnOauthCapacity, oauthBudgetPressure, oauthParallelismCap } from '@buildd/core/oauth-budget';
 import { groupOauthAccountsBySeatId, computeBurnRateConfidence, oauthEpisodeConfidence, computeMissionBudgetForecast } from './budget-forecast';
 
 describe('groupOauthAccountsBySeatId', () => {
@@ -92,6 +93,38 @@ describe('computeBurnRateConfidence', () => {
 });
 
 describe('oauthEpisodeConfidence', () => {
+  it('maps contradictory learned capacity to low forecast confidence even at saturated pressure', () => {
+    const now = new Date('2026-09-01T12:00:00Z');
+    const observedAt = new Date('2026-09-01T11:00:00Z');
+    const episodes = [10, 10, 1000, 1000, 1000].map(turns => ({
+      exhaustedAt: observedAt,
+      workerCount: 10,
+      turns,
+      inputTokens: 0,
+      outputTokens: 0,
+    }));
+    const capacity = learnOauthCapacity(episodes);
+    const pressure = oauthBudgetPressure({
+      capacity,
+      usage: { workerCount: 1, turns: 100, tokens: 0, weightedTurns: 100, weightedTokens: 0 },
+      now,
+      observedAt,
+      windowStartedAt: observedAt,
+    });
+
+    // Five episodes alone cannot make a widely dispersed p25 floor reliable.
+    expect(capacity.samples).toBe(5);
+    expect(capacity.turns).toBe(10);
+    expect(pressure.limiter).toBe('turns');
+    expect(pressure.pct).toBe(1);
+    expect(oauthEpisodeConfidence(pressure.confidence)).toBe('low');
+    expect(oauthParallelismCap({ pressure, baseMax: 10 })).toBeNull();
+
+    // The same sample count with consistent capacity still earns confidence.
+    const stable = learnOauthCapacity(episodes.map(episode => ({ ...episode, turns: 1000 })));
+    expect(oauthEpisodeConfidence(stable.confidence)).toBe('high');
+  });
+
   it('returns null for none — learning state, no calibration yet', () => {
     expect(oauthEpisodeConfidence('none')).toBeNull();
   });

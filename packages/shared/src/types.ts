@@ -1511,6 +1511,17 @@ export interface ClaimDiagnostics {
     routing_paused?: number;
     /** Task already had a live worker when the atomic insert ran (dup guard). */
     duplicate_worker?: number;
+    /**
+     * Retry attempt cancelled instead of claimed: another fix attempt in its
+     * retry family is already open (one open retry per subject).
+     */
+    sibling_retry_open?: number;
+    /**
+     * Claim planner in `apply` mode ordered this task behind a picked, in-flight
+     * or open-PR node it would collide with. Replaces the per-poll
+     * path_overlap / advisory_manifest deferral for that task.
+     */
+    ordered_behind?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
@@ -3367,7 +3378,13 @@ export interface ManifestCoverageCounts {
   /** Fraction in [0, 1]; null for an empty population. */
   concreteShare: number | null;
 }
+export interface CoordinationDecisionCapability {
+  workspaceId: string;
+  capability: string;
+  status: 'enabled' | 'capability_disabled';
+}
 export interface ManifestCoverageStats extends CoordinationMetricFilters, ManifestCoverageCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   groups: Array<ManifestCoverageCounts & { workspaceId: string; missionId: string | null; kind: string | null }>;
 }
 export interface PathClaimCallCounts {
@@ -3377,6 +3394,7 @@ export interface PathClaimCallCounts {
   rejected: number;
 }
 export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCallCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   calls: number;
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
@@ -3384,6 +3402,55 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+}
+/**
+ * Aggregate counts over the orchestration decision ledger
+ * (`orchestration_decisions`, `orchestration_manifest_predictions`) — the
+ * DB-free answer to "is this decision shadow collecting evidence?".
+ * Served by `GET /api/stats/coordination?metric=orchestrationDecisions`.
+ */
+export interface OrchestrationDecisionCounts {
+  total: number;
+  applied: number;
+  suggested: number;
+  fallback: number;
+  /** Rows whose task has an `orchestration_touch_labels` row (an outcome label). */
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  capability: string;
+  decisionId: string;
+  fingerprint: string;
+  candidatePolicyVersion: string;
+  experimentArm: string;
+  mode: string;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+export interface OrchestrationPredictionCounts {
+  total: number;
+  complete: number;
+  unknownScope: number;
+  allApplied: number;
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
+  decisionCapabilities: CoordinationDecisionCapability[];
+  decisions: OrchestrationDecisionCounts & {
+    firstAt: string | null;
+    lastAt: string | null;
+    byGroup: OrchestrationDecisionGroup[];
+    /** `day` is a UTC calendar date (YYYY-MM-DD). */
+    byDay: Array<OrchestrationDecisionCounts & { day: string; capability: string }>;
+    byReason: Array<{ capability: string; status: string; reason: string | null; total: number }>;
+  };
+  manifestPredictions: OrchestrationPredictionCounts & {
+    byDay: Array<OrchestrationPredictionCounts & { day: string }>;
+    byStopReason: Array<{ stopReason: string; total: number }>;
+  };
+  coverage: { note: string };
 }
 
 // ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
@@ -3427,6 +3494,12 @@ export interface WorkspaceOnboardingConfig {
  * only through `resolveScoutExtension` (packages/core/scout-capabilities.ts).
  */
 export interface WorkspaceQualityScoutConfig {
+  /**
+   * `off` (default when absent): no runs. `shadow`: run and record, never file.
+   * `propose`: apply the deduped follow-up policy. No blocking mode exists.
+   * Read only through `resolveScoutMode` (packages/core/quality-scout/ledger.ts).
+   */
+  mode?: 'off' | 'shadow' | 'propose';
   /** Overrides the detected test command as Scout's verification command. */
   verificationCommand?: string;
   /** Where probes may run. `ephemeral: true` is the only thing that permits writes. */

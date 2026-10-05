@@ -341,6 +341,16 @@ export interface WorkspaceGitConfig {
   // else runner). A criterion's own `grader` wins; absent here means 'auto'.
   criteriaGrader?: 'auto' | 'api' | 'runner';
 
+  // Claim-time batch planner (packages/core/claim-planner.ts) in the claim
+  // route: 'off' (absent) = the legacy first-eligible walk, untouched;
+  // 'record' = plan beside the legacy picks and write both to the gate ledger;
+  // 'apply' = claim in plan order. Read only through resolveClaimPlannerConfig()
+  // (apps/web/src/app/api/workers/claim/claim-plan-input.ts).
+  claimPlanner?: 'off' | 'record' | 'apply';
+  // Planner thresholds. Absent = declared/observed scope only: predictions
+  // are ignored and the no-scope mission mutex stays.
+  claimPlannerThresholds?: { thetaOrder: number; thetaSoft: number; thetaIdle: number } | null;
+
   // Where the visual auditor's pages come from: 'sandbox' (absent = today's
   // in-worker boot), 'vercel-preview', or 'auto'. Read only through
   // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
@@ -5010,6 +5020,30 @@ export type NewOrchestrationTouchLabel = typeof orchestrationTouchLabels.$inferI
 // pick's dynamic-definition fingerprint and offered-index map, the selection,
 // truncation/unknown-scope markers, candidate coverage and the same-task
 // baselines. It never feeds tasks.path_manifest or dependsOn.
+/**
+ * A task's expected size (packages/core/task-size-estimate.ts): the median
+ * files/minutes of its completed neighbours, or — with fewer than `k` of
+ * those (jev-scheduling §3's "coarser bucket fallback") — a Jev S/M/L bucket
+ * mapped to representative figures (packages/core/task-size-bucket-decision.ts).
+ */
+export type ExpectedTaskSize =
+  | {
+      files: number;
+      minutes: number;
+      source: 'neighbours';
+      /** Neighbours required. */
+      k: number;
+      /** Neighbours with a size that were used. */
+      n: number;
+    }
+  | {
+      files: number;
+      minutes: number;
+      source: 'jev';
+      bucket: 'S' | 'M' | 'L';
+      confidence: number;
+    };
+
 export const orchestrationManifestPredictions = pgTable('orchestration_manifest_predictions', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
@@ -5039,6 +5073,13 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
   pickCap: integer('pick_cap').notNull(),
   regexPaths: jsonb('regex_paths').$type<string[]>().notNull(),
   neighbourUnionPaths: jsonb('neighbour_union_paths').$type<string[]>().notNull(),
+  // Confidence the selected set is right (jev-scheduling §3): the product of
+  // the pick confidences, recalibrated later by the readout. Null when there
+  // were no picks or any pick carried no confidence.
+  setConfidence: real('set_confidence'),
+  // { files, minutes, source, k, n } from completed neighbours
+  // (task-size-estimate.ts). Null when fewer than k neighbours had a size.
+  expectedSize: jsonb('expected_size').$type<ExpectedTaskSize>(),
   latencyMs: integer('latency_ms').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -5049,5 +5090,158 @@ export const orchestrationManifestPredictions = pgTable('orchestration_manifest_
 export type OrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferSelect;
 export type NewOrchestrationManifestPrediction = typeof orchestrationManifestPredictions.$inferInsert;
 
+// Stored Jev "is this overlap real" answers (jev-scheduling.md §5,
+// packages/core/orchestration-overlap-decision.ts): one row per task pair per
+// decision, asked once from the creation-manifest prediction hook for a new
+// task's soft pairs (predicted scope overlapping a sibling's declared or
+// predicted scope). Read by the claim-time planner (`planClaimBatch`'s
+// `overlapAnswers`) keyed by `overlapPairKey(a, b)`; it only ever replaces a
+// SOFT weight there and never creates or removes a hard edge — it is not
+// consulted by, and never writes, `tasks.path_manifest` or `dependsOn`.
+export const orchestrationOverlapAnswers = pgTable('orchestration_overlap_answers', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id'),
+  // Order-independent pair identity: `overlapPairKey(taskAId, taskBId)` (packages/core/claim-planner.ts).
+  pairKey: text('pair_key').notNull(),
+  taskAId: uuid('task_a_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  taskBId: uuid('task_b_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  decisionId: text('decision_id').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  answer: text('answer').notNull().$type<'REAL' | 'NOT_REAL'>(),
+  confidence: real('confidence').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  // One stored answer per pair per decision; a later ask for the same pair replaces it.
+  pairDecisionIdx: uniqueIndex('orchestration_overlap_answers_pair_decision_idx').on(t.workspaceId, t.pairKey, t.decisionId),
+  workspaceCreatedIdx: index('orchestration_overlap_answers_workspace_created_idx').on(t.workspaceId, t.createdAt),
+}));
+
+export type OrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferSelect;
+export type NewOrchestrationOverlapAnswer = typeof orchestrationOverlapAnswers.$inferInsert;
+
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
+
+/**
+ * Quality Scout run ledger (artifact workspace-quality-scout-spec §3, §12).
+ * One row per Scout run. `candidate_sha` is the exact commit the probes
+ * exercised — staleness is "a newer SHA exists on candidate_ref", and the
+ * prior run pointer answers "what changed since". Results themselves are
+ * shared-substrate VerificationResults on the probe rows.
+ *
+ * Advisory only (v1): nothing reads these tables to block a merge or release.
+ */
+export const qualityScoutRuns = pgTable('quality_scout_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  trigger: text('trigger').notNull().$type<import('../quality-scout/types').ScoutRunTrigger>(),
+  // The mode in effect at start; a later config change never reinterprets it.
+  mode: text('mode').notNull().$type<import('../quality-scout/types').ScoutRun['mode']>(),
+  status: text('status').notNull().default('running').$type<import('../quality-scout/types').ScoutRunStatus>(),
+  candidateRef: text('candidate_ref').notNull(),
+  candidateSha: text('candidate_sha').notNull(),
+  // Plain uuid, not an FK: pruning an old run must not rewrite a newer one.
+  priorRunId: uuid('prior_run_id'),
+  priorSha: text('prior_sha'),
+  budget: jsonb('budget').notNull().$type<import('../quality-scout/types').ScoutBudget>(),
+  policyVersion: text('policy_version').notNull(),
+  candidatesGenerated: integer('candidates_generated'),
+  probesSelected: integer('probes_selected'),
+  probesSkipped: integer('probes_skipped'),
+  // { total, pass, fail, inconclusive, unsupported } — written when the run ends.
+  verdicts: jsonb('verdicts').$type<import('../quality-scout/types').ScoutRunTotals['verdicts'] | null>(),
+  costUsd: decimal('cost_usd', { precision: 10, scale: 4 }),
+  error: text('error'),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceCreatedIdx: index('quality_scout_runs_workspace_created_idx').on(t.workspaceId, t.createdAt),
+  workspaceRefIdx: index('quality_scout_runs_workspace_ref_idx').on(t.workspaceId, t.candidateRef, t.createdAt),
+}));
+
+export type QualityScoutRun = typeof qualityScoutRuns.$inferSelect;
+export type NewQualityScoutRun = typeof qualityScoutRuns.$inferInsert;
+
+/**
+ * Every candidate a run considered — selected or skipped — with the probe
+ * contract frozen before execution (spec §6) and, once run, its substrate
+ * result. `verdict` and `signature` are lifted out of `result` for queries.
+ */
+export const qualityScoutProbes = pgTable('quality_scout_probes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').references(() => qualityScoutRuns.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  candidateId: text('candidate_id').notNull(),
+  family: text('family').notNull().$type<import('../quality-scout/types').ScoutProbeFamily>(),
+  probeKind: text('probe_kind').notNull(),
+  title: text('title').notNull(),
+  invariant: text('invariant').notNull(),
+  sourceSignals: jsonb('source_signals').notNull().$type<import('../quality-scout/types').ScoutSourceSignal[]>(),
+  preconditions: jsonb('preconditions').notNull().$type<string[]>(),
+  executor: text('executor'),
+  estimatedCost: text('estimated_cost').notNull().$type<import('../quality-scout/types').ScoutCost>(),
+  risk: text('risk').notNull().$type<import('../verification-check').VerificationSeverity>(),
+  mutates: boolean('mutates').notNull().default(false),
+  evidenceRequirements: jsonb('evidence_requirements').notNull().$type<import('../verification-check').EvidenceRequirement[]>(),
+  unsupportedReason: text('unsupported_reason'),
+  selection: jsonb('selection').notNull().$type<import('../quality-scout/types').ScoutProbeSelection>(),
+  verdict: text('verdict').$type<import('../verification-check').VerificationVerdict>(),
+  signature: text('signature'),
+  result: jsonb('result').$type<import('../verification-check').VerificationResult | null>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  runCandidateIdx: uniqueIndex('quality_scout_probes_run_candidate_idx').on(t.runId, t.candidateId),
+  workspaceSignatureIdx: index('quality_scout_probes_workspace_signature_idx').on(t.workspaceId, t.signature),
+}));
+
+export type QualityScoutProbe = typeof qualityScoutProbes.$inferSelect;
+export type NewQualityScoutProbe = typeof qualityScoutProbes.$inferInsert;
+
+/**
+ * One deduped Scout defect per (workspace, signature), across runs (spec §9–
+ * §10). Only a `fail` creates or recurs a row; inconclusive/unsupported never
+ * do, and only a `pass` of the same check resolves one. Writers merge through
+ * `applyScoutFailure` and compare-and-set on `occurrence_count`.
+ */
+export const qualityScoutFindings = pgTable('quality_scout_findings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  signature: text('signature').notNull(),
+  recurrenceKey: text('recurrence_key').notNull(),
+  checkId: text('check_id').notNull(),
+  family: text('family').notNull().$type<import('../quality-scout/types').ScoutProbeFamily>(),
+  invariant: text('invariant').notNull(),
+  severity: text('severity').notNull().$type<import('../verification-check').VerificationSeverity>(),
+  confidence: real('confidence'),
+  observed: text('observed'),
+  evidenceRefs: jsonb('evidence_refs').notNull().$type<import('../verification-check').VerificationEvidenceRef[]>(),
+  reproducibility: text('reproducibility').notNull().default('unknown').$type<import('../quality-scout/types').ScoutReproducibility>(),
+  state: text('state').notNull().default('open').$type<import('../quality-scout/types').ScoutFindingState>(),
+  actionState: text('action_state').notNull().default('none').$type<import('../quality-scout/types').ScoutActionState>(),
+  actionTaskId: uuid('action_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  occurrenceCount: integer('occurrence_count').notNull().default(1),
+  regressionCount: integer('regression_count').notNull().default(0),
+  firstSeenRunId: uuid('first_seen_run_id').notNull(),
+  firstSeenSha: text('first_seen_sha').notNull(),
+  lastSeenRunId: uuid('last_seen_run_id').notNull(),
+  lastSeenSha: text('last_seen_sha').notNull(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  resolvedRunId: uuid('resolved_run_id'),
+  resolvedSha: text('resolved_sha'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  workspaceSignatureIdx: uniqueIndex('quality_scout_findings_workspace_signature_idx').on(t.workspaceId, t.signature),
+  workspaceCheckIdx: index('quality_scout_findings_workspace_check_idx').on(t.workspaceId, t.checkId, t.state),
+  workspaceStateIdx: index('quality_scout_findings_workspace_state_idx').on(t.workspaceId, t.state, t.lastSeenAt),
+}));
+
+export type QualityScoutFinding = typeof qualityScoutFindings.$inferSelect;
+export type NewQualityScoutFinding = typeof qualityScoutFindings.$inferInsert;

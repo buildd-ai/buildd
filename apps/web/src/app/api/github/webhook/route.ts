@@ -49,7 +49,7 @@ import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { buildWorkflowRunOutcome, isConfiguredReleaseRun, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
-import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
+import { reconcileSubjectEvent } from '@/lib/supersession';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
@@ -71,7 +71,6 @@ import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { guardReviewVerdict, classifyMergeAgainstReview } from '@/lib/review-verdict-gate';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
-import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { recordPrReverts } from '@/lib/pr-reverts';
 import { isTerminalPrLifecycle } from '@/lib/dep-gate-contract';
 import { detectPrSupersession } from '@/lib/pr-supersession-detect';
@@ -1130,8 +1129,6 @@ async function handlePullRequestEvent(event: {
         prNumber: pr.number,
         mergedHeadSha: pr.head.sha,
         mergeIsNew,
-        installationId: event.installation?.id ?? null,
-        repoFullName: repository.full_name,
       });
     } else {
       // PR closed without merge (abandoned/superseded)
@@ -1194,11 +1191,18 @@ async function handlePullRequestEvent(event: {
       }
     }
 
-    // Reconciliation sweep: update subject state for tasks anchored to this PR.
-    // Best-effort — sweep failure must never fail the webhook response.
-    sweepSubjectAnchoredTasks(worker.workspaceId, pr.number).catch(e =>
-      console.error(`[webhook] subject sweep failed for PR #${pr.number}:`, e),
-    );
+    // Supersession: the PR merged or closed, so the reconciler cancels what
+    // that made obsolete — a live reviewer and open fixes on a merge, unstarted
+    // fixes on a close, and anchored tasks whose subject is now dead. Never
+    // throws; a cleanup failure must not fail the webhook response.
+    await reconcileSubjectEvent({
+      kind: pr.merged ? 'merged' : 'closed',
+      workspaceId: worker.workspaceId,
+      prNumber: pr.number,
+      originalTaskId: worker.taskId,
+      door: `webhook pull_request.closed${pr.merged ? ' (merged)' : ''}`,
+      pr: event.installation ? { installationId: event.installation.id, repoFullName: repository.full_name } : null,
+    });
 
     // Dead-PR shutdown: close buildd-authored loser PRs superseded by this one.
     // Only fires when the workspace has autoCloseBuilddSupersededPrs=true.
@@ -1695,16 +1699,13 @@ async function handleCheckSuiteFailure(
  */
 /**
  * A PR merged — on github.com, with `gh pr merge`, or through a buildd door —
- * measured against, and then closing, its agent review.
+ * measured against its agent review.
  *
- *  1. Telemetry (first delivery only): a merge while a request-changes or
- *     escalate verdict was outstanding is `merged_over_verdict`; a merge no
- *     verdict covered is `merged_unreviewed`. Read BEFORE step 2, because
- *     superseding the reviewer changes the state being measured.
- *  2. Supersede a still-live reviewer. A GitHub-side merge passes no buildd
- *     door, so without this the reviewer runs on (or is claimed later) against
- *     a PR that has already landed. Idempotent: the dashboard merge door
- *     already calls the same helper, and a redelivery finds nothing live.
+ * Telemetry (first delivery only): a merge while a request-changes or escalate
+ * verdict was outstanding is `merged_over_verdict`; a merge no verdict covered
+ * is `merged_unreviewed`. Runs BEFORE the supersession reconcile further down
+ * the close handler, because superseding the reviewer changes the state being
+ * measured.
  *
  * Best-effort throughout: nothing here may fail the merge bookkeeping.
  */
@@ -1715,8 +1716,6 @@ async function reconcileReviewWithMerge(params: {
   prNumber: number;
   mergedHeadSha: string;
   mergeIsNew: boolean;
-  installationId: number | null;
-  repoFullName: string;
 }): Promise<void> {
   if (params.mergeIsNew) {
     try {
@@ -1750,19 +1749,6 @@ async function reconcileReviewWithMerge(params: {
     }
   }
 
-  if (params.taskId && params.installationId) {
-    const superseded = await supersedeReviewerTaskOnMerge({
-      originalTaskId: params.taskId,
-      installationId: params.installationId,
-      repoFullName: params.repoFullName,
-      prNumber: params.prNumber,
-    });
-    if (superseded.superseded) {
-      console.log(
-        `[webhook] PR #${params.prNumber} merged — superseded live reviewer task ${superseded.reviewerTaskId}`,
-      );
-    }
-  }
 }
 
 /**

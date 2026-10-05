@@ -66,6 +66,8 @@ export async function applyTaskReopenSideEffects(task: TaskRef, reason: string):
  *     check. Cancelled tasks deliberately do not unblock or cascade dependents
  *     (see resolveCompletedTask).
  *  4. TASK_UPDATED on the workspace channel.
+ *  5. The supersession reconciler's `cancelled` event: open retries of this
+ *     task (CI/review/conflict attempts) go with it (`cancel_supersedes_retry`).
  *
  * Each step is independent and failures are logged, never thrown, so one broken
  * side effect cannot stop the others or fail the caller's already-committed write.
@@ -95,9 +97,11 @@ export async function applyTaskCancelSideEffects(task: TaskRef): Promise<void> {
     releaseAndNotify(id, 'abandoned'),
     resolveCompletedTask(id, workspaceId),
     emitTaskUpdated({ ...task, status: 'cancelled' }),
+    import('@/lib/supersession').then(({ reconcileSubjectEvent }) =>
+      reconcileSubjectEvent({ kind: 'cancelled', workspaceId, taskId: id, door: 'applyTaskCancelSideEffects' })),
   ]);
 
-  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED'];
+  const labels = ['abort push', 'path-claim release', 'resolveCompletedTask', 'TASK_UPDATED', 'supersession'];
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
       console.error(`[task-cancel] ${labels[i]} failed for ${id}:`, r.reason);

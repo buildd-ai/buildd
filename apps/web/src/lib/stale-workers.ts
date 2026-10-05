@@ -1,3 +1,4 @@
+import { isSilentCompletion } from '@/lib/silent-completion';
 import { db } from '@buildd/core/db';
 import { workers, tasks, workerHeartbeats, missionNotes, accounts } from '@buildd/core/db/schema';
 import { eq, and, or, not, inArray, lt, gt, notInArray, isNotNull, asc, sql } from 'drizzle-orm';
@@ -75,7 +76,7 @@ async function resolveStaleTask(
   // be re-queued — the user explicitly cancelled it and its worker was aborted.
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true },
+    columns: { kind: true, pathManifest: true, outputRequirement: true, taskClass: true, status: true, context: true, category: true, loopConfig: true, loopState: true, updatedAt: true, missionId: true, roleSlug: true },
   });
   // A visual-auditor mission task is settled only by its own evidence check
   // (workers/[id]/route.ts): the reaper never completes it from artifacts, and
@@ -223,7 +224,15 @@ async function resolveStaleTask(
     } catch { /* non-fatal — artifact count defaults to 0; prUrl still checked below */ }
     deliverables = checkWorkerDeliverables(staleWorker, { artifactCount });
   }
-  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit;
+  // Reaper completion is evidence-backed: PR/artifact or positive commits.
+  // Run the same predicate so future deliverable changes cannot bypass it.
+  const hasDeliverables = !!deliverables?.hasAny && !isMissionVisualAudit && !isSilentCompletion({
+    status: 'completed', outputRequirement: currentTask?.outputRequirement,
+    kind: currentTask?.kind, pathManifest: currentTask?.pathManifest,
+    taskClass: currentTask?.taskClass,
+    commitCount: staleWorker?.commitCount, hasPR: deliverables?.hasPR,
+    hasArtifact: deliverables?.hasArtifacts, summarySource: 'fallback',
+  });
 
   if (hasDeliverables && staleWorker) {
     // B.5: Outcome-first summaries — use structuredOutput.summary when present.

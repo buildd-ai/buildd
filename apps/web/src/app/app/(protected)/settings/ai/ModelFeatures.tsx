@@ -4,11 +4,14 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   INFERENCE_CAPABILITIES,
   LIVE_SERVER_FEATURES,
+  OPT_IN_CAPABILITIES,
+  normalizeDecisionShadows,
   normalizeFeatureModes,
   resolveFeatureMode,
   type FeatureModes,
   type ServerFeature,
 } from '@buildd/core/inference-policy';
+import Switch, { SWITCH_HIT_AREA } from '@/components/ui/Switch';
 import { defaultLine, featureState, OVERRIDE_OPTIONS, type OverrideValue } from './feature-copy';
 
 /**
@@ -16,6 +19,7 @@ import { defaultLine, featureState, OVERRIDE_OPTIONS, type OverrideValue } from 
  *
  * Chat is always on (it runs whenever a key resolves), so it has no control
  * here. Built-in decision calls have no control and are not listed. Each
+ * Optional decisions each have an independent opt-in switch. Each server
  * feature is one row: Auto follows the billing model (team key → server, else
  * the runner), and admins can pin Server or Runner inline.
  */
@@ -26,16 +30,22 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
   hasTeamKey: boolean;
 }) {
   const [modes, setModes] = useState<FeatureModes | null>(null);
+  const [shadows, setShadows] = useState<string[] | null>(null);
+  const [decisionsLoaded, setDecisionsLoaded] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setDecisionsLoaded(false);
     try {
       const res = await fetch(`/api/teams/${teamId}`);
       if (res.ok) {
         const data = await res.json();
         setModes(normalizeFeatureModes(data.team?.inferenceFeatureModes));
+        const normalized = normalizeDecisionShadows(data.team?.enabledDecisionShadows ?? null);
+        setShadows(normalized.ok ? normalized.value : null);
+        setDecisionsLoaded(normalized.ok);
       }
     } catch {
       /* non-fatal: the page shows defaults */
@@ -69,6 +79,14 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
     const next = normalizeFeatureModes({ ...(modes ?? {}), [feature]: value });
     setModes(next);
     void patch({ inferenceFeatureModes: next }, () => setModes(prev));
+  }
+
+  function setDecision(capability: string, enabled: boolean) {
+    const prev = shadows;
+    const values = enabled ? [...(shadows ?? []), capability] : (shadows ?? []).filter(c => c !== capability);
+    const next = values.length ? values : null;
+    setShadows(next);
+    void patch({ enabledDecisionShadows: next }, () => setShadows(prev));
   }
 
   return (
@@ -118,6 +136,32 @@ export default function ModelFeatures({ teamId, canManage, hasTeamKey }: {
                   <span className={`shrink-0 text-xs ${r.needsKey ? 'text-status-warning' : 'text-text-primary'}`}>
                     {featureState(r)}
                   </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section aria-labelledby="ai-decisions-h">
+        <h2 id="ai-decisions-h" className="section-label mb-3">Decision features</h2>
+        <p className="text-body text-text-secondary mb-3">Choose which optional decisions run for your team. Each feature has its own switch.</p>
+        <div className="card divide-y divide-border-default">
+          {OPT_IN_CAPABILITIES.map(capability => {
+            const descriptor = INFERENCE_CAPABILITIES[capability];
+            const enabled = shadows?.includes(capability) ?? false;
+            return (
+              <div key={capability} data-testid={`decision-${capability}`} className="flex items-center justify-between gap-4 px-4 py-4">
+                <span className="min-w-0">
+                  <span id={`decision-${capability}-label`} className="block text-body text-text-primary">{descriptor.label}</span>
+                  <span className="block text-meta text-text-secondary">{descriptor.description}</span>
+                  <span className="block mt-1 text-meta text-text-muted">{descriptor.costHint}</span>
+                </span>
+                {canManage ? (
+                  <Switch checked={enabled} labelledBy={`decision-${capability}-label`} disabled={busy || !decisionsLoaded}
+                    className={SWITCH_HIT_AREA} onChange={next => setDecision(capability, next)} />
+                ) : (
+                  <span className="shrink-0 text-meta text-text-primary">{enabled ? 'On' : 'Off'}</span>
                 )}
               </div>
             );

@@ -37,11 +37,16 @@ describe('runDecisionPool', () => {
 
   it('returns within the budget: in-flight items time out, the rest never start', async () => {
     const t0 = Date.now();
-    const res = await runDecisionPool(Array.from({ length: 10 }, (_, i) => i), async () => {
-      await wait(1_000);
-      return 1;
-    }, { concurrency: 2, budgetMs: 50 });
-    expect(Date.now() - t0).toBeLessThan(500);
+    // The worker never resolves, so the budget's timeout always wins the race
+    // against it — a real `wait()` here raced two real timers against each
+    // other and flaked under full-suite CPU contention (a worker occasionally
+    // "won" if its timer fired before the budget's, or a lane missed its
+    // start window before the deadline). A wide budget below gives the two
+    // concurrency lanes headroom to both start under scheduling jitter.
+    const res = await runDecisionPool(Array.from({ length: 10 }, (_, i) => i), () => new Promise<number>(() => {}), {
+      concurrency: 2, budgetMs: 300,
+    });
+    expect(Date.now() - t0).toBeLessThan(2_000);
     expect(res.filter(r => r.status === 'timed_out')).toHaveLength(2);
     expect(res.filter(r => r.status === 'not_started')).toHaveLength(8);
   });
