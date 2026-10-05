@@ -43,7 +43,7 @@ jobs:
     name: Fresh install (ubuntu, non-root, no sudo)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: ubuntu:24.04
+    container: ubuntu:26.04
     steps:
       - name: Base tools a fresh machine has
         run: |
