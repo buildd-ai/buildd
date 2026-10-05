@@ -51,7 +51,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git unzip ca-certificates procps >/dev/null
           useradd -m -s /bin/bash stranger
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install from this commit and start the runner
         env:
