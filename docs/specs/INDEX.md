@@ -4,10 +4,12 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (52)
+## Active (53)
 
-### auth (5)
+### auth (6)
 
+- [Agent Capabilities](./agent-capabilities.md) · @max — verified 2026-10-05
+  An agent role MUST hold a platform capability (deploy, use a deploy credential, manage or reveal one) only through a named registry entry, a per-workspace opt-in, and a named target scope, failing closed.
 - [Auth & OAuth Boundaries](./auth-oauth-boundaries.md) · @max — verified 2026-07-18
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-10-04

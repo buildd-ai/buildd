@@ -2,7 +2,8 @@
  * Default roles seeded into new workspaces.
  *
  * Roles: Organizer (Sonnet), Builder (Opus), Researcher (Sonnet), Writer (Sonnet),
- * Analyst (Sonnet), Reviewer (Sonnet), Visual Auditor (Sonnet), Spec Validator (Sonnet).
+ * Analyst (Sonnet), Reviewer (Sonnet), Visual Auditor (Sonnet), Spec Validator (Sonnet),
+ * Platform Operator (Sonnet; holds deploy capabilities only where a workspace enables it).
  * Each role's `model` is the claim-time router's role floor. The kind×complexity
  * matrix only moves off that floor for tasks whose row actually carries `kind` /
  * `complexity` — schedule-generated tasks (classifyScheduleCadence) and tasks
@@ -18,7 +19,8 @@ import { workspaceSkills, workspaces } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { VISUAL_AUDITOR_ROLE_SLUG, type SkillModel } from '@buildd/shared';
-import { registerTextPrompt, resolvePromptEntry } from '@buildd/core/prompts';
+import { registerTextPrompt, resolvePromptEntry, resolvedPromptVersion } from '@buildd/core/prompts';
+import { OPERATOR_ROLE_SLUG } from './permission-registry';
 import type { RoleOverride } from './policy-overrides';
 import { loadPolicyOverrides } from './policy-overrides-source';
 
@@ -84,6 +86,8 @@ interface DefaultRole extends DefaultRoleDefinition {
   shippedContentHashes: string[];
   /** True when `content` is an active prompts row's body (`rolePromptId`). */
   fromPrompt: boolean;
+  /** The active prompts row's version when `fromPrompt`; else null. */
+  promptRowVersion: number | null;
 }
 
 const ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
@@ -898,6 +902,47 @@ If a near-duplicate exists, update it instead of creating a new entry.
       notFor: 'Open questions with no spec to check against (researcher); fixing the drift it finds (builder)',
     },
   },
+  {
+    // Platform Operator (permission-registry.ts, "Agent capabilities"). The
+    // persona is deliberately plain: it is the public fallback for
+    // `buildd.role.operator`, which a deployment replaces through the prompts
+    // table. Authority does not come from this text: a workspace must enable
+    // the role and name its targets (operator-capability.ts), and the server
+    // checks every deploy against that grant. Provider details live in the
+    // deploy adapters, not here.
+    slug: OPERATOR_ROLE_SLUG,
+    name: 'Platform Operator',
+    description: 'Runs deployments for the targets a workspace allows, using approved credentials the server holds',
+    content: `# Platform Operator
+
+You run deployment and infrastructure tasks for this workspace.
+
+## Rules
+
+- Only act on the providers, projects and environments this workspace has enabled for you. If the task names a target outside them, stop and say which target is not allowed.
+- Deploy through the buildd deployment actions. Name the credential by its reference; the server uses it for you. You never receive or need the credential value, so never ask for it, print it or store it.
+- Creating, rotating, deleting or revealing a credential is not part of a normal deploy. If a task needs it and you were not granted it, stop and explain what a human must do.
+- Report what you deployed: target, environment, the deployment identifier, and the outcome.
+
+## Pull Gates (REQUIRED before saving memory)
+
+Before saving any new memory:
+\`\`\`
+recall query="<proposed memory title>"
+\`\`\`
+If a near-duplicate exists, update it instead of creating a new entry.
+`,
+    color: '#65A30D',
+    model: 'sonnet',
+    isRole: true,
+    allowedTools: ['Read', 'Grep', 'Glob', 'Bash', 'mcp__buildd__buildd'],
+    canDelegateTo: [],
+    mcpServers: { buildd: BUILDD_MCP },
+    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key' },
+    // Not routable: an Operator task is filed with the slug on purpose, never
+    // inferred from free text, so no task drifts into deploy authority.
+    routing: { disabled: true },
+  },
 ];
 
 /**
@@ -922,6 +967,7 @@ export const DEFAULT_ROLES: DefaultRole[] = ROLE_DEFINITIONS.map(r => ({
   supersededContentHashes: r.supersededContentHashes ?? [],
   shippedContentHashes: [roleContentHash(r.content)],
   fromPrompt: false,
+  promptRowVersion: null,
 }));
 
 const DEFAULT_ROLE_SLUGS = new Set(DEFAULT_ROLES.map(r => r.slug));
@@ -958,19 +1004,78 @@ export function resolveDefaultRoles(overrides: Record<string, RoleOverride> = {}
   for (const slug of Object.keys(overrides)) {
     if (!DEFAULT_ROLE_SLUGS.has(slug)) console.warn(`[policy-overrides] role override for unknown slug "${slug}" ignored`);
   }
-  return DEFAULT_ROLES.map(role => {
-    const o = overrides[role.slug];
-    const base: DefaultRole = !o ? role : {
-      ...role,
-      content: o.content ?? role.content,
-      description: o.description ?? role.description,
-      version: Math.max(role.version, o.version ?? 0),
-      supersededContentHashes: [...new Set([...role.supersededContentHashes, ...(o.supersededContentHashes ?? [])])],
-      shippedContentHashes: [...new Set([...role.shippedContentHashes, ...(o.content ? [roleContentHash(o.content)] : [])])],
-    };
-    const prompt = resolvePromptEntry(rolePromptId(role.slug), base.content);
-    return prompt.source === 'active' ? { ...base, content: prompt.body, fromPrompt: true } : base;
-  });
+  return DEFAULT_ROLES.map(role => resolveDefaultRole(role, overrides[role.slug]));
+}
+
+/** One default role through both layers of `resolveDefaultRoles`. */
+function resolveDefaultRole(role: DefaultRole, o: RoleOverride | undefined): DefaultRole {
+  const base: DefaultRole = !o ? role : {
+    ...role,
+    content: o.content ?? role.content,
+    description: o.description ?? role.description,
+    version: Math.max(role.version, o.version ?? 0),
+    supersededContentHashes: [...new Set([...role.supersededContentHashes, ...(o.supersededContentHashes ?? [])])],
+    shippedContentHashes: [...new Set([...role.shippedContentHashes, ...(o.content ? [roleContentHash(o.content)] : [])])],
+  };
+  const prompt = resolvePromptEntry(rolePromptId(role.slug), base.content);
+  return prompt.source === 'active' ? { ...base, content: prompt.body, fromPrompt: true, promptRowVersion: prompt.version } : base;
+}
+
+/** The prompts-table id of the Platform Operator persona. */
+export const OPERATOR_PROMPT_ID = rolePromptId(OPERATOR_ROLE_SLUG);
+
+/**
+ * Which persona text a role runs, without the text: safe for telemetry, the
+ * decision ledger, deploy identity and audit rows.
+ *
+ * - `source`: `active` when a prompts row supplied the body, else `default`
+ *   (the public text, or a policy-override text).
+ * - `promptVersion`: `v<role version>` for the default, `v<role version>+p<row
+ *   version>` for an active row (`resolvedPromptVersion`).
+ * - `fingerprint`: sha256 of the body in effect. For an active row this is
+ *   the row's content hash, so it matches `/api/deploy-identity`.
+ */
+export interface RolePersonaIdentity {
+  slug: string;
+  promptId: string;
+  source: 'active' | 'default';
+  promptVersion: string;
+  fingerprint: string;
+}
+
+export interface ResolvedRolePersona extends RolePersonaIdentity {
+  body: string;
+}
+
+/**
+ * The persona a default role runs in this process, through the same chain as
+ * `resolveDefaultRoles`. Null for a slug with no default role. With no prompts
+ * row it is the public text, so OSS, CI and dev work unchanged.
+ */
+export function resolveRolePersona(slug: string, overrides: Record<string, RoleOverride> = {}): ResolvedRolePersona | null {
+  const shipped = DEFAULT_ROLES.find(r => r.slug === slug);
+  if (!shipped) return null;
+  const role = resolveDefaultRole(shipped, overrides[slug]);
+  const source = role.fromPrompt ? 'active' : 'default';
+  return {
+    slug,
+    promptId: rolePromptId(slug),
+    source,
+    promptVersion: resolvedPromptVersion(`v${role.version}`, { source, version: role.promptRowVersion }),
+    fingerprint: roleContentHash(role.content),
+    body: role.content,
+  };
+}
+
+/** `resolveRolePersona` minus the body. The only shape to log or persist. */
+export function rolePersonaIdentity(persona: ResolvedRolePersona): RolePersonaIdentity {
+  const { body: _body, ...identity } = persona;
+  return identity;
+}
+
+/** The persona as this deployment resolves it, policy overrides included. */
+export async function currentRolePersona(slug: string): Promise<ResolvedRolePersona | null> {
+  return resolveRolePersona(slug, (await loadPolicyOverrides()).roles);
 }
 
 async function currentDefaultRoles(): Promise<DefaultRole[]> {

@@ -305,3 +305,87 @@ export function roleHas(
 export function keyLevelHas(level: string | null | undefined, permission: Permission): boolean {
   return keyHolds(PERMISSIONS[permission].minKeyLevel, level);
 }
+
+// ── Agent capabilities ────────────────────────────────────────────────────────
+//
+// The team permissions above say what a HUMAN team role may do. Agent
+// capabilities say what a task running under an agent ROLE (a workspaceSkills
+// row with isRole) may do on the platform's behalf. Same idiom: a named
+// registry, the roles that hold each by default, a set nothing grants
+// implicitly, and pure checks. Kept apart from PERMISSIONS on purpose: an
+// agent role is not a team role, and neither may ever stand in for the other.
+//
+// Deployment authority is split in two tiers. `standard` is what a normal
+// Platform Operator gets: read deployments, deploy, and USE an approved
+// credential server-side without seeing it. `elevated` is changing or reading
+// the credential itself; no role holds it by default, and only an explicit
+// workspace grant confers it (operator-capability.ts).
+
+export type AgentCapabilityTier = 'standard' | 'elevated';
+
+export interface AgentCapabilityDef {
+  description: string;
+  tier: AgentCapabilityTier;
+}
+
+export const AGENT_CAPABILITIES = {
+  'deployments:read': {
+    description: 'Read deployment state, history and redacted logs for an allowed target.',
+    tier: 'standard',
+  },
+  'deployments:write': {
+    description: 'Run a deploy, secret-put or config update against an allowed provider/project/environment.',
+    tier: 'standard',
+  },
+  'deployment_secrets:use': {
+    description: 'Have the server use an approved credential reference for an allowed deploy. The agent never receives the plaintext.',
+    tier: 'standard',
+  },
+  'deployment_secrets:manage': {
+    description: 'Create, rotate or delete a deployment credential.',
+    tier: 'elevated',
+  },
+  'secrets:reveal': {
+    description: 'Read a stored credential in plaintext.',
+    tier: 'elevated',
+  },
+} as const satisfies Record<string, AgentCapabilityDef>;
+
+export type AgentCapability = keyof typeof AGENT_CAPABILITIES;
+
+export const AGENT_CAPABILITY_NAMES = Object.keys(AGENT_CAPABILITIES) as AgentCapability[];
+
+/** Capabilities no role holds by default and no team default can grant: only an explicit workspace grant. */
+export const ELEVATED_AGENT_CAPABILITIES: ReadonlySet<AgentCapability> = new Set(
+  AGENT_CAPABILITY_NAMES.filter(c => AGENT_CAPABILITIES[c].tier === 'elevated'),
+);
+
+/** The built-in Platform Operator role slug. */
+export const OPERATOR_ROLE_SLUG = 'operator';
+
+/**
+ * Role slug -> the capabilities it may hold. A role absent here holds none,
+ * whatever its row's metadata says, so builder, reviewer and every team's own
+ * roles gain nothing from this registry. Listing a capability here is a
+ * ceiling, not a grant: the workspace must still enable the role
+ * (operator-capability.ts). Elevated capabilities are listed only so an
+ * explicit workspace grant can reach them; they are never on by default.
+ */
+export const ROLE_CAPABILITY_CEILINGS: Readonly<Record<string, readonly AgentCapability[]>> = {
+  [OPERATOR_ROLE_SLUG]: AGENT_CAPABILITY_NAMES,
+};
+
+/** The capabilities a role holds once enabled, before any narrowing: its ceiling minus the elevated ones. */
+export function defaultRoleCapabilities(roleSlug: string | null | undefined): AgentCapability[] {
+  const ceiling = roleSlug ? ROLE_CAPABILITY_CEILINGS[roleSlug] ?? [] : [];
+  return ceiling.filter(c => !ELEVATED_AGENT_CAPABILITIES.has(c));
+}
+
+export function isAgentCapability(value: unknown): value is AgentCapability {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(AGENT_CAPABILITIES, value);
+}
+
+/** Whether `roleSlug` may ever hold `capability` (its ceiling). Unknown roles may hold nothing. */
+export function roleMayHold(roleSlug: string | null | undefined, capability: AgentCapability): boolean {
+  return !!roleSlug && (ROLE_CAPABILITY_CEILINGS[roleSlug] ?? []).includes(capability);
+}
