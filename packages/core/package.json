@@ -156,6 +156,7 @@
     "./quality-scout/ledger": "./quality-scout/ledger.ts",
     "./quality-scout/candidates": "./quality-scout/candidates.ts",
     "./quality-scout/selector": "./quality-scout/selector.ts",
+    "./quality-scout/executors": "./quality-scout/executors.ts",
     "./onboarding-scaffold": "./onboarding-scaffold.ts",
     "./onboarding-spec": "./onboarding-spec.ts",
     "./spec-conformance": "./spec-conformance.ts",
