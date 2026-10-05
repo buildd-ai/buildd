@@ -15919,9 +15919,9 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
       url: 'https://example.test/pr/9', urlTitle: 'Open PR',
     });
     expect(names()).toContain('fireMissionReleaseIfComplete');
-    // The terminal fan-out still reads the worker's reported status.
+    // The terminal fan-out follows the status the release slot decided.
     expect(names()).toContain('persistTaskEvidence');
-    expect(pushTitles()).toEqual(['Task done']);
+    expect(pushTitles()).toEqual(['Task failed']);
   });
 
   it('release failure with no PR: the alert links the task', async () => {
@@ -15950,6 +15950,8 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(releaseSets()[0].status).toBeUndefined();
     expect(names()).toContain('fireMissionReleaseIfComplete');
     expect(mockNotify.mock.calls.find((c: any) => c[0]?.title === 'Release failed')).toBeUndefined();
+    // Held, not done: the release PR's CI settles the outcome (webhook).
+    expect(pushTitles()).toEqual([]);
   });
 
   it('a throwing release leaves the task completed with no record; the mission release still runs', async () => {
@@ -16002,8 +16004,8 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(set.result.loopHistory).toHaveLength(1);
     expect(names()).not.toContain('executeRelease');
     expect(names()).toContain('persistTaskEvidence');
-    // The push still reads the worker's reported status.
-    expect(pushTitles()).toEqual(['Task done']);
+    // The push follows the status the loop slot decided.
+    expect(pushTitles()).toEqual(['Task failed']);
   });
 
   it('visual audit with full evidence: completed, and nothing to release', async () => {
@@ -16028,5 +16030,88 @@ describe('PATCH /api/workers/[id] — completion verdicts (characterization)', (
     expect(outcomeSet()).toBeUndefined();
     expect(names()).not.toContain('executeRelease');
     mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+  });
+
+  // ── The outcome event is the FINAL status, not the reported one ────────────
+  // A worker reports completed; a slot may still fail or hold the task. The
+  // event core emits (and so the ledger row, the team push and the chat post)
+  // follows what the slot decided.
+  const settle = () => new Promise(r => setTimeout(r, 0));
+  const ledger = () => fanout.filter(c => c[0] === 'recordEvent').map(c => c[1]);
+  const pushes = () => fanout.filter(c => c[0] === 'notifyTeam').map(c => c.slice(1));
+
+  it('release CI red: task.failed with the release reason; no done push, no chat post', async () => {
+    setup();
+    releaseReturns({ status: 'failed', message: 'CI red', error: 'CI red on main', releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    await settle();
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1',
+      reason: 'Release failed: CI red on main',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Fix the cursor\nW\nRelease failed: CI red on main',
+      url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+  });
+
+  it('release CI red in a sensitive workspace: the fixed label only, no title, no detail', async () => {
+    setup();
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', dataClass: 'sensitive', gitConfig: null } as any);
+    releaseReturns({ status: 'failed', message: 'CI red', error: 'CI red on main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    mockWorkspacesFindFirst.mockResolvedValue(null);
+    expect(ledger()).toEqual([{ type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: null, workspaceId: 'ws-1', reason: 'Release failed' }]);
+    expect((pushes()[0]![2] as any).message).toBe('Task failed (content redacted)\nRelease failed');
+  });
+
+  it('loop exhausted: task.failed with the loop reason; no done push, no chat post', async () => {
+    setup({ missionId: null, loopConfig: { ...LOOP, maxLoops: 1 } });
+    await patch({ status: 'completed', summary: 'Not yet.', summarySource: 'agent', verificationEvidence: evidence(1) });
+    await settle();
+    expect(ledger()).toEqual([{
+      type: 'task.failed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1',
+      reason: 'Loop attempts exhausted: Loop condition unmet after 1 attempt(s)',
+    }]);
+    expect(pushes()).toEqual([['team-1', 'taskFailed', {
+      title: 'Task failed', message: 'Fix the cursor\nW\nLoop attempts exhausted: Loop condition unmet after 1 attempt(s)',
+      url: 'https://buildd.dev/app/tasks/task-1', urlTitle: 'View task', priority: 0,
+    }]]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+  });
+
+  it('evidence rejected: the report is refused, so no outcome event at all', async () => {
+    setup({ roleSlug: 'visual-auditor' });
+    mockLoadVisualAuditEvidence.mockReset();
+    mockLoadVisualAuditEvidence.mockResolvedValue({ ok: false, missing: ['/app × mobile'] } as any);
+    const res = await patch({ status: 'completed', summary: 'Audited.', summarySource: 'agent' });
+    await settle();
+    expect(res.status).toBe(400);
+    expect(ledger()).toEqual([]);
+    expect(pushes()).toEqual([]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+    expect(names()).not.toContain('persistTaskEvidence');
+    mockLoadVisualAuditEvidence.mockResolvedValue(okEvidence as any);
+  });
+
+  it('release held for CI: no task.completed, no push and no chat post until the CI settles it', async () => {
+    setup();
+    releaseReturns({ status: 'pending_ci', message: 'Waiting on CI', releasePrNumber: 9, releasePrUrl: 'https://example.test/pr/9' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    await settle();
+    expect(ledger()).toEqual([]);
+    expect(pushes()).toEqual([]);
+    expect(names()).not.toContain('postTaskCompletedEvent');
+  });
+
+  it('release passed: task.completed, the done push and the chat post, as before', async () => {
+    setup();
+    releaseReturns({ status: 'completed', message: 'Released to main' });
+    await patch({ status: 'completed', summary: 'Done.', summarySource: 'agent' });
+    await settle();
+    expect(ledger()).toEqual([{ type: 'task.completed', taskId: 'task-1', workerId: WORKER_ID, title: 'Fix the cursor', workspaceId: 'ws-1' }]);
+    expect(pushes().map(p => p[1])).toEqual(['taskCompleted']);
+    expect(names()).toContain('postTaskCompletedEvent');
   });
 });

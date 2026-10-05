@@ -66,6 +66,55 @@ describe('notification subscribers', () => {
     }]]);
   });
 
+  // A task a completion-policy slot failed after its worker reported it done.
+  const releaseRed = { slot: 'release' as const, label: 'Release failed' as const, reason: 'CI red on main' };
+
+  it('a slot failure: the ledger row and the failure push carry the slot\'s reason', async () => {
+    await emit({ type: 'task.failed', ...worker, failure: releaseRed }, { subscribers });
+    expect(calls).toEqual([
+      ['recordEvent', { kind: 'task.failed', taskId: 't-1', workerId: 'w-1', title: 'Fix the cursor', workspaceId: 'ws-1', reason: 'Release failed: CI red on main' }],
+      ['notifyTeam', 'team-1', 'taskFailed', {
+        title: 'Task failed', message: 'Fix the cursor\nW\nRelease failed: CI red on main', url: 'https://buildd.dev/app/tasks/t-1', urlTitle: 'View task', priority: 0,
+      }],
+    ]);
+  });
+
+  it('a slot failure in a sensitive workspace: the fixed label only, never the slot\'s detail', async () => {
+    await emit({ type: 'task.failed', ...worker, sensitive: true, failure: releaseRed }, { subscribers });
+    expect(calls[0]).toEqual(['recordEvent', { kind: 'task.failed', taskId: 't-1', workerId: 'w-1', title: null, workspaceId: 'ws-1', reason: 'Release failed' }]);
+    expect(calls[1][3].message).toBe('Task failed (content redacted)\nRelease failed');
+  });
+
+  it('a worker\'s own failure carries no reason line', async () => {
+    await emit({ type: 'task.failed', ...worker, error: 'Tests failed' }, { subscribers });
+    expect(calls[0][1].reason).toBeUndefined();
+    expect(calls[1][3].message).toBe('Fix the cursor\nW');
+  });
+
+  it('a held release that resolves green: the ledger row is awaited, the done push and the chat post follow', async () => {
+    const chat = mock(async () => {});
+    mock.module('@/lib/chat/mission-events', () => ({ postTaskCompletedEvent: chat }));
+    await emit({ type: 'task.completed', ...worker, via: 'release' }, { subscribers });
+    expect(calls).toEqual([
+      ['recordEvent', { kind: 'task.completed', taskId: 't-1', workerId: 'w-1', title: 'Fix the cursor', workspaceId: 'ws-1' }],
+      ['notifyTeam', 'team-1', 'taskCompleted', {
+        title: 'Task done', message: 'Fix the cursor\nW', url: 'https://buildd.dev/app/tasks/t-1', urlTitle: 'View task', priority: -1,
+      }],
+    ]);
+    await new Promise(r => setTimeout(r, 0));
+    expect(chat).toHaveBeenCalledWith({ taskId: 't-1' });
+  });
+
+  it('a held release that resolves red: the failure push names the release CI', async () => {
+    await emit({
+      type: 'task.failed', ...worker, via: 'release',
+      failure: { slot: 'release', label: 'Release CI failed', reason: 'CI failed on PR #42' },
+    }, { subscribers });
+    expect(calls.map(c => c[0])).toEqual(['recordEvent', 'notifyTeam']);
+    expect(calls[0][1].reason).toBe('Release CI failed: CI failed on PR #42');
+    expect(calls[1][3]).toMatchObject({ title: 'Task failed', message: 'Fix the cursor\nW\nRelease CI failed: CI failed on PR #42' });
+  });
+
   it('PR facts map to their ledger events', async () => {
     await emit({ type: 'pr.merged', repoFullName: 'o/r', prNumber: 7, url: 'https://example.test/pr/7' }, { subscribers });
     await emit({ type: 'pr.ci_failed', repoFullName: 'o/r', prNumber: 7, headSha: 'abc' }, { subscribers });

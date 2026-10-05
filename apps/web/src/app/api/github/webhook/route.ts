@@ -36,6 +36,7 @@ import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
+import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -2078,6 +2079,7 @@ async function handleReleasePrCiSuccess(
         })
         .where(eq(tasks.id, task.id));
       console.log(`[release-pr] Task ${task.id} completed after PR #${prNumber} merged on ${repoFullName}`);
+      await emitHeldReleaseOutcome(task.id, null);
     } else {
       const errMsg = mergeResult.message;
       const releaseResult = {
@@ -2105,6 +2107,7 @@ async function handleReleasePrCiSuccess(
         urlTitle: 'Open PR',
       });
       console.error(`[release-pr] Task ${task.id} FAILED: merge of PR #${prNumber} rejected: ${errMsg}`);
+      await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release merge failed', reason: errMsg });
     }
   }
 }
@@ -2158,6 +2161,7 @@ async function handleReleasePrCiFailure(
         urlTitle: 'Open PR',
       });
       console.error(`[release-pr] Task ${task.id} FAILED: CI failed on release PR #${pr.number}`);
+      await emitHeldReleaseOutcome(task.id, { slot: 'release', label: 'Release CI failed', reason: releaseResult.error });
     }
   }
 }

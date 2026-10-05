@@ -77,6 +77,7 @@ import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
+import type { SlotFailure } from '@/lib/core-events';
 import { COMPLETION_POLICIES } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
@@ -2931,6 +2932,11 @@ export async function PATCH(
       // the loop policy (lib/completion-policy.ts): the ONLY authority that may
       // evaluate it and advance loopIteration. Stale cleanup and webhooks never do.
       let loop: LoopVerdict = null;
+      // A slot that fails a task its worker reported completed (loop exhausted,
+      // release failed), or a release held for CI. The outcome event below
+      // follows these, never the reported status alone.
+      let slotFailure: SlotFailure | null = null;
+      let releaseHeld = false;
       // Declared here so the requeue case (inside the loop block below) can populate it.
       let taskCtxForRetry: Record<string, unknown> = {};
       if (status === 'completed') {
@@ -3553,6 +3559,7 @@ export async function PATCH(
         } else {
           // Worker reported completed but loop iterations are exhausted → task is failed.
           taskUpdate.status = 'failed';
+          slotFailure = { slot: 'loop', label: 'Loop attempts exhausted', reason: loop.reason };
           taskUpdate.loopState = 'exhausted';
           taskUpdate.result = {
             error: loop.reason,
@@ -3595,6 +3602,7 @@ export async function PATCH(
               })
               .where(eq(tasks.id, worker.taskId));
             taskUpdate.result = resultWithRelease;
+            slotFailure = { slot: 'release', label: 'Release failed', reason: release.reason };
 
             // Alert: release failure needs immediate human attention.
             const prLink = release.prUrl ? ` ${release.prUrl}` : '';
@@ -3608,6 +3616,8 @@ export async function PATCH(
           } else if (release.kind === 'hold') {
             // Release PR found but CI not yet green — store tracking info and let
             // the check_suite webhook complete/fail the task when CI resolves.
+            // That resolution emits the outcome event; this PATCH emits none.
+            releaseHeld = true;
             const existingCtx = (
               await db
                 .select({ context: tasks.context })
@@ -3931,7 +3941,12 @@ export async function PATCH(
           // here reported a permanently-failed review-contract violation as
           // "Task done" (see recordTaskOutcome's `effectiveOutcome`, which
           // already applies this same correction).
-          const isDone = status === 'completed' && !contractViolation;
+          // A completion-policy slot overrides the report the same way: a
+          // loop that ran out of attempts or a failed release is a failure,
+          // and a release held for CI is not an outcome yet (the release
+          // PR's CI emits it, github/webhook).
+          const isDone = status === 'completed' && !contractViolation && !slotFailure;
+          if (releaseHeld && !shouldAutoRetry) return;
           // Who hears about it (the team's channel, the subscriptions ledger,
           // a chat-filed mission's conversation) is the modules' business.
           await emit({
@@ -3945,6 +3960,7 @@ export async function PATCH(
             teamId: notifyTeamId,
             workspaceName: taskRecord.workspace?.name ?? null,
             error: error ?? null,
+            failure: shouldAutoRetry ? null : slotFailure,
           }, { isolate: (_label, fn) => runStep('notify', fn) });
         }
       });
