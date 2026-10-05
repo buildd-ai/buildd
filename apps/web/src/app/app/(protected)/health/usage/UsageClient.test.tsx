@@ -9,7 +9,7 @@ mock.module('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(''),
 }));
 
-import { UsageClient } from './UsageClient';
+import { UsageClient, UsageInternals } from './UsageClient';
 import { computeUsageStats, type UsageWorkerRow } from '@/lib/usage-stats';
 import {
   buildActionBreakdownPanel,
@@ -77,13 +77,35 @@ const actionPanel = (over: Partial<Parameters<typeof buildActionBreakdownPanel>[
     ...over,
   });
 
-const render = (over: Parameters<typeof view>[0] = {}, wsFilter: string | null = null) =>
-  renderToStaticMarkup(
-    <UsageClient
-      view={view(over)}
-      wsFilter={wsFilter}
-    />,
+/**
+ * Usage (per-task cost) and, below it, the internals that render on Health →
+ * Operator. Rendered together so every panel test still reads one page.
+ */
+const render = (over: Parameters<typeof view>[0] = {}, wsFilter: string | null = null) => {
+  const v = view(over);
+  return renderToStaticMarkup(
+    <>
+      <UsageClient view={v} wsFilter={wsFilter} />
+      <UsageInternals view={v} />
+    </>,
   );
+};
+
+describe('UsageClient — operator internals live elsewhere', () => {
+  it('Usage alone shows per-task cost but none of the internal panels', () => {
+    const html = renderToStaticMarkup(<UsageClient view={view()} wsFilter={null} />);
+    expect(html).toContain('data-testid="usage-section-per-task"');
+    for (const id of ['usage-section-code-nav', 'usage-section-shell', 'usage-internals']) {
+      expect(html).not.toContain(`data-testid="${id}"`);
+    }
+    expect(html).not.toContain('Shell (all uses)');
+    expect(html).not.toContain('buildd actions');
+  });
+
+  it('UsageInternals renders nothing for an empty window', () => {
+    expect(renderToStaticMarkup(<UsageInternals view={view({ rows: [] })} />)).toBe('');
+  });
+});
 
 describe('UsageClient — header', () => {
   it('is task-keyed: the denominator counts tasks, folding a task’s attempts into one', () => {
@@ -94,7 +116,7 @@ describe('UsageClient — header', () => {
         worker({ workerId: 'c', taskId: 't-2' }),
       ],
     });
-    expect(html).toContain('over 2 tasks (7d)');
+    expect(html).toContain('2 tasks · last 7 days');
     expect(html).not.toContain('worker sessions (7d)');
   });
 
@@ -102,7 +124,7 @@ describe('UsageClient — header', () => {
     const html = render({ window: '24h' });
     expect(html).toContain('data-testid="usage-clamp-notice"');
     expect(html).toContain('24h is too thin for stable percentages here');
-    expect(html).toContain('over 8 tasks (7d)');
+    expect(html).toContain('8 tasks · last 7 days');
   });
 
   it('sends you back to Health at 24h, unclamped — the clamp does not follow you out', () => {
