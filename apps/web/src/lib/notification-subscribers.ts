@@ -53,10 +53,11 @@ export const notificationSubscribers: readonly AnySubscriber[] = [
 
   // ── Team push ──────────────────────────────────────────────────────────────
   // A retry is a (transient) failure, so it is gated on the taskFailed toggle.
+  // Every push redacts the title (and workspace name) in a sensitive workspace.
   subscriber('notifications', 'task.retrying', 'push-task-retrying', e => {
     void notifyTeam(e.teamId, 'taskFailed', {
       title: 'Task retrying',
-      message: `Auto-retrying: ${e.title}\n${e.workspaceName || 'unknown'}`,
+      message: e.sensitive ? 'Task auto-retrying (content redacted)' : `Auto-retrying: ${e.title}\n${e.workspaceName || 'unknown'}`,
       url: taskUrl(e.taskId),
       urlTitle: 'View task',
       priority: 0,
@@ -85,7 +86,8 @@ export const notificationSubscribers: readonly AnySubscriber[] = [
     if (isCredentialExpiredError(e.error)) {
       void notifyTeam(e.teamId, 'credentialExpired', {
         title: '🔑 Agent credential expired',
-        message: `Your Claude credential is expired or invalid — set it again under Settings, Runners.\nTask: ${e.title}`,
+        message: 'Your Claude credential is expired or invalid — set it again under Settings, Runners.'
+          + (e.sensitive ? '' : `\nTask: ${e.title}`),
         url: `https://buildd.dev/app/settings/runners`,
         urlTitle: 'Open settings',
         priority: 1,
