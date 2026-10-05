@@ -1088,10 +1088,13 @@ export function HealthClient({
           obeys `?window=` and says so; nothing here renders freshness. */}
       {showsTrend && (
       <section data-testid="health-section-trend" className="mb-6">
-        <div className="flex items-baseline justify-between gap-3 mb-3">
-          {page === 'all' && <h2 className="section-label">Trend</h2>}
-          <span className="text-[11px] text-text-muted">last {activeWindow}</span>
-        </div>
+        {/* On its own page the window picker in the header already names the window. */}
+        {page === 'all' && (
+          <div className="flex items-baseline justify-between gap-3 mb-3">
+            <h2 className="section-label">Trend</h2>
+            <span className="text-[11px] text-text-muted">last {activeWindow}</span>
+          </div>
+        )}
 
         {/* ONE page-level statement of the shared root cause. The per-stat
             em-dashes and tooltips below stay exactly as they were — the collapse
