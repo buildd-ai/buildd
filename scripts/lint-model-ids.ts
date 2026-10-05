@@ -53,6 +53,7 @@ const ALLOWLIST: string[] = [
   'packages/core/model-tier-liveness.ts', // audits tier IDs; the IDs in its docstrings ARE the spec of the parser
   'packages/core/model-display.ts', // humanises model IDs; the IDs in its docstrings ARE the spec of the parser
   'packages/core/model-catalog.ts', // normalises vendor model IDs; every hit is prose in a docstring, the code itself contains no ID literal
+  'packages/ai-kit/src/policy/defaults.ts', // the kit's bundled fallback policy; standalone (no core import), contract.test.ts pins it to model-tier-defaults.ts
   'packages/core/mcp-tools.ts', // help/param documentation strings only
   'apps/runner/src/index.ts', // runner UI model dropdown
   'apps/runner/src/backends/codex-backend.ts', // brokers OpenAI/codex model IDs for the SDK
