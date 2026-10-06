@@ -17,7 +17,7 @@ import { workerNotDependencyBotPr } from '@/lib/dependency-bot-pr';
 import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { isActionableChip, buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
@@ -60,7 +60,7 @@ import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { ActionQueueCard } from './ActionQueueCard';
 import { StatStrip } from './StatStrip';
 import { MobileHome, type HomeFlightRow } from './MobileHome';
-import { deriveHomeAttention } from '@/lib/home-attention';
+import { deriveHomeNeedsYou } from '@/lib/home-needs-you';
 import { FleetStrip } from './FleetStrip';
 import { ActivityTicker } from './ActivityTicker';
 import { NeedsYouStack, type HomeShippedMission } from './NeedsYouStack';
@@ -1992,7 +1992,7 @@ export default async function HomePage({
     .filter(r => lanesRoles.size === 0 || lanesRoles.has(r.slug))
     .map(r => ({ slug: r.slug, name: r.name, color: r.color ?? null }));
 
-  const phoneAttention = deriveHomeAttention({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions });
+  const { items: phoneAttention } = deriveHomeNeedsYou({ queue: filteredActionQueue, missions: phoneMissionRows, questions, held: heldMissions, isActionable: isActionableChip });
   const phoneFlight = new Map<string, HomeFlightRow>();
   const flightLabels: Record<string, string> = { FIXING_CI: 'fixing tests', CI_RUNNING: 'tests running', FIXING_SPEC: 'updating docs', RESOLVING: 'resolving conflicts', FIXING_REVIEW: 'applying review', REVIEW_RUNNING: 'reviewing', AUTO_MERGE: 'merging' };
   for (const item of inFlightItems) {

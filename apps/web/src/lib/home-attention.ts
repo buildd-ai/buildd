@@ -1,4 +1,4 @@
-import { isActionableChip, type ActionQueueItem } from './action-queue';
+import type { ActionQueueItem } from './action-queue';
 import type { HomeQuestion, HomeHeldMission } from '@/app/app/(protected)/home/NeedsYouCards';
 import type { HomeMissionRow } from '@/app/app/(protected)/home/HomeMissionsSummary';
 import type { StrandCta } from './mission-list-card';
@@ -19,7 +19,9 @@ export interface HomeAttentionItem {
 }
 
 /** One owner decision per subject. PR identity includes the workspace because numbers are repository-local. */
-export function deriveHomeAttention({ queue, missions, questions, held }: {
+export function deriveHomeAttention({ queue, missions, questions, held, isActionable }: {
+  /** Supplied by Home, where the action queue and core UI are composed. */
+  isActionable: (chip: ActionQueueItem['chip']) => boolean;
   queue: readonly ActionQueueItem[];
   missions: readonly HomeMissionRow[];
   questions: readonly HomeQuestion[];
@@ -38,10 +40,10 @@ export function deriveHomeAttention({ queue, missions, questions, held }: {
     const key = i.prNumber != null && i.workspaceId ? `pr:${i.workspaceId}:${i.prNumber}` : i.subjectKey;
     const old = prs.get(key);
     // A live fix/check suppresses an older actionable representation of the same PR.
-    if (!old || !isActionableChip(i.chip) || (isActionableChip(old.chip) && priority(i) > priority(old))) prs.set(key, i);
+    if (!old || !isActionable(i.chip) || (isActionable(old.chip) && priority(i) > priority(old))) prs.set(key, i);
   }
   for (const [key, i] of prs) {
-    if (!isActionableChip(i.chip)) continue;
+    if (!isActionable(i.chip)) continue;
     if (i.chip === 'QUESTION' && questions.some(q => (q.taskId && q.taskId === i.taskId) || q.workerId === i.workerId)) continue;
     const docFix = queue.find(row => row.docFixTaskId && row.docFixTaskId === i.taskId);
     const displayItem = docFix ? { ...i, docFixTaskId: docFix.docFixTaskId } : i;
@@ -71,6 +73,11 @@ export function deriveHomeAttention({ queue, missions, questions, held }: {
   return [...items.values()];
 }
 
+/** Shared grammar for attention lists; each surface keeps its existing zero copy. */
+export function needsYouHeadline(count: number, empty = 'All good.'): string {
+  return count === 0 ? empty : count === 1 ? '1 thing needs you.' : `${count} things need you.`;
+}
+
 export function homeAttentionCopy(items: readonly HomeAttentionItem[]) {
   const count = items.length;
   const merges = items.filter(i => i.label === 'ready to merge').length;
@@ -83,5 +90,5 @@ export function homeAttentionCopy(items: readonly HomeAttentionItem[]) {
     stranded > 0 && `${stranded} mission${stranded === 1 ? '' : 's'} lost ${stranded === 1 ? 'its' : 'their'} session.`,
     other > 0 && `${other} decision${other === 1 ? '' : 's'} to make.`,
   ].filter(Boolean).join(' ') || 'The fleet is working without you.';
-  return { count, headline: count === 0 ? 'Nothing needs you.' : count === 1 ? '1 thing needs you.' : `${count} things need you.`, subline };
+  return { count, headline: needsYouHeadline(count, 'Nothing needs you.'), subline };
 }

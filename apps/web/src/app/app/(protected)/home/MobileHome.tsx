@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { homeAttentionCopy, type HomeAttentionItem } from '@/lib/home-attention';
+import { homeAttentionCopy, type HomeAttentionItem } from '@/lib/home-needs-you';
 import { publishHomeAttentionCount } from '@/lib/home-attention-store';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { HomeShippedMission } from './NeedsYouStack';

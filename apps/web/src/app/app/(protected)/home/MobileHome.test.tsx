@@ -2,7 +2,9 @@ import { describe, expect, it, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 mock.module('next/navigation', () => ({ useRouter: () => ({ refresh() {} }), usePathname: () => '/app/home', useSearchParams: () => new URLSearchParams() }));
 const { MobileHome } = await import('./MobileHome');
-const { deriveHomeAttention } = await import('@/lib/home-attention');
+const { deriveHomeAttention: derive } = await import('@/lib/home-attention');
+const { isActionableChip } = await import('@/lib/action-queue');
+const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
 const render = (items = deriveHomeAttention({ queue: [], questions: [], held: [], missions: [] })) => renderToStaticMarkup(<MobileHome items={items} ask={<form data-testid="ask" />} live={2} capacity={4} mergedToday={3} inCi={1} shipped={[]} flight={Array.from({ length: 6 }, (_, i) => ({ key: String(i), title: `Working ${i}`, agent: 'Builder', href: `/app/tasks/task-${i}`, age: '2m', fixing: false }))} />);
 describe('phone Home inbox', () => {
   it('orders the ask, needs you, shipped, and at most four flight rows', () => {

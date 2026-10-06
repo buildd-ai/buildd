@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { deriveHomeAttention, homeAttentionCopy } from './home-attention';
+import { deriveHomeAttention as derive, homeAttentionCopy } from './home-attention';
+import { isActionableChip } from './action-queue';
+import { deriveHomeNeedsYou } from './home-needs-you';
+const deriveHomeAttention = (input: Omit<Parameters<typeof derive>[0], 'isActionable'>) => derive({ ...input, isActionable: isActionableChip });
 import type { ActionQueueItem } from './action-queue';
 const pr = (key: string, workspaceId = 'workspace-a', chip: ActionQueueItem['chip'] = 'MERGE'): ActionQueueItem => ({ subjectKey: key, chip, workspaceId, prNumber: 42, taskTitle: 'Improve navigation' });
 describe('phone Home attention', () => {
@@ -37,5 +40,22 @@ describe('phone Home attention', () => {
     const items = deriveHomeAttention({ queue: [{ ...pr('doc'), docFixTaskId: 'doc-task' }], missions: [], questions: [], held: [] });
     expect(items[0].sentence).toContain('doc back in line');
     expect(homeAttentionCopy(items).headline).toBe('1 thing needs you.');
+  });
+});
+
+ describe('shared Home needs-you snapshot', () => {
+  it('takes its items and all copy counts from the injected actionable predicate', () => {
+    const snapshot = deriveHomeNeedsYou({ queue: [pr('ready')], missions: [], questions: [], held: [], isActionable: () => false });
+    expect(snapshot.items).toEqual([]);
+    expect(snapshot.count).toBe(snapshot.items.length);
+    expect(snapshot.headline).toBe('Nothing needs you.');
+    expect(snapshot.subline).toBe('The fleet is working without you.');
+  });
+  it('shares the deduplicated singular and plural headline', () => {
+    for (const queue of [[pr('ready'), pr('duplicate')], [pr('ready'), pr('other', 'workspace-b')]]) {
+      const snapshot = deriveHomeNeedsYou({ queue, missions: [], questions: [], held: [], isActionable: isActionableChip });
+      expect(snapshot.count).toBe(snapshot.items.length);
+      expect(snapshot.headline).toBe(snapshot.count === 1 ? '1 thing needs you.' : '2 things need you.');
+    }
   });
 });
