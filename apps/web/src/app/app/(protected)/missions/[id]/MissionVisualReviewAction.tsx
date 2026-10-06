@@ -36,7 +36,7 @@ import {
 import { MissionVisualTray, useMissionVisualReview, type MissionVisualReviewValue } from './MissionVisualReview';
 
 const TRIGGER = 'inline-flex min-h-11 md:min-h-9 items-center gap-1.5 border-2 border-border-strong bg-surface-2 px-3 font-mono text-[12.5px] font-semibold text-text-primary hover:bg-surface-3';
-const PRIMARY = 'inline-flex min-h-11 md:min-h-9 items-center justify-center bg-text-primary px-4 font-mono text-[13px] font-semibold text-surface-1 hover:opacity-90 disabled:opacity-50';
+const PRIMARY = 'inline-flex min-h-11 md:min-h-9 items-center justify-center bg-text-primary px-4 font-mono text-body font-semibold text-surface-1 hover:opacity-90 disabled:opacity-50';
 const FACT_LABEL = 'w-20 shrink-0 text-text-muted';
 
 export default function MissionVisualReviewAction({ missionId, initialOpen = false }: {
@@ -102,7 +102,7 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
       href={missionTaskHref({ missionId, taskId, mode: 'sheet' })}
       data-task-id={taskId}
       onClick={onClose}
-      className="font-mono text-[11px] text-text-muted underline hover:text-text-secondary"
+      className="font-mono text-eyebrow text-text-muted underline hover:text-text-secondary"
       data-testid="visual-review-task-details"
     >
       Task details
@@ -115,7 +115,7 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
         {outcome && <OutcomeLine outcome={outcome} />}
         <MissionVisualTray review={closingDeck(review, onClose)} columns="one" />
         {review.model.phase === 'reviewed' && (
-          <p className="text-[12px] text-text-muted">
+          <p className="text-meta text-text-muted">
             To check a screen again, mark it as an issue in the review. Its fix opens the next round.
           </p>
         )}
@@ -131,15 +131,15 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
   return (
     <div className="flex min-w-0 flex-col gap-4" data-testid="visual-review-start">
       {!requested && !existing && (
-        <p className="text-[13px] leading-[1.5] text-text-secondary">
+        <p className="text-body text-text-secondary">
           Buildd opens the screens this mission changed at phone and desktop width, takes screenshots, and asks you about anything that looks wrong.
         </p>
       )}
 
       {loading ? (
-        <p className="font-mono text-[12px] text-text-muted" role="status">Reading the mission…</p>
+        <p className="font-mono text-meta text-text-muted" role="status">Reading the mission…</p>
       ) : preview && !existing && !requested && (
-        <dl className="flex flex-col gap-1.5 font-mono text-[12px]" data-testid="visual-review-facts">
+        <dl className="flex flex-col gap-1.5 font-mono text-meta" data-testid="visual-review-facts">
           <div className="flex min-w-0 gap-2">
             <dt className={FACT_LABEL}>Screens</dt>
             <dd className="min-w-0 text-text-primary [overflow-wrap:anywhere]" data-testid="visual-review-routes">
@@ -168,7 +168,7 @@ export function VisualReviewSheetBody({ missionId, onClose }: { missionId: strin
       )}
 
       {note && !requested && !existing && (
-        <p role="note" data-testid="visual-review-browser-note" className="border-l-[3px] border-status-warning py-1 pl-3 text-[12px] leading-[1.5] text-text-primary">
+        <p role="note" data-testid="visual-review-browser-note" className="border-l-[3px] border-status-warning py-1 pl-3 text-meta leading-[1.5] text-text-primary">
           {note}
         </p>
       )}
@@ -203,7 +203,7 @@ function OutcomeLine({ outcome }: { outcome: VisualReviewRequestOutcome }) {
       role={ok ? 'status' : 'alert'}
       data-testid={ok ? 'visual-review-outcome' : 'visual-review-error'}
       data-outcome={outcome.kind}
-      className={`text-[12px] [overflow-wrap:anywhere] ${ok ? 'text-text-secondary' : 'text-status-error'}`}
+      className={`text-meta [overflow-wrap:anywhere] ${ok ? 'text-text-secondary' : 'text-status-error'}`}
     >
       {visualReviewOutcomeText(outcome)}
     </p>
