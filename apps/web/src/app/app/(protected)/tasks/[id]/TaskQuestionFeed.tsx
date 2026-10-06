@@ -3,11 +3,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionNote } from '@buildd/shared';
+import { isOpenQuestionNote } from '@/lib/open-ask';
 import QuestionHero from './QuestionHero';
 import { unifyNoteQuestion } from './question-hero';
 
 interface Props {
   taskId: string;
+  taskStatus: string;
+  /** Preloaded notes, also used by isolated visual fixtures. */
+  initialNotes?: MissionNote[];
   /** A mission task's feed lists mission-scoped questions, announced on the mission channel. */
   missionId?: string | null;
   activeWorkerId: string | null;
@@ -42,16 +46,22 @@ export function questionFeedChannels(taskId: string, missionId: string | null | 
 }
 
 /** Which notes this feed renders as open heroes and as answered history. */
-export function partitionQuestionNotes<N extends Pick<MissionNote, 'id' | 'type' | 'status'>>(notes: N[], excludeNoteId: string | null | undefined) {
-  const questions = notes.filter(n => n.type === 'question' && n.id !== excludeNoteId);
+export function partitionQuestionNotes<N extends Pick<MissionNote, 'id' | 'type' | 'status'> & { workerId?: string | null }>(
+  notes: N[], excludeNoteId: string | null | undefined,
+  context: Pick<Props, 'taskStatus' | 'activeWorkerId' | 'activeWorkerStatus'>,
+) {
+  const worker = context.activeWorkerId && context.activeWorkerStatus
+    ? { id: context.activeWorkerId, status: context.activeWorkerStatus } : null;
+  const isOpen = (note: N) => isOpenQuestionNote(note, context.taskStatus, worker);
+  const questions = notes.filter(n => n.type === 'question' && !(n.id === excludeNoteId && isOpen(n)));
   return {
-    open: questions.filter(n => n.status === 'open'),
-    answered: questions.filter(n => n.status !== 'open'),
+    open: questions.filter(isOpen),
+    answered: questions.filter(n => !isOpen(n)),
   };
 }
 
-export default function TaskQuestionFeed({ taskId, missionId = null, activeWorkerId, activeWorkerStatus, excludeNoteId = null, roleName = null }: Props) {
-  const [notes, setNotes] = useState<MissionNote[]>([]);
+export default function TaskQuestionFeed({ taskId, taskStatus, initialNotes = [], missionId = null, activeWorkerId, activeWorkerStatus, excludeNoteId = null, roleName = null }: Props) {
+  const [notes, setNotes] = useState<MissionNote[]>(initialNotes);
   const [sending, setSending] = useState<{ noteId: string; answer: string } | null>(null);
   const [sentFor, setSentFor] = useState<Set<string>>(new Set());
 
@@ -118,7 +128,7 @@ export default function TaskQuestionFeed({ taskId, missionId = null, activeWorke
     }
   };
 
-  const { open, answered } = partitionQuestionNotes(notes, excludeNoteId);
+  const { open, answered } = partitionQuestionNotes(notes, excludeNoteId, { taskStatus, activeWorkerId, activeWorkerStatus });
   const replyMap = new Map(notes.filter(n => n.replyTo).map(n => [n.replyTo!, n]));
 
   if (open.length === 0 && answered.length === 0) return null;
@@ -145,7 +155,7 @@ export default function TaskQuestionFeed({ taskId, missionId = null, activeWorke
         <details className="group" data-testid="task-answered-questions">
           <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-2 min-h-11 border-b border-border-default font-mono text-[11px] uppercase tracking-[2px] text-text-muted hover:text-text-secondary">
             <span className="group-open:rotate-90 transition-transform" aria-hidden="true">▸</span>
-            Answered · {answered.length}
+            Past questions · {answered.length}
           </summary>
           <div className="mt-3 border-2 border-border-strong bg-card">
             {answered.map(note => {
@@ -157,12 +167,12 @@ export default function TaskQuestionFeed({ taskId, missionId = null, activeWorke
                     <p className="flex-1 min-w-0 text-[13px] text-text-secondary [overflow-wrap:anywhere]">{note.title}</p>
                     <span className="font-mono text-[11px] text-text-muted tabular-nums shrink-0">{timeAgo(note.createdAt)}</span>
                   </div>
-                  {reply && (
+                  {reply ? (
                     <div className="mt-1.5 flex items-baseline gap-2">
                       <span className="font-mono text-[11px] uppercase tracking-[1.5px] text-accent-text">A</span>
                       <p className="flex-1 min-w-0 text-[13px] text-text-primary [overflow-wrap:anywhere]">{reply.body || reply.title}</p>
                     </div>
-                  )}
+                  ) : <p className="mt-1.5 text-meta text-text-muted">Not answered</p>}
                 </div>
               );
             })}
