@@ -23,6 +23,8 @@ const { discoverScoutCapabilities } = await core('scout-capabilities.ts');
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
+export {};
+
 const profile = discoverScoutCapabilities({
   readiness: computeReadiness({ files: ['pyproject.toml', 'src/app/main.py'], manifests: { 'pyproject.toml': '[project]\nname = "app"\n' } }),
   extension: { journeys: [{ name: 'smoke', kind: 'cli', command: 'app --smoke', mutates: false }] },
