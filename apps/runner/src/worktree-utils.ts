@@ -393,6 +393,10 @@ export interface WorktreeTelemetry {
   reaped: number;
   /** Refused because a live worker owns the path. */
   skippedOwned: number;
+  /** Local `buildd/*` branches deleted this tick (see branch-prune.ts). */
+  branchesPruned?: number;
+  /** `~/.buildd-cbm-seed` worktree registrations removed this tick. */
+  seedRemoved?: number;
 }
 
 /** Above these, a runner is leaking or bloating and the line says so inline. */
@@ -414,7 +418,8 @@ export function formatWorktreeTelemetry(t: WorktreeTelemetry): string {
   return (
     `[worktree-telemetry] repos=${t.repos} worktrees=${t.worktrees} live=${t.live} ` +
     `terminal=${t.terminal} orphan=${t.orphan} removable=${t.removable} ` +
-    `diskMB=${t.diskMB} reaped=${t.reaped} skipped_owned=${t.skippedOwned}${warn}`
+    `diskMB=${t.diskMB} reaped=${t.reaped} skipped_owned=${t.skippedOwned} ` +
+    `branches_pruned=${t.branchesPruned ?? 0} seed_removed=${t.seedRemoved ?? 0}${warn}`
   );
 }
 
