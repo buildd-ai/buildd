@@ -47,6 +47,8 @@ export interface SlotLaneBar {
   /** Extra attributes for the link, e.g. `data-task-id` for a sheet handler. */
   linkData?: Readonly<Record<`data-${string}`, string>>;
   title?: string;
+  /** Extra facts for the hover card ("done · Builder · PR #12"), one per line. */
+  details?: readonly string[];
 }
 
 export interface SlotLane {
@@ -92,9 +94,36 @@ export interface SlotLanesProps {
   bare?: boolean;
   /** Axis tick text for a tick at epoch `at`. Default: minutes from `from` ("5m"). */
   tickLabel?: (at: number) => string;
+  /**
+   * Hovering a bar opens a card (full title, when, how long, `details`) in
+   * place of the native tooltip, which a row of thin ticks made useless.
+   */
+  hoverCard?: boolean;
+}
+
+function formatSpan(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 1) return '<1m';
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`;
+}
+
+/** What a bar's hover card says, as text: pure, so it is testable without a DOM. */
+export function barCard(
+  bar: Pick<SlotLaneBar, 'label' | 'title' | 'start' | 'end' | 'details'>,
+  opts: { now: number | null; clock?: (at: number) => string },
+): { title: string | null; when: string; details: readonly string[] } {
+  const clock = opts.clock ?? ((at: number) => new Date(at).toISOString().slice(11, 16));
+  const end = bar.end ?? opts.now ?? bar.start;
+  const span = formatSpan(end - bar.start);
+  return {
+    title: bar.title && bar.title !== bar.label ? bar.title : null,
+    when: bar.end == null ? `${clock(bar.start)} → now · ${span} so far` : `${clock(bar.start)} → ${clock(bar.end)} · ${span}`,
+    details: bar.details ?? [],
+  };
 }
 
 const LABEL_COL_PX = 104;
+const CARD_PX = 288;
 const ROW_PX = SLOT_LANE_ROW_PX;
 /** Below this share of the axis a live bar's label goes beside it. */
 const OUTSIDE_LABEL_FRACTION = 0.06;
@@ -141,7 +170,7 @@ const END_MARK: Record<'ok' | 'fail' | 'ci', { glyph: string; cls: string }> = {
 export default function SlotLanes({
   lanes, from, to, now = null, nowLabel, phases, phasesLabel = 'Phase', marks, marksLabel,
   onHover, pinnedId = null, testId = 'slot-lanes', className = '',
-  labels = true, bare = false, tickLabel,
+  labels = true, bare = false, tickLabel, hoverCard = false,
 }: SlotLanesProps) {
   const labelPx = labels ? LABEL_COL_PX : 0;
   const pct = (t: number) => `${axisFraction(t, from, to) * 100}%`;
@@ -188,6 +217,32 @@ export default function SlotLanes({
     }
     setEdges(out);
   }, [active]);
+  // The hover card is viewport-fixed, so the overflow-clipped table it sits
+  // in cannot cut it: under the bar, or above it when the viewport has no
+  // room below. Measured after it renders, so its real height decides.
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [card, setCard] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const root = chartRef.current;
+    if (!hoverCard || !root || !hovered) {
+      setCard(c => (c ? null : c));
+      return;
+    }
+    const target = root.querySelector<HTMLElement>(`[data-bar-id="${CSS.escape(hovered.id)}"]`);
+    if (!target) return;
+    const t = target.getBoundingClientRect();
+    const h = cardRef.current?.offsetHeight ?? 140;
+    const left = Math.max(8, Math.min(t.left, window.innerWidth - CARD_PX - 8));
+    const below = t.bottom + 6;
+    setCard({ left, top: below + h > window.innerHeight - 8 && t.top - h - 6 > 8 ? t.top - h - 6 : below });
+  }, [hovered, hoverCard]);
+  // A scroll moves the bar out from under a fixed card; drop it.
+  useLayoutEffect(() => {
+    if (!hoverCard || !hovered) return;
+    const drop = () => setHovered(null);
+    window.addEventListener('scroll', drop, { passive: true, capture: true });
+    return () => window.removeEventListener('scroll', drop, { capture: true });
+  }, [hovered, hoverCard]);
   const activeGroups = new Set([...(active?.deps ?? []), ...(active?.group ? [active.group] : [])]);
 
   const grid = (
@@ -310,11 +365,13 @@ export default function SlotLanes({
                 'data-tone': b.tone,
                 ...(short ? { 'data-shape': 'short', 'aria-label': shortTitle } : {}),
                 ...(claimed ? { 'data-shape': 'claimed', 'aria-label': claimedTitle } : {}),
-                title: claimed ? claimedTitle : short ? shortTitle : b.title,
+                // The card replaces the native tooltip; two at once is noise.
+                title: hoverCard ? undefined : claimed ? claimedTitle : short ? shortTitle : b.title,
                 className: cls,
                 style,
                 onMouseEnter: () => hover(b),
                 onFocus: () => hover(b),
+                ...(hoverCard ? { onMouseLeave: () => hover(null), onBlur: () => hover(null) } : {}),
               } as const;
               return (
                 <span key={b.id}>
@@ -404,6 +461,26 @@ export default function SlotLanes({
           </div>
         </>
       )}
+
+      {hoverCard && hovered && (() => {
+        const c = barCard(hovered, { now, clock: tickLabel });
+        return (
+          <div
+            ref={cardRef}
+            data-testid="lane-bar-card"
+            role="tooltip"
+            className="pointer-events-none fixed z-50 flex flex-col gap-1 border-2 border-border-strong bg-card px-3 py-2.5 font-mono text-[12px] leading-snug shadow-[var(--card-shadow)]"
+            // First paint is unpositioned and hidden: it exists to be measured.
+            style={card ? { left: card.left, top: card.top, width: CARD_PX } : { left: 0, top: 0, width: CARD_PX, visibility: 'hidden' }}
+          >
+            <span className="flex min-w-0 items-center gap-1.5 font-semibold text-text-primary"><BarLabel bar={hovered} /></span>
+            {c.title && <span className="line-clamp-3 text-text-secondary">{c.title}</span>}
+            <span className="tabular-nums text-text-muted">{c.when}</span>
+            {c.details.map(d => <span key={d} className="text-text-secondary">{d}</span>)}
+            {hovered.href && <span className="text-[11px] text-[var(--fleet-faint)]">Click to open</span>}
+          </div>
+        );
+      })()}
 
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-[4] h-full w-full overflow-visible">
         {edges.map((e, i) => (
