@@ -6,7 +6,8 @@
  * Fixtures are illustrative.
  */
 import { describe, expect, it } from 'bun:test';
-import type { MissionCardRow, MissionCardTaskRow } from '@/lib/mission-card-view';
+import { toFeedTask, type MissionCardRow, type MissionCardTaskRow } from '@/lib/mission-card-view';
+import { feedStripOrder } from '@/lib/mission-strip-order';
 import { buildPulseSegments } from '@/lib/mission-pulse';
 import { buildMissionContextBar, missionContextBarFor } from './mission-context-bar';
 
@@ -55,10 +56,12 @@ describe('buildMissionContextBar', () => {
 
   it('the pulse is the same builder output every surface draws, ringed on this task', () => {
     const bar = buildMissionContextBar(mission(tasks), 'b2');
-    expect(bar.segments.map(s => s.taskId)).toEqual(['a1', 'b1', 'b2', 'b3']);
+    // Dependency-first strip order (#3775): same ids, same order as every other surface.
+    const feed = tasks.map(toFeedTask);
     expect(bar.segments.map(s => s.taskId)).toEqual(
-      buildPulseSegments(tasks.map(x => ({ ...x, createdAt: x.createdAt as Date }))).map(s => s.taskId),
+      buildPulseSegments(feed, { order: feedStripOrder(feed) }).map(s => s.taskId),
     );
+    expect([...bar.segments.map(s => s.taskId)].sort()).toEqual(['a1', 'b1', 'b2', 'b3']);
     expect(bar.selectedTaskId).toBe('b2');
   });
 

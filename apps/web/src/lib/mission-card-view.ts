@@ -58,6 +58,7 @@ import {
 import { missionTaskHref, type MissionOrigin } from './mission-task-href';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { deriveMissionIntegrationPr } from './mission-integration-pr';
+import { taskRowsStripOrder } from './mission-strip-order';
 import { isGreenAutoMergePending } from './auto-merge-grace';
 import { deriveCiRedChains } from './ci-red-chain';
 import { continueOnRunnerBlockedReason, deriveLocalStrand, type LocalStrand } from './local-strand';
@@ -631,7 +632,7 @@ export function buildMissionCardView(row: MissionCardRow, opts: BuildMissionCard
 
   // ── Pulse, caption, primary line. ──
   const feedTasks = tasks.map(toFeedTask);
-  const segments = buildPulseSegments(feedTasks);
+  const segments = buildPulseSegments(feedTasks, { order: taskRowsStripOrder(tasks as unknown as Parameters<typeof taskRowsStripOrder>[0], opts.taskIndex) });
   const { caption, done, total } = missionCardCaption(segments, summary.liveWorkers);
   const compact = summary.group === 'completed';
 
