@@ -37,6 +37,31 @@ export const isHeldState = (s: StripState) => HELD.has(s);
 /** Something can happen on it now: not landed, not held. */
 export const isActiveState = (s: StripState) => s !== 'landed' && !HELD.has(s);
 
+/**
+ * The one failed/error bucket (ci_failed, fixing, failed): everywhere a cell's
+ * state is painted — the strip cell, its outline, a tick's digit, a count — it
+ * is this check or `stripTone`, never a second "is this cell red" test.
+ */
+const ERROR: ReadonlySet<StripState> = new Set(['ci_failed', 'fixing', 'failed']);
+export const isErrorState = (s: StripState) => ERROR.has(s);
+
+/**
+ * A cell's colour tone: the one landed/failed/open vocabulary every surface
+ * (strip cell fill, outline, tick digit, drawer border+pill) renders from, so
+ * a failed cell can never read as "open" in one place and "failed" in another.
+ */
+export type StripTone = 'ok' | 'error' | 'open';
+export function stripTone(state: StripState): StripTone {
+  if (state === 'landed') return 'ok';
+  if (isErrorState(state)) return 'error';
+  return 'open';
+}
+
+/** Active slots whose state is the failed/error bucket, in strip order. */
+export function errorIndices(slots: readonly StripSlot[]): number[] {
+  return slots.flatMap((s, i) => (s.kind === 'task' && isErrorState(s.state) ? [i] : []));
+}
+
 const READINESS: Record<StripState, number> = {
   landed: 0, review: 1, running: 2, fixing: 2, waiting: 2, ci_failed: 3, failed: 3, ready: 4, blocked: 5, queued: 6,
 };
