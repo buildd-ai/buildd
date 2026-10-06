@@ -1,3 +1,4 @@
+import { isOpenAsk } from '@/lib/open-ask';
 import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
 import { readGithubApproval } from '@/lib/github-approval';
@@ -1628,7 +1629,7 @@ export default async function HomePage({
             columns: { id: true, taskId: true, waitingFor: true },
             with: {
               task: {
-                columns: { id: true, title: true, missionId: true },
+                columns: { id: true, title: true, status: true, missionId: true },
                 with: { mission: { columns: { id: true, title: true } } },
               },
             },
@@ -1636,7 +1637,7 @@ export default async function HomePage({
           });
           for (const w of waitingInputWorkers) {
             const wf = w.waitingFor as { type: string; prompt: string } | null;
-            if (!wf?.prompt) continue;
+            if (!wf?.prompt || !isOpenAsk(w.task?.status, 'waiting_input')) continue;
             waitingOnYou.push({
               kind: 'answer',
               workerId: w.id,
