@@ -37,6 +37,7 @@ import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
 import type { MigrationCollision } from '@/lib/migration-safety';
 import { POLICY_DEFAULTS, policyValue } from '@/lib/policy-overrides';
+import { resolveTaskPrBase } from '@buildd/core/mission-integration';
 
 /** Public default; read the live value with `policyValue('maxConflictIterations')`. */
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = POLICY_DEFAULTS.maxConflictIterations;
@@ -178,6 +179,13 @@ export interface ConflictRetryInput {
    * merits — reusing the same dedup/cap/dispatch machinery.
    */
   semanticConflict?: SemanticAssessment;
+  /**
+   * The branch the PR is based on, when known — named in the merge step. A
+   * mission-integration PR's base is the integration branch, and merging
+   * `origin/dev` alone leaves GitHub still reporting conflicts once that branch
+   * has moved beyond dev (task 19e95341). Absent: the generic instruction.
+   */
+  prBase?: string | null;
 }
 
 export interface ConflictRetryTask {
@@ -201,6 +209,7 @@ export interface ConflictRetryTask {
  */
 export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
   const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl, migrationCollision, semanticConflict } = params;
+  const prBase = params.prBase?.trim() || null;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -230,10 +239,10 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
       iteration: nextIteration,
     }),
     description: migrationCollision
-      ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision)
+      ? buildMigrationCollisionDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, migrationCollision, prBase)
       : semanticConflict
-        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict)
-        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
+        ? buildSemanticConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, semanticConflict, prBase)
+        : buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations, prBase),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     missionId: originalTask.missionId ?? null,
@@ -290,12 +299,18 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
   };
 }
 
+/** The merge line of a recipe: the PR's real base by name when known. */
+function mergeBaseLine(prBase: string | null, unknownComment: string): string {
+  return prBase ? `git merge origin/${prBase}` : `git merge origin/dev   # ${unknownComment}`;
+}
+
 function buildConflictDescription(
   task: ConflictRetryInput['originalTask'],
   worker: ConflictRetryInput['worker'],
   repoFullName: string,
   iteration: number,
   maxIterations: number,
+  prBase: string | null,
 ): string {
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
 
@@ -306,10 +321,10 @@ function buildConflictDescription(
 ## Instructions
 
 1. You are on branch \`${worker.branch}\`. Your worktree is based on the previous attempt's work.
-2. Fetch and merge the base branch to incorporate upstream changes:
+2. Fetch and merge ${prBase ? `the PR's base branch, \`${prBase}\`` : 'the base branch'} to incorporate upstream changes:
    \`\`\`bash
    git fetch origin
-   git merge origin/dev   # or origin/main — use the PR's actual base branch
+   ${mergeBaseLine(prBase, "or origin/main — use the PR's actual base branch")}
    \`\`\`
 3. Resolve all conflicts on the merits — keep both intents, do NOT use blanket \`--ours\` or \`--theirs\`.
 4. Run the test suite and verify correctness before pushing.
@@ -331,9 +346,11 @@ function buildSemanticConflictDescription(
   iteration: number,
   maxIterations: number,
   assessment: SemanticAssessment,
+  prBase: string | null,
 ): string {
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
-  const base = assessment.baseRef ?? "the PR's base branch";
+  const baseRef = assessment.baseRef ?? prBase;
+  const base = baseRef ?? "the PR's base branch";
   const evidence = (assessment.evidence ?? [])
     .map((e) => `- \`${e.path}\`: ${e.symbols.map((s) => `\`${s}\``).join(', ')}`)
     .join('\n');
@@ -352,7 +369,7 @@ A clean git merge does not mean the two changes agree. This is a semantic confli
 2. Merge the PR's actual base in (a merge commit — the branch is shared, so do not rewrite its history):
    \`\`\`bash
    git fetch origin
-   git merge origin/${assessment.baseRef ?? '<the PR base branch>'}
+   git merge origin/${baseRef ?? '<the PR base branch>'}
    \`\`\`
 3. Read each symbol above as it now stands and reconcile both intents on the merits. If they already agree, say so in your summary and change nothing else.
 4. Run the tests that cover those symbols before pushing.
@@ -370,6 +387,7 @@ function buildMigrationCollisionDescription(
   iteration: number,
   maxIterations: number,
   collision: MigrationCollision,
+  prBase: string | null,
 ): string {
   const prUrl = `https://github.com/${repoFullName}/pull/${worker.prNumber}`;
   const otherPrUrl = `https://github.com/${repoFullName}/pull/${collision.otherPrNumber}`;
@@ -384,7 +402,7 @@ function buildMigrationCollisionDescription(
 2. Merge the base branch in (do NOT rebase):
    \`\`\`bash
    git fetch origin
-   git merge origin/dev   # or the PR's actual base branch
+   ${mergeBaseLine(prBase, "or the PR's actual base branch")}
    \`\`\`
 3. Take dev's \`packages/core/drizzle/meta/_journal.json\` and snapshots wholesale, then drop this PR's colliding \`${collision.file}\` (and its snapshot). Do NOT hand-edit the journal or a snapshot.
 4. Regenerate at an index past BOTH dev's newest migration and PR #${collision.otherPrNumber}'s \`${collision.otherFile}\` (check that PR's branch if it hasn't merged yet — \`gh pr view ${collision.otherPrNumber}\` / \`git show <its-branch>:packages/core/drizzle/meta/_journal.json\`):
@@ -562,7 +580,9 @@ export async function dispatchConflictRetry(
   // branch it may rule out (below).
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
-    columns: { id: true, title: true, description: true, workspaceId: true, context: true, missionId: true, parentTaskId: true, pathManifest: true },
+    columns: { id: true, title: true, description: true, workspaceId: true, context: true, missionId: true, parentTaskId: true, pathManifest: true, taskClass: true, dependsOn: true },
+    // For the PR base named in the merge step (resolveTaskPrBase below).
+    with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
   });
   if (!task) {
     console.warn(`[conflict-retry] task ${taskId} not found — skipping dispatch`);
@@ -732,6 +752,22 @@ export async function dispatchConflictRetry(
     });
   }
 
+  // The base the PR takes — the same function `create_pr` opened it with — so
+  // the merge step names a mission integration branch instead of telling the
+  // agent to merge dev and guess.
+  const taskContext = (task.context as Record<string, unknown> | null) ?? null;
+  const gitConfig = workspace.gitConfig as WorkspaceGitConfig | null;
+  const prBase = resolveTaskPrBase({
+    mission: task.mission ?? null,
+    task: { title: task.title, taskClass: task.taskClass, context: taskContext, dependsOn: task.dependsOn as string[] | null },
+    head: worker.branch,
+    fallbacks: [
+      typeof taskContext?.targetBranch === 'string' ? taskContext.targetBranch : null,
+      gitConfig?.targetBranch,
+      gitConfig?.defaultBranch,
+    ],
+  }).base;
+
   const retryTask = buildConflictRetryTask({
     originalTask: {
       id: task.id,
@@ -748,6 +784,7 @@ export async function dispatchConflictRetry(
     prRepoUrl,
     migrationCollision,
     semanticConflict,
+    prBase,
     ...(params.humanInitiated
       ? {
           maxConflictIterations:

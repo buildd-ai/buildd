@@ -3,7 +3,7 @@
  * real `zstd` CLI to compress/restore the cache tarball; its unit tests do the
  * same to exercise that path for real, so a sandbox without the binary fails
  * those tests even though nothing else in the installer needs it. install.sh
- * is the real upgrade path for the fleet — this checks it provisions zstd a
+ * is the real upgrade path for the fleet — this checks it provisions zstd in a
  * best-effort, non-fatal way, rather than leaving it to whatever happens to be
  * on the base image.
  */

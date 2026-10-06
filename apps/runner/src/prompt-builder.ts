@@ -4,6 +4,7 @@ import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
+import type { BranchBeyondProbe } from './git-clone';
 import { HEARTBEAT_PROTOCOL_BLOCK, shippedPromptText, taskShippedPromptText, designSourceFromContext, type ClaudeAiArtifactAccess } from '@buildd/shared';
 import {
   buildMemoryBlock,
@@ -289,6 +290,13 @@ export interface PromptContext {
   inputAsRetry?: boolean;
   resolvedContextProviders?: string[];
   feedbackMemories?: Array<{ id: string; title: string; content: string }>;
+  /**
+   * Live look at a mission integration branch the worktree was NOT cut from:
+   * does `origin/<branch>` exist now, and how many commits does it carry
+   * beyond `origin/<beyond>` (the ref the worktree was cut from)? Only called
+   * when those two differ. Absent = assume the cut-time state still holds.
+   */
+  probeMissionBase?: (branch: string, beyond: string) => BranchBeyondProbe;
 }
 
 export interface PromptBuildResult {
@@ -327,6 +335,50 @@ export function worktreeLocationLine(worktreePath: string): string {
  * any other worker reads the copy-in buildd artifacts. claude.ai itself is
  * never fetched over HTTP: Cloudflare challenges it.
  */
+/**
+ * The note for a mission-integration task whose worktree was cut from another
+ * ref (the integration branch was missing on the remote at cut time).
+ *
+ * `worktreeBaseRef` is frozen at cut time, so on its own this note can only
+ * ever repeat the cut-time state. That went stale in practice (task 19e95341):
+ * a sibling's `create_pr` created the branch and early-release work merged into
+ * it, while every later prompt still said "do not fetch or reset onto it" — the
+ * conflict retry merged dev alone and GitHub kept reporting conflicts against
+ * the PR's real base. So the branch is probed fresh at render time, and the
+ * "leave it alone" wording is kept only for when it really is still absent (or
+ * the probe cannot tell).
+ */
+export function missionBaseFallbackNote(
+  base: string,
+  actualBase: string,
+  probe: PromptContext['probeMissionBase'],
+): string {
+  let state: BranchBeyondProbe = { state: 'unknown' };
+  if (probe) {
+    try {
+      state = probe(base, actualBase);
+    } catch {
+      state = { state: 'unknown' };
+    }
+  }
+  if (state.state === 'present' && state.commitsAhead > 0) {
+    const n = state.commitsAhead;
+    return `- \`${base}\` was not on the remote when this worktree was cut (so it was cut from `
+      + `\`origin/${actualBase}\`), but it has since been created on the remote with ${n} commit${n === 1 ? '' : 's'} `
+      + `beyond \`origin/${actualBase}\` — the PR's real base. Fetch and merge it `
+      + `(\`git fetch origin ${base} && git merge origin/${base}\`) to pick those up and clear conflicts, `
+      + `not \`origin/${actualBase}\` alone. Merge, do not reset: your branch is already pushed work.`;
+  }
+  if (state.state === 'present') {
+    return `- \`${base}\` was not on the remote when this worktree was cut (so it was cut from `
+      + `\`origin/${actualBase}\`); \`${base}\` now exists on the remote but carries nothing beyond `
+      + `\`origin/${actualBase}\`, so there is nothing extra to merge. \`create_pr\` targets it.`;
+  }
+  return `- \`${base}\` was not on the remote when this worktree was cut, so it `
+    + `was cut from \`origin/${actualBase}\` instead. Do not try to fetch or reset onto it: `
+    + `\`create_pr\` re-creates it from trunk (or falls back to trunk) and records which on the mission feed.`;
+}
+
 export function designSourceSection(
   context: Record<string, unknown> | null,
   access: ClaudeAiArtifactAccess,
@@ -432,11 +484,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
         && actualBase
         && actualBase !== prBaseResolution.base
       ) {
-        gitContext.push(
-          `- \`${prBaseResolution.base}\` was not on the remote when this worktree was cut, so it `
-          + `was cut from \`origin/${actualBase}\` instead. Do not try to fetch or reset onto it: `
-          + `\`create_pr\` re-creates it from trunk (or falls back to trunk) and records which on the mission feed.`,
-        );
+        gitContext.push(missionBaseFallbackNote(prBaseResolution.base!, actualBase, ctx.probeMissionBase));
       }
       gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
       gitContext.push(worktreeLocationLine(worker.worktreePath));

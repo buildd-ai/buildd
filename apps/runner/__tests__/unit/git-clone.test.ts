@@ -17,6 +17,7 @@ import { DEEP_ORIGIN_COMMITS, git, makeDeepOrigin, remoteBranches } from '../fix
 import {
   CLOUD_BRANCH_FETCH_DEPTH,
   ensureRemoteBranch,
+  probeBranchBeyond,
   remoteBranchFetchArgs,
   type GitCwdRun,
   CLONE_RETRY_BUDGET_MS,
@@ -368,5 +369,58 @@ describe('ensureRemoteBranch: origin/<branch> on demand in a narrow clone', () =
     const host = join(dir, 'host');
     cloneRepo(url, host, { env: {}, log: () => {} });
     expect(remoteBranchFetchArgs(host, 'mission/x')).toEqual(['fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/mission/x:refs/remotes/origin/mission/x']);
+  });
+});
+
+// A mission integration branch can appear on the remote after a worktree was
+// cut from trunk in its absence. The prompt asks, at render time, whether it is
+// there now and what it carries beyond the cut base (task 19e95341).
+describe('probeBranchBeyond: does origin/<branch> exist now, and how far beyond <beyond>', () => {
+  let dir: string;
+  let origin: string;
+  let url: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'probe-beyond-'));
+    ({ origin, url } = makeDeepOrigin(dir));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('present: counts the commits on the branch that the cut base lacks', () => {
+    const path = join(dir, 'host');
+    cloneRepo(url, path, { env: {}, log: () => {} });
+    // mission/x = main~3 + 3 own; dev = main~5 + 2 own → main~4, main~3 and 3 own.
+    expect(probeBranchBeyond(path, 'mission/x', 'dev')).toEqual({ state: 'present', commitsAhead: 5 });
+    expect(probeBranchBeyond(path, 'dev', 'dev')).toEqual({ state: 'present', commitsAhead: 0 });
+  });
+
+  test('a branch created on the remote after the clone is fetched fresh, not read from a stale ref', () => {
+    const path = join(dir, 'host');
+    cloneRepo(url, path, { env: {}, log: () => {} });
+    expect(probeBranchBeyond(path, 'mission/late', 'dev')).toEqual({ state: 'missing' });
+    git(origin, 'branch', 'mission/late', 'mission/x');
+    expect(probeBranchBeyond(path, 'mission/late', 'dev')).toEqual({ state: 'present', commitsAhead: 5 });
+  });
+
+  test('works in a narrow cloud clone too', () => {
+    const path = join(dir, 'cloud');
+    cloneRepo(url, path, { env: { BUILDD_EXECUTOR: 'cloud' }, branch: 'dev', log: () => {} });
+    const r = probeBranchBeyond(path, 'mission/x', 'dev');
+    expect(r.state).toBe('present');
+    expect(r.state === 'present' && r.commitsAhead).toBeGreaterThan(0);
+  });
+
+  test('a fetch that fails for another reason, with no local ref: unknown', () => {
+    const run: GitCwdRun = (args) => args[0] === 'fetch'
+      ? { status: 128, stdout: '', stderr: 'fatal: unable to access: Could not resolve host', signal: null }
+      : { status: 1, stdout: '', stderr: '', signal: null };
+    expect(probeBranchBeyond('/nowhere', 'mission/x', 'dev', { run })).toEqual({ state: 'unknown' });
+  });
+
+  test('unsafe names are refused without running anything', () => {
+    const calls: string[][] = [];
+    const run: GitCwdRun = (args) => { calls.push(args); return { status: 0, stdout: '', stderr: '', signal: null }; };
+    expect(probeBranchBeyond('/nowhere', '--upload-pack=x', 'dev', { run })).toEqual({ state: 'unknown' });
+    expect(probeBranchBeyond('/nowhere', 'mission/x', '--upload-pack=x', { run })).toEqual({ state: 'unknown' });
+    expect(calls).toEqual([]);
   });
 });
