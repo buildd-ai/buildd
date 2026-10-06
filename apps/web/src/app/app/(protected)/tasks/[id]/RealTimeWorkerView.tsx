@@ -1,5 +1,7 @@
 'use client';
 
+import { isOpenAsk } from '@/lib/open-ask';
+
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
@@ -16,7 +18,7 @@ import { showTokenCount } from './milestone-log';
 import { unifyWorkerQuestion, type QuestionNoteLike } from './question-hero';
 import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
 import { useNeedsInput } from '@/components/needs-input-context';
-import { isAnswerableWaitingFor, type NotWaitingReason } from '@/lib/answer-resume';
+import type { NotWaitingReason } from '@/lib/answer-resume';
 import { answerOutcomeLines, classifyRespondReply } from './respond/submit-answer';
 import type { WorkerMilestone, WorkerWaitingFor } from '@buildd/core/db/schema';
 
@@ -119,6 +121,7 @@ interface Props {
    * one instead of two.
    */
   taskId: string;
+  taskStatus?: string;
   statusColors?: Record<string, string>;
   /**
    * The tier this task was assigned (`Premium` / `Standard` / `Budget`, or
@@ -142,7 +145,7 @@ interface Props {
 // trees can be reconstructed; see @/lib/agent-tree.
 type TaskProgressEntry = AgentProgressEntry;
 
-export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, questionNote = null, roleName = null, nowMs: nowProp }: Props) {
+export default function RealTimeWorkerView({ initialWorker, taskId, taskStatus = 'running', modelTier, questionNote = null, roleName = null, nowMs: nowProp }: Props) {
   const router = useRouter();
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const lastStatusRef = useRef(initialWorker.status);
@@ -168,7 +171,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
   const [taskProgress, setTaskProgress] = useState<TaskProgressEntry[]>([]);
   // The question is this page's hero: the global "…needs your input" banner
   // naming it above the hero only repeats it.
-  useHideNeedsInputWhileOpen(worker.waitingFor ? taskId : null);
+  useHideNeedsInputWhileOpen(worker.waitingFor && isOpenAsk(taskStatus, worker.status) ? taskId : null);
 
   // When the server component re-renders (via router.refresh()), pick up fresh
   // worker data from the updated initialWorker prop.
@@ -366,13 +369,8 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
     </div>
   );
 
-  // Waiting for input — render whenever the ask is still answerable, even if
-  // the worker was marked failed/error (inputAsRetry mode aborts the session
-  // after AskUserQuestion, leaving waitingFor populated). A permission prompt
-  // is only answerable while the session is parked on it — the same rule
-  // /respond enforces. The question is the hero; everything else about the run
-  // folds away beneath it.
-  if (worker.waitingFor && isAnswerableWaitingFor(worker.status, worker.waitingFor)) {
+  // Retained questions on ended workers or terminal tasks are history.
+  if (worker.waitingFor && isOpenAsk(taskStatus, worker.status)) {
     const question = unifyWorkerQuestion(worker.waitingFor, questionNote);
     const askedTs = questionNote?.createdAt ? new Date(questionNote.createdAt).getTime() : now.updatedTs;
     return (

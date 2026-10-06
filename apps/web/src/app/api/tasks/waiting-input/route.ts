@@ -1,3 +1,4 @@
+import { isTerminalTaskStatus } from '@buildd/shared';
 import { NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
@@ -43,7 +44,7 @@ export async function GET() {
 
     // Only include non-terminal tasks
     const activeTasks = waitingTasks
-      .filter(t => t.status !== 'completed' && t.status !== 'failed')
+      .filter(t => !isTerminalTaskStatus(t.status))
       .map(t => {
         // A worker still holding its question wins over one already answered.
         const mine = relevantWorkers.filter(w => w.taskId === t.id);

@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration';
+import { knownColumns, latestSnapshotPath, textColumns } from './known-columns';
 
 /**
  * scrub-pii.sql rewrites a prod clone before Visual QA screenshots it, and the
@@ -14,6 +15,10 @@ import { MISSION_PR_TASK_PREFIX } from '../../packages/core/mission-integration'
  * DELETEs or TRUNCATEs, or (c) listed below as structurally safe. A string-
  * literal-union `.$type<'a' | 'b'>()` column is an enum and counts as (c).
  * Adding a column without a decision fails here.
+ *
+ * That only covers this checkout's schema. Columns prod has and this checkout
+ * does not (a branch lagging prod) are overwritten by scrub-pii.sql's last
+ * block, from scripts/qa/known-columns.ts; see the tests for it below.
  */
 
 const root = join(__dirname, '..', '..');
@@ -358,6 +363,46 @@ describe('scrub-pii.sql covers the schema', () => {
     expect(qaStr.indexOf('qa_is_ident')).toBeLessThan(qaStr.indexOf('THEN s'));
     expect(sqlSrc).toMatch(/jsonb_object_agg\(pg_temp\.qa_key\(k\)/);
     expect(cov.assigned.get('workspace_skills')?.has('allowed_tools')).toBe(true);
+  });
+
+  test('the schema parser sees every text-like column the latest Drizzle snapshot has', () => {
+    // A column declared in a shape the line regex misses would get neither a
+    // decision here nor a place on the known list, silently.
+    const seen = new Set(schema.cols.map(c => `${c.table}.${c.column}`));
+    expect(knownColumns().filter(c => !seen.has(c))).toEqual([]);
+  });
+
+  // The coverage tests above only see this checkout's schema.ts, but the clone
+  // is prod's schema plus this branch's migrations. A mission branch cut before
+  // post_session_runs reached prod had no decision for it, so post_session_runs.facts
+  // went to the guard raw. Everything this checkout doesn't know is overwritten.
+  test('text columns the checkout does not know (prod ahead of the branch) are overwritten', () => {
+    expect(cov.top).toContain("SET qa.known = :'known';");
+    const block = /DO \$unknown\$[\s\S]*?\$unknown\$;/.exec(sqlSrc)?.[0] ?? '';
+    // Fails closed on an empty or junk list, instead of wiping every column.
+    expect(block).toMatch(/IF NOT coalesce\('tasks\.title' = ANY \(known\), false\) THEN\s+RAISE EXCEPTION/);
+    // Same column types the guard scans.
+    for (const t of ["'text'", "'character varying'", "'character'", "'json'", "'jsonb'", "'_text'", "'_varchar'"]) {
+      expect(block).toContain(t);
+    }
+    expect(block).toContain("c.table_schema = 'public'");
+    expect(block).toContain('NOT ((c.table_name || \'.\' || c.column_name) = ANY (known))');
+    // Per-row placeholder for NOT NULL columns: a unique index cannot collide.
+    expect(block).toContain('md5(%I::text)');
+    expect(block).toContain('UPDATE %I SET %I = %s');
+    // Inside the one transaction.
+    expect(sqlSrc.indexOf('DO $unknown$')).toBeLessThan(sqlSrc.lastIndexOf('COMMIT;'));
+  });
+
+  test('a branch behind prod leaves the newer table off the known list', () => {
+    // Replays the incident: the snapshot a lagging branch carries has no
+    // post_session_runs, so its facts column is not "known" and gets overwritten.
+    const snap = JSON.parse(readFileSync(latestSnapshotPath(join(root, 'packages/core/drizzle')), 'utf8'));
+    expect(textColumns(snap)).toContain('post_session_runs.facts');
+    delete snap.tables['public.post_session_runs'];
+    const lagging = textColumns(snap);
+    expect(lagging).not.toContain('post_session_runs.facts');
+    expect(lagging).toContain('tasks.title');
   });
 
   test('the CI QA user is designated before the general user scrub', () => {

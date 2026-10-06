@@ -71,11 +71,22 @@ describe('RealTimeWorkerView — needs-input answering', () => {
     expect(html).toContain('worker-needs-input-freetext');
   });
 
-  test('error status with an unanswered question still renders the answer box', () => {
+  test('error status with a retained question does not render an answer box', () => {
     const html = render(
       baseWorker({ status: 'error', waitingFor: { type: 'question', prompt: 'Now what?', options: [] } }),
     );
-    expect(html).toContain('worker-needs-input-freetext');
+    expect(html).not.toContain('worker-needs-input-freetext');
+  });
+
+  test('completed task with a closed PR and retained recommended question has no open ask', () => {
+    const html = renderToStaticMarkup(
+      <RealTimeWorkerView taskId="task-1" taskStatus="completed"
+        initialWorker={baseWorker({ status: 'waiting_input', prLifecycleStatus: 'closed',
+          waitingFor: { type: 'question', prompt: 'Which approach?', options: [{ label: 'Proceed', recommended: true }] },
+        }) as any} />,
+    );
+    expect(html).not.toContain('worker-needs-input-banner');
+    expect(html).not.toContain('worker-needs-input-freetext');
   });
 
   test('worker-needs-input-banner testid survives unchanged', () => {

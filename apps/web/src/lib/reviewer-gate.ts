@@ -32,6 +32,8 @@
 import { derivePrReviewStatus } from './pr-review-status';
 import { evaluateReviewVerdictGate } from './review-verdict-gate';
 import { isGreenAutoMergePending } from './auto-merge-grace';
+import type { LandingOwnership } from './pr-landing-ownership';
+export { resolveLandingOwnership, landingModeOf } from './pr-landing-ownership';
 
 /**
  * Who owns the next move on this PR.
@@ -108,6 +110,16 @@ export interface ReviewerGateInput {
    * ago is still mid-merge, not held.
    */
   prLifecycleUpdatedAt?: Date | null;
+  /**
+   * Who owns the landing, from `resolveLandingOwnership` (the marker + handoff
+   * landPr writes). The ONE place "the platform is landing this" is decided:
+   * `platform` keeps an approved PR out of Needs You (it renders as in-flight
+   * auto-merge) however green it looks in a snapshot, and `human` is landPr
+   * having handed the PR over, with its reason. Absent/`unmanaged` changes nothing.
+   */
+  landing?: LandingOwnership;
+  /** The current head's review is approved. Platform-owned landing only applies once it is. */
+  reviewApproved?: boolean;
 }
 
 // The grace window and its predicate live in a pure module: the mission pulse
@@ -195,6 +207,10 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   if (input.escalationReason != null) {
     return { actor: 'human', reason: input.escalationReason };
   }
+  // landPr itself handed the PR over: the next move is a person's, with its reason.
+  if (input.landing?.owner === 'human') {
+    return { actor: 'human', reason: input.landing.reason };
+  }
   if (input.approvalSummary != null) {
     return { actor: 'human', reason: 'Reviewer approved · awaiting your merge' };
   }
@@ -219,6 +235,12 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
       actor: 'platform',
       reason: 'Merges into the mission integration branch. The mission PR is the review gate.',
     };
+  }
+
+  // Platform-owned landing: review is satisfied and the platform lands it
+  // (refreshing from base, re-checking, merging). In flight, never a MERGE card.
+  if (input.landing?.owner === 'platform' && input.reviewApproved && !input.reviewerTask?.hasLiveWorker) {
+    return { actor: 'platform', platformState: 'auto_merge', reason: input.landing.reason };
   }
 
   const rt = input.reviewerTask;
@@ -374,4 +396,58 @@ export function resolveReviewInFlight(input: ReviewInFlightInput): 'queued' | 'r
   const threshold = input.queuedThresholdMinutes ?? DEFAULT_QUEUED_THRESHOLD_MINUTES;
   if (minutesSince(rt.createdAt, input.now) > threshold) return null;
   return status.state === 'queued' ? 'queued' : 'reviewing';
+}
+
+/** A review is an independent human action, never permission to merge. */
+export interface HumanPrReview {
+  label: 'Review on GitHub' | 'Approve on GitHub';
+  reason: string;
+}
+export interface GithubApprovalFacts {
+  reviewDecision: string | null;
+  /** Latest effective human approval of the live head, excluding bots. */
+  humanApproved: boolean;
+}
+export function resolveHumanPrReview(input: {
+  reviewerTask: StoredVerdictFallbackInput['reviewerTask'];
+  currentHeadSha: string | null;
+  escalationReason: string | null;
+  /** An explicit human handoff, rather than a verdict-gate refusal reason. */
+  hasEscalationNote?: boolean;
+  policyTier: string;
+  github: GithubApprovalFacts | null;
+}): HumanPrReview | null {
+  const status = derivePrReviewStatus({
+    reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null,
+    worker: null,
+  });
+  // GitHub's aggregate decision includes required reviewers and code owners.
+  // A human approval alone must not clear a remaining required approval.
+  if (input.github?.reviewDecision === 'REVIEW_REQUIRED' || input.github?.reviewDecision === 'CHANGES_REQUESTED') {
+    return { label: 'Approve on GitHub', reason: status.state === 'escalated'
+      ? `Review required · ${status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human'}`
+      : 'GitHub approval required' };
+  }
+  if (input.github?.humanApproved) return null;
+  const gate = evaluateReviewVerdictGate(status, input.currentHeadSha);
+  if (input.policyTier === 'human') return { label: 'Review on GitHub', reason: 'Human approval required' };
+  if (status.state === 'escalated' && gate.kind !== 'in_flight') {
+    return { label: 'Review on GitHub', reason: `Review required · ${status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human'}` };
+  }
+  if (input.hasEscalationNote && input.escalationReason && status.state !== 'approved' && gate.kind !== 'in_flight') {
+    return { label: 'Review on GitHub', reason: `Review required · ${input.escalationReason}` };
+  }
+  return null;
+}
+
+/** Home manual readiness: canonical agent approval or a satisfied human escalation.
+ * Omit GitHub facts when checking eligibility for unattended merging. */
+export function isCurrentReviewApproved(input: Pick<StoredVerdictFallbackInput, 'reviewerTask' | 'currentHeadSha'> & { github?: GithubApprovalFacts | null }): boolean {
+  const status = derivePrReviewStatus({ reviewTask: input.reviewerTask ? { id: '', ...input.reviewerTask } : null, worker: null });
+  // A current human approval satisfies an escalation's review handoff. This
+  // only changes Home's manual action: merge doors still require an explicit
+  // human override of the stored escalation, never an unattended merge.
+  if (status.state === 'escalated' && input.github?.humanApproved &&
+      input.github.reviewDecision !== 'REVIEW_REQUIRED' && input.github.reviewDecision !== 'CHANGES_REQUESTED') return true;
+  return status.state === 'approved' && !evaluateReviewVerdictGate(status, input.currentHeadSha).blocks;
 }

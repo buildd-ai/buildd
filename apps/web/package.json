@@ -1,6 +1,6 @@
 {
   "name": "@buildd/web",
-  "version": "0.282.0",
+  "version": "0.284.0",
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",
@@ -14,7 +14,8 @@
     "lint": "next lint",
     "doctor": "bun run scripts/doctor.ts",
     "doctor:vercel": "bun run scripts/doctor.ts --vercel",
-    "reconcile:pr-state": "bun run scripts/reconcile-pr-merge-state.ts"
+    "reconcile:pr-state": "bun run scripts/reconcile-pr-merge-state.ts",
+    "chat-retro:visible-fixture": "bun --preload ../../scripts/stub-server-only.ts scripts/chat-retro-visible-fixture.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.65",

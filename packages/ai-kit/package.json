@@ -21,6 +21,8 @@
     "tool-permissions"
   ],
   "exports": {
+    "./models/provider-keys": "./src/models/provider-keys.ts",
+    "./models/routes": "./src/models/routes.ts",
     "./models": "./src/models/index.ts",
     "./policy": "./src/policy/index.ts",
     "./decide": "./src/decide/index.ts",
