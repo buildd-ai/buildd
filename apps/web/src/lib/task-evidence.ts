@@ -21,6 +21,7 @@ import {
   parseBashTraceExcerpt,
   verifyFamilyOf,
 } from '@buildd/core/bash-failure-trace';
+import { DISPATCH_MODEL_REJECTED_PATTERN } from '@buildd/core/dispatch-model-guard';
 import { cleanLogText, redactLogText } from '@/lib/ci-failure-excerpts';
 
 export const EVIDENCE_MAX_KEY_LINES = 40;
@@ -217,8 +218,12 @@ export function buildTaskEvidence(
 
   const failures = bashFailures(input.traces);
   const recent = failures.slice(-RECENT_FAILURES_FOR_KEY_LINES);
+  // A claim-time model substitution is background, not a cause: the run went
+  // ahead on the fallback model. Left in, it led keyLines and pushed the
+  // task's own error out.
   const otherTraces = input.traces.filter(
-    t => t.pattern !== BASH_FAILURE_PATTERN && t.pattern !== BASH_RECOVERED_PATTERN,
+    t => t.pattern !== BASH_FAILURE_PATTERN && t.pattern !== BASH_RECOVERED_PATTERN &&
+      t.pattern !== DISPATCH_MODEL_REJECTED_PATTERN,
   );
 
   const traceText = [

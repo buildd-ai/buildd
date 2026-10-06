@@ -4,6 +4,10 @@ import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from './api-auth';
 import { canMintAdminTaskToken, isTaskToken, missingTaskTokenScopes, taskTokenKeyBinding, verifyTaskToken } from './task-token';
 import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
+import {
+  delegationAllows, readScheduleDelegation,
+  type ScheduleDelegationCapability, type ScheduleDelegationGrant,
+} from '@buildd/core/token-delegation';
 
 /**
  * Authentication for the few routes a cloud container's per-task token may
@@ -29,9 +33,16 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 
 export interface TaskScope {
   taskId: string;
-  /** The task's workspace: the only one the token may reach. */
+  /** The task's workspace: the only one the token may reach, beyond `delegations`. */
   workspaceId: string;
   expiresAt: number;
+  /**
+   * Explicit extra reach from the schedule that spawned the task
+   * (packages/core/token-delegation.ts), already narrowed to workspaces of
+   * the task's own team. Empty for any task no delegating schedule spawned.
+   * Only `taskScopeAllowsDelegated` reads it.
+   */
+  delegations?: ScheduleDelegationGrant[];
 }
 
 type ApiAccount = NonNullable<Awaited<ReturnType<typeof authenticateApiKey>>>;
@@ -59,14 +70,54 @@ export async function authenticateTaskScopedCaller(
   // An admin token stays admin only while its minting key is: demoting the
   // key ends the admin tokens it minted rather than quietly downgrading them.
   if (claims.level === 'admin' && !canMintAdminTaskToken(account)) return null;
+  const delegations = await loadScheduleDelegations(claims.taskId, claims.workspaceId, account.teamId);
   return {
     ...account,
     scopes: null,
     workspaceIds: null,
     level: claims.level,
     hostRunner: false,
-    taskScope: { taskId: claims.taskId, workspaceId: claims.workspaceId, expiresAt: claims.expiresAt },
+    taskScope: {
+      taskId: claims.taskId, workspaceId: claims.workspaceId, expiresAt: claims.expiresAt,
+      ...(delegations.length ? { delegations } : {}),
+    },
   };
+}
+
+/**
+ * The delegation of the schedule that spawned this task, if any. Read on every
+ * request, so clearing it on the schedule ends the reach at once. Narrowed
+ * here, whatever the row says, to workspaces of the task's own team, which is
+ * also the minting account's team: a grant can never reach across teams. Any
+ * error reads as no delegation (fail closed).
+ */
+async function loadScheduleDelegations(taskId: string, workspaceId: string, accountTeamId: string | null | undefined): Promise<ScheduleDelegationGrant[]> {
+  try {
+    const task = await db.query.tasks.findFirst({
+      where: (t, { eq: eqOp }) => eqOp(t.id, taskId),
+      columns: { workspaceId: true, scheduleId: true },
+    });
+    if (!task?.scheduleId || task.workspaceId !== workspaceId) return [];
+    const schedule = await db.query.taskSchedules.findFirst({
+      where: (s, { eq: eqOp }) => eqOp(s.id, task.scheduleId!),
+      columns: { workspaceId: true, delegation: true },
+    });
+    // The grant belongs to a schedule of the task's own workspace, or to nothing.
+    if (!schedule || schedule.workspaceId !== workspaceId) return [];
+    const grants = readScheduleDelegation(schedule.delegation);
+    if (!grants.length) return [];
+    const rows = await db.query.workspaces.findMany({
+      where: (w, { inArray: inArrayOp }) => inArrayOp(w.id, [workspaceId, ...grants.map(g => g.workspaceId)]),
+      columns: { id: true, teamId: true },
+    });
+    const ownTeam = rows.find(r => r.id === workspaceId)?.teamId;
+    if (!ownTeam || (accountTeamId && ownTeam !== accountTeamId)) return [];
+    const sameTeam = new Set(rows.filter(r => r.teamId === ownTeam).map(r => r.id));
+    return grants.filter(g => sameTeam.has(g.workspaceId));
+  } catch (err) {
+    console.warn('[task-token-auth] schedule delegation lookup failed; none applied:', (err as Error)?.message ?? err);
+    return [];
+  }
 }
 
 /**
@@ -96,6 +147,28 @@ export function taskScopeAllowsWorker(account: { taskScope?: TaskScope }, worker
 export function taskScopeAllowsWorkspace(account: { taskScope?: TaskScope }, workspaceId: string | null | undefined): boolean {
   if (!account.taskScope) return true;
   return !!workspaceId && workspaceId === account.taskScope.workspaceId;
+}
+
+/**
+ * `taskScopeAllowsWorkspace`, widened by exactly one delegated capability:
+ * true unless the caller is a task token and `workspaceId` is neither its
+ * task's workspace nor one its schedule's delegation grants `capability` on.
+ * For the few routes that serve a delegated capability (see
+ * packages/core/token-delegation.ts); every other route keeps
+ * `taskScopeAllowsWorkspace`, so a delegation opens nothing else.
+ */
+export function taskScopeAllowsDelegated(
+  account: { taskScope?: TaskScope },
+  workspaceId: string | null | undefined,
+  capability: ScheduleDelegationCapability,
+): boolean {
+  if (taskScopeAllowsWorkspace(account, workspaceId)) return true;
+  return delegationAllows(account.taskScope?.delegations, workspaceId, capability);
+}
+
+/** True when the caller is a task token reaching a workspace other than its own (only a delegation allows that). */
+export function isDelegatedReach(account: { taskScope?: TaskScope }, workspaceId: string | null | undefined): boolean {
+  return !!account.taskScope && !!workspaceId && workspaceId !== account.taskScope.workspaceId;
 }
 
 /**
@@ -178,19 +251,40 @@ export async function taskScopeAllowsWorkerId(
 }
 
 /**
- * True unless the caller is a task token and `task` is neither its own task
- * nor, for an orchestration (admin) token, a task on its own task's mission
- * in its own workspace. For reading and steering sibling tasks: approving or
- * rejecting their plans, instructing their workers. A worker-level token
- * reaches only its own task, exactly as `taskScopeAllowsTask`.
+ * True unless the caller is a task token and `task` is neither its own task,
+ * nor a child task of its own task, nor, for an orchestration (admin) token,
+ * a task on its own task's mission in its own workspace. For reading and
+ * steering sibling tasks: approving or rejecting their plans, instructing
+ * their workers. A worker-level token reaches its own task and its child
+ * tasks.
  */
 export async function taskScopeAllowsMissionTask(
   account: { level?: string | null; taskScope?: TaskScope },
-  task: { id: string; workspaceId: string | null; missionId: string | null },
+  task: { id: string; workspaceId: string | null; missionId: string | null; parentTaskId?: string | null },
 ): Promise<boolean> {
   if (!account.taskScope) return true;
   if (task.id === account.taskScope.taskId) return true;
+  // Worker-level tokens can also read their own child tasks
+  if (task.parentTaskId === account.taskScope.taskId && task.workspaceId === account.taskScope.workspaceId) return true;
   if (!isOrchestrationTaskToken(account)) return false;
   if (task.workspaceId !== account.taskScope.workspaceId || !task.missionId) return false;
   return taskScopeAllowsMission(account, task.missionId);
+}
+
+/**
+ * Read-only widening of `taskScopeAllowsMissionTask`: a worker-level task token
+ * may also READ any task in its own workspace, the
+ * same tasks `list_tasks` shows it. Writes keep the stricter rule above.
+ */
+export async function taskScopeAllowsMissionTaskRead(
+  account: { level?: string | null; taskScope?: TaskScope },
+  task: { id: string; workspaceId: string | null; missionId: string | null; parentTaskId?: string | null },
+): Promise<boolean> {
+  if (await taskScopeAllowsMissionTask(account, task)) return true;
+  if (!account.taskScope) return true;
+  // list_tasks and recall already show a task token every task in its own
+  // workspace; get_task answering 404 for one of them (e.g. a reviewer reading
+  // the builder task it reviews, which sits on no mission) sent callers off
+  // to guess. The workspace is the same boundary list_tasks enforces.
+  return !!task.workspaceId && task.workspaceId === account.taskScope.workspaceId;
 }

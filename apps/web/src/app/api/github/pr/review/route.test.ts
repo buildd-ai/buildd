@@ -399,7 +399,7 @@ describe('POST /api/github/pr/review — adoption', () => {
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
     expect(mockAppendPrActivity.mock.calls[0][0]).toMatchObject({
       prNumber: 42,
-      entry: { kind: 'reviewing' },
+      entry: { kind: 'review_queued' },
     });
   });
 

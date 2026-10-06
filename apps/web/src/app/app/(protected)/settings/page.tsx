@@ -1,7 +1,8 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { SETTINGS_NAV, legacySettingsTarget } from '@/lib/settings-nav';
+import { isBillingEnforced } from '@buildd/core/entitlements';
+import { legacySettingsTarget, settingsNavFor } from '@/lib/settings-nav';
 import LegacyAnchorRedirect from './_components/LegacyAnchorRedirect';
 
 export const dynamic = 'force-dynamic';
@@ -31,7 +32,7 @@ export default async function SettingsIndexPage({
       <LegacyAnchorRedirect />
       <div className="max-w-2xl space-y-7">
         <h1 className="hidden md:block text-xl font-semibold text-text-primary">Settings</h1>
-        {SETTINGS_NAV.map((group) => (
+        {settingsNavFor({ billing: isBillingEnforced() }).map((group) => (
           <section key={group.label} aria-labelledby={`settings-group-${group.label}`}>
             <h2 id={`settings-group-${group.label}`} className="section-label mb-2">{group.label}</h2>
             <ul className="card divide-y divide-border-default" data-testid="settings-index-group">

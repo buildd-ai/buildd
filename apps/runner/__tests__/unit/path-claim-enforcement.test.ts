@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { execSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync, symlinkSync, statSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { CLOUD_BRANCH_FETCH_DEPTH, cloneRepo } from '../../src/git-clone';
@@ -272,6 +272,25 @@ describe('sweepWorktreeChanges (real git)', () => {
     const sweep = sweepWorktreeChanges(join(tmp, 'not-a-repo'), 'origin/dev');
     expect(sweep.error).toBeDefined();
     expect(sweep.paths).toEqual([]);
+  });
+
+  // This sweep runs on every sync tick against the worker's own live
+  // worktree, concurrently with whatever the agent itself is doing there.
+  // Plain `git status`/`git diff` opportunistically rewrite the on-disk
+  // index to cache fresh stat info — taking index.lock and racing an agent
+  // `git add`/`git commit` in the same worktree for it. Force exactly the
+  // stat mismatch that triggers that rewrite, then prove the sweep's git
+  // calls disable it (GIT_OPTIONAL_LOCKS=0) by asserting the index file
+  // itself is untouched.
+  test('never rewrites the on-disk index, so it cannot take index.lock from a concurrent agent commit', () => {
+    const indexPath = join(work, '.git', 'index');
+    const before = statSync(indexPath).mtimeMs;
+    const future = Date.now() / 1000 + 10;
+    utimesSync(join(work, 'src/keep.ts'), future, future);
+
+    sweepWorktreeChanges(work, 'origin/mission/m-1');
+
+    expect(statSync(indexPath).mtimeMs).toBe(before);
   });
 
   test('refreshBaseRef fetches the base so a moved mission branch is measured correctly', async () => {

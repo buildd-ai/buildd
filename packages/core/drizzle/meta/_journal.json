@@ -1660,6 +1660,27 @@
       "when": 1791201037176,
       "tag": "0242_silky_next_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1791269460754,
+      "tag": "0245_parallel_ted_forrester",
+      "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1791285404474,
+      "tag": "0246_perfect_beast",
+      "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1791289248947,
+      "tag": "0248_powerful_maddog",
+      "breakpoints": true
     }
   ]
 }

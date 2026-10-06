@@ -30,20 +30,21 @@
  * - The actions are `TaskActionZone`, the renderer the task sheet and the
  *   task page mount, from the board model already loaded (no fetch on select).
  */
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatAge, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { taskActionPhase, type MissionExecutor } from '@/lib/task-actions';
 import {
-  activeIndices, DENSE_STRIP_CELLS, defaultStripSelection, heldCount, heldIndices, nextOpenIndex, slotIndexOf, slotMarks,
-  stepIndex, stripBlockerCount, stripCaretLeft, stripMarks, stripOrdinal, stripSelectionReason, stripSlots, stripTick,
-  type StripSlot, type StripState,
+  activeIndices, DENSE_STRIP_CELLS, defaultStripSelection, errorIndices, heldCount, heldIndices, nextOpenIndex,
+  slotIndexOf, slotMarks, stepIndex, stripBlockerCount, stripCaretLeft, stripMarks, stripOrdinal, stripSelectionReason,
+  stripSlots, stripTick, stripTone, type StripSlot, type StripState, type StripTone,
 } from '@/lib/mission-task-strip';
 import { useMissionStrip } from '@/components/missions/mission-strip-context';
 import {
-  LandedMeter, RoleGlyph, SectionLabel, STRIP_DRAWER_ID, stripTone, taskSheetHref,
-  type BoardLinkContext, type StripTone,
+  LandedMeter, RoleGlyph, SectionLabel, STRIP_DRAWER_ID, TONE_BG, TONE_BORDER, TONE_TEXT, taskSheetHref,
+  type BoardLinkContext,
 } from './MissionBoardParts';
 import TaskActionZone from './TaskActionZone';
 
@@ -67,22 +68,6 @@ export interface LandedStripProps {
 const STATUS_PILL: Record<StripState, string> = {
   landed: 'Landed', review: 'In review', running: 'Running', waiting: 'Needs you',
   ci_failed: 'CI failed', fixing: 'Fixing', failed: 'Failed', ready: 'Ready', blocked: 'Blocked', queued: 'Queued',
-};
-
-const TONE_BORDER: Record<StripTone, string> = {
-  ok: 'border-status-success',
-  error: 'border-status-error',
-  open: 'border-accent',
-};
-const TONE_BG: Record<StripTone, string> = {
-  ok: 'bg-status-success',
-  error: 'bg-status-error',
-  open: 'bg-accent',
-};
-const TONE_TEXT: Record<StripTone, string> = {
-  ok: 'text-status-success',
-  error: 'text-status-error',
-  open: 'text-accent-text',
 };
 
 const STEP_BTN = 'inline-flex h-11 items-center justify-center border-[1.5px] border-border-default font-mono text-text-primary hover:bg-surface-3 disabled:opacity-40';
@@ -118,6 +103,10 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
   const marks = slotMarks(slots, selection.marks, sel);
   // Next open cycles through active cells only (NX-1); held ones are skipped.
   const active = activeIndices(slots);
+  // Failed is its own bucket (TONE-1): "N open" never silently counts a
+  // failed cell as open, the same confusion the strip's own fill once had.
+  const failed = errorIndices(slots);
+  const openOnly = active.length - failed.length;
   const held = heldCount(slots);
   const target = active.length > 0 ? nextOpenIndex(active, sel) : (heldIndices(slots)[0] ?? null);
   const tone = stripTone(slot.state);
@@ -126,6 +115,11 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
     ? (held > 0 ? `Nothing open · ${held} held` : 'All tasks landed')
     : target === sel ? `Only open task · ${stripTick(sel)}` : `Next open · ${stripTick(target!)}`;
   const gap = n > DENSE_STRIP_CELLS ? '[--strip-gap:1px]' : `[--strip-gap:4px] ${compact ? '' : 'md:[--strip-gap:6px]'}`;
+  const openJumpLabel = [
+    openOnly > 0 ? `${openOnly} open` : null,
+    failed.length > 0 ? `${failed.length} failed` : null,
+    held > 0 ? `${held} held` : null,
+  ].filter(Boolean).join(' · ');
 
   return (
     <div data-testid="landed-strip-band" data-cells={n} className={`flex flex-col gap-1.5 ${gap}`}>
@@ -136,9 +130,9 @@ export function LandedStrip({ model, compact, link, workspaceId, executor, focus
             type="button"
             data-testid="landed-strip-open-jump"
             onClick={() => target != null && select(slots[target].id)}
-            className="-mr-3 inline-flex h-11 items-center px-3 font-mono text-body font-semibold text-accent-text hover:underline"
+            className={`-mr-3 inline-flex h-11 items-center px-3 font-mono text-body font-semibold hover:underline ${failed.length > 0 && openOnly === 0 ? TONE_TEXT.error : 'text-accent-text'}`}
           >
-            {`${active.length} open${held > 0 ? ` · ${held} held` : ''} ›`}
+            {`${openJumpLabel} ›`}
           </button>
         )}
       </div>
@@ -255,7 +249,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
     landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
-  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_minmax(200px,auto)] md:gap-6';
+  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_fit-content(60%)] md:gap-6';
 
   return (
     <div
@@ -298,6 +292,8 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             blockedByCount={blockedByCount}
             backend={t.backend}
             lastError={null}
+            failureKind={t.failureKind}
+            auditTaskId={t.failureKind === 'verification' && isSurfaceAuditTask(t.title) ? t.id : null}
             worker={t.workerId ? { id: t.workerId, waitingFor: t.waitingFor } : null}
             historyHref={taskPageHref({ taskId: t.id, missionId: link.missionId })}
             roleSlug={t.roleSlug}

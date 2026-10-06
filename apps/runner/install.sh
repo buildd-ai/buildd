@@ -381,11 +381,6 @@ GLOBALEOF
     fi
     ;;
 
-  skill)
-    shift
-    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
-    ;;
-
   login)
     shift
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
@@ -506,6 +501,44 @@ print_next_steps() {
   echo "Config is stored in ~/.buildd/config.json"
 }
 # --- next steps: end ---
+
+# Install zstd: apps/runner/src/warm-repo.ts shells out to the real CLI to
+# compress/restore the cloud runner's cache tarball, and its unit tests do the
+# same to exercise that path for real (no mock) — a sandbox without the binary
+# fails those tests even though nothing else here needs it. Best-effort and
+# idempotent: a missing package manager or a failed install just leaves those
+# tests failing, same as today, rather than aborting the rest of the install.
+zstd_provision() {
+  if command -v zstd >/dev/null 2>&1; then
+    return 0
+  fi
+  case "$(uname -s)" in
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        if [ "$(id -u)" -eq 0 ]; then
+          apt-get update -qq && apt-get install -y -qq zstd
+          return $?
+        elif [ "${BUILDD_NO_SUDO:-}" != "1" ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+          echo -e "${YELLOW}Using sudo (passwordless) to apt-install zstd. Set BUILDD_NO_SUDO=1 to skip.${NC}"
+          sudo -n true 2>/dev/null && sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          return $?
+        fi
+      fi
+      ;;
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        brew install -q zstd
+        return $?
+      fi
+      ;;
+  esac
+  return 1
+}
+
+if ! zstd_provision; then
+  echo -e "${YELLOW}Warning: zstd not installed — warm-repo compression tests will fail without it.${NC}"
+  echo -e "${YELLOW}  Install manually: apt-get install zstd (Linux) or brew install zstd (macOS)${NC}"
+fi
 
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"

@@ -58,6 +58,7 @@ import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
+import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -1864,8 +1865,9 @@ export class WorkerManager {
         diagnosticReason: diagnostics?.reason,
         taskId: task.id,
         ...claimDiagnosticDetail(diagnostics),
+        ...(diagnostics?.taskExclusion?.code ? { taskExclusion: diagnostics.taskExclusion.code } : {}),
       });
-      console.log(`No tasks claimed (reason: ${reason})`);
+      console.log(`No tasks claimed (reason: ${reason}${diagnostics?.taskExclusion?.code ? `, excluded by ${diagnostics.taskExclusion.code}` : ''})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
         {
@@ -1877,6 +1879,7 @@ export class WorkerManager {
           // (run-once.ts) uses to tell a temporary capacity defer from a
           // permanent refusal.
           claimTaskExclusionCode: diagnostics?.taskExclusion?.code,
+          claimTaskExclusionDetail: diagnostics?.taskExclusion?.detail,
         },
       );
     }
@@ -3751,6 +3754,11 @@ export class WorkerManager {
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      // Keep task-tracking tools available on newer Claude models.
+      cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
+      // Nothing re-invokes a session after its turn ends, so background work
+      // and scheduled wakeups can only strand it. See headless-session.ts.
+      applyHeadlessSessionEnv(cleanEnv);
 
       // Resolve role env vars (secret labels → actual values). Not gated on
       // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
@@ -3933,6 +3941,16 @@ export class WorkerManager {
       // (reading secrets from disk, env vars, or response headers and calling APIs
       // directly) that two incidents demonstrated agents will attempt on their own.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Channel Policy\nIf a required MCP tool channel is unavailable during this task, STOP IMMEDIATELY and report the failure. Never substitute direct API access using credentials found in config files, environment variables, disk, or response headers. Tool channel unavailability is a deployment issue that must surface as a task failure — not be silently worked around.';
+
+      // Tool parameter policy: prevent background tasks from hanging the session.
+      // The `run_in_background` parameter in Bash tool calls is designed for
+      // interactive CLI usage where the agent can be re-invoked after the task
+      // completes. In a non-interactive cloud runner, that re-invocation mechanism
+      // does not exist — the session ends while the background task is still
+      // running, and the agent's interim "waiting for notification" message
+      // becomes the task summary instead of actual results. Agents should not use
+      // run_in_background; they should poll synchronously or wait for results.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
@@ -4267,11 +4285,11 @@ export class WorkerManager {
       // shell `gh pr` mutation subcommands and known connector PR-write tool names
       // for roles that have no legitimate reason to reach for them. Placed after all
       // mcpServers mounting above so mountedServerNames reflects the final set.
-      (queryOptions as any).disallowedTools = applyPrMutationDeny((queryOptions as any).disallowedTools, {
+      (queryOptions as any).disallowedTools = withHeadlessToolDeny(applyPrMutationDeny((queryOptions as any).disallowedTools, {
         roleSlug: task.roleSlug,
         hasApiKey: !!this.config.apiKey,
         mountedServerNames: Object.keys(queryOptions.mcpServers ?? {}),
-      });
+      }));
 
       // MCP pre-flight: verify all connector-required servers are mounted and
       // reachable BEFORE the agent loop starts. Connectors are servers the role
@@ -4710,9 +4728,13 @@ export class WorkerManager {
 
       // Check if session actually did work or just errored
       // Only check early output (first 500 chars) to avoid false positives
-      // from agent responses that discuss auth topics
+      // from agent responses that discuss auth topics, and only for a session
+      // that never ran a tool: a rejected credential fails the first model
+      // call, so a session that used tools was authenticated. Without this, a
+      // task ABOUT a 401 ("why does X return 401 Unauthorized") was failed as
+      // an auth error after doing its work.
       const earlyOutput = worker.output.slice(0, 3).join('\n').toLowerCase();
-      const authFailed = isAuthError(earlyOutput);
+      const authFailed = worker.toolCalls.length === 0 && isAuthError(earlyOutput);
 
       if (authFailed) {
         // Auth error - mark as failed, not completed
