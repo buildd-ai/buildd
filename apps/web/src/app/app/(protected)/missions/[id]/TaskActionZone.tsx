@@ -25,6 +25,8 @@ import Spinner from '@/components/Spinner';
 import ClaimTaskHint from '@/components/tasks/ClaimTaskHint';
 import RunnerPicker from '@/components/tasks/RunnerPicker';
 import Disclosure from '@/components/ui/Disclosure';
+import type { TaskFailureKind } from '@/lib/task-failure-kind';
+import { verificationFailedCopy } from '@/lib/task-failure-kind';
 import { explainProviderAuthFailure } from '@/lib/provider-auth-failure';
 import EntitlementBlockedNotice from '@/components/entitlements/EntitlementBlockedNotice';
 import { parseEntitlementBlock, type EntitlementBlock } from '@buildd/shared';
@@ -66,6 +68,10 @@ export interface TaskActionZoneProps {
   backend: 'claude' | 'codex' | null;
   /** `excerpt` is the line shown; `raw`, when given, is the full text it is classified from. */
   lastError: { excerpt: string; raw?: string | null } | null;
+  /** `classifyTaskFailure`: `verification` means the work landed and its audit failed. */
+  failureKind?: TaskFailureKind | null;
+  /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
+  auditTaskId?: string | null;
   worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
@@ -96,6 +102,8 @@ export default function TaskActionZone({
   blockedByCount,
   backend,
   lastError,
+  failureKind = null,
+  auditTaskId = null,
   worker,
   historyHref,
   roleSlug,
@@ -137,6 +145,7 @@ export default function TaskActionZone({
     hasHistory: !!historyHref,
     missionExecutor,
     otherBackendAvailable,
+    failureKind,
   });
   const has = (id: (typeof actions)[number]) => actions.includes(id);
   // "Not logged in · Please run /login" and kin: say what to do instead.
@@ -202,9 +211,37 @@ export default function TaskActionZone({
         </div>
       )}
 
+      {/* Work landed, audit failed → say so; the audit's own surface retries the audit */}
+      {has('verification_failed') && (
+        <div data-testid="task-verification-failed" className="space-y-3 border-2 border-status-warning p-4">
+          <p className="font-mono text-meta font-semibold text-status-warning">{verificationFailedCopy().state}</p>
+          <p className="font-mono text-meta text-text-secondary">{verificationFailedCopy().cause}</p>
+          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
+          <div className="flex flex-wrap items-center gap-2">
+            {auditTaskId && (
+              <button
+                type="button"
+                data-action="retry-audit"
+                disabled={retrying !== null}
+                onClick={() => retry('same')}
+                className={SECONDARY_BTN}
+              >
+                {retrying ? 'Retrying…' : 'Retry the audit'}
+              </button>
+            )}
+            {has('history') && historyHref && (
+              <Link href={historyHref} data-action="history" className={QUIET_BTN}>
+                View history
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Failed → why + retry */}
       {has('retry') && (
         <div className="space-y-3 border-2 border-status-error p-4">
+          <p className="font-mono text-meta font-semibold text-status-error">Worker failed</p>
           {authFailure && lastError ? (
             <div className="space-y-2" data-testid="task-auth-failure">
               <p className="text-body text-text-primary">{authFailure.message}</p>
@@ -217,9 +254,7 @@ export default function TaskActionZone({
             </div>
           ) : lastError ? (
             <p className="break-words font-mono text-[12px] leading-relaxed text-status-error">{lastError.excerpt}</p>
-          ) : (
-            <p className="font-mono text-[12px] text-text-secondary">This task failed.</p>
-          )}
+          ) : null}
           <div className="flex flex-wrap items-center gap-2">
             {/* Single click retries on the backend it already ran on — the
                 common case. The switch is one extra click, never a menu. */}

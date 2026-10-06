@@ -11,6 +11,7 @@
  * and every POST to `/api/tasks/[id]/reassign` through `requestTaskRetry`.
  */
 import { deriveTaskPhase, type TaskPhase } from './task-presentation';
+import type { TaskFailureKind } from './task-failure-kind';
 
 export interface GateRefusal {
   gateReason: string;
@@ -49,12 +50,14 @@ export const STARTABLE_PHASES: ReadonlySet<TaskPhase> = new Set<TaskPhase>([
  * What a task's state offers, in render order. The renderer draws exactly
  * these, and the parity test compares them across surfaces:
  * - `answer`: reply to the agent's open question;
- * - `retry` / `switch_backend` / `history`: a failed task;
+ * - `retry` / `switch_backend` / `history`: a task whose worker failed;
+ * - `verification_failed` / `history`: a task whose work landed and whose audit
+ *   failed — no retry of the build, the audit's own surface retries the audit;
  * - `blocked`: the dependency notice (no action, by design);
  * - `claim_hint`: `claim_task {taskId}` for a task only a local session claims;
  * - `run_now`: ask for a start now (a gate refusal becomes Force start inline).
  */
-export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'blocked' | 'claim_hint' | 'run_now';
+export type TaskActionId = 'answer' | 'retry' | 'switch_backend' | 'history' | 'verification_failed' | 'blocked' | 'claim_hint' | 'run_now';
 
 export interface TaskActionState {
   phase: TaskPhase;
@@ -72,6 +75,8 @@ export interface TaskActionState {
    * produces a second failure); omitted means unknown and keeps it.
    */
   otherBackendAvailable?: boolean;
+  /** `classifyTaskFailure`; `verification` swaps the build's recovery for the audit's. */
+  failureKind?: TaskFailureKind | null;
 }
 
 /** A backend as a product name: "Claude", "Codex". */
@@ -89,7 +94,10 @@ export function taskActionSet(s: TaskActionState): TaskActionId[] {
   const out: TaskActionId[] = [];
   const waiting = s.phase === 'waiting_input';
   if (waiting && s.hasQuestion) out.push('answer');
-  if (s.phase === 'failed' && !waiting) {
+  if (s.phase === 'failed' && !waiting && s.failureKind === 'verification') {
+    out.push('verification_failed');
+    if (s.hasHistory) out.push('history');
+  } else if (s.phase === 'failed' && !waiting) {
     out.push('retry');
     if (otherBackendOf(s.backend) && s.otherBackendAvailable !== false) out.push('switch_backend');
     if (s.hasHistory) out.push('history');

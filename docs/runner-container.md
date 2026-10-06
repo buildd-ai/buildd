@@ -85,7 +85,10 @@ bracket the warm-repo restore, the `git fetch` after it, and the upload of a
 new snapshot generation (see Warm repos below). Alongside them:
 `BUILDD_METRIC=<name> <integer>` (`clone_bytes`, `restore_bytes`,
 `fetch_bytes`, `cache_bytes`, `snapshot_age_ms`, `warm_upload_bytes`,
-`warm_repo_bytes`), one `BUILDD_REPO_SOURCE=warm` or
+`warm_repo_bytes`; and from the resource sampler, re-printed as the extremes
+move: `mem_peak_bytes`, `mem_limit_bytes`, `disk_free_min_bytes`,
+`disk_total_bytes`, which buildd reads to pick the workspace's container
+size), one `BUILDD_REPO_SOURCE=warm` or
 `BUILDD_REPO_SOURCE=clone <reason>` line (`disabled`, `no_snapshot`,
 `unavailable`, `disk`, `restore_failed`), and `BUILDD_WARM_UPLOAD=skipped
 too_large` when a warm upload was due but the repo was over the cap (below).

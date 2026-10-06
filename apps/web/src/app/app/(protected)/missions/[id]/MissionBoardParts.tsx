@@ -10,7 +10,9 @@ import { useRouter } from 'next/navigation';
 import { missionTaskHref, type MissionOrigin } from '@/lib/mission-task-href';
 import { runnerInitial } from '@/lib/runner-display';
 import { BOARD_LANDED, type BoardCriterion, type BoardStatus, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
-import { stripKeyTarget, stripTick, type StripMark, type StripSlot, type StripState } from '@/lib/mission-task-strip';
+import {
+  stripKeyTarget, stripTick, stripTone, type StripMark, type StripSlot, type StripState, type StripTone,
+} from '@/lib/mission-task-strip';
 import { useMissionLiveSnapshot } from './MissionLiveStore';
 import { useAnswerSubmit } from '@/app/app/(protected)/tasks/[id]/respond/use-answer-submit';
 import { answerOutcomeLines } from '@/app/app/(protected)/tasks/[id]/respond/submit-answer';
@@ -156,18 +158,32 @@ const STRIP_CELL_CLASS: Record<StripState, string> = {
   queued: 'border-2 border-[var(--fleet-border-mid)] fleet-hatch-future',
 };
 
-export type StripTone = 'ok' | 'error' | 'open';
-
-export function stripTone(state: StripState): StripTone {
-  if (state === 'landed') return 'ok';
-  if (state === 'ci_failed' || state === 'fixing' || state === 'failed') return 'error';
-  return 'open';
-}
-
 const STRIP_OUTLINE: Record<StripTone, string> = {
   ok: 'outline-status-success',
   error: 'outline-status-error',
   open: 'outline-accent',
+};
+
+/**
+ * The tone's text and dot colour, shared by the tick row here and the drawer
+ * (border/background/pill) in MissionTaskStrip.tsx — one Record per CSS
+ * property, all keyed by the same `StripTone`, so a failed cell is never
+ * "error" in one place and "open" (accent) in another.
+ */
+export const TONE_BORDER: Record<StripTone, string> = {
+  ok: 'border-status-success',
+  error: 'border-status-error',
+  open: 'border-accent',
+};
+export const TONE_BG: Record<StripTone, string> = {
+  ok: 'bg-status-success',
+  error: 'bg-status-error',
+  open: 'bg-accent',
+};
+export const TONE_TEXT: Record<StripTone, string> = {
+  ok: 'text-status-success',
+  error: 'text-status-error',
+  open: 'text-accent-text',
 };
 
 const STATUS_WORDS: Record<StripState, string> = {
@@ -302,13 +318,16 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
           const open = s.state !== 'landed';
           const mark = i === sel ? null : marks[i] ?? null;
           const tick = s.kind === 'fold' ? `+${s.taskIds.length}` : stripTick(i);
+          // The cell's own tone (TONE-1): a failed tick reads status-error, never
+          // the accent "open" colour, whether it is the numbered digit or the dot.
+          const tone = stripTone(s.state);
           let body: ReactNode = null;
           if (numbered || i === sel || s.kind === 'fold') {
             body = mark ? <span className={TICK_MARK_NUMBERED[mark]}>{tick}</span> : tick;
           } else if (mark) {
             body = <i className={`block w-full min-w-px bg-accent ${TICK_MARK_BAR[mark]}`} />;
           } else if (open) {
-            body = <i className="block h-1 w-1 bg-accent" />;
+            body = <i className={`block h-1 w-1 ${TONE_BG[tone]}`} />;
           }
           return (
             <span
@@ -316,7 +335,8 @@ function StripCells({ model, compact, selection }: { model: MissionBoardModel; c
               data-testid="landed-strip-tick"
               data-open={open ? 'true' : undefined}
               data-mark={mark ?? undefined}
-              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${open || mark ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
+              data-tone={open ? tone : undefined}
+              className={`flex min-w-0 flex-1 basis-0 items-center justify-center font-mono text-eyebrow tabular-nums ${open ? `font-semibold ${TONE_TEXT[tone]}` : mark ? 'font-semibold text-accent-text' : 'text-[var(--fleet-faint)]'}`}
             >
               {body}
             </span>

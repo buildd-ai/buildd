@@ -2285,6 +2285,10 @@ export async function handleBuilddAction(
           method: 'PATCH',
           body: JSON.stringify({
             status: 'completed',
+            // The agent's own call, not the runner's end-of-session report: it
+            // can read a 400 and retry, so the server refuses a fixable verdict
+            // instead of failing the worker.
+            viaCompleteTask: true,
             ...(params.summary ? { summary: params.summary, summarySource: 'agent' } : {}),
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
             ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),

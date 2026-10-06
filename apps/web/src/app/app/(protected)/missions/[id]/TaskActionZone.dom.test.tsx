@@ -349,3 +349,62 @@ describe('TaskActionZone — managed-runner plan limit', () => {
     expect(button('Save & start')).toBeDefined();
   });
 });
+
+describe('TaskActionZone — failure kind routes recovery', () => {
+  const dupes = (text: string) => {
+    const words = text.toLowerCase().match(/[a-z]+/g) ?? [];
+    return words.length - new Set(words).size;
+  };
+
+  it('a worker failure offers only execution recovery, under the worker-failure label', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'execution', lastError: { excerpt: 'Tests failed: 3 of 12' }, historyHref: '/h' });
+    await flush();
+    expect(container.textContent).toContain('Worker failed');
+    expect(button('Retry on Claude')).toBeDefined();
+    expect(button('Switch to Codex')).toBeDefined();
+    expect(container.textContent).not.toContain('verification failed');
+    expect(container.textContent).not.toMatch(/audit/i);
+    expect(dupes(container.textContent ?? '')).toBeLessThan(6);
+  });
+
+  it('landed work with a failed audit offers no build recovery, and says verification failed', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'verification', lastError: { excerpt: 'audit exploded' }, historyHref: '/h' });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Implementation complete, verification failed');
+    expect(button('Retry')).toBeUndefined();
+    expect(button('Switch to Codex')).toBeUndefined();
+    expect(text).not.toContain('Retry on Claude');
+    expect(text).not.toContain('Worker failed');
+    expect(text.length).toBeLessThan(120);
+    expect(dupes(text)).toBeLessThan(3);
+  });
+
+  it('a failed audit with landed work offers Retry the audit (reassign), never the build recovery', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'verification', auditTaskId: 't1', lastError: null, historyHref: '/h' });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Implementation complete, verification failed');
+    expect(button('Retry on Claude')).toBeUndefined();
+    expect(button('Switch to Codex')).toBeUndefined();
+    expect(text).not.toContain('Worker failed');
+    expect(text).not.toContain('Skip this audit');
+    await act(async () => { button('Retry the audit')!.click(); });
+    await flush();
+    expect(calls.some(c => c.url === '/api/tasks/t1/reassign?force=true')).toBe(true);
+  });
+
+  it('an execution failure never offers audit recovery', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'execution', auditTaskId: null, lastError: { excerpt: 'boom' }, historyHref: '/h' });
+    await flush();
+    expect(button('Retry the audit')).toBeUndefined();
+    expect(container.textContent).not.toContain('Skip this audit');
+  });
+});

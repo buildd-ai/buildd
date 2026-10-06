@@ -34,7 +34,7 @@ import { getMissionSpendUsd, exhaustMissionBudget } from '@/lib/mission-budget';
 import { isBudgetExhaustionError, isSessionBudgetCapError, extractResetTime, SESSION_WINDOW_MS } from '@/lib/budget-errors';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
-import { backendLabel, isBackendPinned } from '@buildd/core/backend-policy';
+import { backendLabel, claimedBackendOf, isBackendPinned } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
@@ -1613,12 +1613,15 @@ export async function PATCH(
     const isReviewerTask = terminalTaskRow[0]?.category === 'review'
       && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
 
-    // An interactive (claim_task, runner = 'mcp') reviewer calls complete_task
-    // itself and can still read the response, so refuse a malformed verdict here
-    // with the allowed values instead of accepting the call and failing the
-    // worker afterwards. A runner-reported completion has no agent turn left to
-    // read a refusal, so it keeps the requeue-once contract guard further down.
-    if (isReviewerTask && worker.runner === 'mcp') {
+    // A reviewer calling the MCP complete_task tool itself (any interactive
+    // claim_task worker, or a runner-hosted agent mid-session — the tool marks
+    // that PATCH viaCompleteTask) can still read the response, so refuse a
+    // malformed verdict here with the allowed values instead of accepting the
+    // call and failing the worker afterwards: a runner reviewer that left out
+    // `summary` once lost a review it corrected on its very next call. A
+    // runner-reported end-of-session completion has no agent turn left to read
+    // a refusal, so it keeps the requeue-once contract guard further down.
+    if (isReviewerTask && (worker.runner === 'mcp' || body.viaCompleteTask === true)) {
       const submitted = body.structuredOutput as { verdict?: unknown } | null | undefined;
       if (submitted && typeof submitted === 'object' && submitted.verdict) {
         const parsed = parseReviewerOutput(submitted);
@@ -2543,7 +2546,10 @@ export async function PATCH(
     // rate-limit on accounts.budget_exhausted_at (the Claude/OAuth pool) used to
     // pause Claude as well, so a Codex wall left failover with nowhere to go and
     // the task sat until the Codex reset. The pause log is per backend.
-    const walledBackend = (taskForBudget?.backend || 'claude') as 'claude' | 'codex';
+    // The backend THIS run used: a budget-failover flip leaves the stored
+    // column on 'claude', so reading it filed a Codex wall as a Claude one and
+    // the claim route kept flipping tasks onto the walled Codex pool.
+    const walledBackend = claimedBackendOf(taskForBudget?.backend, taskForBudget?.context);
     const budgetScope = {
       teamId,
       accountId: account.id,

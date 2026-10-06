@@ -21,11 +21,14 @@ import ModelProvidersFixture from './ModelProvidersFixture';
 import TaskEvidenceFilesFixture from './TaskEvidenceFilesFixture';
 import { CommitChecksFixture, TaskShippedFixture } from './TaskShippedFixture';
 import AnswerStatesFixture from './AnswerStatesFixture';
+import FailureKindsFixture from './FailureKindsFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
 import EntitlementBlockedFixture from './EntitlementBlockedFixture';
+import RunnerSizeFixture from './RunnerSizeFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
+    RUNNER_SIZE_FIXTURE_STATE,
     MODEL_PROVIDERS_FIXTURE_STATE,
     TOOL_BREAKDOWN_FIXTURE_STATE,
     FIXTURE_VIEWS,
@@ -41,6 +44,7 @@ import {
     ANSWER_STATES_FIXTURE_STATE,
     AGENT_ACCESS_FIXTURE_STATE,
     ENTITLEMENT_BLOCKED_FIXTURE_STATE,
+    FAILURE_KINDS_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
     parseVisualReviewFixtureParams,
@@ -115,6 +119,10 @@ export default function DevFixturesPage() {
         return <AgentAccessFixture />;
     }
 
+    if (state === FAILURE_KINDS_FIXTURE_STATE) {
+        return <FailureKindsFixture />;
+    }
+
     if (state === ANSWER_STATES_FIXTURE_STATE) {
         return <AnswerStatesFixture />;
     }
@@ -127,6 +135,9 @@ export default function DevFixturesPage() {
     }
     if (state === EVIDENCE_STORAGE_FIXTURE_STATE) {
         return <EvidenceStorageFixture />;
+    }
+    if (state === RUNNER_SIZE_FIXTURE_STATE) {
+        return <RunnerSizeFixture />;
     }
     if (state === MODEL_PROVIDERS_FIXTURE_STATE) {
         return <ModelProvidersFixture />;

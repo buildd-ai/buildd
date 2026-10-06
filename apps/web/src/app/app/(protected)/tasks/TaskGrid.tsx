@@ -275,6 +275,7 @@ interface StatusGroup {
 }
 
 interface TaskGridProps {
+  bandFilterLabel?: string;
   tasks: GridTask[];
   missionFilter?: string | null;
   missionTitle?: string | null;
@@ -306,7 +307,7 @@ export function splitTaskRoots(tasks: GridTask[]): { rootTasks: GridTask[]; chil
   return { rootTasks, childrenByParentId };
 }
 
-export default function TaskGrid({ tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
+export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
   const router = useRouter();
 
   const visibleTasks = useMemo(() => {
@@ -347,7 +348,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   // Load persisted filter from localStorage on mount
   useEffect(() => {
-    if (missionFilter) return; // don't persist when scoped to a mission
+    if (missionFilter || bandFilterLabel) return; // scoped lists start at All
     try {
       const stored = localStorage.getItem('buildd-activity-prefs');
       if (stored) {
@@ -360,12 +361,12 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   const updateFilter = useCallback((f: FilterStatus) => {
     setFilter(f);
-    if (missionFilter) return;
+    if (missionFilter || bandFilterLabel) return;
     try {
       const stored = JSON.parse(localStorage.getItem('buildd-activity-prefs') || '{}');
       localStorage.setItem('buildd-activity-prefs', JSON.stringify({ ...stored, filter: f }));
     } catch {}
-  }, [missionFilter]);
+  }, [missionFilter, bandFilterLabel]);
 
   const dismissInitiative = useCallback(() => {
     const params = new URLSearchParams(window.location.search);
@@ -537,6 +538,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
             </svg>
           </div>
+          <BandFilterLabel label={bandFilterLabel} />
           <h2 className="text-xl font-semibold text-text-primary mb-4">No activity</h2>
           <div className="flex flex-wrap items-center justify-center gap-2">
             <NewWorkLink
@@ -572,6 +574,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     <SwipeProvider>
     <div className="h-full overflow-y-auto">
       <div className="max-w-[1000px] mx-auto pt-14 pb-4 md:py-4">
+        <BandFilterLabel label={bandFilterLabel} />
         {/* Breadcrumbs */}
         {missionFilter && (
           <div className="flex items-center gap-2 px-4 mb-3 text-[12px] text-text-muted">
@@ -905,4 +908,9 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     </div>
     </SwipeProvider>
   );
+}
+
+function BandFilterLabel({ label }: { label?: string }) {
+  if (!label) return null;
+  return <div data-testid="task-band-filter" className="px-4 mb-3 flex flex-wrap items-center gap-3 text-meta text-text-secondary"><span>{label}</span><Link className="min-h-[44px] inline-flex items-center text-accent-text" href="/app/tasks">Clear band filter</Link></div>;
 }

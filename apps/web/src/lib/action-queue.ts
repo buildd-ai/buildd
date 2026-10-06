@@ -1,3 +1,4 @@
+import type { HumanPrReview } from './reviewer-gate';
 import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 import { explainProviderAuthFailure } from './provider-auth-failure';
@@ -88,6 +89,9 @@ export interface PendingGates {
 }
 
 export interface MergeChipInput {
+  /** Canonical current-head reviewer approval; a review action still takes precedence. */
+  reviewApproved?: boolean;
+  humanReview?: HumanPrReview | null;
   /** Conflict-resolution retries are exhausted. */
   deadZoneExhausted?: boolean;
   /** A conflict-resolution retry is live. */
@@ -111,6 +115,16 @@ export interface MergeChipInput {
   now: Date;
 }
 
+/** Machine work continues independently of an available human review. */
+function describeReviewMachineState(item: EscalationRawItem, now: Date): string | null {
+  if (item.conflictRetryTaskId) return 'Conflict repair queued';
+  if (item.deadZoneExhausted) return 'Conflict repair needs help';
+  if (item.prLifecycleStatus === 'conflict') return 'Branch has conflicts';
+  if (item.ciGate?.kind === 'fixing') return item.ciGate.fixKind === 'review' ? 'Review fix queued' : 'CI fix queued';
+  if (item.ciGate?.kind === 'blocked' || item.prLifecycleStatus === 'ci_failed') return 'CI failing';
+  return describePendingGates({ ci: pendingCiState({ ...item, now }), review: item.reviewInFlight ?? null }) || null;
+}
+
 function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatus' | 'prLifecycleUpdatedAt' | 'now'>): PendingCiState {
   if (input.ciGate?.kind === 'running' || input.prLifecycleStatus === 'ci_running') return 'running';
   if (input.prLifecycleStatus === 'ci_green') return 'passed';
@@ -125,6 +139,7 @@ function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatu
  * The one precedence rule for a PR card's chip. Explicit and ordered, so a
  * card can never read MERGE and "not mergeable yet" at once:
  *
+ *   0. REVIEW          a canonical human review handoff, independent of merge
  *   1. BLOCKED         conflict retries exhausted (a person must resolve)
  *   2. RESOLVING       an agent is resolving conflicts
  *   3. FIXING_*        an open CI or reviewer fix attempt (ci-gate `fixing`)
@@ -138,12 +153,14 @@ function pendingCiState(input: Pick<MergeChipInput, 'ciGate' | 'prLifecycleStatu
  *   9. AUTO_MERGE      every gate has passed and the platform merges it
  *  10. REVIEW / MERGE  every gate has passed and the policy leaves it to a person
  *
- * Only the BLOCKED rows and 10 ask anything of a human. A conflicting PR never
+ * REVIEW at 0 has a GitHub review link and never a merge CTA.
+ * Only 0, the BLOCKED rows and 10 ask anything of a human. A conflicting PR never
  * reaches 10: a merge tap on it can only be refused again, so the card must
  * not offer one (nor the Retry that follows a refusal).
  */
 export function resolveMergeChip(input: MergeChipInput): { chip: ActionChip; pendingGates: PendingGates | null } {
   const ciGate = input.ciGate ?? null;
+  if (input.humanReview) return { chip: 'REVIEW', pendingGates: null };
   if (input.deadZoneExhausted) return { chip: 'BLOCKED', pendingGates: null };
   if (input.conflictRetryTaskId) return { chip: 'RESOLVING', pendingGates: null };
   if (ciGate?.kind === 'fixing') {
@@ -164,7 +181,7 @@ export function resolveMergeChip(input: MergeChipInput): { chip: ActionChip; pen
     return { chip: 'CI_RUNNING', pendingGates: { ci, review } };
   }
   if (input.autoMerge) return { chip: 'AUTO_MERGE', pendingGates: null };
-  return { chip: input.policyTier === 'agent-review' ? 'REVIEW' : 'MERGE', pendingGates: null };
+  return { chip: input.policyTier === 'agent-review' && !input.reviewApproved ? 'REVIEW' : 'MERGE', pendingGates: null };
 }
 
 /**
@@ -319,6 +336,9 @@ export interface WaitingOnYouRawItem {
 }
 
 export interface EscalationRawItem {
+  /** Canonical current-head reviewer approval; a review action still takes precedence. */
+  reviewApproved?: boolean;
+  humanReview?: HumanPrReview | null;
   workerId: string;
   taskId: string;
   taskTitle: string;
@@ -430,6 +450,8 @@ export interface EscalationRawItem {
 }
 
 export interface ActionQueueItem {
+  humanReview?: HumanPrReview | null;
+  machineStatus?: string | null;
   subjectKey: string;
   // Set on Home when the item's mission belongs to an initiative — drives the
   // initiative filter chips (scoping only; buildActionQueue itself never sets it).
@@ -1173,7 +1195,7 @@ export function buildActionQueue(
     // Draft PRs with CI failures are not actionable by the human — the owner
     // should mark ready_for_review first. Skip them entirely so they don't clutter
     // the Needs You queue.
-    if (item.prIsDraft && item.ciGate?.kind === 'blocked') continue;
+    if (!item.humanReview && item.prIsDraft && item.ciGate?.kind === 'blocked') continue;
     const key = item.prUrl ?? `task:${item.taskId}`;
     // Precedence lives in resolveMergeChip: a conflict outranks CI (an
     // unmergeable branch is why CI cannot pass), and any CI/review gate
@@ -1183,6 +1205,8 @@ export function buildActionQueue(
     // open fix attempt outranks the merge reading).
     const ciGate = item.ciGate ?? null;
     const { chip: baseChip, pendingGates } = resolveMergeChip({
+      humanReview: item.humanReview,
+      reviewApproved: item.reviewApproved,
       deadZoneExhausted: item.deadZoneExhausted,
       conflictRetryTaskId: item.conflictRetryTaskId,
       conflictAutoResolve: item.conflictAutoResolve,
@@ -1198,7 +1222,7 @@ export function buildActionQueue(
     // Fail CLOSED. Only a merge CTA is gated — a BLOCKED or agent-handled card
     // makes no claim that the PR is still open, so staleness does not change
     // what it says.
-    const staleGate = MERGE_CTA_CHIPS.has(baseChip)
+    const staleGate = !item.humanReview && MERGE_CTA_CHIPS.has(baseChip)
       ? resolveStaleGate({
           prOpenedAt: item.prOpenedAt ?? null,
           prLifecycleVerifiedAt: item.prLifecycleVerifiedAt,
@@ -1214,6 +1238,8 @@ export function buildActionQueue(
 
     map.set(key, {
       subjectKey: key,
+      humanReview: item.humanReview,
+      machineStatus: item.humanReview ? describeReviewMachineState(item, now) : null,
       chip,
       staleGate,
       cardAgeHours: staleGate?.ageHours
@@ -1236,7 +1262,7 @@ export function buildActionQueue(
       // ago is the exact lie this whole change exists to stop telling.
       escalationReason: staleGate
         ? staleGate.reason
-        : ciGate?.kind === 'blocked' ? ciGate.reason : item.escalationReason,
+        : item.humanReview?.reason ?? (ciGate?.kind === 'blocked' ? ciGate.reason : item.escalationReason),
       hasEscalationNote: item.hasEscalationNote ?? false,
       recommendation: ciGate?.kind === 'blocked'
         ? ciGate.recommendation

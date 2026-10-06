@@ -38,8 +38,11 @@ describe('effectiveRoles with overrides', () => {
 
   it('locked permissions ignore overrides', () => {
     for (const p of LOCKED_PERMISSIONS) {
-      expect(roleHas('member', p, { [p]: ['owner', 'admin', 'member'] })).toBe(false);
-      expect(roleHas('admin', p, { [p]: ['owner', 'admin', 'member'] })).toBe(false);
+      // A locked permission keeps its registry default whatever is stored.
+      const defaults: readonly string[] = PERMISSIONS[p].defaultRoles;
+      expect(roleHas('member', p, { [p]: ['owner', 'admin', 'member'] })).toBe(defaults.includes('member'));
+      expect(roleHas('admin', p, { [p]: ['owner', 'admin', 'member'] })).toBe(defaults.includes('admin'));
+      expect(roleHas('admin', p, { [p]: ['owner'] })).toBe(defaults.includes('admin'));
     }
   });
 
@@ -49,6 +52,13 @@ describe('effectiveRoles with overrides', () => {
     expect(LOCKED_PERMISSIONS.has('manage_team_permissions')).toBe(true);
     expect(PERMISSIONS.manage_team_permissions.defaultRoles).toEqual(['owner']);
     expect(PERMISSIONS.manage_team_permissions.minKeyLevel).toBeNull();
+  });
+
+  it('locks billing to owners and admins: no team can grant members the card', () => {
+    expect(LOCKED_PERMISSIONS.has('manage_billing')).toBe(true);
+    expect(roleHas('member', 'manage_billing', { manage_billing: ['owner', 'admin', 'member'] })).toBe(false);
+    expect(roleHas('admin', 'manage_billing', null)).toBe(true);
+    expect(PERMISSIONS.manage_billing.minKeyLevel).toBeNull();
   });
 
   it('unknown roles never hold anything', () => {

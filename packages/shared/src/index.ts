@@ -7,6 +7,7 @@ export * from './generated-paths';
 export * from './heartbeat-protocol';
 export * from './chat';
 export * from './executor';
+export * from './runner-size';
 export * from './onboarding-interview';
 export * from './runner-fleet';
 export * from './claude-ai-artifacts';

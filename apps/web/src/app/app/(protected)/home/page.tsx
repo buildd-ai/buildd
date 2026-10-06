@@ -1,3 +1,7 @@
+import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity, installationIdForRepo } from '@/lib/workspace-installation';
+import { repoFullNameFromPrUrl } from '@/lib/repo-scope';
+import { readGithubApproval } from '@/lib/github-approval';
+import { resolveHumanPrReview, isCurrentReviewApproved, type HumanPrReview } from '@/lib/reviewer-gate';
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, teams as teamsTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
@@ -179,6 +183,8 @@ export default async function HomePage({
   const waitingOnYou: WaitingOnYouRawItem[] = [];
 
   let escalationInbox: {
+    humanReview?: HumanPrReview | null;
+    reviewApproved?: boolean;
     workerId: string;
     taskId: string;
     taskTitle: string;
@@ -600,7 +606,7 @@ export default async function HomePage({
               if (last && lastTick) (lastTick as any).result = { summary: last };
             }
             const view = buildHomeCardView(row, { from: 'home', now: nowMs, summary, taskIndex: homeMissionTaskMap });
-            const model = buildMissionListCard(row, view, summary, { now: nowMs });
+            const model = buildMissionListCard(row, view, summary, { now: nowMs, taskIndex: homeMissionTaskMap });
             return [{ view, model, completedAt: m.completedAt, row }];
           });
           // Stranded local missions: the decision shadow looks after the
@@ -912,7 +918,8 @@ export default async function HomePage({
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
               where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
-              columns: { id: true, name: true, gitConfig: true, teamId: true, maxConcurrentTasks: true },
+              columns: { id: true, name: true, repo: true, gitConfig: true, teamId: true, maxConcurrentTasks: true },
+              with: WORKSPACE_INSTALLATION_WITH,
             });
             const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
 
@@ -921,6 +928,31 @@ export default async function HomePage({
             // agent still owns the next move or it has genuinely fallen to the
             // human. Both the in-flight cards and the escalation inbox below read
             // from this one map so they can never disagree.
+            const reviewApprovedTaskIds = new Set<string>();
+            const approvedAutoMergeTaskIds = new Set<string>();
+            const humanReviewByTaskId = new Map<string, HumanPrReview>();
+            const githubApprovalByWorkerId = new Map<string, import('@/lib/reviewer-gate').GithubApprovalFacts>();
+            const installationByRepo = new Map<string, Promise<number | null>>();
+            // Bounded batches avoid an unbounded fan-out on large Home inboxes.
+            for (let offset = 0; offset < openPrWorkers.length; offset += 8) {
+              await Promise.all(openPrWorkers.slice(offset, offset + 8).map(async w => {
+                const repo = repoFullNameFromPrUrl(w.prUrl);
+                if (!repo || !w.prNumber) return;
+                try {
+                  const identity = pickWorkspaceRepoIdentity(wsInboxMap.get(w.workspaceId));
+                  if (!installationByRepo.has(repo)) {
+                    installationByRepo.set(repo, identity.fullName?.toLowerCase() === repo.toLowerCase() && identity.installationId
+                      ? Promise.resolve(identity.installationId) : installationIdForRepo(repo));
+                  }
+                  const installationId = await installationByRepo.get(repo);
+                  if (!installationId) return;
+                  githubApprovalByWorkerId.set(w.id, await readGithubApproval(installationId, repo, w.prNumber));
+                } catch {
+                  // Unknown approval must never erase a canonical human handoff.
+                  console.warn('[home] GitHub approval state unavailable');
+                }
+              }));
+            }
             const gateNow = new Date();
             const stallFactsLoader = createReviewerStallFactsLoader(gateNow);
             // The mission-aware tier each gate was resolved with, so the card
@@ -955,6 +987,28 @@ export default async function HomePage({
               });
               if (fallback.escalationReason != null) escalatedMap.set(w.taskId, fallback.escalationReason);
               if (fallback.approvalSummary != null) approvedMap.set(w.taskId, fallback.approvalSummary);
+              const humanReview = resolveHumanPrReview({
+                reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                currentHeadSha: w.lastCommitSha ?? null,
+                escalationReason: escalatedMap.get(w.taskId) ?? null,
+                hasEscalationNote: escalationNoteTaskIds.has(w.taskId),
+                policyTier: policy.tier,
+                github: githubApprovalByWorkerId.get(w.id) ?? null,
+              });
+              if (humanReview) humanReviewByTaskId.set(w.taskId, humanReview);
+              if (!humanReview && isCurrentReviewApproved({
+                reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                currentHeadSha: w.lastCommitSha ?? null,
+                github: githubApprovalByWorkerId.get(w.id) ?? null,
+              })) {
+                reviewApprovedTaskIds.add(w.taskId);
+                if (isCurrentReviewApproved({
+                  reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
+                  currentHeadSha: w.lastCommitSha ?? null,
+                }) && (policy.tier === 'auto-threshold' || (policy.tier === 'agent-review' && policy.agentReview?.gateCondition !== 'approve-only'))) {
+                  approvedAutoMergeTaskIds.add(w.taskId);
+                }
+              }
               const reviewInFlight = resolveReviewInFlight({
                 reviewerTask: rt
                   ? { status: rt.status as ReviewerTaskStatus, hasLiveWorker: rt.hasLiveWorker, createdAt: rt.createdAt, result: rt.result, context: rt.context }
@@ -1233,7 +1287,7 @@ export default async function HomePage({
                   return !!ws && resolvePolicy(ws).tier === 'human';
                 }
                 // Human-owned PRs, plus auto-merge PRs as in-flight cards.
-                return gateReachesActionQueue(reviewerGateMap.get(w.taskId));
+                return humanReviewByTaskId.has(w.taskId) || gateReachesActionQueue(reviewerGateMap.get(w.taskId));
               })
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
@@ -1286,8 +1340,10 @@ export default async function HomePage({
                   workspaceName: ws?.name ?? '',
                   prNumber: w.prNumber,
                   prUrl: w.prUrl,
+                  reviewApproved: !!w.taskId && reviewApprovedTaskIds.has(w.taskId),
+                  humanReview: w.taskId ? humanReviewByTaskId.get(w.taskId) ?? null : null,
                   policyTier: policy.tier,
-                  autoMerge: gate?.platformState === 'auto_merge',
+                  autoMerge: gate?.platformState === 'auto_merge' || (!!w.taskId && approvedAutoMergeTaskIds.has(w.taskId)),
                   missionId: (w.task as any)?.missionId ?? null,
                   missionTitle: (w.task as any)?.mission?.title ?? null,
                   ciGate,
@@ -1328,17 +1384,16 @@ export default async function HomePage({
                 };
               })
               .sort((a, b) => {
-                // In-flight cards sort last so the slice below never drops a
-                // card that needs the human in favour of one that does not.
-                const handled = (i: { ciGate?: { kind: string } | null; autoMerge?: boolean; reviewInFlight?: string | null }) =>
-                  (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running' || i.reviewInFlight || (i.autoMerge && !i.ciGate) ? 1 : 0);
+                // Human review actions lead even while machine work continues.
+                // Keep every action: an inbox cap silently hides requested reviews.
+                const handled = (i: { humanReview?: HumanPrReview | null; ciGate?: { kind: string } | null; autoMerge?: boolean; reviewInFlight?: string | null }) =>
+                  (!i.humanReview && (i.ciGate?.kind === 'fixing' || i.ciGate?.kind === 'running' || i.reviewInFlight || (i.autoMerge && !i.ciGate)) ? 1 : 0);
                 const handledDiff = handled(a) - handled(b);
                 if (handledDiff !== 0) return handledDiff;
                 const arcDiff = Number(!!b.missionId) - Number(!!a.missionId);
                 if (arcDiff !== 0) return arcDiff;
                 return (a.waitingMinutes ?? 0) - (b.waitingMinutes ?? 0);
-              })
-              .slice(0, 10);
+              });
           }
 
           // Resolved escalations: workers whose PR has since merged or closed.

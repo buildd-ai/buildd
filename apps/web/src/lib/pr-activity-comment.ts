@@ -57,6 +57,7 @@ export const MAX_DETAIL_CHARS = 60;
 export const MAX_NOTE_CHARS = 1200;
 
 export type PrActivityKind =
+  | 'review_queued'
   | 'reviewing'
   | 'review_approved'
   | 'review_approved_awaiting_human'
@@ -182,7 +183,19 @@ function fixTaskHeadline(e: { taskTitle?: string | null }): string | null {
  */
 function present(e: NormalizedEntry, story: Story): Rendered {
   switch (e.kind) {
+    case 'review_queued':
+      // Written when a reviewer task is filed. Nothing is running until a
+      // worker claims it — that claim writes `reviewing`.
+      return {
+        tone: 'waiting',
+        label: story.fix
+          ? story.fix.iteration != null ? `Re-review queued · after ${fixText(story.fix)}` : 'Re-review queued'
+          : 'Review queued',
+        status: 'waiting for a worker',
+      };
     case 'reviewing':
+      // Only ever written once a worker has CLAIMED the reviewer task
+      // (`announceReviewClaimed`), or by a comment that predates `review_queued`.
       return story.fix
         ? { tone: 'working', label: story.fix.iteration != null ? `Re-reviewing · after ${fixText(story.fix)}` : 'Re-reviewing' }
         : { tone: 'working', label: 'Reviewing' };
@@ -415,7 +428,7 @@ function stateBlock(kept: NormalizedEntry[]): string {
 }
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set<PrActivityKind>([
-  'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
+  'review_queued', 'reviewing', 'review_approved', 'review_approved_awaiting_human', 'review_changes_requested',
   'review_escalated', 'review_failed', 'lede_corrected', 'human_review_required', 'ci_fixing',
   'migration_collision_fixing',
   'ci_exhausted', 'fix_started', 'fix_ended', 'fix_superseded_by_approval', 'changes_pushed',

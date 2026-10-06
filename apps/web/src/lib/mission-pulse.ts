@@ -57,6 +57,12 @@ export interface MissionFeedContext {
   openDecisions?: ReadonlyMap<string, Date | string>;
   /** Clock for the just-green auto-merge grace window (ms). Defaults to `Date.now()`. */
   now?: number;
+  /**
+   * Task ids in strip order (`feedStripOrder`): the pulse then draws the same
+   * dependency-first order as the Landed strip and the list. Absent: pulse
+   * order (phase, then creation).
+   */
+  order?: readonly string[];
 }
 
 // ─── D1: which tasks are rows ─────────────────────────────────────────────────
@@ -154,6 +160,14 @@ export function orderDeliverables<T extends MissionFeedTaskInput>(rows: readonly
   const sorted = [...rows].sort((a, b) => byCreated(a.task, b.task));
   const byId = new Map(sorted.map(r => [r.task.id, r]));
   return groupTasksByPhase(sorted.map(r => r.task)).flatMap(g => g.tasks.map(t => byId.get(t.id)!));
+}
+
+/** Rows in `order`; a row the order does not name (a cancelled one) keeps its pulse position, last. */
+function orderByIds<T extends MissionFeedTaskInput>(rows: readonly DeliverableRow<T>[], order: readonly string[]): DeliverableRow<T>[] {
+  const byId = new Map(rows.map(r => [r.task.id, r]));
+  const named = order.flatMap(id => byId.get(id) ?? []);
+  const seen = new Set(named);
+  return [...named, ...orderDeliverables(rows.filter(r => !seen.has(r)))];
 }
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -406,7 +420,8 @@ export function buildPulseCaption(segments: readonly PulseSegment[], opts: { liv
  * variant (card, header, context), so a task's position is learnable.
  */
 export function buildPulseSegments(tasks: readonly MissionFeedTaskInput[], ctx: MissionFeedContext = {}): PulseSegment[] {
-  const ordered = orderDeliverables(foldMissionDeliverables(tasks).rows);
+  const rows = foldMissionDeliverables(tasks).rows;
+  const ordered = ctx.order ? orderByIds(rows, ctx.order) : orderDeliverables(rows);
   const withState = ordered.map(row => ({ row, state: deriveFeedTaskState(row, ctx).state }));
   const hasPhases = groupTasksByPhase(ordered.map(r => r.task)).some(g => g.index !== null);
 
