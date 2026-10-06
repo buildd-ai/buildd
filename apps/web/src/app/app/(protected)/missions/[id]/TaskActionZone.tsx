@@ -340,9 +340,11 @@ export default function TaskActionZone({
           {refusal.gateReason === 'workspace_cap_reached' && (
             <div className="flex flex-wrap items-center gap-2 font-mono text-meta">
               <span className="text-text-secondary">Raise the workspace limit to</span>
-              <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
-              <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
-              <button type="button" aria-label="Raise" onClick={() => setCapTarget(t => Math.min(20, (t ?? cap + 1) + 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">+</button>
+              <div className="inline-flex shrink-0 items-center gap-2">
+                <button type="button" aria-label="Lower" onClick={() => setCapTarget(t => Math.max(cap + 1, (t ?? cap + 1) - 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">−</button>
+                <span className="w-8 text-center tabular-nums text-text-primary">{capTarget ?? cap + 1}</span>
+                <button type="button" aria-label="Raise" onClick={() => setCapTarget(t => Math.min(20, (t ?? cap + 1) + 1))} disabled={starting} className="min-h-11 min-w-11 border border-border-default disabled:opacity-40">+</button>
+              </div>
               <button type="button" data-action="raise_cap" onClick={() => start.raiseCapAndStart(capTarget ?? cap + 1)} disabled={starting} className={SECONDARY_BTN}>
                 {start.pending === 'cap' ? 'Updating…' : 'Save & start'}
               </button>

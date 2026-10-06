@@ -4586,3 +4586,61 @@ describe('POST /api/tasks — post-commit side effects (characterization)', () =
     expect(log[1][1]).toMatchObject({ missionId: 'mission-1', title: 'Task created: Canonical', body: 'Task canon-1', taskId: 'canon-1' });
   });
 });
+
+describe('POST /api/tasks — a task filed without a role gets its kind\'s default role', () => {
+  beforeEach(() => { resetPostMocks(); intakeOverride = null; });
+
+  const roleRow = (slug: string) => ({
+    slug, name: slug, model: 'inherit', workspaceId: null, teamId: 'team-1', metadata: null,
+    enabled: true, isRole: true, allowedTools: null, connectorRefs: null, defaultBackend: null,
+  });
+
+  async function create(body: Record<string, unknown>, roles: unknown[]) {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-1', apiKey: 'bld_test' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-1', createdByWorkerId: null, creationSource: 'mcp', parentTaskId: null,
+    });
+    mockWorkspaceSkillsFindMany.mockResolvedValue(roles as any[]);
+    let inserted: any;
+    mockTasksInsert.mockReturnValue({
+      values: mock((values: any) => {
+        inserted = values;
+        return { returning: mock(() => [{ id: 'task-k', workspaceId: 'ws-1', title: 'T', status: 'pending', taskClass: 'work' }]) };
+      }),
+    });
+    const response = await POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+      body: { workspaceId: 'ws-1', title: 'Add a thing', ...body },
+    }));
+    return { response, inserted };
+  }
+
+  it('engineering with no role becomes builder, marked as inferred from the kind', async () => {
+    const { response, inserted } = await create({ kind: 'engineering' }, [roleRow('builder'), roleRow('researcher')]);
+    expect(response.status).toBe(200);
+    expect(inserted).toBeDefined();
+    expect(inserted.roleSlug).toBe('builder');
+    expect(inserted.context.roleInferred).toMatchObject({ slug: 'builder', source: 'kind' });
+  });
+
+  it('a stated role is kept and nothing is inferred', async () => {
+    const { inserted } = await create({ kind: 'engineering', roleSlug: 'researcher' }, [roleRow('researcher')]);
+    expect(inserted.roleSlug).toBe('researcher');
+    expect(inserted.context.roleInferred).toBeUndefined();
+  });
+
+  it('no default when the workspace has no such role, or the kind has no owner', async () => {
+    const a = await create({ kind: 'writing' }, [roleRow('builder')]);
+    expect(a.inserted.roleSlug).toBeUndefined();
+    const b = await create({ kind: 'design' }, [roleRow('builder')]);
+    expect(b.inserted.roleSlug).toBeUndefined();
+  });
+
+  it('bookkeeping rows never get a default', async () => {
+    const { inserted } = await create({ title: '[friction] something broke', kind: 'engineering' }, [roleRow('builder')]);
+    expect(inserted).toBeDefined();
+    expect(inserted.roleSlug).toBeUndefined();
+  });
+});
