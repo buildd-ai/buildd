@@ -319,7 +319,6 @@ jobs:
           GITHUB_APP_CLIENT_SECRET: ci-placeholder
           # Prevent the app from writing back to the prod-shaped ephemeral branch
           DISABLE_WRITES: "true"
-          BILLING_ENFORCED: "true"  # TEMP: billing page capture, reverted before merge
 
       # --- Playwright capture ---
       # On dispatch, a capture failure fails the run — the caller asked for these
