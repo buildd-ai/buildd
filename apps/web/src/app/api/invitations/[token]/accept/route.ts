@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { teamInvitations, teamMembers, teams } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
@@ -37,10 +37,17 @@ export async function POST(
       return NextResponse.json({ error: 'Invitation has expired' }, { status: 410 });
     }
 
-    // The invite held a seat, so only members count here. A team that lost
-    // seats since (downgrade) is refused; the invitation stays pending.
-    const seat = await checkSeatForNewMember(invitation.teamId, { countPending: false });
-    if (!seat.ok) return seatsExhaustedResponse(seat, 'invitee');
+    // The invite held a seat, so only members count here. Someone already in
+    // the team takes no new seat. A team that lost seats since (downgrade) is
+    // refused; the invitation stays pending.
+    const alreadyMember = await db.query.teamMembers.findFirst({
+      where: and(eq(teamMembers.teamId, invitation.teamId), eq(teamMembers.userId, user.id)),
+      columns: { userId: true },
+    });
+    if (!alreadyMember) {
+      const seat = await checkSeatForNewMember(invitation.teamId, { countPending: false });
+      if (!seat.ok) return seatsExhaustedResponse(seat, 'invitee');
+    }
 
     // Add user to team
     await db.insert(teamMembers)

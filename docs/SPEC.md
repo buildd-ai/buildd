@@ -50,8 +50,16 @@ Stripe is the billing system: the signed, event-id-idempotent webhook
 billing status, subscription id and paid seats. Owners/admins (`manage_billing`,
 locked) open Checkout, the customer portal, or change Team seats under
 `/api/teams/[id]/billing/*`; Settings → Billing renders it. Team is per seat,
-minimum 5; adding a member past the paid seats is refused with a 402 that points
-the owner at adding seats, never charged silently. Rules: `packages/core/billing.ts`.
+minimum 5; adding, inviting (pending invitations hold a seat) or accepting a member
+past the paid seats is refused with a 402 that points the owner at adding seats,
+never charged silently. Rules: `packages/core/billing.ts`.
+When on (`packages/core/billing-limits.ts`): new `docs`-corpus documents past
+`knowledgeBaseCap` (distinct files across the team's workspaces) are not ingested,
+while updates to stored documents, the code index and recall are unaffected and
+nothing stored is ever removed. Decision calls (not chat, not agent work) for a team
+with no OpenRouter key of its own run on `BUILDD_PLATFORM_DECISION_KEY` (with Jev, or
+`BUILDD_PLATFORM_DECISION_MODEL`) when `decisionCallsIncluded`; a team's own key
+always wins.
 
 ### User
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
