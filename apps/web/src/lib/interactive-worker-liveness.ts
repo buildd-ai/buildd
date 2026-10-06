@@ -143,6 +143,16 @@ export async function touchInteractiveWorkers(opts: {
   } catch (err) {
     console.warn(`[mcp] interactive worker liveness touch failed for account ${accountId}:`, err);
   }
+  // The touch above is exactly what keeps a finished task's worker alive past
+  // the idle TTL: the session stays open and keeps calling. So the same call
+  // detaches any of the team's interactive workers whose task already ended.
+  // Lazy import keeps this module light for the reaper that imports it.
+  try {
+    const { detachInteractiveWorkersOfEndedTasks } = await import('@/lib/interactive-detach');
+    await detachInteractiveWorkersOfEndedTasks({ accountId, now });
+  } catch (err) {
+    console.warn(`[mcp] ended-task detach failed for account ${accountId}:`, err);
+  }
 }
 
 /**
