@@ -38,6 +38,7 @@ import type {
   ScoutRunMetrics,
   ScoutRunTotals,
 } from '@buildd/core/quality-scout/types';
+import { isTerminalTaskStatus } from '@buildd/shared';
 import { MAX_MANIFEST_BYTES, selectManifestPaths } from './workspace-readiness-io';
 import type { ScoutActionStore, ScoutFollowUpTaskInput } from './quality-scout-actions';
 import type { ScoutRunLedger } from './quality-scout-run';
@@ -190,14 +191,14 @@ export interface LocalScoutState {
 
 /** Every write the action policy made. Shadow must leave this empty. */
 export interface ScoutWriteAudit {
-  op: 'raiseActionState' | 'insertTask' | 'claimFollowUp' | 'deleteTask' | 'refreshTask' | 'announce';
+  op: 'raiseActionState' | 'insertTask' | 'claimFollowUp' | 'deleteTask' | 'refreshTask' | 'announce' | 'retireFollowUp';
   detail: string;
 }
 
 const RANK: Record<ScoutActionState, number> = { none: 0, retained: 1, aggregated: 2, proposed: 3, filed: 4 };
 
 /** Product-side writes: the ones a shadow run must never make. Raising a finding's action state is ledger bookkeeping. */
-export const PRODUCT_WRITE_OPS: ReadonlySet<ScoutWriteAudit['op']> = new Set(['insertTask', 'claimFollowUp', 'deleteTask', 'refreshTask', 'announce']);
+export const PRODUCT_WRITE_OPS: ReadonlySet<ScoutWriteAudit['op']> = new Set(['insertTask', 'claimFollowUp', 'deleteTask', 'refreshTask', 'announce', 'retireFollowUp']);
 
 export function localScoutStore(path?: string) {
   const state: LocalScoutState =
@@ -253,14 +254,14 @@ export function localScoutStore(path?: string) {
     },
     findings,
     async resolveForPass(run, p) {
-      let n = 0;
+      const resolved: Array<{ signature: string; actionTaskId: string | null }> = [];
       for (const f of state.findings) {
         if (f.checkId === p.result?.checkId && f.state === 'open') {
           setFinding({ ...f, state: 'resolved', resolvedRunId: run.id, resolvedSha: run.candidate.sha, resolvedAt: new Date().toISOString() });
-          n++;
+          resolved.push({ signature: f.signature, actionTaskId: f.actionTaskId });
         }
       }
-      return n;
+      return resolved;
     },
   };
 
@@ -303,6 +304,15 @@ export function localScoutStore(path?: string) {
     },
     async announce(id) {
       audit.push({ op: 'announce', detail: id });
+    },
+    async retireFollowUp(id) {
+      const t = state.tasks.find((x) => x.id === id);
+      if (!t || isTerminalTaskStatus(t.status)) return null;
+      const outcome = t.status === 'pending' ? 'cancelled' : 'annotated';
+      audit.push({ op: 'retireFollowUp', detail: `${id} ${outcome}` });
+      if (outcome === 'cancelled') t.status = 'cancelled';
+      persist();
+      return outcome;
     },
   };
 
