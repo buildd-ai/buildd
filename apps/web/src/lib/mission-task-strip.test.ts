@@ -8,9 +8,9 @@ import { join } from 'node:path';
 import { dagBoard, dagId, DAG_SPECS, type DagSpec } from '@/app/app/dev/fixtures/mission-task-strip-fixtures';
 import type { MissionBoardModel } from './mission-board';
 import {
-  activeIndices, defaultStripSelection, heldCount, nextOpenIndex, slotMarks, stepIndex, stripBlockerCount,
-  stripCaretLeft, stripKeyTarget, stripMarks, stripOrder, stripOrdinal, stripSelectionReason, stripSlots, stripState,
-  stripTick, type StripMark,
+  activeIndices, defaultStripSelection, errorIndices, heldCount, nextOpenIndex, slotMarks, stepIndex,
+  stripBlockerCount, stripCaretLeft, stripKeyTarget, stripMarks, stripOrder, stripOrdinal, stripSelectionReason,
+  stripSlots, stripState, stripTick, stripTone, type StripMark,
 } from './mission-task-strip';
 
 /** The strip order as task tokens. */
@@ -333,5 +333,31 @@ describe('one adjacency derivation (AC-20, AC-21)', () => {
   it('the progress bar compacts by state in one place', () => {
     const bar = src('../components/MissionProgressBar.tsx');
     expect(bar.split('{ solid: 0, half: 1, ghost: 2, notch: 3, empty: 4 }').length - 1).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('TONE-1: failed is its own tone, not "open" (the chip-vs-outline gotcha one layer up)', () => {
+  it('stripTone buckets ci_failed/fixing/failed as error, landed as ok, everything else open', () => {
+    expect(stripTone('failed')).toBe('error');
+    expect(stripTone('ci_failed')).toBe('error');
+    expect(stripTone('fixing')).toBe('error');
+    expect(stripTone('landed')).toBe('ok');
+    for (const s of ['review', 'running', 'waiting', 'ready', 'blocked', 'queued'] as const) {
+      expect(stripTone(s)).toBe('open');
+    }
+  });
+
+  it('a failed task counts as active (it still needs a look) but not as "open": the header must split them', () => {
+    const spec: DagSpec = { tasks: ['A', 'B', 'C'], states: { A: 'landed', B: 'failed' } };
+    const model = dagBoard(spec);
+    const slots = stripSlots(model);
+    const active = activeIndices(slots);
+    const failed = errorIndices(slots);
+    // B (failed) and C (pending/ready) are both active; only B is the error bucket.
+    expect(active.length).toBe(2);
+    expect(failed.length).toBe(1);
+    expect(failed.every(i => slots[i].kind === 'task' && stripTone(slots[i].state) === 'error')).toBe(true);
+    // The count a header shows as "open" must exclude the failed one.
+    expect(active.length - failed.length).toBe(1);
   });
 });
