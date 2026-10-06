@@ -40,7 +40,11 @@ The authoritative entity set is the 30 tables in `schema.ts`. Core entities:
 Multi-tenancy root. Owns accounts, workspaces, missions. Tracks an **aggregate
 monthly budget** (`monthlyBudgetUsd` / `monthlyCostUsd` / `budgetAlertsSent`) across
 all token-accounts — a single SDK credit pool regardless of which API token ran.
-Plans: `free | pro | team`.
+Plans: `free | pro | team` (`teams.plan`, default `free`, plus Stripe customer /
+subscription ids, `billingStatus` and `paidSeats`). Gates read only
+`entitlements(team)` (`packages/core/entitlements.ts`): members, knowledge-base
+document cap, and whether decision calls run on buildd's key. The `BILLING_ENFORCED`
+env switch is off by default, and while off every team is unlimited.
 
 ### User
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`

@@ -34,6 +34,7 @@
     "./dispatch-model-guard": "./dispatch-model-guard.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./entitlements": "./entitlements.ts",
     "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",

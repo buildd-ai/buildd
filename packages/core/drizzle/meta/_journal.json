@@ -1660,6 +1660,13 @@
       "when": 1791201037176,
       "tag": "0242_silky_next_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1791267134100,
+      "tag": "0243_fair_valkyrie",
+      "breakpoints": true
     }
   ]
 }
