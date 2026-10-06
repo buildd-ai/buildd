@@ -73,14 +73,64 @@ describe('pruneLocalBranches', () => {
     expect(cfg).toContain('buildd/unpushed');
   });
 
-  test('old branch is dropped only when the remote still holds the tip', () => {
-    commitOn('buildd/old-pushed');
-    git(repo, 'push -q -u origin buildd/old-pushed');
-    commitOn('buildd/old-local');
-    const future = Date.now() + 30 * 24 * 3600 * 1000;
-    const res = pruneLocalBranches(repo, { now: future, seedDir: join(root, 'no-seed') });
+  test('a branch whose tip a remote ref holds is dropped at any age; local-only work is kept', () => {
+    commitOn('buildd/pushed');
+    git(repo, 'push -q -u origin buildd/pushed');
+    commitOn('buildd/local');
+    const res = pruneLocalBranches(repo, { seedDir: join(root, 'no-seed') });
     expect(res.branchesPruned).toBe(1);
-    expect(branches()).toEqual(['buildd/old-local']);
+    expect(branches()).toEqual(['buildd/local']);
+  });
+
+  // Runner branches are created with their BASE as upstream (origin/dev), so
+  // `[gone]` never fires and the branch's own remote ref is often absent.
+  test('upstream = base: dropped when its commits sit on any remote ref under another name', () => {
+    commitOn('buildd/base-upstream');
+    git(repo, 'branch --set-upstream-to=origin/main buildd/base-upstream');
+    git(repo, 'push -q origin buildd/base-upstream:refs/heads/mission/integration');
+    git(repo, 'fetch -q origin');
+    commitOn('buildd/base-upstream-local');
+    git(repo, 'branch --set-upstream-to=origin/main buildd/base-upstream-local');
+    const res = pruneLocalBranches(repo, { seedDir: join(root, 'no-seed') });
+    expect(res.branchesPruned).toBe(1);
+    expect(branches()).toEqual(['buildd/base-upstream-local']);
+    expect(config()).not.toContain('"buildd/base-upstream"');
+  });
+
+  test('tip equal to a PR head on the remote is dropped; a commit on top of it is kept', () => {
+    commitOn('buildd/pr-closed');
+    git(repo, 'push -q origin buildd/pr-closed:refs/pull/7/head');
+    commitOn('buildd/pr-ahead');
+    git(repo, 'push -q origin buildd/pr-ahead:refs/pull/8/head');
+    const wt = join(root, 'wt-ahead');
+    git(repo, `worktree add -q "${wt}" buildd/pr-ahead`);
+    writeFileSync(join(wt, 'more.txt'), 'y\n');
+    git(wt, 'add -A');
+    git(wt, 'commit -q -m more');
+    git(repo, `worktree remove --force "${wt}"`);
+    // refs/pull/* is not in the default fetch refspec: only ls-remote sees it.
+    expect(git(repo, 'for-each-ref refs/remotes/')).not.toContain('pull');
+    const res = pruneLocalBranches(repo, { seedDir: join(root, 'no-seed') });
+    expect(res.branchesPruned).toBe(1);
+    expect(branches()).toEqual(['buildd/pr-ahead']);
+  });
+
+  test('0 commits ahead of a local upstream is dropped', () => {
+    commitOn('feature');
+    git(repo, 'branch -q --track buildd/tracks-feature feature');
+    const res = pruneLocalBranches(repo, { seedDir: join(root, 'no-seed') });
+    expect(res.branchesPruned).toBe(1);
+    expect(branches()).toEqual([]);
+  });
+
+  test('unreachable remote: the PR-head rule is skipped, nothing throws, other rules still run', () => {
+    commitOn('buildd/pr-only');
+    git(repo, 'push -q origin buildd/pr-only:refs/pull/9/head');
+    git(repo, 'branch buildd/merged origin/main');
+    git(repo, `remote set-url origin "${join(root, 'missing.git')}"`);
+    const res = pruneLocalBranches(repo, { seedDir: join(root, 'no-seed') });
+    expect(res.branchesPruned).toBe(1);
+    expect(branches()).toEqual(['buildd/pr-only']);
   });
 
   test('bounds deletions per tick', () => {
