@@ -1,10 +1,10 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-09-28
-**Previous scan**: 2026-09-21
-**Current SDK version in Buildd**: `^0.3.280` (`package.json` pins `^0.3.280`; `bun.lock` resolves exactly `0.3.280`, parity with CLI v2.1.280 — 3 versions behind this week's head, `0.3.283`/CLI v2.1.283. The TodoWrite/Task-tools gap flagged for five straight scans is still unresolved at the currently-pinned version — see URGENT below.)
-**Python SDK**: v0.2.160 (bundles CLI v2.1.283 — caught up to the TS SDK/CLI head this week)
-**Claude Code CLI**: v2.1.283 (released September 25, 2026)
+**Last updated**: 2026-10-06
+**Previous scan**: 2026-09-28
+**Current SDK version in Buildd**: `^0.3.280` (`package.json` pins `^0.3.280`; `bun.lock` resolves exactly `0.3.280`, parity with CLI v2.1.280 — now 10 versions behind this week's head, `0.3.290`/CLI v2.1.290, and **below the CLI that introduced Claude Sonnet 5.5 (2.1.284)** — see URGENT below.)
+**Python SDK**: v0.2.163 (bundles CLI v2.1.286 — fell 4 versions behind the CLI head again this week)
+**Claude Code CLI**: v2.1.290 (released ~October 5, 2026)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
 
@@ -24,13 +24,125 @@
 
 Flagged as overstated ~4x for three straight scans (Sep 7, Sep 14). This week's code inspection found it's no longer the live-path problem it was: commit `de547e7e` (Sep 4, "resolve tiers from a keyless live catalog") added `packages/core/model-catalog.ts`, which sources real-time pricing — including `cacheRead` — from OpenRouter's public `/api/v1/models` endpoint (`priceFromCatalog`, `model-catalog.ts:183`) and prefers it over the static table everywhere `priceForModel()` is called. The static fallback in `model-prices.ts:42` still hardcodes the stale `cacheRead: 1` for the `fable` tier, but it's now only consulted when the catalog hasn't loaded yet (runner cold start) — not the steady-state figure feeding budget forecasts. Residual action: update the one-line static constant to `0.25` for cold-start accuracy, but this is no longer urgent — downgraded out of URGENT this week, tracked as a low-priority cleanup in Recommendations.
 
-### 🚨 ACTIVE NOW (5th straight scan): TodoWrite/Task-tools missing on Sonnet 5 / Fable / Opus 4.8+ workers
+### 🚨 NEW (Oct 6): Claude Sonnet 5.5 rejects `thinking: disabled` — Buildd's thinking guard doesn't know about it
+
+Sonnet 5.5 (`claude-sonnet-5-5`, GA September 28, default Sonnet as of CLI 2.1.284) returns **400 on `thinking: { type: "disabled" }` at every effort level**; the replacement is the new `between_tools` thinking type (thinking only between tool calls; valid only up to `high` effort — `xhigh`/`max` + `between_tools` is also a 400). Verified in code this week: `packages/core/model-thinking.ts:30` `rejectsDisabledThinking()` matches only `/claude-(fable|mythos)/`, and the effort-gated branch at `:46–47` matches only `claude-opus-5`. **A workspace or task with `thinking: disabled` configured that routes to Sonnet 5.5 will 400 on every turn**, the same failure mode that file's own comment describes for Fable before it was added. Fix: add `sonnet-5-5` (and plausibly the whole `5-5` family incl. the announced Haiku 5.5) to `rejectsDisabledThinking`, with a regression test in the existing model-thinking tests. Second, related gap: `packages/core/model-capability-requirements.ts` `MODEL_MIN_CLI_VERSION` has no `claude-sonnet-5-5` entry, while the runner's locked CLI (2.1.280) predates the CLI that shipped Sonnet 5.5 (2.1.284) — the exact-floor value is **unverified** (no source states it; confirm from the API's own "requires version X" 400 text before adding) but the SDK bump in Recommendations closes the gap regardless. Effort: Low. Priority: **High**.
+
+### 🚨 ACTIVE NOW (6th straight scan): TodoWrite/Task-tools missing on Sonnet 5 / Fable / Opus 4.8+ workers — now backed by usage data
+
+**New evidence this week (Oct 6), not just a grep**: buildd's own `get_usage_stats` tool histogram for the last 7 days (exact per-task histograms) records **no `TodoWrite`, `TaskCreate`, `TaskUpdate` or `TaskList` calls at all** across the workspace's workers, while far rarer built-ins (`TaskStop`, `Monitor`, `ScheduleWakeup`, `AskUserQuestion`) all appear. That is consistent with the tools being absent from the worker toolset, not merely unused. Note `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set (`workers.ts:3753`, comment claims it provides TaskCreate/Update/List) — the histogram suggests it does not, at least not for the lead session. Also relevant: SDK v0.3.286 fixed "foreground subagents sometimes not receiving the task-tracking tools listed in `tools` or `allowedTools`", so the fix should be paired with the SDK bump. Verify by reading one worker's `system/init` `tools` list before and after.
 
 Unresolved across **five** consecutive weekly scans now (Aug 24, Sep 7, Sep 14 as a pre-condition to check before bumping; Sep 21 and this week as an active production bug after the bump happened anyway without it). Re-confirmed by grep this week (Sep 28): `apps/runner/src/workers.ts` still has zero hits for `CLAUDE_CODE_ENABLE_TODO_TOOLS`, and still never explicitly lists `TodoWrite`/`Task*` in `tools`/`allowedTools`. The SDK pin has since moved to `^0.3.280` (from `^0.3.272` last week) — further past the `v0.3.233` threshold, not closer to it. **Every Buildd worker running Opus 4.8+, Sonnet 5, Fable 5/5.1, or Mythos is still silently missing todo/task-tracking tools, one week further into production than last scan.** Fix: set `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in the worker spawn env in `apps/runner/src/workers.ts` (near where `allowedTools` is built, ~line 3348–3817). Effort: Low. Priority: **Highest — this is now the fifth report of the same one-line fix.**
 
 ### GitSpawn (CVE-2026-55607) — `ultrareview` variant re-checked this week, still no confirmed fix
 
-Re-verified this week (Sep 28) rather than carried forward blind: no new source found confirming the second, `claude ultrareview`-path GitSpawn variant has been patched. The primary `core.fsmonitor`/worktree-confusion path (versions 2.1.38–2.1.162) remains fixed in **2.1.163**, long superseded by Buildd's current CLI (2.1.283 head, 2.1.280 pinned). The **ultrareview-path variant** was last confirmed exploitable on **2.1.252** at its Sept 1–2 disclosure ([The Hacker News](https://thehackernews.com/2026/09/malicious-git-configs-can-make-claude.html); [shattered.io](https://shattered.io/gitspawn-ai-coding-agent-vulnerability-2026/)) and no vendor changelog entry between then and CLI 2.1.283 (this week's head — five releases checked this week alone, none mentioning GitSpawn, ultrareview, or a related git-config sink) claims to address it. That's now **four weeks with no confirmation either way**. Buildd's own `/code-review ultra` command invokes exactly this path against exactly its threat model (reviewing untrusted PR content). Action unchanged: before relying on `/code-review ultra` against a PR from an untrusted fork or branch, confirm current patch status with Anthropic support directly rather than assuming changelog silence means fixed. Effort: Low (verification). Priority: High — security, and the silence itself is now the notable data point.
+Re-verified this week (Sep 28) rather than carried forward blind: no new source found confirming the second, `claude ultrareview`-path GitSpawn variant has been patched. The primary `core.fsmonitor`/worktree-confusion path (versions 2.1.38–2.1.162) remains fixed in **2.1.163**, long superseded by Buildd's current CLI (2.1.283 head, 2.1.280 pinned). The **ultrareview-path variant** was last confirmed exploitable on **2.1.252** at its Sept 1–2 disclosure ([The Hacker News](https://thehackernews.com/2026/09/malicious-git-configs-can-make-claude.html); [shattered.io](https://shattered.io/gitspawn-ai-coding-agent-vulnerability-2026/)) and no vendor changelog entry between then and CLI 2.1.283 (this week's head — five releases checked this week alone, none mentioning GitSpawn, ultrareview, or a related git-config sink) claims to address it. That's now **four weeks with no confirmation either way**. **Oct 6 update**: CLI 2.1.284–2.1.290 shipped a large batch of `/ultrareview` *upload* hardening — credential files with a colon before the extension no longer included (2.1.285), unfiltered upload for git filter drivers named `unset`/`unspecified` fixed (2.1.290), `core.worktree`/`core.longpaths`/`core.safecrlf` handling, git ≥2.31 required with working-tree-snapshot uploads (2.1.285). None names GitSpawn or the CVE, and these are exfiltration/upload fixes rather than the config-driven execution sink — still five weeks without explicit confirmation. Buildd's own `/code-review ultra` command invokes exactly this path against exactly its threat model (reviewing untrusted PR content). Action unchanged: before relying on `/code-review ultra` against a PR from an untrusted fork or branch, confirm current patch status with Anthropic support directly rather than assuming changelog silence means fixed. Effort: Low (verification). Priority: High — security, and the silence itself is now the notable data point.
+
+---
+
+## SDK Releases (September 29 – October 6, 2026)
+
+7 CLI releases (v2.1.284–v2.1.290), 7 TypeScript SDK releases (v0.3.284–v0.3.290), 3 Python SDK releases (v0.2.161–v0.2.163, bundling CLI up to v2.1.286). v2.1.290 alone is one of the largest changelogs of the year (well over a hundred entries).
+
+### TypeScript SDK v0.3.284 – v0.3.290
+
+| Version | Key Changes |
+|---------|-------------|
+| **v0.3.284** (Sep 28) | `getSettings().applied.ultracodeAvailable/ultracodeRequested`; `applyFlagSettings({ ultracode: true })` now keeps the current effort instead of jumping to `xhigh`; fixed `query()` closing stdin before a follow-up turn woken by a finished background agent ("Stream closed" in hooks/`canUseTool`/SDK MCP — the TS twin of last week's Python v0.2.160 fix); Elicitation hook `{ decision: 'block' }` now honoured; first turn waits up to 2s for MCP servers named in `allowedTools` even with `CLAUDE_CODE_MCP_STARTUP_WAIT_MS=0` |
+| **v0.3.285** (Sep 29) | `allowedProviders` in `Settings` + `provider_not_allowed` startup failure reason; **Bash/PowerShell `timeout` now bounds `run_in_background` commands (default 30 min, max 2 h)** — previously ignored; `getSubagentMessages()` now includes messages a subagent read; `rewind_conversation` stops backgrounded MCP calls |
+| **v0.3.286** (Sep 30) | **Fixed foreground subagents not receiving task-tracking tools listed in `tools`/`allowedTools`**; **behaviour change: an omitted `permissionMode` is now left to Claude Code** (settings `defaultMode` applies; on third-party providers or telemetry-off the session starts in `auto`) — pass `permissionMode` explicitly to keep manual approvals; `sdk_mcp_manifests` / `sdk_mcp_tools_list_changed` capabilities; an SDK MCP tool whose schema can't convert is now dropped with a warning instead of emptying the server; `toggleMcpServer()` fixes for `createSdkMcpServer()` servers; a priority `now` message backgrounds running work and joins the turn instead of stopping it |
+| **v0.3.287** (Oct 1) | Remote-session latency fields on the success result; clear "OAuth token revoked" error text; MCP `structuredContent` over ~1M JSON chars omitted with `structuredContentOmitted: true`; `commands_changed` no longer arrives before `init` |
+| **v0.3.288–289** | Parity bumps only |
+| **v0.3.290** (Oct 5) | WebFetch `offset` input for paging long pages (CLI also stops silently truncating at 100K chars); `toolAliases` fixes for wildcard deny/ask rules; `includePartialMessages` streams always end with `message_stop`; `resume_reason`/`user_message_uuid(s)` set on turns a restarted worker resumes |
+
+### Python SDK v0.2.161 – v0.2.163
+
+CLI bundle bumps only (2.1.284 → 2.1.286). v0.2.163's CI note is telling: Anthropic had to **pin the model for their own issue-triage job because the CLI's new default model (Sonnet 5.5) broke it** — a small public example of the same default-model-shift risk flagged for Buildd below.
+
+### CLI v2.1.284 – v2.1.290 (highlights relevant to headless/SDK workers)
+
+| Version | Key Changes |
+|---------|--------------|
+| **v2.1.284** (Sep 28) | **Claude Sonnet 5.5 becomes default Sonnet** (1M context, $2/$10); `/mcp reconnect all`; fixed Agent SDK crash on malformed image `source`; fixed MCP tools failing while a server reconnects in a resumed session |
+| **v2.1.285** (Sep 29) | `CLAUDE_CODE_DISABLE_WEB_FETCH`; `allowedProviders` managed setting; `CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES`; background Bash/PowerShell timeout (30 min default, 2 h max); `claude -p` starts in auto mode when no mode configured; **MCP server name `widgets` is now reserved** (checked: Buildd ships no MCP server by that name); many `/ultrareview` upload-hardening fixes |
+| **v2.1.286** (Sep 30) | Fixed `--resume`/`--continue` losing turns after a parallel tool-call batch; fixed every turn failing when the API refuses the default/alias model; API retry limit now covers the whole model call; `--bare` connects only named MCP servers |
+| **v2.1.287** (Oct 1) | **Claude Mods** (in-process JS/TS plugins that can rewrite prompts, intercept/answer tool calls, and redraw UI) + built-in "You should know" side-agent mod; fixed tool heartbeats not reaching the SDK during stalled streams; fixed `claude -p`/SDK repeating model fallback after a mid-reply switch; `alwaysLoad: false` MCP servers now defer *all* tools to tool search; whole-tool Bash allow rules now prompt for sensitive-file writes |
+| **v2.1.288** (Oct 2) | **Mid-response API timeouts: non-interactive sessions continue from the partial reply**; background-command time limit applies to unattended sessions only (i.e. SDK workers); fixed agent teams' spawned agents ignoring their own prompt/tools/effort; fixed dangerous `rm` inside `bash -c` running unprompted; fixed path-scoped rules/nested CLAUDE.md not loading on Write/Edit create; `/code-review --max-findings` |
+| **v2.1.289** (Oct 3) | Mods stabilisation; `agent.spawn` for teammates |
+| **v2.1.290** (Oct 5) | Huge reliability release: fixed **background subagents losing write/Bash access in a worktree**; fixed resumed subagents losing thinking + prompt cache; fixed headless `--json-schema` exiting non-zero on success; fixed mid-response model fallback discarding tool calls; fixed unbounded memory from large HTTP MCP responses; fixed Bash tool losing aliases/PATH after the first command; fixed self-hosted runner symlinked-worktree resume; `/claude-api managed-agents-onboard` |
+
+---
+
+## New Platform Features (September 29 – October 6, 2026)
+
+### Claude Sonnet 5.5 GA (September 28) — breaking thinking change, see URGENT
+
+Model id `claude-sonnet-5-5`; same list price as Sonnet 5 ($2/$10, $0.20 cache read, $2.50 cache write) but Anthropic claims 30%+ faster output and up to ~30% lower cost per task through fewer tokens; Terminal-Bench 4.0 70.6%. Haiku 5.5 is announced for "the coming weeks". **Buildd impact verified in code**: (a) `model-prices.ts` `id.includes('sonnet-5')` already prices `claude-sonnet-5-5` at the correct $2/$10 row (by luck of substring matching — worth an explicit test); (b) the thinking guard does *not* cover it (URGENT); (c) no CLI floor entry, and the locked CLI predates it (URGENT). Because Sonnet 5.5 became the CLI's *default* Sonnet, any Buildd path that passes the `sonnet` alias rather than a pinned id switches models on SDK bump — Anthropic's own Python SDK CI broke this exact way.
+
+### Claude Mods (CLI v2.1.287, October 1)
+
+In-process TypeScript/JavaScript handlers that chain like middleware over Claude Code events: observe, rewrite (e.g. change a Bash command), or answer a tool call without running it; they can also redraw UI and route a request to a different model. Distinct from hooks (out-of-process), skills (instructions) and MCP (external tools). **Relevance for Buildd**: mods are the first first-party mechanism that could replace parts of Buildd's runner-side guardrails (e.g. `applyPrMutationDeny`, cbm enforcement) with in-process policy that also covers subagents. Coverage reporting so far is interactive-only; whether mods load under `-p`/SDK is undocumented — verify before designing around it. Also a new *risk* surface: a mod "runs with your full user permissions", so a repo-shipped mod in an untrusted PR branch is a GitSpawn-shaped concern for reviewer workers. Effort: Low (investigation). Priority: Medium.
+
+### `permissionMode` default change (TS SDK v0.3.286) — verified not applicable
+
+Omitting `permissionMode` now defers to Claude Code, which on third-party providers or telemetry-off starts in `auto`. Checked: `apps/runner/src/workers.ts:3854` always passes `bypassPermissions` or `acceptEdits` explicitly. No action.
+
+### Background-command timeout now enforced (v0.3.285 / CLI 2.1.285, scoped to unattended sessions in 2.1.288)
+
+`run_in_background` Bash commands now stop at their `timeout` (default 30 min, max 2 h) in unattended sessions — exactly Buildd's worker shape. Workers that background a long build/test/integration run and poll it with `Monitor` will see it stopped at 30 min unless they pass a larger `timeout`. Low risk today (most runs are short), but a silent behaviour change on the next SDK bump; mention it in the worker prompt/skill if long background jobs are common.
+
+---
+
+## Anthropic Business News (September 29 – October 6, 2026)
+
+### IPO: timeline slips to mid-November; investor day October 14
+
+Reporting this week moves the expected listing from October to **as early as mid-November**, with marketing beginning the week of November 9 and a pre-IPO investor day on October 14; banks reported as Morgan Stanley, Goldman Sachs and JPMorgan; valuation chatter still up to ~$2T. Informational only — no Buildd action.
+
+---
+
+## New Ecosystem Projects (Since September 28, 2026)
+
+GitHub trending on Oct 3 was dominated by agent skills, harness optimizers and multi-agent orchestration tools (reported as 10 of the top 15).
+
+| Project | Stars (approx.) | Description |
+|---------|-------|--------------|
+| **obra/superpowers** | ~295K | Still the top agentic-skills framework; steady ~+2.5K/week (292.4K → ~295K), same pace as last scan |
+| **mattpocock/skills** | ~275K | One developer's personal `.agents` directory published as a skills repo |
+| **ECC** | ~272K | "Harness optimizer" — skills + instincts + memory + security bundled |
+| **ponytail** | ~153K, fastest-growing | "Think like the laziest senior dev" anti-over-engineering skill |
+| **caveman** | ~109K | Token-compression proxy claiming ~65% input reduction |
+| **Agent-Reach** | ~90K | Zero-API-fee web browsing for agents |
+| **ComposioHQ/agent-orchestrator** | — | Supervises teams of coding agents from planning to merge across 25+ harnesses (Claude Code, Codex, …); desktop/web/mobile/cloud — the closest new direct competitor to Buildd's coordination model |
+
+**Ecosystem trend**: the community is converging on *harness-level* products (skills + memory + guardrails + orchestration in one bundle) rather than single-purpose tools — and Anthropic's Mods launch moves the same direction first-party. Buildd's differentiation (server-side coordination, PR lifecycle, mission/review loop) is orthogonal to harness tuning, but "anti-over-engineering" and token-compression skills are cheap experiments to try via a role skill.
+
+---
+
+## Recommendations for Buildd
+
+### This Week (October 6, 2026)
+
+**#1 — 🚨 NEW: Add Sonnet 5.5 to the `thinking: disabled` guard** — `packages/core/model-thinking.ts:30`. Regression test first (Sonnet 5.5 + `disabled` must be stripped at every effort). Consider matching the `5-5` family generically so Haiku 5.5 doesn't repeat this. Effort: Low. Priority: **High** (hard 400 on every turn for affected workspaces).
+
+**#2 — 🚨 Bump SDK pin `^0.3.280` → `^0.3.290`**, now with real reasons rather than routine: CLI ≥2.1.284 for Sonnet 5.5; v0.3.284 stdin-closed-before-background-agent-turn fix ("Stream closed" in `canUseTool`/SDK MCP — Buildd uses both); v0.3.286 task-tracking-tools-for-subagents fix; v2.1.288 mid-response timeout continuation; v2.1.290 background-subagent worktree write/Bash fix. Watch: v0.3.285 background-command timeout, v0.3.286 `permissionMode` default (n/a, verified), CLI default Sonnet → 5.5 (check nothing passes the bare `sonnet` alias expecting Sonnet 5). After bumping, record the measured Sonnet 5.5 floor in `MODEL_MIN_CLI_VERSION`. Location: `apps/runner/package.json`, `packages/core/package.json`. Effort: Low.
+
+**#3 — 🚨 Fix TodoWrite/Task tools (6th scan) — now evidenced by Buildd's own tool histogram** — zero task-tracking calls in a week of workers (see URGENT). Set `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` in worker env next to `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` (`workers.ts:3753`), ship with #2, then confirm via the next week's `get_usage_stats`. Effort: Low. Priority: High.
+
+**#4 — Investigate Claude Mods under SDK/headless** — if mods load in `-p`, they are a candidate home for in-process worker guardrails; either way, decide whether reviewer workers must disable repo-shipped mods on untrusted branches. Effort: Low. Priority: Medium.
+
+**#5 — GitSpawn `ultrareview` variant: still unconfirmed** (5th week) — lots of upload hardening shipped, nothing naming the CVE. Unchanged action. Priority: High — security.
+
+**#6 — Add explicit price test for `claude-sonnet-5-5`** — currently correct only via `includes('sonnet-5')`; Haiku 5.5 pricing will need a row when it lands. Effort: Trivial.
+
+**#7 — Try a cheap harness experiment** — e.g. register an anti-over-engineering or token-compression skill on one role and compare via `manage_experiments`/`get_usage_stats` (Bash dominates tool calls and code search dominates Bash, so compression of search output is where token savings would show). Effort: Low–Medium. Priority: Low.
+
+### Still Relevant (From September 28, 2026)
+
+**#8 — Evaluate `verbatimPrompts` for the task-description-to-prompt path** — re-checked: still zero references in `workers.ts`.
+**#9 — Track the Claude Plugin Directory portal against a Buildd skill-quality gate.**
+**#10 — Confirm the live model catalog resolved Opus 5.5 (and now Sonnet 5.5) to the expected tiers** — one `manage_model_tiers` list call.
+**#11 — Trivial: Fable static fallback `cacheRead: 1` → `0.25`** — `packages/core/model-prices.ts:42`, re-checked: still `1`.
 
 ---
 
