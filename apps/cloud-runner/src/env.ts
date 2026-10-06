@@ -65,6 +65,8 @@ export interface Env extends EgressEnv, OtelEgressEnv {
    * Default off. Needs the SNAPSHOTS binding too (resumableRunsEnabled).
    */
   RESUMABLE_RUNS?: string;
+  /** This Worker version's id, to tell a deploy from any other agent restart in the run report (wrangler.jsonc `version_metadata`). */
+  CF_VERSION_METADATA?: { id: string };
   /** R2 bucket for snapshots (wrangler.jsonc `r2_buckets`). Only the Worker writes it. */
   SNAPSHOTS?: R2Bucket;
 }

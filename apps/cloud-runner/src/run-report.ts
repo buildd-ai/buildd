@@ -12,7 +12,7 @@
  * one, so a stray credential passed in by mistake cannot come out the other
  * side.
  */
-import type { CrashReport, RunOutcome } from './lifecycle';
+import type { AgentRestart, CrashReport, RunOutcome } from './lifecycle';
 import {
   RUNNER_CLASSES,
   normalizeRunnerSizeDecision,
@@ -30,8 +30,9 @@ import {
  * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
  * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
  * 7: adds `resources` (memory peak, disk minimum), `interruption` and `runnerSize` (container class, weighted runner-seconds).
+ * 8: adds `agentRestarts` (each time the agent restarted under the attempt, and what it did about the run).
  */
-export const RUN_REPORT_VERSION = 7;
+export const RUN_REPORT_VERSION = 8;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -745,6 +746,15 @@ export interface RunReport {
    */
   interruption: RunInterruption | null;
   /**
+   * Each time the agent (Durable Object) restarted while this attempt was
+   * live, oldest first. `recovery`: `reattached` the runner was still going
+   * and the new agent adopted it; `parked` it parked the run and resumed it;
+   * `crashed` it could do neither. `versionChanged` true means a Worker
+   * deploy; false means the restart had another cause (eviction, an isolate
+   * limit); null when a version was unavailable.
+   */
+  agentRestarts: AgentRestart[];
+  /**
    * The container class this attempt ran in and the decision that chose it
    * (buildd's runner size route; `source` null when none reached the agent).
    * `runnerSeconds`: container running to exit, rounded up;
@@ -784,6 +794,8 @@ export interface RunReportInput {
   deferredRetry?: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
   /** See RunReport.interruption. */
   interruption?: RunInterruption | null;
+  /** See RunReport.agentRestarts. */
+  agentRestarts?: AgentRestart[];
   /** The class this agent is (the container class actually used). Absent: standard. */
   runnerSize?: RunnerSize;
   /** buildd's decision that routed the dispatch here, if one reached the agent. */
@@ -794,6 +806,7 @@ const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'deferred', 'start_deferred', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
+const AGENT_RECOVERIES: readonly AgentRestart['recovery'][] = ['reattached', 'parked', 'crashed'];
 const DEFERRED_REASON_RE = /^[A-Za-z0-9_]{1,64}$/;
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
@@ -917,6 +930,17 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       diskTotalBytes: metric('disk_total_bytes'),
     },
     interruption: RUN_INTERRUPTIONS.includes(input.interruption as RunInterruption) ? input.interruption as RunInterruption : null,
+    agentRestarts: (input.agentRestarts ?? []).slice(0, 5).flatMap((r): AgentRestart[] => {
+      const at = ts(r?.at);
+      if (at === null || !AGENT_RECOVERIES.includes(r.recovery)) return [];
+      return [{
+        at,
+        recovery: r.recovery,
+        containerRunning: r.containerRunning === true,
+        runningForMs: ts(r.runningForMs),
+        versionChanged: typeof r.versionChanged === 'boolean' ? r.versionChanged : null,
+      }];
+    }),
     runnerSize: runnerSizeSection(input, timestamps),
   };
 }
