@@ -30,6 +30,9 @@ export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
   'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
+  // resource-sampler.ts: working-set peak, the memory it is measured against,
+  // lowest free disk and the disk's size. Re-printed as they move; last wins.
+  'mem_peak_bytes', 'mem_limit_bytes', 'disk_free_min_bytes', 'disk_total_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 

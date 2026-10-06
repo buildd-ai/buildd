@@ -30,10 +30,13 @@ import { rewriteOtlp } from './otel';
 import { measureResponse, egressClassForKind, inspectGithubThrottle, throttleLogLine, type EgressClass, type EgressEvent, type GithubAuthLabel } from './run-report';
 import { resumableRunsEnabled, warmMaxBundleBytes, warmReposEnabled } from './lifecycle';
 import { SnapshotStore, handleSnapshotRequest, type BucketPort, type SnapshotScope } from './snapshots';
+import type { RunnerSize } from './runner-class';
 
 export interface EgressProps {
   /** The task whose container this handler serves. Set by the WorkerAgent, never by the container. */
   taskId: string;
+  /** Which agent class serves it (WorkerAgentLarge for `large`). Set by the agent too. */
+  runnerSize?: RunnerSize;
 }
 
 interface AgentSource {
@@ -188,10 +191,13 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     })());
   }
 
+  /** The task's agent, in the class that started this container. */
   private async agent(): Promise<AgentSource | null> {
     const taskId = this.ctx.props?.taskId;
     if (!taskId) return null;
-    return (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
+    return this.ctx.props?.runnerSize === 'large'
+      ? (await getAgentByName(this.env.WorkerAgentLarge, taskId)) as unknown as AgentSource
+      : (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
   }
 
   /** The task's agent model endpoint, from its WorkerAgent's in-memory cache. */
@@ -239,7 +245,7 @@ export class EgressHandler extends WorkerEntrypoint<Env, EgressProps> {
     const taskId = this.ctx.props?.taskId;
     if (!taskId) return { grant: null, unavailable: 'no_run' };
     try {
-      const agent = (await getAgentByName(this.env.WorkerAgent, taskId)) as unknown as AgentSource;
+      const agent = (await this.agent())!;
       return await agent.getGithubGrant();
     } catch (err) {
       console.log(`[cloud-runner] task ${taskId}: GitHub grant lookup failed: ${err instanceof Error ? err.message : String(err)}`);
