@@ -9,6 +9,10 @@
  *      that claims, and a dead runner never calls /api/tasks/cleanup.
  *   2. Abandoned path-claim release: release claims a terminal task should have
  *      released. A held claim blocks the claim gate.
+ *   3. Ended-task interactive workers: detach any live claim_task worker whose
+ *      task already ended (lib/interactive-detach.ts), across every team. The
+ *      claim and MCP paths do this as they run; this is the floor that repairs
+ *      the rest, including rows leaked before those paths existed.
  *
  * They live here so a deployment that schedules only the `core` cron profile
  * keeps them (cron-manifest.json, `cron:sync --profile core,ops`). On
@@ -22,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { runStaleWorkerCleanup } from './stale-workers';
 import { sweepAbandonedPathClaims } from './path-claims';
+import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 
 export async function GET(req: NextRequest) {
   return withCronRun('maintenance', req, report => runCronJob(report));
@@ -31,9 +36,10 @@ async function runCronJob(report: CronReport): Promise<NextResponse> {
   const now = new Date();
   const heartbeatOrphans = await runStaleWorkerCleanup(now);
   const abandonedClaimsReleased = await sweepAbandonedPathClaims();
-  const result = { heartbeatOrphans, abandonedClaimsReleased };
+  const interactiveDetached = await detachInteractiveWorkersOfEndedTasks({ now });
+  const result = { heartbeatOrphans, abandonedClaimsReleased, interactiveDetached };
   // Nothing to repair is the healthy state, so changed=0 with errors=0 is fine.
-  // Both sweeps log and swallow their own failures, so errors stays 0 here.
-  report({ changed: heartbeatOrphans + abandonedClaimsReleased, errors: 0, result });
+  // Every sweep logs and swallows its own failures, so errors stays 0 here.
+  report({ changed: heartbeatOrphans + abandonedClaimsReleased + interactiveDetached, errors: 0, result });
   return NextResponse.json(result);
 }

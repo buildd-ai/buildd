@@ -18,6 +18,7 @@ import { guardMissionPrMerge } from '@/lib/mission-pr';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
 import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { describeConflictReason } from '@/lib/merge-blocker';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { actionCardTaskLink } from '@/lib/action-card-context';
 import { missionTaskHref } from '@/lib/mission-task-href';
@@ -27,7 +28,7 @@ import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
-import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import { DEFAULT_MAX_CONFLICT_ITERATIONS, isAutoResolveMergeConflictsEnabled } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { resolveGatedReleaseState } from '@/lib/release-baseline';
 import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
@@ -200,6 +201,9 @@ export default async function HomePage({
     waitingMinutes: number | null;
     conflictRetryTaskId: string | null;
     conflictRetryIteration: number | null;
+    /** See EscalationRawItem.conflictAutoResolve / conflictReason. */
+    conflictAutoResolve: boolean;
+    conflictReason: string | null;
     /** Freshness inputs — buildActionQueue refuses a merge CTA on stale state. */
     prLifecycleStatus: string | null;
     prOpenedAt: Date | null;
@@ -1012,20 +1016,32 @@ export default async function HomePage({
             // While a conflict-retry task is live for a PR, the card renders as
             // RESOLVING rather than asking the human to merge.
             const conflictRetryMap = new Map<string, { taskId: string; iteration: number }>();
-            if (openPrWorkers.length > 0) {
+            // The newest conflict retry per PR, live or not: its failure context
+            // names the conflict in one line (describeConflictReason).
+            const conflictReasonMap = new Map<string, string>();
+            const openPrNumbers = [...new Set(
+              openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null),
+            )];
+            if (openPrNumbers.length > 0) {
               const conflictRetryTasks = await db.query.tasks.findMany({
                 where: and(
                   inArray(tasks.workspaceId, wsIds),
                   sql`${tasks.creationSource} = 'conflict'`,
-                  isNotNull(tasks.conflictRetryPrNumber),
-                  inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+                  inArray(tasks.conflictRetryPrNumber, openPrNumbers),
                 ),
-                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true },
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true },
+                orderBy: [desc(tasks.createdAt)],
               });
               for (const t of conflictRetryTasks) {
                 if (t.conflictRetryPrNumber == null) continue;
                 const key = `${t.workspaceId}:${t.conflictRetryPrNumber}`;
                 const ctx = (t.context ?? {}) as Record<string, unknown>;
+                if (!conflictReasonMap.has(key)) {
+                  const reason = describeConflictReason(ctx.failureContext);
+                  if (reason) conflictReasonMap.set(key, reason);
+                }
+                if (!(LIVE_TASK_STATUSES as readonly string[]).includes(t.status)) continue;
+                if (conflictRetryMap.has(key)) continue;
                 const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
                 conflictRetryMap.set(key, { taskId: t.id, iteration });
               }
@@ -1293,6 +1309,8 @@ export default async function HomePage({
                   conflictRetryIteration: conflictRetry?.iteration ?? null,
                   deadZoneExhausted: !!deadZoneInfo,
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
+                  conflictAutoResolve: isAutoResolveMergeConflictsEnabled(ws?.gitConfig),
+                  conflictReason: w.prNumber != null ? conflictReasonMap.get(`${w.workspaceId}:${w.prNumber}`) ?? null : null,
                   // Read from persisted columns only (I-9): the sweep owns all
                   // GitHub resolution, this layer only judges how old that
                   // resolution is.

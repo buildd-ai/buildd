@@ -20,6 +20,13 @@ export const REASSIGNED_WORKER_ERROR = 'Task was reassigned';
 export const INTERRUPTED_WORKER_ERROR = 'Interrupted — human takeover';
 
 /**
+ * Set when buildd detaches an interactive (claim_task) worker to free its slot
+ * (lib/interactive-detach.ts). The local session may still be running; its
+ * work no longer counts here.
+ */
+export const RELEASED_SLOT_WORKER_ERROR = 'Slot released — local session detached';
+
+/**
  * Substrings that mark a termination the server owns. A worker terminated for
  * one of these reasons MUST NOT be reactivated or recovered: either the runner
  * is gone (expiry/heartbeat/restart) or the work has been handed elsewhere
@@ -28,6 +35,7 @@ export const INTERRUPTED_WORKER_ERROR = 'Interrupted — human takeover';
 export const NON_REACTIVATABLE_ERROR_PHRASES = [
   INTERRUPTED_WORKER_ERROR,
   REASSIGNED_WORKER_ERROR,
+  RELEASED_SLOT_WORKER_ERROR,
   'expired',
   'timed out',
   'went offline',
