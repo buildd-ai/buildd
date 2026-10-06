@@ -58,6 +58,7 @@ import { extractBuilddAction, BUILDD_MCP_TOOL_NAME } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { rescanBrowserCapability, BROWSER_RESCAN_INTERVAL_MS } from './browser-capability';
 import { buildAgentBaseEnv, withWorkerResourceAttribute } from './agent-env';
+import { applyHeadlessSessionEnv, withHeadlessToolDeny } from './headless-session';
 import { advertisedRoleSlugs } from './role-advertising';
 import { outputRequirementNudge } from './output-requirement-nudge';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -3755,6 +3756,9 @@ export class WorkerManager {
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
       // Keep task-tracking tools available on newer Claude models.
       cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
+      // Nothing re-invokes a session after its turn ends, so background work
+      // and scheduled wakeups can only strand it. See headless-session.ts.
+      applyHeadlessSessionEnv(cleanEnv);
 
       // Resolve role env vars (secret labels → actual values). Not gated on
       // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
@@ -4281,11 +4285,11 @@ export class WorkerManager {
       // shell `gh pr` mutation subcommands and known connector PR-write tool names
       // for roles that have no legitimate reason to reach for them. Placed after all
       // mcpServers mounting above so mountedServerNames reflects the final set.
-      (queryOptions as any).disallowedTools = applyPrMutationDeny((queryOptions as any).disallowedTools, {
+      (queryOptions as any).disallowedTools = withHeadlessToolDeny(applyPrMutationDeny((queryOptions as any).disallowedTools, {
         roleSlug: task.roleSlug,
         hasApiKey: !!this.config.apiKey,
         mountedServerNames: Object.keys(queryOptions.mcpServers ?? {}),
-      });
+      }));
 
       // MCP pre-flight: verify all connector-required servers are mounted and
       // reachable BEFORE the agent loop starts. Connectors are servers the role
@@ -4724,9 +4728,13 @@ export class WorkerManager {
 
       // Check if session actually did work or just errored
       // Only check early output (first 500 chars) to avoid false positives
-      // from agent responses that discuss auth topics
+      // from agent responses that discuss auth topics, and only for a session
+      // that never ran a tool: a rejected credential fails the first model
+      // call, so a session that used tools was authenticated. Without this, a
+      // task ABOUT a 401 ("why does X return 401 Unauthorized") was failed as
+      // an auth error after doing its work.
       const earlyOutput = worker.output.slice(0, 3).join('\n').toLowerCase();
-      const authFailed = isAuthError(earlyOutput);
+      const authFailed = worker.toolCalls.length === 0 && isAuthError(earlyOutput);
 
       if (authFailed) {
         // Auth error - mark as failed, not completed
