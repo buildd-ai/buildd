@@ -381,11 +381,6 @@ GLOBALEOF
     fi
     ;;
 
-  skill)
-    shift
-    exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/skill.ts" "$@"
-    ;;
-
   login)
     shift
     exec bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/login.ts" "$@"
