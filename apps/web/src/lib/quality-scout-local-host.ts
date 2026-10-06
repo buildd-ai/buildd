@@ -150,7 +150,8 @@ export function localCommandPort(opts: { dir: string; evidenceDir: string; env?:
         }
         const r = await exec('bash', ['-c', req.command], { cwd: opts.dir, timeoutMs: req.timeoutMs, env: opts.env });
         mkdirSync(opts.evidenceDir, { recursive: true });
-        const file = join(opts.evidenceDir, `command-${++n}.log`);
+        // Unique per process and call: an evidence log is never overwritten by a later run.
+        const file = join(opts.evidenceDir, `command-${req.sha.slice(0, 12)}-${process.pid}-${Date.now()}-${++n}.log`);
         writeFileSync(file, `$ ${req.command}\n# ref ${req.ref} sha ${req.sha}\n# exit ${r.code} timedOut ${r.timedOut} ${r.durationMs}ms\n\n--- stdout ---\n${r.stdout}\n--- stderr ---\n${r.stderr}\n`);
         const after = (await gitStatus(opts.dir).catch(() => '')).split('\n').filter(Boolean);
         const output: ScoutCommandOutput = {
