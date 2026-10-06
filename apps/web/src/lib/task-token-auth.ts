@@ -273,7 +273,7 @@ export async function taskScopeAllowsMissionTask(
 
 /**
  * Read-only widening of `taskScopeAllowsMissionTask`: a worker-level task token
- * may also READ a sibling task on its own task's mission (same workspace), the
+ * may also READ any task in its own workspace, the
  * same tasks `list_tasks` shows it. Writes keep the stricter rule above.
  */
 export async function taskScopeAllowsMissionTaskRead(
@@ -282,6 +282,9 @@ export async function taskScopeAllowsMissionTaskRead(
 ): Promise<boolean> {
   if (await taskScopeAllowsMissionTask(account, task)) return true;
   if (!account.taskScope) return true;
-  if (task.workspaceId !== account.taskScope.workspaceId || !task.missionId) return false;
-  return taskScopeAllowsMission(account, task.missionId);
+  // list_tasks and recall already show a task token every task in its own
+  // workspace; get_task answering 404 for one of them (e.g. a reviewer reading
+  // the builder task it reviews, which sits on no mission) sent callers off
+  // to guess. The workspace is the same boundary list_tasks enforces.
+  return !!task.workspaceId && task.workspaceId === account.taskScope.workspaceId;
 }

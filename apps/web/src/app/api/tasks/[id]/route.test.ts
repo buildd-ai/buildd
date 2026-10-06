@@ -283,7 +283,7 @@ describe('GET /api/tasks/[id]', () => {
     expect(data.parentTaskId).toBe(parentTaskId);
   });
 
-  it("lets an orchestration task's admin token read the tasks on its own mission, and nothing else (workers read them too)", async () => {
+  it("lets a task token read any task in its own workspace, and nothing outside it", async () => {
     const OWN = '22222222-2222-4222-8222-222222222222';
     const sibling = (over: Record<string, unknown>) => ({
       id: TASK_ID, title: 'Sibling', status: 'pending', workspaceId: 'ws-1', missionId: 'm-1',
@@ -297,26 +297,19 @@ describe('GET /api/tasks/[id]', () => {
     const get = () => callHandler(GET, createMockRequest({ headers: { Authorization: 'Bearer bld_xxx' } }), TASK_ID);
     const taskScope = { taskId: OWN, workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 };
 
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'admin', taskScope });
-    expect((await get()).status).toBe(200);
-    row = sibling({ missionId: 'm-2' });
-    expect((await get()).status).toBe(404);
-    row = sibling({ workspaceId: 'ws-2' });
-    expect((await get()).status).toBe(404);
-    row = sibling({ missionId: null });
-    expect((await get()).status).toBe(404);
-
-    // A worker-level token may READ siblings on its own mission (the tasks
-    // list_tasks shows it), but nothing outside that mission or workspace.
-    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'worker', taskScope });
-    row = sibling({});
-    expect((await get()).status).toBe(200);
-    row = sibling({ missionId: 'm-2' });
-    expect((await get()).status).toBe(404);
-    row = sibling({ workspaceId: 'ws-2' });
-    expect((await get()).status).toBe(404);
-    row = sibling({ missionId: null });
-    expect((await get()).status).toBe(404);
+    // Any task token may READ any task in its own workspace (the tasks
+    // list_tasks shows it), on its mission or not, and nothing outside it.
+    for (const level of ['admin', 'worker']) {
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level, taskScope });
+      row = sibling({});
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: 'm-2' });
+      expect((await get()).status).toBe(200);
+      row = sibling({ missionId: null });
+      expect((await get()).status).toBe(200);
+      row = sibling({ workspaceId: 'ws-2' });
+      expect((await get()).status).toBe(404);
+    }
     mockTasksFindFirst.mockReset();
   });
 
