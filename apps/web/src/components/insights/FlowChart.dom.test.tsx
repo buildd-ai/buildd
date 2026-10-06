@@ -29,11 +29,11 @@ it('keyboard selection anchors a summary, expands task details, and keeps its hi
   expect(q('flow-picked')!.getAttribute('aria-modal')).toBe('false');
   expect(q('flow-selection')).not.toBeNull();
   expect(q('flow-picked')!.querySelector('a')?.getAttribute('href')).toStartWith('/app/tasks/');
-  act(() => q('flow-expand')!.click());
+  expect(q('flow-expand')).toBeNull();
   // happy-dom's default 1024px width is md+, so the contextual sheet renders inline
   // (never overlaying the "Agent time by role" card below it) rather than as a
   // viewport-fixed bottom sheet.
-  expect(q('flow-picked')!.className).toContain('max-h-[55vh]');
+  expect(q('flow-picked')!.className).toContain('max-h-[85vh]');
   act(() => q('flow-picked')!.querySelector<HTMLElement>('[aria-label="Close"]')!.click());
   expect(q('flow-picked')).toBeNull();
   expect(q('flow-selection')).not.toBeNull();
@@ -87,6 +87,6 @@ it('shows bounded band composition and a filtered task-list link without explana
   expect(href).toContain('at=');
   expect(container.textContent).not.toContain('About this chart');
   expect(container.textContent).not.toContain('Ticks above the plot');
-  act(() => q('flow-expand')!.click());
+  expect(q('flow-expand')).toBeNull();
   expect(container.textContent).not.toContain('average tasks with an agent');
 });
