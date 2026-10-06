@@ -1419,7 +1419,7 @@ describe('POST /api/workers/claim', () => {
       // First findMany = claimable tasks; second = active-Codex-workspace derivation.
       mockTasksFindMany
         .mockResolvedValueOnce([pendingClaudeTask()])
-        .mockResolvedValueOnce([{ workspaceId: 'ws-1' }]);
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
       mockHasCodexCredential.mockResolvedValue(true);
       setupClaim();
 
@@ -1450,7 +1450,7 @@ describe('POST /api/workers/claim', () => {
       // second = active-Codex-workspace derivation.
       mockTasksFindMany
         .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
-        .mockResolvedValueOnce([{ workspaceId: 'ws-1' }]);
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'codex', context: null }]);
       mockHasCodexCredential.mockResolvedValue(true);
       setupClaim();
 
@@ -1465,6 +1465,63 @@ describe('POST /api/workers/claim', () => {
       // Deferred, not claimed — the atomic claim UPDATE never runs for this task.
       expect(data.workers.length).toBe(0);
       expect(data.diagnostics?.deferrals?.codex_single_flight).toBe(1);
+    });
+
+    // Regression: budget failover flips a Claude task to Codex in memory only —
+    // the row keeps backend:'claude' and the flip lives in the claim stamp. The
+    // busy-workspace derivation read the stored column, so a failover-started
+    // Codex run was invisible to the NEXT claim request, which flipped another
+    // Claude task onto the same Codex window. The runner's backstop then killed
+    // each one as "Deferred: another Codex worker ... is already active".
+    it('treats a failover-started Codex run as occupying the workspace Codex slot', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' },
+      ]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
+        .mockResolvedValueOnce([{
+          workspaceId: 'ws-1',
+          backend: 'claude',
+          context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+        }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(0);
+      expect(data.diagnostics?.deferrals?.codex_single_flight).toBe(1);
+    });
+
+    it('does not count an active Claude run as occupying the Codex slot', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' },
+      ]);
+      mockTasksFindMany
+        .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1', backend: 'claude', context: {} }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.diagnostics?.deferrals?.codex_single_flight ?? 0).toBe(0);
     });
   });
 
