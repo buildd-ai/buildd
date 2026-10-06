@@ -942,3 +942,31 @@ describe('session-end classification', () => {
     expect(completionCall()).toBeDefined();
   });
 });
+
+// A session that started a background job (or scheduled a wakeup) and ended
+// its turn to wait for it is never re-invoked here: the runner sees a natural
+// end, the closing turn cannot recover it and the work is lost. Background
+// tasks are switched off in the CLI and the wakeup tools are denied on every
+// session, closing turns included. See headless-session.ts.
+describe('headless session switches', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(resetAll);
+  afterEach(() => { manager?.destroy(); });
+
+  test('every session gets background tasks off and the wakeup tools denied', async () => {
+    scriptQueue = [
+      [initMsg('sess-1'), assistantText('Done.'), successResult('sess-1')],
+      [assistantText('Calling complete_task now.'), successResult('sess-1')],
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-headless');
+
+    expect(createBackendCalls.length).toBe(2);
+    for (const call of createBackendCalls) {
+      expect(call.config.options?.env?.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
+      expect(call.config.options?.env?.CLAUDE_CODE_DISABLE_CRON).toBe('1');
+      expect(call.config.options?.disallowedTools).toEqual(expect.arrayContaining(['ScheduleWakeup', 'CronCreate']));
+    }
+  });
+});
