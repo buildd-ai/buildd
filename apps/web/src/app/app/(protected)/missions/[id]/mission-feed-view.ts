@@ -9,6 +9,7 @@
  */
 import { selectMissionRecords } from '@/lib/flight-strip-nav';
 import { buildPulseCaption, buildPulseSegments, type MissionFeedTaskInput, type PulseSegment } from '@/lib/mission-pulse';
+import { feedStripOrder } from '@/lib/mission-strip-order';
 import { toMissionFeedTaskInput } from './task-sheet-nav';
 
 type Loose = Record<string, unknown>;
@@ -37,7 +38,7 @@ export function buildMissionFeedView(
   opts: { activeAgents: number; liveStatuses: ReadonlySet<string> },
 ): MissionFeedView {
   const feedTasks = tasks.map(toMissionFeedTaskInput);
-  const pulseSegments = buildPulseSegments(feedTasks);
+  const pulseSegments = buildPulseSegments(feedTasks, { order: feedStripOrder(feedTasks) });
   const segmentLabels = Object.fromEntries(feedTasks.map(t => [t.id, t.title]));
   const pulseCaption = buildPulseCaption(pulseSegments, { liveWorkers: opts.activeAgents });
 

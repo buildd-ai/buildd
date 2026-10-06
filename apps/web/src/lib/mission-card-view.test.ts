@@ -190,7 +190,7 @@ describe('buildMissionCardView', () => {
     expect(view.chip.label).toBe('STALLED');
   });
 
-  it('the pulse is one segment per deliverable in phase order; attempts are not segments', () => {
+  it('the pulse is one segment per deliverable in strip order (creation order among independent tasks, not phase); attempts are not segments', () => {
     const row = mission({
       tasks: [
         task('b1', { ...BUILD, status: 'completed' }),
@@ -200,7 +200,7 @@ describe('buildMissionCardView', () => {
       ],
     });
     const view = buildMissionCardView(row, { from: 'home', now: NOW });
-    expect(view.segments.map(s => s.taskId)).toEqual(['t1', 'b1', 'b2']);
+    expect(view.segments.map(s => s.taskId)).toEqual(['b1', 't1', 'b2']);
     expect(view.caption).toBe('2/3');
     expect(view.total).toBe(3);
   });
