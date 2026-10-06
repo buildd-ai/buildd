@@ -536,8 +536,12 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   admin: [],
 };
 
-/** The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says. */
-export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; description: string; properties: Record<string, Record<string, unknown>> } {
+/**
+ * The `params` schema of a group tool listing `actions`. `help` takes {action}, which the description's help line already says.
+ * No schema-level description: the tool description's signatures already say what params takes, and
+ * repeating "per the signature above" on every group cost ~100 tokens of the 6k budget.
+ */
+export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly string[]): { type: 'object'; properties: Record<string, Record<string, unknown>> } {
   const listed = new Set(actions);
   const properties: Record<string, Record<string, unknown>> = {};
   for (const f of MCP_GROUP_PARAMS[group]) {
@@ -545,5 +549,5 @@ export function mcpGroupParamsSchema(group: McpToolGroup, actions: readonly stri
     if (texts.length === 0) continue;
     properties[f.name] = { ...f.schema, description: texts.join('. ') };
   }
-  return { type: 'object', description: 'Per the signature above.', properties };
+  return { type: 'object', properties };
 }
