@@ -3753,6 +3753,8 @@ export class WorkerManager {
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      // Keep task-tracking tools available on newer Claude models.
+      cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
 
       // Resolve role env vars (secret labels → actual values). Not gated on
       // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
@@ -3935,6 +3937,16 @@ export class WorkerManager {
       // (reading secrets from disk, env vars, or response headers and calling APIs
       // directly) that two incidents demonstrated agents will attempt on their own.
       systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Channel Policy\nIf a required MCP tool channel is unavailable during this task, STOP IMMEDIATELY and report the failure. Never substitute direct API access using credentials found in config files, environment variables, disk, or response headers. Tool channel unavailability is a deployment issue that must surface as a task failure — not be silently worked around.';
+
+      // Tool parameter policy: prevent background tasks from hanging the session.
+      // The `run_in_background` parameter in Bash tool calls is designed for
+      // interactive CLI usage where the agent can be re-invoked after the task
+      // completes. In a non-interactive cloud runner, that re-invocation mechanism
+      // does not exist — the session ends while the background task is still
+      // running, and the agent's interim "waiting for notification" message
+      // becomes the task summary instead of actual results. Agents should not use
+      // run_in_background; they should poll synchronously or wait for results.
+      systemPrompt.append = (systemPrompt.append ?? '') + '\n\n## Tool Parameter Policy\nDo NOT use `run_in_background: true` in Bash tool calls. This parameter expects to re-invoke you after the task completes, but that mechanism does not exist in this execution environment. Instead: poll the task status synchronously in a loop, or wait for the tool result directly. If a long-running task would exceed your tool timeout, that is a blocker you should report to the user rather than work around with background execution.';
 
       // Convert skills to subagent definitions when useSkillAgents is enabled
       // Resolve worktree isolation: task-level override > workspace-level setting
