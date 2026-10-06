@@ -7,7 +7,8 @@
  * writes that answer — once, and only while nothing else has touched the role:
  *
  *   UPDATE tasks SET role_slug = $slug, context = context || {roleInferred}
- *   WHERE id = $id AND role_slug IS NULL AND status = 'pending' AND claimed_at IS NULL
+ *   WHERE id = $id AND (role_slug IS NULL OR roleInferred.source = 'kind')
+ *     AND status = 'pending' AND claimed_at IS NULL
  *
  * No rows back is `lost_race` (claimed or edited first) and nothing else
  * happens. Below the threshold, an answer outside the candidate set, a model
@@ -56,6 +57,8 @@ export function taskRoleMinConfidence(): number {
 /** `tasks.context.roleInferred`: what wrote the role, and on what evidence. */
 export interface RoleInferredStamp {
   slug: string;
+  /** What chose it: the decision model (absent on older rows), or the kind default (task-role-default.ts). */
+  source?: 'decision' | 'kind';
   confidence: number;
   model: string;
   /** How many roles the model chose between. */
@@ -80,7 +83,7 @@ export type WriteInferredRole = (taskId: string, stamp: RoleInferredStamp) => Pr
 async function dbWriteInferredRole(taskId: string, stamp: RoleInferredStamp): Promise<boolean> {
   const { db } = await import('@buildd/core/db');
   const { tasks } = await import('@buildd/core/db/schema');
-  const { and, eq, isNull, sql } = await import('drizzle-orm');
+  const { and, eq, isNull, or, sql } = await import('drizzle-orm');
   // One atomic UPDATE … WHERE (neon-http has no interactive transactions), no read first.
   const rows = await db.update(tasks)
     .set({
@@ -90,7 +93,8 @@ async function dbWriteInferredRole(taskId: string, stamp: RoleInferredStamp): Pr
     })
     .where(and(
       eq(tasks.id, taskId),
-      isNull(tasks.roleSlug),
+      // Empty, or only the kind default (task-role-default.ts): a stated role is never replaced.
+      or(isNull(tasks.roleSlug), sql`${tasks.context}->'roleInferred'->>'source' = 'kind'`),
       eq(tasks.status, 'pending'),
       isNull(tasks.claimedAt),
     ))
@@ -194,6 +198,7 @@ export async function applyTaskRoleDecision(
     }
 
     const stamp: RoleInferredStamp = {
+      source: 'decision',
       slug,
       confidence: record.confidence,
       model: record.model,
@@ -242,3 +247,7 @@ export function scheduleTaskRoleRouting(
     void run();
   }
 }
+
+// The kind default (task-role-default.ts) is part of role routing; the task
+// create route reaches it through this module, its one role-routing entry.
+export { kindDefaultCandidates, kindDefaultRole, kindDefaultStamp } from './task-role-default';

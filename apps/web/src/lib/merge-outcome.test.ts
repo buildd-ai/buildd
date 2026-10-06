@@ -119,4 +119,28 @@ describe('resolveMergeOutcome — review gate', () => {
       message: 'PR has merge conflicts',
     });
   });
+
+  // A merge refused for conflicts with no automatic fix filed: the same merge
+  // cannot succeed until the branch changes, so the card must not offer Retry.
+  it('a conflict refusal with no fix filed → conflict_blocked, never a retryable error', () => {
+    expect(resolveMergeOutcome(false, 422, {
+      error: 'GitHub rejected the merge: PR has merge conflicts.',
+      mergeConflict: true,
+    })).toEqual({ kind: 'conflict_blocked', message: 'GitHub rejected the merge: PR has merge conflicts.' });
+  });
+
+  it('a conflict with a live retry reads as conflict_dispatched with that task', () => {
+    expect(resolveMergeOutcome(false, 409, {
+      error: 'already in progress',
+      conflictRetryDispatched: true,
+      conflictRetryTaskId: 'live-1',
+    })).toEqual({ kind: 'conflict_dispatched', taskId: 'live-1' });
+  });
+
+  it('a transient failure stays a retryable error', () => {
+    expect(resolveMergeOutcome(false, 422, { error: 'GitHub rejected the merge: Internal Server Error' })).toEqual({
+      kind: 'error',
+      message: 'GitHub rejected the merge: Internal Server Error',
+    });
+  });
 });

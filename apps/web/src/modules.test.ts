@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY } from './modules';
+import { reviewerDispatchOnOpen } from './lib/reviewer-subscribers';
 import { COMPLETION_SLOTS } from './lib/completion-policy';
 import { moduleOf } from '../../../scripts/module-boundaries';
 
@@ -23,16 +24,23 @@ describe('composition root', () => {
     ]);
   });
 
-  it('task.completed: chat, then the ledger, then the team push', () => {
+  it('task.completed: a resolved release\'s mission attempt, chat, the ledger, the team push, then its analytics row', () => {
     expect(byEvent('task.completed')).toEqual([
+      'missions:mission-completion-on-release-completed',
       'chat:chat-task-completed',
       'notifications:ledger-task-completed',
       'notifications:push-task-completed',
+      'health-quality:release-outcome-analytics-completed',
     ]);
   });
 
-  it('task.failed: the ledger, then the push (which carries the credential alert)', () => {
-    expect(byEvent('task.failed')).toEqual(['notifications:ledger-task-failed', 'notifications:push-task-failed']);
+  it('task.failed: a resolved release\'s mission attempt, the ledger, the push (which carries the credential alert), then its analytics row', () => {
+    expect(byEvent('task.failed')).toEqual([
+      'missions:mission-completion-on-release-failed',
+      'notifications:ledger-task-failed',
+      'notifications:push-task-failed',
+      'health-quality:release-outcome-analytics-failed',
+    ]);
   });
 
   it('task.created: the category look is scheduled before the mission chain starts', () => {
@@ -51,16 +59,33 @@ describe('composition root', () => {
     expect(byEvent('task.pr_merged')).toEqual([
       'missions:mission-wake-on-merge', 'missions:unblock-dependent-missions', 'releases:release-path-b-trigger',
     ]);
-    expect(byEvent('pr.closed')).toEqual(['missions:settle-surface-intents']);
+    // The verdict is measured before the reviewer is superseded.
+    expect(byEvent('pr.closed')).toEqual([
+      'missions:settle-surface-intents',
+      'reviews:merge-review-telemetry',
+      'reviews:supersession-detect-on-close',
+      'reviews:supersession-reconcile-on-close',
+      'reviews:dead-pr-shutdown',
+    ]);
+    expect(byEvent('pr.close_delivered')).toEqual(['reviews:pr-activity-on-close', 'reviews:review-callback-on-close']);
+    expect(byEvent('pr.review_submitted')).toEqual(['reviews:capture-review-feedback', 'reviews:github-verdict-mission-note']);
+    expect(byEvent('pr.review_comment_created')).toEqual(['reviews:capture-review-comment']);
     expect(byEvent('pr.base_changed')).toEqual(['missions:retarget-surface-intents']);
     expect(byEvent('pr.needs_human')).toEqual(['missions:notify-mission-pr-ready']);
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
-    expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed']);
+    // The ledger records the red head before the CI-fix retry is asked.
+    expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry']);
+    // The push is noted on the PR before a reviewer is re-dispatched.
+    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push']);
   });
 
   it('completion policies: exactly one per core-declared slot, in core\'s order', () => {
     expect(COMPLETION_SLOTS).toEqual(['evidence', 'loop', 'release']);
     expect(Object.keys(COMPLETION_POLICIES).sort()).toEqual([...COMPLETION_SLOTS].sort());
+  });
+
+  it('the PR-opened slot is the reviews module\'s reviewer dispatch', () => {
+    expect(PR_OPENED_POLICY).toBe(reviewerDispatchOnOpen);
   });
 
   it('labels are unique, so a page names exactly one step', () => {

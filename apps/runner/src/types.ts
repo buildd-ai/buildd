@@ -359,6 +359,8 @@ export interface LocalWorker {
    * coarse search-pattern shapes only; no command or pattern text is retained.
    */
   bashCommandCounts?: BashCommandCounts;
+  /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
+  fileToolAreas?: Record<string, Record<string, number>>;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -506,6 +508,8 @@ export interface ResultMeta {
    * no Bash call or predates the classifier — absence is "unknown", not zero.
    */
   bashCommandCounts?: BashCommandCounts;
+  /** File tool calls per repo area (file-area.ts): tool -> area -> calls. Area only, never a path. */
+  fileToolAreas?: Record<string, Record<string, number>>;
   /**
    * Outcome of the one-shot "closing turn" a session that ends without
    * calling complete_task gets before the runner falls back to

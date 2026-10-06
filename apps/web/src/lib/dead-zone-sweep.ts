@@ -30,6 +30,7 @@ import { githubApi } from '@/lib/github';
 import {
   buildConflictRetryTask,
   isAutoResolveMergeConflictsEnabled,
+  releaseSpentConflictRetryKey,
 } from '@/lib/conflict-retry';
 import { policyValue } from '@/lib/policy-overrides';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
@@ -383,7 +384,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
         // of the task it re-attempts — same as conflict-retry.ts's own insert.
         const identity = await inheritAttemptIdentity(retryTask.parentTaskId);
 
-        const [newTask] = await db
+        const insertRetry = () => db
           .insert(tasks)
           .values({
             workspaceId: retryTask.workspaceId,
@@ -403,9 +404,16 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
           .onConflictDoNothing()
           .returning();
 
+        let [newTask] = await insertRetry();
+        // An earlier retry that ended on this same head without pushing still
+        // holds the key. The PR is still dirty, so spark the next attempt. The
+        // retry count above caps how many attempts can run.
+        if (!newTask && await releaseSpentConflictRetryKey(wsId, worker.prNumber, headSha)) {
+          [newTask] = await insertRetry();
+        }
+
         if (!newTask) {
-          // Unique index hit: same (workspaceId, prNumber, headSha) already exists.
-          // A previous sweep already sparked for this head SHA.
+          // Unique index hit: a concurrent caller sparked for this head SHA.
           result.skipped++;
           continue;
         }

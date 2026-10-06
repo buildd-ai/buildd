@@ -1978,6 +1978,8 @@ export default async function TaskDetailPage({
               status={activeWorker.status}
               hasUnansweredQuestion={!!activeWorker.waitingFor}
               instructionHistory={(activeWorker.instructionHistory as any[]) || []}
+              runner={activeWorker.runner}
+              taskTerminal={isTerminal}
             />
           )}
 
