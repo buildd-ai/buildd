@@ -13,7 +13,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
-import { displayWorkspaceName, LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus } from '@buildd/shared';
+import { displayWorkspaceName, LIVE_WORKER_STATUSES, isLiveWorkerStatus, isTerminalTaskStatus, ENTITLEMENT_BLOCK_CONTEXT_KEY, parseEntitlementBlock } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
 import Spinner from '@/components/Spinner';
@@ -1219,6 +1219,7 @@ export default async function TaskDetailPage({
               worker={null}
               roleSlug={task.roleSlug}
               missionExecutor={missionExecutorOf(missionContextRow)}
+              entitlementBlock={task.status === 'pending' ? parseEntitlementBlock((task.context as Record<string, unknown> | null)?.[ENTITLEMENT_BLOCK_CONTEXT_KEY]) : null}
               runnerPicker
             />
           </div>

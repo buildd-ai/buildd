@@ -1537,6 +1537,15 @@ export interface ClaimDiagnostics {
      * degraded or fail at provisioning. See claim/role-env-injection.ts.
      */
     role_env_unsatisfied?: number;
+    /**
+     * Commercial entitlement, managed-runner claims only (accounts.managedRunner):
+     * the team is at its plan's parallel managed-run limit. Not an error; the
+     * task stays pending and starts when a managed run ends.
+     * See packages/shared/src/entitlements.ts.
+     */
+    managed_concurrency?: number;
+    /** Same, for the plan's monthly managed runner-hours allowance. */
+    managed_runner_hours?: number;
   };
   /**
    * Learned OAuth budget pressure for this seat (seat-based auth only).

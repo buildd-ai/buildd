@@ -41,6 +41,7 @@ import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { wakeOldestPendingTaskOnCapacityFreed } from '@/lib/capacity-freed-wake';
+import { onManagedWorkerTerminal } from '@/lib/entitlements/managed-runner';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
 import {
@@ -4136,6 +4137,10 @@ export async function PATCH(
   // than waiting for the cloud runner's own backoff retry or a slow sweep.
   // No-ops for a workspace with no active cloud-dispatch webhook.
   if (isTerminalStatus) await wakeOldestPendingTaskOnCapacityFreed(worker.workspaceId, worker.taskId ?? null);
+  // A managed run ending frees a slot against the team's commercial
+  // entitlement, pooled across its workspaces: wake the oldest task waiting on
+  // it, wherever it is (lib/entitlements/managed-runner.ts).
+  if (isTerminalStatus && (account as { managedRunner?: boolean }).managedRunner) await onManagedWorkerTerminal(worker.workspaceId);
 
   // Release path claims on terminal status so waiting tasks can proceed.
   //

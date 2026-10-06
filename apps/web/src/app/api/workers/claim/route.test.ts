@@ -426,6 +426,27 @@ mock.module('./hold-start-shadow', () => ({
   releaseGatedStartPaths: (i: any) => realHoldStart.releaseGatedStartPaths(i, holdStartTest.deps),
 }));
 
+// Managed-runner entitlement: the real check over injectable usage numbers.
+const realEntitlements = { ...(await import('@/lib/entitlements/managed-runner')) };
+const entTest = {
+  plan: null as Record<string, unknown> | null,
+  activeRuns: 0,
+  hours: 0,
+  checks: 0,
+};
+const mockStampEntitlementBlock = mock(async (_taskId: string, _block: unknown, _now?: Date) => {});
+mock.module('@/lib/entitlements/managed-runner', () => ({
+  ...realEntitlements,
+  checkManagedRunnerEntitlement: (teamId: string, opts: any) => {
+    entTest.checks++;
+    return realEntitlements.checkManagedRunnerEntitlement(teamId, opts, {
+      loadTeamPlan: async () => entTest.plan as any,
+      countActiveManagedRuns: async () => entTest.activeRuns,
+      managedRunnerHoursSince: async () => entTest.hours,
+    });
+  },
+  stampEntitlementBlock: mockStampEntitlementBlock,
+}));
 import { POST } from './route';
 import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
@@ -7221,6 +7242,185 @@ describe('claim gate overrides', () => {
 
       expect(data.workers).toHaveLength(0);
       expect(data.diagnostics?.deferrals?.workspace_cap).toBe(1);
+    });
+  });
+
+  describe('managed-runner entitlement (commercial, managed keys only)', () => {
+    function managedAccount() {
+      return { ...apiAccount(), managedRunner: true };
+    }
+    function managedTask(context: Record<string, unknown> = {}) {
+      return { ...cappedTask(context), workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, repo: 'org/repo', maxConcurrentTasks: 20 } };
+    }
+    /** Every status a tasks UPDATE in this request wrote. */
+    function statusesWritten(): unknown[] {
+      return mockTasksUpdate.mock.results
+        .flatMap((r: any) => (r.value?.set?.mock?.calls ?? []) as any[][])
+        .map(call => call[0]?.status)
+        .filter(Boolean);
+    }
+
+    beforeEach(() => {
+      entTest.plan = null;
+      entTest.activeRuns = 0;
+      entTest.hours = 0;
+      entTest.checks = 0;
+      mockTasksUpdate.mockClear();
+      mockStampEntitlementBlock.mockReset();
+      mockStampEntitlementBlock.mockResolvedValue(undefined);
+      delete process.env.BUILDD_DEFAULT_MANAGED_PLAN;
+    });
+
+    it('hosted individual at 3/3: the task is deferred with the entitlement reason, stamped, and not failed', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(managedAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+      entTest.plan = { plan: 'individual' };
+      entTest.activeRuns = 3;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.managed_concurrency).toBe(1);
+      expect(mockStampEntitlementBlock).toHaveBeenCalledTimes(1);
+      const [stampedTask, block] = mockStampEntitlementBlock.mock.calls[0];
+      expect(stampedTask).toBe('task-1');
+      expect(block).toMatchObject({ kind: 'concurrency', active: 3, limit: 3, scope: 'individual' });
+      expect(statusesWritten()).not.toContain('failed');
+    });
+
+    it('hosted team at 10/10: same deferral, pooled limit 10', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(managedAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+      entTest.plan = { plan: 'team' };
+      entTest.activeRuns = 10;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.managed_concurrency).toBe(1);
+      expect(mockStampEntitlementBlock.mock.calls[0][1]).toMatchObject({ kind: 'concurrency', active: 10, limit: 10, scope: 'team' });
+      expect(statusesWritten()).not.toContain('failed');
+    });
+
+    it('a slot frees (2/3): the same queued task is claimable with no manual retry, and the stamp is cleared', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(managedAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      const stamped = { entitlementBlock: { kind: 'concurrency', active: 3, limit: 3, scope: 'individual' } };
+      mockTasksFindMany.mockResolvedValueOnce([managedTask(stamped)]).mockResolvedValue([]);
+      entTest.plan = { plan: 'individual' };
+      entTest.activeRuns = 2;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+      expect(mockStampEntitlementBlock).not.toHaveBeenCalled();
+      const assigned = mockTasksUpdate.mock.results
+        .flatMap((r: any) => (r.value?.set?.mock?.calls ?? []) as any[][])
+        .map(call => call[0])
+        .find(set => set?.status === 'assigned');
+      expect(assigned?.context).toBeDefined();
+      expect('entitlementBlock' in assigned.context).toBe(false);
+    });
+
+    it('counts runs this batch already started against the limit', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ ...managedAccount(), maxConcurrentWorkers: 10 });
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      const t2 = { ...managedTask(), id: 'task-2' };
+      mockTasksFindMany.mockResolvedValueOnce([managedTask(), t2]).mockResolvedValue([]);
+      entTest.plan = { plan: 'individual' };
+      entTest.activeRuns = 2;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', maxTasks: 2 } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+      expect(mockStampEntitlementBlock.mock.calls.map(c => c[0])).toEqual(['task-2']);
+    });
+
+    it('monthly runner-hours exhausted: deferred as usage, never a failure', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(managedAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+      entTest.plan = { plan: 'individual' };
+      entTest.activeRuns = 0;
+      entTest.hours = 50.2;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.managed_runner_hours).toBe(1);
+      expect(mockStampEntitlementBlock.mock.calls[0][1]).toMatchObject({ kind: 'usage', unit: 'runner_hours', limit: 50 });
+      expect(statusesWritten()).not.toContain('failed');
+    });
+
+    it('a self-hosted runner key ignores the hosted entitlement entirely, even on a plan at its limit', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(apiAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+      entTest.plan = { plan: 'individual' };
+      entTest.activeRuns = 99;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+      expect(entTest.checks).toBe(0);
+    });
+
+    it('no plan assigned and no deployment default: a managed key is unlimited (self-hosted install)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(managedAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+      entTest.activeRuns = 99;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      expect((await res.json()).workers).toHaveLength(1);
+    });
+
+    it('the operational workspace cap still holds a managed claim on its own, under its own reason', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(managedAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([{ id: 'w-0', workspaceId: 'ws-1', status: 'running', taskId: 'other' }]);
+      mockTasksFindMany.mockResolvedValueOnce([cappedTask({})]).mockResolvedValue([]);
+      entTest.plan = { plan: 'team' };
+      entTest.activeRuns = 1;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.deferrals?.workspace_cap).toBe(1);
+      expect(data.diagnostics?.deferrals?.managed_concurrency ?? 0).toBe(0);
+      expect(mockStampEntitlementBlock).not.toHaveBeenCalled();
+    });
+
+    it('an explicit claim of the held task names the entitlement as a temporary deferral', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(managedAccount());
+      setupClaimBase();
+      mockWorkersFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValueOnce([managedTask()]).mockResolvedValue([]);
+      entTest.plan = { plan: 'individual' };
+      entTest.activeRuns = 3;
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r', taskId: 'task-1' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(0);
+      expect(data.diagnostics?.taskExclusion?.code).toBe('managed_concurrency');
     });
   });
 

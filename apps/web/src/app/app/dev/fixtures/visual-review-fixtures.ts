@@ -49,6 +49,8 @@ export const COMMIT_CHECKS_FIXTURE_STATE = 'commit-checks';
 /** A question's answer pending, recorded, already answered and failed (AnswerStatesFixture.tsx). */
 export const ANSWER_STATES_FIXTURE_STATE = 'answer-states';
 export const AGENT_ACCESS_FIXTURE_STATE = 'agent-access';
+/** A queued task held on a managed-runner plan limit (EntitlementBlockedFixture). */
+export const ENTITLEMENT_BLOCKED_FIXTURE_STATE = 'entitlement-blocked';
 
 /** Health's tool list with every row's breakdown, collapsed and open (tool-breakdown-fixture.tsx). */
 export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
@@ -56,7 +58,7 @@ export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
 /** The mission Board's Landed strip and its tethered drawer (mission-task-strip-fixtures.ts). */
 export const MISSION_TASK_STRIP_FIXTURE_STATE = 'mission-task-strip';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, ENTITLEMENT_BLOCKED_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

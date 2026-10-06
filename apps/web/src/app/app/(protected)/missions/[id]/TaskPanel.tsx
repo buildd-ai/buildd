@@ -21,6 +21,7 @@ import { taskPageHref } from '@/lib/mission-task-href';
 import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
 import { subscribeCatchUp } from '@/lib/app-freshness';
 import TaskActionZone from './TaskActionZone';
+import type { EntitlementBlock } from '@buildd/shared';
 
 export interface TaskPanelData {
   id: string;
@@ -33,6 +34,8 @@ export interface TaskPanelData {
   missionId: string | null;
   /** The mission's executor (`local`: runners never claim it); absent from older responses. */
   missionExecutor?: 'runner' | 'local' | null;
+  /** Queued on a plan limit (managed runners); absent from older responses. */
+  entitlementBlock?: EntitlementBlock | null;
   backend: 'claude' | 'codex' | null;
   /** `summary` is describeBackendRouting's sentence (@buildd/core/backend-policy). */
   failover: { from: string; reason: string | null; summary?: string } | null;
@@ -312,6 +315,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
         roleSlug={data.roleSlug}
         missionExecutor={data.missionExecutor ?? null}
+        entitlementBlock={data.entitlementBlock ?? null}
         onChanged={onChanged}
       />
 
