@@ -247,6 +247,27 @@ describe('the owner\'s examples', () => {
     expect(writes[0]).toContain(`"missionId":"${MISSION}"`);
   });
 
+  it('"Run a visual review on this mission" as a visual-auditor task → no card, no write: sent to the mission\'s Visual review', async () => {
+    const input = { title: 'Visual review', description: 'Screenshot the checkout.', roleSlug: 'visual-auditor' };
+    const p = await buildPreview('create_task', input, docked);
+    expect(p.ok).toBe(false);
+    if (!p.ok) {
+      expect(p.question).toContain('mission\'s own command');
+      expect(p.question).toContain(`/app/missions/${MISSION}?visualReview=1`);
+    }
+    // Even an approved call never files it.
+    const out = await (toolsFor({ authorized: ['c'] }).create_task as any).execute({ ...input, missionId: MISSION }, { toolCallId: 'c', messages: [] });
+    expect(out.data).toStartWith('Error: A visual review is not a task to file');
+    expect(writes).toEqual([]);
+  });
+
+  it('a visual-auditor task with no mission explains that a visual review is mission-scoped', async () => {
+    const p = await buildPreview('create_task', { title: 'Visual review', description: 'x', roleSlug: 'visual-auditor', missionId: null }, docked);
+    expect(p.ok).toBe(false);
+    if (!p.ok) expect(p.question).toContain('belongs to a mission');
+    expect(writes).toEqual([]);
+  });
+
   it('"The EUR footnote is wrong, fix it before merging" → a follow-up task on the same branch', async () => {
     const { preview } = await proposeAndApprove('create_task', {
       title: 'Fix the EUR footnote', description: 'The review screenshot shows the wrong EUR footnote.', baseBranch: 'buildd/stripe-currency',
