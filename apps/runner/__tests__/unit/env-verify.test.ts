@@ -360,21 +360,51 @@ describe('executeSteps', () => {
       expect(existsSync(lockPath)).toBe(false);
     });
 
-    it('does not retry, and reports the real failure, when the lock is too young to call stale', async () => {
+    // A young lock is usually not abandoned — it is another worker's `git config`
+    // mid-rewrite of the same shared .git/config (every worktree of a clone
+    // writes there). That is contention, not a stale lock: wait for it, never
+    // delete it.
+    it('waits out a lock held by a concurrent writer, without removing it', async () => {
       const lockPath = join(dir, 'config.lock');
-      writeFileSync(lockPath, ''); // fresh mtime — could be a write genuinely in flight
+      writeFileSync(lockPath, ''); // fresh mtime — a write genuinely in flight
+
+      let calls = 0;
+      const runner: CommandRunner = () => {
+        calls += 1;
+        return calls < 3
+          ? { code: 255, stdout: '', stderr: `error: could not lock config file ${join(dir, 'config')}: File exists` }
+          : { code: 0, stdout: '', stderr: '' };
+      };
+      const waits: number[] = [];
+      const sleep = async (ms: number) => { waits.push(ms); };
+
+      const steps = planSteps({ provision: ['git config core.hooksPath .githooks'] });
+      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now, sleep });
+
+      expect(r.status).toBe('ok');
+      expect(calls).toBe(3);
+      expect(waits.length).toBe(2);
+      expect(existsSync(lockPath)).toBe(true); // never ours to delete
+    });
+
+    it('gives up after bounded retries and reports the real failure when the lock never frees', async () => {
+      const lockPath = join(dir, 'config.lock');
+      writeFileSync(lockPath, '');
 
       let calls = 0;
       const runner: CommandRunner = () => {
         calls += 1;
         return { code: 255, stdout: '', stderr: `error: could not lock config file ${join(dir, 'config')}: File exists` };
       };
+      const sleep = async () => {};
 
       const steps = planSteps({ provision: ['git config core.hooksPath .githooks'] });
-      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now });
+      const [r] = await executeSteps(steps, { root: dir, env: {}, runCommand: runner, now, sleep });
 
-      expect(calls).toBe(1);
       expect(r.status).toBe('fail');
+      expect(r.message).toContain('could not lock config file');
+      expect(calls).toBeGreaterThan(1);
+      expect(calls).toBeLessThanOrEqual(6);
       expect(existsSync(lockPath)).toBe(true);
     });
 
