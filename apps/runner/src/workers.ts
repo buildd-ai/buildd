@@ -6,7 +6,7 @@ import { BuilddClient } from './buildd';
 import type { Outbox } from './outbox';
 import { isServerRefusal, type ServerRefusalError } from './server-refusal';
 import { createWorkspaceResolver, type WorkspaceResolver } from './workspace';
-import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch } from './git-clone';
+import { branchOfRemoteRef, cloneThrottledRecently, ensureRemoteBranch, probeBranchBeyond } from './git-clone';
 import { type SkillBundle, type ClaudeAiArtifactAccess, applyClaudeAiArtifactEnv, resolveOutputFormat, RUNNER_HEARTBEAT_INTERVAL_MS, LIVENESS_PING_INTERVAL_MS } from '@buildd/shared';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -3312,6 +3312,12 @@ export class WorkerManager {
         inputAsRetry: this.config.inputAsRetry,
         resolvedContextProviders: (task.context as any)?.resolvedContextProviders as string[] | undefined,
         feedbackMemories,
+        // worktreeBaseRef is frozen at cut time; a mission integration branch
+        // missing then may exist (with real commits) by now. Only invoked when
+        // the two differ.
+        ...(worker.worktreePath
+          ? { probeMissionBase: (branch: string, beyond: string) => probeBranchBeyond(worker.worktreePath!, branch, beyond) }
+          : {}),
       });
       let promptText = built.promptText;
 

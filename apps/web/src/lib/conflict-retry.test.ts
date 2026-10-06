@@ -396,6 +396,44 @@ describe('buildConflictRetryTask', () => {
   });
 });
 
+// Regression (task 19e95341 / PR #3502): the merge step said
+// `git merge origin/dev   # or origin/main — use the PR's actual base branch`
+// for every PR. A PR based on a mission integration branch that had moved
+// beyond dev stayed conflicted after merging dev, and the agent had to find the
+// real base on GitHub by hand.
+describe('buildConflictRetryTask names the PR base in the merge step', () => {
+  const MISSION_BASE = 'mission/release-things-1a2b3c4d';
+
+  it('a known base is merged by name, not origin/dev', () => {
+    const d = buildConflictRetryTask(makeInput({ prBase: MISSION_BASE }))!.description;
+    expect(d).toContain(`git merge origin/${MISSION_BASE}`);
+    expect(d).not.toContain('git merge origin/dev');
+    expect(d).not.toContain("use the PR's actual base branch");
+  });
+
+  it('the migration-collision recipe merges the same base', () => {
+    const d = buildConflictRetryTask(makeInput({
+      prBase: MISSION_BASE,
+      migrationCollision: { file: '0093_safe.sql', otherFile: '0093_other.sql', otherPrNumber: 100 },
+    }))!.description;
+    expect(d).toContain(`git merge origin/${MISSION_BASE}`);
+    expect(d).not.toContain('git merge origin/dev');
+  });
+
+  it('a semantic review without an assessed baseRef falls back to the PR base', () => {
+    const d = buildConflictRetryTask(makeInput({
+      prBase: MISSION_BASE,
+      semanticConflict: { evidence: [{ path: 'a.ts', symbols: ['f'] }] } as any,
+    }))!.description;
+    expect(d).toContain(`git merge origin/${MISSION_BASE}`);
+  });
+
+  it('no known base: keeps the generic instruction rather than guessing', () => {
+    const d = buildConflictRetryTask(makeInput())!.description;
+    expect(d).toContain("use the PR's actual base branch");
+  });
+});
+
 // ── dispatchConflictRetry ─────────────────────────────────────────────────────
 
 const BASE_PARAMS = {
@@ -506,6 +544,31 @@ describe('dispatchConflictRetry', () => {
     });
     expect(mockInsert).not.toHaveBeenCalled();
     expect(mockWakeTask).not.toHaveBeenCalled();
+  });
+
+  it('a mission-integration task: the retry merges the integration branch, not origin/dev', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, gitConfig: { defaultBranch: 'dev', targetBranch: 'dev' } });
+    mockTaskFindFirst.mockResolvedValue({
+      ...MOCK_TASK,
+      mission: { workingBranch: 'mission/release-things-1a2b3c4d', integrationBranchEnabled: true },
+    });
+
+    const result = await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(result.dispatched).toBe(true);
+    expect(capturedInsertValues.description).toContain('git merge origin/mission/release-things-1a2b3c4d');
+    expect(capturedInsertValues.description).not.toContain('git merge origin/dev');
+    // The mission relation is loaded with the original task.
+    expect(mockTaskFindFirst.mock.calls[0][0].with?.mission).toBeTruthy();
+  });
+
+  it('a task with no mission: the retry merges the workspace target branch', async () => {
+    mockWorkspaceFindFirst.mockResolvedValue({ ...MOCK_WORKSPACE, gitConfig: { defaultBranch: 'main' } });
+    mockTaskFindFirst.mockResolvedValue({ ...MOCK_TASK, missionId: null, mission: null });
+
+    await dispatchConflictRetry(BASE_PARAMS);
+
+    expect(capturedInsertValues.description).toContain('git merge origin/main');
   });
 
   describe('behind-only refresh failures (conflict-aware-orchestration §4)', () => {
