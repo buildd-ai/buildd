@@ -53,9 +53,14 @@ const ledger = {
     },
   },
   resolveForPass: async (run: Any, p: Any) => {
-    let k = 0;
-    for (const [s, f] of findings) if (f.checkId === p.result.checkId && f.state === 'open') { findings.set(s, { ...f, state: 'resolved', resolvedRunId: run.id }); k++; }
-    return k;
+    const out: Any[] = [];
+    for (const [s, f] of findings) {
+      if (f.checkId === p.result.checkId && f.state === 'open') {
+        findings.set(s, { ...f, state: 'resolved', resolvedRunId: run.id });
+        out.push({ signature: s, actionTaskId: f.actionTaskId });
+      }
+    }
+    return out;
   },
 };
 const actions = {
@@ -77,6 +82,14 @@ const actions = {
   deleteTask: async (id: string) => { tasks.delete(id); },
   refreshTask: async (id: string) => { const t = tasks.get(id); if (t) t.refreshed++; return !!t; },
   announce: async () => {},
+  // Same contract as the DB store: cancel while unclaimed, otherwise leave it with its worker.
+  retireFollowUp: async (id: string) => {
+    const t = tasks.get(id);
+    if (!t || isTerminalTaskStatus(t.status)) return null;
+    if (t.status !== 'pending') return 'annotated';
+    t.status = 'cancelled';
+    return 'cancelled';
+  },
 };
 
 let exit = 2;

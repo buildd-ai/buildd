@@ -626,9 +626,15 @@ export async function saveScoutProbes(run: ScoutRun, probes: readonly ScoutProbe
     });
 }
 
-/** Resolve open findings of a check that passed in `run`. Returns how many resolved. */
-export async function resolveScoutFindingsForPass(run: ScoutRun, probe: ScoutProbeRecord, now = new Date()): Promise<number> {
-  if (probe.result?.verdict !== 'pass') return 0;
+/** A finding a pass just resolved, with the follow-up that may still be presented as owed. */
+export interface ScoutResolvedFinding {
+  signature: string;
+  actionTaskId: string | null;
+}
+
+/** Resolve open findings of a check that passed in `run`. Returns the ones it resolved. */
+export async function resolveScoutFindingsForPass(run: ScoutRun, probe: ScoutProbeRecord, now = new Date()): Promise<ScoutResolvedFinding[]> {
+  if (probe.result?.verdict !== 'pass') return [];
   const rows = await db.update(qualityScoutFindings)
     .set({ state: 'resolved', resolvedRunId: run.id, resolvedSha: run.candidate.sha, resolvedAt: now, updatedAt: now })
     .where(and(
@@ -636,8 +642,8 @@ export async function resolveScoutFindingsForPass(run: ScoutRun, probe: ScoutPro
       eq(qualityScoutFindings.checkId, probe.result.checkId),
       eq(qualityScoutFindings.state, 'open'),
     ))
-    .returning({ id: qualityScoutFindings.id });
-  return rows.length;
+    .returning({ signature: qualityScoutFindings.signature, actionTaskId: qualityScoutFindings.actionTaskId });
+  return rows;
 }
 
 /** The latest completed run on a ref — the `prior` for the next run and the base for staleness. */

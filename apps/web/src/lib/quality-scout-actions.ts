@@ -40,8 +40,8 @@ import type {
   ScoutMode,
   ScoutRun,
 } from '@buildd/core/quality-scout/types';
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
-import { isTerminalTaskStatus } from '@buildd/shared';
+import { and, eq, inArray, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { isTerminalTaskStatus, TERMINAL_TASK_STATUSES } from '@buildd/shared';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { pickEffectiveRole } from '@/lib/effective-roles';
 
@@ -161,7 +161,8 @@ export function buildScoutFollowUpDescription(f: ScoutFinding, run: ScoutRun, ki
     ...(f.evidenceRefs.length > 0 ? f.evidenceRefs.map((e) => `- ${e.kind}: ${e.ref}`) : ['- (none)']),
     '',
     `Finding signature: \`${f.signature}\` (check \`${f.checkId}\`). Later Scout runs update this task instead of filing another;`,
-    'a passing run of the same check resolves the finding. The Scout is advisory: nothing blocks on this task.',
+    'a passing run of the same check resolves the finding and cancels this task if nobody has claimed it yet.',
+    'The Scout is advisory: nothing blocks on this task.',
   ];
   return lines.join('\n');
 }
@@ -198,6 +199,12 @@ export interface ScoutActionStore {
   refreshTask(taskId: string, f: ScoutFinding, run: ScoutRun): Promise<boolean>;
   /** Announce and wake a task that won the claim. */
   announce(taskId: string): Promise<void>;
+  /**
+   * The finding resolved: cancel the follow-up if nobody has claimed it yet,
+   * otherwise mark it resolved and drop its priority. Null when the task is
+   * gone or already ended.
+   */
+  retireFollowUp(taskId: string, run: ScoutRun): Promise<'cancelled' | 'annotated' | null>;
 }
 
 
@@ -274,6 +281,25 @@ export async function actOnScoutFinding(
   } catch (err) {
     console.warn('[quality-scout] follow-up action failed (non-fatal):', (err as Error)?.message ?? err);
     return { decision, outcome: 'failed', taskId: null };
+  }
+}
+
+/**
+ * A pass just resolved the finding: its follow-up is no longer owed. Cancel it
+ * while still unclaimed; a claimed one is left to its worker but marked
+ * resolved and deprioritised. Never throws.
+ */
+export async function retireScoutFollowUp(
+  f: { actionTaskId: string | null },
+  run: ScoutRun,
+  store: ScoutActionStore = dbScoutActionStore,
+): Promise<ScoutActionOutcome> {
+  if (!f.actionTaskId) return 'noop';
+  try {
+    return (await store.retireFollowUp(f.actionTaskId, run)) ?? 'noop';
+  } catch (err) {
+    console.warn('[quality-scout] follow-up retire failed (non-fatal):', (err as Error)?.message ?? err);
+    return 'failed';
   }
 }
 
@@ -372,5 +398,24 @@ export const dbScoutActionStore: ScoutActionStore = {
     if (!workspace) return;
     await announceTaskCreated(task, workspace);
     await wakeTask(task.id, 'task.created');
+  },
+  async retireFollowUp(taskId, run) {
+    const resolved = { resolvedRunId: run.id, resolvedSha: run.candidate.sha };
+    const context = sql`jsonb_set(coalesce(${tasks.context}, '{}'::jsonb), '{qualityScout,resolved}', ${JSON.stringify(resolved)}::jsonb, true)`;
+    const [cancelled] = await db.update(tasks)
+      .set({ status: 'cancelled', context, updatedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, 'pending'), isNull(tasks.claimedBy)))
+      .returning({ id: tasks.id, workspaceId: tasks.workspaceId, missionId: tasks.missionId });
+    if (cancelled) {
+      const { applyTaskCancelSideEffects } = await import('@/lib/task-cancel');
+      await applyTaskCancelSideEffects(cancelled);
+      return 'cancelled';
+    }
+    // Claimed (or racing a claim): the worker keeps it, but it no longer outranks owed work.
+    const annotated = await db.update(tasks)
+      .set({ context, priority: sql`least(${tasks.priority}, ${SCOUT_FOLLOW_UP_PRIORITY.low})`, updatedAt: new Date() })
+      .where(and(eq(tasks.id, taskId), notInArray(tasks.status, [...TERMINAL_TASK_STATUSES])))
+      .returning({ id: tasks.id });
+    return annotated.length > 0 ? 'annotated' : null;
   },
 };
