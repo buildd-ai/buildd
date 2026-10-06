@@ -11,34 +11,37 @@
  * A branch is dropped only when its work is safe to lose:
  *   - merged into the default branch, or
  *   - its upstream is `[gone]` (it was pushed, the remote branch was deleted), or
- *   - older than `maxAgeMs` while its remote-tracking ref still holds the tip.
+ *   - 0 commits ahead of its configured upstream, or
+ *   - its tip is reachable from any remote-tracking ref (`refs/remotes/*`), or
+ *   - its tip IS the head of a PR on origin (`refs/pull/N/head`, which GitHub
+ *     keeps after the PR closes and its branch is deleted).
+ * Runner branches are created with their BASE (origin/dev) as upstream, so
+ * `[gone]` almost never fires for them; the last three rules carry the load.
  * Never a branch checked out in any worktree, or in `protectedBranches`
- * (owned by a live worker). A branch that was never pushed and is unmerged is
- * always kept — "no remote" alone is not "remote gone".
+ * (owned by a live worker). Commits that exist only in this clone are always
+ * kept, at any age — "no remote" alone is not "remote gone".
  *
  * Also drops registrations of `~/.buildd-cbm-seed/*` worktrees left by the
  * removed CBM provisioning.
  */
 import { execFileSync } from 'child_process';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, realpathSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join, sep } from 'path';
 import { parseWorktreeList } from './worktree-utils';
 
 export const BRANCH_PREFIX = 'buildd/';
-export const DEFAULT_BRANCH_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-export const DEFAULT_MAX_BRANCH_DELETES_PER_TICK = 200;
+export const DEFAULT_MAX_BRANCH_DELETES_PER_TICK = 1000;
 export const DEFAULT_MAX_SEED_REMOVALS_PER_TICK = 5;
+const LS_REMOTE_TIMEOUT_MS = 20_000;
 
 export interface PruneOptions {
   /** Branches owned by a live worker (never deleted). */
   protectedBranches?: Iterable<string>;
-  maxAgeMs?: number;
   maxDeletes?: number;
   maxSeedRemovals?: number;
   /** Directory whose worktree registrations are dropped. Default `~/.buildd-cbm-seed`. */
   seedDir?: string;
-  now?: number;
 }
 
 export interface PruneResult {
@@ -46,10 +49,34 @@ export interface PruneResult {
   seedWorktreesRemoved: number;
 }
 
-function git(cwd: string, args: string[]): string {
+function git(cwd: string, args: string[], extra: { timeout?: number; input?: string } = {}): string {
   return execFileSync('git', args, {
-    cwd, encoding: 'utf-8', timeout: 30_000, stdio: 'pipe', maxBuffer: 64 * 1024 * 1024,
+    cwd, encoding: 'utf-8', timeout: extra.timeout ?? 30_000, stdio: 'pipe', maxBuffer: 64 * 1024 * 1024,
+    input: extra.input,
+    // ls-remote must never block on a credential prompt.
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
+}
+
+/** Tips (of `shas`) NOT reachable from any remote-tracking ref, in one rev-list pass. */
+function tipsOnlyLocal(repoDir: string, shas: string[]): Set<string> | null {
+  if (shas.length === 0) return new Set();
+  try {
+    const out = git(repoDir, ['rev-list', '--stdin', '--not', '--remotes'], { input: shas.join('\n') + '\n' });
+    return new Set(out.split('\n').filter(Boolean));
+  } catch {
+    return null;
+  }
+}
+
+/** SHAs of every `refs/pull/N/head` on origin, or null when origin can't be reached. */
+function prHeadShas(repoDir: string): Set<string> | null {
+  try {
+    const out = git(repoDir, ['ls-remote', 'origin', 'refs/pull/*/head'], { timeout: LS_REMOTE_TIMEOUT_MS });
+    return new Set(out.split('\n').map(l => l.split('\t')[0]).filter(Boolean));
+  } catch {
+    return null;
+  }
 }
 
 function defaultRef(repoDir: string): string | null {
@@ -64,8 +91,6 @@ function defaultRef(repoDir: string): string | null {
 
 export function pruneLocalBranches(repoDir: string, opts: PruneOptions = {}): PruneResult {
   const result: PruneResult = { branchesPruned: 0, seedWorktreesRemoved: 0 };
-  const now = opts.now ?? Date.now();
-  const maxAgeMs = opts.maxAgeMs ?? DEFAULT_BRANCH_MAX_AGE_MS;
   const maxDeletes = opts.maxDeletes ?? DEFAULT_MAX_BRANCH_DELETES_PER_TICK;
   const seedDir = opts.seedDir ?? join(homedir(), '.buildd-cbm-seed');
 
@@ -76,8 +101,12 @@ export function pruneLocalBranches(repoDir: string, opts: PruneOptions = {}): Pr
     return result;
   }
 
-  const seedPrefix = seedDir.endsWith(sep) ? seedDir : seedDir + sep;
-  const seeds = worktrees.filter(w => w.path.startsWith(seedPrefix));
+  // git prints resolved paths, so match the symlink-resolved dir too
+  // (macOS tmpdir is /var → /private/var).
+  const seedPrefixes = [seedDir];
+  try { seedPrefixes.push(realpathSync(seedDir)); } catch { /* not created */ }
+  const asPrefix = (d: string) => (d.endsWith(sep) ? d : d + sep);
+  const seeds = worktrees.filter(w => seedPrefixes.some(d => w.path.startsWith(asPrefix(d))));
   const removedSeeds = new Set<string>();
   for (const w of seeds.slice(0, opts.maxSeedRemovals ?? DEFAULT_MAX_SEED_REMOVALS_PER_TICK)) {
     try {
@@ -100,7 +129,7 @@ export function pruneLocalBranches(repoDir: string, opts: PruneOptions = {}): Pr
   let refs: string[];
   try {
     refs = git(repoDir, [
-      'for-each-ref', '--format=%(refname:short)\t%(objectname)\t%(committerdate:unix)\t%(upstream:track)',
+      'for-each-ref', '--format=%(refname:short)\t%(objectname)\t%(upstream)\t%(upstream:track)',
       `refs/heads/${BRANCH_PREFIX}`,
     ]).split('\n').filter(Boolean);
   } catch {
@@ -118,21 +147,29 @@ export function pruneLocalBranches(repoDir: string, opts: PruneOptions = {}): Pr
     } catch { /* treat as none merged */ }
   }
 
+  // Cheap rules first (no extra git call), then one rev-list pass, then one
+  // ls-remote — each only over what the previous rules left.
   const doomed: string[] = [];
+  let rest: { name: string; sha: string }[] = [];
   for (const line of refs) {
-    if (doomed.length >= maxDeletes) break;
-    const [name, sha, ts, track] = line.split('\t');
-    if (!name || keep.has(name)) continue;
-    let safe = merged.has(name) || (track ?? '').includes('gone');
-    if (!safe && now - Number(ts) * 1000 > maxAgeMs) {
-      // Old: only if the remote still holds the commits.
-      try {
-        git(repoDir, ['merge-base', '--is-ancestor', sha, `refs/remotes/origin/${name}`]);
-        safe = true;
-      } catch { /* remote missing or lacks the tip: keep */ }
-    }
-    if (safe) doomed.push(name);
+    const [name, sha, upstream, track = ''] = line.split('\t');
+    if (!name || !sha || keep.has(name)) continue;
+    const notAhead = !!upstream && !track.includes('ahead') && !track.includes('gone');
+    if (merged.has(name) || track.includes('gone') || notAhead) doomed.push(name);
+    else rest.push({ name, sha });
   }
+
+  const localOnly = tipsOnlyLocal(repoDir, rest.map(r => r.sha));
+  if (localOnly) {
+    for (const r of rest) if (!localOnly.has(r.sha)) doomed.push(r.name);
+    rest = rest.filter(r => localOnly.has(r.sha));
+  }
+
+  if (rest.length > 0 && doomed.length < maxDeletes) {
+    const prHeads = prHeadShas(repoDir);
+    if (prHeads) for (const r of rest) if (prHeads.has(r.sha)) doomed.push(r.name);
+  }
+  doomed.splice(maxDeletes);
 
   for (let i = 0; i < doomed.length; i += 50) {
     const batch = doomed.slice(i, i + 50);
