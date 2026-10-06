@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Select } from '@/components/ui/Select';
 import Chip from '@/components/ui/Chip';
+import { rankModelOptions } from './model-rank';
 
 /**
  * The agent endpoint editor's model mapping (docs/design/agent-model-endpoint.md
@@ -145,22 +146,13 @@ export function EndpointModelMap({ teamId, workspaceId, request, disabled, onMap
           const served = listed.includes(sent);
           return (
             <li key={r.model} data-testid="endpoint-model-row" data-model={r.model}
-              className="flex flex-col md:flex-row md:items-center gap-2 py-2 border-b border-border-default">
-              <div className="md:w-60 min-w-0">
-                <p className="font-mono text-text-primary truncate" title={r.model}>{r.model}</p>
-                <p className="text-text-muted">{r.tiers.length > 0 ? r.tiers.join(', ') : 'saved alias'}</p>
+              className="grid grid-cols-[minmax(0,1fr)_auto] md:grid-cols-[15rem_minmax(0,1fr)_9rem] items-center gap-x-2 gap-y-1.5 py-2 border-b border-border-default">
+              <div className="min-w-0">
+                <p className="font-mono text-body text-text-primary break-all">{r.model}</p>
+                <p className="text-meta text-text-muted">{r.tiers.length > 0 ? r.tiers.join(', ') : 'saved alias'}</p>
               </div>
-              <Select
-                size="sm"
-                className="flex-1 min-w-0"
-                aria-label={`Endpoint model for ${r.model}`}
-                value={c.value ?? AS_IS}
-                options={options}
-                searchable
-                disabled={disabled}
-                onChange={(v) => setChoices((prev) => ({ ...prev, [r.model]: { value: v === AS_IS ? null : v, by: 'person' } }))}
-              />
-              <div className="flex flex-wrap gap-1 md:w-40 md:justify-end">
+              {/* The chips sit on the model's own line on a phone, in the last column on desktop. */}
+              <div className="flex flex-wrap justify-end gap-1 md:order-last">
                 {c.by === 'suggested' && (
                   <Chip tone="accent" data-testid="endpoint-model-suggested" title="Picked by the team's decision model. Check it before saving."
                     trailing={c.confidence !== undefined ? `${Math.round(c.confidence * 100)}%` : undefined}>suggested</Chip>
@@ -170,6 +162,19 @@ export function EndpointModelMap({ teamId, workspaceId, request, disabled, onMap
                 )}
                 {!served && <Chip tone="warning" data-testid="endpoint-model-unserved" title="This endpoint does not list it: agents asking for it will be refused.">not served</Chip>}
               </div>
+              <Select
+                size="sm"
+                className="col-span-2 md:col-span-1 min-w-0"
+                aria-label={`Endpoint model for ${r.model}`}
+                value={c.value ?? AS_IS}
+                options={options}
+                searchable
+                wrapLabels
+                filter={rankModelOptions}
+                menuMinWidth={360}
+                disabled={disabled}
+                onChange={(v) => setChoices((prev) => ({ ...prev, [r.model]: { value: v === AS_IS ? null : v, by: 'person' } }))}
+              />
             </li>
           );
         })}

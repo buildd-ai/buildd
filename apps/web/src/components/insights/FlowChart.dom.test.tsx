@@ -30,11 +30,26 @@ it('keyboard selection anchors a summary, expands task details, and keeps its hi
   expect(q('flow-selection')).not.toBeNull();
   expect(q('flow-picked')!.querySelector('a')?.getAttribute('href')).toStartWith('/app/tasks/');
   act(() => q('flow-expand')!.click());
-  expect(q('flow-picked')!.className).toContain('h-[55dvh]');
+  // happy-dom's default 1024px width is md+, so the contextual sheet renders inline
+  // (never overlaying the "Agent time by role" card below it) rather than as a
+  // viewport-fixed bottom sheet.
+  expect(q('flow-picked')!.className).toContain('max-h-[55vh]');
   act(() => q('flow-picked')!.querySelector<HTMLElement>('[aria-label="Close"]')!.click());
   expect(q('flow-picked')).toBeNull();
   expect(q('flow-selection')).not.toBeNull();
 });
+it('the task-detail sheet renders inline next to the chart at desktop width, never as a viewport-fixed overlay that could cover sibling cards', () => {
+  render();
+  const svg = container.querySelector('svg')!;
+  act(() => svg.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+  act(() => q('flow-details-trigger')!.click());
+  const dialog = q('flow-picked')!;
+  // Rendered in place inside `container` (not portaled to <body>), so it can never
+  // land on top of unrelated content elsewhere on the page.
+  expect(container.contains(dialog)).toBe(true);
+  expect(dialog.closest('.fixed')).toBeNull();
+});
+
 it('release annotations are selectable and show exactly one selected event hairline', () => {
   render();
   act(() => container.querySelector<SVGElement>('[data-testid="flow-release"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));

@@ -58,6 +58,31 @@ describe('launcher script PATH', () => {
     expect(launcher).toContain('service)');
     expect(launcher).toContain('bun --no-env-file run --preload "$BUILDD_PRELOAD" "$HOME/.buildd/apps/runner/src/service.ts" "$@"');
   });
+
+  test('every advertised subcommand resolves to an existing file', async () => {
+    // Extract all .ts file paths from the launcher that are executed via bun run
+    const filePathRegex = /\$HOME\/\.buildd\/apps\/runner\/src\/([a-z-]+\.ts)/g;
+    const matches = Array.from(launcher.matchAll(filePathRegex));
+    expect(matches.length).toBeGreaterThan(0);
+
+    const srcDir = join(import.meta.dir, '../../src');
+    const referencedFiles = new Set<string>();
+
+    for (const match of matches) {
+      const fileName = match[1];
+      referencedFiles.add(fileName);
+    }
+
+    for (const fileName of referencedFiles) {
+      const filePath = join(srcDir, fileName);
+      const file = Bun.file(filePath);
+      const exists = await file.exists();
+      expect(exists).toBe(
+        true,
+        `Launcher references ${fileName}, but ${filePath} does not exist`,
+      );
+    }
+  });
 });
 
 describe('launcher never reads a .env from the current folder', () => {

@@ -276,6 +276,11 @@ describe('taskScopeAllowsMissionTask', () => {
     expect(await taskScopeAllowsMissionTask(worker, { id: 'task-1', workspaceId: 'ws-1', missionId: null })).toBe(true);
   });
 
+  it('allows a worker token to read its own child tasks', async () => {
+    const childTask = { id: 'task-child', workspaceId: 'ws-1', missionId: null, parentTaskId: 'task-1' };
+    expect(await taskScopeAllowsMissionTask(worker, childTask)).toBe(true);
+  });
+
   it("allows an admin token a task on its own task's mission", async () => {
     expect(await taskScopeAllowsMissionTask(admin, sibling)).toBe(true);
   });
@@ -283,6 +288,16 @@ describe('taskScopeAllowsMissionTask', () => {
   it("refuses a worker token its own mission's other tasks, without reading anything", async () => {
     expect(await taskScopeAllowsMissionTask(worker, sibling)).toBe(false);
     expect(mockTasksFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('refuses a worker token child tasks that belong to a different parent', async () => {
+    const wrongParent = { id: 'task-child', workspaceId: 'ws-1', missionId: null, parentTaskId: 'task-2' };
+    expect(await taskScopeAllowsMissionTask(worker, wrongParent)).toBe(false);
+  });
+
+  it('refuses a worker token child tasks in a different workspace, even if parent matches', async () => {
+    const crossWorkspaceChild = { id: 'task-child', workspaceId: 'ws-2', missionId: null, parentTaskId: 'task-1' };
+    expect(await taskScopeAllowsMissionTask(worker, crossWorkspaceChild)).toBe(false);
   });
 
   it('refuses an admin token another mission, another workspace, and a task on no mission', async () => {
