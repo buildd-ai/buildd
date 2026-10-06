@@ -9,6 +9,7 @@ import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { hashApiKey, extractApiKeyPrefix } from '@/lib/api-auth';
 import { emit } from '@/lib/core-emit';
+import { checkMemberCapacity } from '@buildd/core/billing-limits';
 
 const isDevelopment = process.env.NODE_ENV === 'development';
 
@@ -203,6 +204,9 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         for (const invite of pendingInvites) {
           if (new Date(invite.expiresAt) > new Date()) {
+            // Plan member limit (no-op while BILLING_ENFORCED is off): a full
+            // team's invitation stays pending rather than joining past the cap.
+            if (!(await checkMemberCapacity(invite.teamId)).ok) continue;
             await db.insert(teamMembers).values({
               teamId: invite.teamId,
               userId: newUser.id,

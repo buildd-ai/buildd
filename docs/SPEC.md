@@ -45,6 +45,15 @@ subscription ids, `billingStatus` and `paidSeats`). Gates read only
 `entitlements(team)` (`packages/core/entitlements.ts`): members, knowledge-base
 document cap, and whether decision calls run on buildd's key. The `BILLING_ENFORCED`
 env switch is off by default, and while off every team is unlimited.
+When on (`packages/core/billing-limits.ts`): adding a member, inviting one (pending
+invitations count as seats) or accepting an invitation past `maxMembers` is refused
+with HTTP 402 `plan_member_limit`; new `docs`-corpus documents past
+`knowledgeBaseCap` (distinct files across the team's workspaces) are not ingested,
+while updates to stored documents, the code index and recall are unaffected and
+nothing stored is ever removed. Decision calls (not chat, not agent work) for a team
+with no OpenRouter key of its own run on `BUILDD_PLATFORM_DECISION_KEY` (with Jev, or
+`BUILDD_PLATFORM_DECISION_MODEL`) when `decisionCallsIncluded`; a team's own key
+always wins.
 
 ### User
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`

@@ -4,6 +4,7 @@ import { teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getRequestPrincipal, requireSessionUser } from '@/lib/auth-helpers';
 import { roleHas, type TeamRole, getTeamPermissionOverrides } from '@/lib/permissions';
+import { checkMemberCapacity } from '@buildd/core/billing-limits';
 
 export async function GET(
   req: NextRequest,
@@ -120,6 +121,12 @@ export async function POST(
 
     if (existingMembership) {
       return NextResponse.json({ error: 'User is already a team member' }, { status: 409 });
+    }
+
+    // Plan member limit (no-op while BILLING_ENFORCED is off).
+    const capacity = await checkMemberCapacity(teamId);
+    if (!capacity.ok) {
+      return NextResponse.json({ error: capacity.message, code: capacity.code }, { status: 402 });
     }
 
     await db
