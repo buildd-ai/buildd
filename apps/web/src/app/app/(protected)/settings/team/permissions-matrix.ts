@@ -28,8 +28,8 @@ export interface MatrixRow {
   isDefault: boolean;
 }
 
-/** A behaviour, not something a person does: never shown as a row. */
-const HIDDEN: ReadonlySet<Permission> = new Set<Permission>(['seed_team_timezone']);
+/** Never shown as a row: a behaviour, or an owner's locked choice about their own account. */
+const HIDDEN: ReadonlySet<Permission> = new Set<Permission>(['seed_team_timezone', 'activate_chat_retro_dogfood']);
 
 function withDefault(row: Omit<MatrixRow, 'isDefault'>): MatrixRow {
   return { ...row, isDefault: row.admin === row.defaultAdmin && row.member === row.defaultMember };

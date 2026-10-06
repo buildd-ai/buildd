@@ -19,17 +19,39 @@ export const TURN_LABELS = [
   'over_fetch', 'reasoning_timeout', 're_asked', 'wrong_tier',
 ] as const;
 export type TurnLabel = typeof TURN_LABELS[number];
-/** Every turn label but `needed` is a cause of waste. */
-export type CauseLabel = Exclude<TurnLabel, 'needed'>;
-export const CAUSE_LABELS = TURN_LABELS.filter((l): l is CauseLabel => l !== 'needed');
+/**
+ * Visible-answer causes (./visible-answer.ts). Code labels these from the
+ * stored turns and the client's turn signal; the model is never asked them,
+ * so they are not in TURN_LABELS.
+ */
+export const VISIBLE_CAUSE_LABELS = ['no_answer', 'render_gap', 'blank_retry'] as const;
+export type VisibleCauseLabel = typeof VISIBLE_CAUSE_LABELS[number];
 
+/** Every turn label but `needed` is a cause of waste, and so is every visible-answer cause. */
+export type CauseLabel = Exclude<TurnLabel, 'needed'> | VisibleCauseLabel;
+export const CAUSE_LABELS: readonly CauseLabel[] = [
+  ...TURN_LABELS.filter((l): l is Exclude<TurnLabel, 'needed'> => l !== 'needed'),
+  ...VISIBLE_CAUSE_LABELS,
+];
+
+/** The fix classes the model picks from. */
 export const FIX_CLASS_LABELS = [
   'tool_description', 'tool_or_param', 'system_prompt', 'routing_tier', 'directive_or_memory', 'ui',
 ] as const;
-export type FixClassLabel = typeof FIX_CLASS_LABELS[number];
+/** Code-only fix class: the turn itself (stream, persistence) lost the answer. Never asked. */
+export const CODE_FIX_CLASS_LABELS = ['turn_pipeline'] as const;
+/** A fix class the model may pick. */
+export type ModelFixClassLabel = typeof FIX_CLASS_LABELS[number];
+export type FixClassLabel = ModelFixClassLabel | typeof CODE_FIX_CLASS_LABELS[number];
+export const ALL_FIX_CLASS_LABELS: readonly FixClassLabel[] = [...FIX_CLASS_LABELS, ...CODE_FIX_CLASS_LABELS];
 
-/** Waste candidates code detects. */
-export const CANDIDATE_KINDS = ['stopped', 'repeat_call', 'large_result', 'routing_error', 'denied_approval', 'thumbs_down'] as const;
+/** Waste candidates code detects. The last three are the visible-answer kinds. */
+export const VISIBLE_CANDIDATE_KINDS = ['no_output', 'render_gap', 'blank_retry'] as const;
+export type VisibleCandidateKind = typeof VISIBLE_CANDIDATE_KINDS[number];
+export const CANDIDATE_KINDS = [
+  'stopped', 'repeat_call', 'large_result', 'routing_error', 'denied_approval', 'thumbs_down',
+  ...VISIBLE_CANDIDATE_KINDS,
+] as const;
 export type CandidateKind = typeof CANDIDATE_KINDS[number];
 
 export const STATUS_LABELS = ['skipped', 'judged', 'failed'] as const;
@@ -63,7 +85,7 @@ export const LESSON_TEXT_COLUMNS: Record<string, readonly string[] | RegExp> = {
   intent: INTENT_LABELS,
   satisfied: SATISFIED_LABELS,
   primary_cause: CAUSE_LABELS,
-  fix_class: FIX_CLASS_LABELS,
+  fix_class: ALL_FIX_CLASS_LABELS,
   tool_name: TOOL_NAME_PATTERN,
   signature: SIGNATURE_PATTERN,
   version: VERSION_PATTERN,
