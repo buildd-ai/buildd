@@ -3410,9 +3410,53 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
 }
+/** n / p50 / p90 over a set of durations, in milliseconds; null quantiles when n = 0. */
+export interface DurationSummary {
+  n: number;
+  p50Ms: number | null;
+  p90Ms: number | null;
+}
+/**
+ * Early-release rollout measure (knowledge-base: buildd/design/early-release.md
+ * "Failure modes & the measure"), read off `dependency_releases` rows and the
+ * `early_release` gate ledger. Served as `earlyRelease` on
+ * `GET /api/stats/coordination` (or alone with `?metric=earlyRelease`).
+ */
+export interface EarlyReleaseStats extends CoordinationMetricFilters {
+  /** Each workspace's resolved `gitConfig.earlyRelease.mode`, so zero releases can be told apart from "never opted in". */
+  modes: Array<{ workspaceId: string; mode: 'off' | 'rule_only' | 'rule_and_jev' }>;
+  /** Release decisions made in the window, by decision. */
+  decisions: { start_now: number; start_stacked: number; wait: number };
+  /**
+   * Of the dependents released (start_now / start_stacked) in the window, how
+   * many the reconciler later had to refresh or escalate, or whose release was
+   * revoked or whose task was cancelled. A dependent counts once in `reworked`
+   * even if several apply; the per-cause counts may overlap.
+   */
+  rework: {
+    released: number;
+    reworked: number;
+    rate: number | null;
+    refreshed: number;
+    escalated: number;
+    cancelled: number;
+  };
+  /**
+   * Upstream PR raised → dependent's own PR merged, over dependents whose PR
+   * merged in the window. `released` = dependents with a start_now/start_stacked
+   * release; `notOptedIn` = dependents in workspaces whose mode is 'off' and that
+   * were never released (today's merge-gated path). Opted-in dependents held at
+   * `wait` are in neither cohort.
+   */
+  chainDuration: { released: DurationSummary; notOptedIn: DurationSummary };
+  /** Release decision (≈ upstream PR raised) → dependent's first claim, for dependents released in the window. */
+  raisedToClaimed: DurationSummary;
+  coverage: { note: string };
+}
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+  earlyRelease?: EarlyReleaseStats;
 }
 /**
  * Aggregate counts over the orchestration decision ledger
