@@ -1717,12 +1717,13 @@ async function maybeDispatchReviewer(
       await announceTaskCreated(reviewerTaskFull, workspace);
       await wakeTask(reviewerTaskFull.id, 'task.created');
       console.log(`[reviewer] Dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName}`);
-      // Tell the PR (not just the dashboard) that an agent has this.
+      // Tell the PR (not just the dashboard) a review is queued. It says
+      // "Reviewing" only once a worker claims the reviewer task.
       await appendPrActivity({
         installationId,
         repoFullName,
         prNumber: pr.number,
-        entry: { kind: 'reviewing' },
+        entry: { kind: 'review_queued' },
         workspaceId: openWorker.workspaceId,
       });
     }
@@ -1901,8 +1902,9 @@ async function maybeReDispatchReviewer(
       installationId,
       repoFullName,
       prNumber: pr.number,
-      // The renderer words this "Re-reviewing · after fix N" from the log.
-      entry: { kind: 'reviewing' },
+      // The renderer words this "Re-review queued · after fix N" from the log;
+      // the claim turns it into "Re-reviewing".
+      entry: { kind: 'review_queued' },
       workspaceId: openWorker.workspaceId,
     });
   } catch (err) {

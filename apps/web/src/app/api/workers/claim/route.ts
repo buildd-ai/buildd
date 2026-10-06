@@ -97,7 +97,7 @@ import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } fr
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
-import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
+import { announceFixClaimed, announceReviewClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
 import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/core/claim-planner';
 import {
@@ -2799,9 +2799,10 @@ export async function POST(req: NextRequest) {
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
-      // A fix attempt just got a worker: the PR's activity comment may now say
-      // "Fixing" instead of "fix queued". No-op for any other task.
+      // A fix attempt or reviewer just got a worker: the PR's activity comment
+      // may now say "Fixing" / "Reviewing" instead of queued. No-op otherwise.
       await announceFixClaimed(claimedTask);
+      await announceReviewClaimed(claimedTask);
     }
   }
 

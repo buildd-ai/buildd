@@ -258,8 +258,10 @@ mock.module('@/lib/pusher', () => ({
   triggerEvent: mock(() => Promise.resolve()),
 }));
 const mockAnnounceFixClaimed = mock(() => Promise.resolve());
+const mockAnnounceReviewClaimed = mock(() => Promise.resolve());
 mock.module('@/lib/pr-activity-fix-claimed', () => ({
   announceFixClaimed: mockAnnounceFixClaimed,
+  announceReviewClaimed: mockAnnounceReviewClaimed,
 }));
 mock.module('@/lib/notify', () => ({
   notify: mock(() => {}),
@@ -1060,6 +1062,37 @@ describe('POST /api/workers/claim', () => {
       expect(res.status).toBe(200);
       expect(data.workers.length).toBe(1);
       expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    // Filing a reviewer only says "Review queued" on the PR; the claim is what
+    // makes "Reviewing" true. One claim, one announcement.
+    it('announces a claimed reviewer task to the PR comment exactly once', async () => {
+      const loginAccount = { id: 'acct-login', type: 'user', teamId: 'team-personal' };
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...loginAccount, authType: 'api', level: 'worker', maxConcurrentWorkers: 3, workspaceIds: null,
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue(linksFor(loginAccount));
+      mockWorkspacesFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-mine' }]);
+      mockTasksFindMany.mockResolvedValueOnce([{
+        ...pendingTask(),
+        title: 'Review PR #42: First task',
+        context: { reviewerFor: 'task-0', prNumber: 42 },
+      }]);
+      setupClaimWrites();
+      mockAnnounceReviewClaimed.mockClear();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+      expect(res.status).toBe(200);
+      expect((await res.json()).workers).toHaveLength(1);
+      expect(mockAnnounceReviewClaimed).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceReviewClaimed).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'task-1',
+        context: expect.objectContaining({ reviewerFor: 'task-0', prNumber: 42 }),
+      }));
     });
 
     it("another team's token still cannot claim there", async () => {

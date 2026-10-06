@@ -4010,7 +4010,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('announces on the PR that a reviewer agent picked it up', async () => {
+    it('announces on the PR that a review is queued — not Reviewing until claimed', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
 
@@ -4022,7 +4022,8 @@ describe('POST /api/github/webhook', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       expect(body).toContain('<!-- buildd-activity -->');
-      expect(body).toContain('**Reviewing**');
+      expect(body).toContain('**Review queued**');
+      expect(body).not.toContain('**Reviewing**');
       // Role slugs are internal vocabulary; the PR reader doesn't need them.
       expect(body).not.toContain('reviewer role');
     });
