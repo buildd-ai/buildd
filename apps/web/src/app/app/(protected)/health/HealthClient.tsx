@@ -24,7 +24,9 @@ import type {
 import { getModelDisplayName } from '@buildd/core/model-display';
 import { Stat } from '@/components/StatTile';
 import { byModelAbsence, divergenceSummary, scanCaveat } from '@/lib/model-presentation';
-import { shortToolName, usageDrilldownHref } from '@/lib/usage-drilldown';
+import { usageDrilldownHref } from '@/lib/usage-drilldown';
+import { buildToolBreakdown } from '@/lib/tool-usage-breakdown';
+import ToolBreakdownList from './_components/ToolBreakdownList';
 import { CONSUMPTION_TOP_TOOLS, formatShare, groupToolsByServer } from '@/lib/usage-breakdowns';
 import {
   coverageLabel,
@@ -1346,6 +1348,14 @@ function ConsumptionSection({
   const { totals, tools, groups, window, byModel, modelDivergence, scan } = stats;
   const topTools = tools.byTool.slice(0, CONSUMPTION_TOP_TOOLS);
   const toolGroups = groupToolsByServer(tools.byTool);
+  const breakdownFor = (list: typeof tools.byTool) => buildToolBreakdown({
+    tools: list,
+    // Each source may be absent (older rows, a failed read): that row stays plain.
+    bashBuckets: stats.bashBuckets?.classifiedCalls ? stats.bashBuckets : null,
+    actions: stats.builddActions ?? null,
+    fileAreas: stats.fileAreas?.tasksWithAreas ? stats.fileAreas.byTool : null,
+  });
+  const topRows = breakdownFor(topTools);
   const maxToolCalls = topTools[0]?.calls ?? 0;
   const coverageGap = tools.coverage.tasks - tools.coverage.histogram;
   const topModels = byModel.slice(0, 6);
@@ -1415,24 +1425,7 @@ function ConsumptionSection({
                 </span>
               )}
             </div>
-            {topTools.map((t) => (
-              <div key={t.name} className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-text-primary flex-1 min-w-0 truncate" title={t.name}>
-                    {shortToolName(t.name)}
-                  </span>
-                  <span className="text-xs text-text-muted tabular-nums shrink-0">
-                    {t.calls} · {Math.round(t.share * 100)}%
-                  </span>
-                </div>
-                <div className="h-1.5 rounded-full bg-surface-3 overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-primary"
-                    style={{ width: `${maxToolCalls > 0 ? (t.calls / maxToolCalls) * 100 : 0}%` }}
-                  />
-                </div>
-              </div>
-            ))}
+            <ToolBreakdownList rows={topRows} maxCalls={maxToolCalls} />
 
             {/* Every tool, not just the head: anything below the top rows —
                 the graph, recall, ToolSearch — was invisible before. Same
@@ -1450,24 +1443,9 @@ function ConsumptionSection({
                         <span className="text-[11px] uppercase tracking-wide text-text-muted">{g.label}</span>
                         <span className="text-[11px] text-text-muted tabular-nums">{g.calls.toLocaleString('en-US')}</span>
                       </div>
-                      {g.tools.map((t) => (
-                        <div key={t.name} data-testid="consumption-all-tools-row" className="flex items-center gap-2 min-w-0">
-                          <span className="text-xs text-text-primary flex-1 min-w-0 truncate" title={t.name}>
-                            {shortToolName(t.name)}
-                          </span>
-                          <span className="text-[11px] text-text-muted tabular-nums shrink-0">
-                            {t.calls.toLocaleString('en-US')} · {formatShare(t.share)}
-                          </span>
-                        </div>
-                      ))}
+                      <ToolBreakdownList rows={breakdownFor(g.tools)} maxCalls={maxToolCalls} />
                     </div>
                   ))}
-                  <a
-                    href={usageDrilldownHref({ window, workspaceId })}
-                    className="block text-[11px] text-primary hover:underline"
-                  >
-                    Shell buckets, graph tools and buildd actions on the usage page →
-                  </a>
                 </div>
               </details>
             )}

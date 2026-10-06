@@ -1368,6 +1368,7 @@ export default async function MissionDetailPage({
       autoVerify={autoVerifyFlag}
       readonly={isTerminal}
       failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+      missionPrCount={prCount}
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   );
