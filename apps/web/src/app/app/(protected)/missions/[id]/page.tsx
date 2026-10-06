@@ -1386,6 +1386,7 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
     />
   );
   const back = mastheadBack(from, breadcrumb.links);
