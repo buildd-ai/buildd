@@ -27,6 +27,7 @@
  * must opt in (`allowEphemeralWrites`) — a shadow run never mutates.
  */
 
+import { createHash } from 'crypto';
 import type { ScoutProbeKind } from '../decision-kind-scout-probe-selection';
 import type { AssertionResult } from '../spec-conformance';
 import type { ScoutCapability, ScoutCapabilityKind, ScoutCapabilityProfile } from '../scout-capabilities';
@@ -516,6 +517,23 @@ export interface ScoutProbeExecution {
   reproduction: ScoutReproduction | null;
 }
 
+/**
+ * What a runnable action executes, as a stable key — for the adapters whose
+ * action does not depend on the hypothesis that selected it (a command, an
+ * HTTP request, a capture of declared routes). Null for spec and readiness
+ * probes, whose refs and items come from the candidate's own signals.
+ */
+export function scoutExecutionKey(action: ScoutProbeAction): string | null {
+  let parts: unknown[];
+  switch (action.adapter) {
+    case 'command': parts = [action.capabilityId, action.command, action.expect.exit, action.expect.outputIncludes ?? null]; break;
+    case 'api': parts = [action.capabilityId, action.method, action.path, action.target, action.baseUrl, action.expect]; break;
+    case 'surface': parts = [action.capabilityId, [...action.routes].sort(), [...action.viewports].sort(), action.pageSource]; break;
+    default: return null;
+  }
+  return `${action.adapter}_${createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)}`;
+}
+
 function reproductionOf(action: ScoutProbeAction, run: ScoutRun): ScoutReproduction {
   const base = { ref: run.candidate.ref, sha: run.candidate.sha, capabilityId: action.capabilityId };
   switch (action.adapter) {
@@ -572,6 +590,7 @@ export async function runScoutProbe(
   const judge = JUDGE[action.adapter] as (input: unknown) => VerificationObservation;
   const executor: VerificationExecutor<unknown> = { kind: `scout-${action.adapter}`, requires: [hostCap], run: judge };
   const reproduction = reproductionOf(action, run);
+  const executionKey = scoutExecutionKey(action);
 
   const attempt = async (): Promise<{ record: ScoutProbeRecord; configError: boolean }> => {
     let gathered: Gathered = { input: null, coverage: 'absent', configError: false };
@@ -587,7 +606,7 @@ export async function runScoutProbe(
       evidence: scoutEvidenceCoverage(keys, action.adapter, gathered.coverage),
       capabilities: offered,
       now: now(),
-    });
+    }, executionKey);
     return { record, configError: gathered.configError };
   };
 
