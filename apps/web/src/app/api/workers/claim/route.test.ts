@@ -338,9 +338,13 @@ mock.module('@/lib/task-dependencies', () => ({
 const mockDiagnoseExplicitTaskExclusion = mock((_opts: any) => Promise.resolve(null as any));
 const mockStampLastClaimAttempt = mock((_opts: any) => Promise.resolve());
 const mockEvaluateForcedGates = mock((_opts: any) => Promise.resolve([] as string[]));
+const mockExplicitExclusionGateEvent = mock((opts: any) => ({
+  gate: 'claim_loop_deferral', outcome: 'deferred', reason: opts.exclusion.code, taskId: opts.taskId, workspaceId: opts.workspaceId,
+}));
 mock.module('./explicit-task-exclusion', () => ({
   diagnoseExplicitTaskExclusion: mockDiagnoseExplicitTaskExclusion,
   evaluateForcedGates: mockEvaluateForcedGates,
+  explicitExclusionGateEvent: mockExplicitExclusionGateEvent,
   stampLastClaimAttempt: mockStampLastClaimAttempt,
 }));
 
@@ -2757,6 +2761,37 @@ describe('POST /api/workers/claim', () => {
     expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({
       taskId: 'task-held', workspaceIds: ['ws-1'], reason: 'no_pending_tasks',
     });
+  });
+
+  // The PR #3678 reviewer: filed, woken, and the runner's wake claim named it
+  // within a second — but a WHERE gate (the workspace cap) dropped it, so the
+  // runner heard only `no_pending_tasks` and nothing recorded why. The exact
+  // exclusion must reach the task's gate history and its stamp.
+  it('a wake claim the WHERE refuses records the exact gate on the task (ledger + stamp)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 10, type: 'user', authType: 'oauth',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    const exclusion = { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' };
+    mockDiagnoseExplicitTaskExclusion.mockReset();
+    mockDiagnoseExplicitTaskExclusion.mockResolvedValueOnce(exclusion);
+    mockStampLastClaimAttempt.mockReset();
+    mockFireDeferralEvent.mockClear();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'coder-workspace', taskId: 'reviewer-task', workspaceId: 'ws-1' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics).toMatchObject({ reason: 'no_pending_tasks', taskExclusion: exclusion });
+
+    await new Promise((r) => setTimeout(r, 0));
+    const events = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).filter((e: any) => e.taskId === 'reviewer-task');
+    expect(events).toEqual([expect.objectContaining({ gate: 'claim_loop_deferral', reason: 'workspace_cap', workspaceId: 'ws-1' })]);
+    expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({ taskId: 'reviewer-task', exclusion });
   });
 
   it('an explicit claim rejected for no_slots still stamps, scoped to the claimable workspaces', async () => {

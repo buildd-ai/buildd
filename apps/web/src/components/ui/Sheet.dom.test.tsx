@@ -106,6 +106,17 @@ describe('Sheet', () => {
     expect(q('sheet')).toBeNull();
   });
 
+  it('contextual peek keeps the chart interactive and scroll unlocked, without a backdrop', () => {
+    act(() => root.render(<Sheet open contextual height="peek" onClose={() => {}} title="Tasks" testId="sheet">x</Sheet>));
+    const dialog = q('sheet')!;
+    expect(dialog.getAttribute('aria-modal')).toBe('false');
+    expect(dialog.className).toContain('h-[35dvh]');
+    expect(dialog.parentElement!.className).toContain('pointer-events-none');
+    expect(dialog.className).toContain('pointer-events-auto');
+    expect(dialog.parentElement!.querySelector('.bg-black\\/50')).toBeNull();
+    expect(main.style.overflow).toBe('auto');
+  });
+
   it('wide + tall sizes', () => {
     act(() => root.render(<Sheet open onClose={() => {}} title="A" testId="sheet" width="wide" height="tall">x</Sheet>));
     expect(q('sheet')!.className).toContain('max-w-3xl');
