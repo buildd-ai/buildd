@@ -14,7 +14,7 @@
  *    A decider that throws or answers outside the kind's decision set gets the
  *    kind's own deterministic fallback, so a failure stays bounded.
  *
- * Independence: a candidate that shares an anchor with, or largely overlaps the
+ * Independence: a candidate that shares an anchor and family with, or largely overlaps the
  * paths of, an already-selected probe of the same kind is a near-duplicate; a
  * probe family is capped at `maxPerFamily`. Neither costs a decision.
  *
@@ -120,7 +120,9 @@ function overlap(a: readonly string[], b: readonly string[]): number {
 
 function duplicateOf(c: ScoutProbeCandidate, selected: readonly ScoutSelectedProbe[]): string | null {
   for (const { candidate: s } of selected) {
-    if (s.anchor === c.anchor) return s.id;
+    // A shared anchor is one hypothesis only within a family: a changed area
+    // holding UI and non-UI files is both a surface and a contract question.
+    if (s.anchor === c.anchor && s.family === c.family) return s.id;
     if (s.probeKind === c.probeKind && overlap(s.paths, c.paths) >= NEAR_DUPLICATE_OVERLAP) return s.id;
   }
   return null;

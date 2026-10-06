@@ -182,6 +182,14 @@ describe('selectScoutProbes — independence', () => {
     expect(r.skipped[0]).toMatchObject({ reason: 'near_duplicate', duplicateOf: a.id });
   });
 
+  it('a different family on the same changed area is a different hypothesis, not a duplicate', async () => {
+    // One area holding both UI and non-UI changes yields a contract and a surface candidate with the same anchor.
+    const contract = cand({ anchor: 'apps/web', family: 'contract', paths: ['apps/web/src/lib/a.ts'] });
+    const surface = cand({ anchor: 'apps/web', family: 'surface', probeKind: 'visual', executor: 'ui-surface', paths: ['apps/web/src/app/page.tsx'] });
+    const r = await selectScoutProbes(set([contract, surface]), recorder().decide);
+    expect(ids(r.selected)).toEqual([contract.id, surface.id]);
+  });
+
   it('skips a same-kind candidate whose paths largely overlap a selected one', async () => {
     const paths = ['x/a.go', 'x/b.go', 'x/c.go'];
     const a = cand({ paths });
