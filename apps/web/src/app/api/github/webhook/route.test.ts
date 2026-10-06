@@ -4048,7 +4048,7 @@ describe('POST /api/github/webhook', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
-    it('announces on the PR that a reviewer agent picked it up', async () => {
+    it('announces on the PR that a review is queued — not Reviewing until claimed', async () => {
       withAgentReviewWorkspaceAndWorker();
       mockPreflightEscalationCheck.mockReturnValue({ shouldEscalate: false });
 
@@ -4060,7 +4060,8 @@ describe('POST /api/github/webhook', () => {
       expect(commentCall).toBeDefined();
       const body = JSON.parse(commentCall[2].body).body as string;
       expect(body).toContain('<!-- buildd-activity -->');
-      expect(body).toContain('**Reviewing**');
+      expect(body).toContain('**Review queued**');
+      expect(body).not.toContain('**Reviewing**');
       // Role slugs are internal vocabulary; the PR reader doesn't need them.
       expect(body).not.toContain('reviewer role');
     });
@@ -6901,7 +6902,7 @@ describe('webhook → reviewer flows (characterization)', () => {
     });
     expect(call('announceTaskCreated')[0]).toMatchObject({ id: 'reviewer-95', workspaceId: 'ws1', missionId: 'm-95', roleSlug: 'reviewer' });
     expect(call('wakeTask')).toEqual(['reviewer-95', 'task.created']);
-    expect((call('appendPrActivity')[0] as any)).toMatchObject({ prNumber: 95, entry: { kind: 'reviewing' }, workspaceId: 'ws1' });
+    expect((call('appendPrActivity')[0] as any)).toMatchObject({ prNumber: 95, entry: { kind: 'review_queued' }, workspaceId: 'ws1' });
   });
 
   it('a redelivered open: the reviewer dedupes, nothing is announced, and the PR is still held from auto-merge', async () => {
@@ -6959,7 +6960,7 @@ describe('webhook → reviewer flows (characterization)', () => {
       headSha: NEW, baseRef: 'dev',
       priorVerdict: { headSha: OLD, verdict: 'request-changes', confidence: 0.9, summary: 'needs work', feedback: 'fix it' },
     });
-    expect((call('appendPrActivity', 1)[0] as any).entry).toEqual({ kind: 'reviewing' });
+    expect((call('appendPrActivity', 1)[0] as any).entry).toEqual({ kind: 'review_queued' });
   });
 
   it('a redelivered push (head equals the reviewed head): the comment only', async () => {

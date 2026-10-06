@@ -235,6 +235,67 @@ describe('status derivation — queued is never shown as working', () => {
   });
 });
 
+// PR #3678: the dispatch-time entry read "Reviewing" for hours while no worker
+// ever claimed the reviewer. Filing it says queued; only the claim says Reviewing.
+describe('review queued → reviewing', () => {
+  const reviewQueued = { kind: 'review_queued' as const, at: at(0) };
+  const reviewClaimed = { kind: 'reviewing' as const, taskUrl: 'https://buildd.dev/app/tasks/rev-1', at: at(2) };
+
+  it('a filed reviewer reads as queued, waiting for a worker, with no spinner', () => {
+    const body = renderPrActivityComment([reviewQueued]);
+    const header = headerOf(body);
+    expect(header).toContain(`${GLYPH.waiting} **Review queued**`);
+    expect(header).toContain('waiting for a worker');
+    expect(body).not.toContain(SPINNER_PATH);
+    expect(body).not.toContain('Reviewing');
+    expect(body).toContain('- `0m` Review queued');
+  });
+
+  it('flips to Reviewing, with the spinner, once a worker claims it', () => {
+    const body = renderPrActivityComment([reviewQueued, reviewClaimed]);
+    const header = headerOf(body);
+    expect(header).toContain('**Reviewing**');
+    expect(header).toContain(SPINNER_PATH);
+    expect(header).toContain('[Open in Buildd](https://buildd.dev/app/tasks/rev-1)');
+    expect(body).toContain('- `0m` Review queued');
+    expect(body).toContain('- `+2m` Reviewing');
+  });
+
+  it('a review queued after a fix is a re-review, and says which fix', () => {
+    const header = headerOf(renderPrActivityComment([
+      reviewQueued, reviewClaimed, queued, fixing, pushed, { kind: 'review_queued', at: at(27) },
+    ]));
+    expect(header).toContain('**Re-review queued · after fix 1 of 3**');
+    expect(header).not.toContain(SPINNER_PATH);
+  });
+
+  it('keeps the queued and re-review rows short enough for a phone', () => {
+    const body = renderPrActivityComment([
+      { ...reviewQueued, detail: 'manual' }, reviewClaimed, queued, fixing, pushed,
+      { kind: 'review_queued', detail: 'manual', at: at(27) }, { ...reviewClaimed, at: at(28) },
+    ]);
+    const rows = body.split('\n').filter((l) => l.startsWith('- '));
+    expect(rows).toHaveLength(7);
+    for (const r of rows) expect(r.replace(/\]\([^)]*\)/g, ']').length).toBeLessThanOrEqual(64);
+  });
+
+  it('a second claim announcement for the same review does not stack a row', async () => {
+    listResponse = [{ id: 7, body: renderPrActivityComment([reviewQueued, reviewClaimed]) }];
+    const result = await appendPrActivity({
+      installationId: 1, repoFullName: 'o/r', prNumber: 3678,
+      entry: { kind: 'reviewing', taskUrl: 'https://buildd.dev/app/tasks/rev-1' },
+      onlyIfPresent: true,
+    });
+    expect(result).toEqual({ action: 'unchanged', commentId: 7 });
+    expect(calls.some((c) => c.options.method === 'PATCH')).toBe(false);
+  });
+
+  it('round-trips through the state block', () => {
+    expect(parsePrActivityState(renderPrActivityComment([reviewQueued, reviewClaimed])).map((e) => e.kind))
+      .toEqual(['review_queued', 'reviewing']);
+  });
+});
+
 describe('length and layout', () => {
   it('collapses reviewer feedback instead of pasting it into the row', () => {
     const body = renderPrActivityComment([reviewing, queued]);

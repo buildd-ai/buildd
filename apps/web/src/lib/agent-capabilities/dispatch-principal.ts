@@ -3,7 +3,8 @@
  * dispatcher presents: the runner key (already authenticated by the route),
  * the workspace's dispatch token, and `{ taskId, workerId? }`.
  *
- * Used by /api/runner/github-token and /api/runner/model-endpoint.
+ * Used by /api/runner/github-token and /api/runner/model-endpoint;
+ * resolveDispatchTask alone by /api/runner/runner-size.
  */
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
@@ -48,10 +49,20 @@ export type DispatchPrincipalResult =
 
 const NOT_FOUND: PrincipalRefusal = { ok: false, status: 404, error: 'Task not found', reasonCode: 'not_found' };
 
-export async function resolveDispatchPrincipal(
+export type DispatchTaskResult =
+  | { ok: true; task: LoadedTask; workspace: DispatchWorkspace }
+  | PrincipalRefusal;
+
+/**
+ * The dispatcher's half of the check, before any worker exists: the task is in
+ * a workspace the account may claim from, and the dispatch token is that
+ * workspace's. Used alone by /api/runner/runner-size, which the dispatcher
+ * calls before it starts a container.
+ */
+export async function resolveDispatchTask(
   account: PrincipalAccount,
-  input: { taskId: string; workerId?: string; dispatchToken: string },
-): Promise<DispatchPrincipalResult> {
+  input: { taskId: string; dispatchToken: string },
+): Promise<DispatchTaskResult> {
   const task = await loadTask(input.taskId);
   const ws = task?.workspace;
   if (!task || !ws || task.workspaceId !== ws.id) return NOT_FOUND;
@@ -61,6 +72,16 @@ export async function resolveDispatchPrincipal(
   if (!dispatchTokenMatches(ws.webhookConfig, input.dispatchToken)) {
     return { ok: false, status: 403, error: 'Dispatch token does not match this workspace', reasonCode: 'dispatch_token_mismatch' };
   }
+  return { ok: true, task, workspace: ws };
+}
+
+export async function resolveDispatchPrincipal(
+  account: PrincipalAccount,
+  input: { taskId: string; workerId?: string; dispatchToken: string },
+): Promise<DispatchPrincipalResult> {
+  const resolved = await resolveDispatchTask(account, input);
+  if (!resolved.ok) return resolved;
+  const { task, workspace: ws } = resolved;
 
   const rows = await db.query.workers.findMany({
     where: and(eq(workers.taskId, input.taskId), inArray(workers.status, [...LIVE_WORKER_STATUSES])),

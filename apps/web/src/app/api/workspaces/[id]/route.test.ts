@@ -693,6 +693,42 @@ describe('PATCH /api/workspaces/[id]', () => {
     }
   });
 
+  // Cloud-runner container class (packages/shared/src/runner-size.ts).
+  it('accepts gitConfig.runnerSize standard/large and null to clear', async () => {
+    for (const value of ['standard', 'large', null]) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { autoMergePR: true } });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSize: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(200);
+      expect(capturedUpdates.gitConfig).toMatchObject({ autoMergePR: true, runnerSize: value });
+    }
+  });
+
+  it('rejects an unknown gitConfig.runnerSize value (returns 400)', async () => {
+    for (const value of ['Large', 'xl', 'standard-3', true, 2, '']) {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });
+      const req = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSize: value } } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe("gitConfig.runnerSize must be 'standard', 'large' or null");
+    }
+  });
+
+  it('gitConfig.runnerSizeDerived can only be cleared, never written', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { runnerSizeDerived: { size: 'large', reason: 'low_disk', at: 'x' } } });
+    const forged = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSizeDerived: { size: 'large', reason: 'low_disk', at: 'x' } } } });
+    expect((await PATCH(forged, { params: mockParams })).status).toBe(400);
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: { runnerSizeDerived: { size: 'large', reason: 'low_disk', at: 'x' } } });
+    const clear = createMockRequest({ method: 'PATCH', body: { gitConfig: { runnerSizeDerived: null } } });
+    expect((await PATCH(clear, { params: mockParams })).status).toBe(200);
+    expect(capturedUpdates.gitConfig).toMatchObject({ runnerSizeDerived: null });
+  });
+
   it('rejects an unknown gitConfig.pathClaimEnforcement value (returns 400)', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockWorkspacesFindFirst.mockResolvedValue({ teamId: 'team-1', gitConfig: {} });

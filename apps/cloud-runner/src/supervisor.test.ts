@@ -1033,3 +1033,107 @@ describe('scheduled dispatch (task.scheduled)', () => {
     expect(h.fc.starts).toHaveLength(0);
   });
 });
+
+describe('container class: the report says which class ran and why, and how the run ended', () => {
+  const LARGE = { size: 'large', source: 'derived', reason: 'memory_pressure' } as const;
+
+  test("a large agent's report: its class, buildd's decision, its instance type, weighted runner-seconds", async () => {
+    let t = 1_000;
+    const h = harness({ config: { runnerSize: 'large', instanceType: 'standard-3' }, now: () => t });
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-l']);
+    h.sup.dispatch({ runnerSize: LARGE });
+    await h.until(() => h.state.workerId === 'worker-l');
+    t = 61_000;
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.runnerSize).toEqual(LARGE);
+    expect(h.state.report).toMatchObject({
+      instanceType: 'standard-3',
+      interruption: null,
+      runnerSize: { size: 'large', source: 'derived', reason: 'memory_pressure', weight: 2, runnerSeconds: 60, weightedRunnerSeconds: 120 },
+    });
+  });
+
+  test('the decision carries over to the agent\'s own retries, which never re-ask', async () => {
+    const NOW = 2_000_000;
+    const h = harness({ config: { runnerSize: 'large' }, now: () => NOW });
+    h.fc.setStdout(['BUILDD_CLAIM_DEFERRED=workspace_cap']);
+    h.sup.dispatch({ runnerSize: LARGE });
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(5);
+    await h.settle();
+    const [id, entry] = [...h.sched.scheduled.entries()][0]!;
+    h.fc.setStdout([]);
+    h.sup.fireScheduledDispatch(entry.payload, id);
+    expect(h.state.runnerSize).toEqual(LARGE);
+  });
+
+  test('task.scheduled stores the decision with the wake and hands it to the run it starts', async () => {
+    const NOW = 2_000_000;
+    const h = harness({ config: { runnerSize: 'large' }, now: () => NOW });
+    await h.sup.scheduleDispatch(NOW + 60_000, { runnerSize: LARGE });
+    const [id, entry] = [...h.sched.scheduled.entries()][0]!;
+    expect(entry.payload.runnerSize).toEqual(LARGE);
+    h.sup.fireScheduledDispatch(entry.payload, id);
+    expect(h.state.runnerSize).toEqual(LARGE);
+  });
+
+  test('the capacity retry applies per class: a large start refused for capacity defers and retries in the large agent', async () => {
+    const NOW = 2_000_000;
+    const h = harness({ config: { runnerSize: 'large', instanceType: 'standard-3' }, now: () => NOW });
+    (h.fc.container as { start: ContainerPort['start'] }).start = () => {
+      throw new Error('There is no container instance that can be provided to this Durable Object, try again later.');
+    };
+    h.sup.dispatch({ runnerSize: LARGE });
+    await h.settle();
+    expect(h.state).toMatchObject({ outcome: 'start_deferred', deferredRetryCount: 1 });
+    expect(h.state.report).toMatchObject({ instanceType: 'standard-3', runnerSize: { size: 'large', runnerSeconds: null }, deferredRetry: { reason: 'container_capacity' } });
+    expect(h.sched.scheduled.size).toBe(1);
+  });
+
+  test('interruption: the container dying under the run is container_stopped', async () => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-7']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-7');
+    h.fc.kill();
+    await h.settle();
+    expect(h.state.report!.interruption).toBe('container_stopped');
+  });
+
+  test('interruption: a runner that exits on its own (even badly) is none', async () => {
+    const h = harness();
+    h.sup.dispatch();
+    await h.until(() => h.state.status === 'running');
+    h.fc.exits[0]!.resolve(137);
+    await h.settle();
+    expect(h.state.report!.interruption).toBeNull();
+  });
+
+  test('interruption: a park waiting for an answer is question', async () => {
+    const h = harness({ config: { resumableRuns: true } });
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-p1', 'BUILDD_PARKED=worker-p1']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-p1');
+    h.fc.exits[0]!.resolve(4);
+    await h.settle();
+    expect(h.state.report!.interruption).toBe('question');
+  });
+
+  test('interruption: an orphan found after the agent restarted (a deploy) is agent_restart', async () => {
+    const h = harness({ initial: { taskId: TASK_ID, attempt: 3, status: 'running', workerId: 'w-orphan', startedAt: 1, runnerSize: LARGE } });
+    await h.sup.recoverOrphan();
+    await h.settle();
+    expect(h.state.report).toMatchObject({ outcome: 'crashed', interruption: 'agent_restart' });
+  });
+
+  test('resource metric lines land in the report', async () => {
+    const h = harness();
+    h.fc.setStdout(['BUILDD_WORKER_ID=worker-r', 'BUILDD_METRIC=mem_peak_bytes 3900000000', 'BUILDD_METRIC=mem_limit_bytes 4294967296', 'BUILDD_METRIC=disk_free_min_bytes 2000000000']);
+    h.sup.dispatch();
+    await h.until(() => h.state.workerId === 'worker-r');
+    h.fc.exits[0]!.resolve(0);
+    await h.settle();
+    expect(h.state.report!.resources).toEqual({ memoryPeakBytes: 3_900_000_000, memoryLimitBytes: 4_294_967_296, diskFreeMinBytes: 2_000_000_000, diskTotalBytes: null });
+  });
+});

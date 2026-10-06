@@ -13,7 +13,8 @@ Design: [`docs/design/cloudflare-sandbox-runner.md`](../../docs/design/cloudflar
 
 | File | What it is |
 |---|---|
-| `src/index.ts` | Worker entry: `fetch` handler, re-exports `WorkerAgent` |
+| `src/index.ts` | Worker entry: `fetch` handler, re-exports `WorkerAgent` and `WorkerAgentLarge` |
+| `src/runner-class.ts` | The two container classes (standard, large), buildd's size lookup, weighted runner-seconds. Runtime-free |
 | `src/http.ts` | Routes, bearer auth, body validation. Runtime-free |
 | `src/worker-agent.ts` | `WorkerAgent`: wires the supervisor to `ctx.container`, state and keepAlive |
 | `src/supervisor.ts` | One run: start the container, exec, wait, record, stop, crash report. Runtime-free |
@@ -102,7 +103,7 @@ it as above).
 | `MODEL`, `PUSHER_KEY`, `PUSHER_CLUSTER`, `BUILDD_ONCE_MAX_WAIT_MS` | var | no | Passed through, same meaning as on a long-lived runner |
 | `CONTAINER_INACTIVITY_TIMEOUT_MS` | var | no | Default 30 min. A backstop: the agent holds keepAlive for the whole run |
 | `CONTAINER_START_TIMEOUT_MS` | var | no | Default 5 min, for `ctx.container.running` after `start()` |
-| `CONTAINER_INSTANCE_TYPE` | var | no | Copy of `containers[0].instance_type`, for the run report (a test keeps them equal) |
+| `CONTAINER_INSTANCE_TYPE`, `CONTAINER_INSTANCE_TYPE_LARGE` | var | no | Copies of the standard and large classes' `instance_type`, for the run report (a test keeps them equal) |
 | `RUNNER_GROUP` | var | no | The Worker name (`wrangler.jsonc`; `deploy.ts --name` rewrites it). Every container reports it as `BUILDD_RUNNER_GROUP`, so the dashboard fleet shows this deployment as one elastic group, not one runner per run. Default `buildd-cloud-runner`. Takes effect on redeploy |
 | `OTEL_EXPORTER_OTLP_*`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_TRACES_BETA` | var / secret | no | OpenTelemetry export, see Telemetry |
 | `WARM_REPOS` | var | no | `1` turns on warm repos (below). Default off. Needs the `SNAPSHOTS` R2 binding |
@@ -113,6 +114,38 @@ it as above).
 
 The container gets a placeholder `ANTHROPIC_API_KEY` and no GitHub token; the
 real credentials are added to its outbound requests (see Egress credentials).
+
+## Container sizes
+
+One Worker, two container classes. Cloudflare fixes the instance type per
+container class, and each class backs its own Durable Object class:
+
+| Size | Agent class | Instance type | Weight |
+|---|---|---|---|
+| `standard` | `WorkerAgent` | `standard-1` (½ vCPU, 4 GiB, 8 GB disk) | 1 |
+| `large` | `WorkerAgentLarge` | `standard-3` (2 vCPU, 8 GiB, 16 GB disk) | 2 |
+
+Each has its own `max_instances` in `wrangler.jsonc`, so the capacity retry
+(`start_deferred`, below) applies per class. `deploy.ts` lists both in its
+plan and refuses a generated config that lost one.
+
+**buildd picks the size, never the container.** On each `/dispatch` the
+Worker asks `POST <BUILDD_SERVER>/api/runner/runner-size` with the runner key
+and `X-Buildd-Dispatch-Token` (the same two credentials as the GitHub grant;
+the container holds neither) and sends the task to that class's agent. The
+answer is the workspace's `gitConfig.runnerSize` when set, otherwise derived
+from its recent run reports: `large` once any shows a working set within ~10%
+of the class memory, free disk under ~3 GB, the container stopping under the
+run (not a deploy, not a question), or a warm checkout plus cache over a few
+GB. A derivation is stored and sticks; an explicit `standard` overrides it.
+The rule is `apps/web/src/lib/runner-size.ts`; the workspace settings page
+shows the effective size and why.
+
+A `task.resume` goes to the class whose agent parked that worker (buildd's
+answer is a first guess; the other class is asked only if it does not hold
+it). `GET /tasks/:taskId` and the debug kill go to the class holding the
+task's latest run. No answer from buildd (an older server, a refusal, a
+timeout) is `standard`, reported as `runnerSize.source: fallback`.
 
 ## Measuring runs
 
@@ -139,7 +172,10 @@ any other status. The result is `report.delivery`: `sent`, `rejected`, `error`,
 | `durationsMs.*` | Derived; null when either end is missing |
 | `containerInstanceId` | The Durable Object ID (`ctx.id`). `ctx.container` exposes no instance ID; Cloudflare documents the Durable Object ID (the container's `CLOUDFLARE_DURABLE_OBJECT_ID`) as what identifies the instance on the dashboard. One agent reuses it across attempts |
 | `runLabel` | `<taskId>.<attempt>`, also set as the container label `bd_run`, so analytics can be joined per attempt |
-| `instanceType` | `CONTAINER_INSTANCE_TYPE` |
+| `instanceType` | The instance type of the class the attempt actually ran in (`CONTAINER_INSTANCE_TYPE` or `CONTAINER_INSTANCE_TYPE_LARGE`) |
+| `runnerSize` | `size` (the class used), `source` and `reason` (buildd's decision: `explicit`, `derived` with its reason, `default`, `pinned` for a resume, `fallback` when buildd did not answer), `weight` (standard 1, large 2), `runnerSeconds` (container running to exit, rounded up) and `weightedRunnerSeconds`, for hosted fair use later; nothing bills from it yet (report version 7) |
+| `resources` | `memoryPeakBytes` (working-set peak), `memoryLimitBytes`, `diskFreeMinBytes`, `diskTotalBytes`, from the runner's sampler (`apps/runner/src/resource-sampler.ts`, `BUILDD_METRIC=` lines re-printed as the extremes move). Null from an image without it |
+| `interruption` | Why the run did not end on its own exit: `container_stopped` (the container died under it), `agent_restart` (the agent restarted, a deploy, and found it orphaned), `question` (parked waiting for an answer), or null |
 | `egress.{model,github,passthrough}` | Per class: `requests`, `rejected` (refused by the handler), `responseBytes` (model: decoded body bytes the container read to the end; GitHub and passthrough: `content-length` when present, so chunked git packs are not counted — those bodies stream natively, never through JavaScript; a lower bound). Only intercepted hosts are seen; other egress is not counted |
 | `egressDetail.{model,github,passthrough}` | Why requests failed, as counts only: `rejectReasons` (`path`, `unconfigured`, `plain_http`, `port`, `unparseable`, `merge_blocked`, `other`) for refusals by the handler, `rejectedPaths` (where `path` refusals were going, as fixed labels: `api_hello`, `event_logging`, `oauth`, `claude_code_api`, `other_api`, `files`, `batches`, `other_v1`, `other`), and `errorStatuses` (upstream 4xx/5xx by code, e.g. a proxy's 403 for a model the key may not use). No URL or header is recorded |
 | `egressDetail.github.credentialed`, `.unauthenticated` | Forwarded GitHub requests that carried the injected installation token, and those that did not, by fixed reason: `no_grant` (the agent had no live run), `grant_fetch_failed` (buildd's `/api/runner/github-token` refused or failed, or the agent is backing off after that), `grant_expired`, `out_of_scope` (not the task's repo: another repo, `/user`, codeload) |

@@ -129,9 +129,35 @@ export const teams = pgTable('teams', {
   // rows in chat_retros; `proposals` (requires lessons) lets the daily pass
   // file suggested improvements as tasks. Removal: see chat-retro/REMOVAL.md.
   chatRetro: jsonb('chat_retro').$type<{ lessons?: boolean; proposals?: boolean } | null>(),
+
+  // Billing (knowledge-base: buildd/plans/billing-v1.md). Never read directly by a
+  // gate — read packages/core/entitlements.ts entitlements(team), which also
+  // honours the BILLING_ENFORCED switch (off = unlimited for everyone). An unknown
+  // `plan` value reads as 'free'. Written by the Stripe webhook (later task).
+  plan: text('plan').$type<import('@buildd/shared').TeamPlan>().notNull().default('free'),
+  // Stripe subscription status as last reported ('active', 'trialing',
+  // 'past_due', 'canceled', ...). NULL = never subscribed.
+  billingStatus: text('billing_status'),
+  stripeCustomerId: text('stripe_customer_id'),
+  stripeSubscriptionId: text('stripe_subscription_id'),
+  // Seats paid for on the Team plan (subscription quantity). NULL = none; the
+  // Team plan still covers TEAM_PLAN_MIN_SEATS members.
+  paidSeats: integer('paid_seats'),
 }, (t) => ({
   slugIdx: uniqueIndex('teams_slug_idx').on(t.slug),
+  stripeCustomerIdx: uniqueIndex('teams_stripe_customer_id_idx').on(t.stripeCustomerId),
 }));
+
+// Stripe webhook events already applied, keyed by Stripe's event id — the
+// webhook's idempotency ledger (apps/web/src/app/api/webhooks/stripe/route.ts).
+// A row is claimed before the event is applied and deleted again if applying
+// fails, so a Stripe retry of a failed event runs, a replay of a done one doesn't.
+export const stripeEvents = pgTable('stripe_events', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'set null' }),
+  processedAt: timestamp('processed_at', { withTimezone: true }).defaultNow().notNull(),
+});
 
 // Team membership
 export const teamMembers = pgTable('team_members', {
@@ -362,6 +388,13 @@ export interface WorkspaceGitConfig {
   // in-worker boot), 'vercel-preview', or 'auto'. Read only through
   // resolveVisualQaConfig(). See docs/design/visual-qa-auditor.md → "Page source".
   visualQa?: import('../visual-qa-page-source').VisualQaConfig;
+
+  // Cloud-runner container class. Absent = derived from recent run reports
+  // (apps/web/src/lib/runner-size.ts); an explicit value always wins.
+  runnerSize?: 'standard' | 'large';
+  // Written by buildd, never by the settings form: the first derivation that
+  // moved this workspace to `large`, kept so one light run does not move it back.
+  runnerSizeDerived?: { size: 'large'; reason: 'memory_pressure' | 'low_disk' | 'container_restart' | 'large_checkout'; at: string };
 
   // Maximum budget in USD per worker session (passed to SDK as maxBudgetUsd)
   // The SDK will stop the agent when this limit is reached

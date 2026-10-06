@@ -206,6 +206,26 @@ export type TeamRoleValue = typeof TeamRole[keyof typeof TeamRole];
 
 export type TeamPlan = 'free' | 'pro' | 'team';
 
+// Billing routes (apps/web/src/app/api/teams/[id]/billing/*). Plan changes land
+// only through the Stripe webhook; these routes hand the owner a Stripe URL.
+export type PaidTeamPlan = Exclude<TeamPlan, 'free'>;
+
+/** POST /api/teams/[id]/billing/checkout. `seats` is Team only; never below 5 or current members + invites. */
+export interface BillingCheckoutRequest {
+  plan: PaidTeamPlan;
+  seats?: number;
+}
+
+/** POST /api/teams/[id]/billing/seats — the Team plan's new total seat count. */
+export interface BillingSeatsRequest {
+  seats: number;
+}
+
+/** checkout and portal answer with the Stripe page to send the owner to. */
+export interface BillingRedirectResponse {
+  url: string;
+}
+
 export interface Team {
   id: string;
   name: string;
