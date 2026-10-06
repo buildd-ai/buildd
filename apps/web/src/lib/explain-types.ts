@@ -199,6 +199,12 @@ export interface ExplainAnswer {
    */
   access?: import('./agent-capabilities/access-log').AccessItem[];
   /**
+   * Task scope only: the task verdict (lib/task-verdict.ts), the same one the
+   * task page leads with: state, one-sentence headline, the fact behind it
+   * and up to three actions, with any cached decision-model wording applied.
+   */
+  verdict?: Pick<import('./task-verdict').TaskVerdict, 'state' | 'headline' | 'cause' | 'actions' | 'wordedBy'>;
+  /**
    * Why the task runs (or last ran) on a backend other than the one it was
    * filed with: a claim-time flip (budget failover, provider toggle) or a
    * worker-report failover. Absent when nothing moved it. `describeBackendRouting`

@@ -171,6 +171,9 @@ const SAFE: Record<string, string[]> = {
     'conflict_retry_head_sha', 'reviewer_retry_head_sha', 'depends_on', 'predicted_model',
     'loop_state', 'subject_head_sha',
     'category_decision', // { v, source, keyword, jev, confidence, skipped?, at }: labels, numbers, a version, a timestamp
+    // StoredVerdictDecision (lib/task-verdict.ts): fixed-vocabulary labels, a
+    // hash, row ids, a model id, a timestamp, and a cause key naming CI checks.
+    'verdict_decision',
   ],
   task_subject_reports: ['origin'],
   task_subject_claims: ['key_type', 'key_hash'],

@@ -789,6 +789,16 @@ async function viewForTask(taskId: string): Promise<{
  * `actor` is who the inline evidence list is audited to. Reach is the caller's
  * job: GET /api/explain has already decided the actor can read the workspace.
  */
+/** The task verdict for `explain`: rules plus any cached wording for the same state. */
+async function loadTaskVerdictForExplain(taskId: string): Promise<ExplainAnswer['verdict'] | null> {
+  const { loadVerdictRecord } = await import('./task-verdict-decision-refresh');
+  const { applyVerdictDecision } = await import('./task-verdict');
+  const { verdict, stored } = await loadVerdictRecord(taskId);
+  if (!verdict) return null;
+  const v = applyVerdictDecision(verdict, stored);
+  return { state: v.state, headline: v.headline, cause: v.cause, actions: v.actions, wordedBy: v.wordedBy };
+}
+
 export async function explainTask(taskId: string, actor: EvidenceActor): Promise<ExplainResult | null> {
   const loaded = await viewForTask(taskId);
   if (!loaded) return null;
@@ -819,7 +829,11 @@ export async function explainTask(taskId: string, actor: EvidenceActor): Promise
   // long-running task's renewals do not crowd out the answer.
   const access = (await loadTaskAccess(taskId).catch(() => [])).slice(-40);
   const answer = withBackendRouting(answerFrom(view, subject, buildHistory(lineage), because, gateHistory, evidenceObjects), task);
-  return { scope: 'task', subjects: [access.length > 0 ? { ...answer, access } : answer] };
+  // The verdict the task page leads with, from the same loader the
+  // state-change recompute uses. Read-only: no model call. A failure omits it.
+  const verdict = await loadTaskVerdictForExplain(taskId).catch(() => null);
+  const withAccess = access.length > 0 ? { ...answer, access } : answer;
+  return { scope: 'task', subjects: [verdict ? { ...withAccess, verdict } : withAccess] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────

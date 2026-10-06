@@ -12,6 +12,7 @@ import { buildAgentTree, flattenAgentTree, type AgentProgressEntry } from '@/lib
 import { requestRefresh, flushRefresh } from './coalesced-refresh';
 import { formatElapsed } from './format-elapsed';
 import { deriveNow, touchedFiles, countToolCalls, formatOffset } from './task-activity';
+import { showTokenCount } from './milestone-log';
 import { unifyWorkerQuestion, type QuestionNoteLike } from './question-hero';
 import { useHideNeedsInputWhileOpen } from '@/lib/needs-input-hidden';
 import { useNeedsInput } from '@/components/needs-input-context';
@@ -332,6 +333,8 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
   });
   const elapsed = startMs != null ? elapsedLabel(nowMs - startMs) : null;
   const tokens = (worker.inputTokens || 0) + (worker.outputTokens || 0);
+  // 0 tokens after real turns is a reporting gap, not a measurement: hide it.
+  const tokensShown = showTokenCount(tokens, worker.turns);
   const touched = touchedFiles(milestones);
   const touchedAdd = touched.rows.reduce((s, r) => s + (r.add ?? 0), 0);
   const touchedRem = touched.rows.reduce((s, r) => s + (r.rem ?? 0), 0);
@@ -403,7 +406,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
           />
         </div>
 
-        <PausedBar pct={now.pct} elapsed={elapsed} turns={worker.turns} tokens={formatTokens(tokens)} />
+        <PausedBar pct={now.pct} elapsed={elapsed} turns={worker.turns} tokens={tokensShown ? formatTokens(tokens) : null} />
 
         <div data-testid="worker-paused-context" className="border-t border-border-default">
           {now.headline && now.headline !== question.headline && (
@@ -436,6 +439,17 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
         )
       )}
 
+      {/* Results: what the run has produced so far, before the log. */}
+      <StatRow
+        elapsed={elapsed}
+        turns={worker.turns}
+        tokens={tokensShown ? tokens : null}
+        pr={worker.prUrl ? { url: worker.prUrl, number: worker.prNumber, lifecycle: worker.prLifecycleStatus ?? null } : null}
+        filesTouched={Math.max(filesEdited, worker.filesChanged ?? 0)}
+        added={added}
+        removed={removed}
+      />
+
       {/* Subagent progress indicator — nested by parentAgentId into an agent tree */}
       {taskProgress.length > 0 && isActive && (
         <div className="mt-4 p-3 bg-surface-2 border border-border-default">
@@ -461,16 +475,6 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
         </div>
       )}
 
-      <StatRow
-        elapsed={elapsed}
-        turns={worker.turns}
-        tokens={tokens}
-        pr={worker.prUrl ? { url: worker.prUrl, number: worker.prNumber, lifecycle: worker.prLifecycleStatus ?? null } : null}
-        filesTouched={Math.max(filesEdited, worker.filesChanged ?? 0)}
-        added={added}
-        removed={removed}
-      />
-
       {activity}
 
       {/* Model usage — collapsible, the run's accounting rather than its story */}
@@ -491,6 +495,7 @@ export default function RealTimeWorkerView({ initialWorker, taskId, modelTier, q
               durationApiMs={worker.resultMeta?.durationApiMs}
               terminalReason={worker.resultMeta?.terminalReason}
               stopReason={worker.resultMeta?.stopReason}
+              turns={worker.resultMeta?.numTurns ?? worker.turns}
             />
           )}
         </div>
