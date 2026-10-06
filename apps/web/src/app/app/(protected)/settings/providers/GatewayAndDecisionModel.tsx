@@ -146,7 +146,7 @@ function GatewaySection({ teamId, canManage, gateway, error, onChanged }: {
         <div className="flex items-baseline justify-between gap-3">
           <span className="text-text-muted shrink-0">Team key</span>
           {gateway
-            ? <span className="min-w-0 text-right font-mono text-text-primary break-all" data-testid="litellm-gateway-status">{gateway.baseURL} · key …{gateway.last4}</span>
+            ? <span className="min-w-0 text-right font-mono text-text-primary break-all" data-testid="litellm-gateway-status">{gateway.baseURL} <span className="whitespace-nowrap">· key …{gateway.last4}</span></span>
             : <span className="text-text-muted" data-testid="litellm-gateway-status">{gateway === undefined ? '' : 'none'}</span>}
         </div>
         {gateway?.health === 'revoked' && gateway.lastVerificationError && (

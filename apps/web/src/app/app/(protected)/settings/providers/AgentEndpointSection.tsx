@@ -238,7 +238,7 @@ function RouteDetail({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
 function MappingDisclosure({ endpoint: e }: { endpoint: MaskedAgentEndpointView }) {
   if (e.kind === 'openrouter' || !e.mapping || e.mapping.length === 0) return null;
   return (
-    <Disclosure summary={<span className="font-mono break-all" data-testid="agent-endpoint-mapping-summary">{mappingSummary(e.mapping)}</span>}>
+    <Disclosure summary={<span className="font-mono break-words" data-testid="agent-endpoint-mapping-summary">{mappingSummary(e.mapping)}</span>}>
       <ul className="border-t border-border-default" data-testid="agent-endpoint-mapping" aria-label="Model mapping">
         {e.mapping.map((m) => (
           <li key={m.model} data-testid="endpoint-mapping-row" data-model={m.model}
