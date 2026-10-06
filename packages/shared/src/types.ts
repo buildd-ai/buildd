@@ -3508,10 +3508,13 @@ export interface WorkspaceQualityScoutConfig {
    * Critical journeys. API `path` is relative to the test environment (or the
    * app booted in the sandbox); absolute URLs are refused. `mutates` defaults to
    * true for a CLI journey and to "not GET/HEAD/OPTIONS" for an API journey.
+   * `paths` (exact, `dir/` prefix or glob) scopes a journey to the code it
+   * exercises: Scout uses it for changes there and not for unrelated ones;
+   * unscoped journeys are shared across changes in turn.
    */
   journeys?: Array<
-    | { name: string; kind: 'cli'; command: string; mutates?: boolean; expect?: string }
-    | { name: string; kind: 'api'; method?: string; path: string; mutates?: boolean; expect?: string }
+    | { name: string; kind: 'cli'; command: string; mutates?: boolean; expect?: string; paths?: string[] }
+    | { name: string; kind: 'api'; method?: string; path: string; mutates?: boolean; expect?: string; paths?: string[] }
   >;
   /** UI route patterns worth looking at, e.g. `/`, `/items/:id`. */
   uiRoutes?: string[];

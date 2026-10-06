@@ -117,6 +117,12 @@ describe('expectations are parsed, never guessed', () => {
     expect(parseCommandExpectation('looks right')).toBeNull();
   });
 
+  it('never splits inside a quoted output clause', () => {
+    expect(parseCommandExpectation('stdout contains "build and test ok"')).toEqual({ exit: 0, outputIncludes: 'build and test ok' });
+    expect(parseCommandExpectation("exit 0 and stdout contains 'a, b; c'")).toEqual({ exit: 0, outputIncludes: 'a, b; c' });
+    expect(parseHttpExpectation('status 200 and body contains "ready and serving"')).toEqual({ status: 200, bodyIncludes: 'ready and serving' });
+  });
+
   it('reads status and body clauses', () => {
     expect(parseHttpExpectation(undefined)).toEqual({ status: '2xx' });
     expect(parseHttpExpectation('404')).toEqual({ status: 404 });
@@ -187,6 +193,17 @@ describe('command / CLI-contract probes — no-UI, non-Buildd repo', () => {
 
     const again = await runScoutProbe(scoutRun(), probeFor('cli-journey:bad-flag'), cliProfile, { command: commandPort({ exitCode: 0 }).port }, { now });
     expect(again.probe.result!.signature).toBe(r.signature);
+  });
+
+  it('quotes the stream that carries the failure, not a banner on the other one', async () => {
+    const { port } = commandPort({
+      exitCode: 1,
+      stderrTail: '[dotenv@16.4.5] injecting env (3) from .env',
+      stdoutTail: 'tests/test_cli.py::test_help FAILED\nAssertionError: expected Usage in output',
+    });
+    const exec = await runScoutProbe(scoutRun(), probeFor('verification-command'), cliProfile, { command: port }, { now });
+    expect(exec.probe.result!.verdict).toBe('fail');
+    expect(exec.probe.result!.observed).toContain('AssertionError: expected Usage in output');
   });
 
   it('a timeout or missing exit code is inconclusive, never pass or fail', async () => {
@@ -454,6 +471,27 @@ describe('spec and readiness probes — reuse spec comparison and readiness stat
     expect(t.probe.result!.verdict).toBe('inconclusive');
   });
 
+  it('a build that runs an opaque package script is treated as mutating: it may migrate a database', () => {
+    const nodeBuild = discoverScoutCapabilities({
+      readiness: computeReadiness({
+        files: ['package.json', 'pnpm-lock.yaml', 'src/index.ts'],
+        manifests: { 'package.json': JSON.stringify({ scripts: { test: 'vitest run', build: 'pnpm db:migrate && tsc' } }) },
+      }),
+    });
+    const build = nodeBuild.capabilities.find((c) => c.kind === 'build-command')!;
+    expect(build.value).toBe('pnpm run build');
+    expect(build.mutates).toBe(true);
+    expect(build.usable).toBe(false);
+    expect(planScoutProbe(probeFor('build-command', { family: 'release' }), nodeBuild)).toMatchObject({ status: 'refused', disposition: 'needs-human' });
+
+    const goBuild = discoverScoutCapabilities({
+      readiness: computeReadiness({ files: ['go.mod', 'main.go'], manifests: { 'go.mod': 'module x\n' } }),
+    });
+    const toolchain = goBuild.capabilities.find((c) => c.kind === 'build-command')!;
+    expect(toolchain.value).toBe('go build ./...');
+    expect(toolchain.mutates).toBe(false);
+  });
+
   it('capabilities with no executor yet (migrations) are unsupported, not run as something else', () => {
     const profile = discoverScoutCapabilities({
       readiness: computeReadiness({ files: ['go.mod', 'migrations/0001_init.sql', 'main.go'], manifests: { 'go.mod': 'module x\n' } }),
@@ -491,8 +529,9 @@ describe('end to end on a generic no-UI workspace: generate → execute → dedu
   });
 
   it('two hypotheses that run the same command are one finding, not one each', async () => {
+    // Failure-grounded hypotheses prefer the verification command, so all of them run it.
     const { candidates } = generateScoutCandidates(
-      { candidateRef: 'main', changedPaths: ['src/tool/cli.py', 'src/report/render.py', 'scripts/check.sh'] },
+      { candidateRef: 'main', changedPaths: [], failures: [{ signature: 'flaky-a', count: 1 }, { signature: 'flaky-b', count: 1 }] },
       cliProfile,
     );
     const contract = candidates.filter((x) => x.family === 'contract' && x.supported);

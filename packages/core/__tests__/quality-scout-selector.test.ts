@@ -28,8 +28,9 @@ function cand(over: Partial<ScoutProbeCandidate> & { signal?: ScoutSignalType } 
     touchesChangedPaths: true,
     severity: 'medium' as ScoutSeverity,
     priorFailures: 0,
-    preconditions: ['verification-command'],
-    executor: 'verification-command',
+    preconditions: ['cli-journey'],
+    // One distinct execution per candidate unless a test says otherwise.
+    executor: `cli-journey:j${n}`,
     supported: true,
     estimatedCost: 'medium',
     evidenceRequirements: ['x'],
@@ -188,6 +189,43 @@ describe('selectScoutProbes — independence', () => {
     const surface = cand({ anchor: 'apps/web', family: 'surface', probeKind: 'visual', executor: 'ui-surface', paths: ['apps/web/src/app/page.tsx'] });
     const r = await selectScoutProbes(set([contract, surface]), recorder().decide);
     expect(ids(r.selected)).toEqual([contract.id, surface.id]);
+  });
+
+  it('an anchor shared across families never makes one hypothesis a duplicate of another', async () => {
+    // A changed package holding a schema file yields persistence and contract candidates on one anchor.
+    const persistence = cand({ anchor: 'packages/core', family: 'persistence', probeKind: 'spec_invariant', paths: ['packages/core/db/schema.ts'] });
+    const contract = cand({ anchor: 'packages/core', family: 'contract', paths: ['packages/core/index.ts'] });
+    const r = await selectScoutProbes(set([persistence, contract]), recorder().decide);
+    expect(ids(r.selected)).toEqual([persistence.id, contract.id]);
+  });
+
+  it('an unsupported candidate is never the reason a supported one is skipped', async () => {
+    const persistence = cand({ anchor: 'packages/core', family: 'persistence', supported: false, executor: null, unsupportedReason: 'none' });
+    const contract = cand({ anchor: 'packages/core', family: 'contract' });
+    const r = await selectScoutProbes(set([persistence, contract]), recorder().decide);
+    expect(ids(r.selected)).toEqual([contract.id]);
+  });
+
+  it('hypotheses that would run the same command are one probe: the rest do not spend budget slots', async () => {
+    const a = cand({ family: 'contract', executor: 'verification-command' });
+    const b = cand({ family: 'persistence', probeKind: 'spec_invariant', executor: 'verification-command' });
+    const c = cand({ family: 'release', probeKind: 'spec_invariant', executor: 'verification-command' });
+    const other = cand({ family: 'state-transition', probeKind: 'regression' });
+    const rec = recorder();
+    const r = await selectScoutProbes(set([a, b, c, other]), rec.decide, { budget: 4 });
+    expect(ids(r.selected)).toEqual([a.id, other.id]);
+    expect(r.skipped).toEqual([
+      expect.objectContaining({ reason: 'near_duplicate', duplicateOf: a.id }),
+      expect.objectContaining({ reason: 'near_duplicate', duplicateOf: a.id }),
+    ]);
+    expect(rec.asked.map((q) => q.subjectRef?.id)).toEqual([a.id, other.id]);
+  });
+
+  it('spec and readiness probes read their own signals, so a shared executor is not the same execution', async () => {
+    const a = cand({ family: 'contract', probeKind: 'spec_invariant', executor: 'spec' });
+    const b = cand({ family: 'contract', probeKind: 'spec_invariant', executor: 'spec' });
+    const r = await selectScoutProbes(set([a, b]), recorder().decide);
+    expect(ids(r.selected)).toEqual([a.id, b.id]);
   });
 
   it('skips a same-kind candidate whose paths largely overlap a selected one', async () => {

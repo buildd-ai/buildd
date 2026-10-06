@@ -236,6 +236,61 @@ describe('generateScoutCandidates — executor matching', () => {
     const contract = bySignal(candidates, 'change').find((c) => c.family === 'contract');
     expect(contract?.executor).toBe('api-journey:invoices');
   });
+
+  it('skips a capability no executor exercises: a repo with migrations runs persistence through its verification command', () => {
+    expect(goProfile.capabilities.find((c) => c.kind === 'migrations')?.usable).toBe(true);
+    const { candidates } = generateScoutCandidates(base({ changedPaths: ['migrations/0002_add_tax.sql'] }), goProfile);
+    const [p] = byFamily(candidates, 'persistence');
+    expect(p.supported).toBe(true);
+    expect(p.executor).toBe('verification-command');
+  });
+
+  it('records a kind with no executor as the reason when nothing else can run the probe', () => {
+    const migrationsOnly: ScoutCapabilityProfile = {
+      ...goProfile,
+      capabilities: goProfile.capabilities.filter((c) => c.kind !== 'verification-command'),
+    };
+    const { candidates } = generateScoutCandidates(base({ changedPaths: ['migrations/0002_add_tax.sql'] }), migrationsOnly);
+    const [p] = byFamily(candidates, 'persistence');
+    expect(p.supported).toBe(false);
+    expect(p.unsupportedReason).toMatch(/migrations/);
+  });
+
+  const journeyProfile = (journeys: Array<{ name: string; command: string; paths?: string[] }>) =>
+    discoverScoutCapabilities({
+      readiness: computeReadiness(pythonCli),
+      extension: { journeys: journeys.map((j) => ({ ...j, kind: 'cli' as const, mutates: false })) },
+    });
+
+  it('binds the journey whose declared paths cover the changed area, not the first one declared', () => {
+    const profile = journeyProfile([
+      { name: 'billing', command: 'tool billing check', paths: ['internal/billing/'] },
+      { name: 'auth', command: 'tool auth check', paths: ['internal/auth/**'] },
+    ]);
+    const { candidates } = generateScoutCandidates(
+      base({ changedPaths: ['internal/auth/session.go', 'internal/billing/invoice.go'] }),
+      profile,
+    );
+    const contract = (anchor: string) => candidates.find((c) => c.family === 'contract' && c.anchor === anchor);
+    expect(contract('internal/billing')?.executor).toBe('cli-journey:billing');
+    expect(contract('internal/auth')?.executor).toBe('cli-journey:auth');
+  });
+
+  it('a journey scoped to other paths is not used for an unrelated change', () => {
+    const profile = journeyProfile([{ name: 'billing', command: 'tool billing check', paths: ['internal/billing/'] }]);
+    const { candidates } = generateScoutCandidates(base({ changedPaths: ['cmd/svc/main.go'] }), profile);
+    expect(candidates.find((c) => c.family === 'contract')?.executor).toBe('verification-command');
+  });
+
+  it('spreads unscoped journeys across candidates instead of shadowing journeys 2..n behind the first', () => {
+    const profile = journeyProfile([
+      { name: 'one', command: 'tool one' },
+      { name: 'two', command: 'tool two' },
+    ]);
+    const { candidates } = generateScoutCandidates(base({ changedPaths: ['a/x.py', 'b/y.py'] }), profile);
+    const executors = candidates.filter((c) => c.family === 'contract').map((c) => c.executor).sort();
+    expect(executors).toEqual(['cli-journey:one', 'cli-journey:two']);
+  });
 });
 
 describe('generateScoutCandidates — bounded', () => {

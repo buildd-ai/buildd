@@ -15,8 +15,9 @@
  *    kind's own deterministic fallback, so a failure stays bounded.
  *
  * Independence: a candidate that shares an anchor and family with, or largely overlaps the
- * paths of, an already-selected probe of the same kind is a near-duplicate; a
- * probe family is capped at `maxPerFamily`. Neither costs a decision.
+ * paths of, an already-selected probe of the same kind, or would run the same
+ * command / request / capture as one, is a near-duplicate; a probe family is
+ * capped at `maxPerFamily`. Neither costs a decision.
  *
  * Every candidate ends up exactly once in `selected` or `skipped`, with a reason.
  */
@@ -30,6 +31,7 @@ import {
   type ScoutProbeFeatures,
 } from '../decision-kind-scout-probe-selection';
 import { runBuilddDecision, type BuilddDecisionDeps, type BuilddDecisionScope } from '../decision-policy';
+import { scoutCapabilityFixesExecution } from './adapters/kinds';
 import type { ScoutCandidateSet, ScoutProbeCandidate, ScoutProbeFamily } from './candidates';
 
 export const DEFAULT_SCOUT_BUDGET = 4;
@@ -123,6 +125,9 @@ function duplicateOf(c: ScoutProbeCandidate, selected: readonly ScoutSelectedPro
     // A shared anchor is one hypothesis only within a family: a changed area
     // holding UI and non-UI files is both a surface and a contract question.
     if (s.anchor === c.anchor && s.family === c.family) return s.id;
+    // A command, request or capture runs the same whatever hypothesis picked it:
+    // one execution is one check (and one finding), so it spends one slot.
+    if (c.executor && s.executor === c.executor && scoutCapabilityFixesExecution(c.executor)) return s.id;
     if (s.probeKind === c.probeKind && overlap(s.paths, c.paths) >= NEAR_DUPLICATE_OVERLAP) return s.id;
   }
   return null;

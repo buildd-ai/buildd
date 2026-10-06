@@ -30,7 +30,7 @@
 import { createHash } from 'crypto';
 import type { ScoutProbeKind } from '../decision-kind-scout-probe-selection';
 import type { AssertionResult } from '../spec-conformance';
-import type { ScoutCapability, ScoutCapabilityKind, ScoutCapabilityProfile } from '../scout-capabilities';
+import type { ScoutCapability, ScoutCapabilityProfile } from '../scout-capabilities';
 import { captureRefMatch } from '../visual-qa-capture-ref';
 import { classifyPageLoad, CONFIG_ERROR_MESSAGES } from '../visual-qa-page-source';
 import type { ReadinessItemId, ReadinessReport } from '../workspace-readiness';
@@ -55,6 +55,7 @@ import {
   type ScoutHttpRequest,
   type ScoutHttpResponse,
 } from './adapters/contract';
+import { SCOUT_ADAPTER_BY_KIND, SCOUT_ADAPTERS, type ScoutAdapterKind } from './adapters/kinds';
 import { evidenceRefs as refs } from './adapters/shared';
 import { SCOUT_EVIDENCE_REQUIREMENTS } from './candidates';
 import { executeScoutProbe } from './ledger';
@@ -74,20 +75,7 @@ export { parseHttpExpectation, type ScoutHttpExpectation, type ScoutHttpRequest,
 
 // ── Adapters ────────────────────────────────────────────────────────────────
 
-export const SCOUT_ADAPTERS = ['command', 'api', 'surface', 'spec', 'readiness'] as const;
-export type ScoutAdapterKind = (typeof SCOUT_ADAPTERS)[number];
-
-/** Capability kind → the adapter that exercises it. Unlisted kinds have no adapter yet. */
-const ADAPTER_BY_KIND: Partial<Record<ScoutCapabilityKind, ScoutAdapterKind>> = {
-  'verification-command': 'command',
-  'typecheck-command': 'command',
-  'build-command': 'command',
-  'cli-journey': 'command',
-  'api-journey': 'api',
-  'ui-surface': 'surface',
-  spec: 'spec',
-  release: 'readiness',
-};
+export { SCOUT_ADAPTERS, type ScoutAdapterKind } from './adapters/kinds';
 
 /** The evidence key each adapter natively produces, usable directly as a requirement key. */
 export const SCOUT_ADAPTER_EVIDENCE: Readonly<Record<ScoutAdapterKind, string>> = {
@@ -276,7 +264,7 @@ export function planScoutProbe(probe: ScoutProbeRecord, profile: ScoutCapability
       ? refuse('needs-human', 'capability_blocked', cap.blockedReason ?? 'Blocked by a workspace constraint.')
       : refuse('unsupported', 'capability_unavailable', cap.blockedReason ?? `Capability ${cap.id} is ${cap.status}.`);
   }
-  const adapter = ADAPTER_BY_KIND[cap.kind];
+  const adapter = SCOUT_ADAPTER_BY_KIND[cap.kind];
   if (!adapter) return refuse('unsupported', `no_adapter:${cap.kind}`, `No Scout executor exercises ${cap.kind} capabilities yet.`);
 
   const mutates = cap.mutates || probe.mutates;
