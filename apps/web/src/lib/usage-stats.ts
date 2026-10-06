@@ -12,6 +12,7 @@
  */
 
 import type { ResultMeta } from '@buildd/core/db/schema';
+import { canonicalToolName } from '@buildd/shared';
 import { derivedValue, derivedUnavailable, type DerivedMetric } from '@buildd/core/derived-metric';
 import { compareAssignedActual, primaryModelFromUsage } from '@buildd/core/model-display';
 import {
@@ -298,6 +299,11 @@ export interface UsageStats {
   bashBuckets: BashBucketsBlock;
   /** Pattern shapes of the `code_search` bucket above. Same population. */
   searchShapes: SearchShapesBlock;
+  /**
+   * Which repo areas the file tools (Read, Edit, Write, ...) touched, from
+   * `resultMeta.fileToolAreas`. Same population as `bashBuckets`.
+   */
+  fileAreas: FileAreasBlock;
 }
 
 /** Bounds of what a capped scan actually read. */
@@ -318,7 +324,7 @@ export type GroupDimension = 'role' | 'workspace' | 'creationSource' | 'none' | 
  * for everything a background runner claimed. A few rows are placeholders that
  * no runner executed: server-inserted bookkeeping workers (`'system'` in
  * lib/mission-pr.ts, `'external'` in lib/pr-review-request.ts) and the
- * OpenClaw skill's claims (`'openclaw'`); those go to `other` so they don't
+ * retired OpenClaw skill's claims (`'openclaw'`, kept for old rows); those go to `other` so they don't
  * inflate `runner`. Exact match only: a runner whose id merely contains "mcp"
  * is still a runner.
  */
@@ -396,6 +402,20 @@ export function serverOf(toolName: string): string {
  * histogram and falls back to the pre-histogram signals so older windows aren't
  * blank — the caller surfaces which it got via `tools.coverage`.
  */
+/**
+ * Fold aliases of one tool into its canonical name (`bash` -> `Bash`, Codex's
+ * `mcp__codex_apps__buildd.recall` -> `mcp__buildd__recall`), so stored rows
+ * written before the runner canonicalised at capture merge too.
+ */
+function canonicalCounts(counts: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [name, n] of Object.entries(counts)) {
+    const key = canonicalToolName(name);
+    out[key] = (out[key] ?? 0) + n;
+  }
+  return out;
+}
+
 export function toolCountsForWorker(row: UsageWorkerRow): {
   counts: Record<string, number>;
   source: ToolSource;
@@ -403,12 +423,12 @@ export function toolCountsForWorker(row: UsageWorkerRow): {
 } {
   const histogram = row.resultMeta?.toolCounts;
   if (histogram && Object.keys(histogram).length > 0) {
-    return { counts: { ...histogram }, source: 'histogram', truncated: false };
+    return { counts: canonicalCounts(histogram), source: 'histogram', truncated: false };
   }
 
   const counts: Record<string, number> = {};
   for (const call of row.mcpCalls ?? []) {
-    const name = `mcp__${call.server}__${call.tool}`;
+    const name = canonicalToolName(`mcp__${call.server}__${call.tool}`);
     counts[name] = (counts[name] ?? 0) + 1;
   }
   // `resultMeta.cbm` is retired, but rows written before the histogram carry
@@ -471,6 +491,8 @@ export interface TaskAgg {
   canonicalSeen: boolean;
   /** `resultMeta.bashCommandCounts` summed across the task's workers. */
   bash: TaskBashCounts;
+  /** `resultMeta.fileToolAreas` summed across the task's workers: tool -> area -> calls. */
+  areas: Record<string, Record<string, number>>;
 }
 
 function claimLatencyOf(row: UsageWorkerRow): number | null {
@@ -513,6 +535,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
         truncatedWorkers: 0,
         canonicalSeen: false,
         bash: emptyTaskBashCounts(),
+        areas: {},
       };
       byTask.set(key, agg);
     }
@@ -550,6 +573,7 @@ export function aggregateByTask(rows: UsageWorkerRow[]): TaskAgg[] {
     }
     if (truncated) agg.truncatedWorkers++;
     addBashCounts(agg.bash, row.resultMeta?.bashCommandCounts);
+    addFileAreas(agg.areas, row.resultMeta?.fileToolAreas);
     // A task's source is the weakest of its workers' — one derived worker makes
     // the task total a floor, so 'derived' outranks 'histogram' here.
     if (source === 'derived') agg.toolSource = 'derived';
@@ -959,7 +983,40 @@ export function computeUsageStats(
         .filter(t => t.toolSource === 'histogram')
         .map(t => ({ bash: t.bash, bashCalls: t.counts.Bash ?? 0 })),
     ),
+    fileAreas: buildFileAreas(tasks.filter(t => t.toolSource === 'histogram')),
   };
+}
+
+export interface FileAreasBlock {
+  /** The population: tasks with an exact tool histogram. */
+  histogramTasks: number;
+  /** Of those, tasks whose workers recorded file areas. */
+  tasksWithAreas: number;
+  /** Tool -> area -> calls, canonical tool names. */
+  byTool: Record<string, Record<string, number>>;
+}
+
+function addFileAreas(into: Record<string, Record<string, number>>, from: Record<string, Record<string, number>> | null | undefined): void {
+  if (!from || typeof from !== 'object') return;
+  for (const [tool, areas] of Object.entries(from)) {
+    if (!areas || typeof areas !== 'object') continue;
+    const key = canonicalToolName(tool);
+    const target = (into[key] ??= {});
+    for (const [area, n] of Object.entries(areas)) {
+      if (!(typeof n === 'number' && n > 0)) continue;
+      target[area] = (target[area] ?? 0) + n;
+    }
+  }
+}
+
+function buildFileAreas(tasks: TaskAgg[]): FileAreasBlock {
+  const byTool: Record<string, Record<string, number>> = {};
+  let tasksWithAreas = 0;
+  for (const t of tasks) {
+    if (Object.keys(t.areas).length > 0) tasksWithAreas += 1;
+    addFileAreas(byTool, t.areas);
+  }
+  return { histogramTasks: tasks.length, tasksWithAreas, byTool };
 }
 
 /** The closed set of windows callers may request. Anything else should be rejected before reaching this module. */

@@ -623,6 +623,38 @@ describe('Error Handling', () => {
       expect(worker?.error).toBe('Agent authentication failed');
       expect(worker?.currentAction).toBe('Auth failed');
     });
+
+    // A task ABOUT a 401 opens with the agent restating it. That session ran
+    // tools, so its credential plainly worked — calling it an auth failure
+    // threw away finished work and failed the task over to another backend.
+    test('agent text that discusses a 401 is not an auth failure once the session used tools', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-auth-topic' },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: "I'll investigate why get_usage_stats returns 401 Unauthorized for a repo-name workspace ID." }] },
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/tmp/route.ts' } }] },
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-auth-topic' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-auth-topic',
+        branch: 'buildd/auth-topic',
+        task: makeTask(),
+      }] }));
+
+      manager = new WorkerManager(makeConfig());
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      const worker = manager.getWorker('w-auth-topic');
+      expect(worker?.error).not.toBe('Agent authentication failed');
+      expect(worker?.currentAction).not.toBe('Auth failed');
+    });
   });
 
   // ─── 3. Network Failures ─────────────────────────────────────────────────

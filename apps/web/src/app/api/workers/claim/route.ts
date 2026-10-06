@@ -45,7 +45,7 @@ import {
 } from '@buildd/core/dispatch-model-guard';
 import { drawModelRoutingArm, applyModelRoutingTreatment, recordModelRoutingAssignment } from '@buildd/core/model-routing-experiment-source';
 import { drawAgentPoolArm, applyAgentPoolArm, recordAgentPoolAssignment, type AgentPoolDraw } from '@buildd/core/tier-pool-source';
-import { BACKEND_ROUTING_KEY, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
+import { BACKEND_ROUTING_KEY, claimedBackendOf, isBackendPinned, maskBackend, type AgentBackend, type ClaimBackendRouting, type ClaimRoutingReason } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap, declaresNoScope, intersectPaths, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -53,7 +53,6 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import {
   BYPASS_MISSION_BUDGET_KEY,
   CAP_EXEMPT_KEY,
-  bypassFlagCondition,
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace, registerClaimDeferralWaiters, type ClaimDeferralWaiter } from '@buildd/core/path-claim';
@@ -66,8 +65,12 @@ import { FORCE_CLAIM_CONTEXT_KEY, withoutForceClaim } from '@/lib/force-claim';
 import { describeExplicitDeferral } from './explicit-deferral';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld, missionNotLocal, taskNotHeld, checkTaskMissionLocal } from './held-gate';
-import { diagnoseExplicitTaskExclusion, evaluateForcedGates, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
+import { diagnoseExplicitTaskExclusion, evaluateForcedGates, explicitExclusionGateEvent, stampLastClaimAttempt, type ExplicitTaskGates } from './explicit-task-exclusion';
 import { roleSlugGate } from './role-gate';
+// The workspace concurrency cap as a claim predicate (see the call site for the
+// rules). A function so a force claim can evaluate it for the audit without
+// applying it.
+import { workspaceCapGate } from './workspace-cap-gate';
 import { workspaceExecutorGate } from './workspace-executor-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { guardClaimedRetry } from '@/lib/supersession';
@@ -97,7 +100,7 @@ import { resolveClaudeModelRoute, routeUsesOauthSeat, type ClaudeModelRoute } fr
 import { attachGitHubCredentialModes } from './github-credential-injection';
 import { AGENT_GITHUB_TOKEN_ROLLOUT_ENV, parseAgentGitHubRollout } from '@buildd/core/agent-github-credentials';
 import { fireDeferralEvent, fireGateEvent, fireRepeatGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
-import { announceFixClaimed } from '@/lib/pr-activity-fix-claimed';
+import { announceFixClaimed, announceReviewClaimed } from '@/lib/pr-activity-fix-claimed';
 import { isDispatchedReview } from '@/lib/read-only-review';
 import { planClaimBatch, type ClaimPlan, type PlannerThresholds } from '@buildd/core/claim-planner';
 import {
@@ -136,36 +139,6 @@ const CLAIM_COOLDOWN_MS = 60_000;
  */
 function producesNoFileEdits(outputRequirement: unknown): boolean {
   return outputRequirement === 'artifact_required' || outputRequirement === 'none';
-}
-
-/**
- * The workspace concurrency cap as a claim predicate (see the call site for the
- * rules). A function so a force claim can evaluate it for the audit without
- * applying it.
- */
-function workspaceCapGate() {
-  return or(
-      bypassFlagCondition(tasks.context, CAP_EXEMPT_KEY),
-      sql`(
-      SELECT COUNT(*) FROM ${workers} w2
-      JOIN ${tasks} t3 ON t3.id = w2.task_id
-      WHERE t3.workspace_id = ${tasks.workspaceId}
-      AND w2.status IN ('running', 'starting', 'idle')
-      AND t3.id != ${tasks.id}
-      AND EXISTS (
-        SELECT 1 FROM ${workspaces} ws
-        WHERE ws.id = t3.workspace_id
-        AND ws.repo IS NOT NULL
-      )
-    ) < GREATEST(
-      (SELECT COALESCE(ws2.max_concurrent_tasks, 3) FROM ${workspaces} ws2
-       WHERE ws2.id = ${tasks.workspaceId}),
-      COALESCE(
-        (SELECT m.max_concurrent_tasks FROM ${missions} m WHERE m.id = ${tasks.missionId}),
-        0
-      )
-    )`,
-    )!;
 }
 
 export async function POST(req: NextRequest) {
@@ -360,14 +333,25 @@ export async function POST(req: NextRequest) {
     if (taskId && payload.diagnostics.reason !== 'race_lost') {
       const stampTaskId = taskId;
       const deferrals = payload.diagnostics.deferrals as Record<string, number> | undefined;
+      const exclusion = payload.diagnostics.taskExclusion;
       resolveClaimableWorkspaceIds()
-        .then((ids) => stampLastClaimAttempt({
-          taskId: stampTaskId,
-          workspaceIds: ids,
-          reason: payload.diagnostics.reason,
-          ...(deferrals ? { deferrals } : {}),
-          now: new Date(),
-        }))
+        .then((ids) => {
+          // A WHERE-clause gate that dropped the named task (a runner's wake
+          // claim) otherwise leaves no gate-ledger row — the task's gate
+          // history stays empty and explain can only call it a wait.
+          const event = exclusion
+            ? explicitExclusionGateEvent({ taskId: stampTaskId, exclusion, workspaceId: ids.length === 1 ? ids[0] : null })
+            : null;
+          if (event) fireDeferralEvent(event);
+          return stampLastClaimAttempt({
+            taskId: stampTaskId,
+            workspaceIds: ids,
+            reason: payload.diagnostics.reason,
+            ...(deferrals ? { deferrals } : {}),
+            ...(exclusion ? { exclusion } : {}),
+            now: new Date(),
+          });
+        })
         .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${stampTaskId}:`, err));
     }
     // A cloud container has no credential broker and must not learn secret ids.
@@ -1252,12 +1236,16 @@ export async function POST(req: NextRequest) {
   const codexFlippedWorkspaces = new Set<string>();
   const activeTaskIds = activeWorkers.map(w => w.taskId).filter(Boolean) as string[];
   if (activeTaskIds.length > 0) {
-    const activeCodexTasks = await db.query.tasks.findMany({
-      where: and(inArray(tasks.id, activeTaskIds), eq(tasks.backend, 'codex')),
-      columns: { workspaceId: true },
+    // Not filtered on the stored column: a budget-failover flip leaves the row
+    // on 'claude' and records the Codex run only in the claim stamp, so a
+    // `backend = 'codex'` WHERE missed every failover-started Codex worker and
+    // the next claim request flipped another task onto the same window.
+    const activeTasks = await db.query.tasks.findMany({
+      where: inArray(tasks.id, activeTaskIds),
+      columns: { workspaceId: true, backend: true, context: true },
     });
-    for (const t of activeCodexTasks) {
-      if (t.workspaceId) codexBusyWorkspaces.add(t.workspaceId);
+    for (const t of activeTasks) {
+      if (t.workspaceId && claimedBackendOf(t.backend, t.context) === 'codex') codexBusyWorkspaces.add(t.workspaceId);
     }
   }
   // Flip a task to Codex in-memory, respecting runner-side Codex auth
@@ -2799,9 +2787,10 @@ export async function POST(req: NextRequest) {
           worker: { id: cw.id, name: account.name, status: 'idle' },
         }
       );
-      // A fix attempt just got a worker: the PR's activity comment may now say
-      // "Fixing" instead of "fix queued". No-op for any other task.
+      // A fix attempt or reviewer just got a worker: the PR's activity comment
+      // may now say "Fixing" / "Reviewing" instead of queued. No-op otherwise.
       await announceFixClaimed(claimedTask);
+      await announceReviewClaimed(claimedTask);
     }
   }
 

@@ -29,6 +29,7 @@ import {
 } from './mission-pulse';
 import { deriveWorkKind, LIVE_WORKER_STATUSES, reduceToFrontier } from './task-presentation';
 import { buildMissionAdjacency, type AdjacencyGateRow } from './condensed-timeline';
+import { classifyTaskFailure, type TaskFailureKind } from './task-failure-kind';
 import { boardTaskLabel } from './mission-board-label';
 import { resolveRunnerDisplay, runnerKey, type RunnerDisplay, type RunnerHeartbeatLike } from './runner-display';
 import { activeWorkMs, formatDuration } from './mission-duration';
@@ -220,6 +221,8 @@ export interface BoardTask {
   taskMode: string | null;
   workerStatus: string | null;
   backend: 'claude' | 'codex' | null;
+  /** `classifyTaskFailure` over the mission's rows; null unless the task failed. */
+  failureKind: TaskFailureKind | null;
 }
 
 export interface BoardPhase {
@@ -665,6 +668,7 @@ export function buildMissionBoard(input: MissionBoardInput): MissionBoardModel {
       taskMode: t.mode ?? null,
       workerStatus: own?.status ?? null,
       backend: t.backend === 'claude' || t.backend === 'codex' ? t.backend : null,
+      failureKind: classifyTaskFailure(t, input.tasks),
     };
   }
 

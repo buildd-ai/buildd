@@ -10,7 +10,7 @@ import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
 import { validateRequiredConnectors } from '@/lib/required-connectors';
-import { authenticateTaskScopedCaller, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
+import { authenticateTaskScopedCaller, isDelegatedReach, taskScopeAllowsDelegated, taskScopeAllowsMission, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
 import { emit } from '@/lib/core-emit';
 import { withDispatchHint } from '@buildd/core/dispatch-outbox';
@@ -18,7 +18,7 @@ import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
-import { scheduleTaskRoleRouting } from '@/lib/task-role-apply';
+import { kindDefaultCandidates, kindDefaultRole, kindDefaultStamp, scheduleTaskRoleRouting } from '@/lib/task-role-apply';
 import { scheduleCreationManifestShadow } from '@/lib/task-manifest-prediction';
 import { heuristicTaskLabel, normalizeTaskLabel } from '@buildd/core/task-label';
 import { TaskCategory, type TaskCategoryValue } from '@buildd/shared';
@@ -410,8 +410,8 @@ export async function POST(req: NextRequest) {
       outputRequirement: rawOutputRequirement,
       // Project scoping
       project,
-      // Mission linking
-      missionId,
+      // Mission linking (reassigned below only to drop an inherited link on a delegated follow-up)
+      missionId: requestedMissionId,
       // Workflow DAG: task IDs that must complete before this task is claimable
       dependsOn,
       // Role routing — only runners with this skill can claim the task
@@ -444,6 +444,7 @@ export async function POST(req: NextRequest) {
       subjectAnchor: rawSubjectAnchor,
       fileAnywayReason,
     } = body;
+    let missionId: string | undefined = requestedMissionId;
 
     gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
 
@@ -554,8 +555,25 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
-    if (apiAccount && !taskScopeAllowsWorkspace(apiAccount, workspaceId)) {
-      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace' }, { status: 403 });
+    // A task token files in its own workspace, or in one its schedule's
+    // delegation grants tasks:create on (packages/core/token-delegation.ts).
+    if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
+      return NextResponse.json({ error: 'A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on' }, { status: 403 });
+    }
+    // A delegated follow-up is a plain task: it never joins a mission or a
+    // dependency graph in the other workspace, so it cannot steer work there.
+    // Its parent is the filing task itself (derived from the worker), which
+    // is the audit link back to the run that filed it.
+    if (apiAccount?.taskScope && isDelegatedReach(apiAccount, workspaceId)) {
+      // MCP create_task fills in the filing task's own mission by default;
+      // that link stays home rather than refusing the follow-up.
+      if (missionId && await taskScopeAllowsMission(apiAccount, missionId)) missionId = undefined;
+      if (missionId || (Array.isArray(dependsOn) && dependsOn.length > 0)) {
+        return NextResponse.json({ error: 'A delegated task cannot set missionId or dependsOn' }, { status: 400 });
+      }
+      if (parentTaskId && parentTaskId !== apiAccount.taskScope.taskId) {
+        return NextResponse.json({ error: 'A delegated task can only name its filing task as parent' }, { status: 400 });
+      }
     }
     gateWorkspaceId = workspaceId;
 
@@ -1314,6 +1332,24 @@ export async function POST(req: NextRequest) {
     const previewRoleSlug = typeof roleSlug === 'string' && roleSlug ? roleSlug : null;
     let previewRoleModel: string | null = null;
     let roleMayBeInferred = false;
+    // Same rule the insert below applies; computed here so the kind default
+    // (task-role-default.ts) can tell a work row from bookkeeping.
+    const isBookkeepingTitle =
+      title.startsWith('[friction] ') ||
+      title.startsWith('Aggregate results:') ||
+      title.startsWith('Evaluate mission completion:') ||
+      title.startsWith('Mission:') ||
+      title.startsWith('Close mission') ||
+      // Option A′: the row that owns a mission integration PR. The opener
+      // sets `taskClass` directly, but a caller can create one through this
+      // route, and as `work` it would become a deliverable of the very
+      // mission whose completion it is waiting on.
+      title.startsWith(MISSION_PR_TASK_PREFIX);
+    // A task filed with no role gets its kind's default role when the
+    // workspace has it (task-role-default.ts). Stamped as inferred, so the
+    // decision model may still replace it and the claim keeps the task's model.
+    let kindDefaultSlug: string | null = null;
+    let kindDefaultCandidateCount = 0;
     if (targetWorkspace.teamId) {
       try {
         const roleRows = await db.query.workspaceSkills.findMany({
@@ -1324,7 +1360,10 @@ export async function POST(req: NextRequest) {
             or(isNull(workspaceSkills.workspaceId), eq(workspaceSkills.workspaceId, workspaceId)),
             ...(previewRoleSlug ? [eq(workspaceSkills.slug, previewRoleSlug)] : []),
           ),
-          columns: { slug: true, model: true, workspaceId: true, teamId: true, metadata: true },
+          columns: {
+            slug: true, name: true, model: true, workspaceId: true, teamId: true, metadata: true,
+            enabled: true, isRole: true, allowedTools: true, connectorRefs: true, defaultBackend: true,
+          },
         });
         if (previewRoleSlug) {
           const row = pickRoleRowForTask(roleRows, {
@@ -1333,6 +1372,20 @@ export async function POST(req: NextRequest) {
           previewRoleModel = row ? (row.model ?? 'inherit') : null;
         } else {
           roleMayBeInferred = countRoleInferenceCandidates(roleRows, workspaceId) >= 2;
+          const kindCandidates = kindDefaultCandidates(roleRows, {
+            workspaceId,
+            backend: resolvedBackend ?? null,
+            outputRequirement: outputRequirement ?? null,
+            pathManifestIsConcrete,
+            emitsPlan: !!emitsPlan,
+          });
+          kindDefaultCandidateCount = kindCandidates.length;
+          kindDefaultSlug = kindDefaultRole({
+            statedRoleSlug: null,
+            kind: finalKind ?? null,
+            taskClass: isBookkeepingTitle ? 'bookkeeping' : 'work',
+            candidates: kindCandidates,
+          });
         }
       } catch (err) {
         console.warn('[tasks] role lookup for routing preview failed:', err);
@@ -1371,18 +1424,7 @@ export async function POST(req: NextRequest) {
         priority: priority || 0,
         status: 'pending',
         mode: emitsPlan ? 'planning' : 'execution',
-        taskClass: (
-          title.startsWith('[friction] ') ||
-          title.startsWith('Aggregate results:') ||
-          title.startsWith('Evaluate mission completion:') ||
-          title.startsWith('Mission:') ||
-          title.startsWith('Close mission') ||
-          // Option A′: the row that owns a mission integration PR. The opener
-          // sets `taskClass` directly, but a caller can create one through this
-          // route, and as `work` it would become a deliverable of the very
-          // mission whose completion it is waiting on.
-          title.startsWith(MISSION_PR_TASK_PREFIX)
-        ) ? 'bookkeeping' : 'work',
+        taskClass: isBookkeepingTitle ? 'bookkeeping' : 'work',
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: {
@@ -1404,6 +1446,7 @@ export async function POST(req: NextRequest) {
           // see task-routing-preview.ts. Lets analytics and the model cell tell
           // "the filer said this" apart from "we guessed this".
           ...(routingWasInferred ? { routingInferred: true, routingInferredReason } : {}),
+          ...(kindDefaultSlug ? { roleInferred: kindDefaultStamp(kindDefaultSlug, kindDefaultCandidateCount) } : {}),
           ...backendPinnedCtx,
         },
         ...(project ? { project } : {}),
@@ -1412,7 +1455,7 @@ export async function POST(req: NextRequest) {
         ...(outputSchema ? { outputSchema } : {}),
         ...(missionId ? { missionId } : {}),
         ...(resolvedDependsOn.length > 0 ? { dependsOn: resolvedDependsOn } : {}),
-        ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
+        ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : kindDefaultSlug ? { roleSlug: kindDefaultSlug } : {}),
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
         ...(pathManifest ? {
           pathManifest,
@@ -1590,7 +1633,9 @@ export async function POST(req: NextRequest) {
           teamId: targetWorkspace.teamId,
           workspaceId,
           accountId: creatorContext.createdByAccountId ?? null,
-          statedRoleSlug: task.roleSlug ?? null,
+          // The caller's role only: a kind default is not stated, so the
+          // decision model still runs and may replace it.
+          statedRoleSlug: typeof roleSlug === 'string' && roleSlug ? roleSlug : null,
           title: task.title,
           label: task.label ?? null,
           kind: rawKind ?? null,

@@ -101,6 +101,26 @@ cd apps/web && bun run build:only   # next build only, no migration, no DATABASE
 No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
 cleanly on its own.
 
+**Both this and the full unit suite run well past a typical shell tool's default command
+timeout.** `build:only` takes roughly 5-8 minutes wall-clock; `bun run test` (every file in
+its own process, see below) takes roughly 4-6 minutes. An agent driving a sandboxed shell
+tool whose default per-command timeout is shorter than that (e.g. 120s) gets the process
+killed with SIGTERM/exit 143 partway through, with no digest and nothing useful in the log —
+indistinguishable at first glance from a real hang. Pass an explicit timeout long enough to
+cover the full run (both commands fit comfortably under 10 minutes today) rather than relying
+on a tool's default.
+
+**`warm-repo.test.ts`'s compression tests need the real `zstd` CLI.** `apps/runner/src/warm-repo.ts`
+shells out to `zstd` to compress/restore the cloud runner's cache tarball, and its unit tests spawn
+the real binary (no mock) to exercise that path, so a sandbox without it fails only those
+assertions while the rest of the file passes. `apps/runner/install.sh` now provisions `zstd`
+on fresh installs the same best-effort way it provisions other tooling (`apt-get`/`brew`, never
+fatal to the rest of the install) — an older sandbox that predates that change, or one on a
+platform neither package manager covers, can still be missing it. Confirm with `command -v zstd`;
+if it's absent, this is a known sandbox-provisioning gap, not a product bug — production code
+(`zstdAvailable()` in `warm-repo.ts`) already falls back to a plain, uncompressed tarball when
+the binary is missing, so don't change `warm-repo.ts` to work around it.
+
 ## Visual Review
 
 Screenshot any UI change at phone and desktop width before calling it done. Full

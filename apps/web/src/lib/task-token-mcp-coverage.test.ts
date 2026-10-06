@@ -40,15 +40,6 @@ const REFUSED_CALLS: Record<string, Record<string, string>> = {
     'apps/web/src/app/api/experiments/[id]/readout/route.ts':
       'a readout counts tasks across every workspace on the team; narrowing it to one would change what it measures',
   },
-  list_artifacts: {
-    'apps/web/src/app/api/workspaces/route.ts': 'fallback lookup when no workspace is known; the MCP route pins a task token to its own workspace',
-  },
-  list_schedules: {
-    'apps/web/src/app/api/workspaces/route.ts': 'fallback lookup when no workspace is known; the MCP route pins a task token to its own workspace',
-  },
-  trace_schedule: {
-    'apps/web/src/app/api/workspaces/route.ts': 'fallback lookup when no workspace is known; the MCP route pins a task token to its own workspace',
-  },
 };
 
 function trackedRoutes(): string[] {

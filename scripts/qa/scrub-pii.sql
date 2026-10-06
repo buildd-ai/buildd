@@ -229,6 +229,8 @@ DELETE FROM system_cache;
 DELETE FROM prompts;              -- private prompt text; the clone runs on public defaults
 DELETE FROM cron_runs;
 DELETE FROM gate_events;
+-- Stripe webhook idempotency ledger: event ids are Stripe-side identifiers.
+DELETE FROM stripe_events;
 -- Capability decisions: per-run grant/PR audit; resources name repos and PRs.
 DELETE FROM agent_capability_decisions;
 -- Dispatch intent is a transient delivery ledger; last_error can echo webhook bodies.
@@ -293,7 +295,9 @@ UPDATE team_invitations SET
 
 UPDATE teams t SET
   name = 'Team ' || s.n,
-  slug = 'team-' || s.n
+  slug = 'team-' || s.n,
+  stripe_customer_id = NULL,
+  stripe_subscription_id = NULL
 FROM (SELECT id, row_number() OVER (ORDER BY id) AS n FROM teams) s WHERE t.id = s.id;
 
 UPDATE accounts a SET

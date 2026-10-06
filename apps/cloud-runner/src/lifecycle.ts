@@ -31,6 +31,7 @@ export const CLAIM_DEFERRED_LINE_PREFIX = 'BUILDD_CLAIM_DEFERRED=';
 
 import type { RunTimings, StoredRunReport } from './run-report';
 import { SNAPSHOT_HOST } from './snapshots';
+import type { RunnerSizeDecision } from './runner-class';
 
 export type RunStatus = 'idle' | 'starting' | 'running' | 'exited';
 
@@ -97,6 +98,11 @@ export interface RunState {
    * Read by `deferredRetryBackoffMs` to decide the next delay, or to stop.
    */
   deferredRetryCount?: number;
+  /**
+   * The latest container-class decision that reached this agent (buildd's
+   * answer at dispatch), kept across this agent's own retries and resumes.
+   */
+  runnerSize?: RunnerSizeDecision;
 }
 
 export const INITIAL_STATE: RunState = { taskId: null, attempt: 0, status: 'idle' };
@@ -119,6 +125,12 @@ export interface DispatchRequest {
    * forward instead of resetting it to 0.
    */
   deferredRetry?: boolean;
+  /**
+   * buildd's container-class decision for this dispatch (runner-class.ts), for
+   * the run report. The class itself is already fixed: it is the agent class
+   * this request reached.
+   */
+  runnerSize?: RunnerSizeDecision;
 }
 
 /**

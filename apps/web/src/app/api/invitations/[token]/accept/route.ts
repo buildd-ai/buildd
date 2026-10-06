@@ -3,6 +3,7 @@ import { db } from '@buildd/core/db';
 import { teamInvitations, teamMembers, teams } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
+import { checkSeatForNewMember, seatsExhaustedResponse } from '@/lib/billing/seats';
 
 // POST /api/invitations/[token]/accept — accept an invitation
 export async function POST(
@@ -35,6 +36,11 @@ export async function POST(
         .where(eq(teamInvitations.id, invitation.id));
       return NextResponse.json({ error: 'Invitation has expired' }, { status: 410 });
     }
+
+    // The invite held a seat, so only members count here. A team that lost
+    // seats since (downgrade) is refused; the invitation stays pending.
+    const seat = await checkSeatForNewMember(invitation.teamId, { countPending: false });
+    if (!seat.ok) return seatsExhaustedResponse(seat, 'invitee');
 
     // Add user to team
     await db.insert(teamMembers)

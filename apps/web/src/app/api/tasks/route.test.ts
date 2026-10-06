@@ -572,8 +572,55 @@ describe('POST /api/tasks', () => {
         method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Elsewhere' },
       }));
       expect(response.status).toBe(403);
-      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace');
+      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on');
       expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    describe('with a schedule delegation (scheduled reviewer files a follow-up elsewhere)', () => {
+      const delegated = (capabilities: string[]) => ({
+        ...scoped,
+        taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: 'ws-2', capabilities }] },
+      });
+      const elsewhere = { id: 'task-elsewhere', workspaceId: 'ws-2', title: 'Defect found', status: 'pending' };
+      const fileIn = (body: Record<string, unknown>) => POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Defect found', ...body },
+      }));
+
+      it('files into a workspace the delegation grants tasks:create on, through the normal path', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['analytics:read', 'tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [elsewhere]) })) });
+        const response = await fileIn({});
+        expect(response.status).toBe(200);
+        expect((await response.json()).id).toBe('task-elsewhere');
+      });
+
+      it('an analytics-only delegation still cannot create there', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['analytics:read']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        const response = await fileIn({});
+        expect(response.status).toBe(403);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
+
+      it('a delegation for one workspace opens no other', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-3', teamId: 'team-1', accessMode: 'open' });
+        const response = await fileIn({ workspaceId: 'ws-3' });
+        expect(response.status).toBe(403);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
+
+      it('a delegated follow-up cannot join a mission, a dependency graph or another parent there', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        expect((await fileIn({ missionId: '33333333-3333-4333-8333-333333333333' })).status).toBe(400);
+        expect((await fileIn({ dependsOn: ['55555555-5555-4555-8555-555555555555'] })).status).toBe(400);
+        expect((await fileIn({ parentTaskId: '66666666-6666-4666-8666-666666666666' })).status).toBe(400);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
     });
 
     for (const level of ['worker', 'admin']) {
@@ -4584,5 +4631,63 @@ describe('POST /api/tasks — post-commit side effects (characterization)', () =
     await settleFireAndForget(() => log.some(l => l[0] === 'resolveCriteriaEscalation'));
     expect(log.map(l => l[0])).toEqual(['resolveFeedActor', 'postMissionFeedEvent', 'reopenCompletedMission', 'resolveCriteriaEscalation']);
     expect(log[1][1]).toMatchObject({ missionId: 'mission-1', title: 'Task created: Canonical', body: 'Task canon-1', taskId: 'canon-1' });
+  });
+});
+
+describe('POST /api/tasks — a task filed without a role gets its kind\'s default role', () => {
+  beforeEach(() => { resetPostMocks(); intakeOverride = null; });
+
+  const roleRow = (slug: string) => ({
+    slug, name: slug, model: 'inherit', workspaceId: null, teamId: 'team-1', metadata: null,
+    enabled: true, isRole: true, allowedTools: null, connectorRefs: null, defaultBackend: null,
+  });
+
+  async function create(body: Record<string, unknown>, roles: unknown[]) {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-1', apiKey: 'bld_test' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-1', createdByWorkerId: null, creationSource: 'mcp', parentTaskId: null,
+    });
+    mockWorkspaceSkillsFindMany.mockResolvedValue(roles as any[]);
+    let inserted: any;
+    mockTasksInsert.mockReturnValue({
+      values: mock((values: any) => {
+        inserted = values;
+        return { returning: mock(() => [{ id: 'task-k', workspaceId: 'ws-1', title: 'T', status: 'pending', taskClass: 'work' }]) };
+      }),
+    });
+    const response = await POST(createMockRequest({
+      method: 'POST', headers: { Authorization: 'Bearer bld_test' },
+      body: { workspaceId: 'ws-1', title: 'Add a thing', ...body },
+    }));
+    return { response, inserted };
+  }
+
+  it('engineering with no role becomes builder, marked as inferred from the kind', async () => {
+    const { response, inserted } = await create({ kind: 'engineering' }, [roleRow('builder'), roleRow('researcher')]);
+    expect(response.status).toBe(200);
+    expect(inserted).toBeDefined();
+    expect(inserted.roleSlug).toBe('builder');
+    expect(inserted.context.roleInferred).toMatchObject({ slug: 'builder', source: 'kind' });
+  });
+
+  it('a stated role is kept and nothing is inferred', async () => {
+    const { inserted } = await create({ kind: 'engineering', roleSlug: 'researcher' }, [roleRow('researcher')]);
+    expect(inserted.roleSlug).toBe('researcher');
+    expect(inserted.context.roleInferred).toBeUndefined();
+  });
+
+  it('no default when the workspace has no such role, or the kind has no owner', async () => {
+    const a = await create({ kind: 'writing' }, [roleRow('builder')]);
+    expect(a.inserted.roleSlug).toBeUndefined();
+    const b = await create({ kind: 'design' }, [roleRow('builder')]);
+    expect(b.inserted.roleSlug).toBeUndefined();
+  });
+
+  it('bookkeeping rows never get a default', async () => {
+    const { inserted } = await create({ title: '[friction] something broke', kind: 'engineering' }, [roleRow('builder')]);
+    expect(inserted).toBeDefined();
+    expect(inserted.roleSlug).toBeUndefined();
   });
 });

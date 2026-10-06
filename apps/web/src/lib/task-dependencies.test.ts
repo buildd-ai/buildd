@@ -739,6 +739,140 @@ describe('dependency failure cascade', () => {
     expect(eventNames).toContain('task:dependency_failed');
     expect(eventNames).not.toContain('task:unblocked');
   });
+
+  it('releases a path-overlap-only edge instead of cascading failure, when it was the only dep', async () => {
+    // The failed task's edge is recorded as inferred (auto path-overlap), not
+    // caller-declared — same mission, different task, as in a01b3251-style
+    // serialization where two mission tasks both overlap a third, unrelated one.
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults = [
+      [{
+        id: 'dependent-1',
+        title: 'Phase 2',
+        workspaceId: 'ws-1',
+        status: 'pending',
+        dependsOn: ['task-A'],
+        pathDeclaration: {
+          declared: ['apps/web/src/lib/foo.ts'],
+          source: 'creation',
+          snapshotAt: '2026-01-01T00:00:00.000Z',
+          inferredDependsOn: ['task-A'],
+        },
+      }],
+    ];
+    findFirstResults[2] = { title: 'Phase 1' };
+
+    await resolveCompletedTask('task-A', 'ws-1');
+
+    // No failure cascade: no fail-status update, no dependency_failed event,
+    // no recursive resolveCompletedTask (which would need findFirstResults[3]/[4]).
+    expect(mockUpdateSet).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    const eventNames = mockTriggerEvent.mock.calls.map((c: any) => c[1]);
+    expect(eventNames).not.toContain('task:dependency_failed');
+
+    // The inferred edge is removed from both dependsOn and pathDeclaration.
+    expect(mockUpdateSet).toHaveBeenCalledWith({
+      dependsOn: [],
+      pathDeclaration: {
+        declared: ['apps/web/src/lib/foo.ts'],
+        source: 'creation',
+        snapshotAt: '2026-01-01T00:00:00.000Z',
+        inferredDependsOn: [],
+      },
+      updatedAt: expect.any(Date),
+    });
+
+    // No deps left at all — fully unblocked, same signal a completed dep gives.
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'task:unblocked',
+      { taskId: 'dependent-1', resolvedDependency: 'task-A' }
+    );
+    expect(mockWakeTask).toHaveBeenCalledWith('dependent-1', 'dependency.satisfied');
+  });
+
+  it('releases a path-overlap-only edge but does not claim full unblock when a declared dep remains', async () => {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults = [
+      [{
+        id: 'dependent-1',
+        title: 'Phase 2',
+        workspaceId: 'ws-1',
+        status: 'pending',
+        dependsOn: ['task-A', 'task-B'],
+        pathDeclaration: {
+          declared: ['apps/web/src/lib/foo.ts'],
+          source: 'creation',
+          snapshotAt: '2026-01-01T00:00:00.000Z',
+          inferredDependsOn: ['task-A'],
+        },
+      }],
+    ];
+    findFirstResults[2] = { title: 'Phase 1' };
+
+    await resolveCompletedTask('task-A', 'ws-1');
+
+    expect(mockUpdateSet).toHaveBeenCalledWith({
+      dependsOn: ['task-B'],
+      pathDeclaration: {
+        declared: ['apps/web/src/lib/foo.ts'],
+        source: 'creation',
+        snapshotAt: '2026-01-01T00:00:00.000Z',
+        inferredDependsOn: [],
+      },
+      updatedAt: expect.any(Date),
+    });
+
+    // task-B (a real, declared dependency) still stands — not fully clear yet.
+    const eventNames = mockTriggerEvent.mock.calls.map((c: any) => c[1]);
+    expect(eventNames).not.toContain('task:unblocked');
+    expect(eventNames).not.toContain('task:dependency_failed');
+    // Still worth waking: harmless if task-B isn't done, lets the claim route decide.
+    expect(mockWakeTask).toHaveBeenCalledWith('dependent-1', 'dependency.satisfied');
+  });
+
+  it('still cascades failure for a caller-declared edge to the same failed task', async () => {
+    // pathDeclaration exists (this dependent ALSO has an unrelated inferred
+    // edge) but does not list the failed task — so the edge to it is the
+    // caller's own explicit dependsOn, and must still cascade.
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults = [
+      [{
+        id: 'dependent-1',
+        title: 'Phase 2',
+        workspaceId: 'ws-1',
+        status: 'pending',
+        dependsOn: ['task-A', 'task-other'],
+        pathDeclaration: {
+          declared: ['apps/web/src/lib/foo.ts'],
+          source: 'creation',
+          snapshotAt: '2026-01-01T00:00:00.000Z',
+          inferredDependsOn: ['task-other'],
+        },
+      }],
+    ];
+    findFirstResults[2] = { title: 'Phase 1' };
+    // Recursive call for auto-failed dependent-1:
+    findFirstResults[3] = { parentTaskId: null };
+    findFirstResults[4] = { mode: 'execution', missionId: null, status: 'failed' };
+    selectWhereResults[1] = [];
+
+    await resolveCompletedTask('task-A', 'ws-1');
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    expect(mockTriggerEvent).toHaveBeenCalledWith(
+      'workspace-ws-1',
+      'task:dependency_failed',
+      {
+        taskId: 'dependent-1',
+        failedDependency: 'task-A',
+        failedDependencyTitle: 'Phase 1',
+      }
+    );
+  });
 });
 
 // ── checkDependsOnResolved: mergedAt gate (review-gate-ux.md §5.3) ──────────────

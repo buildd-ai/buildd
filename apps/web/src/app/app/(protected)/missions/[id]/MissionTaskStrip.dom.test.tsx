@@ -99,6 +99,14 @@ describe('Landed strip', () => {
     expect(drawer().querySelector('[data-testid="task-action-zone"]')?.getAttribute('data-actions')).toBe('claim_hint run_now');
   });
 
+  it('the action column is capped, so a long refusal wraps instead of starving the title column', async () => {
+    await mount(missionTaskStripFixture('mid-open'));
+    // An `auto` track grows to the refusal's max-content width and squeezes
+    // the `minmax(0,1fr)` title column to nothing (the title then breaks per letter).
+    expect(drawer().className).toContain('md:grid-cols-[minmax(0,1fr)_fit-content(60%)]');
+    expect(drawer().className).not.toMatch(/grid-cols-\[[^\]]*auto\)?\]/);
+  });
+
   it('selects the last task when everything landed', async () => {
     await mount(missionTaskStripFixture('all-landed'));
     expect(pressed()).toBe(9);

@@ -1,11 +1,12 @@
 ---
 title: BYO Evidence Storage
-status: draft
+status: active
 owner: max
-last_verified: 2026-10-01
+last_verified: 2026-10-06
 summary: Buildd MUST write each task's run evidence to a team-configured S3-compatible bucket, keep only pointers in Postgres, and index the error-bearing parts into a searchable `evidence` corpus read through the reach guard.
 domain: knowledge
-surfaces: [apps/runner/src/session-diagnostics.ts, apps/web/src/app/api/workers/[id]/session-upload-url/route.ts, apps/web/src/lib/storage-keys.ts, apps/web/src/lib/chat/registry.ts]
+surfaces: [apps/web/src/lib/evidence-backend.ts, apps/runner/src/evidence-writer.ts, apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts, apps/web/src/lib/evidence-read.ts]
+verified_by: [apps/web/src/lib/evidence-backend.test.ts, apps/web/src/app/api/evidence-backends/route.test.ts, apps/web/src/app/api/workers/[id]/evidence-upload-url/route.test.ts, apps/runner/__tests__/unit/evidence-writer.test.ts, apps/web/src/lib/evidence-confirm.test.ts, apps/web/src/lib/ci-job-log-evidence.test.ts, apps/web/src/app/api/tasks/[id]/evidence/route.test.ts, apps/web/src/app/api/evidence/route.test.ts, apps/web/src/lib/evidence-indexer.test.ts]
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, artifacts-and-sharing, credential-isolation]
 keywords: [evidence, s3, r2, byo, transcript, ci-log, query_knowledge, read_evidence, evidence_backends, evidence_objects, evidence_storage_credential]
 assertions:
@@ -26,13 +27,12 @@ assertions:
     type: config_key
     key: retentionDays
     file: apps/web/src/lib/evidence-backend.ts
-  # Unbuilt (build item 8, P4): retention_days is configured on the backend,
-  # but no job reads evidence_objects.expires_at to delete expired objects yet.
-  # The spec names apps/web/src/lib/evidence-retention.ts as the new module.
-  - id: evidence-retention-job-reads-expiry
-    type: config_key
-    key: expiresAt
-    file: apps/web/src/lib/evidence-retention.ts
+  # The retention job (build item 8, P4) is NOT IMPLEMENTED: retention_days is
+  # configured on the backend and expires_at is written, but nothing deletes
+  # expired objects. Its assertion was removed when this spec went active,
+  # because a failing assertion on an active spec fails the conformance check.
+  # The task that builds item 8 re-adds it (key expiresAt in its new module)
+  # in the same PR.
 ---
 
 # BYO Evidence Storage
@@ -45,9 +45,11 @@ index the error-bearing segments into a `{workspaceId}:evidence` knowledge
 corpus, so that "why did task X fail" is answerable from chat, MCP or an agent
 without opening GitHub or a terminal.
 
-This spec is `draft`: nothing below "Current state" is built. Naming a planned
-symbol or route in backticks is the correct state for a draft (SPEC-FORMAT rule
-7/8); each becomes a lint error when the spec is promoted to `active`.
+This spec is `active`: build items 1 to 6 (P1, P3 indexing and the P4 UI)
+have shipped. Build items 7 and 8 (segmented transcripts, retention) and a few
+smaller pieces have not; each is marked **NOT IMPLEMENTED** where it is
+described, and "Current state" lists them in one place. Unbuilt names are
+written as plain text, not in backticks (SPEC-FORMAT rules 7 and 8).
 
 ## Why
 
@@ -61,40 +63,62 @@ anonymous GitHub API calls were rate-limited.
 
 ## Current state (verified against the code)
 
-- **Transcripts are uploaded, but nothing reads them.** `uploadSessionDiagnostics`
+**Built:**
+
+- **Backends.** `evidenceBackends` and `evidenceObjects` in
+  `packages/core/db/schema.ts`; credential purpose `evidence_storage_credential`
+  in `packages/core/secrets/types.ts`. Resolution, the per-backend client
+  (`createEvidenceS3Client`, `getEvidenceS3Client`), SSRF validation
+  (`validateEvidenceEndpoint`), presigning (`generateEvidenceUploadUrl`) and the
+  probe (`verifyEvidenceBackend`) live in `apps/web/src/lib/evidence-backend.ts`.
+  Routes: `/api/evidence-backends`, `/api/evidence-backends/[id]` and
+  `/api/evidence-backends/[id]/verify`; MCP `manage_evidence_backends`.
+- **Runner writers** for `command_output` and `test_report`:
+  `EvidenceWriter` in `apps/runner/src/evidence-writer.ts`, uploading through
+  `POST /api/workers/[id]/evidence-upload-url` and settling through
+  `POST /api/workers/[id]/evidence/[evidenceId]/confirm`
+  (`confirmEvidenceUpload`, `apps/web/src/lib/evidence-confirm.ts`).
+- **CI job logs**: `captureCiJobLogEvidence` in
+  `apps/web/src/lib/ci-job-log-evidence.ts`, called from
+  `apps/web/src/lib/ci-failure-retry.ts`.
+- **Read paths**: `GET /api/tasks/:id/evidence`, `GET /api/evidence`,
+  `GET /api/evidence/download`, MCP `read_evidence`, the chat registry entry,
+  and the inline object list on `get_task`, `get_pr` and `explain`
+  (`apps/web/src/lib/evidence-inline.ts`).
+- **Corpus**: `'evidence'` is in `Corpus`, `ALL_CORPORA` and `CORPORA`;
+  `packages/core/evidence-chunker.ts` and `apps/web/src/lib/evidence-indexer.ts`,
+  swept hourly by `/api/cron/evidence-index`.
+- **UI**: Settings → Storage
+  (`apps/web/src/app/app/(protected)/settings/storage/`) with the lifecycle
+  snippet, and the task page's evidence files list (`TaskEvidenceFiles`).
+
+**NOT IMPLEMENTED:**
+
+- Segmented transcripts and manifests (build item 7, P2). Transcripts still go
+  only through the legacy path: `uploadSessionDiagnostics`
   (`apps/runner/src/session-diagnostics.ts`) ships `transcript.jsonl` and
-  `session.log` through `POST /api/workers/[id]/session-upload-url` (body
-  `{kind, sizeBytes}`) to the buildd-managed bucket, at key
-  `sessions/{team}/{workspace}/{worker}/{filename}`. No route, tool or UI
-  consumes those keys.
-- **Upload happens once, at session end, and only for `done` or `error`**
-  (`apps/runner/src/workers.ts`, the "Durable session diagnostics" block). A
-  runner that dies mid-session uploads nothing.
-- **The "last 200" cap is in the runner's in-memory ring buffers, not in the
-  uploader.** `worker.toolCalls` and `worker.messages` each evict with `shift()`
-  past 200 entries and `worker.output` past 100 (`apps/runner/src/workers.ts`).
-  `buildSessionTranscript` can only serialise what survived. Fixing the cap
-  therefore means flushing segments before eviction, not changing the upload.
-- **Tool-result bodies are never retained.** The transcript holds milestones,
-  text and tool_use messages, tool-call inputs and `output` lines. A
-  `tool_result` is scanned for error patterns (`scanToolResult`) and dropped.
-- **Two byte ceilings, both 8 MiB:** `MAX_TRANSCRIPT_BYTES` on the runner
-  (writes a `truncated` marker) and `MAX_SESSION_ARTIFACT_BYTES` on the server
-  (413, and bound into the presigned `ContentLength`).
-- **Keys are write-once.** The route answers 409 if `objectExists(storageKey)`,
-  so one object per worker per kind. Segmented uploads need a different key
-  layout and route.
-- **Only `workspaces.dataClass = 'sensitive'` is excluded (403).** There is no
-  `private` class on workspaces and no `tasks.visibility` column;
-  `docs/design/private-task-execution.md` is a design, not built.
-- **Storage is one env-configured bucket.** `apps/web/src/lib/storage.ts` builds
-  a single `S3Client`; there is no per-team client.
-- **`result.evidence` does not exist yet.** `TaskResult` in
-  `packages/shared/src/types.ts` has no `evidence` field (task 0c635dfe
-  introduces the compact record). This spec stores the bulk that record links to.
-- docs/design/workspace-knowledge-management.md §8 already decides "Postgres
-  for the index, R2 for blobs". This spec follows it: **the bucket holds blobs
-  and the searchable index stays in Postgres.**
+  `session.log` once, at session end, through
+  `POST /api/workers/[id]/session-upload-url` to write-once keys under
+  `sessions/...`. The 200-entry ring buffers in `apps/runner/src/workers.ts`
+  still cap what `buildSessionTranscript` can serialise, and `tool_result`
+  bodies are still dropped after `scanToolResult`.
+- Retention (build item 8, P4): `expires_at` is written but no job deletes
+  expired objects, pointers or chunks; deleting a task or `forget` on a
+  workspace does not delete its objects; no re-scan on a redaction bump.
+- The daily backend probe and the health alert for a `failing` backend.
+  Verification runs only on save and on an explicit verify.
+- The `pr_diff` writer (P3) and the link from `evidence` chunks into
+  `get_failure_analytics` signatures (P3).
+- `result.evidence.links` does not reference `evidence_objects.id`; the compact
+  record (`TaskEvidence` in `packages/shared/src/types.ts`) carries only
+  `ciRunUrl`, `prUrl` and `fullLogUrl`.
+- Only `workspaces.dataClass = 'sensitive'` is a privacy class. There is no
+  `tasks.visibility` column; `docs/design/private-task-execution.md` is a
+  design, not built.
+
+docs/design/workspace-knowledge-management.md §8 decides "Postgres for the
+index, R2 for blobs". This spec follows it: **the bucket holds blobs and the
+searchable index stays in Postgres.**
 
 ## Invariants
 
@@ -144,12 +168,13 @@ but evidence resolution runs server-side with no claiming account, so the
 account tier does not apply; the backend row pins its secret by
 `credential_secret_id`, and that secret's `team_id` MUST equal the backend's.
 
-**Verification** runs on save and daily: PUT, GET, DELETE of
+**Verification** runs on save and daily (the daily run is NOT IMPLEMENTED;
+today it runs on save and on an explicit verify): PUT, GET, DELETE of
 `{prefix}/.buildd-probe/{uuid}`. It needs Put and Get, optionally Delete, and
 never List. The result sets `status` and reuses the `secrets` health columns
 (`healthStatus`, `lastVerifiedAt`, `lastVerificationError`) the way
 `POST /api/secrets/[id]/verify` does for the Cloudflare token. A `failing`
-backend raises a health alert.
+backend raises a health alert (NOT IMPLEMENTED).
 
 Surfaces: Settings → Storage (admin), MCP `manage_evidence_backends` (admin
 token), and chat read-only status.
@@ -226,8 +251,9 @@ for indexing at upload stays skipped after it is settled.
   The no-prod-data gate protects this public repo, not a tenant's evidence in
   the tenant's own bucket; scrubbing identifiers would destroy the diagnostic
   value.
-- The manifest records `redactionVersion`. A bump marks older objects for
-  optional re-scan.
+- The manifest records redactionVersion. A bump marks older objects for
+  optional re-scan. NOT IMPLEMENTED: manifests arrive with build item 7 and the
+  re-scan with build item 8.
 
 ## Postgres pointers
 
@@ -238,7 +264,9 @@ Table `evidence_objects`:
 `index_state` (`skipped` | `queued` | `indexed` | `failed`).
 
 `result.evidence.links[]` (task 0c635dfe) references `evidence_objects.id`,
-never raw URLs.
+never raw URLs. NOT IMPLEMENTED: the compact record shipped, but its `links`
+carries only `ciRunUrl`, `prUrl` and `fullLogUrl`; the object list reaches
+readers through the inline list on `get_task`, `get_pr` and `explain` instead.
 
 ## The `evidence` corpus
 
@@ -344,8 +372,8 @@ never raw URLs.
   a short delay (reusing the signed URL when it got one); a second failure ends
   the object `failed` and is not retried further. This is a retry inside the
   writer, not a queued job. A single failed upload does not mark the backend
-  `failing`; that status comes from verification (the save-time and daily probe)
-  and raises the health alert.
+  `failing`; that status comes from verification (the save-time probe; the
+  daily probe and the health alert are NOT IMPLEMENTED).
 - Byte cap hit: the writer keeps head and tail (about a quarter head, the rest
   tail, cut on line boundaries), drops the middle, and inserts a marker line
   stating how many bytes were omitted. If the gzipped body is still over the cap
@@ -361,12 +389,13 @@ never raw URLs.
 ## Retention and deletion
 
 - `expires_at = created_at + retention_days` (default 30; `buildd_default` fixed
-  at 30). A daily job deletes expired objects, pointers and chunks. Today the
-  managed bucket has no documented retention at all.
+  at 30). A daily job deletes expired objects, pointers and chunks. **NOT
+  IMPLEMENTED** (build item 8): `expires_at` is written on every pointer row,
+  but nothing deletes expired objects yet.
 - BYO buckets get a recommended lifecycle rule as a backstop; Settings shows the
   snippet.
 - Deleting a task, or `forget` on a workspace, deletes its objects, pointers and
-  chunks.
+  chunks. NOT IMPLEMENTED (build item 8).
 
 ## Security
 
@@ -413,13 +442,17 @@ never raw URLs.
 
 - **P1:** backend config + verification; `command_output`, `ci_job_log` and
   `test_report` writers; `evidence_objects`; `read_evidence` in MCP and chat.
-  Alone this would have answered the incident above.
+  Alone this would have answered the incident above. Built, except the daily
+  probe.
 - **P2:** segmented transcripts with pre-eviction flush and manifests (removes
-  the 200 cap); tool_result bodies in the transcript.
+  the 200 cap); tool_result bodies in the transcript. NOT IMPLEMENTED.
 - **P3:** the `evidence` corpus: chunker, index sweep, `query_knowledge`,
-  failure-signature link; `pr_diff`.
+  failure-signature link; `pr_diff`. Corpus, chunker, sweep and
+  `query_knowledge` built; the failure-signature link and `pr_diff` are NOT
+  IMPLEMENTED.
 - **P4:** Evidence tab, retention job, lifecycle snippet, re-scan on redaction
-  bump.
+  bump. Evidence tab and lifecycle snippet built; the retention job and re-scan
+  are NOT IMPLEMENTED.
 
 ## Open questions (proposed default; work proceeds on the default)
 
@@ -441,7 +474,14 @@ never raw URLs.
   `apps/web/src/lib/storage.ts`, `apps/web/src/lib/storage-keys.ts`,
   `apps/web/src/lib/session-artifact-keys.ts`,
   `apps/web/src/lib/ci-failure-inspect.ts`.
-- Data: `packages/core/db/schema.ts` (`secrets`, `knowledgeIngestJobs`),
+- Evidence: `apps/runner/src/evidence-writer.ts` (`EvidenceWriter`,
+  `buildWorkerSecretValues`), `apps/web/src/lib/evidence-backend.ts`,
+  `apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts`,
+  `apps/web/src/lib/evidence-confirm.ts`, `apps/web/src/lib/ci-job-log-evidence.ts`,
+  `apps/web/src/lib/evidence-read.ts`, `apps/web/src/lib/evidence-inline.ts`,
+  `packages/core/evidence-chunker.ts`, `apps/web/src/lib/evidence-indexer.ts`,
+  `apps/web/src/app/api/cron/evidence-index/route.ts`.
+- Data: `packages/core/db/schema.ts` (`secrets`, `evidenceBackends`, `evidenceObjects`),
   `packages/core/secrets/types.ts`, `packages/core/redaction.ts`.
 - Knowledge: `packages/core/knowledge-store/types.ts`, `.../health.ts`,
   `packages/core/mcp-tools.ts` (`CORPORA`, `mirrorWorkProduct`).
@@ -460,10 +500,10 @@ never raw URLs.
 Ordered; each item is one PR against the mission integration branch. Every
 schema change follows `.claude/skills/schema-change` (compare the newest
 `packages/core/drizzle/` index against `origin/dev` immediately before
-generating, and again before pushing). None of this is built yet. Task
-`0c635dfe` (the compact `result.evidence` record) has not landed on `dev`;
-tasks 2, 3 and 4 define the pointer side as an extension of it, and wire
-`result.evidence.links[]` only if it exists when they start.
+generating, and again before pushing). **Status:** items 1 to 6 are built,
+except the daily probe and health alert from item 1; items 7 and 8 are NOT
+IMPLEMENTED. Task `0c635dfe` (the compact `result.evidence` record) landed,
+but `result.evidence.links[]` was not wired to `evidence_objects.id`.
 
 Two decisions here differ from the original brief and are deliberate: chat and
 MCP read evidence through the server proxy (Invariant 6), so the presigned GET
@@ -480,8 +520,10 @@ corpus").
   resolution order workspace → team → `buildd_default`.
 - **Paths:** `packages/core/db/schema.ts`, `packages/core/drizzle/*`,
   `packages/core/secrets/types.ts`, `apps/web/src/lib/storage.ts`,
-  `apps/web/src/lib/evidence-backends.ts` (new),
-  `apps/web/src/app/api/evidence-backends/**` (new),
+  `apps/web/src/lib/evidence-backend.ts`,
+  `apps/web/src/app/api/evidence-backends/route.ts`,
+  `apps/web/src/app/api/evidence-backends/[id]/route.ts`,
+  `apps/web/src/app/api/evidence-backends/[id]/verify/route.ts`,
   `packages/core/mcp-tools.ts`, `packages/core/mcp-tool-groups.ts`,
   `apps/web/src/lib/chat/registry.ts` (list/get reads, writes deferred).
 - **Depends on:** none.
@@ -502,9 +544,9 @@ corpus").
   (`upload_state`, one retry, task status untouched).
 - **Paths:** `packages/core/db/schema.ts`, `packages/core/drizzle/*`,
   `apps/web/src/lib/storage-keys.ts`,
-  `apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts` (new),
+  `apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts`,
   `apps/runner/src/workers.ts`, `apps/runner/src/buildd.ts`,
-  `apps/runner/src/evidence-writer.ts` (new), `packages/shared/src/types.ts`.
+  `apps/runner/src/evidence-writer.ts`, `packages/shared/src/types.ts`.
 - **Depends on:** 1.
 - **Acceptance:** AC-2 (runner unit test with a seeded secret, asserting the
   stored bytes never contain it); AC-7; a test that a failed upload leaves
@@ -518,9 +560,9 @@ corpus").
   exact values plus generic patterns, write a `ci_job_log` object, and insert
   pointer rows for the retry task and its root task.
 - **Paths:** `apps/web/src/lib/ci-failure-inspect.ts`,
-  `apps/web/src/lib/ci-failure-digest.ts`, `apps/web/src/lib/evidence-writer.ts`
-  (new, server-side counterpart of the runner writer), the CI-failure webhook
-  handler that calls the inspector.
+  `apps/web/src/lib/ci-failure-digest.ts`, `apps/web/src/lib/ci-job-log-evidence.ts`
+  (`captureCiJobLogEvidence`, the server-side counterpart of the runner
+  writer), called from `apps/web/src/lib/ci-failure-retry.ts`.
 - **Depends on:** 2.
 - **Acceptance:** AC-3; a fixture log with ANSI codes and a masked token
   round-trips clean; with no backend and a sensitive workspace, nothing is
@@ -534,8 +576,8 @@ corpus").
   (reach `byTask`; `requireQuery: ['workspaceId']` for the PR lookup); object
   list (id, kind, bytes, state; pointers only, no key lines) inlined into
   `get_task`, `get_pr` and `explain`.
-- **Paths:** `apps/web/src/app/api/tasks/[id]/evidence/route.ts` (new),
-  `apps/web/src/app/api/evidence/route.ts` (new), `packages/core/mcp-tools.ts`,
+- **Paths:** `apps/web/src/app/api/tasks/[id]/evidence/route.ts`,
+  `apps/web/src/app/api/evidence/route.ts`, `packages/core/mcp-tools.ts`,
   `packages/core/mcp-tool-groups.ts`, `apps/web/src/lib/chat/registry.ts`,
   `apps/web/src/lib/chat/in-process-api.ts`, `apps/web/src/lib/chat/reach-rules.ts`.
 - **Depends on:** 2 (3 adds `ci_job_log` fixtures but is not required).
@@ -555,8 +597,8 @@ corpus").
   `recall scope=evidence`; sensitive workspaces and private tasks return nothing.
 - **Paths:** `packages/core/knowledge-store/types.ts`,
   `packages/core/knowledge-store/health.ts`, `packages/core/mcp-tools.ts`,
-  `packages/core/evidence-chunker.ts` (new),
-  `apps/web/src/lib/evidence-indexer.ts` (new), the cron route that hosts the
+  `packages/core/evidence-chunker.ts`,
+  `apps/web/src/lib/evidence-indexer.ts`, the cron route that hosts the
   sweep (`apps/web/src/app/api/cron/evidence-index/route.ts`, hourly), `apps/web/src/lib/chat/registry.ts` if `recall` scopes are enumerated
   there.
 - **Depends on:** 2 (3 for CI-log chunks).
@@ -570,7 +612,7 @@ corpus").
 - **Scope:** Settings → Storage (add, edit, verify, remove a backend; status and
   last error; lifecycle-rule snippet) and the task-page Evidence tab (object
   list, tail viewer with grep, short-lived presigned GET for download, UI only).
-- **Paths:** `apps/web/src/app/app/(protected)/settings/storage/**` (new),
+- **Paths:** `apps/web/src/app/app/(protected)/settings/storage/**`,
   `apps/web/src/app/app/(protected)/tasks/[id]/**` (Evidence tab), the presign
   route for downloads under `apps/web/src/app/api/evidence/`.
 - **Depends on:** 1 for the settings page; 4 for the Evidence tab.
@@ -578,7 +620,7 @@ corpus").
   component test that the credential form never echoes a stored secret back; the
   download URL is minted per click and expires in minutes.
 
-### 7. Segmented transcripts (P2)
+### 7. Segmented transcripts (P2) — NOT IMPLEMENTED
 
 - **Scope:** flush transcript segments before the ring buffers evict, keep
   `tool_result` bodies, write a per-worker `manifest.json` with `complete`;
@@ -590,13 +632,14 @@ corpus").
 - **Acceptance:** AC-4; a runner that dies mid-session leaves earlier segments
   readable with `complete = false`.
 
-### 8. Retention, deletion and re-scan (P4)
+### 8. Retention, deletion and re-scan (P4) — NOT IMPLEMENTED
 
 - **Scope:** daily job deleting expired objects, pointers and chunks; task and
   workspace `forget` deletion; re-scan objects older than the current
-  `redactionVersion` on demand; health alert for a `failing` backend.
+  redactionVersion on demand; health alert for a `failing` backend.
 - **Paths:** a new cron route under `apps/web/src/app/api/cron/`,
-  `apps/web/src/lib/evidence-retention.ts` (new), `apps/web/src/lib/storage.ts`.
+  apps/web/src/lib/evidence-retention.ts (new, not created yet),
+  `apps/web/src/lib/storage.ts`.
 - **Depends on:** 2 and 5.
 - **Acceptance:** AC-8; deleting a task removes its objects, pointer rows and
   chunks; a bucket that rejects DELETE leaves the pointer row marked for retry

@@ -34,3 +34,9 @@ describe('TaskGrid — empty Activity with chat available', () => {
     expect(html).not.toContain('href="/app/tasks/new"');
   });
 });
+
+it('keeps the selected historical band visible even when its task list is empty', () => {
+  const html = renderToStaticMarkup(<TaskGrid tasks={[]} bandFilterLabel="Released · Jan 10" />);
+  expect(html).toContain('Released · Jan 10');
+  expect(html).toContain('Clear band filter');
+});

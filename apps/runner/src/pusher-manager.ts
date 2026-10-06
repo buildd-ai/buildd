@@ -14,9 +14,33 @@ import { logCollapsed } from './log';
 const CLAIM_POLL_FAILURE_COLLAPSE_WINDOW_MS = 5 * 60_000;
 
 /** A targeted claim the server answered with no_pending_tasks (see WorkerManager.claimAndStart). */
+/** Exclusion codes that do mean someone else has (or finished) the task. */
+const RACE_EXCLUSION_CODES = new Set(['not_found', 'not_pending', 'already_claimed', 'active_worker', 'state_changed']);
+
+type ClaimRejection = {
+  claimError?: unknown;
+  claimReason?: unknown;
+  claimTaskExclusionCode?: unknown;
+  claimTaskExclusionDetail?: unknown;
+};
+
 function isLostClaimRace(err: unknown): boolean {
-  const e = err as { claimError?: unknown; claimReason?: unknown } | null;
-  return !!e && e.claimError === 'server_rejected' && e.claimReason === 'no_pending_tasks';
+  const e = err as ClaimRejection | null;
+  if (!e || e.claimError !== 'server_rejected' || e.claimReason !== 'no_pending_tasks') return false;
+  return typeof e.claimTaskExclusionCode !== 'string' || RACE_EXCLUSION_CODES.has(e.claimTaskExclusionCode);
+}
+
+/**
+ * The claim gate that refused a task we were woken for (e.g. `workspace_cap`),
+ * or null. The claim WHERE drops such a task and answers `no_pending_tasks`,
+ * which reads exactly like a lost race unless the named gate is printed.
+ */
+function claimGateRefusal(err: unknown): { code: string; detail: string | null } | null {
+  const e = err as ClaimRejection | null;
+  if (!e || e.claimError !== 'server_rejected') return null;
+  const code = e.claimTaskExclusionCode;
+  if (typeof code !== 'string' || RACE_EXCLUSION_CODES.has(code)) return null;
+  return { code, detail: typeof e.claimTaskExclusionDetail === 'string' ? e.claimTaskExclusionDetail : null };
 }
 
 type EventHandler = (event: any) => void;
@@ -216,7 +240,10 @@ export class PusherManager {
       // Losing the race for a broadcast assignment (another runner or our own
       // poll claimed it first) is the expected outcome, not a failure: one
       // info line, no stack. Anything else stays an error.
-      if (isLostClaimRace(err)) {
+      const refusal = claimGateRefusal(err);
+      if (refusal) {
+        console.log(`Assigned task ${task.id} refused by claim gate ${refusal.code}${refusal.detail ? `: ${refusal.detail}` : ''}`);
+      } else if (isLostClaimRace(err)) {
         console.log(`Lost claim race for assigned task ${task.id}: already claimed or no longer pending`);
       } else {
         console.error(`Failed to start assigned task ${task.id}:`, err);

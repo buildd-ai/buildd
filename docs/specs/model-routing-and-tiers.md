@@ -79,6 +79,13 @@ evaluate by hand.
 - A role whose model comes from **inference** (`context.roleInferred` present)
   contributes nothing to the model — not a pin, not a floor. Only a stated role
   moves the model (`knowledge-base: buildd/design/role-routing.md` §4.1).
+- A task created with no role gets its kind's default role when the workspace
+  has that role as a routable candidate (engineering → builder, research →
+  researcher, writing → writer, analysis → analyst, coordination → organizer;
+  `apps/web/src/lib/task-role-default.ts`). It is stamped
+  `context.roleInferred` with `source: 'kind'`, so it follows the rule above,
+  and the decision model may replace it while the task is unclaimed. A stated
+  role is never replaced.
 - A role's `model` is a **floor, never a cap**: the clamp only fires when the
   computed tier is *below* it (`model-router.ts:152-157`). A role pinned to
   `opus`/`premium` therefore defeats every downshift the budget and spike gates
@@ -370,6 +377,13 @@ matrix can be argued about with data rather than taste.
   outcome. It is skipped entirely when the completion is an auto-retry, so a
   retried task contributes one row, not one per attempt
   (`apps/web/src/app/api/workers/[id]/route.ts:1614-1629`).
+- The row's `outcome` is the task's FINAL status, not the one the worker
+  reported: a contract guard or a completion-policy slot (loop exhausted,
+  release failed) that fails a reported completion records `failed`. A release
+  held for CI records nothing from the worker PATCH; the PATCH keeps the row on
+  `tasks.context.heldReleaseOutcome`, and the release PR's CI resolution
+  records it with the release's outcome
+  (`apps/web/src/lib/routing-analytics-subscribers.ts`).
 - The row copies `kind`, `complexity`, `classified_by` and `predicted_model`
   from the task row rather than trusting the caller
   (`packages/core/routing-analytics.ts:45-74`).

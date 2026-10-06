@@ -30,6 +30,7 @@
  * - The actions are `TaskActionZone`, the renderer the task sheet and the
  *   task page mount, from the board model already loaded (no fetch on select).
  */
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { formatAge, type BoardTask, type MissionBoardModel } from '@/lib/mission-board';
@@ -248,7 +249,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
     landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
-  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_minmax(200px,auto)] md:gap-6';
+  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_fit-content(60%)] md:gap-6';
 
   return (
     <div
@@ -291,6 +292,8 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
             blockedByCount={blockedByCount}
             backend={t.backend}
             lastError={null}
+            failureKind={t.failureKind}
+            auditTaskId={t.failureKind === 'verification' && isSurfaceAuditTask(t.title) ? t.id : null}
             worker={t.workerId ? { id: t.workerId, waitingFor: t.waitingFor } : null}
             historyHref={taskPageHref({ taskId: t.id, missionId: link.missionId })}
             roleSlug={t.roleSlug}
