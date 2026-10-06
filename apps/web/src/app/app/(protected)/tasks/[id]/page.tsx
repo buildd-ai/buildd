@@ -1,5 +1,4 @@
 import { Suspense } from 'react';
-import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
@@ -68,7 +67,7 @@ import { listTaskEvidenceObjects, toEvidenceObjectSummary } from '@/lib/evidence
 import { evidenceViewOf } from '@/lib/task-evidence';
 import MissionContextBar from './MissionContextBar';
 import TaskPageActionZone from './TaskPageActionZone';
-import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
+import { auditTaskIdFor, loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 import RunnerReachBanner from './RunnerReachBanner';
 import { loadRunnerReachDiagnosis } from '@/lib/runner-reach';
 import { canAdministerTeamKeys } from '@/lib/key-level-policy';
@@ -1221,7 +1220,7 @@ export default async function TaskDetailPage({
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
               failureKind={failureKind}
-              auditTaskId={failureKind === 'verification' && isSurfaceAuditTask(task.title) ? task.id : null}
+              auditTaskId={auditTaskIdFor(task, failureKind)}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
               roleSlug={task.roleSlug}
