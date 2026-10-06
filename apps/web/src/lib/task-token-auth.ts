@@ -270,3 +270,18 @@ export async function taskScopeAllowsMissionTask(
   if (task.workspaceId !== account.taskScope.workspaceId || !task.missionId) return false;
   return taskScopeAllowsMission(account, task.missionId);
 }
+
+/**
+ * Read-only widening of `taskScopeAllowsMissionTask`: a worker-level task token
+ * may also READ a sibling task on its own task's mission (same workspace), the
+ * same tasks `list_tasks` shows it. Writes keep the stricter rule above.
+ */
+export async function taskScopeAllowsMissionTaskRead(
+  account: { level?: string | null; taskScope?: TaskScope },
+  task: { id: string; workspaceId: string | null; missionId: string | null; parentTaskId?: string | null },
+): Promise<boolean> {
+  if (await taskScopeAllowsMissionTask(account, task)) return true;
+  if (!account.taskScope) return true;
+  if (task.workspaceId !== account.taskScope.workspaceId || !task.missionId) return false;
+  return taskScopeAllowsMission(account, task.missionId);
+}
