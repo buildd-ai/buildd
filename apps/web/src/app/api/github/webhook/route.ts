@@ -7,7 +7,6 @@ import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { announceTaskCreated, wakeTask } from '@/lib/dispatch-authority';
-import { retryCiFailureForPr } from '@/lib/ci-failure-retry';
 import { notifyOperator } from '@/lib/pushover';
 import { notifyTeamOf } from '@/lib/notify';
 import { isMissionPrTask } from '@buildd/core/mission-integration';
@@ -17,28 +16,22 @@ import { detachInteractiveWorkersOfEndedTasks } from '@/lib/interactive-detach';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, enqueuePushIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
-import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
-import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
-import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
-import { reviewerTitle } from '@/lib/task-title';
-import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
-import { tryDispatchMigrationCollisionRetry } from '@/lib/migration-collision-retry';
+import { resolvePolicy } from '@/lib/merge-policy';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches, prUrlFor } from '@/lib/repo-scope';
 import { emit } from '@/lib/core-emit';
 import { emitHeldReleaseOutcome } from '@/lib/task-outcome-event';
+import { PR_OPENED_POLICY } from '@/modules';
 import type { PrOwnerFact } from '@/lib/core-events';
 import { stampPrMergedOnAllRows } from '@/lib/pr-merge-stamp';
 import { requestRecheckForMergedDocFix } from '@/lib/spec-recheck';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { schedulePrScopeReconcile } from '@/lib/pr-scope-reconcile-trigger';
-import { conformanceManifest } from '@/lib/path-declaration';
 import { applyTaskCancelSideEffects, applyTaskReopenSideEffects } from '@/lib/task-cancel';
-import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
-import { isApprovalSelfMergeable, pickReviewerRole } from '@/lib/pr-review-status';
+import { readPrReviewStatus } from '@/lib/pr-review-request';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { carryForwardApprovalIfUnchanged } from '@/lib/approval-carry-forward';
 import { landPr, resolveLandingMode } from '@/lib/pr-landing';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
@@ -425,11 +418,11 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         await reportTaskPolicyOutcome(worker.taskId, [{ type: 'tests', passed: false }]);
       }
     }
-    // Subscriptions ledger: "tell me if CI goes red on PR N". One row per head SHA.
+    // Per PR: the subscriptions ledger records "CI went red on PR N" (one row
+    // per head SHA), then the reviews module asks for a bounded CI-fix task.
     for (const pr of check_suite.pull_requests) {
-      await emit({ type: 'pr.ci_failed', repoFullName: repository.full_name, prNumber: pr.number, headSha });
+      await emit({ type: 'pr.ci_failed', repoFullName: repository.full_name, prNumber: pr.number, headSha, installationId: installation.id });
     }
-    await handleCheckSuiteFailure(check_suite, repository, installation.id);
     await handleReleasePrCiFailure(check_suite.pull_requests, repository.full_name);
     return;
   }
@@ -855,51 +848,34 @@ async function handlePullRequestEvent(event: {
         });
       }
 
-      // Follow-up push on a PR buildd is already working (CI fix or review fix).
-      // onlyIfPresent: no sticky comment yet means we haven't claimed this PR,
-      // so a bare "fixes pushed" note would be noise.
+      // A push to a PR buildd owns: the reviews module notes it on the PR and,
+      // after a non-approving verdict, re-dispatches a reviewer at the new head.
       if (event.installation && action === 'synchronize') {
-        await appendPrActivity({
+        await emit({
+          type: 'pr.synchronized',
           installationId: event.installation.id,
           repoFullName: repository.full_name,
-          prNumber: pr.number,
-          entry: {
-            kind: 'changes_pushed',
-            sha: pr.head.sha.slice(0, 7),
-            url: `${pr.html_url}/commits/${pr.head.sha}`,
-          },
-          onlyIfPresent: true,
-          workspaceId: openWorker.workspaceId,
+          pr: { number: pr.number, headSha: pr.head.sha, htmlUrl: pr.html_url, baseRef: pr.base?.ref ?? null, body: pr.body ?? null, draft: !!pr.draft },
+          worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId ?? null, branch: openWorker.branch },
         });
       }
     }
 
-    // On PR open (not synchronize/reopen), check merge policy and possibly dispatch reviewer
+    // On PR open (not synchronize/reopen): the PR-opened policy slot (reviews)
+    // may take the PR (a reviewer dispatched, a human escalation, a mechanical
+    // fix), and a PR it holds skips core's no-CI auto-merge below.
     if (!pr.draft && event.installation && action === 'opened' && openWorker?.taskId) {
-      const dispatched = await maybeDispatchReviewer(
-        event.installation.id,
-        repository.full_name,
-        pr,
-        openWorker as typeof openWorker & { taskId: string },
-      );
-      if (dispatched) {
+      const { held } = await PR_OPENED_POLICY({
+        installationId: event.installation.id,
+        repoFullName: repository.full_name,
+        pr: { number: pr.number, headSha: pr.head.sha, htmlUrl: pr.html_url, baseRef: pr.base?.ref ?? null, body: pr.body ?? null },
+        worker: { id: openWorker.id, workspaceId: openWorker.workspaceId, taskId: openWorker.taskId, branch: openWorker.branch },
+      });
+      if (held) {
         // Work-tracker update still fires; skip no-CI auto-merge path
         maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, false).catch(() => {});
         return;
       }
-    }
-
-    // A push to an already-open PR: if the PR carries an existing terminal,
-    // non-approving verdict (changes_requested/escalated), re-dispatch a
-    // reviewer against the new head. Without this the review loop never
-    // closes — see maybeReDispatchReviewer's doc comment.
-    if (!pr.draft && event.installation && action === 'synchronize' && openWorker?.taskId) {
-      await maybeReDispatchReviewer(
-        event.installation.id,
-        repository.full_name,
-        pr,
-        openWorker as typeof openWorker & { taskId: string },
-      );
     }
 
     // A freshly-opened (or un-drafted) PR on a repo with NO CI: auto-merge here,
@@ -1328,470 +1304,6 @@ async function reportMissionGateRetarget(opts: {
     + `instead of integration branch '${opts.fromBase}' — `
     + (opts.restored ? 'base restored by buildd' : 'review gate lost'),
   );
-}
-
-/**
- * CI check suite failed → hand each PR in the suite to `retryCiFailureForPr`
- * (lib/ci-failure-retry.ts), which files a bounded CI-fix task or records why
- * not. The red-PR sweep (lib/ci-red-sweep.ts) calls the same function for a PR
- * this event could not act on.
- */
-async function handleCheckSuiteFailure(
-  checkSuite: GitHubCheckSuiteEvent['check_suite'],
-  repository: GitHubCheckSuiteEvent['repository'],
-  installationId: number,
-) {
-  for (const pr of checkSuite.pull_requests) {
-    try {
-      await retryCiFailureForPr({
-        repoFullName: repository.full_name,
-        prNumber: pr.number,
-        headSha: checkSuite.head_sha,
-        installationId,
-        surface: 'webhook:check_suite',
-      });
-    } catch (error) {
-      console.error(`Error creating CI retry task for PR #${pr.number} on ${repository.full_name}:`, error);
-    }
-  }
-}
-
-/**
- * The role a webhook-dispatched review runs as, checked against the roles the
- * workspace actually has — the same `pickReviewerRole` rule the create_pr,
- * manual-review and re-review routes apply. The policy's role slug is only a
- * preference: a reviewer task routed to a role no runner advertises is never
- * claimed. Null when the workspace has no role at all.
- */
-async function resolveReviewerRoleForDispatch(
-  workspace: { id: string; teamId: string },
-  policyRole: string | null,
-  prNumber: number,
-): Promise<string | null> {
-  const roles = await listWorkspaceRoles(workspace.id, workspace.teamId);
-  const picked = pickReviewerRole({ requested: null, policyRole, available: roles });
-  if (!picked.role) {
-    console.warn(`[reviewer] Not dispatching a reviewer for PR #${prNumber}: ${picked.error}`);
-    return null;
-  }
-  if (policyRole && picked.role !== policyRole) {
-    console.warn(
-      `[reviewer] PR #${prNumber}: policy reviewer role '${policyRole}' does not exist in this workspace — using '${picked.role}'`,
-    );
-  }
-  return picked.role;
-}
-
-/**
- * BT-5 / BT-10: Check merge policy for an opened PR and dispatch a reviewer task
- * if the workspace is configured for agent-review.
- *
- * Returns true if we handled the PR (reviewer task created or pre-flight escalated)
- * and the caller should skip the normal no-CI auto-merge path.
- */
-async function maybeDispatchReviewer(
-  installationId: number,
-  repoFullName: string,
-  // `body` is read for its lede only — see renderLedeGuidance in @/lib/reviewer.
-  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null },
-  openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
-): Promise<boolean> {
-  try {
-    const workspace = await db.query.workspaces.findFirst({
-      where: eq(workspaces.id, openWorker.workspaceId),
-    });
-    if (!workspace) return false;
-
-    const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
-    });
-    if (!task) return false;
-
-    // Load mission separately to resolve merge policy
-    type PolicyMission = {
-      mergePolicy?: import('@buildd/shared').MergePolicy | null;
-      requiresReview?: boolean;
-      workingBranch?: string | null;
-      integrationBranchEnabled?: boolean;
-    };
-    let mission: PolicyMission | null = null;
-    if (task.missionId) {
-      const row = await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
-        columns: RESOLVE_POLICY_MISSION_COLUMNS,
-      });
-      if (row) mission = row as PolicyMission;
-    }
-    // Take the base ref straight off the webhook payload rather than re-reading
-    // workers.prBaseRef: this runs on PR open, where the DB write from the create
-    // call and this event race. The payload is authoritative and race-free.
-    const basePolicy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
-
-    // Fetch PR files first (needed for policyConfig override AND pre-flight check)
-    let prFiles: Array<{
-      filename: string;
-      status: string;
-      additions: number;
-      deletions: number;
-      patch?: string | null;
-      previous_filename?: string | null;
-    }> = [];
-    try {
-      const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
-      if (Array.isArray(raw)) prFiles = raw;
-    } catch (err) {
-      console.warn(`[reviewer] Could not fetch PR files for pre-flight check on #${pr.number}:`, err);
-    }
-
-    // Classify migrations first: the schema risk class keys off the verdict
-    // (EXPAND passes), not off the mere presence of a schema/migration path.
-    const migrationSafety = await inspectPullRequestMigrations({
-      installationId,
-      repoFullName,
-      prNumber: pr.number,
-      headSha: pr.head.sha,
-      files: prFiles,
-      baseRef: pr.base?.ref ?? null,
-    });
-
-    // A migration-number collision this PR owns (see `classifyPullRequestMigrations`)
-    // is a mechanical fix, not a policy decision — dispatch a renumber task
-    // through the conflict-retry machinery instead of escalating to a human,
-    // regardless of merge-policy tier. Only when the dispatch didn't handle it
-    // (retries exhausted, feature disabled) does this fall through to the
-    // normal tier/escalation logic below, unchanged.
-    if (!migrationSafety.safe && migrationSafety.collision) {
-      const collisionRetry = await tryDispatchMigrationCollisionRetry({
-        collision: migrationSafety.collision,
-        workerId: openWorker.id,
-        taskId: task.id,
-        prNumber: pr.number,
-        headSha: pr.head.sha,
-        repoFullName,
-        workspaceId: openWorker.workspaceId,
-        installationId,
-      }).catch((err) => {
-        console.error(`[reviewer] migration-collision retry dispatch failed for PR #${pr.number}:`, err);
-        return { handled: false };
-      });
-      if (collisionRetry.handled) return true;
-    }
-
-    // Apply semantic risk-class policy override (detected policyConfig paths)
-    const policyConfig = workspace.gitConfig?.policyConfig ?? null;
-    const policy = applyPolicyConfigToMergePolicy(
-      basePolicy,
-      policyConfig,
-      prFiles.map((f) => f.filename),
-      migrationSafety,
-    );
-
-    if (policy.tier !== 'agent-review' && policy.tier !== 'human') return false;
-
-    // BT-10: Pre-flight escalation guard (also handles human-tier from policyConfig)
-    const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig ?? undefined);
-    const shouldEscalateToHuman = preflight.shouldEscalate || policy.tier === 'human';
-    if (shouldEscalateToHuman) {
-      const reason = preflight.shouldEscalate ? preflight.reason : `workspace policy requires human review`;
-      console.log(`[reviewer] Pre-flight escalation for PR #${pr.number}: ${reason}`);
-      if (task.missionId) {
-        await db.insert(missionNotes).values({
-          missionId: task.missionId,
-          taskId: task.id,
-          authorType: 'system',
-          type: 'reviewer_escalated',
-          title: `PR #${pr.number} escalated to human (pre-flight)`,
-          body: reason,
-          status: 'open',
-        });
-        await emit({ type: 'pr.needs_human', missionId: task.missionId,
-          title: `PR #${pr.number} requires human review`,
-          prUrl: pr.html_url,
-          prNumber: pr.number,
-          headSha: pr.head.sha,
-          reason: 'auto_merge_blocked',
-          message: `${task.title} — ${reason}`,
-        });
-      }
-      void notifyTeamOf({ workspaceId: workspace.id }, 'needsAttention', {
-        title: `PR #${pr.number} escalated`,
-        message: reason,
-        url: pr.html_url,
-        urlTitle: 'View PR',
-      });
-      await appendPrActivity({
-        installationId,
-        repoFullName,
-        prNumber: pr.number,
-        entry: { kind: 'human_review_required', note: reason },
-        workspaceId: openWorker.workspaceId,
-      });
-      return true; // handled — skip auto-merge
-    }
-
-    if (policy.tier !== 'agent-review') return false;
-
-    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
-    if (!reviewerRole) {
-      // No role can run the review. Hold the PR for a human rather than fall
-      // through to auto-merge: the policy asked for a review.
-      await appendPrActivity({
-        installationId,
-        repoFullName,
-        prNumber: pr.number,
-        entry: { kind: 'human_review_required', note: 'the workspace has no role that can run the agent review' },
-        workspaceId: openWorker.workspaceId,
-      });
-      return true;
-    }
-
-    // iteration/maxIterations are stored in task.context JSONB (not columns)
-    const taskCtx = (task.context ?? {}) as Record<string, unknown>;
-    const originalTask = {
-      title: task.title,
-      description: task.description,
-      backend: task.backend,
-      missionId: task.missionId ?? null,
-      pathManifest: conformanceManifest(task),
-      iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
-      maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
-    };
-
-    // Create reviewer task
-    const reviewerTask = await createReviewerTask({
-      workspaceId: openWorker.workspaceId,
-      originalTaskId: task.id,
-      originalTask,
-      worker: { branch: openWorker.branch },
-      prNumber: pr.number,
-      prUrl: pr.html_url,
-      headSha: pr.head.sha,
-      reviewerRole,
-      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
-      installationId,
-      repoFullName,
-      policyConfig: policyConfig ?? undefined,
-      migrationSafety,
-      // Already fetched above for the policy override and the pre-flight
-      // check — passing it through saves a second identical GitHub call.
-      prFiles,
-      // The webhook payload already carries the body; the reviewer reads it for
-      // its lede only. Passing it saves a GET the context builder would
-      // otherwise make per reviewed PR.
-      prBody: pr.body ?? null,
-      // Same for the base branch the reviewer diffs against.
-      baseRef: pr.base?.ref ?? null,
-    });
-
-    // A deduplicated result is another producer's reviewer: it was dispatched
-    // and announced by whoever created it.
-    if (reviewerTask && !reviewerTask.deduplicated) {
-      // The announcement needs more than just the id — pass the reviewer task details
-      // we know from the params rather than re-querying the DB.
-      const reviewerTaskFull = {
-        id: reviewerTask.id,
-        title: reviewerTitle(pr.number, task.title),
-        description: null as null,
-        workspaceId: openWorker.workspaceId,
-        missionId: task.missionId ?? null,
-        backend: originalTask.backend,
-        roleSlug: reviewerRole,
-      };
-      await announceTaskCreated(reviewerTaskFull, workspace);
-      await wakeTask(reviewerTaskFull.id, 'task.created');
-      console.log(`[reviewer] Dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName}`);
-      // Tell the PR (not just the dashboard) that an agent has this.
-      await appendPrActivity({
-        installationId,
-        repoFullName,
-        prNumber: pr.number,
-        entry: { kind: 'reviewing' },
-        workspaceId: openWorker.workspaceId,
-      });
-    }
-
-    return true; // handled — skip auto-merge
-  } catch (err) {
-    console.error(`[reviewer] maybeDispatchReviewer failed for PR #${pr.number}:`, err);
-    return false;
-  }
-}
-
-/**
- * On a push to an already-open PR (`synchronize`), re-dispatch a reviewer
- * when the PR's current review verdict is a TERMINAL, NON-APPROVING one
- * (`changes_requested` / `escalated`) made against a commit the push has now
- * superseded.
- *
- * Closes the gap `maybeDispatchReviewer` leaves: that function only ever
- * fires on `action === 'opened'`, so the fix a retry task pushes after a
- * request-changes verdict was never re-reviewed — the review loop opened and
- * never closed (see review-verdict-gate.ts's module doc for the other half
- * of that bug, the gate's own stale-SHA handling).
- *
- * An `approved` verdict is deliberately NOT re-dispatched here — see
- * review-verdict-gate.ts: a push after an approval makes the gate itself
- * treat that approval as stale (blocking) rather than this function firing a
- * fresh agent review on every push after every approval, which is by far the
- * common case and usually merges before another push ever lands.
- *
- * Single-flight: skips when a review round is already `queued`/`reviewing`
- * for this PR — the same one-reviewer-per-PR-at-a-time rule the manual
- * `POST /api/prs/[prNumber]/re-review` route and the MCP `request_pr_review`
- * force path apply, so a rapid run of pushes dispatches at most one reviewer.
- * `createReviewerTask`'s own (workspace, PR, headSha) dedup guard is a
- * second, independent backstop against a redelivered webhook.
- *
- * The dispatched round inherits the SAME iteration/maxIterations the request-
- * changes retry loop already tracks on whichever task currently owns the PR
- * (the original task, or the newest retry) — so the existing cap in
- * `handleReviewerOutcomeIfNeeded` (apps/web/src/app/api/workers/[id]/route.ts,
- * default 3) keeps capping the round count and escalating on exhaustion; this
- * function does not need a cap of its own.
- */
-async function maybeReDispatchReviewer(
-  installationId: number,
-  repoFullName: string,
-  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null },
-  openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
-): Promise<void> {
-  try {
-    const status = await readPrReviewStatus({ workspaceId: openWorker.workspaceId, prNumber: pr.number });
-
-    if (status.state === 'queued' || status.state === 'reviewing') {
-      fireGateEvent({
-        gate: GATE_SLUGS.REVIEWER_SINGLE_FLIGHT,
-        surface: 'webhook synchronize',
-        outcome: 'deferred',
-        reason: 'a reviewer is already working this PR',
-        workspaceId: openWorker.workspaceId,
-        taskId: openWorker.taskId,
-        workerId: openWorker.id,
-        callerOrigin: 'system',
-        detail: { prNumber: pr.number, reviewTaskId: status.reviewTaskId },
-      });
-      return;
-    }
-
-    // An approval is not re-reviewed on push. If the push left the PR diff
-    // unchanged (rebase / base merge), record that the approval covers the
-    // new head so the review gate does not treat it as stale; otherwise the
-    // gate blocks it as stale_approval, as before.
-    if (status.state === 'approved') {
-      if (pr.base?.ref) {
-        await carryForwardApprovalIfUnchanged({
-          installationId,
-          repoFullName,
-          workspaceId: openWorker.workspaceId,
-          prNumber: pr.number,
-          baseRef: pr.base.ref,
-          headSha: pr.head.sha,
-          deps: { readStatus: async () => status },
-        });
-      }
-      return;
-    }
-
-    if (status.state !== 'changes_requested' && status.state !== 'escalated') return;
-    const priorVerdictKind = status.verdict;
-    if (priorVerdictKind !== 'request-changes' && priorVerdictKind !== 'escalate') return;
-    // No recorded SHA, or the head hasn't actually moved since the verdict
-    // (a redelivered/duplicate synchronize) — nothing to re-review.
-    const priorHeadSha = status.reviewHeadSha;
-    if (!priorHeadSha || priorHeadSha === pr.head.sha) return;
-
-    const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, openWorker.workspaceId) });
-    if (!workspace) return;
-
-    const task = await db.query.tasks.findFirst({
-      where: eq(tasks.id, openWorker.taskId),
-      columns: { id: true, title: true, description: true, backend: true, missionId: true, pathManifest: true, pathDeclaration: true, context: true },
-    });
-    if (!task) return;
-
-    let mission: {
-      mergePolicy?: import('@buildd/shared').MergePolicy | null;
-      requiresReview?: boolean;
-      workingBranch?: string | null;
-      integrationBranchEnabled?: boolean;
-    } | null = null;
-    if (task.missionId) {
-      const row = await db.query.missions.findFirst({
-        where: eq(missions.id, task.missionId),
-        columns: RESOLVE_POLICY_MISSION_COLUMNS,
-      });
-      if (row) mission = row;
-    }
-    const policy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
-    // The PR was already dispatched to a reviewer once under this policy — a
-    // tier change since then (workspace policy edited mid-review) means the
-    // workspace no longer wants an agent re-reviewing it.
-    if (policy.tier !== 'agent-review') return;
-
-    const reviewerRole = await resolveReviewerRoleForDispatch(workspace, policy.agentReview?.reviewerRole ?? null, pr.number);
-    if (!reviewerRole) return;
-
-    const taskCtx = (task.context ?? {}) as Record<string, unknown>;
-    const originalTask = {
-      title: task.title,
-      description: task.description,
-      backend: task.backend,
-      missionId: task.missionId ?? null,
-      pathManifest: conformanceManifest(task),
-      iteration: typeof taskCtx.iteration === 'number' ? taskCtx.iteration : null,
-      maxIterations: typeof taskCtx.maxIterations === 'number' ? taskCtx.maxIterations : null,
-    };
-
-    const reviewerTask = await createReviewerTask({
-      workspaceId: openWorker.workspaceId,
-      originalTaskId: task.id,
-      originalTask,
-      worker: { branch: openWorker.branch },
-      prNumber: pr.number,
-      prUrl: pr.html_url,
-      headSha: pr.head.sha,
-      reviewerRole,
-      confidenceThreshold: policy.agentReview?.maxConfidenceThreshold,
-      installationId,
-      repoFullName,
-      policyConfig: workspace.gitConfig?.policyConfig ?? undefined,
-      baseRef: pr.base?.ref ?? null,
-      priorVerdict: {
-        headSha: priorHeadSha,
-        verdict: priorVerdictKind,
-        confidence: status.confidence ?? 0,
-        summary: status.summary ?? '',
-        feedback: status.feedback,
-        escalationReason: status.escalationReason,
-      },
-    });
-
-    if (!reviewerTask || reviewerTask.deduplicated) return;
-
-    const reviewerTaskFull = {
-      id: reviewerTask.id,
-      title: reviewerTitle(pr.number, task.title),
-      description: null as null,
-      workspaceId: openWorker.workspaceId,
-      missionId: task.missionId ?? null,
-      backend: originalTask.backend,
-      roleSlug: reviewerRole,
-    };
-    await announceTaskCreated(reviewerTaskFull, workspace);
-    await wakeTask(reviewerTaskFull.id, 'task.created');
-    console.log(`[reviewer] Re-dispatched reviewer task ${reviewerTask.id} for PR #${pr.number} on ${repoFullName} (was ${status.state} at ${priorHeadSha.slice(0, 7)})`);
-    await appendPrActivity({
-      installationId,
-      repoFullName,
-      prNumber: pr.number,
-      // The renderer words this "Re-reviewing · after fix N" from the log.
-      entry: { kind: 'reviewing' },
-      workspaceId: openWorker.workspaceId,
-    });
-  } catch (err) {
-    console.error(`[reviewer] maybeReDispatchReviewer failed for PR #${pr.number}:`, err);
-  }
 }
 
 // For a newly-opened worker PR on a repo with no CI, attempt auto-merge now.
