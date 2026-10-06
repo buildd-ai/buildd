@@ -164,3 +164,22 @@ describe('quick-add role picker', () => {
     expect('roleSlug' in body).toBe(false);
   });
 });
+
+describe('where the mission runs is switchable both ways', () => {
+  const menu = (html: string) => html.slice(html.indexOf('data-testid="mission-capability-menu"'));
+
+  it('a local mission offers "Run on runners"', () => {
+    const html = render({ displayState: 'active', executor: 'local' });
+    expect(menu(html)).toContain('data-testid="mission-executor-toggle"');
+    expect(menu(html)).toContain('Run on runners');
+  });
+
+  it('a runner mission offers "Run locally"', () => {
+    const html = render({ displayState: 'active', executor: 'runner' });
+    expect(menu(html)).toContain('Run locally');
+  });
+
+  it('offers nothing when the executor is not known', () => {
+    expect(render({ displayState: 'active' })).not.toContain('mission-executor-toggle');
+  });
+});

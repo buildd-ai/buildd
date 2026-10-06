@@ -77,7 +77,7 @@ import { secrets as secretsTable } from '@buildd/core/db/schema';
 import { redactSecretsInBody } from '@buildd/core/redaction';
 import { decrypt } from '@buildd/core/secrets';
 import type { LoopVerdict } from '@/lib/completion-policy';
-import type { SlotFailure } from '@/lib/core-events';
+import type { HeldOutcomeAnalytics, SlotFailure } from '@/lib/core-events';
 import { COMPLETION_POLICIES } from '@/modules';
 import type { TaskHandoff, PathCollisionNotice } from '@buildd/shared';
 import { VISUAL_AUDITOR_ROLE_SLUG, TERMINAL_WORKER_STATUSES, isTerminalWorkerStatus, INTERACTIVE_WORKER_RUNNER } from '@buildd/shared';
@@ -3575,6 +3575,26 @@ export async function PATCH(
         .set(taskUpdate)
         .where(and(eq(tasks.id, worker.taskId), not(eq(tasks.status, 'cancelled'))));
 
+      // The routing-outcome analytics row this report produces, minus the
+      // outcome. Built here so a release held for CI can keep it on the task:
+      // the release PR's CI records it with the real outcome
+      // (lib/task-outcome-event.ts), not this PATCH.
+      const durationMs = worker.startedAt
+        ? Date.now() - new Date(worker.startedAt).getTime()
+        : null;
+      const outcomeAnalytics: HeldOutcomeAnalytics = {
+        accountId: worker.accountId,
+        actualModel: sessionActualModel,
+        totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
+        totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
+        durationMs,
+        wasRetried: ((taskCtxForRetry.retryCount as number | undefined) ?? 0) > 0,
+        // Taxonomy follow-up: code_failure is still the catch-all here, so a
+        // readout must treat it as "unclassified", not "the model's fault".
+        exitCause: (updates.exitCause as string | null | undefined) ?? worker.exitCause ?? null,
+        workerId: id,
+      };
+
       // Run release sequence on successful completion.
       // IMPORTANT: a failed release overrides the task status to 'failed' — the
       // task is not truly done until the release PR lands and prod is healthy.
@@ -3635,6 +3655,7 @@ export async function PATCH(
                   releasePrPending: true,
                   releasePrNumber: release.prNumber,
                   releasePrUrl: release.prUrl,
+                  heldReleaseOutcome: outcomeAnalytics,
                 },
                 updatedAt: new Date(),
               })
@@ -3655,36 +3676,25 @@ export async function PATCH(
         COMPLETION_POLICIES.release.settled(releaseInput);
       }
 
-      // The outcome is settled: not going back to the queue. Subscribers (the
-      // evidence record) are awaited — a serverless function may freeze an
-      // un-awaited write — and isolated by emit, which never throws.
-      if (!shouldAutoRetry && loop?.kind !== 'hold') {
+      // The outcome is settled: not going back to the queue, and not a release
+      // still waiting on CI (its resolution emits this, once, when the status
+      // is real: the evidence record reads the task's status off the row).
+      // Subscribers (the evidence record) are awaited — a serverless function
+      // may freeze an un-awaited write — and isolated by emit, which never throws.
+      if (!shouldAutoRetry && loop?.kind !== 'hold' && !releaseHeld) {
         await emit({ type: 'task.terminal', taskId: worker.taskId, workerId: id, workspaceId: worker.workspaceId, sensitive: isSensitive });
       }
 
       // Record routing outcome for analytics/calibration. Skipped on retry
-      // (we only want one row per terminal outcome). Fire-and-forget.
+      // (we only want one row per terminal outcome) and while a release is
+      // held (its CI resolution records the row). The outcome is the FINAL
+      // status: a contract guard or a completion-policy slot that failed a
+      // reported completion records failed. Fire-and-forget.
+      const effectiveOutcome = contractViolation || slotFailure ? 'failed' : status;
       if (!shouldAutoRetry) {
-        const durationMs = worker.startedAt
-          ? Date.now() - new Date(worker.startedAt).getTime()
-          : null;
-        const retryCount =
-          ((taskCtxForRetry.retryCount as number | undefined) ?? 0);
-        const effectiveOutcome = contractViolation ? 'failed' : status;
-        recordTaskOutcome({
-          taskId: worker.taskId,
-          accountId: worker.accountId,
-          outcome: effectiveOutcome,
-          actualModel: sessionActualModel,
-          totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
-          totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
-          durationMs,
-          wasRetried: retryCount > 0,
-          // Taxonomy follow-up: code_failure is still the catch-all here, so a
-          // readout must treat it as "unclassified", not "the model's fault".
-          exitCause: (updates.exitCause as string | null | undefined) ?? worker.exitCause ?? null,
-          workerId: id,
-        }).catch(() => {});
+        if (!releaseHeld) {
+          recordTaskOutcome({ ...outcomeAnalytics, taskId: worker.taskId, outcome: effectiveOutcome }).catch(() => {});
+        }
         // Model policy: the run's duration and cost against the policy decision
         // the claim stored. A no-op unless a policy service issued it.
         await reportTaskPolicyOutcome(worker.taskId, codingRunObservations({
@@ -3693,7 +3703,9 @@ export async function PATCH(
         }));
         // Systemic-failure detector: pages (critical) when tasks start failing
         // in a row, so an "all tasks failing on the runner" outage is caught fast.
-        recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
+        if (!releaseHeld) {
+          recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
+        }
       }
 
       // Post-completion side effects (non-fatal — must not block worker update).
@@ -3791,6 +3803,8 @@ export async function PATCH(
         workspaceId: worker.workspaceId,
         missionId: taskMissionId,
         status,
+        finalStatus: shouldAutoRetry || releaseHeld ? null : effectiveOutcome === 'completed' ? 'completed' : 'failed',
+        releaseHeld,
         structuredOutput: body.structuredOutput,
         verificationEvidence,
       }, { isolate: runStep });
@@ -3955,6 +3969,7 @@ export async function PATCH(
             taskId,
             workerId: id,
             workspaceId: worker.workspaceId,
+            missionId: taskMissionId,
             title: taskRecord.title,
             sensitive: isSensitive,
             teamId: notifyTeamId,
