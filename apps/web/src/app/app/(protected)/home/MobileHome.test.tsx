@@ -19,7 +19,7 @@ describe('phone Home inbox', () => {
     expect(html).toContain('0 open');
   });
   it('uses one card frame, ink ready marker, and guarded merge action', () => {
-    const items = deriveHomeAttention({ queue: [{ subjectKey: 'ready', chip: 'MERGE', prNumber: 7, workspaceId: 'example', taskTitle: 'A change', missionMergeBlockedReason: 'Other work is still running.' }], questions: [], held: [], missions: [] });
+    const items = deriveHomeAttention({ queue: [{ subjectKey: 'ready', chip: 'MERGE', prNumber: 7, workspaceId: 'example', taskTitle: 'A change', prUrl: 'https://github.com/example/project/pull/7', missionMergeBlockedReason: 'Other work is still running.' }], questions: [], held: [], missions: [] });
     const html = render(items);
     expect(html).toContain('1 thing needs you.');
     expect(html).toContain('1 open');
@@ -37,4 +37,18 @@ it('human review links to GitHub with machine status and no merge button', () =>
   expect(html).toContain('CI running');
   expect(html).toContain('/pull/7/files');
   expect(html).not.toMatch(/>Merge<|>Merge anyway</);
+});
+
+it('renders a mixed list with named actions, concrete reasons and no generic fallbacks', () => {
+  const html = render(deriveHomeAttention({ queue: [
+    { subjectKey: 'a', chip: 'DECIDE', missionId: 'mission-a', escalationReason: 'Pick a rollout order' },
+    { subjectKey: 'b', chip: 'REVIEW', prNumber: 8, workspaceId: 'example', taskTitle: 'Another change', prUrl: 'https://github.com/example/project/pull/8', humanReview: { label: 'Review PR', reason: 'Review required · protected migration paths' } },
+    { subjectKey: 'c', chip: 'DECIDE' },
+  ], questions: [], held: [], missions: [] }));
+  expect(html).toContain('2 things need you.');
+  expect(html).toContain('1 decision · 1 review');
+  expect(html).toContain('Pick a rollout order');
+  expect(html).toContain('>Choose…<');
+  expect(html).toContain('Review required · protected migration paths');
+  for (const bad of ['Open decision', 'Work needs a decision', '/app/health', 'Nothing else is blocking it']) expect(html).not.toContain(bad);
 });
