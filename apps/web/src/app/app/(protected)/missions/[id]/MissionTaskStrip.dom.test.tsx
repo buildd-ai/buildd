@@ -154,16 +154,45 @@ describe('Landed strip', () => {
     expect(drawer().querySelector('[data-testid="landed-strip-drawer-reason"]')?.textContent).toBe('The accessor said this.');
   });
 
-  it('the situation affordance selects its cell and focuses the drawer; no second CTA', async () => {
+  it('the situation affordance selects its cell and focuses the drawer; no second CTA, and never says "Open" for a scroll', async () => {
     const f = missionTaskStripFixture('states');
     await mount(f, null, <SituationTaskAffordance label="Open the failed task" href="/x" taskId={stripFixtureId(4)} />);
     expect(container.querySelector('[data-testid="mission-primary-action"]')).toBeNull();
     const pointer = container.querySelector<HTMLElement>('[data-testid="mission-primary-action-strip"]')!;
     // Dependency order: the blocked task sits right after the queued task it waits on.
-    expect(pointer.textContent).toContain('Open the failed task · 03');
+    // The control only scrolls and focuses — it never navigates — so it is
+    // never labelled "Open", which promises the reader they will land somewhere.
+    expect(pointer.textContent).toContain('Jump to the failed task · 03');
+    expect(pointer.textContent).not.toContain('Open');
     await click(pointer);
     expect(drawer().dataset.taskRef).toBe(stripFixtureId(4));
     expect(document.activeElement).toBe(drawer());
+  });
+
+  it('TONE-1: a failed cell\'s tick digit, outline and the header count all agree — none of them read "open"', async () => {
+    const f = missionTaskStripFixture('states');
+    await mount(f);
+    // Strip order: 01 landed, 02 ready (queued on a runner), 03 blocked (waits
+    // on 02), 04 failed — the fixture's own doc comment.
+    const failedCell = cells()[3];
+    expect(failedCell.dataset.status).toBe('failed');
+    expect(failedCell.className).toContain('border-status-error');
+    expect(failedCell.className).not.toContain('border-accent');
+
+    const failedTick = ticks()[3];
+    expect(failedTick.dataset.tone).toBe('error');
+    expect(failedTick.className).toContain('text-status-error');
+    expect(failedTick.className).not.toContain('text-accent-text');
+
+    // The genuinely-open cell (ready, index 1) still reads accent, never error.
+    const openTick = ticks()[1];
+    expect(openTick.dataset.tone).toBe('open');
+    expect(openTick.className).toContain('text-accent-text');
+
+    // 02 is open, 03 is held (blocked on 02), 04 is failed: the header must
+    // name the failed one apart from "open" instead of folding it in.
+    const jump = container.querySelector<HTMLElement>('[data-testid="landed-strip-open-jump"]')!;
+    expect(jump.textContent).toBe('1 open · 1 failed · 1 held ›');
   });
 
   it('AC-7: ready, blocked and queued cells carry three different fills', async () => {
