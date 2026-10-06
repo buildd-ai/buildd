@@ -40,7 +40,11 @@ The authoritative entity set is the 30 tables in `schema.ts`. Core entities:
 Multi-tenancy root. Owns accounts, workspaces, missions. Tracks an **aggregate
 monthly budget** (`monthlyBudgetUsd` / `monthlyCostUsd` / `budgetAlertsSent`) across
 all token-accounts — a single SDK credit pool regardless of which API token ran.
-Plans: `free | pro | team`.
+Plans: `free | pro | team` (`teams.plan`, default `free`, plus Stripe customer /
+subscription ids, `billingStatus` and `paidSeats`). Gates read only
+`entitlements(team)` (`packages/core/entitlements.ts`): members, knowledge-base
+document cap, and whether decision calls run on buildd's key. The `BILLING_ENFORCED`
+env switch is off by default, and while off every team is unlimited.
 
 ### User
 SSO identity (`googleId`, `githubId`, `email`). Belongs to teams via `team_members`
@@ -71,6 +75,18 @@ picks workspaces itself (claim candidates, reach lists, ingest jobs) is bounded
 by the token's list. An unrestricted token is auto-linked to open workspaces
 only; linking a token to a restricted workspace takes a team owner or admin. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
+
+A per-task token (`bldt_`) is confined to its own task's workspace. The one
+exception is a **schedule delegation** (`task_schedules.delegation`,
+`packages/core/token-delegation.ts`): a team owner or admin may grant the tasks
+one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
+gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
+path, no mission, dependencies or foreign parent) on named workspaces of the same
+team. It is stored on the schedule, never the task, records who granted it and
+when, is re-read on every request, and never exceeds the minting account's reach.
+Analytics reads a reviewer depends on report `status` — `OK` / `NO_DATA` reached
+the data; `FORBIDDEN` / `UNAUTHORIZED` / `TOOL_UNAVAILABLE` did not and are never
+evidence of zero rows.
 
 > **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
 > `secrets` table. Kept for back-compat, slated for removal. The parallel

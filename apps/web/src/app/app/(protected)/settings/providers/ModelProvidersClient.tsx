@@ -9,7 +9,7 @@ import { STATUS_TONE_SQUARE } from '@/lib/status-tone';
 import { useSearchParams } from 'next/navigation';
 import ConnectOpenRouterButton, { providerFlowMessage } from '@/components/settings/ConnectOpenRouterButton';
 import { chatStatusCopy, choiceFromPolicy, policyFromChoice, type PolicyChoice } from './provider-copy';
-import GatewayAndDecisionModel from './GatewayAndDecisionModel';
+import { DecisionModelPicker, GatewayCard } from './GatewayAndDecisionModel';
 import AgentEndpointSection, { type EndpointWorkspace } from './AgentEndpointSection';
 
 export interface ChatAvailabilityProp {
@@ -31,6 +31,8 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability, wo
 }) {
   const [view, setView] = useState<ProviderKeysView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped when the gateway changes: the sections that route through it reload.
+  const [gatewayRev, setGatewayRev] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -92,6 +94,7 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability, wo
               />
             );
           })}
+          <GatewayCard teamId={teamId} canManage={canManage} onChanged={() => setGatewayRev((r) => r + 1)} />
         </div>
         {!canManage && <p className="text-xs text-text-muted mt-2.5">Only a team owner or admin can change team keys.</p>}
       </section>
@@ -100,9 +103,9 @@ export default function ModelProvidersClient({ teamId, isAdmin, availability, wo
         <KeyPolicyControl teamId={teamId} policy={view.keyPolicy} canManage={canManage} onChanged={load} />
       )}
 
-      <GatewayAndDecisionModel teamId={teamId} canManage={canManage} />
+      <DecisionModelPicker teamId={teamId} canManage={canManage} rev={gatewayRev} />
 
-      <AgentEndpointSection teamId={teamId} canManage={canManage} workspaces={workspaces} />
+      <AgentEndpointSection teamId={teamId} canManage={canManage} workspaces={workspaces} rev={gatewayRev} />
 
     </div>
   );

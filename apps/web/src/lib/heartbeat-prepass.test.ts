@@ -43,7 +43,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { computeStateKey, evaluateHeartbeatPrepass, classifyMissionWait, classifyLastHeartbeatCycleWait, type HeartbeatMissionState } from './heartbeat-prepass';
+import { computeStateKey, evaluateHeartbeatPrepass, classifyMissionWait, classifyLastHeartbeatCycleWait, QUEUED_ATTEMPT_GRACE_MS, type HeartbeatMissionState } from './heartbeat-prepass';
 
 function resetAll() {
   missionsFindFirstResult = null;
@@ -314,8 +314,8 @@ describe('evaluateHeartbeatPrepass', () => {
     const newer = new Date('2026-09-28T10:00:00Z');
     tasksFindManyResult = [
       { title: 'Build A', mode: 'execution', taskClass: 'work', status: 'in_progress', result: null, context: null, createdAt: older },
-      // A queued reviewer is a self-resolving wait: not open work.
-      { title: 'Review A', mode: 'execution', taskClass: 'attempt', status: 'pending', result: null, context: null, createdAt: older },
+      // A freshly queued reviewer is a self-resolving wait: not open work.
+      { title: 'Review A', mode: 'execution', taskClass: 'attempt', status: 'pending', result: null, context: null, createdAt: new Date() },
       { title: 'Mission: X', mode: 'planning', taskClass: 'bookkeeping', status: 'completed', result: null, context: null, createdAt: older },
       { title: 'Mission: X', mode: 'planning', taskClass: 'bookkeeping', status: 'pending', result: null, context: null, createdAt: newer },
     ];
@@ -584,6 +584,27 @@ describe('classifyMissionWait', () => {
       },
     ], now);
     expect(result).toBeNull();
+  });
+
+  // A reviewer/retry attempt is woken the moment it is filed and an idle
+  // runner claims it within seconds. Queued past the grace with no worker, it
+  // is not "resuming by itself": something refused it, and calling that a
+  // self-resolving wait (with a deadline that rolled forward forever) is how a
+  // green PR's reviewer sat pending for hours reading as healthy progress.
+  it('a freshly queued reviewer attempt is a wait ending at its grace, not a rolling deadline', () => {
+    const createdAt = new Date(now.getTime() - 2 * 60 * 1000);
+    const result = classifyMissionWait([
+      { status: 'pending', mode: 'execution', taskClass: 'attempt', context: { reviewerFor: 't-1' }, startAt: null, loopConfig: null, loopState: null, createdAt },
+    ], now);
+    expect(result?.reason).toBe('reviewer/retry task queued');
+    expect(result?.waitUntil).toEqual(new Date(createdAt.getTime() + QUEUED_ATTEMPT_GRACE_MS));
+  });
+
+  it('a reviewer attempt queued past the grace with no worker is not a self-resolving wait', () => {
+    const createdAt = new Date(now.getTime() - QUEUED_ATTEMPT_GRACE_MS - 1000);
+    expect(classifyMissionWait([
+      { status: 'pending', mode: 'execution', taskClass: 'attempt', context: { reviewerFor: 't-1' }, startAt: null, loopConfig: null, loopState: null, createdAt },
+    ], now)).toBeNull();
   });
 
   it('uses the earliest waitUntil across multiple waiting tasks', () => {
