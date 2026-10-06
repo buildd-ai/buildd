@@ -377,6 +377,13 @@ matrix can be argued about with data rather than taste.
   outcome. It is skipped entirely when the completion is an auto-retry, so a
   retried task contributes one row, not one per attempt
   (`apps/web/src/app/api/workers/[id]/route.ts:1614-1629`).
+- The row's `outcome` is the task's FINAL status, not the one the worker
+  reported: a contract guard or a completion-policy slot (loop exhausted,
+  release failed) that fails a reported completion records `failed`. A release
+  held for CI records nothing from the worker PATCH; the PATCH keeps the row on
+  `tasks.context.heldReleaseOutcome`, and the release PR's CI resolution
+  records it with the release's outcome
+  (`apps/web/src/lib/routing-analytics-subscribers.ts`).
 - The row copies `kind`, `complexity`, `classified_by` and `predicted_model`
   from the task row rather than trusting the caller
   (`packages/core/routing-analytics.ts:45-74`).
