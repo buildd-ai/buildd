@@ -22,6 +22,7 @@ export type CapabilityName =
   | 'pr.create'
   | 'pr.adopt'
   | 'pr.close'
+  | 'pr.update_body'
   | 'pr.merge';
 
 export interface CapabilityDecisionRecord {
