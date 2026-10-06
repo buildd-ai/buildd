@@ -21,6 +21,8 @@ const mockResolveCompletedTask = mock(() => Promise.resolve());
 const mockWakeTask = mock(async (_id: string, _cause: string) => {});
 const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
 
+const mockIsPathClaimHolder = mock(async (_a: any, _t: any) => false);
+mock.module('@/lib/path-claim-holder-read', () => ({ taskScopeIsPathClaimHolder: mockIsPathClaimHolder }));
 const mockDispatchHistory = mock(async (_taskId: string) => [] as any[]);
 mock.module('@buildd/core/dispatch-outbox', () => ({ dispatchHistoryForTask: mockDispatchHistory }));
 
@@ -316,6 +318,18 @@ describe('GET /api/tasks/[id]', () => {
     row = sibling({ workspaceId: 'ws-2' });
     expect((await get()).status).toBe(404);
     row = sibling({ missionId: null });
+    expect((await get()).status).toBe(404);
+
+    // The holder named by a check_path_claim conflict is readable even from
+    // another mission, but never across workspaces.
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', level: 'worker', taskScope });
+    mockIsPathClaimHolder.mockResolvedValue(true);
+    row = sibling({ missionId: 'm-2' });
+    expect((await get()).status).toBe(200);
+    row = sibling({ missionId: null });
+    expect((await get()).status).toBe(200);
+    mockIsPathClaimHolder.mockResolvedValue(false);
+    row = sibling({ missionId: 'm-2' });
     expect((await get()).status).toBe(404);
     mockTasksFindFirst.mockReset();
   });
