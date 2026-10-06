@@ -89,7 +89,7 @@ export default function MobilePageHeader({
             </svg>
           </Link>
         )}
-        {phoneHome && showSwitcher ? <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} /> : <span className="shrink-0 font-semibold text-text-primary">{phoneHome ? 'buildd' : title}</span>}
+        {phoneHome && showSwitcher ? <WorkspaceSwitcher showMobileLabel workspaces={workspaces} teamName={currentTeam?.name ?? null} /> : <span className="shrink-0 font-semibold text-text-primary">{phoneHome ? 'buildd' : title}</span>}
         {currentTeam && !phoneHome && (
           <>
             <span className="text-text-muted shrink-0" aria-hidden="true">·</span>
@@ -100,7 +100,7 @@ export default function MobilePageHeader({
       <div className="flex items-center gap-2 shrink-0">
         {showSwitcher && !phoneHome && <WorkspaceSwitcher workspaces={workspaces} teamName={currentTeam?.name ?? null} />}
         {phoneHome && <button type="button" onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')} aria-label={resolved === 'dark' ? 'Switch to Day' : 'Switch to Night'} className="flex h-11 w-11 items-center justify-center border border-border-default text-text-primary">{resolved === 'dark' ? '☀' : '☾'}</button>}
-        <UserAvatarMenu userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
+        <UserAvatarMenu neutral={phoneHome} userInitial={userInitial} direction="down" active={isAccountRoute(pathname)} />
       </div>
     </div>
   );
