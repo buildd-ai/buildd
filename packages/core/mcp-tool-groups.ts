@@ -285,7 +285,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   explain: 'what a task, mission, workspace or PR waits on, with evidence',
   get_error_traces: 'errors caught from agent tool output',
   get_failure_analytics: 'failure patterns; error= finds a known one',
-  list_incidents: 'Failure Pattern Sentinel incident ledger: severity, alert and fix-task state',
+  list_incidents: 'known failure incidents',
   get_budget_forecast: 'session pressure, budget burn',
   get_usage_stats: 'token, cost and turn stats',
   get_manifest_coverage: 'coverage by scope and kind',
