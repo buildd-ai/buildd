@@ -563,6 +563,7 @@ export async function retryCiFailureForPr(input: CiFailureInput): Promise<CiRetr
     workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
     foreignHeadSha,
     foreignCommitAuthor,
+    prRefs: prGate.headRef ? { headRef: prGate.headRef, baseRef: prGate.baseRef ?? null } : null,
   });
 
   if (!retryTask) {
