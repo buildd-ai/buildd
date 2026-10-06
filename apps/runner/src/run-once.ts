@@ -614,6 +614,15 @@ export async function runOnceFromCli(opts: {
     });
   }
 
+  // What the run uses of its container (cloud only: the lines are off
+  // elsewhere): memory peak and free-disk low, for the run report, from which
+  // buildd picks the workspace's container size.
+  const { phaseLinesEnabled } = await import('./phase-lines');
+  const sampler = phaseLinesEnabled(opts.env)
+    ? await (await import('./resource-sampler')).startContainerResourceSampler(opts.builddHome, (name, value) => emitMetric(name, value))
+    : null;
+  const stopSampler = () => sampler?.stop();
+
   const { WorkerManager } = await import('./workers');
   const { Outbox, createReplayHandler } = await import('./outbox');
   const { credentialBroker } = await import('./broker');
@@ -675,7 +684,7 @@ export async function runOnceFromCli(opts: {
     log,
   };
 
-  if (!opts.resumeWorkerId) return runOnce({ taskId: opts.taskId }, deps);
+  if (!opts.resumeWorkerId) return runOnce({ taskId: opts.taskId }, deps).finally(stopSampler);
 
   // ── --resume-worker ──
   const resumeWorkerId = opts.resumeWorkerId;
@@ -740,7 +749,7 @@ export async function runOnceFromCli(opts: {
     },
     discardBundle: async () => { snapshots.remove?.('/park'); },
   };
-  return runResume({ workerId: resumeWorkerId }, { ...deps, resume });
+  return runResume({ workerId: resumeWorkerId }, { ...deps, resume }).finally(stopSampler);
 }
 
 export interface ProcInfo { pid: number; ppid: number; uid: number; startTime: number }
