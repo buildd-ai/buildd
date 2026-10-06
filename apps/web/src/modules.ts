@@ -22,6 +22,7 @@ import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
 import { roleSubscribers } from '@/lib/default-roles-subscribers';
+import { routingAnalyticsSubscribers } from '@/lib/routing-analytics-subscribers';
 
 export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // task.created: the category look is scheduled before the mission chain starts.
@@ -34,6 +35,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   ...chatSubscribers,
   ...notificationSubscribers,
   ...roleSubscribers,
+  // A held release's outcome-analytics row, recorded when its CI resolves it.
+  ...routingAnalyticsSubscribers,
 ];
 
 /**

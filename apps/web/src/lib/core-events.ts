@@ -38,6 +38,23 @@ export interface SlotFailure {
 }
 
 /**
+ * The outcome-analytics row (`@buildd/core/routing-analytics`
+ * `recordTaskOutcome`) a held release's worker report would have written,
+ * minus the outcome: the worker PATCH keeps it on `tasks.context` while the
+ * release waits on CI, and the resolution records it with the real outcome.
+ */
+export interface HeldOutcomeAnalytics {
+  accountId: string | null;
+  actualModel: string | null;
+  totalCostUsd: number | string | null;
+  totalTurns: number | null;
+  durationMs: number | null;
+  wasRetried: boolean;
+  exitCause: string | null;
+  workerId: string;
+}
+
+/**
  * The task's outcome as people are told it. The type is the task's FINAL
  * status, as core decided it, never just the status the worker reported.
  * `via: 'worker'`: settled by the worker PATCH. `via: 'release'`: a release
@@ -49,6 +66,7 @@ export interface WorkerTaskOutcome {
   taskId: string;
   workerId: string;
   workspaceId: string | null;
+  missionId: string | null;
   /** Raw title. Subscribers decide what a sensitive workspace may see. */
   title: string;
   sensitive: boolean;
@@ -58,6 +76,11 @@ export interface WorkerTaskOutcome {
   error: string | null;
   /** Set on `task.failed` when a slot, not the worker, failed the task. */
   failure?: SlotFailure | null;
+  /**
+   * `via: 'release'` only: the analytics row the PATCH kept while the release
+   * was held. Null for a task held before the PATCH kept one.
+   */
+  heldAnalytics?: HeldOutcomeAnalytics | null;
 }
 
 type WorkerOutcomeType = 'task.completed' | 'task.failed' | 'task.retrying';
@@ -66,13 +89,20 @@ type WorkerOutcomeEvent = { [T in WorkerOutcomeType]: { type: T } & WorkerTaskOu
 
 export type CoreEvent =
   /**
-   * The worker's report is on the task row and the outcome is settled: not an
-   * auto-retry, not a loop requeue.
+   * The task's terminal status is on its row: not an auto-retry, not a loop
+   * requeue, not a release still held for CI. The worker PATCH emits it when
+   * the report settles the task; for a held release, the release PR's CI
+   * resolution emits it (lib/task-outcome-event.ts). Once per settled report.
    */
   | { type: 'task.terminal'; taskId: string; workerId: string; workspaceId: string | null; sensitive: boolean }
   /**
    * A worker reported completed/failed/error and the task row is written.
-   * Fires for auto-retries and loop iterations too.
+   * Fires for auto-retries and loop iterations too. `status` is what the
+   * worker REPORTED; `finalStatus` is the terminal status core decided (a
+   * completion-policy slot or a contract guard may have failed a reported
+   * completion), null when the report did not settle the task: requeued, or
+   * `releaseHeld` (the release PR's CI settles it later and emits its
+   * outcome then, `via: 'release'`).
    */
   | {
       type: 'worker.reported';
@@ -81,6 +111,8 @@ export type CoreEvent =
       workspaceId: string | null;
       missionId: string | null;
       status: 'completed' | 'failed' | 'error';
+      finalStatus: 'completed' | 'failed' | null;
+      releaseHeld: boolean;
       structuredOutput: unknown;
       verificationEvidence: unknown;
     }

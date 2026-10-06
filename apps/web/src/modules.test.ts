@@ -23,16 +23,23 @@ describe('composition root', () => {
     ]);
   });
 
-  it('task.completed: chat, then the ledger, then the team push', () => {
+  it('task.completed: a resolved release\'s mission attempt, chat, the ledger, the team push, then its analytics row', () => {
     expect(byEvent('task.completed')).toEqual([
+      'missions:mission-completion-on-release-completed',
       'chat:chat-task-completed',
       'notifications:ledger-task-completed',
       'notifications:push-task-completed',
+      'health-quality:release-outcome-analytics-completed',
     ]);
   });
 
-  it('task.failed: the ledger, then the push (which carries the credential alert)', () => {
-    expect(byEvent('task.failed')).toEqual(['notifications:ledger-task-failed', 'notifications:push-task-failed']);
+  it('task.failed: a resolved release\'s mission attempt, the ledger, the push (which carries the credential alert), then its analytics row', () => {
+    expect(byEvent('task.failed')).toEqual([
+      'missions:mission-completion-on-release-failed',
+      'notifications:ledger-task-failed',
+      'notifications:push-task-failed',
+      'health-quality:release-outcome-analytics-failed',
+    ]);
   });
 
   it('task.created: the category look is scheduled before the mission chain starts', () => {
