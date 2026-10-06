@@ -117,6 +117,16 @@ describe('Sheet', () => {
     expect(main.style.overflow).toBe('auto');
   });
 
+  it('full-screen evidence uses the phone viewport and a centered desktop panel', () => {
+    act(() => root.render(<Sheet open onClose={() => {}} title="Evidence" testId="sheet" height="full">output</Sheet>));
+    const dialog = q('sheet')!;
+    expect(dialog.className).toContain('h-[100dvh]');
+    expect(dialog.className).toContain('md:max-h-[90dvh]');
+    expect(dialog.parentElement!.className).toContain('md:items-center');
+    expect(dialog.className).toContain('md:max-w-4xl');
+    expect(main.style.overflow).toBe('hidden');
+  });
+
   it('wide + tall sizes', () => {
     act(() => root.render(<Sheet open onClose={() => {}} title="A" testId="sheet" width="wide" height="tall">x</Sheet>));
     expect(q('sheet')!.className).toContain('max-w-3xl');

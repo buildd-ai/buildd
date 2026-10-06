@@ -158,7 +158,9 @@ describe('TaskErrorEvidence', () => {
     expect(dialog.textContent).toContain('Edit foo.ts');
     expect(dialog.textContent).toContain('Task failed');
     expect(dialog.textContent).toContain('bash_nonzero_exit');
-    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(dialog.className).toContain('h-[100dvh]');
+    expect(dialog.className).toContain('md:max-h-[90dvh]');
     expect(document.body.style.overflow).toBe('hidden');
 
     await act(async () => {

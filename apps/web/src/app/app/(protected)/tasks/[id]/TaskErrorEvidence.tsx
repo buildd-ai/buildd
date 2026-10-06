@@ -12,15 +12,12 @@
  * Rows clamp for scanning; tapping one opens the complete evidence: a
  * full-screen sheet below md, a large centered modal from md.
  */
-import { useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useRef, useState, type RefObject } from 'react';
 import Chip, { type ChipTone } from '@/components/ui/Chip';
 import Disclosure from '@/components/ui/Disclosure';
 import Eyebrow from '@/components/ui/Eyebrow';
-import { lockScroll, nextTrappedFocus } from '@/components/ui/Sheet';
+import Sheet from '@/components/ui/Sheet';
 import { ZonedTime } from '@/components/DisplayTimezone';
-import { useEscapeClose } from '@/hooks/useEscapeClose';
-import { findScrollRoot } from '@/lib/scroll-root';
 import { formatInZone } from '@/lib/zoned-time';
 import {
   affectsLine,
@@ -45,8 +42,6 @@ const PRESENTATION_CHIP: Record<ErrorEvidenceItem['presentation'], { label: stri
   noise: { label: 'Expected', tone: 'muted' },
 };
 
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /** A needs-attention item on a task that succeeded reads as recovered. */
 function settle(item: ErrorEvidenceItem, terminalSucceeded: boolean): ErrorEvidenceItem {
@@ -172,135 +167,77 @@ function EvidenceSheet({
   onClose: () => void;
   triggerRef: RefObject<HTMLElement | null>;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const titleId = useId();
-  useEscapeClose(true, onClose, triggerRef, panelRef);
-
-  useEffect(() => {
-    closeRef.current?.focus({ preventScroll: true });
-    const root = findScrollRoot(document);
-    const unlockRoot = lockScroll(root);
-    const unlockBody = root === document.body ? () => {} : lockScroll(document.body);
-    function onTab(e: KeyboardEvent) {
-      const panel = panelRef.current;
-      if (e.key !== 'Tab' || !panel) return;
-      const target = nextTrappedFocus(Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE)), document.activeElement, e.shiftKey);
-      if (target) {
-        e.preventDefault();
-        target.focus();
-      }
-    }
-    document.addEventListener('keydown', onTab);
-    return () => {
-      document.removeEventListener('keydown', onTab);
-      unlockBody();
-      unlockRoot();
-    };
-  }, []);
-
   const chip = PRESENTATION_CHIP[item.presentation];
   const pre = 'p-3 bg-surface-2 border border-border-default font-mono text-body text-text-primary whitespace-pre-wrap [overflow-wrap:anywhere]';
 
-  // Full-screen below md (a phone needs every pixel for the output); a large
-  // centered modal from md. Sheet is a bottom panel capped at 85vh, too
-  // short for a 60-line output tail on a phone.
-  const sheet = (
-    <div className="fixed inset-0 z-50 flex md:items-center md:justify-center md:p-6" role="presentation">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        data-testid="error-evidence-sheet"
-        className="relative flex flex-col w-full h-full md:h-auto md:max-h-[90vh] md:max-w-4xl bg-surface-1 md:border-2 md:border-border-strong md:shadow-[var(--card-shadow)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
-      >
-        <header className="shrink-0 flex items-start gap-3 px-4 py-3 border-b border-border-default">
-          <div className="min-w-0 flex-1">
-            <h2 id={titleId} className="text-title font-semibold text-text-primary [overflow-wrap:anywhere]">{taskTitle}</h2>
-            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-text-muted">
-              <span>{item.attempt.label}</span>
-              <span aria-hidden="true">·</span>
-              <Time value={item.ts} format="datetime" />
-              <Chip tone={chip.tone} variant="soft">{chip.label}</Chip>
-            </p>
-            <p className="mt-1 text-body text-text-secondary">
-              {item.reason}
-              {item.decidedBy === 'model' && <span className="text-text-muted"> (judged by model)</span>}
-            </p>
-          </div>
-          <button
-            ref={closeRef}
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="-mr-2 w-11 h-11 shrink-0 flex items-center justify-center text-text-muted hover:text-text-primary transition-colors"
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </header>
+  return (
+    <Sheet open onClose={onClose} title={taskTitle} height="full" trapFocus
+      returnFocusRef={triggerRef} testId="error-evidence-sheet">
+      <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-meta text-text-muted">
+        <span>{item.attempt.label}</span>
+        <span aria-hidden="true">·</span>
+        <Time value={item.ts} format="datetime" />
+        <Chip tone={chip.tone} variant="soft">{chip.label}</Chip>
+      </p>
+      <p className="mt-1 text-body text-text-secondary">
+        {item.reason}
+        {item.decidedBy === 'model' && <span className="text-text-muted"> (judged by model)</span>}
+      </p>
+      <div className="mt-4 space-y-5">
+        <p className="text-body text-text-primary">{affectsLine(item)}</p>
 
-        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-5">
-          <p className="text-body text-text-primary">{affectsLine(item)}</p>
-
-          {item.command != null && (
-            <section>
-              <div className="flex items-center justify-between gap-2">
-                <Eyebrow as="h3" tone="muted">Command</Eyebrow>
-                <CopyButton text={item.command} label="Copy command" />
-              </div>
-              <pre data-testid="error-evidence-command" className={`mt-1 ${pre}`}>{item.command}</pre>
-              <p className="mt-1 text-meta text-text-muted">Exit code {item.exitCode ?? 'unknown'}</p>
-            </section>
-          )}
-
+        {item.command != null && (
           <section>
             <div className="flex items-center justify-between gap-2">
-              <Eyebrow as="h3" tone="muted">{item.command != null ? 'Output' : 'Excerpt'}</Eyebrow>
-              <CopyButton text={item.output} label="Copy output" />
+              <Eyebrow as="h3" tone="muted">Command</Eyebrow>
+              <CopyButton text={item.command} label="Copy command" />
             </div>
-            {item.output ? (
-              <pre data-testid="error-evidence-output" className={`mt-1 max-h-[60vh] overflow-auto ${pre}`}>{item.output}</pre>
-            ) : (
-              <p className="mt-1 text-meta text-text-muted">No output was recorded.</p>
-            )}
+            <pre data-testid="error-evidence-command" className={`mt-1 ${pre}`}>{item.command}</pre>
+            <p className="mt-1 text-meta text-text-muted">Exit code {item.exitCode ?? 'unknown'}</p>
           </section>
+        )}
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <ContextList title="Before" lines={item.before} />
-            <ContextList title="After" lines={item.after} />
+        <section>
+          <div className="flex items-center justify-between gap-2">
+            <Eyebrow as="h3" tone="muted">{item.command != null ? 'Output' : 'Excerpt'}</Eyebrow>
+            <CopyButton text={item.output} label="Copy output" />
           </div>
-
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-meta">
-            <dt className="text-text-muted">Pattern</dt>
-            <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.pattern}</dd>
-            {item.source && (
-              <>
-                <dt className="text-text-muted">Source</dt>
-                <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.source}</dd>
-              </>
-            )}
-          </dl>
-
-          {item.logUrl && (
-            <a
-              href={item.logUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center min-h-11 text-body text-accent-text hover:underline"
-            >
-              Open CI log
-            </a>
+          {item.output ? (
+            <pre data-testid="error-evidence-output" className={`mt-1 max-h-[60vh] overflow-auto ${pre}`}>{item.output}</pre>
+          ) : (
+            <p className="mt-1 text-meta text-text-muted">No output was recorded.</p>
           )}
-        </div>
-      </div>
-    </div>
-  );
+        </section>
 
-  return createPortal(sheet, document.body);
+        <div className="grid gap-4 md:grid-cols-2">
+          <ContextList title="Before" lines={item.before} />
+          <ContextList title="After" lines={item.after} />
+        </div>
+
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-meta">
+          <dt className="text-text-muted">Pattern</dt>
+          <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.pattern}</dd>
+          {item.source && (
+            <>
+              <dt className="text-text-muted">Source</dt>
+              <dd className="font-mono text-text-secondary [overflow-wrap:anywhere]">{item.source}</dd>
+            </>
+          )}
+        </dl>
+
+        {item.logUrl && (
+          <a
+            href={item.logUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center min-h-11 text-body text-accent-text hover:underline"
+          >
+            Open CI log
+          </a>
+        )}
+      </div>
+    </Sheet>
+  );
 }
 
 export default function TaskErrorEvidence({ items, taskTitle, terminalSucceeded }: TaskErrorEvidenceProps) {

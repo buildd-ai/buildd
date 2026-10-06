@@ -58,7 +58,7 @@ export default function TaskVerdictBlock({
       <div data-testid="task-header-status" data-status={displayStatus} data-verdict={verdict.state}>
         <Chip tone={s.tone} variant="soft">{s.label}</Chip>
       </div>
-      <h2 data-testid="task-verdict-headline" className="mt-2 text-[18px] md:text-[20px] font-semibold leading-snug [overflow-wrap:anywhere]">
+      <h2 data-testid="task-verdict-headline" className="mt-2 text-heading font-semibold leading-snug [overflow-wrap:anywhere]">
         {verdict.headline}
       </h2>
       {verdict.cause && (
@@ -96,7 +96,7 @@ export default function TaskVerdictBlock({
               href={a.href}
               {...(a.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
               data-testid="task-verdict-action"
-              className={`inline-flex min-h-11 w-full items-center justify-center border-2 px-4 text-[13px] font-medium md:w-auto ${ACTION_CLASS[a.tone]}`}
+              className={`inline-flex min-h-11 w-full items-center justify-center border-2 px-4 text-body font-medium md:w-auto ${ACTION_CLASS[a.tone]}`}
             >
               {a.label}{a.external ? ' ↗' : ''}
             </a>
