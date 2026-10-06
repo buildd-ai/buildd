@@ -4724,9 +4724,13 @@ export class WorkerManager {
 
       // Check if session actually did work or just errored
       // Only check early output (first 500 chars) to avoid false positives
-      // from agent responses that discuss auth topics
+      // from agent responses that discuss auth topics, and only for a session
+      // that never ran a tool: a rejected credential fails the first model
+      // call, so a session that used tools was authenticated. Without this, a
+      // task ABOUT a 401 ("why does X return 401 Unauthorized") was failed as
+      // an auth error after doing its work.
       const earlyOutput = worker.output.slice(0, 3).join('\n').toLowerCase();
-      const authFailed = isAuthError(earlyOutput);
+      const authFailed = worker.toolCalls.length === 0 && isAuthError(earlyOutput);
 
       if (authFailed) {
         // Auth error - mark as failed, not completed
