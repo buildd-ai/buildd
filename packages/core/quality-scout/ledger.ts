@@ -186,6 +186,17 @@ export function scoutCheckId(candidateId: string): string {
   return `${SCOUT_FLAVOR}:${candidateId}`;
 }
 
+/**
+ * The check id for a probe whose execution does not depend on which hypothesis
+ * selected it (the same command, request or capture). Two hypotheses that run
+ * the same thing gather the same evidence, so a failure there is one defect:
+ * keying it by the execution is what keeps it one finding and one follow-up
+ * across hypotheses and across runs.
+ */
+export function scoutExecutionCheckId(executionKey: string): string {
+  return `${SCOUT_FLAVOR}:exec:${executionKey}`;
+}
+
 function normalizeRequirement(r: string | EvidenceRequirement): EvidenceRequirement {
   if (typeof r === 'string') return { key: r, need: 'complete' };
   return { key: r.key, need: r.need === 'partial' ? 'partial' : 'complete' };
@@ -221,13 +232,19 @@ const NO_EXECUTOR = 'scout:no-usable-executor';
 
 /**
  * The probe as a substrate check on the run's candidate SHA. The id depends
- * only on the candidate, so the signature of the same failure is the same in
- * every run. The executor must also find the probe's chosen capability.
+ * only on the candidate — or, given `executionKey`, only on what is executed —
+ * so the signature of the same failure is the same in every run. The executor
+ * must also find the probe's chosen capability.
  */
-export function buildScoutProbeCheck<I>(run: ScoutRun, probe: ScoutProbeRecord, executor: VerificationExecutor<I>): VerificationCheck<I> {
+export function buildScoutProbeCheck<I>(
+  run: ScoutRun,
+  probe: ScoutProbeRecord,
+  executor: VerificationExecutor<I>,
+  executionKey?: string | null,
+): VerificationCheck<I> {
   const requires = [probe.executor ?? NO_EXECUTOR, ...executor.requires.filter(r => r !== probe.executor)];
   return {
-    id: scoutCheckId(probe.candidateId),
+    id: executionKey ? scoutExecutionCheckId(executionKey) : scoutCheckId(probe.candidateId),
     version: SCOUT_CHECK_VERSION,
     invariant: probe.invariant,
     subject: { kind: 'candidate-sha', ref: run.candidate.sha },
@@ -244,9 +261,10 @@ export function executeScoutProbe<I>(
   probe: ScoutProbeRecord,
   executor: VerificationExecutor<I>,
   ctx: VerificationRunContext<I>,
+  executionKey?: string | null,
 ): ScoutProbeRecord {
   if (probe.selection.status !== 'selected') throw new Error(`scout probe ${probe.candidateId}: only a selected probe is executed`);
-  const result = runVerificationCheck(buildScoutProbeCheck(run, probe, executor), ctx);
+  const result = runVerificationCheck(buildScoutProbeCheck(run, probe, executor, executionKey), ctx);
   return Object.freeze({ ...probe, result });
 }
 

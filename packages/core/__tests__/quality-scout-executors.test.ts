@@ -490,6 +490,32 @@ describe('end to end on a generic no-UI workspace: generate → execute → dedu
     expect([...rows.values()][0].occurrenceCount).toBe(2);
   });
 
+  it('two hypotheses that run the same command are one finding, not one each', async () => {
+    const { candidates } = generateScoutCandidates(
+      { candidateRef: 'main', changedPaths: ['src/tool/cli.py', 'src/report/render.py', 'scripts/check.sh'] },
+      cliProfile,
+    );
+    const contract = candidates.filter((x) => x.family === 'contract' && x.supported);
+    expect(contract.length).toBeGreaterThan(1);
+    expect(new Set(contract.map((x) => x.executor)).size).toBe(1);
+
+    const ports: ScoutProbePorts = { command: commandPort({ exitCode: 2, stderrTail: 'boom' }).port };
+    const results = await Promise.all(contract.map((x) => runScoutProbe(scoutRun(), scoutProbeRecord(x, SELECTED), cliProfile, ports, { now })));
+    const sigs = new Set(results.map((r) => r.probe.result!.signature));
+    expect(results.every((r) => r.probe.result!.verdict === 'fail')).toBe(true);
+    expect(sigs.size).toBe(1);
+    expect(results[0].probe.result!.checkId).toMatch(/^quality-scout:exec:command_/);
+  });
+
+  it('a different command is a different check', async () => {
+    const run = scoutRun();
+    const help = await runScoutProbe(run, probeFor('cli-journey:help'), cliProfile, { command: commandPort({ exitCode: 1 }).port }, { now });
+    const bad = await runScoutProbe(run, probeFor('cli-journey:bad-flag'), cliProfile, { command: commandPort({ exitCode: 0 }).port }, { now });
+    expect(help.probe.result!.verdict).toBe('fail');
+    expect(bad.probe.result!.verdict).toBe('fail');
+    expect(help.probe.result!.checkId).not.toBe(bad.probe.result!.checkId);
+  });
+
   it('an unselected probe is a caller error', async () => {
     const skipped: ScoutProbeRecord = { ...probeFor('verification-command'), selection: { status: 'skipped', reason: 'budget', reasonCode: null } };
     await expect(runScoutProbe(scoutRun(), skipped, cliProfile, {})).rejects.toThrow(/selected/);
