@@ -18,19 +18,20 @@ function entry(id: string, created: number, input = 2): CatalogEntry {
   };
 }
 
-// claude-opus-5-5 is the newest model with a recorded CLI floor. claude-sonnet-5-5
-// was released after it, so nobody has vouched for it.
+// Sonnet 5.5 has a recorded CLI floor; a hypothetical Sonnet 6 release
+// after it still needs its own verified floor before dispatch.
 const CATALOG: CatalogEntry[] = [
   entry('claude-sonnet-5', D(0)),
   entry('claude-opus-5', D(1), 5),
   entry('claude-opus-5-5', D(10), 4),
   entry('claude-sonnet-5-5', D(15)),
+  entry('claude-sonnet-6', D(20)),
   entry('claude-haiku-4-5', D(-100), 1),
 ];
 
 describe('checkDispatchModel', () => {
   it('refuses a release newer than every recorded CLI floor', () => {
-    expect(checkDispatchModel('claude-sonnet-5-5', CATALOG)).toEqual({ ok: false, reason: 'newer_than_floor_table' });
+    expect(checkDispatchModel('claude-sonnet-6', CATALOG)).toEqual({ ok: false, reason: 'newer_than_floor_table' });
   });
 
   it('refuses a Claude id the healthy catalog does not list', () => {
@@ -41,6 +42,7 @@ describe('checkDispatchModel', () => {
     expect(checkDispatchModel('claude-sonnet-5', CATALOG).ok).toBe(true);
     expect(checkDispatchModel('claude-haiku-4-5-20251001', CATALOG).ok).toBe(true);
     expect(checkDispatchModel('claude-opus-5-5', CATALOG).ok).toBe(true);
+    expect(checkDispatchModel('claude-sonnet-5-5', CATALOG).ok).toBe(true);
   });
 
   it('accepts the code-level tier defaults even if the catalog has not heard of them', () => {
@@ -72,21 +74,21 @@ describe('guardDispatchModel', () => {
 
   it('falls back to the tier entry and names the rejected id and where it came from', () => {
     const g = guardDispatchModel({
-      resolved: 'claude-sonnet-5-5', source: 'tier_pool_arm', tier: 'standard',
+      resolved: 'claude-sonnet-6', source: 'tier_pool_arm', tier: 'standard',
       fallbacks: [{ model: 'claude-sonnet-5', source: 'tier_row' }], catalog: CATALOG,
     });
     expect(g.model).toBe('claude-sonnet-5');
     expect(g.source).toBe('tier_row');
     expect(g.rejection).toEqual({
-      rejected: 'claude-sonnet-5-5', reason: 'newer_than_floor_table', source: 'tier_pool_arm', fallback: 'claude-sonnet-5',
+      rejected: 'claude-sonnet-6', reason: 'newer_than_floor_table', source: 'tier_pool_arm', fallback: 'claude-sonnet-5',
     });
-    expect(describeDispatchModelRejection(g.rejection!)).toContain('"claude-sonnet-5-5" from tier_pool_arm');
+    expect(describeDispatchModelRejection(g.rejection!)).toContain('"claude-sonnet-6" from tier_pool_arm');
   });
 
   it('skips a tier entry that is itself bad and lands on the tier default', () => {
     const g = guardDispatchModel({
-      resolved: 'claude-sonnet-5-5', source: 'tier_row', tier: 'standard',
-      fallbacks: [{ model: 'claude-sonnet-5-5', source: 'tier_row' }], catalog: CATALOG,
+      resolved: 'claude-sonnet-6', source: 'tier_row', tier: 'standard',
+      fallbacks: [{ model: 'claude-sonnet-6', source: 'tier_row' }], catalog: CATALOG,
     });
     expect(g.model).toBe(TIER_DEFAULTS.standard.model);
     expect(g.source).toBe('tier_default');

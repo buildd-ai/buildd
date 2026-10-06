@@ -20,9 +20,10 @@ import { useSharedComposer } from './composer-store';
 import type { ConversationListItem } from '@/lib/chat/conversations';
 
 export default function HomeChatCard({
-  teamId, workspaces, recent, agentName = 'buildd', compact = false, initialWorkspaceId = null,
+  teamId, workspaces, recent, agentName = 'buildd', compact = false, initialWorkspaceId = null, phoneInbox = false,
 }: {
   teamId: string;
+  phoneInbox?: boolean;
   workspaces: readonly ComposerWorkspace[];
   recent: readonly ConversationListItem[];
   agentName?: string;
@@ -56,6 +57,16 @@ export default function HomeChatCard({
       setBusy(false);
     }
   }
+
+  if (phoneInbox) return (
+    <section className="mb-7" data-testid="home-ask-box">
+      <form onSubmit={e => { e.preventDefault(); if (composer.draft.trim() && !busy) void send(composer.draft.trim()); }} className="flex border border-border-strong bg-[var(--chat-surface)]">
+        <input aria-label="Ask buildd" placeholder="Describe the work, or ask…" value={composer.draft} onChange={e => composer.setDraft(e.target.value)} disabled={busy} className="min-w-0 flex-1 bg-transparent px-3 font-convo text-lede text-text-primary placeholder:text-text-muted focus:outline-none" />
+        <button type="submit" aria-label="Send" disabled={busy || !composer.draft.trim()} className="min-h-12 w-14 shrink-0 border-l border-border-strong bg-accent text-[var(--on-accent)] disabled:opacity-50">{busy ? '…' : '↑'}</button>
+      </form>
+      {error && <p role="alert" className="mt-2 text-meta text-status-error">{error}</p>}
+    </section>
+  );
 
   return (
     <section data-testid="home-chat-card" className="mb-6">

@@ -6,6 +6,10 @@ vi.mock('@buildd/core/db', () => ({
       taskSchedules: {
         findFirst: vi.fn(),
       },
+      workspaces: {
+        findFirst: vi.fn(),
+        findMany: vi.fn(),
+      },
     },
     update: vi.fn(() => ({
       set: vi.fn(() => ({
@@ -33,6 +37,7 @@ vi.mock('@/lib/api-auth', () => ({
 vi.mock('@/lib/team-access', () => ({
   verifyWorkspaceAccess: vi.fn(),
   verifyAccountWorkspaceAccess: vi.fn(),
+  canCallerAdminTeam: vi.fn(),
 }));
 
 vi.mock('@/lib/schedule-helpers', () => ({
@@ -44,7 +49,7 @@ import { GET, PATCH, DELETE } from './route';
 import { db } from '@buildd/core/db';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
 import { NextRequest } from 'next/server';
 
@@ -222,6 +227,89 @@ describe('PATCH /schedules/[scheduleId]', () => {
       { params },
     );
     expect(res.status).toBe(200);
+  });
+});
+
+describe('PATCH delegation (explicit cross-workspace reach for the schedule\'s tasks)', () => {
+  const TARGET = '00000000-0000-0000-0000-0000000000aa';
+  const OTHER_TEAM_WS = '00000000-0000-0000-0000-0000000000bb';
+  const grant = { grants: [{ workspaceId: TARGET, capabilities: ['analytics:read', 'tasks:create'] }] };
+
+  beforeEach(() => {
+    (db.query.workspaces.findFirst as any).mockResolvedValue({ teamId: 'team-1' });
+    (db.query.workspaces.findMany as any).mockResolvedValue([
+      { id: TARGET, teamId: 'team-1' },
+      { id: OTHER_TEAM_WS, teamId: 'team-2' },
+    ]);
+  });
+
+  it('a team admin grants it, and the row records who and when', async () => {
+    mockSessionUser();
+    (canCallerAdminTeam as any).mockResolvedValue(true);
+    const { set } = mockDbUpdate({ ...mockSchedule });
+    const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
+    expect(res.status).toBe(200);
+    const written = (set.mock.calls[0] as any)[0].delegation;
+    expect(written.grants).toEqual(grant.grants);
+    expect(written.grantedByUserId).toBe('user-1');
+    expect(typeof written.grantedAt).toBe('string');
+    expect(canCallerAdminTeam).toHaveBeenCalledWith({ kind: 'user', userId: 'user-1' }, 'team-1');
+  });
+
+  it('a team member who is not admin cannot grant it', async () => {
+    mockSessionUser();
+    (canCallerAdminTeam as any).mockResolvedValue(false);
+    const res = await PATCH(makeRequest('PATCH', { delegation: grant }), { params });
+    expect(res.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('never reaches another team', async () => {
+    mockSessionUser();
+    (canCallerAdminTeam as any).mockResolvedValue(true);
+    const res = await PATCH(makeRequest('PATCH', {
+      delegation: { grants: [{ workspaceId: OTHER_TEAM_WS, capabilities: ['analytics:read'] }] },
+    }), { params });
+    expect(res.status).toBe(400);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a capability outside the delegation vocabulary', async () => {
+    mockSessionUser();
+    (canCallerAdminTeam as any).mockResolvedValue(true);
+    for (const capability of ['admin', 'secrets', 'tasks:write']) {
+      const res = await PATCH(makeRequest('PATCH', {
+        delegation: { grants: [{ workspaceId: TARGET, capabilities: [capability] }] },
+      }), { params });
+      expect(res.status).toBe(400);
+    }
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('the granter must reach the target itself', async () => {
+    mockAdminApiKey();
+    (canCallerAdminTeam as any).mockResolvedValue(true);
+    (verifyAccountWorkspaceAccess as any).mockImplementation(async (_a: string, ws: string) => ws === WORKSPACE_ID);
+    const res = await PATCH(makeRequest('PATCH', { delegation: grant }, 'Bearer bld_admin'), { params });
+    expect(res.status).toBe(403);
+    expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it('null clears it', async () => {
+    mockSessionUser();
+    (canCallerAdminTeam as any).mockResolvedValue(true);
+    const { set } = mockDbUpdate({ ...mockSchedule });
+    const res = await PATCH(makeRequest('PATCH', { delegation: null }), { params });
+    expect(res.status).toBe(200);
+    expect((set.mock.calls[0] as any)[0].delegation).toBeNull();
+  });
+
+  it('moving the schedule to another workspace drops its grant', async () => {
+    mockSessionUser();
+    const { set } = mockDbUpdate({ ...mockSchedule });
+    const res = await PATCH(makeRequest('PATCH', { workspaceId: TARGET }), { params });
+    expect(res.status).toBe(200);
+    expect((set.mock.calls[0] as any)[0].delegation).toBeNull();
   });
 });
 
