@@ -6,7 +6,8 @@
  * key. So each route file that calls it must also apply a scope check
  * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
  * `taskScopeAllowsWorkerPr` / `taskScopeAllowsMission` / `taskScopeAllowsInitiative` /
- * `taskScopeAllowsMissionTask`,
+ * `taskScopeAllowsMissionTask` / `taskScopeAllowsDelegated` (a schedule's
+ * explicit delegation, packages/core/token-delegation.ts),
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
  * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it
@@ -19,12 +20,13 @@ import { execSync } from 'child_process';
 import { join } from 'path';
 
 const REPO = join(import.meta.dir, '../../../..');
-const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
+const SCOPE_CHECK = /taskScopeAllows(Task|Worker|Workspace|WorkerPr|Mission|Initiative|MissionTask|Delegated)\(|\.taskScope\b|authorizeWorkerPrCapability\(/;
 
 const OPTED_IN = [
   'apps/web/src/app/api/artifacts/[artifactId]/route.ts',
   'apps/web/src/app/api/artifacts/upload-url/route.ts',
   'apps/web/src/app/api/connectors/mounted/route.ts',
+  'apps/web/src/app/api/decisions/route.ts',
   'apps/web/src/app/api/discrepancies/[id]/route.ts',
   'apps/web/src/app/api/discrepancies/route.ts',
   'apps/web/src/app/api/evidence/route.ts',
@@ -76,6 +78,7 @@ const OPTED_IN = [
   'apps/web/src/app/api/workspaces/[id]/memory/route.ts',
   'apps/web/src/app/api/workspaces/[id]/schedules/[scheduleId]/route.ts',
   'apps/web/src/app/api/workspaces/[id]/schedules/route.ts',
+  'apps/web/src/app/api/workspaces/route.ts',
 ];
 
 function routesCallingIt(): string[] {

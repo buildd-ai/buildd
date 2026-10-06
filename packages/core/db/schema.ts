@@ -27,6 +27,7 @@ export const connectorAuthModeEnum = pgEnum('connector_auth_mode', ['none', 'hea
 export const connectorTransportEnum = pgEnum('connector_transport', ['http', 'stdio']);
 import { relations, sql } from 'drizzle-orm';
 import { DEFAULT_ENABLED_DECISION_SHADOWS } from '../inference-policy';
+import type { ScheduleDelegation } from '../token-delegation';
 import type { WorkerEnvironment, SkillModel, MergePolicy, LoopConfig, LoopState, TaskSubjectAnchor, PathDeclaration, TaskStatusValue, WorkerStatusValue, MissionStatusValue, WorkspaceOnboardingConfig } from '@buildd/shared';
 
 // Teams table for multi-tenancy ownership
@@ -2516,6 +2517,11 @@ export const taskSchedules = pgTable('task_schedules', {
     suggestedByTaskId?: string;
     suggestedByWorkerId?: string;
   }>(),
+  // Explicit cross-workspace reach for the tasks this schedule spawns
+  // (packages/core/token-delegation.ts). Kept off taskTemplate on purpose:
+  // the template is copied into each task, and nothing a task carries may
+  // widen its own token. Null = no delegation (the default).
+  delegation: jsonb('delegation').$type<ScheduleDelegation>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

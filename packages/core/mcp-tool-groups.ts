@@ -65,6 +65,7 @@ export const ACTION_AREA: Record<BuilddAction, ActionArea> = {
   get_pr_review: 'prs',
   merge_pr: 'prs',
   close_pr: 'prs',
+  update_pr: 'prs',
   request_pr_review: 'prs',
   list_releases: 'prs',
   get_release: 'prs',
@@ -209,7 +210,7 @@ export const MCP_GROUP_PURPOSE_PARTS: Record<McpToolGroup, { lead?: string; part
   },
   prs: {
     parts: [
-      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr'] },
+      { text: 'pull requests', actions: ['list_prs', 'get_pr', 'merge_pr', 'close_pr', 'update_pr'] },
       { text: 'reviews', actions: ['get_pr_review', 'request_pr_review'] },
       { text: 'releases', actions: ['list_releases', 'get_release', 'release_status'] },
     ],
@@ -301,6 +302,7 @@ export const ACTION_SUMMARY: Record<BuilddAction, string> = {
   get_pr_review: 'where a PR review stands',
   merge_pr: 'merge a PR',
   close_pr: 'close a PR',
+  update_pr: 'replace a PR\'s body',
   request_pr_review: 'hand a PR to a reviewer agent',
   list_releases: 'releases, newest first',
   get_release: 'one release with its tasks',
@@ -520,13 +522,14 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
     param('window', { type: 'string', enum: ['24h', '7d', '30d'] }, [{ text: 'Window (default 7d)', actions: ['get_usage_stats', 'get_failure_analytics', 'get_manifest_coverage', 'get_path_claim_stats', 'get_decision_stats'] }]),
     param('family', { type: 'string', enum: ['gate'] }, [{ text: 'Gate ledger, including changeIntent warnings', actions: ['get_failure_analytics'] }]),
     param('errorPrefix', str, [{ text: 'Literal reason/signature prefix', actions: ['get_failure_analytics'] }]),
+    param('capability', str, [{ text: 'Ledger rows, e.g. question_gate', actions: ['get_decision_stats'] }]),
   ],
   runners: [
     param('workspaceId', str, [{ text: WS, actions: ['list_connectors'] }]),
     param('taskId', str, [{ text: 'Task UUID', actions: ['send_agent_message'] }]),
   ],
   prs: [
-    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'get_pr_review', 'request_pr_review'] }]),
+    param('prNumber', num, [{ text: 'PR number', actions: ['get_pr', 'merge_pr', 'close_pr', 'update_pr', 'get_pr_review', 'request_pr_review'] }]),
   ],
   artifacts: [
     param('artifactId', str, [{ text: 'Artifact UUID', actions: ['get_artifact', 'update_artifact'] }]),
@@ -534,6 +537,7 @@ export const MCP_GROUP_PARAMS: Record<McpToolGroup, GroupParam[]> = {
   ],
   schedules: [
     param('scheduleId', str, [{ text: 'Schedule UUID', actions: ['update_schedule', 'delete_schedule'] }]),
+    param('delegation', { type: 'object' }, [{ text: 'Cross-workspace grant', actions: ['update_schedule'] }]),
   ],
   work: [],
   admin: [],

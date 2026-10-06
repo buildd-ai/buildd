@@ -759,4 +759,30 @@ describe('collectGitStats', () => {
 
     expect(stats.dirtyWorktree).toBe(false);
   });
+
+  // cwd is the worker's own live worktree, and this runs while the agent may
+  // be concurrently staging/committing there. `status`/`diff` take
+  // index.lock to opportunistically rewrite the on-disk index unless told
+  // not to — every real git call this function makes must opt out, or a
+  // sync/terminal-event tick can collide with the agent's own `git add`.
+  test('every git call disables optional locks, so it never contends for index.lock with the agent', async () => {
+    mergeBaseOutput = 'abc1234';
+    numstatOutput = '1\t1\tsrc/a.ts\n';
+    statusPorcelain = ' M src/a.ts\n';
+
+    await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    // Scoped to the calls that share collectGitStats' own `opts` (merge-base,
+    // rev-parse, rev-list, diff, status) — the ones that read/refresh the
+    // index and so are the ones that can actually take index.lock. The
+    // separate origin-branch-fetch probe this baseRef also triggers uses its
+    // own git port and isn't part of this guarantee.
+    const relevant = syncCalls.filter(c =>
+      /^git (merge-base|rev-parse|rev-list|diff|status)/.test(c.cmd),
+    );
+    expect(relevant.length).toBeGreaterThan(0);
+    for (const call of relevant) {
+      expect((call.opts as any).env?.GIT_OPTIONAL_LOCKS).toBe('0');
+    }
+  });
 });

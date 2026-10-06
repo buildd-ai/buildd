@@ -29,7 +29,9 @@ mock.module('../../src/session-logger', () => ({
 }));
 
 let statusPorcelainOutput = '';
-const mockExecSync = mock((cmd: string) => {
+const execSyncCalls: Array<{ cmd: string; opts: any }> = [];
+const mockExecSync = mock((cmd: string, opts?: any) => {
+  execSyncCalls.push({ cmd, opts });
   if (cmd.includes('status --porcelain')) return statusPorcelainOutput;
   // computeTouchedPaths' `git diff --name-only` — no touched paths by default.
   return '';
@@ -88,6 +90,7 @@ describe('WorkerSync dirty-worktree reporting', () => {
   beforeEach(() => {
     mockUpdateWorker.mockClear();
     seenPayloads.length = 0;
+    execSyncCalls.length = 0;
     statusPorcelainOutput = '';
     worktreeExists = true;
   });
@@ -122,5 +125,17 @@ describe('WorkerSync dirty-worktree reporting', () => {
     await makeSync(worker).syncWorkerToServer(worker);
 
     expect(seenPayloads[0].dirtyWorktree).toBeUndefined();
+  });
+
+  // This runs on every sync tick against the worker's own live worktree,
+  // concurrently with whatever the agent itself is doing there — an agent
+  // `git add`/`git commit` racing this `git status` for the same
+  // index.lock is exactly the friction this guards against.
+  test('the status probe disables optional locks, so it cannot contend for index.lock with the agent', async () => {
+    const worker = makeWorker();
+    await makeSync(worker).syncWorkerToServer(worker);
+
+    const statusCall = execSyncCalls.find(c => c.cmd.includes('status --porcelain'));
+    expect(statusCall?.opts?.env?.GIT_OPTIONAL_LOCKS).toBe('0');
   });
 });
