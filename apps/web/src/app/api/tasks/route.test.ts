@@ -3183,6 +3183,8 @@ describe('POST /api/tasks', () => {
       expect(Object.keys(json).sort()).toEqual(['error', 'frictionSignature']);
       expect(json.error).toBe(
         'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
+        'A whole-repo glob (\'**\', \'*\', or a bare package root like \'apps/**\') does not satisfy this: it means "no scope declared," not "touches everything," so it is rejected the same as an empty manifest. ' +
+        "For a branch-sync/upkeep task that can't predict every conflict path before merging, declare the paths most likely to actually collide (e.g. schema/migration files, cron config) rather than the whole repo — the manifest only has to catch likely overlaps, it doesn't need to be exhaustive. " +
         "If this task won't produce a PR, set outputRequirement: 'none' instead.",
       );
       expect(mockScheduleCreationManifestShadow).not.toHaveBeenCalled();
