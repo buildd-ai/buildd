@@ -54,7 +54,14 @@ export const MODULE_RULES: ReadonlyArray<readonly [ModuleId, RegExp]> = [
 
 export type Owner = ModuleId | 'core';
 
+/** Core run-record helpers whose names also match broader module heuristics. */
+const CORE_RUN_RECORD_FILES: ReadonlySet<string> = new Set([
+  'packages/core/bash-failure-trace.ts',
+  'apps/web/src/app/app/(protected)/tasks/[id]/error-evidence.ts',
+]);
+
 export function moduleOf(path: string): Owner {
+  if (CORE_RUN_RECORD_FILES.has(path)) return 'core';
   const q = '/' + path;
   for (const [id, re] of MODULE_RULES) if (re.test(q)) return id;
   return 'core';
