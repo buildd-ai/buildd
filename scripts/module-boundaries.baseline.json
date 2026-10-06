@@ -127,6 +127,7 @@
     },
     "apps/web/src/app/api/tasks/[id]/summary/route.ts": {
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
+      "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
       "apps/web/src/lib/visual-review-load.ts": "visual-qa",
       "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
     },
@@ -699,6 +700,7 @@
       "apps/web/src/lib/mission-task-href.ts": "missions",
       "apps/web/src/lib/mission-visual-review.ts": "visual-qa",
       "apps/web/src/lib/task-evidence.ts": "knowledge",
+      "apps/web/src/lib/task-failure-kind-load.ts": "health-quality",
       "apps/web/src/lib/visual-review-load.ts": "visual-qa",
       "apps/web/src/lib/visual-review-rounds.ts": "visual-qa"
     },
