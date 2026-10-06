@@ -98,6 +98,7 @@ export const CHAT_ROUTES: readonly RouteEntry[] = [
   // Team-wide reads: the route limits results to ?teamId (session path), which the guard pins.
   { pattern: '/api/explain', methods: ['GET'], load: () => import('@/app/api/explain/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/health/failures', methods: ['GET'], load: () => import('@/app/api/health/failures/route'), reach: { pinTeam: true, ...ROWS } },
+  { pattern: '/api/health/incidents', methods: ['GET'], load: () => import('@/app/api/health/incidents/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/health/budget', methods: ['GET'], load: () => import('@/app/api/health/budget/route'), reach: { pinTeam: true, ...ROWS } },
   { pattern: '/api/connectors/mounted', methods: ['GET'], load: () => import('@/app/api/connectors/mounted/route'), reach: { requireQuery: ['workspaceId'], ...ROWS } },
 
