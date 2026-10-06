@@ -3753,6 +3753,8 @@ export class WorkerManager {
 
       // Enable Agent Teams (SDK handles TeamCreate, SendMessage, TaskCreate/Update/List)
       cleanEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+      // Keep task-tracking tools available on newer Claude models.
+      cleanEnv.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
 
       // Resolve role env vars (secret labels → actual values). Not gated on
       // `roleConfig` alone: `roleEnvSecrets`/`roleEnvMissing` are delivered
