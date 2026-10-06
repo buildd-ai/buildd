@@ -6,6 +6,7 @@
  * lives in TaskSheet; the phase action lives in TaskActionZone so the full task
  * page can share it.
  */
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { VisualReviewModel } from '@buildd/shared';
 import Link from 'next/link';
@@ -312,6 +313,7 @@ export default function TaskPanelBody({ data, workspaceId, onChanged }: TaskPane
         backend={data.backend}
         lastError={data.lastError}
         failureKind={data.failureKind ?? null}
+        auditTaskId={data.failureKind === 'verification' && isSurfaceAuditTask(data.title) ? data.id : null}
         worker={w ? { id: w.id, waitingFor: w.waitingFor } : null}
         historyHref={taskPageHref({ taskId: data.id, missionId: data.missionId })}
         roleSlug={data.roleSlug}

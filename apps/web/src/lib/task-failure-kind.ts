@@ -41,6 +41,8 @@ export function classifyTaskFailure(task: FailureTaskLike, siblings: readonly Fa
   if (task.status !== 'failed') return null;
   const others = siblings.filter(s => s.id !== task.id);
   if (isSurfaceAuditTask(task.title)) {
+    // The audit's own worker must have finished and reported; one that died or never ran is an execution failure.
+    if (task.workers?.[0]?.status !== 'completed') return 'execution';
     return others.some(s => !isSurfaceAuditTask(s.title) && implementationLanded(s)) ? 'verification' : 'execution';
   }
   if (!implementationLanded(task)) return 'execution';

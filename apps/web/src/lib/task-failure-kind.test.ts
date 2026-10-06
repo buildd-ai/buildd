@@ -15,9 +15,15 @@ describe('classifyTaskFailure', () => {
     const audit = { id: 'b', title: '[surface audit] Mission', status: 'failed' };
     expect(classifyTaskFailure({ id: 'a', title: 'Build', status: 'failed', workers: [merged] }, [audit])).toBe('verification');
   });
-  it('a failed audit task with an implementation already landed is a verification failure', () => {
+  it('a failed audit whose own worker finished and reported is verification', () => {
     const impl = { id: 'a', title: 'Build', status: 'completed', workers: [merged] };
-    expect(classifyTaskFailure({ id: 'b', title: '[surface audit] Mission', status: 'failed', workers: [died] }, [impl])).toBe('verification');
+    const reported = { status: 'completed', prUrl: null, mergedAt: null, prLifecycleStatus: null };
+    expect(classifyTaskFailure({ id: 'b', title: '[surface audit] Mission', status: 'failed', workers: [reported] }, [impl])).toBe('verification');
+  });
+  it('a failed audit whose worker died is execution even with an implementation landed', () => {
+    const impl = { id: 'a', title: 'Build', status: 'completed', workers: [merged] };
+    expect(classifyTaskFailure({ id: 'b', title: '[surface audit] Mission', status: 'failed', workers: [died] }, [impl])).toBe('execution');
+    expect(classifyTaskFailure({ id: 'b', title: '[surface audit] Mission', status: 'failed', workers: [] }, [impl])).toBe('execution');
   });
   it('a failed audit with nothing landed is an execution failure', () => {
     expect(classifyTaskFailure({ id: 'b', title: '[surface audit] Mission', status: 'failed', workers: [died] }, [])).toBe('execution');

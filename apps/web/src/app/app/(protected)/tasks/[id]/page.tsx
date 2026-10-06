@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import { isSurfaceAuditTask } from '@buildd/core/surface-audit';
 import { resolveRunnerDisplay, runnerDisplayResolver } from '@/lib/runner-display';
 import { getRunnerHeartbeats, isRunnerOnline, loadRunnerHeartbeats } from '@/lib/runner-heartbeats';
 import { db } from '@buildd/core/db';
@@ -1220,6 +1221,7 @@ export default async function TaskDetailPage({
               blockedByCount={unresolvedDeps.length}
               backend={(task.backend as 'claude' | 'codex' | null) ?? null}
               failureKind={failureKind}
+              auditTaskId={failureKind === 'verification' && isSurfaceAuditTask(task.title) ? task.id : null}
               lastError={failedExcerpt ? { excerpt: failedExcerpt, raw: taskWorkers[0]?.error ?? null } : null}
               worker={null}
               roleSlug={task.roleSlug}

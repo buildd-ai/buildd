@@ -343,4 +343,28 @@ describe('TaskActionZone — failure kind routes recovery', () => {
     expect(text.length).toBeLessThan(120);
     expect(dupes(text)).toBeLessThan(3);
   });
+
+  it('a failed audit with landed work offers Retry the audit (reassign), never the build recovery', async () => {
+    codexConfigured = true;
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'verification', auditTaskId: 't1', lastError: null, historyHref: '/h' });
+    await flush();
+    const text = container.textContent ?? '';
+    expect(text).toContain('Implementation complete, verification failed');
+    expect(button('Retry on Claude')).toBeUndefined();
+    expect(button('Switch to Codex')).toBeUndefined();
+    expect(text).not.toContain('Worker failed');
+    expect(text).not.toContain('Skip this audit');
+    await act(async () => { button('Retry the audit')!.click(); });
+    await flush();
+    expect(calls.some(c => c.url === '/api/tasks/t1/reassign?force=true')).toBe(true);
+  });
+
+  it('an execution failure never offers audit recovery', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ phase: 'failed', failureKind: 'execution', auditTaskId: null, lastError: { excerpt: 'boom' }, historyHref: '/h' });
+    await flush();
+    expect(button('Retry the audit')).toBeUndefined();
+    expect(container.textContent).not.toContain('Skip this audit');
+  });
 });

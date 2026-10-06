@@ -68,6 +68,8 @@ export interface TaskActionZoneProps {
   lastError: { excerpt: string; raw?: string | null } | null;
   /** `classifyTaskFailure`: `verification` means the work landed and its audit failed. */
   failureKind?: TaskFailureKind | null;
+  /** Set when this task IS the surface audit: a verification failure then offers "Retry the audit". */
+  auditTaskId?: string | null;
   worker: { id: string; waitingFor: { prompt: string; options?: string[]; context?: string } | null } | null;
   /** "View history" target on failure; omitted on the full page itself. */
   historyHref?: string | null;
@@ -93,6 +95,7 @@ export default function TaskActionZone({
   backend,
   lastError,
   failureKind = null,
+  auditTaskId = null,
   worker,
   historyHref,
   roleSlug,
@@ -201,11 +204,25 @@ export default function TaskActionZone({
         <div data-testid="task-verification-failed" className="space-y-3 border-2 border-status-warning p-4">
           <p className="font-mono text-meta font-semibold text-status-warning">{verificationFailedCopy().state}</p>
           <p className="font-mono text-meta text-text-secondary">{verificationFailedCopy().cause}</p>
-          {has('history') && historyHref && (
-            <Link href={historyHref} data-action="history" className={QUIET_BTN}>
-              View history
-            </Link>
-          )}
+          {retryError && <p className="font-mono text-meta text-status-error">{retryError}</p>}
+          <div className="flex flex-wrap items-center gap-2">
+            {auditTaskId && (
+              <button
+                type="button"
+                data-action="retry-audit"
+                disabled={retrying !== null}
+                onClick={() => retry('same')}
+                className={SECONDARY_BTN}
+              >
+                {retrying ? 'Retrying…' : 'Retry the audit'}
+              </button>
+            )}
+            {has('history') && historyHref && (
+              <Link href={historyHref} data-action="history" className={QUIET_BTN}>
+                View history
+              </Link>
+            )}
+          </div>
         </div>
       )}
 
