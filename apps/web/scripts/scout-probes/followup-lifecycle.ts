@@ -20,6 +20,7 @@ const core = (p: string) => import(`${root}/packages/core/${p}`);
 const { runQualityScout } = await lib('quality-scout-run.ts');
 const { computeReadiness } = await core('workspace-readiness.ts');
 const { discoverScoutCapabilities } = await core('scout-capabilities.ts');
+const { TASK_STATUSES, UNCLAIMED_TASK_STATUSES, isTerminalTaskStatus } = await import(`${root}/packages/shared/src/status.ts`);
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -100,7 +101,9 @@ async function run(shaChar: string, mode = 'propose') {
 
 const results: Array<{ step: string; ok: boolean; detail: string }> = [];
 const check = (step: string, ok: boolean, detail: string) => results.push({ step, ok, detail });
-const live = () => [...tasks.entries()].filter(([, t]) => !['completed', 'failed', 'cancelled'].includes(t.status));
+const live = () => [...tasks.entries()].filter(([, t]) => !isTerminalTaskStatus(t.status));
+// Every claimed-but-not-ended status (in_progress, review): the follow-up is still being worked.
+const CLAIMED_OPEN: string[] = TASK_STATUSES.filter((s: string) => !isTerminalTaskStatus(s) && !UNCLAIMED_TASK_STATUSES.includes(s));
 const only = () => [...findings.values()][0];
 
 await run('a');
@@ -113,7 +116,7 @@ tasks.get(only().actionTaskId)!.status = 'completed';
 await run('c');
 check('an ended follow-up with the finding still failing is replaced by exactly one', live().length === 1 && tasks.size === 2, `tasks=${tasks.size} live=${live().length}`);
 
-for (const status of ['in_progress', 'review']) {
+for (const status of CLAIMED_OPEN) {
   const id = only().actionTaskId;
   tasks.get(id)!.status = status;
   const before = tasks.size;
