@@ -6,7 +6,8 @@ import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
 import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, ClaimTaskExclusion } from '@buildd/shared';
-import { CLOUD_EXECUTOR, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { CLOUD_EXECUTOR, ENTITLEMENT_BLOCK_CONTEXT_KEY, entitlementDeferralKey, isRunnerExecutor, stripClaimCredentials } from '@buildd/shared';
+import { checkManagedRunnerEntitlement, stampEntitlementBlock } from '@/lib/entitlements/managed-runner';
 import { authenticateTaskScopedCaller } from '@/lib/task-token-auth';
 import { INTERACTIVE_SESSION_HEADER, resolveClaimRunner, verifyInteractiveSession } from '@/lib/interactive-session';
 import { INTERACTIVE_CLAIM_SESSION_KEY, INTERACTIVE_CLAIM_USER_KEY } from '@/lib/interactive-worker-liveness';
@@ -1154,6 +1155,8 @@ export async function POST(req: NextRequest) {
     oauth_parallelism: 0,
     role_env_unsatisfied: 0,
     ordered_behind: 0,
+    managed_concurrency: 0,
+    managed_runner_hours: 0,
     // Every counter must be a declared diagnostics key (and vice versa): the
     // response casts to ClaimDiagnostics['deferrals'], so without this check a
     // new reason ships untyped to every client.
@@ -1222,6 +1225,9 @@ export async function POST(req: NextRequest) {
   // workers per workspace and stop claiming once a repo workspace reaches its cap.
   const DEFAULT_MAX_CONCURRENT_TASKS = 3;
   const activeByWorkspace = new Map<string, number>();
+  // Managed runs this batch started, per team: not yet visible to the
+  // entitlement's live-worker count.
+  const managedClaimedByTeam = new Map<string, number>();
   for (const w of activeWorkers) {
     if (!['running', 'starting', 'idle'].includes(w.status)) continue;
     activeByWorkspace.set(w.workspaceId, (activeByWorkspace.get(w.workspaceId) || 0) + 1);
@@ -1917,6 +1923,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Commercial entitlement: Buildd-managed runner keys only (packages/shared/
+    // src/entitlements.ts). A self-hosted runner never gets here, and the
+    // operational caps above stay as they are. Not forceable and not an error:
+    // the task stays pending with the block stamped on it for the dashboard,
+    // and a managed run ending (or the hourly sweep) wakes it.
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) {
+        const block = await checkManagedRunnerEntitlement(entitlementTeamId, {
+          claimedInBatch: managedClaimedByTeam.get(entitlementTeamId) ?? 0,
+          now,
+        });
+        if (block) {
+          deferTask(task, entitlementDeferralKey(block), { ...block });
+          await stampEntitlementBlock(task.id, block, now);
+          continue;
+        }
+      }
+    }
+
     // Team provider toggle (reversible mask) — applied BEFORE budget logic so the
     // rest sees the effective backend. Disabling a provider here redirects matching
     // jobs to an enabled one at dispatch time, without touching stored settings;
@@ -2359,6 +2385,8 @@ export async function POST(req: NextRequest) {
     // Why this claim's backend differs from the stored one — or nothing, so a
     // previous attempt's flip never reads as this one's.
     delete (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY];
+    // Claimed: it no longer waits on an entitlement.
+    delete (patchedContext as Record<string, unknown>)[ENTITLEMENT_BLOCK_CONTEXT_KEY];
     const routing = backendRouting.get(task.id);
     if (routing && routing.backend === (task as any).backend) {
       (patchedContext as Record<string, unknown>)[BACKEND_ROUTING_KEY] = routing;
@@ -2426,6 +2454,10 @@ export async function POST(req: NextRequest) {
 
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
+    if (account.managedRunner) {
+      const entitlementTeamId = (task as any).workspace?.teamId as string | undefined;
+      if (entitlementTeamId) managedClaimedByTeam.set(entitlementTeamId, (managedClaimedByTeam.get(entitlementTeamId) ?? 0) + 1);
+    }
 
     // Mirror into the Codex single-flight tracker so a second originally-Codex
     // task for this workspace, later in the same batch, hits the defer above

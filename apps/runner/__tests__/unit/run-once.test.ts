@@ -558,6 +558,13 @@ describe('classifyClaimFailure', () => {
     }
   });
 
+  test('a managed-runner entitlement block is a deferral (retry later), never a refusal or failure', () => {
+    for (const code of ['managed_concurrency', 'managed_runner_hours']) {
+      const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'all_candidates_deferred', claimTaskExclusionCode: code });
+      expect(classifyClaimFailure(err)).toBe('deferred');
+    }
+  });
+
   test('server_rejected with a structural taskExclusion code stays refused', () => {
     for (const code of ['already_claimed', 'active_worker', 'duplicate_worker', 'task_held', 'mission_held', 'mission_local', 'subject_dead', 'runner_preference', 'role_mismatch', 'workspace_executor', 'workspace_mismatch', 'capability_mismatch', 'not_found', 'not_pending']) {
       const err = Object.assign(new Error('rejected'), { claimError: 'server_rejected', claimReason: 'no_pending_tasks', claimTaskExclusionCode: code });

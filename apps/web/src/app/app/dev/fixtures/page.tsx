@@ -24,6 +24,7 @@ import AnswerStatesFixture from './AnswerStatesFixture';
 import FailureKindsFixture from './FailureKindsFixture';
 import AgentAccessFixture from './AgentAccessFixture';
 import ToolBreakdownFixture from './tool-breakdown-fixture';
+import EntitlementBlockedFixture from './EntitlementBlockedFixture';
 import RunnerSizeFixture from './RunnerSizeFixture';
 import {
     EVIDENCE_STORAGE_FIXTURE_STATE,
@@ -42,6 +43,7 @@ import {
     COMMIT_CHECKS_FIXTURE_STATE,
     ANSWER_STATES_FIXTURE_STATE,
     AGENT_ACCESS_FIXTURE_STATE,
+    ENTITLEMENT_BLOCKED_FIXTURE_STATE,
     FAILURE_KINDS_FIXTURE_STATE,
     VISUAL_REVIEW_FIXTURE_STATE,
     isFixtureView,
@@ -123,6 +125,9 @@ export default function DevFixturesPage() {
 
     if (state === ANSWER_STATES_FIXTURE_STATE) {
         return <AnswerStatesFixture />;
+    }
+    if (state === ENTITLEMENT_BLOCKED_FIXTURE_STATE) {
+        return <EntitlementBlockedFixture />;
     }
 
     if (state === TOOL_BREAKDOWN_FIXTURE_STATE) {

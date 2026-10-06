@@ -12,3 +12,4 @@ export * from './onboarding-interview';
 export * from './runner-fleet';
 export * from './claude-ai-artifacts';
 export * from './tool-names';
+export * from './entitlements';

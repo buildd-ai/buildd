@@ -15,7 +15,7 @@ import type { TaskFailureKind } from './task-failure-kind';
 
 export interface GateRefusal {
   gateReason: string;
-  blockClass?: 'policy' | 'capability';
+  blockClass?: 'policy' | 'capability' | 'entitlement';
   error?: string;
   canForce?: boolean;
   /** workspace_cap_reached: the person may start this one task past the cap. */
@@ -32,6 +32,8 @@ export interface GateRefusal {
   blockingDeps?: Array<{ taskId: string | null; taskTitle: string | null; prUrl: string | null; prNumber: number | null }>;
   /** deferred_start: the scheduled start (ISO). */
   startAt?: string | null;
+  /** entitlement_blocked: the plan limit (an EntitlementBlock, parsed by the renderer). */
+  entitlement?: unknown;
 }
 
 // ── Action set ───────────────────────────────────────────────────────────────
@@ -234,6 +236,8 @@ export function getGateReasonTitle(refusal: GateRefusal, ctx: GateCopyContext = 
       return `Blocked: no ${refusal.backend ?? 'backend'} credential available`;
     case 'workspace_cap_reached':
       return `Workspace full (${refusal.active}/${refusal.cap} running)`;
+    case 'entitlement_blocked':
+      return 'Queued: plan limit reached';
     default:
       return 'Blocked';
   }
@@ -257,6 +261,8 @@ export function getGateReasonSubtitle(refusal: GateRefusal, ctx: GateCopyContext
       return `The role requires connectors that are not available in this workspace.${refusal.missingConnectors?.length ? ` Missing: ${refusal.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${refusal.alternativeRole ? ` Or re-file it with role: ${refusal.alternativeRole}.` : ''}`;
     case 'capability_mismatch':
       return 'The configured backend has no server credentials. Switch to an available backend to start this task.';
+    case 'entitlement_blocked':
+      return 'The task starts automatically when the limit lifts.';
     case 'workspace_cap_reached':
       return `Queued. The task starts when a slot opens.${typeof refusal.queuePosition === 'number' && refusal.queuePosition > 0 ? ` ${refusal.queuePosition} other pending task${refusal.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`;
     default:

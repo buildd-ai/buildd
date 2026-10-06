@@ -310,6 +310,46 @@ describe('TaskActionZone — overrides carry through a chain of refusals', () =>
   });
 });
 
+describe('TaskActionZone — managed-runner plan limit', () => {
+  const block = { kind: 'concurrency', key: 'managed_runner.concurrency', active: 3, limit: 3, scope: 'individual' } as const;
+
+  it('a queued task held on a plan limit shows the entitlement state instead of Run now, and no error', async () => {
+    stubFetch({ status: 200, body: {} });
+    await mount({ entitlementBlock: block });
+    const notice = container.querySelector('[data-testid="entitlement-blocked"]') as HTMLElement;
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain('3 managed runs already active');
+    expect(button('Run now')).toBeUndefined();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.innerHTML).not.toContain('status-error');
+  });
+
+  it('a start refused on a plan limit renders the same notice, not the gate warning, and Leave queued closes it', async () => {
+    stubFetch({ status: 422, body: { gateReason: 'entitlement_blocked', blockClass: 'entitlement', canForce: false, entitlement: { ...block, limit: 10, active: 10, scope: 'team' }, error: 'Queued' } });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="task-start-refusal"]')).toBeNull();
+    const notice = container.querySelector('[data-testid="entitlement-blocked"]') as HTMLElement;
+    expect(notice.textContent).toContain('10 managed runs already active');
+    expect(button('Force start')).toBeUndefined();
+    expect(container.innerHTML).not.toMatch(/status-error|status-warning/);
+    await act(async () => { button('Leave queued')!.click(); });
+    expect(container.querySelector('[data-testid="entitlement-blocked"]')).toBeNull();
+    expect(button('Run now')).toBeDefined();
+  });
+
+  it('the workspace cap refusal is unchanged: an operational limit keeps its own controls', async () => {
+    stubFetch({ status: 422, body: { gateReason: 'workspace_cap_reached', blockClass: 'policy', active: 3, cap: 3, canExempt: true } });
+    await mount();
+    await act(async () => { button('Run now')!.click(); });
+    await flush();
+    expect(container.querySelector('[data-testid="entitlement-blocked"]')).toBeNull();
+    expect(container.querySelector('[data-gate="workspace_cap_reached"]')).not.toBeNull();
+    expect(button('Save & start')).toBeDefined();
+  });
+});
+
 describe('TaskActionZone — failure kind routes recovery', () => {
   const dupes = (text: string) => {
     const words = text.toLowerCase().match(/[a-z]+/g) ?? [];
