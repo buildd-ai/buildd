@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUBSCRIBERS, COMPLETION_POLICIES } from './modules';
+import { SUBSCRIBERS, COMPLETION_POLICIES, PR_OPENED_POLICY } from './modules';
+import { reviewerDispatchOnOpen } from './lib/reviewer-subscribers';
 import { COMPLETION_SLOTS } from './lib/completion-policy';
 import { moduleOf } from '../../../scripts/module-boundaries';
 
@@ -72,12 +73,19 @@ describe('composition root', () => {
     expect(byEvent('pr.base_changed')).toEqual(['missions:retarget-surface-intents']);
     expect(byEvent('pr.needs_human')).toEqual(['missions:notify-mission-pr-ready']);
     expect(byEvent('workflow_run.completed')).toEqual(['releases:release-workflow-run-readback']);
-    expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed']);
+    // The ledger records the red head before the CI-fix retry is asked.
+    expect(byEvent('pr.ci_failed')).toEqual(['notifications:ledger-pr-ci-failed', 'reviews:ci-failure-retry']);
+    // The push is noted on the PR before a reviewer is re-dispatched.
+    expect(byEvent('pr.synchronized')).toEqual(['reviews:pr-activity-changes-pushed', 'reviews:reviewer-redispatch-on-push']);
   });
 
   it('completion policies: exactly one per core-declared slot, in core\'s order', () => {
     expect(COMPLETION_SLOTS).toEqual(['evidence', 'loop', 'release']);
     expect(Object.keys(COMPLETION_POLICIES).sort()).toEqual([...COMPLETION_SLOTS].sort());
+  });
+
+  it('the PR-opened slot is the reviews module\'s reviewer dispatch', () => {
+    expect(PR_OPENED_POLICY).toBe(reviewerDispatchOnOpen);
   });
 
   it('labels are unique, so a page names exactly one step', () => {

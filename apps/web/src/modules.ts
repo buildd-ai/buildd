@@ -19,6 +19,8 @@ import { releasePolicy } from '@/lib/release-completion-policy';
 import { knowledgeSubscribers } from '@/lib/knowledge-subscribers';
 import { missionSubscribers } from '@/lib/mission-subscribers';
 import { reviewSubscribers } from '@/lib/review-subscribers';
+import { reviewerSubscribers, reviewerDispatchOnOpen } from '@/lib/reviewer-subscribers';
+import type { PrOpenedPolicy } from '@/lib/pr-opened-policy';
 import { releaseSubscribers } from '@/lib/release/subscribers';
 import { chatSubscribers } from '@/lib/chat/subscribers';
 import { notificationSubscribers } from '@/lib/notification-subscribers';
@@ -37,6 +39,8 @@ export const SUBSCRIBERS: readonly AnySubscriber[] = [
   // Before notifications: on a completion the chat post was kicked off first.
   ...chatSubscribers,
   ...notificationSubscribers,
+  // pr.ci_failed: the ledger records the red head before the CI-fix retry is asked.
+  ...reviewerSubscribers,
   ...roleSubscribers,
   // A held release's outcome-analytics row, recorded when its CI resolves it.
   ...routingAnalyticsSubscribers,
@@ -53,3 +57,9 @@ export const COMPLETION_POLICIES: CompletionPolicies = {
   loop: loopPolicy,
   release: releasePolicy,
 };
+
+/**
+ * The PR-opened slot (lib/pr-opened-policy.ts): the reviews module may take a
+ * freshly opened worker PR, and a PR it holds skips core's no-CI auto-merge.
+ */
+export const PR_OPENED_POLICY: PrOpenedPolicy = reviewerDispatchOnOpen;
