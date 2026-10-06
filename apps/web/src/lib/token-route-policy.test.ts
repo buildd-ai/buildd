@@ -37,6 +37,12 @@ describe('REST token scope policy', () => {
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/artifacts?workspaceId=ws-a'))).toBe(false);
     expect(canAccessTokenRoute({ scopes: ['admin'], workspaceIds: ['ws-a'] }, request('/api/workspaces/ws-b/config', 'PATCH'))).toBe(false);
   });
+  test('workspace-restricted tokens can list workspaces (endpoint filters results)', () => {
+    const token = { scopes: ['tasks:read'], workspaceIds: ['ws-a'] };
+    // /api/workspaces is allowed for workspace-restricted tokens because the endpoint
+    // properly filters results via listReachableWorkspaceIds
+    expect(canAccessTokenRoute(token, request('/api/workspaces'))).toBe(true);
+  });
   test('evidence reads take analytics:read, matching the read_evidence action', () => {
     const token = { scopes: ['analytics:read'] };
     expect(requiredTokenScope('/api/tasks/t-1/evidence', 'GET')).toBe('analytics:read');
