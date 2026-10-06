@@ -1,3 +1,4 @@
+import { isOpenAsk } from './open-ask';
 /**
  * Home's fleet queries: the runner snapshot (heartbeats × live workers), each
  * slot's day history, the ticker's events and the stat strip's counts.
@@ -156,7 +157,7 @@ export async function loadHomeFleet(input: {
         mergedAt: workers.mergedAt, prNumber: workers.prNumber, waitingFor: workers.waitingFor,
         linesAdded: workers.linesAdded, linesRemoved: workers.linesRemoved,
         progress: workerProgressSql,
-        taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
+        taskStatus: tasks.status, taskId: tasks.id, taskTitle: tasks.title, taskLabel: tasks.label, taskMode: tasks.mode,
         roleSlug: tasks.roleSlug, missionId: tasks.missionId, taskClass: tasks.taskClass,
       })
       .from(workers)
@@ -236,7 +237,7 @@ export async function loadHomeFleet(input: {
   const merged = workerRows.filter(r => r.mergedAt && new Date(r.mergedAt).getTime() >= dayStart && r.prNumber);
   const mergedPrNumbers = [...new Set(merged.map(r => r.prNumber!))].sort((a, b) => b - a);
   const questions: HomeFleetQuestion[] = workerRows
-    .filter(r => r.status === 'waiting_input' && (r.waitingFor as any)?.prompt)
+    .filter(r => isOpenAsk(r.taskStatus, r.status) && (r.waitingFor as any)?.prompt)
     .sort((a, b) => new Date(a.updatedAt ?? 0).getTime() - new Date(b.updatedAt ?? 0).getTime())
     .map(r => {
       const wf = r.waitingFor as { prompt: string; options?: string[] };

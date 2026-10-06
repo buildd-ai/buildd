@@ -206,6 +206,26 @@ export type TeamRoleValue = typeof TeamRole[keyof typeof TeamRole];
 
 export type TeamPlan = 'free' | 'pro' | 'team';
 
+// Billing routes (apps/web/src/app/api/teams/[id]/billing/*). Plan changes land
+// only through the Stripe webhook; these routes hand the owner a Stripe URL.
+export type PaidTeamPlan = Exclude<TeamPlan, 'free'>;
+
+/** POST /api/teams/[id]/billing/checkout. `seats` is Team only; never below 5 or current members + invites. */
+export interface BillingCheckoutRequest {
+  plan: PaidTeamPlan;
+  seats?: number;
+}
+
+/** POST /api/teams/[id]/billing/seats — the Team plan's new total seat count. */
+export interface BillingSeatsRequest {
+  seats: number;
+}
+
+/** checkout and portal answer with the Stripe page to send the owner to. */
+export interface BillingRedirectResponse {
+  url: string;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -2062,6 +2082,21 @@ export const VISUAL_AUDITOR_ROLE_SLUG = 'visual-auditor';
 // by a runner that lists the slug in `availableSkills`. Every other roleSlug
 // keeps the legacy rule (an empty `availableSkills` list claims anything).
 export const EXPLICIT_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
+
+// Role slugs a person never picks for a task they write. buildd files these
+// tasks itself: a visual review is a mission command (POST
+// /api/missions/[id]/surface-audit), and a hand-written visual-auditor task
+// would miss its dependencies, routes and evidence contract.
+export const SYSTEM_ROLE_SLUGS: readonly string[] = [VISUAL_AUDITOR_ROLE_SLUG];
+
+export function isSystemRoleSlug(slug: string | null | undefined): boolean {
+  return !!slug && SYSTEM_ROLE_SLUGS.includes(slug);
+}
+
+/** The roles a generic task picker offers a person: everything but the system roles. */
+export function humanPickableRoles<T extends { slug: string }>(roles: readonly T[]): T[] {
+  return roles.filter(r => !isSystemRoleSlug(r.slug));
+}
 
 // ============================================================================
 // VISUAL REVIEW (docs/design/visual-qa-human-review.md)

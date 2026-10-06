@@ -275,6 +275,7 @@ interface StatusGroup {
 }
 
 interface TaskGridProps {
+  bandFilterLabel?: string;
   tasks: GridTask[];
   missionFilter?: string | null;
   missionTitle?: string | null;
@@ -306,7 +307,7 @@ export function splitTaskRoots(tasks: GridTask[]): { rootTasks: GridTask[]; chil
   return { rootTasks, childrenByParentId };
 }
 
-export default function TaskGrid({ tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
+export default function TaskGrid({ bandFilterLabel, tasks, missionFilter, missionTitle, workspaces, selectedWorkspaceId, initiativeFilter, initiativeTitle, initiativeMissionIds }: TaskGridProps) {
   const router = useRouter();
 
   const visibleTasks = useMemo(() => {
@@ -347,7 +348,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   // Load persisted filter from localStorage on mount
   useEffect(() => {
-    if (missionFilter) return; // don't persist when scoped to a mission
+    if (missionFilter || bandFilterLabel) return; // scoped lists start at All
     try {
       const stored = localStorage.getItem('buildd-activity-prefs');
       if (stored) {
@@ -360,12 +361,12 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
 
   const updateFilter = useCallback((f: FilterStatus) => {
     setFilter(f);
-    if (missionFilter) return;
+    if (missionFilter || bandFilterLabel) return;
     try {
       const stored = JSON.parse(localStorage.getItem('buildd-activity-prefs') || '{}');
       localStorage.setItem('buildd-activity-prefs', JSON.stringify({ ...stored, filter: f }));
     } catch {}
-  }, [missionFilter]);
+  }, [missionFilter, bandFilterLabel]);
 
   const dismissInitiative = useCallback(() => {
     const params = new URLSearchParams(window.location.search);
@@ -528,6 +529,35 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     return sortByRecency(nonWaitingTasks);
   }, [nonWaitingTasks, effectiveGroupBy]);
 
+  // A band drill-down that selected nothing is a filtered-empty result, not an
+  // empty workspace: say so, and make leaving the filter the primary action.
+  if (rootTasks.length === 0 && !missionFilter && bandFilterLabel) {
+    return (
+      <div data-testid="task-band-empty" className="h-full flex flex-col p-8 pt-20 md:pt-8">
+        <h1 className="text-[28px] font-bold text-text-primary" style={{ fontFamily: 'var(--font-display, inherit)' }}>Activity</h1>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="max-w-md text-center">
+            <div className="w-16 h-16 mx-auto bg-surface-3 rounded-full flex items-center justify-center mb-4">
+              <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 4h18l-7 8v6l-4 2v-8L3 4z" />
+              </svg>
+            </div>
+            <p className="text-meta text-text-secondary mb-2">{bandFilterLabel}</p>
+            <h2 className="text-xl font-semibold text-text-primary mb-2">No tasks in this band</h2>
+            <p className="text-[13px] text-text-secondary mb-4">No tasks were in this band for the selected window.</p>
+            <Link
+              href="/app/tasks"
+              data-testid="task-band-empty-clear"
+              className="inline-flex items-center min-h-11 md:min-h-0 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover"
+            >
+              Clear band filter
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (rootTasks.length === 0 && !missionFilter) {
     return (
       <div className="h-full flex items-center justify-center p-8 pt-20 md:pt-8">
@@ -572,6 +602,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     <SwipeProvider>
     <div className="h-full overflow-y-auto">
       <div className="max-w-[1000px] mx-auto pt-14 pb-4 md:py-4">
+        <BandFilterLabel label={bandFilterLabel} />
         {/* Breadcrumbs */}
         {missionFilter && (
           <div className="flex items-center gap-2 px-4 mb-3 text-[12px] text-text-muted">
@@ -905,4 +936,9 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
     </div>
     </SwipeProvider>
   );
+}
+
+function BandFilterLabel({ label }: { label?: string }) {
+  if (!label) return null;
+  return <div data-testid="task-band-filter" className="px-4 mb-3 flex flex-wrap items-center gap-3 text-meta text-text-secondary"><span>{label}</span><Link className="min-h-[44px] inline-flex items-center text-accent-text" href="/app/tasks">Clear band filter</Link></div>;
 }

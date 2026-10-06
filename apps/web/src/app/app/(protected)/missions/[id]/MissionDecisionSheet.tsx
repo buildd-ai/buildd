@@ -7,6 +7,11 @@ import type { GoalCriterion } from '@buildd/shared';
 import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
 import { AddCriterionForm } from './MissionGoalCriteria';
 import { plainCriteriaError } from '@/lib/goal-criteria-panel';
+import {
+  requestMissionVisualReview,
+  visualReviewOutcomeText,
+  type VisualReviewRequestOutcome,
+} from '@/lib/mission-visual-review-request';
 
 export interface SurfaceAuditDecision {
   /** The UI files the mission changed (the completion gate's read), for the collapsed list. */
@@ -104,7 +109,7 @@ export default function MissionDecisionSheet({
   const [reasonError, setReasonError] = useState<string | null>(null);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
-  const [auditRequested, setAuditRequested] = useState<{ created: boolean } | null>(null);
+  const [auditRequested, setAuditRequested] = useState<VisualReviewRequestOutcome | null>(null);
   const [auditWaiving, setAuditWaiving] = useState(false);
   const [auditWaived, setAuditWaived] = useState<{ reason: string; completed: boolean } | null>(null);
 
@@ -191,20 +196,15 @@ export default function MissionDecisionSheet({
     setSelected('audit');
     setAuditBusy(true);
     setAuditError(null);
-    try {
-      const res = await fetch(`/api/missions/${missionId}/surface-audit`, { method: 'POST' });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setAuditError(typeof body.error === 'string' ? body.error : `Could not add the visual audit (HTTP ${res.status})`);
-        return;
-      }
-      setAuditRequested({ created: body.created !== false });
-      router.refresh();
-    } catch {
-      setAuditError('Could not reach buildd. The visual audit was not added.');
-    } finally {
-      setAuditBusy(false);
+    // The same request, wording and dedup as the mission header's "Run visual review".
+    const outcome = await requestMissionVisualReview(missionId);
+    setAuditBusy(false);
+    if (outcome.kind === 'refused' || outcome.kind === 'error') {
+      setAuditError(visualReviewOutcomeText(outcome));
+      return;
     }
+    setAuditRequested(outcome);
+    router.refresh();
   }
 
   async function handleWaiveAudit() {
@@ -276,9 +276,7 @@ export default function MissionDecisionSheet({
 
           {auditRequested && (
             <p role="status" className="text-[12px] text-text-secondary" data-testid="surface-audit-requested">
-              {auditRequested.created
-                ? 'A visual audit was added to this mission. It completes once the audit finishes.'
-                : 'A visual audit is already on this mission.'}
+              {visualReviewOutcomeText(auditRequested)}
             </p>
           )}
 
