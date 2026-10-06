@@ -709,6 +709,50 @@ describe('GET /api/workers/active', () => {
     expect(data.activeLocalUis).toEqual([]);
   });
 
+  describe('per-task token', () => {
+    const SCOPED = { id: 'acct-run', taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+    const grants: Record<string, string[]> = {
+      'acct-run': ['ws-1', 'ws-2'],
+      'acct-both': ['ws-1', 'ws-2'],
+      'acct-other': ['ws-2'],
+    };
+    const runner = (accountId: string, url: string) => ({
+      localUiUrl: url, viewerToken: 'proxy-secret', accountId,
+      maxConcurrentWorkers: 2, activeWorkerCount: 0, lastHeartbeatAt: new Date(),
+      account: { id: accountId, name: accountId, maxConcurrentWorkers: 2, teamId: null },
+    });
+    const req = (qs = '') => new NextRequest(`http://localhost:3000/api/workers/active${qs}`, { headers: { authorization: 'Bearer bld_test' } });
+
+    beforeEach(() => {
+      mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+      mockGetAccountWorkspacePermissions.mockImplementation(async (id: string) =>
+        (grants[id] ?? []).map(workspaceId => ({ workspaceId, canClaim: true, canCreate: false })));
+      mockWorkspacesFindMany.mockImplementation(async (args: any) =>
+        (args?.where?.values ?? []).map((id: string) => ({ id, name: `WS ${id}`, teamId: null, accessMode: 'restricted' })));
+      mockHeartbeatsFindMany.mockResolvedValue([runner('acct-both', 'http://both'), runner('acct-other', 'http://other')]);
+    });
+
+    it('lists only runners reaching its own workspace, naming only that workspace, without viewer tokens', async () => {
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      const rows = (await res.json()).activeLocalUis;
+      expect(rows.map((r: any) => r.localUiUrl)).toEqual(['http://both']);
+      expect(rows[0].workspaceIds).toEqual(['ws-1']);
+      expect(rows[0].viewerToken).toBeNull();
+    });
+
+    it('404s another workspace the account reaches', async () => {
+      expect((await GET(req('?workspaceId=ws-2'))).status).toBe(404);
+    });
+
+    it('an account key keeps both runners and their viewer tokens', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-run' });
+      const rows = (await (await GET(req())).json()).activeLocalUis;
+      expect(rows.map((r: any) => r.localUiUrl).sort()).toEqual(['http://both', 'http://other']);
+      expect(rows.every((r: any) => r.viewerToken === 'proxy-secret')).toBe(true);
+    });
+  });
+
   describe('browser capability', () => {
     const hb = (envKeys: string[] | null) => ({
       localUiUrl: 'http://localhost:8766', viewerToken: 't', accountId: 'account-1',

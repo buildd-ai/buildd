@@ -8,7 +8,7 @@ const STATUS_LABELS: Record<string, string> = {
   in_progress: 'Running',
   starting: 'Starting',
   waiting_input: 'Needs Input',
-  waiting_on_you: 'Waiting on you',
+  waiting_on_you: 'Needs input',
   // The subject-liveness claim gate excludes this task — no worker can ever
   // pick it up. See lib/subject-gate-contract.ts.
   subject_dead: 'Subject Closed',

@@ -60,7 +60,7 @@ mock.module('@buildd/core/tier-pool-daily-source', () => ({
 }));
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { modelTierRegistry: { findFirst: async () => registryRow } },
+    query: { teams: { findFirst: async () => null }, modelTierRegistry: { findFirst: async () => registryRow } },
     insert: () => ({ values: async (v: any) => { log('registryInsert')(v); } }),
   },
 }));

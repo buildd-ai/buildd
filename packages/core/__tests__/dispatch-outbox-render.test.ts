@@ -9,6 +9,11 @@ import {
   claimDueDispatchesSql,
   defaultDedupeKey,
   dispatchOutboxHealthSql,
+  dispatchTeamHealthSql,
+  latestDispatchForTaskSql,
+  dispatchHistoryForTaskSql,
+  toDispatchHistoryEntry,
+  parseDispatchTeamHealth,
   PUBLISH_GRACE_MS,
   dispatchHintSql,
   enqueueDispatchSql,
@@ -81,8 +86,81 @@ describe('dispatchOutboxHealthSql', () => {
   test('reports unacked dispatch rows and orphaned handoffs alongside the old counters', () => {
     const { sql, params } = render(dispatchOutboxHealthSql());
     expect(params).toHaveLength(0);
-    for (const col of ['overdue', 'stuck', 'failed', 'unacked', 'orphaned']) expect(sql).toContain(`AS ${col}`);
+    for (const col of ['overdue', 'stuck', 'failed', 'unacked', 'orphaned', 'unacked_stale']) expect(sql).toContain(`AS ${col}`);
     expect(sql).toContain("o.status = 'handed_off' AND o.not_before < now() - interval '1 hour'");
+  });
+});
+
+describe('dispatchOutboxHealthSql unacked_stale', () => {
+  test('only counts rows due past the fallback that were never taken back', () => {
+    const { sql } = render(dispatchOutboxHealthSql());
+    const stale = sql.slice(sql.indexOf('AS orphaned'));
+    expect(stale).toContain("o.not_before < now() - interval '5 minutes'");
+    expect(stale).toContain("o.created_at < now() - interval '5 minutes'");
+    expect(stale).toContain("w.dispatch_transport = 'dispatch'");
+    expect(stale).toContain('dispatchFallbackAt');
+  });
+});
+
+describe('dispatchTeamHealthSql', () => {
+  const WS = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+  test('scopes to the given workspaces through one bound jsonb parameter', () => {
+    const { sql, params } = render(dispatchTeamHealthSql(WS));
+    expect(params).toHaveLength(1);
+    expect(JSON.parse(String(params[0]))).toEqual({ ws: WS });
+    expect(sql).toContain("o.workspace_id IN (SELECT jsonb_array_elements_text(a->'ws')::uuid FROM args)");
+    expect(sql).not.toContain('ANY(');
+  });
+
+  test('reports every count, by-route deliveries and latency percentiles', () => {
+    const { sql } = render(dispatchTeamHealthSql(WS));
+    for (const col of ['pending', 'due', 'overdue', 'delivering', 'stuck', 'handed_off', 'unacked', 'unacked_stale', 'orphaned', 'failed_24h', 'delivered_24h', 'delivered_via', 'p50', 'p95', 'samples']) {
+      expect(sql).toContain(`AS ${col}`);
+    }
+    expect(sql).toContain('percentile_cont(0.95)');
+    // Latency is delivery time, so folded and expired wakes are not deliveries.
+    expect(sql).toContain("via NOT IN ('merged_into_pending', 'expired')");
+  });
+
+  test('parse: numbers from strings, null percentiles, jsonb by-route as text or object', () => {
+    expect(parseDispatchTeamHealth(undefined)).toMatchObject({ pending: 0, deliveredVia: {}, latencyMs: { p50: null, p95: null, samples: 0 } });
+    const h = parseDispatchTeamHealth({
+      pending: '3', due: '1', overdue: '0', delivering: '0', stuck: '0', handed_off: '2', unacked: '1', unacked_stale: '0',
+      orphaned: '0', failed_24h: '1', delivered_24h: '9', delivered_via: '{"dispatch":7,"pusher":2}', p50: '812.4', p95: 4100, samples: '9',
+    });
+    expect(h).toMatchObject({ pending: 3, handedOff: 2, failed24h: 1, delivered24h: 9, deliveredVia: { dispatch: 7, pusher: 2 } });
+    expect(h.latencyMs).toEqual({ p50: 812, p95: 4100, samples: 9 });
+    expect(parseDispatchTeamHealth({ delivered_via: { webhook: '4' } }).deliveredVia).toEqual({ webhook: 4 });
+  });
+});
+
+describe('latestDispatchForTaskSql', () => {
+  test('newest row for the task, task id bound', () => {
+    const { sql, params } = render(latestDispatchForTaskSql('33333333-3333-4333-8333-333333333333'));
+    expect(params).toEqual(['33333333-3333-4333-8333-333333333333']);
+    expect(sql).toContain('ORDER BY created_at DESC, id DESC LIMIT 1');
+  });
+});
+
+describe('dispatchHistoryForTaskSql', () => {
+  test('the newest rows, returned oldest first', () => {
+    const { sql, params } = render(dispatchHistoryForTaskSql('33333333-3333-4333-8333-333333333333', 20));
+    expect(params).toEqual(['33333333-3333-4333-8333-333333333333', 20]);
+    expect(sql).toContain('ORDER BY created_at DESC, id DESC LIMIT $2');
+    expect(sql.trim().endsWith('ORDER BY created_at, id')).toBe(true);
+  });
+
+  test('toDispatchHistoryEntry: camelCase, ISO times, causes from text or array', () => {
+    const e = toDispatchHistoryEntry({
+      id: 'r1', intent: 'work_execution', cause: 'task.created', causes: '["task.created","ci.retry"]', status: 'handed_off',
+      transport: 'dispatch', not_before: '2026-10-04 12:00:00+00', handed_off_at: '2026-10-04T12:00:01Z', delivered_at: null,
+      delivered_via: null, attempt_count: '1', last_error: null, created_at: '2026-10-04T11:59:59Z',
+    });
+    expect(e).toEqual({
+      id: 'r1', intent: 'work_execution', cause: 'task.created', causes: ['task.created', 'ci.retry'], status: 'handed_off',
+      transport: 'dispatch', notBefore: '2026-10-04T12:00:00.000Z', handedOffAt: '2026-10-04T12:00:01.000Z', deliveredAt: null,
+      deliveredVia: null, attemptCount: 1, lastError: null, createdAt: '2026-10-04T11:59:59.000Z',
+    });
   });
 });
 

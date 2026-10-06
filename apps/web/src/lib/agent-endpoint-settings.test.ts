@@ -27,6 +27,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 mock.module('@buildd/core/secrets', () => ({
   decrypt: (s: string) => s,
+  encrypt: (s: string) => s,
   getSecretsProvider: () => ({ replaceScoped: async (value: string, meta: any) => { stored.push({ value, meta }); return 's-1'; } }),
 }));
 const realGateway = { ...(await import('@buildd/core/litellm-gateway')) };

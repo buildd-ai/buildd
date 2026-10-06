@@ -32,7 +32,7 @@ describe('open PR', () => {
   it('says Done, waits on your merge, and offers Review & merge with checks and PR number under it', () => {
     const v = buildTaskShippedView(input())!;
     expect(v.eyebrow).toBe('What shipped · Feature');
-    expect(v.chips.map(c => c.label)).toEqual(['Done', 'Waiting on your merge']);
+    expect(v.chips.map(c => c.label)).toEqual(['Done', 'Ready to merge']);
     expect(v.action).toEqual({ label: 'Review & merge', href: PR_URL, tone: 'primary' });
     expect(v.actionMeta).toBe('Checks passing · PR #416');
     expect(v.mergedLine).toBeNull();

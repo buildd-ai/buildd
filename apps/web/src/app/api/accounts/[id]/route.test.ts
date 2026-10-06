@@ -3,9 +3,23 @@ import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserTeamIds = mock(() => Promise.resolve(['team-1']));
+const mockGetUserTeamRole = mock(() => Promise.resolve('owner'));
 const mockAccountsFindFirst = mock(() => null as any);
 const mockAccountsDelete = mock(() => ({
   where: mock(() => Promise.resolve()),
+}));
+const mockInvalidateAccountCacheByHash = mock(() => {});
+let lastMaxConcurrentWorkers = 10;
+const mockReturning = mock(() => Promise.resolve([{ id: '11111111-1111-4111-8111-111111111111', maxConcurrentWorkers: lastMaxConcurrentWorkers }]));
+const mockWhere = mock(() => ({ returning: mockReturning }));
+const mockUpdateSet = mock((v: any) => {
+  if (v && typeof v === 'object' && 'maxConcurrentWorkers' in v) {
+    lastMaxConcurrentWorkers = v.maxConcurrentWorkers;
+  }
+  return { where: mockWhere };
+});
+const mockUpdate = mock(() => ({
+  set: mockUpdateSet,
 }));
 
 mock.module('@/lib/auth-helpers', () => ({
@@ -14,13 +28,24 @@ mock.module('@/lib/auth-helpers', () => ({
 
 mock.module('@/lib/team-access', () => ({
   getUserTeamIds: mockGetUserTeamIds,
+  getUserTeamRole: mockGetUserTeamRole,
+}));
+
+mock.module('@/lib/key-level-policy', () => ({
+  canAdministerTeamKeys: (role: string | null) => role === 'owner' || role === 'admin',
+}));
+
+mock.module('@/lib/api-auth', () => ({
+  invalidateAccountCacheByHash: mockInvalidateAccountCacheByHash,
+  invalidateAccountWorkspaceCache: mock(() => {}),
 }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       accounts: { findFirst: mockAccountsFindFirst },
     },
+    update: mockUpdate,
     delete: () => mockAccountsDelete(),
   },
 }));
@@ -31,13 +56,13 @@ mock.module('drizzle-orm', () => ({
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   accounts: { id: 'id', teamId: 'teamId' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
 
-import { GET, DELETE } from './route';
+import { GET, DELETE, PATCH } from './route';
 
 const mockParams = Promise.resolve({ id: '11111111-1111-4111-8111-111111111111' });
 
@@ -148,5 +173,107 @@ describe('DELETE /api/accounts/[id]', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.success).toBe(true);
+  });
+});
+
+describe('PATCH /api/accounts/[id] — maxConcurrentWorkers (team owners and admins only)', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserTeamIds.mockReset();
+    mockGetUserTeamIds.mockResolvedValue(['team-1']);
+    mockGetUserTeamRole.mockReset();
+    mockGetUserTeamRole.mockResolvedValue('owner');
+    mockAccountsFindFirst.mockReset();
+    mockAccountsFindFirst.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', teamId: 'team-1', apiKey: 'bld_test123' });
+    mockUpdateSet.mockClear();
+    mockInvalidateAccountCacheByHash.mockClear();
+    process.env.NODE_ENV = 'production';
+  });
+
+  afterAll(() => {
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('returns 401 without a session', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    const req = new NextRequest('http://localhost:3000/api/accounts/account-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentWorkers: 5 }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(401);
+  });
+
+  it('refuses a team member with 403', async () => {
+    mockGetUserTeamRole.mockResolvedValue('member');
+    const req = new NextRequest('http://localhost:3000/api/accounts/account-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentWorkers: 5 }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(403);
+    expect(mockUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an account outside the caller\'s teams', async () => {
+    mockAccountsFindFirst.mockResolvedValue(null);
+    const req = new NextRequest('http://localhost:3000/api/accounts/account-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentWorkers: 5 }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(404);
+  });
+
+  it('validates maxConcurrentWorkers is an integer between 1 and 50', async () => {
+    const req = (value: any) => new NextRequest('http://localhost:3000/api/accounts/account-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentWorkers: value }),
+    });
+
+    // Too low
+    let res = await PATCH(req(0), { params: mockParams });
+    expect(res.status).toBe(400);
+
+    // Too high
+    res = await PATCH(req(51), { params: mockParams });
+    expect(res.status).toBe(400);
+
+    // Not an integer
+    res = await PATCH(req(5.5), { params: mockParams });
+    expect(res.status).toBe(400);
+
+    // Not a number
+    res = await PATCH(req('five'), { params: mockParams });
+    expect(res.status).toBe(400);
+
+    expect(mockUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('lets a team admin update maxConcurrentWorkers and invalidates the cache', async () => {
+    mockGetUserTeamRole.mockResolvedValue('admin');
+    const req = new NextRequest('http://localhost:3000/api/accounts/account-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentWorkers: 10 }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.maxConcurrentWorkers).toBe(10);
+    expect(mockUpdateSet).toHaveBeenCalledTimes(1);
+    expect(mockInvalidateAccountCacheByHash).toHaveBeenCalledWith('bld_test123');
+  });
+
+  it('lets a team owner update maxConcurrentWorkers and invalidates the cache', async () => {
+    const req = new NextRequest('http://localhost:3000/api/accounts/account-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ maxConcurrentWorkers: 3 }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.maxConcurrentWorkers).toBe(3);
+    expect(mockInvalidateAccountCacheByHash).toHaveBeenCalledWith('bld_test123');
   });
 });

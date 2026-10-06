@@ -172,3 +172,49 @@ describe('POST /api/github/pr/supersede', () => {
     }));
   });
 });
+
+describe('per-task token', () => {
+  const SCOPED = { id: 'acc-1', teamId: 'team-1', name: 'Agent Bob', level: 'worker', taskScope: { taskId: 't-1', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+  const worker = (over: Record<string, unknown> = {}) => ({
+    id: 'w-1', taskId: 't-1', accountId: 'acc-1', prNumber: 2287, workspaceId: 'ws-1', workspace: { id: 'ws-1', teamId: 'team-1' }, ...over,
+  });
+
+  beforeEach(() => {
+    reset();
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve(SCOPED as any));
+  });
+
+  it('supersedes its own task’s PR, resolving in its own workspace and confining the target repo', async () => {
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(worker() as any));
+    const res = await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'branch deleted' }));
+    expect(res.status).toBe(200);
+    expect(mockResolveWorkerByPrNumber).toHaveBeenCalledWith(expect.anything(), 2287, 'ws-1');
+    expect(mockRecordPrSupersession).toHaveBeenCalledWith(expect.objectContaining({ workerId: 'w-1', targetRepoWithinWorkspace: true }));
+  });
+
+  it('supersedes its own worker’s PR by workerId', async () => {
+    mockWorkersFindFirst.mockImplementation(() => Promise.resolve(worker() as any));
+    const res = await POST(makeRequest({ workerId: 'w-1', supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('refuses another task’s PR in its workspace, before writing', async () => {
+    mockResolveWorkerByPrNumber.mockImplementation(() => Promise.resolve(worker({ id: 'w-2', taskId: 't-2' }) as any));
+    const res = await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
+
+  it('refuses a worker of its own task that tracks no PR', async () => {
+    mockWorkersFindFirst.mockImplementation(() => Promise.resolve(worker({ prNumber: null }) as any));
+    const res = await POST(makeRequest({ workerId: 'w-1', supersedingPrNumber: 2293, reason: 'x' }));
+    expect(res.status).toBe(403);
+    expect(mockRecordPrSupersession).not.toHaveBeenCalled();
+  });
+
+  it('account keys keep the mission-wide target scope', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve({ id: 'acc-1', teamId: 'team-1', name: 'Agent Bob' } as any));
+    await POST(makeRequest({ prNumber: 2287, supersedingPrNumber: 2293, reason: 'x' }));
+    expect(mockRecordPrSupersession.mock.calls[0][0]).not.toHaveProperty('targetRepoWithinWorkspace');
+  });
+});

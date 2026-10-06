@@ -372,7 +372,7 @@ function TaskRow({
       {/* Waiting input form */}
       {waitingFor && latestWorker && (
         <div className="pl-7 pb-1">
-          <span className="section-label text-status-warning">Needs your input</span>
+          <span className="section-label text-status-warning">Needs input</span>
           <WorkerRespondInput
             workerId={latestWorker.id}
             taskId={task.id}
@@ -833,7 +833,7 @@ function TimelineView({
       {/* ── WAITING ON YOU ─────────────────────────────────────────── */}
       {waitingOnYou.length > 0 && (
         <div>
-          <SectionLabel>Waiting on you</SectionLabel>
+          <SectionLabel>Needs input</SectionLabel>
           <ChainList
             chains={waitingOnYou}
             effectivePolicyTier={effectivePolicyTier}

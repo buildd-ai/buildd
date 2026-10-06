@@ -634,7 +634,7 @@ export async function canCompleteMission(
       if (!hold.enforced) {
         console.log(`[visual-review-shadow] ${mission.id.slice(0, 8)} would hold: ${what}`);
       } else {
-        const screens = hold.cells > 0 ? `${hold.cells} ${hold.cells === 1 ? 'screen wants' : 'screens want'} your review` : '';
+        const screens = hold.cells > 0 ? `${hold.cells} ${hold.cells === 1 ? 'screen' : 'screens'} to review` : '';
         const text = [screens, hold.roundCapOpen ? 'the visual audit round-cap question is open' : ''].filter(Boolean).join(', and ');
         return {
           ...base,

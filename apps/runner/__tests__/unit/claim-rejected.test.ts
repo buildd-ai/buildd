@@ -404,4 +404,26 @@ describe('idle claim polls', () => {
     expect(err.claimError).toBe('server_rejected');
     expect(err.claimReason).toBe('no_pending_tasks');
   });
+
+  // run-once.ts's classifyClaimFailure (--once's exit-code mapping) tells a
+  // temporary capacity defer from a permanent refusal by this specific field —
+  // without it, every explicit-taskId refusal looked identical regardless of
+  // whether the named gate (e.g. workspace_cap) was self-resolving.
+  test('an explicit-task exclusion carries its gate code on the error', async () => {
+    mockClaimTask.mockImplementation(async () => ({
+      workers: [],
+      diagnostics: { reason: 'no_pending_tasks', taskExclusion: { code: 'workspace_cap', detail: 'at cap' } },
+    }));
+    manager = new WorkerManager(makeConfig());
+    const err: any = await manager.claimAndStart(makeTask()).catch(e => e);
+    expect(err.claimError).toBe('server_rejected');
+    expect(err.claimTaskExclusionCode).toBe('workspace_cap');
+  });
+
+  test('no taskExclusion on the response → no claimTaskExclusionCode on the error', async () => {
+    mockClaimTask.mockImplementation(async () => ({ workers: [], diagnostics: { reason: 'no_pending_tasks' } }));
+    manager = new WorkerManager(makeConfig());
+    const err: any = await manager.claimAndStart(makeTask()).catch(e => e);
+    expect(err.claimTaskExclusionCode).toBeUndefined();
+  });
 });

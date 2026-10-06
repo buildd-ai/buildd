@@ -5,6 +5,7 @@
  * Blocks:
  *   - Sibling worktrees under the same repo clone (other tenants' code)
  *   - ~/.buildd/ (runner's own API key and worker-state files)
+ *   - ~/.claude.json (`buildd login` writes the key into its buildd MCP entry)
  *   - $TMPDIR/buildd-codex-homes/ (per-worker Codex auth.json with OAuth/API key)
  *   - $TMPDIR/claude-cfg-XXXXXX/ (per-worker Claude credential dirs)
  *
@@ -25,6 +26,10 @@ export function buildReadJailDeniedPrefixes(repoPath: string): string[] {
   return [
     // Runner coordination key and worker-state files
     normalize(`${homedir()}/.buildd`),
+    // `buildd login` writes the key into the human's own Claude Code config
+    // here (its buildd MCP entry). Agent sessions never need that file: their
+    // buildd entry is passed by the runner and shadows it.
+    normalize(`${homedir()}/.claude.json`),
     // All worktrees for this repo clone (sibling branches = other tenants)
     normalize(`${repoPath}/.buildd-worktrees`),
     // Codex per-worker credential homes: $TMPDIR/buildd-codex-homes/<workerId>/auth.json

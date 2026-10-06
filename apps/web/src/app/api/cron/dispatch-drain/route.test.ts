@@ -48,7 +48,11 @@ const ZERO = { checked: 0, republished: 0, projected: 0, fellBack: 0, left: 0, w
 const reconcileOrphans = mock(async () => ({ ...ZERO }) as Record<string, number>);
 mock.module('@/lib/dispatch-reconcile', () => ({ reconcileOrphans }));
 
-let health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0 };
+const realAlerts = await import('@/lib/dispatch-alerts');
+const alertFloorRepair = mock(async (_c: unknown[]) => 'quiet' as string);
+mock.module('@/lib/dispatch-alerts', () => ({ ...realAlerts, alertFloorRepair }));
+
+let health: Record<string, number> = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0, unackedStale: 0 };
 const backfillStartAtWakes = mock(async () => 0);
 const settleDispatchTimer = mock(async (_ms: number) => {});
 const markDispatchBacklog = mock(async () => {});
@@ -74,8 +78,8 @@ beforeEach(() => {
   reports.length = 0;
   dueCount = 0;
   drainResults = [];
-  health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0 };
-  for (const m of [publishPendingDispatches, reconcileOrphans, drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
+  health = { overdue: 0, stuck: 0, failed: 0, unacked: 0, orphaned: 0, unackedStale: 0 };
+  for (const m of [alertFloorRepair, publishPendingDispatches, reconcileOrphans, drainDispatchOutbox, reseedDispatchTimer, backfillStartAtWakes, settleDispatchTimer, markDispatchBacklog, repairDependencyWakes]) m.mockClear();
 });
 
 describe('GET /api/cron/dispatch-drain', () => {
@@ -197,5 +201,39 @@ describe('GET /api/cron/dispatch-drain', () => {
     expect(body.repair.startAtBackfilled).toEqual({ error: 'backfill query failed' });
     expect(reseedDispatchTimer).toHaveBeenCalledTimes(1);
     expect(reports[0].errors).toBe(1);
+  });
+
+  it('a quiet floor still calls the alert with no conditions, so a cleared condition can be reported', async () => {
+    drainResults = [batch(0)];
+    await call();
+    expect(alertFloorRepair).toHaveBeenCalledTimes(1);
+    expect(alertFloorRepair.mock.calls[0][0]).toEqual([]);
+  });
+
+  it('a floor that had to repair alerts with each non-zero condition', async () => {
+    drainResults = [batch(2)];
+    reconcileOrphans.mockResolvedValueOnce({ checked: 5, republished: 1, projected: 0, fellBack: 2, left: 2, workerErrors: 1 });
+    health = { overdue: 0, stuck: 0, failed: 4, unacked: 3, orphaned: 1, unackedStale: 2 };
+    const body = await (await call()).json();
+    expect(alertFloorRepair.mock.calls[0][0]).toEqual([
+      { key: 'republished', count: 1 }, { key: 'fellBack', count: 2 }, { key: 'workerErrors', count: 1 },
+      { key: 'orphaned', count: 1 }, { key: 'unackedStale', count: 2 },
+    ]);
+    expect(body.repair.alert).toBe('quiet');
+  });
+
+  it('the gated tick never alerts', async () => {
+    dueCount = 2;
+    drainResults = [batch(1)];
+    await call('?gate=due');
+    expect(alertFloorRepair).not.toHaveBeenCalled();
+  });
+
+  it('an alert that throws does not fail the floor', async () => {
+    drainResults = [batch(1)];
+    alertFloorRepair.mockRejectedValueOnce(new Error('redis'));
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect((await res.json()).repair.alert).toEqual({ error: 'redis' });
   });
 });

@@ -13,6 +13,7 @@ import {
   LANDING_CI_WAIT_MS,
   LANDING_FIX_PICKUP_MS,
   LANDING_RETRY_MS,
+  LANDING_CYCLE_COOLDOWN_MS,
   type LandingSweepDeps,
   type LandingTarget,
   type PeekedPr,
@@ -140,6 +141,11 @@ describe('due member encoding', () => {
 });
 
 describe('nextLookAt', () => {
+  // A spent refresh cycle is still the platform's to land: it comes back when
+  // the cooldown lets landPr start a new cycle, instead of leaving the queue.
+  it.each(['refresh_exhausted', 'refresh_unsafe'] as const)('%s comes back after the cycle cooldown', (cause) => {
+    expect(nextLookAt({ kind: 'needs_human', cause, reason: 'x' }, T0)).toBe(T0 + LANDING_CYCLE_COOLDOWN_MS);
+  });
   it('merged leaves the queue', () => {
     expect(nextLookAt(merged(), T0)).toBeNull();
   });

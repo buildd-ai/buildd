@@ -23,7 +23,7 @@ mock.module('drizzle-orm', () => ({
   and: (...args: any[]) => ({ type: 'and', args }),
 }));
 
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   teamMembers: { teamId: 'teamMembers.teamId', userId: 'teamMembers.userId', role: 'teamMembers.role' },
   users: { id: 'users.id' },
 }));
@@ -34,7 +34,7 @@ function userIdIn(where: any): string | undefined {
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       teamMembers: {
         findFirst: async (q: any) => {
           const userId = userIdIn(q.where);

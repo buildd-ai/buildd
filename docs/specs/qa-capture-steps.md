@@ -1,13 +1,32 @@
 ---
 title: QA Capture Interaction Steps
-status: draft
+status: active
 owner: builder
-last_verified: 2026-10-03
+last_verified: 2026-10-05
 summary: Visual QA capture MUST be able to open a modal, menu or gated state through a validated, closed list of steps before a shot, and MUST NOT commit a write on a page backed by real data.
 domain: surfaces
 surfaces: [scripts/qa/steps.ts, scripts/qa/capture.ts, apps/web/src/lib/visual-audit-evidence.ts, scripts/demo/run-storyboard.ts]
 keywords: [QA_PLAN, capture plan, stepFailed, commit step, visual audit, unsure, force-start dialog, storyboard, interaction steps, metadata.qa.state]
 verified_by: [scripts/qa/steps.test.ts, apps/web/src/lib/visual-audit-evidence.test.ts]
+assertions:
+  - id: plan-validation
+    type: symbol
+    name: validatePlan
+    path: scripts/qa/steps.ts
+  - id: write-guard-methods
+    type: symbol
+    name: isMutatingMethod
+    path: scripts/qa/steps.ts
+  - id: capture-reads-qa-plan
+    type: symbol_reachable
+    symbol: QA_PLAN
+    entry: scripts/qa/capture.ts
+    as: read
+  - id: storyboard-shares-step-engine
+    type: symbol_reachable
+    symbol: runSteps
+    entry: scripts/demo/run-storyboard.ts
+    as: import
 supersedes: []
 ---
 
@@ -132,4 +151,6 @@ committing step MUST NOT run against a preview.
 
 - Stubbing network responses to fake a server state. A state the data can't produce (a real
   provider failure) stays `unsure`, with a `[surface fix]` task asking for a `?state=` fixture.
+  Existing fixtures: `/app/settings/team?state=multi-member` (dev server only) adds a synthetic
+  second member so Remove and the role select are reachable; it never writes.
 - Video or multi-frame capture of a state (the storyboard's `record` / `type` stay its own).

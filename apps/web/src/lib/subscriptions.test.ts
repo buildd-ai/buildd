@@ -77,6 +77,13 @@ describe('dedupe: the same fact from two code paths is one ledger row', () => {
       .not.toBe(taskFailedEvent({ taskId: TASK, workerId: WORKER_B }).dedupeKey);
   });
 
+  it('a failure carries its reason in the payload, cut to short text; none when absent', () => {
+    expect(taskFailedEvent({ taskId: TASK, workerId: WORKER_A, reason: 'Release failed: CI red' }).payload.reason)
+      .toBe('Release failed: CI red');
+    expect(taskFailedEvent({ taskId: TASK, workerId: WORKER_A, reason: 'x'.repeat(500) }).payload.reason).toHaveLength(200);
+    expect('reason' in taskFailedEvent({ taskId: TASK, workerId: WORKER_A }).payload).toBe(false);
+  });
+
   it('CI red is keyed per head SHA', () => {
     const one = prCiFailedEvent({ repoFullName: 'acme/widgets', prNumber: 42, headSha: 'abc' });
     const same = prCiFailedEvent({ repoFullName: 'acme/widgets', prNumber: 42, headSha: 'abc' });

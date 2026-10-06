@@ -64,7 +64,7 @@ export async function githubApi(installationId: number, path: string, options: R
     throw new Error(`GitHub API error: ${response.status} ${error}`);
   }
 
-  // Handle 204 No Content (e.g., repository_dispatch)
+  // Handle 204 No Content
   if (response.status === 204) {
     return null;
   }
@@ -453,60 +453,4 @@ export interface GitHubIssuesEvent {
   installation?: {
     id: number;
   };
-}
-
-// Dispatch a repository_dispatch event to trigger GitHub Actions workflows
-/**
- * The repository_dispatch body a task wake sends. Shared by the in-app send
- * below and the Dispatch transport's GitHub Actions grant
- * (lib/dispatch-resolve.ts), so the workflow sees the same event either way.
- */
-export function repositoryDispatchBody(task: { id: string; title: string; workspaceId: string; mode?: string; priority?: number }) {
-  return {
-    event_type: 'buildd-task',
-    client_payload: {
-      task_id: task.id,
-      title: task.title,
-      workspace_id: task.workspaceId,
-      mode: task.mode || 'execution',
-      priority: task.priority || 0,
-    },
-  };
-}
-
-export async function dispatchToGitHubActions(
-  installationId: number,
-  repoFullName: string,
-  task: {
-    id: string;
-    title: string;
-    description: string | null;
-    workspaceId: string;
-    mode?: string;
-    priority?: number;
-  }
-): Promise<boolean> {
-  if (!isGitHubAppConfigured()) {
-    return false;
-  }
-
-  try {
-    const [owner, repo] = repoFullName.split('/');
-    if (!owner || !repo) {
-      console.error(`Invalid repo full name: ${repoFullName}`);
-      return false;
-    }
-
-    await githubApi(installationId, `/repos/${owner}/${repo}/dispatches`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(repositoryDispatchBody(task)),
-    });
-
-    console.log(`Task ${task.id} dispatched to GitHub Actions: ${repoFullName}`);
-    return true;
-  } catch (error) {
-    console.error(`GitHub Actions dispatch failed for ${repoFullName}:`, error);
-    return false;
-  }
 }

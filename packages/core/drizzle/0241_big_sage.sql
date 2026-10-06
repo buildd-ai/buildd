@@ -1,0 +1,1 @@
+ALTER TABLE "teams" ADD COLUMN "permission_overrides" jsonb DEFAULT '{}'::jsonb NOT NULL;

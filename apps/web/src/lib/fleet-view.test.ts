@@ -6,6 +6,7 @@ import {
   fleetLabel,
   fleetSummary,
   homeHeadline,
+  FLEET_ONLINE_WINDOW_MS,
   runnerIdentity,
   runnerNameFromUrl,
   startOfDayInZone,
@@ -192,12 +193,16 @@ describe('homeHeadline', () => {
   it('says how many agents work and how many things need you', () => {
     expect(text(homeHeadline({ live: 5, needsYou: 2 }))).toBe('5 agents working. 2 need you.');
     expect(text(homeHeadline({ live: 6, needsYou: 1 }))).toBe('6 agents working. 1 needs you.');
-    expect(text(homeHeadline({ live: 1, needsYou: 0 }))).toBe('1 agent working. Nothing needs you.');
+    expect(text(homeHeadline({ live: 1, needsYou: 0 }))).toBe('1 agent working. Nothing needs input.');
   });
   it('an idle fleet names what just shipped', () => {
     const parts = homeHeadline({ live: 0, needsYou: 1, shipped: 'Example mission' });
-    expect(text(parts)).toBe('Fleet idle. Example mission shipped.');
+    expect(text(parts)).toBe('No agents working. Example mission shipped.');
     expect(parts.find(p => p.tone === 'success')?.text).toBe('shipped');
+  });
+  it('an idle fleet is said in plain words, never "fleet idle"', () => {
+    expect(text(homeHeadline({ live: 0, needsYou: 0 }))).toBe('Nothing needs you right now.');
+    expect(text(homeHeadline({ live: 0, needsYou: 2 }))).toBe('No agents working. 2 need you.');
   });
 });
 
@@ -393,8 +398,37 @@ describe('ephemeral --once runs: one elastic group per cloud dispatcher', () => 
       [run('a', 'headless://container/once/a'), run('b', 'headless://container/once/b')],
       { now: NOW },
     );
-    expect(fleetLabel(s)).toBe('Fleet · 2 runners × 4 slots + 1 elastic group');
+    expect(fleetLabel(s)).toBe('Runners · 2 runners × 4 slots + 1 elastic group');
     const only = buildFleetSnapshot([cloud('a')], [run('a', 'headless://container/once/a')], { now: NOW });
-    expect(fleetLabel(only)).toBe('Fleet · 1 elastic group');
+    expect(fleetLabel(only)).toBe('Runners · 1 elastic group');
   });
 });
+
+describe('fleet online window', () => {
+  // A runner restarted under a new address leaves its old heartbeat row
+  // behind. Both rows are "online" inside the 1.5x-poll-interval window (90
+  // minutes by default), so Home said "2 runners" for an hour and a half.
+  // Liveness pings land every minute, so presence reads those instead.
+  const beat = (id: string, url: string, ageMin: number): FleetHeartbeatRow => ({
+    id, accountId: 'acct', localUiUrl: url, maxConcurrentWorkers: 3, lastHeartbeatAt: min(ageMin),
+  });
+  const beats = [beat('old', 'http://laptop.local:8766', 12), beat('new', 'http://laptop.local:8767', 0.5)];
+
+  it('counts only the runner that is pinging now', () => {
+    const snap = buildFleetSnapshot(beats, [], { now: NOW, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS });
+    expect(snap.runners.filter(r => r.online).map(r => r.id)).toEqual(['new']);
+    expect(fleetCapacity(beats, { now: NOW, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS })).toBe(3);
+  });
+
+  it('is a few liveness pings wide, not the poll interval', () => {
+    expect(FLEET_ONLINE_WINDOW_MS).toBeLessThanOrEqual(5 * 60_000);
+    expect(FLEET_ONLINE_WINDOW_MS).toBeGreaterThanOrEqual(2 * 60_000);
+  });
+
+  it('is the window Home and Settings load the fleet with', async () => {
+    const src = await Bun.file(new URL('./home-fleet.ts', import.meta.url)).text();
+    expect(src).not.toMatch(/onlineThresholdMs:\s*RUNNER_ONLINE_THRESHOLD_MS/);
+    expect(src.match(/onlineThresholdMs:\s*FLEET_ONLINE_WINDOW_MS/g)?.length).toBe(3);
+  });
+});
+

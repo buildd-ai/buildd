@@ -664,7 +664,11 @@ export const MAX_RECORDED_NARROWINGS = 20;
  * the caller's (see apps/web/src/lib/path-claim-release.ts).
  *
  * dependsOn is not touched. Edges inferred at creation are recorded in
- * `path_declaration.inferredDependsOn`; removing them is a separate decision.
+ * `path_declaration.inferredDependsOn`; removing them is a separate decision
+ * — the one taken in `cascadeDependencyFailure`
+ * (apps/web/src/lib/task-dependencies.ts) when the upstream side of such an
+ * edge fails: it releases the edge instead of cascading the failure, because
+ * an inferred edge is a serialization mutex, not a real dependency.
  */
 export async function narrowPathClaims(input: NarrowInput): Promise<NarrowResult> {
   const { workspaceId, taskId } = input;

@@ -373,8 +373,8 @@ export function ApprovalCard({
     : details == null && count > 0 ? `${count} change${count === 1 ? '' : 's'}` : null;
 
   return (
-    <section className={cls} data-state={deciding ? 'deciding' : 'awaiting'} data-approval-id={approvalId ?? undefined} aria-label={`Needs your OK: ${typeof headline === 'string' ? headline : humanizeToolName(toolNameOf(part))}`} data-testid="kit-approval">
-      {head(deciding ? (sent === 'deny' ? 'Discarding…' : 'Confirmed') : 'Needs your OK')}
+    <section className={cls} data-state={deciding ? 'deciding' : 'awaiting'} data-approval-id={approvalId ?? undefined} aria-label={`Approval needed: ${typeof headline === 'string' ? headline : humanizeToolName(toolNameOf(part))}`} data-testid="kit-approval">
+      {head(deciding ? (sent === 'deny' ? 'Discarding…' : 'Confirmed') : 'Approval needed')}
       <h3 className="kit-card-title">{headline}</h3>
       {body != null && <div className="kit-approval-body">{body}</div>}
       {foldable ? (
@@ -518,7 +518,7 @@ export function ApprovalRowsCard({
   const checkedCount = parts.filter(p => !unchecked.has(p.toolCallId)).length;
   const counts = (o: ApprovalRowOutcome) => outcomes.filter(x => x === o).length;
   const status = awaiting
-    ? 'Needs your OK'
+    ? 'Approval needed'
     : !settled
       ? (sent === 'deny' ? 'Discarding…' : 'Confirmed')
       : [counts('ran') && `${counts('ran')} done`, counts('changed') && `${counts('changed')} changed`, counts('failed') && `${counts('failed')} failed`, counts('discarded') && `${counts('discarded')} discarded`]
@@ -546,7 +546,7 @@ export function ApprovalRowsCard({
     <section
       className={`kit-card kit-approval-rows${className ? ` ${className}` : ''}`}
       data-state={awaiting ? 'awaiting' : settled ? 'done' : 'deciding'}
-      aria-label={`Needs your OK: ${shape.headline}`}
+      aria-label={`Approval needed: ${shape.headline}`}
       data-testid="kit-approval-rows"
     >
       <div className="kit-card-head">

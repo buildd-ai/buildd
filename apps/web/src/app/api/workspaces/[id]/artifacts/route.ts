@@ -5,6 +5,7 @@ import { artifacts } from '@buildd/core/db/schema';
 import { eq, and, desc, like, gte, lt } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace } from '@/lib/task-token-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { appBaseUrl } from '@/lib/app-url';
 import { reviewArtifactScope } from '@/lib/artifact-scope';
@@ -13,11 +14,12 @@ import { isUuid } from '@/lib/uuid';
 import { notifyTeamOf, type NotifyPayload } from '@/lib/notify';
 import { isReviewArtifact } from '@/lib/artifact-prominence';
 
+/** GET's auth. A per-task token is accepted here and confined in GET. */
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
 
-  const account = await authenticateApiKey(apiKey, req);
+  const account = await authenticateTaskScopedCaller(apiKey, req);
   if (account) return { type: 'api' as const, account };
 
   if (process.env.NODE_ENV !== 'development') {
@@ -83,6 +85,8 @@ export async function GET(
     const access = await verifyWorkspaceAccess(auth.user.id, id);
     if (!access) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   } else if (auth.type === 'api') {
+    // A per-task token lists artifacts only in its own task's workspace.
+    if (!taskScopeAllowsWorkspace(auth.account, id)) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
     const hasAccess = await verifyAccountWorkspaceAccess(auth.account.id, id);
     if (!hasAccess) return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }

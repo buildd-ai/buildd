@@ -362,6 +362,26 @@ describe('buildVisualReviewModel: after a fix merges (fixCheck)', () => {
     const m = buildVisualReviewModel(input({ shots: [a, after], tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90)), fix('fx2', 'pending', null)] }));
     expect(cellA(m).fixCheck).toBeNull();
   });
+
+  it('a round-2 recapture that lands in a sibling cell (no title collision, so no matching variant) resolves the stuck round-1 cell instead of leaving it an open issue', () => {
+    const row = (id: string, workerId: string, title: string, verdict: 'ok' | 'issue', min: number, extra: Record<string, unknown> = {}) => ({
+      id, type: 'screenshot', workerId, createdAt: at(min), title,
+      metadata: { qa: { runKey: `run-${workerId}`, route: '/inv', viewport: 'desktop' as const, verdict, finding: `/inv desktop ${verdict}`, ...extra } },
+    });
+    // Round 1: two shots collide on /inv desktop, so each gets a title variant.
+    const eur = row('s-eur', 'w1', 'inv-eur-desktop.png', 'issue', 1, { fixTaskId: 'fx' });
+    const jpy = row('s-jpy', 'w1', 'inv-jpy-desktop.png', 'ok', 2);
+    // Round 2 only recaptures the fixed route; alone in its round, it collides
+    // with nothing, so it gets no title variant and lands in a different cell.
+    const after = row('s-after', 'w2', 'inv-desktop.png', 'ok', 120);
+    const m = buildVisualReviewModel(input({
+      shots: [eur, jpy, after],
+      tasks: [audit('t1', 1, 'completed', 'w1'), round2, fix('fx', 'completed', at(90))],
+    }));
+    expect(m.cells.map(c => c.key).sort()).toEqual(['/inv|desktop|', '/inv|desktop|jpy']);
+    expect(m.resolvedElsewhere).toEqual([{ key: '/inv|desktop|eur', route: '/inv', viewport: 'desktop', variant: 'eur', resolvedBy: '/inv|desktop|' }]);
+    expect(m.summary).toMatchObject({ shots: 2, ok: 2, issues: 0, unsure: 0, awaitingCapture: 0 });
+  });
 });
 
 describe('buildVisualReviewModel: triage queue', () => {

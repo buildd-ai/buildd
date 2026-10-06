@@ -57,7 +57,7 @@ export function missionInsight(s: MissionSheetState): MissionInsight | null {
     return { text: 'Everything landed. Not marked complete.', disagrees: true };
   }
   if (s.needsYou > 0) {
-    return { text: `${s.needsYou} ${plural(s.needsYou, 'task is', 'tasks are')} waiting on you.`, disagrees: true };
+    return { text: `${s.needsYou} ${plural(s.needsYou, 'task needs', 'tasks need')} input.`, disagrees: true };
   }
   if (s.complete) {
     return { text: s.goal.total > 0 ? 'Done, and every goal criterion checks out.' : 'Done.', disagrees: false };

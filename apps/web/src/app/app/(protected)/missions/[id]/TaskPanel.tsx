@@ -19,6 +19,7 @@ import { deriveDisplayStatus } from '@/lib/task-presentation';
 import { taskActionPhase } from '@/lib/task-actions';
 import { taskPageHref } from '@/lib/mission-task-href';
 import { CHANNEL_PREFIX, getPusherClient, subscribeToChannel, unsubscribeFromChannel } from '@/lib/pusher-client';
+import { subscribeCatchUp } from '@/lib/app-freshness';
 import TaskActionZone from './TaskActionZone';
 
 export interface TaskPanelData {
@@ -212,18 +213,16 @@ export function useTaskSummary(taskId: string, { workspaceId }: { workspaceId?: 
     };
   }, [workspaceId, taskId, fetchTask]);
 
-  // Fallback poll, paused while hidden or while realtime is live; catch up on return.
+  // Fallback poll, paused while hidden or while realtime is live. Catching up
+  // on return / reconnect / pull is the shell's call (lib/app-freshness.ts).
   useEffect(() => {
     const interval = setInterval(() => {
       if (shouldPollSummary({ hidden: document.hidden, realtime: realtimeRef.current })) fetchTask();
     }, SUMMARY_POLL_MS);
-    const onVisible = () => {
-      if (!document.hidden) fetchTask();
-    };
-    document.addEventListener('visibilitychange', onVisible);
+    const unsubscribeCatchUp = subscribeCatchUp(() => { fetchTask(); });
     return () => {
       clearInterval(interval);
-      document.removeEventListener('visibilitychange', onVisible);
+      unsubscribeCatchUp();
     };
   }, [fetchTask]);
 

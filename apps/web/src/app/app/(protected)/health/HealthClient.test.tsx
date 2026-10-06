@@ -141,7 +141,6 @@ const render = (over: Record<string, any> = {}) =>
       budgetForecast={null}
       failureAnalytics={null}
       window="7d"
-      cbm={null}
       subagentDelegation={null}
       errorPatterns={null}
       now={NOW}
@@ -201,7 +200,7 @@ describe('HealthClient — layout', () => {
       failureAnalytics: analytics(),
       usageStats: { total: 40, completed: 30, failed: 4, unassigned: 6 },
     });
-    expect(html).toContain('over 1 runner');
+    expect(html).toContain('1 runner');
     expect(html).toContain('over 8 terminal worker sessions');
     expect(html).toContain('over 40 tasks');
   });
@@ -259,7 +258,8 @@ describe('HealthClient — Problems', () => {
 describe('HealthClient — STATE grammar', () => {
   it('renders runner freshness from the heartbeat, not from render time', () => {
     const html = render({ runners: [runner({ lastHeartbeatAt: ago(3 * HOUR) })] });
-    expect(html).toContain('as of 3h ago');
+    // 3h without a heartbeat is offline, so the line reads "last seen", from the heartbeat.
+    expect(html).toContain('last seen 3h ago');
   });
 
   it('renders `never observed` for a credential that was never verified', () => {
@@ -399,7 +399,7 @@ describe('HealthClient — Trend', () => {
   it('shows the top 8 tools, then every tool grouped by server behind an expander', () => {
     const names = [
       'Bash', 'Read', 'Edit', 'Grep', 'mcp__buildd__buildd', 'Write', 'Glob', 'TodoWrite',
-      'mcp__codebase-memory__search_graph', 'mcp__buildd__recall', 'ToolSearch', 'mcp__dispatch__dispatch_read',
+      'mcp__github__get_pr', 'mcp__buildd__recall', 'ToolSearch', 'mcp__dispatch__dispatch_read',
     ];
     const byTool = names.map((name, i) => ({ name, calls: 100 - i, share: (100 - i) / 1000, tasks: 5, exactCalls: 100 - i, exactTasks: 5 }));
     const html = render({ consumption: consumption({ tools: { ...consumption().tools, byTool } }) });
@@ -407,15 +407,14 @@ describe('HealthClient — Trend', () => {
     const head = section.slice(0, section.indexOf('data-testid="consumption-all-tools"'));
     // Top rows: the first eight, and nothing below them.
     expect(head).toContain('TodoWrite');
-    expect(head).not.toContain('search_graph');
+    expect(head).not.toContain('get_pr');
     expect(section).toContain('Show all 12 tools');
     // The expander lists every tool, exactly once, under its server.
     expect(section.match(/data-testid="consumption-all-tools-row"/g)?.length).toBe(12);
     for (const n of names) expect(section).toContain(`title="${n}"`);
     const groups = section.slice(section.indexOf('data-testid="consumption-all-tools"'));
     expect(groups.indexOf('Built-in')).toBeLessThan(groups.indexOf('>buildd<'));
-    expect(groups.indexOf('>buildd<')).toBeLessThan(groups.indexOf('>codebase-memory<'));
-    expect(groups.indexOf('>codebase-memory<')).toBeLessThan(groups.indexOf('Other MCP'));
+    expect(groups.indexOf('>buildd<')).toBeLessThan(groups.indexOf('Other MCP'));
     // Links on to the drill-down for the finer breakdowns.
     expect(groups).toContain('href="/app/health/usage?window=7d"');
     // Coverage label and floor marking are unchanged.
@@ -437,41 +436,6 @@ describe('HealthClient — Trend', () => {
     expect(html).toContain('≥31/40');
     // … and the scan cap is a separate axis that is shown alongside, not folded in.
     expect(html).toContain('data-testid="consumption-scan-caveat"');
-  });
-
-  it('drops the CBM adoption ratio but keeps the never-queried alarm', () => {
-    const html = render({
-      cbm: {
-        tracked: 12,
-        activeCount: 10,
-        adoptionRate: 0,
-        totalGraphCalls: 0,
-        zeroCallTasks: 10,
-        state: 'unused',
-        warmStartRate: 1,
-        warmStarts: 10,
-        indexAttempted: 0,
-        indexFailed: 0,
-        indexFailureRate: null,
-        topIndexFailReason: null,
-        eligibleFallbackRate: 0,
-        byDesignSkips: {},
-        binaryAbsent: 0,
-        mountUnavailable: 0,
-        avgFileAccessOnActive: 12,
-        avgGraphCallsOnActive: 0,
-        inputTokenDeltaPct: null,
-        fileAccessDeltaPct: null,
-        deltasSuppressedBecause: 'no_graph_tool_calls_observed',
-        topTools: [],
-        tools: { sessions: 0, totalCalls: 0, tools: [] },
-      },
-    });
-    expect(html).toContain('Never queried');
-    expect(html).toContain('over 10 CBM-enabled sessions');
-    // The adoption percentage moves to the usage drill-down; publishing it in two
-    // places under two different windows is what the restructure removes.
-    expect(html).not.toContain('0% of 10');
   });
 
   it('renders no subagent-delegation section when the panel is null', () => {
@@ -741,7 +705,7 @@ describe('HealthClient — budget forecast labels', () => {
     });
     expect(html).toContain('health-section-budget-forecast');
     expect(html).not.toContain('?window=');
-    expect(html).toContain('ignores the page window');
+    expect(html).toContain('usage limits and monthly spend');
   });
 
   it('labels monthly and mission spend as an estimate', () => {

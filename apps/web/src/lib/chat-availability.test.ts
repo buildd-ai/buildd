@@ -15,6 +15,7 @@ const deps = (over: Partial<{ key: boolean; role: string | null; throws: boolean
   keyPolicy: async (): Promise<Policy> => { if (over.throws) throw new Error('db down'); return over.policy ?? 'team'; },
   hasKey: async () => over.key ?? false,
   role: async () => over.role ?? 'member',
+  overrides: async () => ({}),
 });
 
 describe('computeChatAvailability', () => {

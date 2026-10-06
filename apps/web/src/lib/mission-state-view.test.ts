@@ -342,7 +342,7 @@ describe('deriveMissionStateView — awaiting merge', () => {
     expect(waiting.prNumbers).toEqual([34]);
     expect(waiting.taskIds).toEqual(['task-c']);
     expect(view.situation.headline).toContain('closed without merging');
-    expect(view.situation.headline).not.toContain('waiting on you to merge');
+    expect(view.situation.headline).not.toContain('ready to merge');
     expect(view.nextAction).toContain('record_pr_supersession');
   });
 
@@ -658,11 +658,11 @@ describe('deriveMissionStateView — visual review', () => {
     expect(view.kind).toBe('awaiting_decision');
     const w = gated(view);
     expect(w.kind).toBe('human_decision');
-    expect(w.label).toBe('3 screens want your review');
+    expect(w.label).toBe('3 screens to review');
     expect(w.tone).toBe('warning');
     expect(view.derivedFrom.kind).toBe('canCompleteMission');
     expect(view.nextAction).toContain('visual review');
-    expect(view.situation.headline).toBe('Waiting on you: 3 screens want your review.');
+    expect(view.situation.headline).toBe('3 screens to review.');
   });
 
   it('in shadow the same fact shows, without blocking', () => {
@@ -678,9 +678,9 @@ describe('deriveMissionStateView — visual review', () => {
     expect(view.kind).toBe('idle');
     expect(view.waitingOn).toBeNull();
     const fact = view.outstanding.find(f => f.kind === 'human_decision');
-    expect(fact?.label).toBe('1 screen wants your review');
+    expect(fact?.label).toBe('1 screen to review');
     expect(fact?.tone).toBe('info');
-    expect(view.situation.focus?.label).toBe('1 screen wants your review');
+    expect(view.situation.focus?.label).toBe('1 screen to review');
   });
 
   it('shows alongside a running mission and under another refusal', () => {
@@ -690,7 +690,7 @@ describe('deriveMissionStateView — visual review', () => {
       completion: { ok: true, code: 'ok', reason: '', visualReviewHold: { cells: 2, roundCapOpen: false, enforced: false } },
     });
     expect(running.kind).toBe('running');
-    expect(running.outstanding.some(f => f.kind === 'human_decision' && f.label === '2 screens want your review')).toBe(true);
+    expect(running.outstanding.some(f => f.kind === 'human_decision' && f.label === '2 screens to review')).toBe(true);
   });
 
   it('an open round-cap question with no unsure screen reads as the audit\'s call', () => {
@@ -698,7 +698,7 @@ describe('deriveMissionStateView — visual review', () => {
       ...base,
       completion: { ok: false, code: 'visual_review_open', reason: '', visualReviewHold: { cells: 0, roundCapOpen: true, enforced: true } },
     });
-    expect(gated(view).label).toBe('The visual audit wants your call');
+    expect(gated(view).label).toBe('Visual audit: decision needed');
   });
 
   it('nothing to review: no fact', () => {

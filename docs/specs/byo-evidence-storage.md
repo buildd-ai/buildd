@@ -8,6 +8,31 @@ domain: knowledge
 surfaces: [apps/runner/src/session-diagnostics.ts, apps/web/src/app/api/workers/[id]/session-upload-url/route.ts, apps/web/src/lib/storage-keys.ts, apps/web/src/lib/chat/registry.ts]
 related: [knowledge-store-retrieval, knowledge-ingest-pipeline, artifacts-and-sharing, credential-isolation]
 keywords: [evidence, s3, r2, byo, transcript, ci-log, query_knowledge, read_evidence, evidence_backends, evidence_objects, evidence_storage_credential]
+assertions:
+  - id: evidence-pointer-tables
+    type: symbol
+    name: evidenceObjects
+    path: packages/core/db/schema.ts
+  - id: evidence-credential-purpose
+    type: config_key
+    key: evidence_storage_credential
+    file: packages/core/secrets/types.ts
+  - id: evidence-upload-url-route
+    type: route
+    method: POST
+    path: /api/workers/[id]/evidence-upload-url
+    file: apps/web/src/app/api/workers/[id]/evidence-upload-url/route.ts
+  - id: evidence-backend-retention-days
+    type: config_key
+    key: retentionDays
+    file: apps/web/src/lib/evidence-backend.ts
+  # Unbuilt (build item 8, P4): retention_days is configured on the backend,
+  # but no job reads evidence_objects.expires_at to delete expired objects yet.
+  # The spec names apps/web/src/lib/evidence-retention.ts as the new module.
+  - id: evidence-retention-job-reads-expiry
+    type: config_key
+    key: expiresAt
+    file: apps/web/src/lib/evidence-retention.ts
 ---
 
 # BYO Evidence Storage

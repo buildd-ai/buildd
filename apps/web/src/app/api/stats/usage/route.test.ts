@@ -375,13 +375,12 @@ describe('GET /api/stats/usage — fine-grained breakdowns', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', name: 'Buildd' }]);
   });
 
-  it('returns bash buckets, search shapes, buildd actions and graph tools, each with its own population', async () => {
+  it('returns bash buckets, search shapes and buildd actions, each with its own population', async () => {
     mockWorkersFindMany.mockResolvedValue([
       worker({
         resultMeta: {
-          toolCounts: { Bash: 5, 'mcp__codebase-memory__search_graph': 2 },
+          toolCounts: { Bash: 5 },
           bashCommandCounts: { total: 5, buckets: { code_search: 3, test: 2 }, searchShapes: { identifier: 3 } },
-          cbm: { outcome: 'enforced', toolCalls: { search_graph: 2 }, totalCbmCalls: 2, readCount: 0, grepCount: 0, globCount: 0 },
         },
       }),
     ]);
@@ -400,8 +399,7 @@ describe('GET /api/stats/usage — fine-grained breakdowns', () => {
     expect(body.buildActions.totalCalls).toBe(2);
     expect(body.buildActions.capturedSince).toBe('2026-09-03');
     expect(body.buildActions.workers).toBe(1);
-    expect(body.cbmTools.sessions).toBe(1);
-    expect(body.cbmTools.tools[0]).toMatchObject({ tool: 'search_graph', calls: 2, sessions: 1 });
+    expect(body.cbmTools).toBeUndefined();
   });
 
   it('nulls a breakdown whose read failed instead of failing the response', async () => {
@@ -411,7 +409,48 @@ describe('GET /api/stats/usage — fine-grained breakdowns', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.buildActions).toBeNull();
-    expect(body.cbmTools).toBeNull();
     expect(body.totals.tasks).toBe(1);
+  });
+});
+
+// A per-task token (cloud container, and self-hosted agents once they carry
+// one) reads usage only for its own task's workspace, never team-wide.
+describe('GET /api/stats/usage — per-task token', () => {
+  const SCOPED = { id: 'acct-1', teamId: 'team-1', level: 'worker', taskScope: { taskId: 'task-own', workspaceId: 'ws-1', expiresAt: Date.now() + 60_000 } };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockResolvedValue(SCOPED);
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Buildd' },
+      { id: 'ws-2', name: 'Docs' },
+    ]);
+  });
+
+  it('defaults to its own workspace, not the whole team', async () => {
+    mockWorkersFindMany.mockResolvedValue([worker()]);
+    const res = await GET(makeRequest({ groupBy: 'workspace' }, 'bld_test'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.workspaceIds).toEqual(['ws-1']);
+    expect(JSON.stringify(body)).not.toContain('Docs');
+  });
+
+  it('reads its own workspace when asked for it', async () => {
+    const res = await GET(makeRequest({ workspace: 'ws-1' }, 'bld_test'));
+    expect(res.status).toBe(200);
+    expect((await res.json()).workspaceIds).toEqual(['ws-1']);
+  });
+
+  it('404s another workspace on the same team before reading anything', async () => {
+    const res = await GET(makeRequest({ workspace: 'ws-2' }, 'bld_test'));
+    expect(res.status).toBe(404);
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
+
+  it('an account key still reads the whole team', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
+    const body = await (await GET(makeRequest({}, 'bld_test'))).json();
+    expect(body.workspaceIds).toEqual(['ws-1', 'ws-2']);
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Home's FLEET panel: runners × slots. Each busy slot row shows its live
+ * Home's runners panel: runners × slots. Each busy slot row shows its live
  * worker (role square, task name + short label, progress); a couple of
  * recently finished slots keep their "idle · last …" row; every other quiet
  * slot folds into one "N idle slots" row, so ten slots with one agent on them
@@ -103,7 +103,7 @@ function SlotCell({ slot, now }: { slot: FleetSlot; now: number }) {
       </div>
       {w.question ? (
         <div className="mt-1 flex items-center gap-1.5 font-mono text-[11px] font-bold uppercase tracking-[1px] text-status-warning">
-          ? Waiting on you{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}</span>}
+          ? Needs input{mins != null && <span className="font-normal normal-case tracking-normal text-text-muted">· {mins}</span>}
         </div>
       ) : w.progress != null ? (
         <div className="mt-1.5 flex items-center gap-2.5 font-mono text-[11px] text-text-muted">
@@ -288,7 +288,8 @@ export function FleetStrip({
       <section data-testid="home-fleet" className="mb-8">
         <div className="mb-3">{label}</div>
         <div className="border border-dashed border-border-strong px-5 py-4 font-mono text-[12.5px] text-text-secondary">
-          No runners online. Start one with <code className="text-text-primary">buildd</code> on any machine.
+          No runners online. Run <code className="text-text-primary">buildd</code> on a machine where it is installed, or{' '}
+          <Link href="/app/settings/runners" className="text-accent-text hover:underline">install it</Link>.
         </div>
       </section>
     );
@@ -302,7 +303,7 @@ export function FleetStrip({
             data-testid="fleet-summary"
             className="card flex min-h-11 cursor-pointer list-none items-center gap-3 px-4 py-2.5 md:px-5 [&::-webkit-details-marker]:hidden"
           >
-            <span className="section-label hidden shrink-0 text-text-muted md:inline">Fleet</span>
+            <span className="section-label hidden shrink-0 text-text-muted md:inline">Runners</span>
             <SummaryLine fleet={fleet} now={now} />
             <span className="shrink-0 font-mono text-[11px] text-text-muted">
               <span className="group-open:hidden">show ▸</span>

@@ -14,6 +14,7 @@ import {
   type BucketObjectLike,
   type BucketPort,
   type SnapshotScope,
+  WARM_HARD_MAX_BYTES,
 } from './snapshots';
 
 /** In-memory R2 with the conditional-put semantics the store relies on. */
@@ -393,6 +394,34 @@ describe('streamed multipart uploads (a bundle of unknown length)', () => {
     for (const body of ['nope', '{}', JSON.stringify({ parts: [{ partNumber: 'x', etag: 1 }] }), JSON.stringify({ parts: [] })]) {
       expect((await call('POST', `/warm/${gen}/repo/multipart/complete`, body, scope, { [ID]: id })).status).toBe(400);
     }
+  });
+});
+
+describe('the per-workspace cap (scope.maxBytes, from buildd with the GitHub grant)', () => {
+  const ID = 'x-buildd-upload-id';
+  test('GET /warm/limits answers the cap this run is held to: the workspace cap, else the Worker default', async () => {
+    expect(parseSnapshotRoute('GET', '/warm/limits')).toEqual({ op: 'warm_limits' });
+    expect(parseSnapshotRoute('POST', '/warm/limits')).toBeNull();
+    const withWs = await handleSnapshotRequest(req('GET', '/warm/limits'), { workspaceId: WS, maxBytes: 3 * 1024 ** 3 }, store, { maxPartBytes: 1024 ** 3 });
+    expect(withWs.status).toBe(200);
+    expect(await withWs.json()).toEqual({ maxBytes: 3 * 1024 ** 3 });
+    const fallback = await handleSnapshotRequest(req('GET', '/warm/limits'), scope, store, { maxPartBytes: 1024 ** 3 });
+    expect(await fallback.json()).toEqual({ maxBytes: 1024 ** 3 });
+    // Bounded by the Worker too, whatever the scope says.
+    const huge = await handleSnapshotRequest(req('GET', '/warm/limits'), { workspaceId: WS, maxBytes: 1024 ** 4 }, store, { maxPartBytes: 1024 ** 3 });
+    expect(await huge.json()).toEqual({ maxBytes: WARM_HARD_MAX_BYTES });
+    expect(WARM_HARD_MAX_BYTES).toBe(8 * 1024 ** 3);
+  });
+
+  test('a completed upload is held to the workspace cap, not the Worker default', async () => {
+    const s: SnapshotScope = { workspaceId: WS, maxBytes: 5 };
+    const begin = await handleSnapshotRequest(req('POST', '/warm/begin', '{}'), s, store, { maxPartBytes: 1024 ** 3 });
+    const gen = ((await begin.json()) as { generation: string }).generation;
+    const created = await handleSnapshotRequest(req('POST', `/warm/${gen}/cache/multipart`, '{}'), s, store, { maxPartBytes: 1024 ** 3 });
+    const id = ((await created.json()) as { uploadId: string }).uploadId;
+    const part = await handleSnapshotRequest(req('PUT', `/warm/${gen}/cache/multipart/1`, 'abcdef', { 'content-length': '6', [ID]: id }), s, store, { maxPartBytes: 1024 ** 3 });
+    // A part over the cap is refused up front.
+    expect(part.status).toBe(413);
   });
 });
 

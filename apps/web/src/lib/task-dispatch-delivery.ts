@@ -1,11 +1,8 @@
-import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, type WorkspaceWebhookConfig } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
-import { dispatchToGitHubActions, isGitHubAppConfigured } from '@/lib/github';
+import type { WorkspaceWebhookConfig } from '@buildd/core/db/schema';
 
 /**
- * Delivery primitives for task wakes: the webhook POST, GitHub Actions
- * repository_dispatch and the Pusher payload shape. Only the dispatch
+ * Delivery primitives for task wakes: the webhook POST and the Pusher
+ * payload shape. Only the dispatch
  * authority (lib/dispatch-authority.ts) sends task wakes with these; the one
  * other sender is `dispatchResumedTask`, which resumes a live *worker* and so
  * is not a task wake at all.
@@ -96,8 +93,6 @@ export type DispatchWorkspace = {
   name?: string;
   repo?: string | null;
   webhookConfig?: WorkspaceWebhookConfig | null;
-  githubInstallationId?: string | null;
-  githubRepoId?: string | null;
 };
 
 export type WebhookPayloadExtra = { workerId?: string; cause?: string; dispatchId?: string; notBefore?: string };
@@ -232,45 +227,4 @@ export function buildTaskPayload(
     // Include workspace info so runners can resolve workspace path before claiming
     ...(workspace.name && { workspace: { name: workspace.name, repo: workspace.repo || null } }),
   };
-}
-
-/**
- * Try to dispatch a task via GitHub Actions repository_dispatch.
- * Requires workspace to have a linked GitHub installation and repo.
- */
-export async function tryGitHubActionsDispatch(
-  workspace: {
-    id?: string;
-    githubInstallationId?: string | null;
-    githubRepoId?: string | null;
-  },
-  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number }
-): Promise<boolean> {
-  if (!isGitHubAppConfigured() || !workspace.githubInstallationId || !workspace.githubRepoId) {
-    return false;
-  }
-
-  try {
-    // Look up the GitHub installation's numeric ID and repo full name
-    const installation = await db.query.githubInstallations.findFirst({
-      where: eq(githubInstallations.id, workspace.githubInstallationId),
-    });
-
-    const repo = await db.query.githubRepos.findFirst({
-      where: eq(githubRepos.id, workspace.githubRepoId),
-    });
-
-    if (!installation || !repo) {
-      return false;
-    }
-
-    return await dispatchToGitHubActions(
-      installation.installationId,
-      repo.fullName,
-      task
-    );
-  } catch (error) {
-    console.error('GitHub Actions dispatch lookup failed:', error);
-    return false;
-  }
 }

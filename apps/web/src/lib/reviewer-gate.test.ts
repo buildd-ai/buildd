@@ -616,7 +616,7 @@ describe('deriveStoredVerdictFallback — the mission-less "no recorded verdict"
       reviewerTask: { status: 'completed', hasLiveWorker: false, createdAt: NOW },
     }));
     expect(gate.actor).toBe('human');
-    expect(gate.reason).toBe('Review finished with no recorded verdict · needs your review');
+    expect(gate.reason).toBe('Review finished with no recorded verdict · review needed');
   });
 
   it('an existing note wins outright — the fallback never overrides real note evidence', () => {

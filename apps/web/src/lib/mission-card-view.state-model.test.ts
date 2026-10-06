@@ -201,7 +201,7 @@ describe('the situation copy agrees with the grouping while work is in flight', 
     expect(s.state.kind).toBe('running');
     expect(s.group).toBe('running');
     expect(s.state.situation.headline).toMatch(/^Running \(1 agent\)/);
-    expect(s.state.situation.headline).not.toMatch(/waiting on you/i);
+    expect(s.state.situation.headline).not.toMatch(/needs input/i);
     expect(s.state.situation.headline).toContain('"no open tasks"');
   });
 });

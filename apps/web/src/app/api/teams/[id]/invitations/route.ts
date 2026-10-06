@@ -4,6 +4,7 @@ import { teamInvitations, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireSessionUser } from '@/lib/auth-helpers';
 import crypto from 'crypto';
+import { roleHas, getTeamPermissionOverrides } from '@/lib/permissions';
 
 // GET /api/teams/[id]/invitations — list pending invitations
 export async function GET(
@@ -24,7 +25,7 @@ export async function GET(
     ),
   });
 
-  if (!membership || membership.role === 'member') {
+  if (!membership || !roleHas(membership.role, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
@@ -68,7 +69,7 @@ export async function POST(
     ),
   });
 
-  if (!membership || membership.role === 'member') {
+  if (!membership || !roleHas(membership.role, 'manage_team_members', await getTeamPermissionOverrides(teamId))) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
