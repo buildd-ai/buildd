@@ -572,8 +572,55 @@ describe('POST /api/tasks', () => {
         method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Elsewhere' },
       }));
       expect(response.status).toBe(403);
-      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace');
+      expect((await response.json()).error).toBe('A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on');
       expect(mockTasksInsert).not.toHaveBeenCalled();
+    });
+
+    describe('with a schedule delegation (scheduled reviewer files a follow-up elsewhere)', () => {
+      const delegated = (capabilities: string[]) => ({
+        ...scoped,
+        taskScope: { ...scoped.taskScope, delegations: [{ workspaceId: 'ws-2', capabilities }] },
+      });
+      const elsewhere = { id: 'task-elsewhere', workspaceId: 'ws-2', title: 'Defect found', status: 'pending' };
+      const fileIn = (body: Record<string, unknown>) => POST(createMockRequest({
+        method: 'POST', headers: { Authorization: 'Bearer bld_test' }, body: { workspaceId: 'ws-2', title: 'Defect found', ...body },
+      }));
+
+      it('files into a workspace the delegation grants tasks:create on, through the normal path', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['analytics:read', 'tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [elsewhere]) })) });
+        const response = await fileIn({});
+        expect(response.status).toBe(200);
+        expect((await response.json()).id).toBe('task-elsewhere');
+      });
+
+      it('an analytics-only delegation still cannot create there', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['analytics:read']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        const response = await fileIn({});
+        expect(response.status).toBe(403);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
+
+      it('a delegation for one workspace opens no other', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-3', teamId: 'team-1', accessMode: 'open' });
+        const response = await fileIn({ workspaceId: 'ws-3' });
+        expect(response.status).toBe(403);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
+
+      it('a delegated follow-up cannot join a mission, a dependency graph or another parent there', async () => {
+        mockAccountsFindFirst.mockResolvedValue(delegated(['tasks:create']));
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-2', teamId: 'team-1', accessMode: 'open' });
+        mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
+        expect((await fileIn({ missionId: '33333333-3333-4333-8333-333333333333' })).status).toBe(400);
+        expect((await fileIn({ dependsOn: ['55555555-5555-4555-8555-555555555555'] })).status).toBe(400);
+        expect((await fileIn({ parentTaskId: '66666666-6666-4666-8666-666666666666' })).status).toBe(400);
+        expect(mockTasksInsert).not.toHaveBeenCalled();
+      });
     });
 
     for (const level of ['worker', 'admin']) {

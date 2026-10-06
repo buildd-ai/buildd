@@ -762,6 +762,31 @@ describe('GET /api/health/failures — per-task token', () => {
     expect(mockGetFailureAnalytics).not.toHaveBeenCalled();
   });
 
+  it('reads a workspace its schedule delegates analytics:read on, when named; never by default', async () => {
+    const delegated = authedAccount({ taskScope: {
+      taskId: 'task-1', workspaceId: OWN, expiresAt: Date.now() + 60_000,
+      delegations: [{ workspaceId: OTHER, capabilities: ['analytics:read'] }],
+    } });
+    mockAuthenticateApiKey.mockResolvedValue(delegated);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER, teamId: TEAM_ID });
+    const res = await GET(makeRequest(`${URL_BASE}?workspaceId=${OTHER}&family=gate`));
+    expect(res.status).toBe(200);
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OTHER]);
+    mockGetFailureAnalytics.mockClear();
+    await GET(makeRequest(`${URL_BASE}?error=boom`));
+    expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([OWN]);
+  });
+
+  it('a tasks:create-only delegation does not open analytics', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(authedAccount({ taskScope: {
+      taskId: 'task-1', workspaceId: OWN, expiresAt: Date.now() + 60_000,
+      delegations: [{ workspaceId: OTHER, capabilities: ['tasks:create'] }],
+    } }));
+    mockWorkspacesFindFirst.mockResolvedValue({ id: OTHER, teamId: TEAM_ID });
+    expect((await GET(makeRequest(`${URL_BASE}?workspaceId=${OTHER}`))).status).toBe(404);
+    expect(mockGetFailureAnalytics).not.toHaveBeenCalled();
+  });
+
   it('leaves an account key unchanged: team-wide by default', async () => {
     mockAuthenticateApiKey.mockResolvedValue(authedAccount());
     await GET(makeRequest(URL_BASE));
