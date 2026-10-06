@@ -60,11 +60,12 @@ export interface ChatAgent {
 export function AgentAvatar({ agent, size = 'md' }: { agent: ChatAgent; size?: 'xs' | 'sm' | 'md' }) {
   const dim = size === 'xs' ? 'h-5 w-5 text-[11px]' : size === 'sm' ? 'h-7 w-7 text-[13px]' : 'h-9 w-9 text-[15px]';
   const isBuildd = agent.name === 'buildd';
+  const color = isBuildd ? null : agent.color;
   return (
     <span
       aria-hidden="true"
-      className={`grid shrink-0 place-items-center font-mono font-bold text-white ${dim} ${agent.color ? '' : 'bg-text-primary'}`}
-      style={agent.color ? { background: agent.color } : undefined}
+      className={`grid shrink-0 place-items-center font-mono font-bold ${dim} ${color ? 'text-white' : 'bg-text-primary text-surface-1'}`}
+      style={color ? { background: color } : undefined}
     >
       {isBuildd ? '✳' : agent.name.charAt(0).toUpperCase()}
     </span>
