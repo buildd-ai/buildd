@@ -16,6 +16,7 @@ interface Props {
   isHeld: boolean;
   displayState: MissionDisplayState;
   hasPrimaryAction?: boolean;
+  executor?: 'runner' | 'local' | null;
 }
 
 /**
