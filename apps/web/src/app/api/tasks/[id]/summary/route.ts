@@ -12,6 +12,7 @@ import { loadVisualReview } from '@/lib/visual-review-load';
 import { visualReviewRoundOf } from '@/lib/visual-review-rounds';
 import type { VisualReviewModel } from '@buildd/shared';
 import { describeBackendRouting } from '@buildd/core/backend-policy';
+import { loadTaskFailureKind } from '@/lib/task-failure-kind-load';
 
 /** One record the task produced, as the sheet lists it (W4 "Records"). */
 export interface TaskSummaryRecord {
@@ -219,6 +220,13 @@ export async function GET(
       ).length;
     }
 
+    let failureKind: Awaited<ReturnType<typeof loadTaskFailureKind>> = null;
+    try {
+      failureKind = await loadTaskFailureKind(task);
+    } catch (err) {
+      console.error('Task summary: failure kind load failed', err);
+    }
+
     return NextResponse.json({
       id: task.id,
       title: task.title,
@@ -271,6 +279,7 @@ export async function GET(
           }
         : null,
       blockedByCount,
+      failureKind,
       records,
       origin,
       visual,
