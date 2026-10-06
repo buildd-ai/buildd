@@ -7,7 +7,7 @@
  * (`taskScopeAllowsTask` / `taskScopeAllowsWorker` / `taskScopeAllowsWorkspace` /
  * `taskScopeAllowsWorkerPr` / `taskScopeAllowsMission` / `taskScopeAllowsInitiative` /
  * `taskScopeAllowsMissionTask` / `taskScopeAllowsDelegated` (a schedule's
- * explicit delegation, packages/core/schedule-delegation.ts),
+ * explicit delegation, packages/core/token-delegation.ts),
  * a direct read of `.taskScope`, or `authorizeWorkerPrCapability`, which
  * applies `taskScopeAllowsWorker` itself and is tested for it in
  * lib/agent-capabilities/worker-pr.test.ts), and each exported handler that calls it

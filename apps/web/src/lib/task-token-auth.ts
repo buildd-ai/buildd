@@ -7,7 +7,7 @@ import { tokenWorkspaceAllowed } from '@buildd/core/token-scopes';
 import {
   delegationAllows, readScheduleDelegation,
   type ScheduleDelegationCapability, type ScheduleDelegationGrant,
-} from '@buildd/core/schedule-delegation';
+} from '@buildd/core/token-delegation';
 
 /**
  * Authentication for the few routes a cloud container's per-task token may
@@ -38,7 +38,7 @@ export interface TaskScope {
   expiresAt: number;
   /**
    * Explicit extra reach from the schedule that spawned the task
-   * (packages/core/schedule-delegation.ts), already narrowed to workspaces of
+   * (packages/core/token-delegation.ts), already narrowed to workspaces of
    * the task's own team. Empty for any task no delegating schedule spawned.
    * Only `taskScopeAllowsDelegated` reads it.
    */
@@ -154,7 +154,7 @@ export function taskScopeAllowsWorkspace(account: { taskScope?: TaskScope }, wor
  * true unless the caller is a task token and `workspaceId` is neither its
  * task's workspace nor one its schedule's delegation grants `capability` on.
  * For the few routes that serve a delegated capability (see
- * packages/core/schedule-delegation.ts); every other route keeps
+ * packages/core/token-delegation.ts); every other route keeps
  * `taskScopeAllowsWorkspace`, so a delegation opens nothing else.
  */
 export function taskScopeAllowsDelegated(

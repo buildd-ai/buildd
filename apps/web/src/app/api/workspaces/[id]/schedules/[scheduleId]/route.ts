@@ -8,7 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { authenticateTaskScopedCaller, taskScopeAllowsWorkspace, type TaskScopedAccount } from '@/lib/task-token-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess, canCallerAdminTeam } from '@/lib/team-access';
-import { parseScheduleDelegationInput, type ScheduleDelegation } from '@buildd/core/schedule-delegation';
+import { parseScheduleDelegationInput, type ScheduleDelegation } from '@buildd/core/token-delegation';
 
 type RouteParams = { params: Promise<{ id: string; scheduleId: string }> };
 
@@ -46,7 +46,7 @@ async function resolveAuth(
 type ScheduleAuth = NonNullable<Awaited<ReturnType<typeof resolveAuth>>>;
 
 /**
- * Validate and stamp a `delegation` write (packages/core/schedule-delegation.ts).
+ * Validate and stamp a `delegation` write (packages/core/token-delegation.ts).
  * Granting reach is an admin act: only a team admin/owner session or an admin
  * key of the schedule's team may set it, every target must be a workspace of
  * that same team, and the granter must itself reach each target. Clearing it

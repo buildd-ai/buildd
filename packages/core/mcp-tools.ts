@@ -18,7 +18,7 @@ import type { DispatchHistoryEntry } from './dispatch-outbox';
 import { formatEvidenceObjects, formatTaskEvidence, formatTaskMismatch } from './task-evidence-format';
 import { runGetVisualReview, runListRunners } from './mcp-visual-review';
 import { normalizeProject, workspaceProjectKey } from './project-scope';
-import { formatAnalyticsReadFailure, readScheduleDelegation } from './schedule-delegation';
+import { formatAnalyticsReadFailure, readScheduleDelegation } from './token-delegation';
 import { saveMemory, updateMemory } from './memory-write';
 import {
   LEDE_FIELD_SPEC,

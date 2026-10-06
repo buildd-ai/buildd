@@ -198,7 +198,7 @@ const SAFE: Record<string, string[]> = {
     'tracked_branch',
   ],
   // delegation: workspace/user/account ids, a fixed capability vocabulary and a
-  // timestamp (packages/core/schedule-delegation.ts). No free text.
+  // timestamp (packages/core/token-delegation.ts). No free text.
   task_schedules: ['cron_expression', 'timezone', 'last_heartbeat_state_hash', 'delegation'],
   github_installations: ['permissions'],
   github_repos: ['default_branch'],

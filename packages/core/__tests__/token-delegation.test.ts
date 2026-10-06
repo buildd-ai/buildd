@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   classifyAnalyticsReadFailure, delegationAllows, formatAnalyticsReadFailure, isEvidenceStatus,
   parseScheduleDelegationInput, readScheduleDelegation, SCHEDULE_DELEGATION_MAX_GRANTS,
-} from '../schedule-delegation';
+} from '../token-delegation';
 
 const OWN = '00000000-0000-4000-8000-000000000001';
 const TARGET = '00000000-0000-4000-8000-000000000002';

@@ -25,7 +25,7 @@ function parseInstant(value: string | null): Date | null | 'invalid' {
  * here instead of grepping shadow log lines.
  *
  * A per-task token reads its own task's workspace, or one its schedule's
- * delegation grants analytics:read on (packages/core/schedule-delegation.ts).
+ * delegation grants analytics:read on (packages/core/token-delegation.ts).
  *
  * The answer always carries `status`: OK when rows matched, NO_DATA when the
  * read succeeded and nothing matched. A store failure is a 503, never an

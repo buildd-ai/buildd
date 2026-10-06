@@ -48,7 +48,7 @@ import { TOKEN_PRESETS, hasTokenScope, type TokenScope } from '@buildd/core/toke
  * (`hasTokenRouteAdminAccess`) stays closed to a task token of either level.
  *
  * A task spawned by a schedule that carries a delegation
- * (packages/core/schedule-delegation.ts) may also reach the workspaces that
+ * (packages/core/token-delegation.ts) may also reach the workspaces that
  * delegation names, for exactly its capabilities: analytics reads (decision
  * ledger, decision and coordination stats, failure and gate analytics,
  * workspace name resolution) and filing a plain task. The grant is read from

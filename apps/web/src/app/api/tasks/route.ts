@@ -556,7 +556,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
     // A task token files in its own workspace, or in one its schedule's
-    // delegation grants tasks:create on (packages/core/schedule-delegation.ts).
+    // delegation grants tasks:create on (packages/core/token-delegation.ts).
     if (apiAccount && !taskScopeAllowsDelegated(apiAccount, workspaceId, 'tasks:create')) {
       return NextResponse.json({ error: 'A task token may create tasks only in its own workspace, or one its schedule delegates tasks:create on' }, { status: 403 });
     }

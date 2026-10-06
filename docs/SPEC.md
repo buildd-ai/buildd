@@ -74,7 +74,7 @@ M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
 A per-task token (`bldt_`) is confined to its own task's workspace. The one
 exception is a **schedule delegation** (`task_schedules.delegation`,
-`packages/core/schedule-delegation.ts`): a team owner or admin may grant the tasks
+`packages/core/token-delegation.ts`): a team owner or admin may grant the tasks
 one schedule spawns `analytics:read` (decision ledger, decision/coordination stats,
 gate ledger, workspace name resolution) and/or `tasks:create` (the normal create
 path, no mission, dependencies or foreign parent) on named workspaces of the same
