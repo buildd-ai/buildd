@@ -108,9 +108,10 @@ function blockedByChecks(input: VerdictInput, pr: NonNullable<VerdictInput['pr']
     ? `PR blocked · ${plural(failing.length, 'check')} failing: ${names.slice(0, 2).join(', ')}${names.length > 2 ? ` +${names.length - 2}` : ''}`
     : 'PR blocked · checks failing';
   const first = failing[0];
+  // The failing check's name and line are the check rows under the headline
+  // (`failingChecks`); the cause adds only what those rows cannot say.
   const causeParts: string[] = [];
-  if (first) causeParts.push(first.line ? `${first.name}: ${first.line}` : `${first.name} failed on the latest commit.`);
-  else causeParts.push('CI failed on the latest commit.');
+  if (!first) causeParts.push('CI failed on the latest commit.');
   if (input.openAttempt) {
     causeParts.push(`${attemptName(input.openAttempt)} is ${input.openAttempt.claimed ? 'running' : 'queued'}; this stays blocked until the check is green.`);
   }
@@ -126,7 +127,7 @@ function blockedByChecks(input: VerdictInput, pr: NonNullable<VerdictInput['pr']
   return {
     state: 'blocked',
     headline,
-    cause: causeParts.join(' '),
+    cause: causeParts.length > 0 ? causeParts.join(' ') : null,
     actions: actions.slice(0, MAX_ACTIONS),
     causeKey: `blocked:check:${names.slice().sort().join('|') || '?'}`,
     failingChecks: failing,

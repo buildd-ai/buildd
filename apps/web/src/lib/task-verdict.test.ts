@@ -36,7 +36,9 @@ describe('deriveTaskVerdict', () => {
     const v = deriveTaskVerdict(input())!;
     expect(v.state).toBe('blocked');
     expect(v.headline).toBe('PR blocked · 1 check failing: PR body lint');
-    expect(v.cause).toContain('PR body lint: Body contains a full UUID');
+    // The check and its first error line ride on the inline check row, not repeated in the cause.
+    expect(v.failingChecks[0]).toMatchObject({ name: 'PR body lint', line: 'Body contains a full UUID' });
+    expect(v.cause).not.toContain('Body contains a full UUID');
     expect(v.cause).toContain('The agent reported success; the check says otherwise.');
     expect(v.headline).not.toContain('Tier-2');
     expect(v.actions[0]).toMatchObject({ label: 'View failing check', href: 'https://github.com/acme/app/runs/1' });
