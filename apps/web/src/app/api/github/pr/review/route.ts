@@ -16,7 +16,8 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { authenticateApiKey } from '@/lib/api-auth';
+import { authenticateTaskScopedCaller, taskScopeAllowsWorkerPr, taskScopeAllowsWorkspace, type TaskScope } from '@/lib/task-token-auth';
+import { taskNamesPr } from '@/lib/agent-capabilities/pr-ownership';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveSessionTeamIds, workspaceIdsForTeams } from '@/lib/session-team-scope';
@@ -42,7 +43,7 @@ import {
   type PrReviewWaitFor,
 } from '@/lib/pr-review-status';
 
-type Account = { id: string; teamId: string };
+type Account = { id: string; teamId: string; taskScope?: TaskScope };
 
 /**
  * Which workspaces a caller may resolve a PR in. An API key reaches its own
@@ -57,6 +58,12 @@ interface TargetScope {
 }
 
 function accountScope(account: Account): TargetScope {
+  // A per-task token sees only its own task's workspace, and anything outside
+  // it as missing rather than forbidden.
+  if (account.taskScope) {
+    const workspaceId = account.taskScope.workspaceId;
+    return { teamIds: [account.teamId], workspaceIds: async () => [workspaceId], foreignWorkspace: 'not_found' };
+  }
   return {
     teamIds: [account.teamId],
     workspaceIds: () => getTeamWorkspaceIds(account.teamId),
@@ -131,6 +138,31 @@ async function resolveTarget(
   };
 }
 
+/**
+ * Does the task token's OWN task name this PR — in its title, description or
+ * context, or as a retry attempt's subject? Mirrors the fallback `pr/route.ts`
+ * already applies to close/merge via `agentRunMayActOnPr`: a coordination or
+ * cleanup task that never opened a PR of its own may still act on one its
+ * brief explicitly names (e.g. "resolve conflicts on #3492").
+ */
+async function taskScopeNamesPr(scope: TaskScope, prNumber: number): Promise<boolean> {
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, scope.taskId),
+    columns: {
+      id: true,
+      title: true,
+      description: true,
+      context: true,
+      workspaceId: true,
+      reviewerRetryPrNumber: true,
+      ciRetryPrNumber: true,
+      conflictRetryPrNumber: true,
+    },
+  });
+  if (!task || task.workspaceId !== scope.workspaceId) return false;
+  return taskNamesPr(task, prNumber);
+}
+
 /** The GitHub repo + installation behind a workspace. */
 async function resolveRepo(workspace: ResolvedTarget['workspace']) {
   if (!workspace.githubRepoId || !workspace.githubInstallationId) return null;
@@ -165,7 +197,8 @@ async function resolveEffectivePolicy(
 }
 
 export async function POST(req: NextRequest) {
-  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
+  // A per-task token may ask for review only of its own task's PR.
+  const account = await authenticateTaskScopedCaller(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
   if (!account) return bad('Invalid API key', 401);
 
   let body: Record<string, unknown>;
@@ -215,6 +248,10 @@ export async function POST(req: NextRequest) {
   }
 
   const existingWorker = await findPrOwningWorker(workspace.id, prNumber);
+  const ownsViaWorker = !!existingWorker && taskScopeAllowsWorkerPr(account, { ...existingWorker, prNumber }, prNumber);
+  if (account.taskScope && !ownsViaWorker && !(await taskScopeNamesPr(account.taskScope, prNumber))) {
+    return bad('A task token may request review only of its own PR, or one its task names', 403);
+  }
   const existingReview = await findReviewTaskForPr(workspace.id, prNumber);
   const inFlight = existingReview?.status === 'pending' || existingReview?.status === 'in_progress';
   const force = body.force === true;
@@ -430,7 +467,8 @@ export async function POST(req: NextRequest) {
 // just `teamId` when given; anything outside 404s. A key, when present, is
 // authoritative and `teamId` is ignored.
 export async function GET(req: NextRequest) {
-  const account = await authenticateApiKey(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
+  // A per-task token reads reviews only in its own task's workspace (accountScope).
+  const account = await authenticateTaskScopedCaller(req.headers.get('authorization')?.replace('Bearer ', '') || null, req);
   const sessionUser = account ? null : await getCurrentUser();
   if (!account && !sessionUser) return bad('Invalid API key', 401);
 
@@ -452,6 +490,7 @@ export async function GET(req: NextRequest) {
   const target = await resolveTarget(scope, prNumber, url.searchParams.get('workspaceId'));
   if ('error' in target) return bad(target.error, target.status, target.candidates ? { candidates: target.candidates } : {});
   const { workspace } = target;
+  if (account && !taskScopeAllowsWorkspace(account, workspace.id)) return bad('PR not found', 404);
 
   const waitFor: PrReviewWaitFor = url.searchParams.get('waitFor') === 'merge' ? 'merge' : 'verdict';
   const requestedWait = Number(url.searchParams.get('waitSeconds') ?? 0);

@@ -392,6 +392,45 @@ describe('buildMissionContext', () => {
     expect(d).not.toContain('to avoid branch conflicts');
   });
 
+  it('an active prompts row replaces the sequencing text; the branch still fills it', async () => {
+    const { installPrompts, resetPrompts } = await import('@buildd/core/prompts');
+    const { promptContentHash } = await import('@buildd/core/prompts-source');
+    const { MISSION_PROMPT_IDS } = await import('./mission-prompts');
+    const body = 'PRIVATE sequencing guidance{{workingBranch}}.';
+    resetPrompts();
+    installPrompts([{ id: MISSION_PROMPT_IDS.sequencingIntegration, version: 3, body, contentHash: promptContentHash(body) }]);
+    try {
+      mockSequencingMission({ integrationBranchEnabled: true, workingBranch: 'mission/ship-the-thing-1a2b3c4d' });
+      const d = (await buildMissionContext('obj-seq'))!.description;
+      expect(d).toContain('PRIVATE sequencing guidance (`mission/ship-the-thing-1a2b3c4d`).');
+      expect(d).not.toContain('unattended');
+    } finally {
+      resetPrompts();
+    }
+  });
+
+  it('a prompts row missing the placeholder is rejected and the public sequencing text runs', async () => {
+    const { installPrompts, resetPrompts, promptFallbackCounts } = await import('@buildd/core/prompts');
+    const { promptContentHash } = await import('@buildd/core/prompts-source');
+    const { MISSION_PROMPT_IDS } = await import('./mission-prompts');
+    const body = 'PRIVATE sequencing guidance with no branch.';
+    resetPrompts();
+    installPrompts([{ id: MISSION_PROMPT_IDS.sequencingIntegration, version: 1, body, contentHash: promptContentHash(body) }]);
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      mockSequencingMission({ integrationBranchEnabled: true, workingBranch: 'mission/ship-the-thing-1a2b3c4d' });
+      const d = (await buildMissionContext('obj-seq'))!.description;
+      expect(d).not.toContain('PRIVATE');
+      expect(d).toContain('mission/ship-the-thing-1a2b3c4d');
+      expect(d).toContain('unattended');
+      expect(promptFallbackCounts()[MISSION_PROMPT_IDS.sequencingIntegration].invalid).toBe(1);
+    } finally {
+      console.warn = warn;
+      resetPrompts();
+    }
+  });
+
   it('surfaces nextSuggestion from completed tasks', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-5',

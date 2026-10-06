@@ -6,6 +6,12 @@ import { afterEach, describe, expect, it, mock } from 'bun:test';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 mock.module('next/navigation', () => ({ useRouter: () => ({ refresh() {} }) }));
 
+const mockFetch = mock(async () => ({
+  ok: true,
+  json: async () => ({ maxConcurrentWorkers: 5 }),
+}));
+globalThis.fetch = mockFetch as any;
+
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { default: RunnerTokensSection } = await import('./RunnerTokensSection');
@@ -55,5 +61,51 @@ describe('RunnerTokensSection token details', () => {
     expect(host.textContent).not.toContain('Capabilities');
     await expandToken();
     expect(host.textContent).toContain('Capabilities');
+  });
+
+  it('shows maxConcurrentWorkers in the detail', async () => {
+    await mount({ maxConcurrentWorkers: 7 });
+    await expandToken();
+    expect(host.textContent).toContain('Workers: 7');
+  });
+
+  it('shows maxConcurrentWorkers as editable when canManageHostRunner is true', async () => {
+    await mount({ maxConcurrentWorkers: 3, canManageHostRunner: true });
+    await expandToken();
+
+    expect(host.textContent).toContain('Workers: 3');
+
+    // Verify the Workers display is clickable (cursor-pointer class applied)
+    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.includes('Workers: 3'));
+    expect(workersSpan).toBeTruthy();
+    expect((workersSpan as HTMLElement).className).toContain('cursor-pointer');
+
+    // Click on the Workers display to enter edit mode
+    await act(async () => {
+      workersSpan?.click();
+    });
+
+    // Verify the input field is now present
+    const input = host.querySelector<HTMLInputElement>('input[type="number"]');
+    expect(input).toBeTruthy();
+    expect(input?.value).toBe('3');
+    expect(input?.min).toBe('1');
+    expect(input?.max).toBe('50');
+  });
+
+  it('does not allow editing maxConcurrentWorkers when canManageHostRunner is false', async () => {
+    await mount({ maxConcurrentWorkers: 3, canManageHostRunner: false });
+    await expandToken();
+
+    const workersSpan = [...host.querySelectorAll('span')].find((s) => s.textContent?.startsWith('Workers: 3'));
+    expect(workersSpan).toBeTruthy();
+
+    await act(async () => {
+      workersSpan?.click();
+    });
+
+    // Verify the input field is NOT present
+    const input = host.querySelector<HTMLInputElement>('input[type="number"]');
+    expect(input).toBeFalsy();
   });
 });

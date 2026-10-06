@@ -877,11 +877,8 @@ export interface QuestionWhere {
   file?: string;
 }
 
-/** Claim-time marker for the question-gate experiment (see ClaimTasksResponse). */
+/** Claim-time capability marker for the question gate (see ClaimTasksResponse). */
 export interface QuestionGateMarker {
-  experimentId: string;
-  policyVersion: number;
-  arm: 'control' | 'treatment';
   /** Pushbacks per worker before a question is sent as-is. */
   maxPushbacks: number;
 }
@@ -1357,8 +1354,7 @@ export interface ClaimTasksInput {
   claimAcrossAccessible?: boolean;
   /**
    * Protocol features this runner build implements, so the server does not send
-   * a payload field an older runner would silently ignore. See
-   * CBM_WITHHOLD_RUNNER_FEATURE in @buildd/core/cbm-access-experiment.
+   * a payload field an older runner would silently ignore.
    */
   runnerFeatures?: string[];
   /**
@@ -1451,6 +1447,8 @@ export type ClaimTaskExclusionCode =
   | 'role_mismatch'
   | 'runner_cooldown'
   | 'workspace_cap'
+  /** The workspace's work runs on the other executor (gitConfig.executor: cloud vs host). */
+  | 'workspace_executor'
   | 'path_overlap'
   /** Codex task and this caller can run neither Codex nor its credential. */
   | 'capability_mismatch'
@@ -1511,6 +1509,17 @@ export interface ClaimDiagnostics {
     routing_paused?: number;
     /** Task already had a live worker when the atomic insert ran (dup guard). */
     duplicate_worker?: number;
+    /**
+     * Retry attempt cancelled instead of claimed: another fix attempt in its
+     * retry family is already open (one open retry per subject).
+     */
+    sibling_retry_open?: number;
+    /**
+     * Claim planner in `apply` mode ordered this task behind a picked, in-flight
+     * or open-PR node it would collide with. Replaces the per-poll
+     * path_overlap / advisory_manifest deferral for that task.
+     */
+    ordered_behind?: number;
     /** Codex task deferred: the workspace's one Codex slot is already taken. */
     codex_single_flight?: number;
     /** Resolved model needs a newer Claude Code CLI than this runner reports. */
@@ -1583,6 +1592,18 @@ export interface PendingCredentialRefresh {
   expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
 }
 
+/**
+ * GET /api/workers/[id]/prompt-bundles — the claim response's role and skill
+ * payload, resolved again for a session resumed by a runner that no longer
+ * holds it (restart, park → reattach). Each field is absent when the task has
+ * nothing of that kind.
+ */
+export interface WorkerPromptBundlesResponse {
+  skillBundles?: SkillBundle[];
+  roleConfig?: RoleConfig;
+  roleInstructions?: RoleInstructions;
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -1591,12 +1612,6 @@ export interface ClaimTasksResponse {
     task: Task;
     skillBundles?: SkillBundle[];
     childResults?: Array<{ id: string; title: string; status: string; result: TaskResult | null }>;
-    /**
-     * Set when the task is enrolled in a running `cbm_access` experiment.
-     * `withheld: true` means the runner must run it WITHOUT codebase-memory:
-     * no mount, no steering, every CBM tool denied.
-     */
-    cbmExperiment?: { experimentId: string; policyVersion: number; arm: 'control' | 'treatment'; withheld: boolean };
     /**
      * Set when the team runs a `question_gate` experiment and the runner sent
      * the `question_gate` feature. The runner then routes AskUserQuestion
@@ -2148,6 +2163,23 @@ export interface VisualReviewCaptureGap {
   round: number;
 }
 
+/**
+ * A cell stuck "awaiting a new screenshot" after its fix merged, whose place
+ * (route, viewport and state) a different cell — another variant key —
+ * captured after the merge: a later round often re-shoots only the routes it
+ * fixed with no title collision, so the recapture lands in a sibling cell
+ * instead of this one's history. Hidden from `cells`/`queue`/the summary
+ * counts; kept here for audit (docs/design/visual-qa-human-review.md).
+ */
+export interface VisualReviewResolvedElsewhere {
+  key: string;
+  route: string;
+  viewport: VisualQaViewport;
+  variant: string | null;
+  /** The cell key whose current shot, captured after the merge, resolves this one. */
+  resolvedBy: string;
+}
+
 /** One audit screenshot, as every surface renders it. */
 export interface VisualReviewShot {
   /** The artifact id. */
@@ -2372,6 +2404,8 @@ export interface VisualReviewModel {
   superseded?: VisualReviewSupersededShot[];
   /** Wrong-ref shots the auditor still has to recapture. Never in `cells` or `queue`. */
   captureGaps?: VisualReviewCaptureGap[];
+  /** Cells resolved by a later round's capture of the same place under a different variant. Never in `cells` or `queue`. */
+  resolvedElsewhere?: VisualReviewResolvedElsewhere[];
   generatedAt: string;
 }
 
@@ -3059,7 +3093,7 @@ export interface GateReasonFamily {
 
 export type ExperimentStatus = 'draft' | 'running' | 'paused' | 'concluded';
 export type ExperimentVisibility = 'admins' | 'team';
-export type ExperimentKind = 'model_routing' | 'cbm_access' | 'heartbeat_triage' | 'question_gate';
+export type ExperimentKind = 'model_routing' | 'heartbeat_triage' | 'question_gate';
 
 /** An `experiments` row as the API returns it. Dates are ISO strings. */
 export interface Experiment {
@@ -3180,6 +3214,10 @@ export interface LaneBar {
   /** Role colour from the role's own data; null = neutral. */
   color: string | null;
   roleSlug?: string | null;
+  /** The role's display name ("Builder"), for the hover card. */
+  roleName?: string | null;
+  /** The PR this run opened, if any. */
+  prNumber?: number | null;
   state: 'running' | 'waiting' | 'done' | 'failed';
   href?: string | null;
 }
@@ -3367,7 +3405,13 @@ export interface ManifestCoverageCounts {
   /** Fraction in [0, 1]; null for an empty population. */
   concreteShare: number | null;
 }
+export interface CoordinationDecisionCapability {
+  workspaceId: string;
+  capability: string;
+  status: 'enabled' | 'capability_disabled';
+}
 export interface ManifestCoverageStats extends CoordinationMetricFilters, ManifestCoverageCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   groups: Array<ManifestCoverageCounts & { workspaceId: string; missionId: string | null; kind: string | null }>;
 }
 export interface PathClaimCallCounts {
@@ -3377,6 +3421,7 @@ export interface PathClaimCallCounts {
   rejected: number;
 }
 export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCallCounts {
+  decisionCapabilities?: CoordinationDecisionCapability[];
   calls: number;
   bySurface: Array<PathClaimCallCounts & { surface: string; firstRecordedAt: string | null }>;
   coverage: { completeHistoricalCalls: boolean; note: string };
@@ -3384,6 +3429,55 @@ export interface PathClaimStats extends CoordinationMetricFilters, PathClaimCall
 export interface CoordinationStats {
   manifestCoverage: ManifestCoverageStats;
   pathClaims: PathClaimStats;
+}
+/**
+ * Aggregate counts over the orchestration decision ledger
+ * (`orchestration_decisions`, `orchestration_manifest_predictions`) — the
+ * DB-free answer to "is this decision shadow collecting evidence?".
+ * Served by `GET /api/stats/coordination?metric=orchestrationDecisions`.
+ */
+export interface OrchestrationDecisionCounts {
+  total: number;
+  applied: number;
+  suggested: number;
+  fallback: number;
+  /** Rows whose task has an `orchestration_touch_labels` row (an outcome label). */
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionGroup extends OrchestrationDecisionCounts {
+  capability: string;
+  decisionId: string;
+  fingerprint: string;
+  candidatePolicyVersion: string;
+  experimentArm: string;
+  mode: string;
+  firstAt: string | null;
+  lastAt: string | null;
+}
+export interface OrchestrationPredictionCounts {
+  total: number;
+  complete: number;
+  unknownScope: number;
+  allApplied: number;
+  labelled: number;
+  unlabelled: number;
+}
+export interface OrchestrationDecisionStats extends CoordinationMetricFilters {
+  decisionCapabilities: CoordinationDecisionCapability[];
+  decisions: OrchestrationDecisionCounts & {
+    firstAt: string | null;
+    lastAt: string | null;
+    byGroup: OrchestrationDecisionGroup[];
+    /** `day` is a UTC calendar date (YYYY-MM-DD). */
+    byDay: Array<OrchestrationDecisionCounts & { day: string; capability: string }>;
+    byReason: Array<{ capability: string; status: string; reason: string | null; total: number }>;
+  };
+  manifestPredictions: OrchestrationPredictionCounts & {
+    byDay: Array<OrchestrationPredictionCounts & { day: string }>;
+    byStopReason: Array<{ stopReason: string; total: number }>;
+  };
+  coverage: { note: string };
 }
 
 // ── Workspace onboarding (docs/design/workspace-onboarding.md §2) ──────────
@@ -3445,4 +3539,54 @@ export interface WorkspaceReadinessReport {
   skill: 'workspace-onboarding';
   /** The git tree response was truncated. */
   truncated: boolean;
+}
+
+/** One benchmark set's scores in a prompt eval run. Never carries prompt text. */
+export interface PromptEvalResultSummary {
+  benchmarkSet: string;
+  promptId: string;
+  promptSource: 'private' | 'public default';
+  /** Row version; null for a public default. */
+  promptRowVersion: number | null;
+  /** First 12 hex of the sha256 of the text scored. */
+  promptHash: string;
+  promptVersion: string;
+  /**
+   * The model that scored it, or for `no_eval_set` the model that serves it in
+   * production (nothing was called). Null for a dry run.
+   */
+  model: string | null;
+  /** `no_eval_set`: no benchmark set or no labelled cases; every score is null. `no_cases` is the older name. */
+  status: 'scored' | 'dry_run' | 'no_eval_set' | 'no_cases';
+  cases: number;
+  accuracy: number | null;
+  baselineAccuracy: number | null;
+  coverageAt90: number | null;
+  accuracyAt90: number | null;
+  errors: number;
+  notRun: number;
+  costUsd: number | null;
+}
+
+/** One run in `GET /api/admin/prompt-evals`. */
+export interface PromptEvalRunSummary {
+  id: string;
+  teamId: string | null;
+  /** `cron`: a run from the retired weekly schedule. */
+  trigger: 'push' | 'cron' | 'manual';
+  status: 'running' | 'passed' | 'failed' | 'refused' | 'skipped';
+  promptsRef: string | null;
+  evalModel: string | null;
+  /** The model the team's live decisions use. */
+  prodModel: string | null;
+  modelMismatch: boolean;
+  /** Set only when a per-run override scored on another model than production: the scores do not predict production behaviour. */
+  modelMismatchNote?: string;
+  dryRun: boolean;
+  loadedPrompts: number | null;
+  costUsd: number | null;
+  problems: string[] | null;
+  startedAt: string;
+  finishedAt: string | null;
+  results: PromptEvalResultSummary[];
 }

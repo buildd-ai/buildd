@@ -1026,7 +1026,7 @@ export default async function MissionDetailPage({
           </div>
           <p className="text-[13px] text-text-secondary">
             {missionIntegrationPr.state === 'not_opened'
-              ? `Task PRs merge into this mission's integration branch. No PR from that branch into the target branch exists yet, so none of this mission's work is on the target branch.`
+              ? `Task PRs merge into the integration branch. No PR to the target branch is open, so none of this work has shipped.`
               : missionIntegrationPr.state === 'merged'
                 ? `This mission's work reached the target branch through one PR from its integration branch.`
                 : `The mission's review gate: one PR from the integration branch into the target branch. The merge policy applies to this PR only.`}
@@ -1138,7 +1138,7 @@ export default async function MissionDetailPage({
           <div className="mb-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
             <div className="flex items-start gap-2">
               <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Needs your decision
+                Decision needed
               </span>
               <span className="min-w-0 text-[12px] text-text-secondary [overflow-wrap:anywhere]">
                 {surfaceAuditBlocked ? surfaceAuditHeadline(surfaceAuditPaths.length) : readingCopy}
@@ -1368,6 +1368,7 @@ export default async function MissionDetailPage({
       autoVerify={autoVerifyFlag}
       readonly={isTerminal}
       failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+      missionPrCount={prCount}
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   );
@@ -1385,6 +1386,7 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
     />
   );
   const back = mastheadBack(from, breadcrumb.links);

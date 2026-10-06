@@ -1,10 +1,8 @@
 /**
  * Per-worker tool-call histogram.
  *
- * The CBM counters (cbmToolCounts / cbmFileAccessCounts) only bucket
- * `mcp__codebase-memory__*` and Read/Grep/Glob, so Edit/Write/Bash/Task and
- * every non-CBM MCP server were invisible to any usage rollup — and
- * `workers.mcpCalls` keeps only the last 100 calls, so even MCP totals were a
+ * Before this, Edit/Write/Bash/Task and most MCP servers were invisible to
+ * any usage rollup — and `workers.mcpCalls` keeps only the last 100 calls, so even MCP totals were a
  * floor rather than a count. This records one increment per tool_use block
  * under its exact SDK tool name: counts, not events, so nothing is truncated
  * and the payload stays a few hundred bytes regardless of session length.

@@ -10,7 +10,7 @@ let deleteCalls = 0;
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: {
+    query: { teams: { findFirst: async () => null },
       teamMembers: { findFirst: mockTeamMembersFindFirst },
       teamInvitations: { findFirst: mockTeamInvitationsFindFirst },
     },
@@ -21,7 +21,7 @@ mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ type: 'eq', a, b }),
   and: (...args: any[]) => ({ type: 'and', args }),
 }));
-mock.module('@buildd/core/db/schema', () => ({
+mock.module('@buildd/core/db/schema', () => ({ teams: { id: 'teams.id', permissionOverrides: 'teams.permission_overrides' },
   teamInvitations: { id: 'id', teamId: 'teamId' },
   teamMembers: { teamId: 'teamId', userId: 'userId' },
 }));

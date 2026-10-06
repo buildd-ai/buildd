@@ -120,6 +120,54 @@ describe('buildMissionListCard — a PR that just went green is merging, not an 
   });
 });
 
+describe('buildMissionListCard — a cancelled task never draws as a progress unit (Jev repro)', () => {
+  // Regression: a mission card read "16/17 done, 1 in CI" while the phase
+  // bar drew 18 boxes — one extra dashed "skipped" cell for the cancelled
+  // task that the n/N text had already excluded. The cell collection and the
+  // n/N text must come from the same reducer, so a renderer that only ever
+  // iterates `cells` (PhaseBar, the mini strip) can't draw more units than
+  // the caption claims.
+  const row: ListMissionRow = {
+    id: 'm-jev', title: 'Jev schedules the work', status: 'active', createdAt: new Date(NOW - 3600_000),
+    tasks: [
+      ...Array.from({ length: 16 }, (_, i) => task(`done${i}`, { ...phase(0, 'Work'), status: 'completed', workers: [{ status: 'completed' }] })),
+      task('ci', { ...phase(0, 'Work'), status: 'completed', workers: [{ status: 'completed', prNumber: 99, prUrl: 'https://example.test/pr/99', prLifecycleStatus: 'ci_running' }] }),
+      task('cancelled', { ...phase(0, 'Work'), status: 'cancelled' }),
+    ],
+  };
+  const card = build(row);
+  const cells = card.phases.flatMap(p => p.cells);
+
+  it('reads 16/17 with exactly 17 countable glyphs, one of them not done', () => {
+    expect(card.counts).toMatchObject({ done: 16, total: 17 });
+    expect(cells).toHaveLength(17);
+    expect(cells.filter(c => c.state !== 'done')).toHaveLength(1);
+    expect(cells.some(c => c.taskId === 'cancelled')).toBe(false);
+  });
+
+  it('every phase.cells.length equals its own phase.total, and the sum equals the card total', () => {
+    for (const p of card.phases) expect(p.cells).toHaveLength(p.total);
+    expect(card.phases.reduce((n, p) => n + p.total, 0)).toBe(card.counts.total);
+  });
+
+  it('counting done cells across phases matches counts.done', () => {
+    expect(cells.filter(c => c.state === 'done')).toHaveLength(card.counts.done);
+  });
+
+  it('a phase made entirely of cancelled tasks is dropped, not rendered empty', () => {
+    const allCancelled: ListMissionRow = {
+      id: 'm-jev2', title: 'All cancelled in one phase', status: 'active',
+      tasks: [
+        task('a', { ...phase(0, 'Dropped'), status: 'cancelled' }),
+        task('b', { ...phase(0, 'Dropped'), status: 'cancelled' }),
+        task('c', { ...phase(1, 'Kept'), status: 'completed', workers: [{ status: 'completed' }] }),
+      ],
+    };
+    const card2 = build(allCancelled);
+    expect(card2.phases.map(p => p.label)).toEqual(['Kept']);
+  });
+});
+
 describe('buildMissionListCard — recurring, held and done', () => {
   it('a recurring mission is Idle between ticks, with its cadence, runs and last summary', () => {
     const tick = (id: string, hoursAgo: number, over: Partial<ListTaskRow> = {}) =>

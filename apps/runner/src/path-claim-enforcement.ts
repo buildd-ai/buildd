@@ -25,6 +25,7 @@
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import { isAbsolute, relative, resolve, sep } from 'path';
+import { branchOfRemoteRef, remoteBranchFetchArgs } from './git-clone';
 import {
   resolveTaskPrBase,
   missionIntegrationBase,
@@ -376,13 +377,16 @@ export function resolvePrBaseRef(opts: {
  */
 export function refreshBaseRef(worktreePath: string, baseRef: string | null | undefined, timeoutMs = 15_000): Promise<boolean> {
   if (!baseRef || !baseRef.startsWith('origin/')) return Promise.resolve(false);
-  const branch = baseRef.slice('origin/'.length);
+  const branch = branchOfRemoteRef(baseRef);
+  if (!branch) return Promise.resolve(false);
   if (typeof childProcess.execFile !== 'function') return Promise.resolve(false);
   return new Promise(resolvePromise => {
     try {
       childProcess.execFile(
         'git',
-        ['fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+        // A depth when a shallow (cloud) clone does not have the branch yet:
+        // an undeepened fetch of a new ref there downloads its whole history.
+        remoteBranchFetchArgs(worktreePath, branch),
         { cwd: worktreePath, timeout: timeoutMs },
         (err) => resolvePromise(!err),
       );

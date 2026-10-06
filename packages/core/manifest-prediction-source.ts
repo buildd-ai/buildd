@@ -16,18 +16,26 @@
  *    creation; its diff paths come from `pr` corpus chunks stamped before the
  *    same cutoff. At creation time this is trivially true; it matters for any
  *    replay over historical tasks, which reuses this exact code path.
- *  - **CBM**: a bounded adapter seam. codebase-memory runs only on runners (a
- *    stdio server per worktree) and the server has no revision-pinned index —
- *    the Step E finding (apps/web/src/lib/semantic-refresh.ts). The server
- *    adapter therefore answers `unavailable`, coverage is recorded as
- *    `neighbour_diff_only`, and candidate omissions are unknown scope.
+ *  - **Tree-pinned** (knowledge-base: buildd/design/jev-scheduling.md §1d):
+ *    the repository tree at the task's base commit, read through the
+ *    workspace installation as the knowledge-ingest fallback does and cached
+ *    per commit, ranked by the workspace code corpus. Coverage is
+ *    `tree_pinned`; a tree or corpus failure degrades to `neighbour_diff_only`
+ *    with candidate omissions unknown scope.
+ *
+ * ── Set confidence and size (jev-scheduling §3) ──────────────────────────
+ *  - `setConfidence`: the product of the pick confidences
+ *    (`setConfidenceOf`), a starting point the readout recalibrates.
+ *  - `expectedSize`: median files and session minutes of the same
+ *    neighbours (`./task-size-estimate.ts`); null with fewer than k.
  *
  * One overall deadline (5s default) covers access, retrieval and every pick.
  */
 import { and, eq, gte, inArray, isNotNull, lt, sql } from 'drizzle-orm';
 import { FAILED_WORKER_STATUSES } from '@buildd/shared';
 import { db } from './db/client';
-import { orchestrationManifestPredictions, workers } from './db/schema';
+import { githubInstallations, githubRepos, orchestrationManifestPredictions, workers, workspaces } from './db/schema';
+import { getInstallationToken } from './github-installation-auth';
 import { buildNamespace } from './knowledge-store/pg-vector-store';
 import { inferPathsFromText } from './task-path-inference';
 import { hasConcretePathManifest } from './path-overlap';
@@ -40,6 +48,9 @@ import {
   type OrchestrationDecisionDeps,
   type OrchestrationDecisionRow,
 } from './orchestration-decision';
+import { loadTaskPrDiffs, type LoadTaskPrDiffs } from './task-pr-diffs';
+import { estimateTaskSize, type EstimateTaskSizeArgs, type ExpectedTaskSize } from './task-size-estimate';
+import { estimateExpectedSize, type EstimateExpectedSizeDeps } from './task-size-bucket-source';
 import type { DecisionAccess } from './decision-client';
 import { manifestPickIdentity, resolveApplyingFraction, type PromotionEvidence } from './orchestration-promotion';
 import {
@@ -48,15 +59,16 @@ import {
   MANIFEST_DECISION_ID,
   MANIFEST_PICK_MODE,
   MANIFEST_PICK_QUESTION,
-  MANIFEST_PROMPT_VERSION,
+  manifestPromptVersion,
   buildManifestCandidates,
   predictionUnknownScope,
   resolvePickCap,
   runRepeatedManifestChoice,
-  type CbmCandidateResult,
   type ManifestCandidateSet,
+  type ManifestPick,
   type NeighbourEvidence,
   type RepeatedChoiceResult,
+  type TreeCandidateResult,
 } from './manifest-prediction';
 
 const CAPABILITY = 'orchestration_manifest' as const;
@@ -66,38 +78,163 @@ const FAILED_STATUSES: ReadonlySet<string> = new Set<string>(FAILED_WORKER_STATU
 
 /** Neighbour retrieval config: the task-area defaults, diff source, a little wider. Not the experiment's runtime config. */
 export const MANIFEST_NEIGHBOUR_CONFIG: TaskAreaConfig = { ...TASK_AREA_FALLBACK, topK: 10, pathSource: 'diff' };
-/** Bound on CBM paths requested per prediction. */
-export const MANIFEST_CBM_CANDIDATE_LIMIT = 64;
+/** Bound on corpus-ranked files requested per prediction (tree-pinned source). */
+export const MANIFEST_TREE_RANKED_LIMIT = 64;
 /** Task text sent to the model, per field. */
 export const MANIFEST_STATE_DESCRIPTION_CHARS = 1_500;
 
-// ── CBM adapter seam ─────────────────────────────────────────────────────────
+// ── Tree-pinned candidate source (jev-scheduling §1d) ────────────────────────
 
-export interface CbmCandidateRequest {
+export interface TreeCandidateRequest {
   workspaceId: string;
-  /** The revision candidates must exist at (base ref/SHA). Null ⇒ nothing pinned. */
-  revision: string | null;
+  /** The branch or SHA the task will base on. Null ⇒ the repository's default branch. */
+  baseRef: string | null;
   seedText: string;
+  /** Corpus-ranked files requested. */
   limit: number;
   signal?: AbortSignal;
 }
 
-export interface CbmCandidateAdapter {
-  lookup(req: CbmCandidateRequest): Promise<CbmCandidateResult>;
+export interface TreeCandidateAdapter {
+  lookup(req: TreeCandidateRequest): Promise<TreeCandidateResult>;
 }
 
-export const UNAVAILABLE_CBM_CANDIDATE_ADAPTER: CbmCandidateAdapter = {
-  async lookup() {
-    return {
-      status: 'unavailable',
-      reason: 'no revision-pinned codebase index is reachable from the server (codebase-memory runs on runners only)',
-    };
-  },
-};
+/** A workspace's repository and an authenticated GitHub GET bound to it. */
+export interface TreeRepoAccess {
+  repo: string;
+  github: (path: string) => Promise<any>;
+}
 
-/** The adapter the deployed server uses. A provider answering at the requested revision is the one change needed. */
-export function getServerCbmCandidateAdapter(): CbmCandidateAdapter {
-  return UNAVAILABLE_CBM_CANDIDATE_ADAPTER;
+export interface CodeCorpusHit {
+  sourcePath: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TreeCandidateAdapterDeps {
+  /** Null when the workspace has no linked repository or installation. */
+  resolveRepo: (workspaceId: string, signal?: AbortSignal) => Promise<TreeRepoAccess | null>;
+  /** The workspace `code` corpus (what `recall scope=code` reads), best first. */
+  queryCode: (workspaceId: string, text: string, topK: number) => Promise<CodeCorpusHit[]>;
+  /** Tree file lists keyed `<repo>@<sha>`. A commit's tree never changes, so entries never go stale. */
+  cache?: Map<string, readonly string[]>;
+  cacheMax?: number;
+}
+
+/** Trees kept per server instance. One large repo's tree is a few MB of paths at most. */
+export const TREE_CACHE_MAX_COMMITS = 16;
+const FULL_SHA = /^[0-9a-f]{40}$/i;
+const encodeRef = (ref: string) => encodeURIComponent(ref);
+
+/**
+ * Candidates from the repository tree at the task's base commit, ranked by the
+ * workspace code corpus. The ref is resolved to a commit SHA first, so the
+ * cache is per commit, not per branch. Any failure (no installation, a failed
+ * or truncated tree read, a corpus error) answers `unavailable` and the caller
+ * degrades to neighbour-diff-only coverage.
+ */
+export function createTreeCandidateAdapter(deps: TreeCandidateAdapterDeps): TreeCandidateAdapter {
+  const cache = deps.cache ?? new Map<string, readonly string[]>();
+  const cacheMax = deps.cacheMax ?? TREE_CACHE_MAX_COMMITS;
+  const unavailable = (reason: string): TreeCandidateResult => ({ status: 'unavailable', reason: reason.slice(0, 200) });
+
+  const readTree = async (access: TreeRepoAccess, sha: string): Promise<readonly string[]> => {
+    const key = `${access.repo}@${sha}`;
+    const hit = cache.get(key);
+    if (hit) {
+      cache.delete(key);
+      cache.set(key, hit);
+      return hit;
+    }
+    const body = await access.github(`/repos/${access.repo}/git/trees/${sha}?recursive=1`);
+    if (body?.truncated) throw new Error('tree listing truncated by GitHub: absence at the commit cannot be verified');
+    if (!Array.isArray(body?.tree)) throw new Error('unexpected tree response');
+    const paths = (body.tree as Array<{ path?: unknown; type?: unknown }>)
+      .filter(e => e?.type === 'blob' && typeof e.path === 'string')
+      .map(e => e.path as string)
+      .sort();
+    cache.set(key, paths);
+    while (cache.size > cacheMax) cache.delete(cache.keys().next().value as string);
+    return paths;
+  };
+
+  return {
+    async lookup(req) {
+      try {
+        const access = await deps.resolveRepo(req.workspaceId, req.signal);
+        if (!access) return unavailable('no GitHub installation or repository linked to the workspace');
+        const resolveSha = async (): Promise<string> => {
+          const ref = req.baseRef?.trim();
+          if (ref && FULL_SHA.test(ref)) return ref.toLowerCase();
+          let branch = ref;
+          if (!branch) {
+            const repo = await access.github(`/repos/${access.repo}`);
+            branch = typeof repo?.default_branch === 'string' ? repo.default_branch : '';
+            if (!branch) throw new Error('could not resolve the default branch');
+          }
+          const commit = await access.github(`/repos/${access.repo}/commits/${encodeRef(branch)}`);
+          if (typeof commit?.sha !== 'string') throw new Error('could not resolve the base commit');
+          return commit.sha;
+        };
+        const ranking = req.seedText.trim()
+          ? deps.queryCode(req.workspaceId, req.seedText, req.limit)
+          : Promise.resolve([] as CodeCorpusHit[]);
+        const [sha, hits] = await Promise.all([
+          resolveSha(),
+          ranking.catch((err) => { throw new Error(`code corpus: ${String((err as Error)?.message ?? err)}`); }),
+        ]);
+        const paths = await readTree(access, sha);
+        const ranked = [...new Set(hits
+          .map(h => h.sourcePath ?? (typeof h.metadata?.path === 'string' ? h.metadata.path : null))
+          .filter((p): p is string => typeof p === 'string' && p !== ''))].slice(0, req.limit);
+        return { status: 'ok', revision: sha, paths, ranked };
+      } catch (err) {
+        return unavailable(`tree source: ${String((err as Error)?.message ?? err)}`);
+      }
+    },
+  };
+}
+
+const SERVER_TREE_CACHE = new Map<string, readonly string[]>();
+
+async function resolveServerRepo(workspaceId: string, signal?: AbortSignal): Promise<TreeRepoAccess | null> {
+  const workspace = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
+  if (!workspace?.githubInstallationId) return null;
+  let repo = workspace.repo ?? null;
+  if (workspace.githubRepoId) {
+    const linked = await db.query.githubRepos.findFirst({ where: eq(githubRepos.id, workspace.githubRepoId) });
+    repo = linked?.fullName ?? repo;
+  }
+  const installation = await db.query.githubInstallations.findFirst({ where: eq(githubInstallations.id, workspace.githubInstallationId) });
+  if (!repo || !installation) return null;
+  const token = await getInstallationToken(installation.installationId);
+  return {
+    repo,
+    github: async (path: string) => {
+      const response = await fetch(`https://api.github.com${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+        signal: signal ?? AbortSignal.timeout(ORCHESTRATION_DECISION_DEADLINE_MS),
+      });
+      if (!response.ok) throw new Error(`GitHub read failed (${response.status})`);
+      return response.json();
+    },
+  };
+}
+
+async function queryServerCodeCorpus(workspaceId: string, text: string, topK: number): Promise<CodeCorpusHit[]> {
+  const store = await defaultStore();
+  const results = await store.query(buildNamespace(workspaceId, 'code'), {
+    text,
+    topK,
+    filters: { corpus: 'code' },
+    useGraph: false,
+    trackHits: false,
+  });
+  return results.map(r => ({ sourcePath: r.sourcePath, metadata: r.metadata }));
+}
+
+/** The tree-pinned source the deployed server uses: the workspace installation's tree read, cached per commit. */
+export function getServerTreeCandidateAdapter(): TreeCandidateAdapter {
+  return createTreeCandidateAdapter({ resolveRepo: resolveServerRepo, queryCode: queryServerCodeCorpus, cache: SERVER_TREE_CACHE });
 }
 
 // ── Neighbour evidence (predicates rendered by the tests) ────────────────────
@@ -212,7 +349,12 @@ export interface CreationManifestDeps {
   onReceipt?: OrchestrationDecisionDeps['onReceipt'];
   recordPrediction?: (row: ManifestPredictionRow) => Promise<void>;
   loadNeighbours?: (args: { workspaceId: string; taskId: string; seedText: string; cutoff: Date; signal: AbortSignal }) => Promise<NeighbourEvidence[]>;
-  cbm?: CbmCandidateAdapter;
+  /** Default: `getServerTreeCandidateAdapter()`. */
+  tree?: TreeCandidateAdapter;
+  /** Expected size from the same neighbours (jev-scheduling §3). Default: `estimateTaskSize`. */
+  estimateSize?: (args: EstimateTaskSizeArgs & { signal: AbortSignal }) => Promise<ExpectedTaskSize | null>;
+  /** The Jev S/M/L fallback when `estimateSize` has fewer than k neighbours (jev-scheduling §3). Default: the real `orchestration_ordering` decision call. */
+  sizeBucketDeps?: EstimateExpectedSizeDeps;
   now?: () => number;
   deadlineMs?: number;
   /** The REQUESTED applying fraction (default `MANIFEST_APPLYING_FRACTION`); the promotion guard grants it. */
@@ -233,7 +375,20 @@ const isConcreteDeclaration = (m: readonly string[] | null | undefined) =>
 
 const RETRIEVAL_DEADLINE = Symbol('retrieval_deadline');
 
-const EMPTY_UNAVAILABLE: CbmCandidateResult = { status: 'unavailable', reason: 'not consulted' };
+/**
+ * How sure the model is of the whole selected set (jev-scheduling §3): the
+ * product of its pick confidences, the DONE pick included. A starting point
+ * the readout recalibrates. Null with no picks, or when any pick has none.
+ */
+export function setConfidenceOf(picks: readonly Pick<ManifestPick, 'confidence'>[]): number | null {
+  if (picks.length === 0) return null;
+  let p = 1;
+  for (const k of picks) {
+    if (typeof k.confidence !== 'number' || !Number.isFinite(k.confidence)) return null;
+    p *= k.confidence;
+  }
+  return p;
+}
 
 export async function predictCreationManifest(
   input: CreationManifestInput,
@@ -258,12 +413,18 @@ export async function predictCreationManifest(
     }
   };
 
-  const rowOf = (c: ManifestCandidateSet, r: RepeatedChoiceResult | null, stop: string, neighbourUnion: string[]): ManifestPredictionRow => ({
+  const rowOf = (
+    c: ManifestCandidateSet,
+    r: RepeatedChoiceResult | null,
+    stop: string,
+    neighbourUnion: string[],
+    expectedSize: ExpectedTaskSize | null = null,
+  ): ManifestPredictionRow => ({
     teamId: input.teamId,
     workspaceId: input.workspaceId,
     taskId: input.taskId,
     decisionId: MANIFEST_DECISION_ID,
-    promptVersion: MANIFEST_PROMPT_VERSION,
+    promptVersion: manifestPromptVersion(),
     candidatePolicyVersion: MANIFEST_CANDIDATE_POLICY_VERSION,
     mode: MANIFEST_PICK_MODE,
     taskCreatedAt: input.createdAt,
@@ -282,6 +443,8 @@ export async function predictCreationManifest(
     pickCap,
     regexPaths,
     neighbourUnionPaths: neighbourUnion,
+    setConfidence: setConfidenceOf(r?.picks ?? []),
+    expectedSize,
     latencyMs: Math.max(0, Math.round(now() - started)),
   });
 
@@ -299,7 +462,7 @@ export async function predictCreationManifest(
     }
     if (!access.ok && access.error.kind === 'capability_disabled') return { skipped: 'capability_disabled' };
 
-    const emptyCandidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours: [], cbm: EMPTY_UNAVAILABLE });
+    const emptyCandidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours: [] });
     if (!access.ok) {
       // Opted in, no key: record the miss; spend nothing on retrieval.
       const row = rowOf(emptyCandidates, null, 'missing_key', []);
@@ -311,14 +474,35 @@ export async function predictCreationManifest(
     const controller = new AbortController();
     const retrieval = (async () => {
       const loadNeighbours = deps.loadNeighbours ?? (async (a) => loadNeighbourEvidence(await defaultStore(), a));
-      const cbm = deps.cbm ?? getServerCbmCandidateAdapter();
-      const [neighbours, cbmResult] = await Promise.all([
+      const tree = deps.tree ?? getServerTreeCandidateAdapter();
+      const estimateSize = deps.estimateSize ?? ((a) => estimateTaskSize(a));
+      const [[neighbours, expectedSize], treeResult] = await Promise.all([
         loadNeighbours({ workspaceId: input.workspaceId, taskId: input.taskId, seedText, cutoff: input.createdAt, signal: controller.signal })
-          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; }),
-        cbm.lookup({ workspaceId: input.workspaceId, revision: input.baseRef ?? null, seedText, limit: MANIFEST_CBM_CANDIDATE_LIMIT, signal: controller.signal })
-          .catch((err): CbmCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),
+          .catch((err) => { console.warn('[manifest-prediction] neighbour lookup failed:', (err as Error)?.message ?? err); return [] as NeighbourEvidence[]; })
+          // The size reads the same neighbours: no second retrieval. Fewer
+          // than k ⇒ the Jev S/M/L bucket fallback (jev-scheduling §3).
+          .then(async (found): Promise<[NeighbourEvidence[], ExpectedTaskSize | null]> => [
+            found,
+            await estimateExpectedSize({
+              workspaceId: input.workspaceId,
+              taskId: input.taskId,
+              seedText,
+              cutoff: input.createdAt,
+              neighbourTaskIds: found.map(n => n.taskId),
+              signal: controller.signal,
+              teamId: input.teamId,
+              missionId: input.missionId ?? null,
+              accountId: input.accountId ?? null,
+              userId: input.userId ?? null,
+              title: input.title,
+              description: input.description ?? null,
+            }, { estimateSize, ...deps.sizeBucketDeps })
+              .catch((err) => { console.warn('[manifest-prediction] size estimate failed:', (err as Error)?.message ?? err); return null; }),
+          ]),
+        tree.lookup({ workspaceId: input.workspaceId, baseRef: input.baseRef ?? null, seedText, limit: MANIFEST_TREE_RANKED_LIMIT, signal: controller.signal })
+          .catch((err): TreeCandidateResult => ({ status: 'unavailable', reason: `adapter error: ${String((err as Error)?.message ?? err).slice(0, 120)}` })),
       ]);
-      return { neighbours, cbmResult };
+      return { neighbours, expectedSize, treeResult };
     })();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const raced = await Promise.race([
@@ -333,8 +517,8 @@ export async function predictCreationManifest(
       return { row };
     }
 
-    const { neighbours, cbmResult } = raced;
-    const candidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours, cbm: cbmResult });
+    const { neighbours, expectedSize, treeResult } = raced;
+    const candidates = buildManifestCandidates({ cutoff: input.createdAt, neighbours, tree: treeResult, namedPaths: regexPaths });
     // Same-task neighbour-union baseline over the same leakage-filtered neighbours.
     const pastNeighbours = neighbours
       .filter(n => n.completedAt && n.completedAt.getTime() < input.createdAt.getTime())
@@ -373,7 +557,9 @@ export async function predictCreationManifest(
         buildState: async () => ({
           task: { title: input.title, description },
           alreadySelected: args.selected,
-          note: 'Candidates come from files that similar completed tasks actually changed. New files are never listed.',
+          note: candidates.coverage.source === 'tree_pinned'
+            ? 'Candidates are files that exist at the base commit: files similar completed tasks changed, files ranked relevant to the task, and their neighbours. New files are never listed.'
+            : 'Candidates come from files that similar completed tasks actually changed. New files are never listed.',
         }),
         isValidAnswer: args.isValidAnswer,
         cohort: {
@@ -399,7 +585,7 @@ export async function predictCreationManifest(
       }),
     });
 
-    const row = rowOf(candidates, result, result.stop, neighbourUnion);
+    const row = rowOf(candidates, result, result.stop, neighbourUnion, expectedSize);
     await persist(row);
     return { row };
   } catch (err) {
@@ -436,7 +622,7 @@ export function manifestPredictionsWhere(opts: { workspaceId: string; since: Dat
  * task's PR merged), with candidate misses and same-task baselines. Never the
  * caller manifest. Workspace-scoped reads throughout.
  */
-export async function loadManifestPredictionLabels(opts: { workspaceId: string; since: Date; until: Date; limit?: number }) {
+export async function loadManifestPredictionLabels(opts: { workspaceId: string; since: Date; until: Date; limit?: number }, deps: { loadPrDiffs?: LoadTaskPrDiffs } = {}) {
   const { labelsWhere, prWorkersWhere } = await import('./orchestration-ledger-source');
   const { orchestrationTouchLabels } = await import('./db/schema');
   const { labelManifestPrediction } = await import('./manifest-prediction');
@@ -453,29 +639,42 @@ export async function loadManifestPredictionLabels(opts: { workspaceId: string; 
       taskId: orchestrationTouchLabels.taskId,
       workerStatus: orchestrationTouchLabels.workerStatus,
       touchedPaths: orchestrationTouchLabels.touchedPaths,
+      truncated: orchestrationTouchLabels.truncated,
       prNumber: orchestrationTouchLabels.prNumber,
     }).from(orchestrationTouchLabels).where(labelsWhere(scope)),
-    db.select({ taskId: workers.taskId, mergedAt: workers.mergedAt }).from(workers).where(prWorkersWhere(scope)),
+    db.select({ taskId: workers.taskId, mergedAt: workers.mergedAt, prNumber: workers.prNumber, prUrl: workers.prUrl }).from(workers).where(prWorkersWhere(scope)),
   ]);
   const merged = new Set((prs as Array<{ taskId: string | null; mergedAt: Date | null }>).filter(p => p.taskId && p.mergedAt).map(p => p.taskId!));
+  const prRefs = [...prs, ...labels.filter(l => l.prNumber && !prs.some(pr => pr.taskId === l.taskId && pr.prNumber === l.prNumber)).map(l => ({ taskId: l.taskId, prNumber: l.prNumber }))];
+  const prDiffs = await (deps.loadPrDiffs ?? loadTaskPrDiffs)(opts.workspaceId, prRefs);
   return predictions.map(p => {
-    const touched = (labels as Array<{ taskId: string; workerStatus: string; touchedPaths: string[] }>)
-      .filter(l => l.taskId === p.taskId)
+    const diffs = prDiffs.get(p.taskId) ?? [];
+    const taskLabels = (labels as Array<{ taskId: string; workerStatus: string; touchedPaths: string[]; truncated?: boolean }>).filter(l => l.taskId === p.taskId);
+    const reasons = [
+      ...diffs.filter(diff => diff.status !== 'complete').map(diff => diff.status === 'incomplete' ? `pr_diff_${diff.reason}` : 'pr_diff_closed'),
+      ...(taskLabels.some(l => l.truncated && !FAILED_STATUSES.has(l.workerStatus)) ? ['touch_labels_truncated'] : []),
+    ];
+    const touched = taskLabels
       .map(l => ({ paths: l.touchedPaths ?? [], landed: merged.has(p.taskId), failed: FAILED_STATUSES.has(l.workerStatus) }));
+    for (const diff of diffs) if (diff.status === 'complete') touched.push({ paths: diff.files, landed: merged.has(p.taskId), failed: false });
     return {
+      prDiffs: diffs,
       predictionId: p.id,
       taskId: p.taskId,
       decisionId: p.decisionId,
       candidatePolicyVersion: p.candidatePolicyVersion,
       fingerprints: (p.picks as Array<{ fingerprint?: string }>).map(k => k.fingerprint ?? null),
-      label: labelManifestPrediction({
+      label: reasons.length ? {
+        status: 'missing' as const, reason: 'incomplete_observation' as const, reasons,
+        observedPaths: [...new Set(touched.filter(t => !t.failed).flatMap(t => t.paths))].sort(),
+      } : labelManifestPrediction({
         prediction: {
           candidates: p.candidates,
           selected: p.selected,
           picks: p.picks as never,
           stop: p.stopReason as never,
           complete: p.complete,
-          unknownScope: p.unknownScope,
+          unknownScope: p.unknownScope || diffs.some(diff => diff.status !== 'complete'),
           allApplied: p.allApplied,
           decisionId: p.decisionId,
           candidatePolicyVersion: p.candidatePolicyVersion,

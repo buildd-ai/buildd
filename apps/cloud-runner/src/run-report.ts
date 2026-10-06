@@ -18,8 +18,10 @@ import type { CrashReport, RunOutcome } from './lifecycle';
  * 2: adds `repo` (warm restore vs clone) and the restore/fetch/upload durations.
  * 3: adds `resume` (a parked run continued in a new container) and the park durations.
  * 4: adds `schedule` (a `task.scheduled` start: when it was due, when it started).
+ * 5: adds `deferredRetry` (a `deferred`/`start_deferred` outcome's self-scheduled backoff retry).
+ * 6: adds `repo.cacheSkipped`, `repo.bytes.cacheRaw` and `durationsMs.restoreCache` (compressed cache tarball).
  */
-export const RUN_REPORT_VERSION = 4;
+export const RUN_REPORT_VERSION = 6;
 
 /** Artifact key prefix; the full key is `cloud-run-report:<workerId>` (one per claim). */
 export const RUN_REPORT_KEY_PREFIX = 'cloud-run-report';
@@ -46,6 +48,7 @@ export const RUN_PHASES = [
   'restore_warm_start', 'restore_warm_end', 'fetch_start', 'fetch_end',
   'warm_upload_start', 'warm_upload_end',
   'park_start', 'park_end', 'restore_park_start', 'restore_park_end',
+  'restore_cache_start', 'restore_cache_end',
 ] as const;
 export type RunPhase = typeof RUN_PHASES[number];
 export type RunnerPhases = Partial<Record<RunPhase, number>>;
@@ -65,10 +68,49 @@ export function parsePhaseLine(line: string): { phase: RunPhase; at: number } | 
 export const METRIC_LINE_PREFIX = 'BUILDD_METRIC=';
 export const RUN_METRICS = [
   'clone_bytes', 'restore_bytes', 'fetch_bytes', 'cache_bytes', 'snapshot_age_ms', 'warm_upload_bytes',
-  'park_bytes', 'resume_layer',
+  'park_bytes', 'resume_layer', 'warm_repo_bytes', 'cache_raw_bytes',
 ] as const;
 export type RunMetric = typeof RUN_METRICS[number];
 export type RunnerMetrics = Partial<Record<RunMetric, number>>;
+
+export const WARM_UPLOAD_LINE_PREFIX = 'BUILDD_WARM_UPLOAD=';
+export const WARM_UPLOAD_SKIP_REASONS = ['too_large'] as const;
+export type WarmUploadSkipReason = typeof WARM_UPLOAD_SKIP_REASONS[number];
+export type WarmUploadLine = { skipped: WarmUploadSkipReason };
+const WARM_UPLOAD_LINE_RE = /^BUILDD_WARM_UPLOAD=skipped ([a-z_]+)$/;
+
+/** From a `BUILDD_WARM_UPLOAD=skipped <reason>` line, or null. */
+export function parseWarmUploadLine(line: string): WarmUploadLine | null {
+  const m = WARM_UPLOAD_LINE_RE.exec(line.trim());
+  const reason = m?.[1] as WarmUploadSkipReason | undefined;
+  return reason && WARM_UPLOAD_SKIP_REASONS.includes(reason) ? { skipped: reason } : null;
+}
+
+/**
+ * `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>`: a subtree of the dependency
+ * cache (or the whole cache tarball) was left out of the warm upload for
+ * size. `bytes` is its size on disk, `cap` the workspace's warm cap.
+ */
+export const CACHE_SKIPPED_LINE_PREFIX = 'BUILDD_CACHE_SKIPPED=';
+export const CACHE_SKIP_PARTS = ['pnpm-store', 'cache'] as const;
+export type CacheSkipPart = typeof CACHE_SKIP_PARTS[number];
+export type CacheSkippedLine = { part: CacheSkipPart; bytes: number; cap: number };
+const CACHE_SKIPPED_LINE_RE = /^BUILDD_CACHE_SKIPPED=([a-z-]+) (\d{1,16}) (\d{1,16})$/;
+
+/** From a `BUILDD_CACHE_SKIPPED=<part> <bytes> <cap>` line, or null. */
+export function parseCacheSkippedLine(line: string): CacheSkippedLine | null {
+  const m = CACHE_SKIPPED_LINE_RE.exec(line.trim());
+  if (!m || !CACHE_SKIP_PARTS.includes(m[1] as CacheSkipPart)) return null;
+  const bytes = Number(m[2]), cap = Number(m[3]);
+  return Number.isSafeInteger(bytes) && Number.isSafeInteger(cap) ? { part: m[1] as CacheSkipPart, bytes, cap } : null;
+}
+
+function cacheSkipped(v: unknown): CacheSkippedLine | null {
+  const c = v as Partial<CacheSkippedLine> | undefined;
+  if (!c || !CACHE_SKIP_PARTS.includes(c.part as CacheSkipPart)) return null;
+  const ok = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  return ok(c.bytes) && ok(c.cap) ? { part: c.part as CacheSkipPart, bytes: c.bytes!, cap: c.cap! } : null;
+}
 
 export const REPO_SOURCE_LINE_PREFIX = 'BUILDD_REPO_SOURCE=';
 export const REPO_FALLBACK_REASONS = ['disabled', 'no_snapshot', 'unavailable', 'disk', 'restore_failed'] as const;
@@ -148,8 +190,10 @@ export function egressClassForKind(kind: 'anthropic' | 'github' | 'passthrough')
  * Why the handler refused a request. Mirrors outbound.ts RejectReason.
  * `merge_blocked`: a direct PR merge (REST or GraphQL) or a push to a
  * protected branch — see outbound.ts "Merge guard".
+ * `push_not_allowed`: a push or ref write outside the grant's
+ * `pushableBranches` — see outbound.ts "Push allow-list".
  */
-export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'merge_blocked', 'other'] as const;
+export const REJECT_REASONS = ['path', 'unconfigured', 'plain_http', 'port', 'unparseable', 'merge_blocked', 'push_not_allowed', 'other'] as const;
 export type RejectReason = typeof REJECT_REASONS[number];
 /** Mirrors outbound.ts RejectedPathLabel: where a `path` refusal was going, as a fixed label. */
 export const REJECTED_PATH_LABELS = ['api_hello', 'event_logging', 'oauth', 'claude_code_api', 'other_api', 'files', 'batches', 'other_v1', 'other'] as const;
@@ -510,6 +554,23 @@ export function applyEgressEvent(counters: EgressCounters, e: EgressEvent): void
  * end (or failed). A body the container abandons is not reported, so
  * responseBytes is a lower bound. Status and headers are kept.
  */
+/**
+ * Count a response's bytes without putting large bodies through JavaScript.
+ * Model responses (small, and their byte count matters) go through
+ * countResponseBytes. GitHub and passthrough bodies are returned untouched so
+ * they stream natively: a JS pass-through costs Worker CPU per chunk, and a
+ * ~1.5 GB git pack exceeded the invocation's CPU limit, cutting the clone a
+ * few KB before its end. Their bytes come from `content-length` when the
+ * upstream sends one (a chunked git pack sends none, so it is not counted;
+ * `responseBytes` stays a lower bound).
+ */
+export function measureResponse(res: Response, cls: EgressClass, onBytes: (bytes: number) => void): Response {
+  if (cls === 'model') return countResponseBytes(res, onBytes);
+  const len = Number(res.headers.get('content-length'));
+  if (res.headers.has('content-length') && Number.isSafeInteger(len) && len >= 0) onBytes(len);
+  return res;
+}
+
 export function countResponseBytes(res: Response, onDone: (bytes: number) => void): Response {
   if (!res.body) {
     onDone(0);
@@ -545,6 +606,10 @@ export interface RunTimings {
   runnerMetrics?: RunnerMetrics;
   /** From the `BUILDD_REPO_SOURCE=` line. */
   repoSource?: RepoSourceLine;
+  /** From a `BUILDD_WARM_UPLOAD=skipped` line. */
+  warmUpload?: WarmUploadLine;
+  /** From a `BUILDD_CACHE_SKIPPED=` line. */
+  cacheSkipped?: CacheSkippedLine;
   /** A `task.scheduled` start: the time the wake was scheduled for. */
   scheduledFor?: number;
 }
@@ -591,6 +656,8 @@ export interface RunReport {
     park: number | null;
     /** Downloading and applying the park bundle in a resumed run. */
     restorePark: number | null;
+    /** Downloading and extracting the dependency cache of a warm restore (streamed). */
+    restoreCache: number | null;
     toFirstModelRequest: number | null;
     total: number | null;
   };
@@ -603,7 +670,24 @@ export interface RunReport {
     source: 'warm' | 'clone' | null;
     fallbackReason: RepoFallbackReason | null;
     snapshotAgeMs: number | null;
-    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; upload: number | null };
+    /**
+     * Why the run uploaded no warm snapshot it otherwise would have:
+     * `too_large`, the repo (or its bundle as it streamed) was over the cap.
+     * Null: uploaded, or no upload was due.
+     */
+    warmUploadSkipReason: WarmUploadSkipReason | null;
+    /**
+     * A part of the dependency cache the upload left out for size (the pnpm
+     * store, or the whole cache tarball), its size on disk and the cap.
+     * Null: nothing was left out, or no upload was due.
+     */
+    cacheSkipped: CacheSkippedLine | null;
+    /**
+     * `warmRepo`: the clone's object store as measured against the cap.
+     * `cache`: the cache tarball as stored (zstd-compressed when the image
+     * has zstd); `cacheRaw`: the same tarball before compression, on upload.
+     */
+    bytes: { clone: number | null; restore: number | null; fetch: number | null; cache: number | null; cacheRaw: number | null; upload: number | null; warmRepo: number | null };
   };
   /**
    * Resumable runs. `resumed`: this attempt continued a parked worker.
@@ -625,6 +709,15 @@ export interface RunReport {
   exitCode: number | null;
   outcome: RunOutcome | null;
   crashReport: CrashReport | null;
+  /**
+   * Set only when `outcome` is `deferred` or `start_deferred`: the backoff
+   * retry the supervisor scheduled itself (or declined to, past the cap).
+   * `reason`: the claim's taskExclusion/diagnostics code for `deferred`,
+   * `'container_capacity'` for `start_deferred`, null if the runner printed
+   * none. `retryNumber` is 1-indexed; `backoffMs` null means the cap
+   * (MAX_DEFERRED_RETRIES) was hit and nothing was scheduled.
+   */
+  deferredRetry: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
 }
 
 export interface RunReportInput {
@@ -643,12 +736,15 @@ export interface RunReportInput {
   resumed?: boolean;
   /** End of the parked attempt this one resumes (agent clock). */
   parkedAt?: number;
+  /** See RunReport.deferredRetry. */
+  deferredRetry?: { retryNumber: number; backoffMs: number | null; reason: string | null } | null;
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const INSTANCE_TYPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'crashed'];
+const OUTCOMES: readonly RunOutcome[] = ['done', 'failed', 'refused', 'usage', 'parked', 'deferred', 'start_deferred', 'crashed'];
 const CRASH_REPORTS: readonly CrashReport[] = ['sent', 'rejected', 'error', 'no_worker_id'];
+const DEFERRED_REASON_RE = /^[A-Za-z0-9_]{1,64}$/;
 
 // Shapes of credentials an identifier must never be mistaken for (Anthropic,
 // buildd, GitHub, Slack, AWS, generic `key-`/`token`). Task and worker IDs are
@@ -698,6 +794,8 @@ export function assembleRunReport(input: RunReportInput): RunReport {
   const src = t.repoSource as { source?: unknown; reason?: unknown } | undefined;
   const source = src?.source === 'warm' || src?.source === 'clone' ? src.source : null;
   const fallbackReason = source === 'clone' && REPO_FALLBACK_REASONS.includes(src?.reason as RepoFallbackReason) ? src!.reason as RepoFallbackReason : null;
+  const skipped = (t.warmUpload as { skipped?: unknown } | undefined)?.skipped;
+  const warmUploadSkipReason = WARM_UPLOAD_SKIP_REASONS.includes(skipped as WarmUploadSkipReason) ? skipped as WarmUploadSkipReason : null;
   return {
     kind: RUN_REPORT_KIND,
     version: RUN_REPORT_VERSION,
@@ -718,6 +816,7 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       warmUpload: span(phase('warm_upload_start'), phase('warm_upload_end')),
       park: span(phase('park_start'), phase('park_end')),
       restorePark: span(phase('restore_park_start'), phase('restore_park_end')),
+      restoreCache: span(phase('restore_cache_start'), phase('restore_cache_end')),
       toFirstModelRequest: span(timestamps.claimedAt, timestamps.firstModelRequestAt),
       total: span(timestamps.dispatchReceivedAt, timestamps.exitedAt),
     },
@@ -726,12 +825,16 @@ export function assembleRunReport(input: RunReportInput): RunReport {
       source,
       fallbackReason,
       snapshotAgeMs: metric('snapshot_age_ms'),
+      warmUploadSkipReason,
+      cacheSkipped: cacheSkipped(t.cacheSkipped),
       bytes: {
         clone: metric('clone_bytes'),
         restore: metric('restore_bytes'),
         fetch: metric('fetch_bytes'),
         cache: metric('cache_bytes'),
+        cacheRaw: metric('cache_raw_bytes'),
         upload: metric('warm_upload_bytes'),
+        warmRepo: metric('warm_repo_bytes'),
       },
     },
     resume: {
@@ -750,6 +853,13 @@ export function assembleRunReport(input: RunReportInput): RunReport {
     exitCode: typeof input.exitCode === 'number' && Number.isInteger(input.exitCode) ? input.exitCode : null,
     outcome: input.outcome && OUTCOMES.includes(input.outcome) ? input.outcome : null,
     crashReport: input.crashReport && CRASH_REPORTS.includes(input.crashReport) ? input.crashReport : null,
+    deferredRetry: input.deferredRetry
+      ? {
+          retryNumber: count(input.deferredRetry.retryNumber),
+          backoffMs: ts(input.deferredRetry.backoffMs),
+          reason: typeof input.deferredRetry.reason === 'string' && DEFERRED_REASON_RE.test(input.deferredRetry.reason) ? input.deferredRetry.reason : null,
+        }
+      : null,
   };
 }
 

@@ -28,7 +28,8 @@
  *
  * Pure: no DB, no env. The stores live in ./orchestration-claim-source.ts.
  */
-import { choice, defineDecision, type Decision } from '@builddai/ai-kit/decide';
+import { choice, type Decision } from '@builddai/ai-kit/decide';
+import { definePromptedDecision } from './prompted-decision';
 import { LIVE_WORKER_STATUSES } from '@buildd/shared';
 import { candidateDigest } from './orchestration-decision';
 
@@ -57,7 +58,7 @@ export const CLAIM_HOLD_LABELS: readonly ClaimHoldLabel[] = ['HOLD', 'START'];
  * needs a minConfidence measured on held-out Jev outcomes (Step I) and a
  * prompt-version bump, which changes the fingerprint.
  */
-export const CLAIM_HOLD_DECISION = defineDecision({
+export const CLAIM_HOLD_DECISION = definePromptedDecision({
   id: 'buildd.orchestration_claim_hold',
   promptVersion: CLAIM_HOLD_PROMPT_VERSION,
   questions: CLAIM_HOLD_QUESTIONS,

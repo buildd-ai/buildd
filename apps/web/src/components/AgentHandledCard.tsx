@@ -1,21 +1,27 @@
 import Link from 'next/link';
 import Spinner from './Spinner';
 import { ActionCardContextLine } from './ActionCardContextLine';
-import type { ActionQueueItem } from '@/lib/action-queue';
+import { describePendingGates, type ActionQueueItem } from '@/lib/action-queue';
 import { actionCardTaskLink } from '@/lib/action-card-context';
 
 /**
  * Informational card for work an agent already owns — a live CI fix, a check
- * suite still running, or a PR the platform will merge by itself on green. It stays in the queue so a stuck agent is visible, but
+ * suite still running, a reviewer checking the latest commit, or a PR the
+ * platform will merge by itself on green. It stays in the queue so a stuck agent is visible, but
  * carries no merge affordance and no count: nothing here is waiting on a human.
  */
 export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
   const gate = item.ciGate;
-  const label = gate && gate.kind !== 'blocked'
+  // A pending CI/review wait names exactly what is pending ("CI passed ·
+  // reviewer checking the latest commit"), never a generic "still running".
+  const label = item.pendingGates
+    ? describePendingGates(item.pendingGates)
+    : gate && gate.kind !== 'blocked'
     ? gate.label
     : item.chip === 'AUTO_MERGE' ? (item.escalationReason ?? 'Auto-merges when CI passes') : 'Agent working';
   const fixTaskId = gate?.kind === 'fixing' ? gate.taskId : null;
-  const spinning = gate?.kind === 'fixing';
+  const fixTaskTitle = gate?.kind === 'fixing' ? gate.taskTitle : null;
+  const spinning = gate?.kind === 'fixing' || item.pendingGates?.review === 'reviewing';
 
   return (
     <div className="border-l-2 border-text-muted bg-surface-2 px-4 py-3">
@@ -39,7 +45,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
       <div className="flex items-center gap-3 mt-0.5 flex-wrap">
         {fixTaskId && (
           <Link href={actionCardTaskLink(item, { taskId: fixTaskId, page: true })} className="inline-flex items-center min-h-11 md:min-h-0 text-[11px] font-medium text-accent-text hover:underline">
-            View fix attempt
+            {fixTaskTitle ?? 'View fix attempt'}
           </Link>
         )}
         {item.prUrl && (

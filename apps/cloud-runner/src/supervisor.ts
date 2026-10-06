@@ -30,9 +30,12 @@ import {
   EXIT_PARKED,
   crashReportAction,
   decideDispatch,
+  deferredRetryBackoffMs,
+  isContainerStartCapacityError,
   orphanParkCommand,
   isOrphanedRun,
   outcomeForExitCode,
+  parseClaimDeferredLine,
   parseWorkerIdLine,
   runnerCommand,
   type ContainerEnvSource,
@@ -55,6 +58,8 @@ import {
   parseMetricLine,
   parsePhaseLine,
   parseRepoSourceLine,
+  parseWarmUploadLine,
+  parseCacheSkippedLine,
   recordMetric,
   recordPhase,
   runLabel,
@@ -127,6 +132,8 @@ export interface SupervisorDeps {
 export interface ScheduledDispatchPayload {
   /** Epoch ms the wake is for: the task's startAt. */
   notBefore: number;
+  /** See DispatchRequest.deferredRetry — carried through the alarm so the fire can pass it on. */
+  deferredRetry?: boolean;
 }
 
 /**
@@ -218,6 +225,10 @@ export class TaskSupervisor {
       outputTail: [],
       timings: request.scheduledFor !== undefined ? { scheduledFor: request.scheduledFor } : {},
       ...(history.length ? { reportHistory: history } : {}),
+      // Carried forward ONLY for the agent's own backoff retry of a deferred
+      // attempt — any other dispatch (a real retry webhook, a resume, the
+      // very first attempt) resets the streak to 0 by omitting this key.
+      ...(request.deferredRetry ? { deferredRetryCount: state.deferredRetryCount ?? 0 } : {}),
       // A resume continues the parked worker: its id is known up front (for
       // the snapshot scope and a crash report), and no claim line will come.
       ...(resume ? { workerId: resume, resumed: true, ...(state.endedAt !== undefined ? { parkedAt: state.endedAt } : {}) } : {}),
@@ -242,16 +253,16 @@ export class TaskSupervisor {
    * still finishing, and the wake fires after it has. A `notBefore` already
    * past is a dispatch now. Bounds on how far ahead are the caller's (http.ts).
    */
-  async scheduleDispatch(notBefore: number): Promise<ScheduleDispatchResult> {
+  async scheduleDispatch(notBefore: number, opts: { deferredRetry?: boolean } = {}): Promise<ScheduleDispatchResult> {
     const previous = this.d.getState().scheduleId;
     if (notBefore <= this.d.now()) {
       if (previous) {
         this.patch({ scheduledFor: undefined, scheduleId: undefined });
         this.cancelSchedule(previous);
       }
-      return { scheduled: false, ...this.dispatch({ scheduledFor: notBefore }) };
+      return { scheduled: false, ...this.dispatch({ scheduledFor: notBefore, deferredRetry: opts.deferredRetry }) };
     }
-    const id = await this.d.scheduler.scheduleAt(notBefore, { notBefore });
+    const id = await this.d.scheduler.scheduleAt(notBefore, { notBefore, ...(opts.deferredRetry ? { deferredRetry: true } : {}) });
     // Re-read after the await: whatever happened meanwhile, this wake is the latest.
     const replaced = this.d.getState().scheduleId;
     this.patch({ scheduledFor: notBefore, scheduleId: id });
@@ -274,7 +285,7 @@ export class TaskSupervisor {
     }
     const scheduledFor = state.scheduledFor ?? payload.notBefore;
     this.patch({ scheduledFor: undefined, scheduleId: undefined });
-    return { fired: true, ...this.dispatch({ scheduledFor }) };
+    return { fired: true, ...this.dispatch({ scheduledFor, deferredRetry: payload.deferredRetry }) };
   }
 
   private cancelSchedule(id: string): void {
@@ -437,7 +448,18 @@ export class TaskSupervisor {
       error = describe(err);
     }
 
-    const outcome = configError ? 'usage' : outcomeForExitCode(code);
+    // A container-capacity refusal (the platform's own instance ceiling, not
+    // ours) never got as far as an exit code — `code` stays null. Distinct
+    // from every other `code === null` case (container died, exec failed):
+    // those ARE infrastructure crashes worth a stale-worker retry if a worker
+    // exists; this one never got that far, so there is nothing to mark and
+    // retrying the exact same container is pointless. finish() backs off and
+    // self-schedules instead of reporting a crash.
+    const outcome: RunOutcome = configError
+      ? 'usage'
+      : (code === null && isContainerStartCapacityError(error))
+        ? 'start_deferred'
+        : outcomeForExitCode(code);
     this.d.log(`[cloud-runner] task ${this.d.taskId}: attempt ${attempt} exited code=${code ?? 'none'} outcome=${outcome}${error ? ` (${error})` : ''}`);
     await this.finish({ code, outcome, error });
   }
@@ -452,6 +474,7 @@ export class TaskSupervisor {
     if (this.d.getState().timings?.exitedAt === undefined) this.patchTimings({ exitedAt: this.d.now() });
     await this.stopContainer(r.outcome === 'crashed' ? 'run crashed' : r.outcome === 'parked' ? 'run parked' : 'run finished');
     const crashReport = await this.reportCrashIfNeeded(r);
+    const deferredRetry = r.outcome === 'deferred' || r.outcome === 'start_deferred' ? this.scheduleDeferredRetry(r.outcome) : null;
     const state = this.d.getState();
     const report = assembleRunReport({
       taskId: this.d.taskId,
@@ -468,6 +491,7 @@ export class TaskSupervisor {
       crashReport,
       resumed: state.resumed,
       parkedAt: state.parkedAt,
+      deferredRetry,
     });
     this.patch({
       status: 'exited',
@@ -476,6 +500,7 @@ export class TaskSupervisor {
       endedAt: this.d.now(),
       ...(r.error ? { error: r.error } : {}),
       ...(crashReport ? { crashReport } : {}),
+      ...(deferredRetry ? { deferredRetryCount: deferredRetry.retryNumber } : {}),
       outputTail: [...this.tail],
       report: { ...report, delivery: report.workerId ? 'pending' : 'no_worker_id' },
     });
@@ -488,6 +513,29 @@ export class TaskSupervisor {
       report,
     );
     this.setDelivery(report.attempt, delivery);
+  }
+
+  /**
+   * A `deferred` (claim refused for a temporary reason) or `start_deferred`
+   * (the platform's own container-capacity ceiling) attempt: nothing else
+   * will retry this task — the runner never created a worker, so there is no
+   * worker for buildd's own infra-retry budget to act on. Self-schedule the
+   * next attempt on the existing `task.scheduled` alarm with backoff, capped
+   * at MAX_DEFERRED_RETRIES; past the cap, give up and leave the task to
+   * buildd's own sweep or a freed-capacity wake instead of retrying forever.
+   */
+  private scheduleDeferredRetry(outcome: 'deferred' | 'start_deferred'): { retryNumber: number; backoffMs: number | null; reason: string | null } {
+    const retryNumber = (this.d.getState().deferredRetryCount ?? 0) + 1;
+    const backoffMs = deferredRetryBackoffMs(retryNumber);
+    const reason = outcome === 'start_deferred' ? 'container_capacity' : this.d.getState().claimDeferredReason ?? null;
+    if (backoffMs === null) {
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: ${outcome} (${reason ?? 'unknown'}) — retries exhausted after ${retryNumber - 1}; leaving it to buildd's own sweep`);
+      return { retryNumber, backoffMs: null, reason };
+    }
+    this.d.log(`[cloud-runner] task ${this.d.taskId}: ${outcome} (${reason ?? 'unknown'}) — retrying in ${Math.round(backoffMs / 1000)}s (attempt ${retryNumber})`);
+    this.d.waitUntil(this.scheduleDispatch(this.d.now() + backoffMs, { deferredRetry: true }).catch(err =>
+      this.d.log(`[cloud-runner] task ${this.d.taskId}: scheduling the deferred retry failed: ${describe(err)}`)));
+    return { retryNumber, backoffMs, reason };
   }
 
   /** Record the delivery on the attempt's report, wherever it is by now. */
@@ -536,6 +584,11 @@ export class TaskSupervisor {
           return;
         }
       }
+      const claimDeferredReason = parseClaimDeferredLine(line);
+      if (claimDeferredReason) {
+        this.patch({ claimDeferredReason });
+        return;
+      }
       const phase = parsePhaseLine(line);
       if (phase) {
         const runnerPhases = recordPhase(state.timings?.runnerPhases, phase.phase, phase.at);
@@ -548,7 +601,14 @@ export class TaskSupervisor {
         return;
       }
       const source = parseRepoSourceLine(line);
-      if (source) this.patchTimings({ repoSource: source });
+      if (source) {
+        this.patchTimings({ repoSource: source });
+        return;
+      }
+      const warmUpload = parseWarmUploadLine(line);
+      if (warmUpload) { this.patchTimings({ warmUpload }); return; }
+      const cacheSkipped = parseCacheSkippedLine(line);
+      if (cacheSkipped) this.patchTimings({ cacheSkipped });
     };
     try {
       for (;;) {

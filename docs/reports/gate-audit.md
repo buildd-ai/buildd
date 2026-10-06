@@ -76,9 +76,11 @@ validation (which would change which error a doubly-invalid request gets).
 |---|---|---|---|---|
 | 15 | `route.ts:1087` | `mission_base_adoption` | rejected | auto-detected PR on the worker's branch targets the wrong base |
 | 16-18 | `route.ts:1143` | `output_requirement` | rejected | `pr_required` / `artifact_required` / `auto`. All three refuse through `persistRejectedCompletionPayload`, so the ledger row is written there — a fourth arm cannot be added that preserves the payload and forgets the ledger |
+| — | `route.ts` completion gate | `silent_completion` | rejected | Empty editing session with a fallback, fragmented or forward-looking summary; preserves rejected payload, fails worker, retries once independently of mission membership, then posts a warning |
 | 19 | `route.ts:1249` | `output_requirement` | bypassed | `discardEdits` acknowledged the edits as scratch |
 | 19a | `route.ts` terminal block | `worker_patch_refused` | rejected | the runner reporting that a prior mutation of ours was refused with a non-gate 4xx (or an unqueueable 5xx). Those reports are exempt from the task's retry budget, so this row is what keeps the exemption countable: a rise here means we are rejecting the runner's requests, not that agents are failing. An output-gate refusal is deliberately excluded — it already has its `output_requirement` row from sites 16-18 |
 | 19b | `route.ts` terminal block | `handoff_required` | rejected | completing task has an unfinished dependent and no `structuredOutput.handoff.delivered` |
+| 19c | `route.ts` self-reported PR / `pr_required` fallback | `pr_ownership` | rejected | the PR an agent run reports (or the `#N` fallback adopts) is not one its task owns, is outside the linked repo, or targets the wrong mission base. The PR fields are dropped; the rest of the PATCH still applies |
 
 Site 19 is the direct read on how often the `auto` gate is being talked out of
 a refusal, which is the number that would have shown the reviewer-task
@@ -90,6 +92,7 @@ regression without a human noticing nine dead runs.
 |---|---|---|---|---|
 | 20 | `pr/route.ts:687` | `pr_head_mismatch` | rejected | PR head is not the worker's own branch |
 | 21 | `pr/route.ts:705` | `pr_base_mismatch` | rejected | PR base disagrees with the mission integration branch |
+| 21a | `pr/route.ts:refusePrOwnership` | `pr_ownership` | rejected | an agent run recording a PR its task does not own: `head_not_owned`, `protected_head`, or `pr_outside_linked_repo` (adoption). Runs on fresh create, dedup-by-head and `prUrl` adoption; people and teammates are exempt. See `lib/agent-capabilities/pr-ownership.ts` |
 
 ### merge_pr — `apps/web/src/app/api/github/pr/route.ts` (PUT)
 
@@ -135,6 +138,8 @@ analytics family='gate'` and the health page's Gates block.
 | 34 | `claim/route.ts` (trigger-level token) | `claim_loop_deferral` | rejected | trigger tokens cannot claim |
 | 35 | `claim/route.ts` (`runner` field missing) | `claim_loop_deferral` | rejected | malformed claim request. A client that omits `runner` does so on every poll, so this site is collapsed via `recordOrCoalesceRepeat` to one row per account per hour: `detail.accountId`, `detail.count`, `detail.lastSeenAt`, plus `detail.userAgent` and `detail.bodyKeys` to identify the client |
 | 36 | `claim/route.ts` `deferTask()` — 13 dispatch-loop sites (`connector_mismatch`, `subject_dead`, `path_overlap` ×2, `mission_budget`, `mission_concurrent`, `mission_paced`, `advisory_manifest`, `workspace_cap`, `provider_unavailable`, `budget_paused` ×2, `routing_paused`, `duplicate_worker`, `codex_single_flight`) | `claim_loop_deferral` | deferred | one row per (taskId, reason) per tick, coalesced across polls via `recordOrCoalesceDeferral` into a `detail.consecutiveDeferrals` counter with a `detail.firstDeferredAt` floor. `codex_single_flight` replaces what used to be discovered post-claim, in the runner, by killing a started worker (`apps/runner/src/workers.ts` still keeps that check as a race backstop for two concurrent claim requests this in-batch guard can't see) |
+| 36b | `claim/claim-plan-store.ts` `fireOrderedBehind` / `fireClaimPlanRecord` — claim planner, only for a workspace with `gitConfig.claimPlanner` `record` or `apply` | `claim_loop_deferral` | deferred / accepted | `ordered_behind` (apply): one row per (taskId, blocker) EVER via `recordDeferralOnce` — a repeat poll behind the same blocker writes nothing, so a task's row count is its starvation credit; `detail.blockedBy`, `detail.edge`, `detail.orientation`. `claim_plan` (accepted, record and apply): the plan beside the picks actually made, collapsed via `recordOrCoalesceRepeat` per (mode, workspace, plan signature) per hour; `detail.planned`, `detail.actual`, `detail.agree`, `detail.orderedBehind` |
+| 36c | `claim/route.ts` `emptyClaim` → `explicit-task-exclusion.ts:explicitExclusionGateEvent` — an explicit-`taskId` claim (a runner's wake claim, `claim_task {taskId}`) that a claim-query WHERE gate dropped (`workspace_cap`, `deps_blocked`, `subject_dead`, `mission_held`, …) | `claim_loop_deferral` | deferred | reason = the exclusion code, `detail.explicitClaim: true` + the caller-facing sentence, coalesced like row 36. Not written for codes meaning the task was not claimable at all (`not_found`, `not_pending`, `already_claimed`, `active_worker`, `state_changed`). Before this a WHERE-gate refusal recorded nothing, so a woken task refused on every wake had an empty gate history |
 | 37 | `stranded-tasks-sweep.ts:sweepStrandedTasks` | `claim_loop_deferral` | stranded | pending past `startAt` by 2h, or the same deferral reason for `STRAND_CONSECUTIVE_THRESHOLD` consecutive polls; posts one open `mission_notes` warning per task, cleared when the task re-arms |
 
 ### Mission goal-criteria evaluation — `apps/web/src/lib/mission-criteria-eval.ts`, `mission-criteria-verify.ts`, `mission-criteria-worker-eval.ts`
@@ -236,6 +241,8 @@ happen is recorded rather than logged, and the hourly pr-reconcile sweep retries
 |---|---|---|---|---|
 | 60 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | stranded | ancestor PR left open: state unreadable or close failed (create_pr or sweep) |
 | 61 | `retry-pr-supersession.ts:closeAncestorRetryPrs` | `retry_pr_supersession` | warned | sweep found two open PRs in one retry lineage and closed the older |
+| 61e | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | rejected | create_pr refused a fresh PR from a retry whose subject PR is still open and whose head is an ancestor of the new branch (or vice versa), or diverged from it with no runner trace proving the subject branch missing or diverged (`detail.resumeCause`): the retry must update the subject PR |
+| 61f | `github/pr/route.ts` (`retry-fresh-pr-gate.ts`) | `retry_pr_supersession` | warned | a retry opened a fresh PR while its subject PR was open: `detail.freshPrReason` is `diverged` (GitHub compare, plus the runner's `detail.resumeCause` of `missing` or `diverged`) or `unverified` (unreadable, failed open) |
 
 ### Automatic supersession of closed PRs (`lib/pr-supersession-detect.ts`)
 
@@ -247,6 +254,30 @@ is recorded only when the content verifies.
 |---|---|---|---|---|
 | 61a | `pr-supersession-detect.ts:recordVerified` | `auto_pr_supersession` | accepted | candidate's merged diff carries the closed PR's changes; edge recorded with `detail.method` (patch-id or content) and `detail.confidence` |
 | 61b | `pr-supersession-detect.ts:detectPrSupersession` | `auto_pr_supersession` | deferred | candidate found but not content-verified: suggestion stored for the mission card, no edge |
+
+### Supersession reconciler (`lib/supersession.ts`, `lib/supersession-store.ts`)
+
+One rule table decides which queued or running work a subject event made
+obsolete: a reviewer verdict, a PR merged or closed (webhook and both merge
+routes), a task cancelled, a task whose PR merged. Every cancel is a status
+CAS; only the caller that wins it writes the ledger row, so two doors seeing
+the same event record one cancellation.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 61c | `supersession-store.ts:recordSupersession` | `supersession` | accepted | one row per task a rule cancelled; `detail.rule` is the rule id, `detail.event` the subject event, `surface` the door |
+| 61d | `supersession-store.ts:recordBulkRefusal` | `supersession` | rejected | one event matched more than the per-event cap: nothing cancelled, `detail.wouldCancel` holds the set, and a warning note is posted |
+
+The dispatch guard also runs the table before a fix or CI retry is created
+(`checkDispatch`) and against the inserted row (`guardDispatchedTask`).
+`open_retry_supersedes_duplicate` keeps one subject PR to one open retry: a
+newcomer is not filed, and of two racing inserts the newer cancels itself —
+recorded as row 61c with that rule id. The open set covers the whole retry
+family (`collectRetryFamily`), so a sibling fixing a sibling's PR blocks too.
+The claim route runs the same rule (`guardClaimedRetry`) before starting an
+attempt: one with an older open sibling, or a newer one already running, is
+cancelled (row 61c, surface `POST /api/workers/claim`) and counted as the
+`sibling_retry_open` claim-loop deferral.
 
 ### Auto-merge — the unattended merge path (`lib/auto-merge.ts:tryAutoMergeWorkerPr`)
 
@@ -317,6 +348,6 @@ merge writes an `accepted` row carrying `detail.timeToLandMs`.
 | `apps/web/src/app/api/tasks/route.ts:POST` | `decomposition_refused` | rejected | Re-checks, at the moment the organizer's own planning task tries to create a non-retry child, whether sibling tasks were pre-filed against the mission after that planning task was created. `runMission()`'s own pre-filed-task detection only runs once, inside the SAME request that creates the mission — too early to see tasks a creator files right after. `detail.preFiledTaskIds`, `detail.organizerTaskId`; persists `missions.decompositionSkipped=true` and a mission note on the first trip. Exempt: manual-orchestration missions, and any create with an explicit `parentTaskId` (a retry naming the failing task). |
 | `apps/web/src/lib/mission-branch-refresh.ts:refreshMissionIntegrationBranch` | `mission_branch_refresh` | accepted / stranded | Keeping a mission's integration branch current with dev (docs/design/mission-delivery-arc.md P5, superseded). `accepted` = GitHub's merges API landed dev cleanly, a merge commit, no agent. `stranded` = a 409 conflict dispatched the one conflict-resolution task this mission is allowed to have open at a time (`detail.conflictTaskId`), or one was already open and nothing new was dispatched (`detail.dispatched: false`). A clean skip (already current, single-flight lease held, mission's own PR already merged, mission terminal) writes no row — only an actual merge attempt or a conflict is worth a ledger line. |
 
-`get_manifest_coverage` and `get_path_claim_stats` read aggregate REST metrics.
+`get_manifest_coverage`, `get_path_claim_stats` and `get_decision_stats` read aggregate REST metrics.
 Use `get_failure_analytics` with `family=gate` and
 `errorPrefix="Change intent conflict"` to count delivered change-intent warnings.

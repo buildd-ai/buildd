@@ -27,6 +27,14 @@ import { join, basename } from 'path';
 import { homedir, tmpdir } from 'os';
 import type { WorkerEnvironment } from '@buildd/shared';
 import { CAPABILITY_BROWSER } from '@buildd/shared';
+import {
+  BROWSER_INSTALL_COMMAND,
+  getPlaywrightPin,
+  installedPinnedBuilds,
+  isPinnedBuildPath,
+  pinnedBuildDirNames,
+  type PlaywrightPin,
+} from './playwright-pin';
 
 export const PATH_BROWSER_BINS = [
   'chromium',
@@ -71,6 +79,8 @@ export interface BrowserDetection {
   /** Playwright directories that existed and were searched. */
   searched: string[];
   attempts: BrowserProbeAttempt[];
+  /** The repo's pinned Playwright and the build it expects, when resolvable. */
+  pin?: PlaywrightPin;
 }
 
 interface Candidate {
@@ -173,10 +183,11 @@ function findInPlaywrightDirs(dirs: string[]): string[] {
 }
 
 /**
- * Ordered, deduped candidates: Playwright builds first (headless shells before
- * full Chromium), then PATH entries deduped by realpath with snap stubs dropped.
+ * Ordered, deduped candidates: Playwright builds first — the pinned version's
+ * build before any other, headless shells before full Chromium — then PATH
+ * entries deduped by realpath with snap stubs dropped.
  */
-export function collectBrowserCandidates(searched: string[]): Candidate[] {
+export function collectBrowserCandidates(searched: string[], pin: PlaywrightPin | undefined = getPlaywrightPin()): Candidate[] {
   const out: Candidate[] = [];
   const seenReal = new Set<string>();
   const add = (c: Candidate) => {
@@ -191,8 +202,10 @@ export function collectBrowserCandidates(searched: string[]): Candidate[] {
     source: 'playwright' as const,
     root: searched.find(d => path === d || path.startsWith(d.endsWith('/') ? d : `${d}/`)),
   }));
-  // Stable sort: headless shells first, discovery order otherwise.
-  pw.sort((a, b) => Number(isHeadlessShell(b.path)) - Number(isHeadlessShell(a.path)));
+  // Stable sort: pinned build first, then headless shells, discovery order otherwise.
+  const pinned = (p: string) => (pin && isPinnedBuildPath(p, pin) ? 1 : 0);
+  pw.sort((a, b) =>
+    pinned(b.path) - pinned(a.path) || Number(isHeadlessShell(b.path)) - Number(isHeadlessShell(a.path)));
   pw.forEach(add);
 
   for (const path of findOnPath()) {
@@ -340,9 +353,11 @@ function probeAsync(c: Candidate): Promise<BrowserProbeAttempt> {
 }
 
 function finalize(searched: string[], attempts: BrowserProbeAttempt[], hit?: { a: BrowserProbeAttempt; c: Candidate }): BrowserDetection {
+  const pin = getPlaywrightPin();
   const d: BrowserDetection = hit
     ? { available: true, path: hit.a.path, browsersRoot: hit.c.root, searched, attempts }
     : { available: false, searched, attempts };
+  if (pin) d.pin = pin;
   lastDetection = d;
   return d;
 }
@@ -387,14 +402,32 @@ export async function detectBrowserAsync(): Promise<BrowserDetection> {
   return finalize(searched, attempts);
 }
 
+/**
+ * What the pinned Playwright expects versus what is on disk, so a version
+ * mismatch (another Playwright's install garbage-collected this build) reads
+ * straight off the log line.
+ */
+function pinNote(d: BrowserDetection, exists: (p: string) => boolean = fs.existsSync): string {
+  if (!d.pin) return '';
+  const present = installedPinnedBuilds(d.searched, d.pin, exists);
+  return ` — pinned Playwright ${d.pin.version} expects ${pinnedBuildDirNames(d.pin).join(' / ')}`
+    + ` (installed: ${present.length ? present.join(', ') : 'none'})`;
+}
+
+const REPAIR_HINT = `Repair from apps/runner: ${BROWSER_INSTALL_COMMAND}`;
+
 /** One log line: what was found, or every path tried and why it failed. */
 export function formatBrowserDetection(d: BrowserDetection): string {
   if (d.available) {
-    return `[env-scan] browser: yes — ${d.path} passed headless launch probe`;
+    // Only a Playwright-dir build can be "off pin"; a system Chromium on PATH is fine as is.
+    const offPin = d.pin && d.path && d.browsersRoot && !isPinnedBuildPath(d.path, d.pin)
+      ? ` (not the pinned build${pinNote(d)})`
+      : '';
+    return `[env-scan] browser: yes — ${d.path} passed headless launch probe${offPin}`;
   }
   const dirs = d.searched.length ? d.searched.join(', ') : 'none present';
   if (d.attempts.length === 0) {
-    return `[env-scan] browser: no — no Chromium on PATH (${PATH_BROWSER_BINS.join(', ')}) or in Playwright dirs (${dirs}). Install: npx playwright install --with-deps chromium`;
+    return `[env-scan] browser: no — no Chromium on PATH (${PATH_BROWSER_BINS.join(', ')}) or in Playwright dirs (${dirs})${pinNote(d)}. ${REPAIR_HINT}`;
   }
   const tried = d.attempts.map(a => {
     const bits = [`exit=${a.exitCode ?? 'none'}`];
@@ -402,7 +435,7 @@ export function formatBrowserDetection(d: BrowserDetection): string {
     if (a.stderrHead) bits.push(`stderr: ${a.stderrHead}`);
     return `${a.path} (${bits.join('; ')})`;
   }).join(' | ');
-  return `[env-scan] browser: no — launch probe failed for: ${tried}`;
+  return `[env-scan] browser: no — launch probe failed for: ${tried}${pinNote(d)}. ${REPAIR_HINT}`;
 }
 
 function logIfChanged(d: BrowserDetection): void {

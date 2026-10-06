@@ -26,16 +26,16 @@ import type {
   ExperimentVisibility,
   UpdateExperimentInput,
 } from '@buildd/shared';
-import { defaultCbmAccessConfig } from '@buildd/core/cbm-access-experiment';
 import { defaultHeartbeatTriageConfig } from '@buildd/core/heartbeat-triage-experiment';
 import { defaultQuestionGateConfig } from '@buildd/core/question-gate';
 import { stripNonDrawConfig, validateDurationCap } from '@buildd/core/experiment-health';
+import { roleHas, type PermissionOverrides } from '@/lib/permission-registry';
 
 export type TeamRole = 'owner' | 'admin' | 'member';
 
 export const EXPERIMENT_STATUSES: readonly ExperimentStatus[] = ['draft', 'running', 'paused', 'concluded'];
 export const EXPERIMENT_VISIBILITIES: readonly ExperimentVisibility[] = ['admins', 'team'];
-export const EXPERIMENT_KINDS = ['model_routing', 'cbm_access', 'heartbeat_triage', 'question_gate'] as const satisfies readonly ExperimentKind[];
+export const EXPERIMENT_KINDS = ['model_routing', 'heartbeat_triage', 'question_gate'] as const satisfies readonly ExperimentKind[];
 
 /** Legal status moves. `concluded` is terminal. */
 export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly ExperimentStatus[]> = {
@@ -45,12 +45,12 @@ export const EXPERIMENT_TRANSITIONS: Record<ExperimentStatus, readonly Experimen
   concluded: [],
 };
 
-export function isExperimentAdmin(role: TeamRole | null | undefined): boolean {
-  return role === 'owner' || role === 'admin';
+export function isExperimentAdmin(role: TeamRole | null | undefined, overrides: PermissionOverrides | null): boolean {
+  return roleHas(role, 'run_experiments', overrides);
 }
 
-export function canViewExperiment(visibility: string, role: TeamRole | null | undefined): boolean {
-  return visibility === 'team' || isExperimentAdmin(role);
+export function canViewExperiment(visibility: string, role: TeamRole | null | undefined, overrides: PermissionOverrides | null): boolean {
+  return visibility === 'team' || isExperimentAdmin(role, overrides);
 }
 
 /**
@@ -118,13 +118,8 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
     return { ok: false, status: 400, error: `kind must be one of ${EXPERIMENT_KINDS.join(', ')}` };
   }
 
-  // cbm_access has no implicit share: withholding the graph from half the
-  // fleet because a caller omitted a field is not a safe default. The operator
-  // names the share (e.g. 0.2) explicitly, or the create is refused.
-  if (kind === 'cbm_access' && b.treatmentFraction === undefined) {
-    return { ok: false, status: 400, error: 'treatmentFraction is required for kind cbm_access (the share of eligible tasks that run WITHOUT CBM, e.g. 0.2)' };
-  }
-  // Same rule: skipping organizer cycles is the intervention, so its share is named.
+  // No implicit share: skipping organizer cycles is the intervention, so its
+  // share is named explicitly, or the create is refused.
   if (kind === 'heartbeat_triage' && b.treatmentFraction === undefined) {
     return { ok: false, status: 400, error: 'treatmentFraction is required for kind heartbeat_triage (the share of missions whose confident waits skip the organizer, e.g. 0.3)' };
   }
@@ -153,8 +148,7 @@ export function parseCreateExperiment(body: unknown): Result<NewExperimentValues
       kind: kind as ExperimentKind,
       treatmentFraction: fraction,
       config: (b.config as Record<string, unknown> | undefined)
-        ?? (kind === 'cbm_access' ? defaultCbmAccessConfig()
-          : kind === 'heartbeat_triage' ? defaultHeartbeatTriageConfig()
+        ?? (kind === 'heartbeat_triage' ? defaultHeartbeatTriageConfig()
           : kind === 'question_gate' ? defaultQuestionGateConfig()
           : defaultModelRoutingConfig()),
       visibility,

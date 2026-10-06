@@ -395,3 +395,62 @@ describe('GET /api/explain — dashboard session', () => {
     expect(mockGetUserTeamIds).not.toHaveBeenCalled();
   });
 });
+
+describe('GET /api/explain — per-task token', () => {
+  const WS2 = '44444444-4444-4444-4444-444444444444';
+  const scoped = { id: 'acct-1', teamId: 'team-1', level: 'worker', taskScope: { taskId: TASK, workspaceId: WS, expiresAt: Date.now() + 60_000 } };
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockImplementation(async () => scoped);
+    // Its team has a second workspace the minting account also reaches.
+    mockGetTeamWorkspaceIds.mockImplementation(async () => [WS, WS2]);
+  });
+
+  it('explains a task in its own workspace', async () => {
+    const res = await GET(req(`taskId=${TASK}`));
+    expect(res.status).toBe(200);
+    expect(mockExplainTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('404s a task in another workspace of its team', async () => {
+    mockTasksFindFirst.mockImplementation(async () => ({ id: TASK, workspaceId: WS2 }));
+    const res = await GET(req(`taskId=${TASK}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainTask).not.toHaveBeenCalled();
+  });
+
+  it('404s another workspace of its team as a subject', async () => {
+    mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS2, teamId: 'team-1' }));
+    const res = await GET(req(`workspaceId=${WS2}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('404s a team-level mission, which is outside any one workspace', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: null, teamId: 'team-1' }));
+    const res = await GET(req(`missionId=${MISSION}`));
+    expect(res.status).toBe(404);
+    expect(mockExplainMission).not.toHaveBeenCalled();
+  });
+
+  it('explains a mission in its own workspace', async () => {
+    mockMissionsFindFirst.mockImplementation(async () => ({ id: MISSION, workspaceId: WS, teamId: 'team-1' }));
+    const res = await GET(req(`missionId=${MISSION}`));
+    expect(res.status).toBe(200);
+  });
+
+  it('resolves a PR number only within its own workspace', async () => {
+    mockResolveWorkerByPrNumberInWorkspaces.mockImplementation(async () => ({ id: 'w', taskId: TASK, workspaceId: WS, prNumber: 7 }));
+    const res = await GET(req('prNumber=7'));
+    expect(res.status).toBe(200);
+    expect(mockResolveWorkerByPrNumber).not.toHaveBeenCalled();
+    expect((mockResolveWorkerByPrNumberInWorkspaces.mock.calls[0] as any[])[0]).toEqual([WS]);
+  });
+
+  it('leaves an account key unchanged: every workspace of its team', async () => {
+    mockAuthenticateApiKey.mockImplementation(async () => ({ id: 'acct-1', teamId: 'team-1' }));
+    mockWorkspacesFindFirst.mockImplementation(async () => ({ id: WS2, teamId: 'team-1' }));
+    const res = await GET(req(`workspaceId=${WS2}`));
+    expect(res.status).toBe(200);
+  });
+});

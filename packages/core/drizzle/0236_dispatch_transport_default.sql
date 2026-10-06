@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ALTER COLUMN "dispatch_transport" SET DEFAULT 'dispatch';

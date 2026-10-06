@@ -207,7 +207,7 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
           {state.kind === 'verified' && (
             <div data-testid="cloudflare-deploy" className="space-y-2">
               <p className="text-xs text-text-secondary">
-                Next: deploy the cloud runner from the repo root. It reads this token with your admin key.
+                Deploy the cloud runner from the repo root:
               </p>
               <CopyBlock text={CLOUD_RUNNER_DEPLOY_COMMAND} />
             </div>
@@ -274,7 +274,7 @@ export default function CloudflareSection({ teams, defaultTeamId }: Props) {
             Store and verify
           </button>
           <p className="text-xs text-text-muted">
-            Stored encrypted for the whole team. Only owners and admins can change it. Never sent to runners.
+            Encrypted, team-wide, never sent to runners. Owners and admins only.
           </p>
         </div>
       )}

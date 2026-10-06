@@ -22,7 +22,7 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
-import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
+import { reconcileSubjectEvent } from '@/lib/supersession';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -314,17 +314,17 @@ export async function POST(
         console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
       );
 
-      // A human just merged this PR directly — if a reviewer task was still
-      // pending or running for it, cancel it so it doesn't run against an
-      // already-merged PR (fire-and-forget: never blocks the merge response).
-      supersedeReviewerTaskOnMerge({
-        originalTaskId: worker.taskId,
-        installationId,
-        repoFullName,
+      // A human just merged this PR directly: a live reviewer or an open fix
+      // for it is obsolete. Fire-and-forget (never throws), so it never blocks
+      // the merge response.
+      void reconcileSubjectEvent({
+        kind: 'merged',
+        workspaceId: worker.workspaceId,
         prNumber,
-      }).catch((e: unknown) =>
-        console.error(`[pr-merge] supersedeReviewerTaskOnMerge failed for task ${worker.taskId}:`, e)
-      );
+        originalTaskId: worker.taskId,
+        door: 'POST /api/prs/[prNumber]/merge',
+        pr: { installationId, repoFullName },
+      });
     }
 
     // Unblock dependent missions if this task belonged to one
@@ -664,18 +664,20 @@ export async function POST(
             { status: 409 },
           );
         }
-        if (dispatchResult.disabled) {
-          // Feature disabled — fall through to standard error
-        } else {
-          // Duplicate dedup hit — already handling it
+        if (dispatchResult.inFlightTaskId) {
+          // A conflict retry is already working this PR: the card shows it,
+          // not a Retry that would only re-hit the same conflict.
           return NextResponse.json(
             {
               error: `PR #${prNumber} has merge conflicts. A conflict-resolution task is already in progress.`,
-              conflictRetryDispatched: false,
+              conflictRetryDispatched: true,
+              conflictRetryTaskId: dispatchResult.inFlightTaskId,
             },
             { status: 409 },
           );
         }
+        // Anything else (disabled, a refusal, a lost race) falls through to
+        // the conflict error below, flagged so the card offers no merge Retry.
       }
     }
 
@@ -687,7 +689,12 @@ export async function POST(
       : /method not allowed|405/i.test(rawMessage)
       ? 'PR is not in a mergeable state — check CI status and branch protection rules'
       : `GitHub rejected the merge: ${rawMessage}`;
-    return NextResponse.json({ error: userMessage }, { status: 422 });
+    // `mergeConflict`: the same merge cannot succeed until the branch changes,
+    // so a Retry would only repeat this refusal (lib/merge-outcome.ts).
+    return NextResponse.json(
+      { error: userMessage, ...(failureClass === 'conflict' ? { mergeConflict: true } : {}) },
+      { status: 422 },
+    );
   }
 
   return finalizeSuccessfulMerge();

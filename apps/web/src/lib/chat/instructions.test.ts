@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'bun:test';
-import { CHAT_INSTRUCTIONS } from './instructions';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { installPrompts, resetPrompts } from '@buildd/core/prompts';
+import { CHAT_INSTRUCTIONS, CHAT_INSTRUCTIONS_PROMPT_ID, chatInstructions } from './instructions';
 
 describe('CHAT_INSTRUCTIONS', () => {
   // The model's text stays in the thread after the person confirms, so "I won't
@@ -31,5 +32,18 @@ describe('CHAT_INSTRUCTIONS: one write per intent', () => {
   it('asks for every requested write at once, as rows of one card', () => {
     expect(CHAT_INSTRUCTIONS).toMatch(/propose them all at once, in the same step: they become rows of one card, up to 8/);
     expect(CHAT_INSTRUCTIONS).not.toMatch(/at most one write per turn/i);
+  });
+});
+
+describe('chatInstructions: resolves through the prompts table', () => {
+  afterEach(() => resetPrompts());
+
+  it('is the public default with no active row', () => {
+    expect(chatInstructions()).toBe(CHAT_INSTRUCTIONS);
+  });
+
+  it('is the active row when there is one', () => {
+    installPrompts([{ id: CHAT_INSTRUCTIONS_PROMPT_ID, version: 1, contentHash: 'h', body: 'Override text.' }]);
+    expect(chatInstructions()).toBe('Override text.');
   });
 });

@@ -26,6 +26,7 @@ import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integrat
 import { describePrimaryCloneDrift } from './worktree-confinement';
 import { diagnoseRegistryAuth, type RegistryAuthDiagnosis } from './install-diagnosis';
 import { emitPhase } from './phase-lines';
+import { branchOfRemoteRef, ensureRemoteBranch, type GitCwdRun, type RemoteBranchResult } from './git-clone';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -391,7 +392,7 @@ export interface SetupWorktreeResult {
    * resolveWorktreeBase settled on after probing the remote, including any
    * fallback it took.
    *
-   * Returned because the codebase-memory seed is keyed on it. A caller that
+   * Returned so callers read the real base. A caller that
    * re-derived this instead would be re-implementing the base decision, and
    * branch-names.ts documents what hand-mirroring that rule already cost once —
    * a predicted ref that never existed, failing silently.
@@ -411,7 +412,7 @@ export interface SetupWorktreeResult {
   /** Set when a resume/base candidate resolved to a branch that cannot be the
    *  worktree's own checkout — the repo default branch, or a branch another
    *  worktree already holds. The task's own `branch` was used instead, so the
-   *  worker keeps its isolated worktree (and CBM) instead of failing setup and
+   *  worker keeps its isolated worktree instead of failing setup and
    *  degrading into the shared repo root. `holder` is the worktree that owns the
    *  branch, when known. */
   sharedBranch?: {
@@ -479,6 +480,42 @@ export function __resetPrimaryCloneDriftWarnings(): void {
 }
 
 /** Branch name → directory name. The only place this mapping is spelled. */
+/** git through this module's (injectable) execSync, for the git-clone.ts helpers. */
+function gitPort(cwd: string): GitCwdRun {
+  const q = (a: string) => `'${a.replace(/'/g, `'\\''`)}'`;
+  return (args, timeoutMs) => {
+    try {
+      const out = execSync(`git ${args.map(q).join(' ')}`, { cwd, timeout: timeoutMs, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      return { status: 0, stdout: String(out ?? ''), stderr: '', signal: null };
+    } catch (err) {
+      const e = err as { status?: unknown; stdout?: unknown; stderr?: unknown; message?: unknown; signal?: unknown };
+      return {
+        status: typeof e?.status === 'number' ? e.status : 1,
+        stdout: String(e?.stdout ?? ''),
+        stderr: String(e?.stderr ?? e?.message ?? ''),
+        signal: (typeof e?.signal === 'string' ? e.signal : null) as NodeJS.Signals | null,
+      };
+    }
+  };
+}
+
+/**
+ * `origin/<branch>` on demand: in a narrow (cloud) clone, which holds the
+ * default branch only, fetch it by name (git-clone.ts ensureRemoteBranch). A
+ * full clone: a no-op, its `git fetch origin` already brought every branch.
+ */
+function ensureOriginBranch(repoPath: string, branch: string, workerId: string): RemoteBranchResult {
+  return ensureRemoteBranch(repoPath, branch, { run: gitPort(repoPath), log: (m) => console.log(`[Worker ${workerId}] ${m}`) });
+}
+
+function isShallowClone(repoPath: string): boolean {
+  try {
+    return String(execSync('git rev-parse --is-shallow-repository', { cwd: repoPath, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }) ?? '').trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function safeWorktreeDirName(branch: string): string {
   return branch.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
@@ -652,18 +689,38 @@ export async function setupWorktree(
     }
 
     // Create worktree with new branch — from resumeBranch/baseBranch (retry) or default branch (fresh)
-    // fetchBranch uses already-fetched remote tracking refs (git fetch origin ran above)
+    // fetchBranch uses already-fetched remote tracking refs (git fetch origin
+    // ran above). A narrow (cloud) clone holds the default branch only, so the
+    // candidate is fetched by name first (ensureOriginBranch); a full clone
+    // skips that.
     const fetchBranch = async (candidate: string): Promise<BranchFetchResult> => {
+      if (ensureOriginBranch(repoPath, candidate, workerId) === 'missing') return 'missing';
       try {
-        const countStr = execSync(
+        const countStr = String(execSync(
           `git rev-list --count "origin/${defaultBranch}..origin/${candidate}"`,
           // Piped: a missing candidate is an expected negative (caught below and
           // logged by resolveWorktreeBase). Inherited stderr put git's
           // "fatal: ambiguous argument" in the runner log on every such start.
           { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] },
-        ).trim();
+        ) ?? '').trim();
         const count = parseInt(countStr, 10);
         if (!isNaN(count) && count > 50) {
+          // In a shallow clone the count is only a count of commits ahead when
+          // the merge base is here. Without it, the walk runs to the shallow
+          // boundary and counts every fetched commit: a branch cut a week ago
+          // and a few commits ahead would read as diverged and lose its PR.
+          // Undecidable here, so not a veto.
+          if (isShallowClone(repoPath)) {
+            try {
+              execSync(`git merge-base "origin/${defaultBranch}" "origin/${candidate}"`, { ...execOpts, timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+            } catch {
+              console.log(
+                `[Worker ${workerId}] origin/${candidate} has no merge base with origin/${defaultBranch} in this shallow clone; ` +
+                `divergence cannot be measured, treating it as usable`,
+              );
+              return 'ok';
+            }
+          }
           return 'diverged';
         }
         return 'ok';
@@ -822,7 +879,7 @@ export async function setupWorktree(
     // exists" / "cannot delete branch 'X' used by worktree at …".  Tasks whose
     // context carried baseBranch:"dev" used to hit exactly that: every
     // concurrent worker but one failed setup and was silently degraded into the
-    // shared role-clone root (no fs isolation, no CBM).  Fall back to the task's
+    // shared role-clone root (no fs isolation).  Fall back to the task's
     // own branch, which is unique per task, and report it.
     //
     // This also covers the mission-integration case: when the branch parameter
@@ -1022,6 +1079,10 @@ export async function setupWorktree(
       // branch, which in practice is nearly always.
       if (!localBranchExists(candidate)) continue;
 
+      // Its remote tip may not be in a narrow (cloud) clone yet (a branch
+      // restored from a park bundle, pushed by an earlier attempt): without it
+      // pushed work reads as unpushed. A full clone: a no-op.
+      ensureOriginBranch(repoPath, candidate, workerId);
       const safeToDelete =
         isAncestorOf(candidate, `origin/${defaultBranch}`) || isAncestorOf(candidate, `origin/${candidate}`);
       if (safeToDelete) {
@@ -1279,6 +1340,11 @@ export async function collectGitStats(
   // worker made zero commits of its own. Shared by the lastCommitSha trust
   // check below and the diff, which must agree on the same base.
   let mergeBase = '';
+  // A narrow (cloud) clone may not hold the base: a resumed park restores the
+  // worktree into a fresh clone of the default branch only. Fetched by name;
+  // a full clone: a no-op.
+  const baseBranch = branchOfRemoteRef(baseRef);
+  if (baseBranch) ensureOriginBranch(cwd, baseBranch, workerId);
   if (baseRef) {
     try {
       const result = execSync(`git merge-base HEAD ${baseRef} 2>/dev/null`, opts).trim();

@@ -57,6 +57,10 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+let latestWake: Row | null = null;
+const mockLatestDispatchForTask = mock(async (_id: string) => latestWake);
+mock.module('@buildd/core/dispatch-outbox', () => ({ latestDispatchForTask: mockLatestDispatchForTask }));
+
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   tasks: { id: 'id', missionId: 'missionId', parentTaskId: 'parentTaskId', workspaceId: 'workspaceId', status: 'status' },
@@ -428,6 +432,37 @@ describe('explainTask', () => {
     expect(answer.situation.nextAction ?? '').not.toMatch(/retry the task/i);
   });
 
+  it('a pending task whose latest wake failed says so in because[], with the outbox id', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    latestWake = { id: 'outbox-9', status: 'failed', cause: 'task.created', transport: 'dispatch', attempt_count: 5, not_before: new Date(Date.now() - 3600_000).toISOString(), last_error: 'http_500' };
+    try {
+      const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+      const wake = answer.because.find(l => l.refs.outboxId === 'outbox-9');
+      expect(wake?.claim).toContain('failed after 5 attempts');
+      // Before the closing conclusion, and numbered in order.
+      expect(answer.because[answer.because.length - 1].refs.outboxId).toBeUndefined();
+      expect(answer.because.map(l => l.order)).toEqual(answer.because.map((_, i) => i + 1));
+    } finally {
+      latestWake = null;
+    }
+  });
+
+  it('a task that is not pending never reads its wake', async () => {
+    taskRows = [task({ id: 'task-1', status: 'completed' })];
+    mockLatestDispatchForTask.mockClear();
+    await explainTask('task-1', ACTOR);
+    expect(mockLatestDispatchForTask).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable wake leaves the chain as it was', async () => {
+    missionRow = { id: 'mission-1', executor: 'runner', isHeld: false };
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    mockLatestDispatchForTask.mockImplementationOnce(async () => { throw new Error('db'); });
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.because.some(l => l.refs.outboxId)).toBe(false);
+  });
+
   it('a held local mission is not read as local (held wins)', async () => {
     missionRow = { id: 'mission-1', executor: 'local', isHeld: true };
     taskRows = [task({ id: 'task-1', status: 'pending' })];
@@ -471,7 +506,7 @@ describe('explainTask', () => {
     expect(answer.waitingOn?.kind).toBe('pr_closed_unmerged');
     expect(answer.situation.headline).toContain('closed without merging');
     expect(answer.situation.headline).not.toContain('open PR');
-    expect(answer.situation.headline).not.toContain('waiting on you to merge');
+    expect(answer.situation.headline).not.toContain('ready to merge');
     expect(answer.nextAction).toContain('record_pr_supersession');
     expect(answer.because.some(l => l.claim.includes('record_pr_supersession'))).toBe(true);
   });
@@ -557,6 +592,25 @@ describe('explainTask', () => {
     expect(answer.waitingOn).toBeNull();
     expect(answer.nextAction).toBeNull();
     expect(answer.derivedFrom.waitingOn).toBeNull();
+  });
+
+  // The claim flips a Claude task to Codex in memory; without this the only
+  // trace was a log line, and explain could not say why the backend changed.
+  it('says why the claim ran the task on another backend', async () => {
+    taskRows = [task({
+      id: 'task-1', status: 'in_progress', backend: 'claude',
+      context: { backendRouting: { backend: 'codex', from: 'claude', reason: 'claude_seat_exhausted' } },
+    })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.backendRouting?.summary).toBe('routed to Codex by budget failover (Claude seat exhausted)');
+    expect(answer.backendRouting?.backend).toBe('codex');
+    expect(answer.derivedFrom.backendRouting).toBe('tasks.context.backendRouting');
+  });
+
+  it('leaves backendRouting off when nothing moved the task', async () => {
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    const answer = (await explainTask('task-1', ACTOR))!.subjects[0];
+    expect(answer.backendRouting).toBeUndefined();
   });
 });
 

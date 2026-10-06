@@ -4,17 +4,20 @@
  * docs/design/agent-model-endpoint.md §4, §6). The key never leaves the
  * server: callers get the base URL, the key's last four characters and health.
  *
- * Rows are team-wide or one workspace, never account- or person-scoped.
+ * Rows are team-wide or one workspace, never account- or person-scoped. The
+ * team-wide row may narrow itself to some workspaces (`appliesTo` in its blob,
+ * @buildd/core/agent-endpoint); `setAgentEndpointAppliesTo` edits that list
+ * without the key and can fold matching per-workspace copies into it.
  */
 import { db } from '@buildd/core/db';
 import { modelTierRegistry, secrets, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { decrypt, getSecretsProvider } from '@buildd/core/secrets';
+import { and, eq, isNull } from 'drizzle-orm';
+import { decrypt, encrypt, getSecretsProvider } from '@buildd/core/secrets';
 import { maskKeyLast4 } from '@buildd/core/inference-keys';
 import type { LookupAll } from '@buildd/core/net/public-address';
 import { normalizeGatewayUrl, resolveLiteLLMGateway, type LiteLLMGateway } from '@buildd/core/litellm-gateway';
 import { teamCredentialWhere } from '@buildd/core/secrets/team-scope';
-import { TIER_DEFAULTS, TIERS } from '@buildd/core/model-tier-defaults';
+import { TIERS, bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import {
   buildEndpointModelRows,
   deriveModelAliases,
@@ -27,6 +30,7 @@ import {
   AGENT_ENDPOINT_PURPOSE,
   mapAgentModel,
   parseAgentEndpointBlob,
+  parseAppliesTo,
   resolveEndpointFromBlob,
   serializeAgentEndpoint,
   validateAgentEndpointInput,
@@ -40,11 +44,20 @@ import {
 
 export type EndpointHealth = 'healthy' | 'revoked' | 'unknown';
 
+export interface EndpointWorkspaceRef { id: string; name: string }
+
 export interface MaskedAgentEndpoint {
   id: string;
   scope: 'team' | 'workspace';
   workspaceId: string | null;
   workspaceName: string | null;
+  /**
+   * Team row: the workspaces it applies to, or null for all of them. Ids that
+   * left the team or were deleted are dropped here. Workspace rows: null.
+   */
+  appliesTo: EndpointWorkspaceRef[] | null;
+  /** Workspace row: routes exactly like the team row (same kind, URL, key, header and aliases). */
+  matchesTeam: boolean;
   kind: AgentEndpointKind;
   /** Effective Anthropic-compatible root ('' when a gateway reference has no gateway). */
   baseUrl: string;
@@ -78,7 +91,7 @@ type VerifyDeps = { fetcher?: Fetcher; lookup?: LookupAll };
  * into the name actually sent, from the alias table and the endpoint's own
  * `/v1/models` list.
  */
-export const VERIFY_MODEL = TIER_DEFAULTS.budget.model;
+export const VERIFY_MODEL = bundledTierEntry('budget').model;
 
 /** Listed models a refusal message names, at most. */
 const USABLE_SHOWN = 3;
@@ -92,7 +105,10 @@ const USABLE_SHOWN = 3;
  */
 async function agentTierModels(teamId: string): Promise<{ wanted: Array<{ model: string; tiers: string[] }>; hints: Record<string, string[]> }> {
   const wanted: Array<{ model: string; tiers: string[] }> = [];
-  for (const t of TIERS) if (TIER_DEFAULTS[t].provider === 'anthropic') wanted.push({ model: TIER_DEFAULTS[t].model, tiers: [t] });
+  for (const t of TIERS) {
+    const d = bundledTierEntry(t);
+    if (d.provider === 'anthropic') wanted.push({ model: d.model, tiers: [t] });
+  }
   let rows: Array<{ tier: string; provider: string; model: string; surface: string | null }> = [];
   try {
     rows = (await db.query.modelTierRegistry.findMany({
@@ -153,6 +169,52 @@ function readBlob(encryptedValue: string): AgentEndpointBlob | null {
   }
 }
 
+/** This team's workspaces by id to name (the query is re-checked in code). */
+async function teamWorkspaceNames(teamId: string): Promise<Map<string, string>> {
+  const ws = await db.query.workspaces.findMany({
+    where: eq(workspaces.teamId, teamId),
+    columns: { id: true, name: true, teamId: true },
+  });
+  const names = new Map<string, string>();
+  for (const w of ws ?? []) if (w.teamId === teamId) names.set(w.id, w.name);
+  return names;
+}
+
+/** The listed ids that are still this team's workspaces, named, in list order. */
+function namedRefs(ids: readonly string[], names: Map<string, string>): EndpointWorkspaceRef[] {
+  return ids.filter((id) => names.has(id)).map((id) => ({ id, name: names.get(id)! }));
+}
+
+function sameModels(a: AgentModelMap, b: AgentModelMap): boolean {
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
+}
+
+/**
+ * Two rows route identically: same kind, Anthropic root, key, header and
+ * aliases. Only then is a per-workspace copy redundant with the team row; any
+ * difference (a key, a URL, an alias, a gateway that resolves elsewhere) keeps it.
+ */
+function sameRoute(a: AgentEndpointRoute | null, b: AgentEndpointRoute | null): boolean {
+  if (!a || !b) return false;
+  return a.kind === b.kind && a.baseUrl === b.baseUrl && a.apiKey === b.apiKey &&
+    a.authHeader === b.authHeader && sameModels(a.models, b.models);
+}
+
+/**
+ * `appliesTo` from a settings call: undefined/null means all workspaces; else
+ * every id must be one of this team's workspaces (400 otherwise).
+ */
+async function resolveAppliesTo(teamId: string, raw: unknown): Promise<{ ok: true; appliesTo: string[] | undefined; names: Map<string, string> } | Refusal> {
+  const parsed = parseAppliesTo(raw);
+  if (parsed.ok === false) return { ok: false, status: 400, error: parsed.error };
+  const names = await teamWorkspaceNames(teamId);
+  if (parsed.appliesTo?.some((id) => !names.has(id))) {
+    return { ok: false, status: 400, error: 'appliesTo names a workspace that is not in this team.' };
+  }
+  return { ok: true, appliesTo: parsed.appliesTo, names };
+}
+
 export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgentEndpoint[]> {
   const rows = await db.query.secrets.findMany({
     where: endpointRows(teamId),
@@ -162,27 +224,24 @@ export async function listTeamAgentEndpoints(teamId: string): Promise<MaskedAgen
     },
   });
   const mine = rows.filter((r) => r.purpose === AGENT_ENDPOINT_PURPOSE && !r.accountId && !r.userId);
-  const wsIds = [...new Set(mine.map((r) => r.workspaceId).filter((v): v is string => !!v))];
-  const names = new Map<string, string>();
-  if (wsIds.length > 0) {
-    const ws = await db.query.workspaces.findMany({
-      where: inArray(workspaces.id, wsIds),
-      columns: { id: true, name: true, teamId: true },
-    });
-    for (const w of ws) if (w.teamId === teamId) names.set(w.id, w.name);
-  }
+  const names = mine.length > 0 ? await teamWorkspaceNames(teamId) : new Map<string, string>();
 
   const out: MaskedAgentEndpoint[] = [];
   const tierModels = mine.length > 0 ? await agentTierModels(teamId) : { wanted: [], hints: {} };
-  for (const r of mine) {
+  const read = await Promise.all(mine.map(async (r) => {
     const blob = readBlob(r.encryptedValue);
     const gateway = blob?.kind === 'gateway' ? await gatewayFor(teamId, r.workspaceId) : null;
-    const route = blob ? resolveEndpointFromBlob(blob, gateway) : null;
+    return { r, blob, gateway, route: blob ? resolveEndpointFromBlob(blob, gateway) : null };
+  }));
+  const teamRoute = read.find((x) => !x.r.workspaceId)?.route ?? null;
+  for (const { r, blob, gateway, route } of read) {
     out.push({
       id: r.id,
       scope: r.workspaceId ? 'workspace' : 'team',
       workspaceId: r.workspaceId,
       workspaceName: r.workspaceId ? names.get(r.workspaceId) ?? null : null,
+      appliesTo: !r.workspaceId && blob?.appliesTo ? namedRefs(blob.appliesTo, names) : null,
+      matchesTeam: !!r.workspaceId && sameRoute(route, teamRoute),
       kind: blob?.kind ?? 'anthropic-compatible',
       baseUrl: route?.baseUrl ?? '',
       authHeader: route?.authHeader ?? 'authorization',
@@ -322,8 +381,26 @@ export async function setTeamAgentEndpoint(
 
   // A blank key keeps the saved one, for the same endpoint only.
   let endpoint = input.endpoint;
+  // Which workspaces a team row applies to: the call's list when it names one
+  // (null = all), else the saved row's, so re-saving never silently widens it.
+  let appliesTo: string[] | undefined;
+  let names: Map<string, string> | null = null;
   if (endpoint && typeof endpoint === 'object' && !Array.isArray(endpoint)) {
-    const filled = withStoredKey(endpoint as Record<string, unknown>, await storedBlobAt(input.teamId, workspaceId));
+    const { appliesTo: rawAppliesTo, ...rest } = endpoint as Record<string, unknown>;
+    const stored = await storedBlobAt(input.teamId, workspaceId);
+    if (workspaceId) {
+      if (rawAppliesTo !== undefined && rawAppliesTo !== null) {
+        return { ok: false, status: 400, error: 'A workspace endpoint applies to its own workspace only.' };
+      }
+    } else if (rawAppliesTo !== undefined) {
+      const a = await resolveAppliesTo(input.teamId, rawAppliesTo);
+      if (!a.ok) return a;
+      appliesTo = a.appliesTo;
+      names = a.names;
+    } else {
+      appliesTo = stored?.appliesTo;
+    }
+    const filled = withStoredKey(rest, stored);
     if (!filled) return { ok: false, status: 400, error: 'Enter the key for this endpoint.' };
     endpoint = filled;
   }
@@ -365,6 +442,7 @@ export async function setTeamAgentEndpoint(
     const derived = deriveModelAliases({ models: tierModels.wanted.map((w) => w.model), explicit, listed });
     if (Object.keys(derived).length > 0) blob = { ...blob, models: { ...derived, ...explicit } };
   }
+  if (appliesTo) blob = { ...blob, appliesTo };
 
   const id = await getSecretsProvider().replaceScoped(serializeAgentEndpoint(blob), {
     teamId: input.teamId,
@@ -381,6 +459,8 @@ export async function setTeamAgentEndpoint(
       scope: workspaceId ? 'workspace' : 'team',
       workspaceId,
       workspaceName: null,
+      appliesTo: appliesTo ? namedRefs(appliesTo, names ?? await teamWorkspaceNames(input.teamId)) : null,
+      matchesTeam: false,
       kind: route.kind,
       baseUrl: route.baseUrl,
       authHeader: route.authHeader,
@@ -394,6 +474,79 @@ export async function setTeamAgentEndpoint(
       updatedAt: now.toISOString(),
     },
   };
+}
+
+export interface EndpointCopy {
+  workspaceId: string;
+  workspaceName: string | null;
+  /** Routes exactly like the team row (sameRoute). */
+  matches: boolean;
+  /** Deleted by this call (only ever a matching copy, only with consolidate). */
+  removed: boolean;
+}
+
+/**
+ * Change which workspaces the team-wide endpoint applies to, without the key:
+ * the saved blob is rewritten with the new `appliesTo` (null = all
+ * workspaces) and nothing else; no verify call, health untouched.
+ *
+ * `copies`: every selected workspace (every team workspace for null) that has
+ * its own endpoint row, and whether it routes exactly like the team row. With
+ * `consolidate: true` those matching copies are deleted, so the workspace now
+ * uses the team row. A copy with a different key, URL, header, aliases or
+ * gateway is never deleted, and copies outside the selection are not touched.
+ */
+export async function setAgentEndpointAppliesTo(input: {
+  teamId: string;
+  appliesTo: unknown;
+  consolidate?: unknown;
+}): Promise<{ ok: true; endpoint: MaskedAgentEndpoint; copies: EndpointCopy[] } | Refusal> {
+  if (input.appliesTo === undefined) {
+    return { ok: false, status: 400, error: 'appliesTo is required: a list of workspace ids, or null for all workspaces.' };
+  }
+  if (input.consolidate !== undefined && typeof input.consolidate !== 'boolean') {
+    return { ok: false, status: 400, error: 'consolidate must be true or false.' };
+  }
+  const a = await resolveAppliesTo(input.teamId, input.appliesTo);
+  if (!a.ok) return a;
+
+  const rows = ((await db.query.secrets.findMany({
+    where: endpointRows(input.teamId),
+    columns: { id: true, workspaceId: true, accountId: true, userId: true, purpose: true, encryptedValue: true },
+  })) ?? []).filter((r) => r.purpose === AGENT_ENDPOINT_PURPOSE && !r.accountId && !r.userId);
+  const teamRow = rows.find((r) => !r.workspaceId);
+  if (!teamRow) return { ok: false, status: 404, error: 'Save a team-wide endpoint first.' };
+  const blob = readBlob(teamRow.encryptedValue);
+  if (!blob) return { ok: false, status: 409, error: 'The saved endpoint could not be read. Save it again.' };
+
+  const { appliesTo: _previous, ...rest } = blob;
+  const next = validateAgentEndpointInput(a.appliesTo ? { ...rest, appliesTo: a.appliesTo } : rest);
+  if (!next.ok) return { ok: false, status: 409, error: 'The saved endpoint could not be read. Save it again.' };
+  await db.update(secrets)
+    .set({ encryptedValue: encrypt(serializeAgentEndpoint(next.blob)), updatedAt: new Date() })
+    .where(and(endpointRows(input.teamId), eq(secrets.id, teamRow.id)));
+
+  const selected = new Set(a.appliesTo ?? [...a.names.keys()]);
+  const teamGateway = next.blob.kind === 'gateway' ? await gatewayFor(input.teamId, null) : null;
+  const teamRoute = resolveEndpointFromBlob(next.blob, teamGateway);
+  const copies: EndpointCopy[] = [];
+  for (const r of rows) {
+    if (!r.workspaceId || !selected.has(r.workspaceId)) continue;
+    const wsBlob = readBlob(r.encryptedValue);
+    const wsGateway = wsBlob?.kind === 'gateway' ? await gatewayFor(input.teamId, r.workspaceId) : null;
+    const matches = sameRoute(wsBlob ? resolveEndpointFromBlob(wsBlob, wsGateway) : null, teamRoute);
+    let removed = false;
+    if (matches && input.consolidate === true) {
+      await getSecretsProvider().delete(r.id);
+      removed = true;
+    }
+    copies.push({ workspaceId: r.workspaceId, workspaceName: a.names.get(r.workspaceId) ?? null, matches, removed });
+  }
+  copies.sort((x, y) => (x.workspaceName ?? '').localeCompare(y.workspaceName ?? ''));
+
+  const endpoint = (await listTeamAgentEndpoints(input.teamId)).find((e) => e.id === teamRow.id);
+  if (!endpoint) return { ok: false, status: 409, error: 'The endpoint changed while saving. Reload and try again.' };
+  return { ok: true, endpoint, copies };
 }
 
 export async function deleteTeamAgentEndpoint(teamId: string, workspaceId: string | null): Promise<boolean> {

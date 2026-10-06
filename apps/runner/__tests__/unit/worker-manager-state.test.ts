@@ -87,6 +87,10 @@ const mockSendHeartbeat = mock(async () => ({}));
 const mockRunCleanup = mock(async () => ({}));
 const mockSearchFeedbackMemories = mock(async () => []);
 const mockGetWorkerRemote = mock(async () => null);
+// Defaults to a transport failure (the realistic "gate unreachable" shape),
+// which fails open to a human-facing park for a genuinely_blocked session
+// end. Tests that need the pushed-turn path override this per-case.
+const mockCheckQuestion = mock(async () => { throw new Error('question-check unreachable'); });
 
 mock.module('../../src/buildd', () => ({
   BuilddClient: class {
@@ -102,6 +106,7 @@ mock.module('../../src/buildd', () => ({
     runCleanup = mockRunCleanup;
     searchFeedbackMemories = mockSearchFeedbackMemories;
     getWorkerRemote = mockGetWorkerRemote;
+    checkQuestion = mockCheckQuestion;
   },
 }));
 
@@ -230,6 +235,8 @@ describe('WorkerManager — state transitions', () => {
     mockMessagesQueue = [];
     mockQueryPrompts = [];
     mockThrowOnAbort = false;
+    mockCheckQuestion.mockClear();
+    mockCheckQuestion.mockImplementation(async () => { throw new Error('question-check unreachable'); });
     mockUpdateWorker.mockClear();
     mockClaimTask.mockReset();
     mockClaimTask.mockResolvedValue({ workers: [] });
@@ -575,13 +582,19 @@ describe('WorkerManager — state transitions', () => {
       expect(waitingCalls.length).toBeGreaterThanOrEqual(1);
     });
 
-    // The nudge turn a pr_required session gets when it ends with nothing
-    // delivered is itself a session: an AskUserQuestion inside it takes the
-    // real abort path (the SDK generator throws) and must park the worker as
-    // waiting_input — the "genuinely blocked" way out the nudge offers — not
-    // fail it, and not earn a second nudge.
-    test('AskUserQuestion during the no-deliverable nudge turn parks as waiting_input, not failed', async () => {
+    // A pushed turn (session-end-classification.ts) is itself a session: an
+    // AskUserQuestion inside it takes the real abort path (the SDK generator
+    // throws) and must park the worker as waiting_input — not fail it, and
+    // not earn a second push. The signal here is genuinely_blocked (no
+    // commits, no background job, no denial), so the Jev gate is what sends
+    // this session into a pushed turn in the first place — decide retry.
+    test('AskUserQuestion during a pushed turn parks as waiting_input, not failed', async () => {
       mockThrowOnAbort = true;
+      mockCheckQuestion.mockImplementation(async () => ({
+        verdict: 'decide', outcome: 'decided', disposition: 'decide',
+        decision: { optionIndex: 0, label: 'Give it one more try', confidence: 0.9 },
+        reason: 'Take one more shot at it.', version: 'qd1', latencyMs: 5,
+      }));
       mockMessagesQueue = [
         [
           { type: 'system', subtype: 'init', session_id: 'sess-nudge-park' },
@@ -613,7 +626,7 @@ describe('WorkerManager — state transitions', () => {
       await new Promise(r => setTimeout(r, 300));
 
       expect(mockQueryPrompts.length).toBe(2);
-      expect(mockQueryPrompts[1]).toContain('Your session is about to end with nothing delivered.');
+      expect(mockQueryPrompts[1]).toBe('Take one more shot at it.');
 
       const worker = manager.getWorker('w-nudge-park');
       expect(worker?.status).toBe('waiting');

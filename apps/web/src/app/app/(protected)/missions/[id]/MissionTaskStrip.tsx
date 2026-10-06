@@ -222,7 +222,7 @@ export function stripReason(t: BoardTask, executor: MissionExecutor | null): str
     case 'done':
     case 'blocked':
       return null;
-    case 'waiting': return t.waitingFor?.prompt ?? 'Waiting on you.';
+    case 'waiting': return t.waitingFor?.prompt ?? 'Needs input.';
     case 'running': return t.currentAction ?? `Running${t.runner ? ` on ${t.runner}` : ''}.`;
     case 'review': return 'PR open, awaiting merge.';
     case 'ci_failed': return 'CI failed on its PR.';
@@ -255,7 +255,7 @@ const StripDrawer = memo(function StripDrawer({ ref, task: t, state, index, tone
     landed && t.endedAt != null ? `landed ${formatAge(now - t.endedAt)} ago` : null,
     t.id.slice(0, 8),
   ].filter(Boolean).join(' · ');
-  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_minmax(200px,auto)] md:gap-6';
+  const twoCol = compact ? '' : 'md:grid md:grid-cols-[minmax(0,1fr)_fit-content(60%)] md:gap-6';
 
   return (
     <div

@@ -15,6 +15,7 @@
  * Cached per mission and the set of merged PRs behind it, so reopening the
  * sheet does not spend again. The cache is per server instance (best effort).
  */
+import { promptedQuestions } from '@buildd/core/prompted-decision';
 import { createHash } from 'node:crypto';
 import { SURFACE_AUDIT_WAIVER_MIN_REASON_LENGTH } from '@buildd/core/surface-audit';
 import type {
@@ -24,6 +25,7 @@ import type {
   DecisionResult,
   decisionCall,
 } from '@buildd/core/decision-client';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 export const SURFACE_AUDIT_ADVICE_CAPABILITY = 'surface_audit_advice' as const;
 export const SURFACE_AUDIT_ADVICE_DECISION_ID = 'surface_audit_advice';
@@ -66,6 +68,14 @@ export const SURFACE_AUDIT_ADVICE_QUESTION = {
 
 type Questions = { pick: typeof SURFACE_AUDIT_ADVICE_QUESTION };
 
+/** The prompts-table id whose active row may replace the question (`@buildd/core/prompted-decision`). */
+export const SURFACE_AUDIT_ADVICE_PROMPT_ID = 'buildd.surface_audit_advice';
+
+/** The question and prompt version in effect: an active prompts row, else the public ones. */
+function currentPrompt() {
+  return promptedQuestions(SURFACE_AUDIT_ADVICE_PROMPT_ID, { pick: SURFACE_AUDIT_ADVICE_QUESTION }, SURFACE_AUDIT_ADVICE_PROMPT_VERSION);
+}
+
 export interface AdviceFacts {
   uiPaths: string[];
   /** Titles of the completed work that shipped them (a PR's title is its task's). */
@@ -86,7 +96,7 @@ export function buildAdviceState(facts: AdviceFacts) {
 /** The sorted PR numbers behind the mission's shipped work, hashed: the cache's "head of the merged set". */
 export function adviceCacheKey(missionId: string, prNumbers: readonly number[]): string {
   const head = createHash('sha256').update([...new Set(prNumbers)].sort((a, b) => a - b).join(',')).digest('hex').slice(0, 16);
-  return `${missionId}:${SURFACE_AUDIT_ADVICE_PROMPT_VERSION}:${head}`;
+  return `${missionId}:${currentPrompt().promptVersion}:${head}`;
 }
 
 /** The route-ish area a UI file sits in, for the sentence: `apps/web/src/app/app/(protected)/missions/[id]/x.tsx` -> `missions`. */
@@ -214,7 +224,7 @@ export async function adviseSurfaceAudit(input: AdviceInput, deps: AdviceDeps = 
       accountId: input.accountId ?? null,
       userId: input.userId ?? null,
       state: buildAdviceState(input),
-      questions: { pick: SURFACE_AUDIT_ADVICE_QUESTION },
+      questions: currentPrompt().questions,
       timeoutMs: ADVICE_TIMEOUT_MS,
       decisionId: SURFACE_AUDIT_ADVICE_DECISION_ID,
       access,
@@ -228,7 +238,7 @@ export async function adviseSurfaceAudit(input: AdviceInput, deps: AdviceDeps = 
     }
     const { choice, confidence } = res.answers.pick;
     log(`${SURFACE_AUDIT_ADVICE_LOG_PREFIX} ${JSON.stringify({
-      v: `${SURFACE_AUDIT_ADVICE_PROMPT_VERSION}|${res.model}`,
+      v: `${currentPrompt().promptVersion}|${res.model}`,
       mission: input.missionId.slice(0, 8),
       pick: choice,
       confidence,
@@ -248,3 +258,6 @@ export async function adviseSurfaceAudit(input: AdviceInput, deps: AdviceDeps = 
     return null;
   }
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(SURFACE_AUDIT_ADVICE_PROMPT_ID, { pick: SURFACE_AUDIT_ADVICE_QUESTION });

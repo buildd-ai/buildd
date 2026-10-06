@@ -92,6 +92,10 @@ describe('classifyErrorClass', () => {
     expect(classifyErrorClass('operation timed out')).toBe('timeout');
     expect(classifyErrorClass('HTTP 401 Bad credentials')).toBe('auth');
   });
+  it('names the agent CLI "not logged in" failure as auth, not unknown', () => {
+    expect(classifyErrorClass('Not logged in · Please run /login')).toBe('auth');
+    expect(classifyErrorClass('[mcp-sdk] noise\nnot logged in')).toBe('auth');
+  });
   it('falls back to the scanner pattern label', () => {
     expect(classifyErrorClass('weird', ['command_not_found'])).toBe('infra');
   });

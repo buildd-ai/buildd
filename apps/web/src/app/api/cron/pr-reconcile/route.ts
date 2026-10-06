@@ -74,7 +74,7 @@ import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { sweepSpecDiscrepancyRechecks } from '@/lib/spec-recheck';
 import { sweepDuplicateLineagePrs } from '@/lib/retry-pr-supersession';
 import { sweepClosedUnsupersededPrs } from '@/lib/pr-supersession-detect';
-import { sweepMissionBranchRefresh } from '@/lib/mission-branch-refresh';
+import { MISSION_BRANCH_REFRESH_SWEEP } from '@/modules';
 import { sweepLandingPrs } from '@/lib/pr-landing-sweep-deps';
 import { redriveDeferredRefreshes, type RefreshRedriveResult } from '@/lib/refresh-redrive';
 import { PR_LANDING_DUE_QUEUE, type LandingSweepResult } from '@/lib/pr-landing-sweep';
@@ -122,7 +122,7 @@ export async function GET(req: NextRequest) {
       // (lib/mission-branch-refresh.ts) — covers a lost webhook delivery.
       // Hourly, like merge-state healing: a mission branch left stale for a
       // full day is exactly the failure mode this exists to close. Isolated.
-      sweepMissionBranchRefresh().catch((err): { error: string } => ({
+      MISSION_BRANCH_REFRESH_SWEEP().catch((err): { error: string } => ({
         error: err instanceof Error ? err.message : String(err),
       })),
       // Stranded-task detection has nothing to do with PRs — it rides this

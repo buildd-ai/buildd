@@ -37,3 +37,6 @@ scripts/demo/out/
 # Local chat/MCP eval data (apps/web/scripts/chat-eval): real questions and
 # transcripts. Never commit it (this repo is public).
 .eval-data/
+
+# Private prompts checked out by the private prompt eval
+.private-prompts/

@@ -78,7 +78,7 @@ function rowMessage(message: Message, b: StorageBackend): Message {
   if (message.type === 'error' && b.lastError && b.status !== 'ok' && message.text.includes(b.lastError)) {
     // Keep anything after the error (verify warnings, e.g. a publicly readable probe).
     const rest = message.text.slice(message.text.indexOf(b.lastError) + b.lastError.length).trim();
-    return { ...message, text: `The check failed just now. The error is shown above.${rest ? ` ${rest}` : ''}` };
+    return { ...message, text: `Check failed.${rest ? ` ${rest}` : ''}` };
   }
   return message;
 }
@@ -217,8 +217,8 @@ export default function StorageSection({ workspaces, fixture }: {
       const v = data as unknown as Verification;
       const warn = v.warnings?.length ? ` ${v.warnings.join(' ')}` : '';
       setMessage(v.status === 'ok'
-        ? { type: 'success', text: `Verified: buildd wrote, read back and deleted a check object.${warn}`, backendId: backend.id }
-        : { type: 'error', text: `The check failed: ${v.error ?? 'unknown error'}${warn}`, backendId: backend.id });
+        ? { type: 'success', text: `Verified.${warn}`, backendId: backend.id }
+        : { type: 'error', text: `Check failed: ${v.error ?? 'unknown error'}${warn}`, backendId: backend.id });
       await load();
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Verify failed', backendId: backend.id });
@@ -232,8 +232,8 @@ export default function StorageSection({ workspaces, fixture }: {
     if (!(await confirm({
       title: `Remove the ${backend.workspaceId ? `${scope} backend` : 'team default backend'}?`,
       message: backend.workspaceId
-        ? 'New evidence for this workspace goes to the team default instead. Objects already in the bucket stay there; buildd keeps its pointers but can no longer read them.'
-        : 'New evidence goes to buildd\'s managed bucket instead. Objects already in your bucket stay there; buildd keeps its pointers but can no longer read them.',
+        ? 'New evidence goes to the team default. Existing objects stay in the bucket, unreadable from buildd.'
+        : 'New evidence goes to the buildd bucket. Existing objects stay in your bucket, unreadable from buildd.',
       confirmLabel: 'Remove',
       variant: 'danger',
     }))) return;
@@ -273,8 +273,7 @@ export default function StorageSection({ workspaces, fixture }: {
             <div className="px-4 py-4 space-y-1" data-testid="storage-empty">
               <div className="font-mono text-[13px] font-semibold text-text-primary">buildd managed</div>
               <p className="text-xs text-text-secondary">
-                No bucket of your own yet. Evidence goes to buildd&apos;s managed bucket and is kept 30 days.
-                {canManage ? ' Add a backend to keep it in a bucket your team controls.' : ''}
+                Kept 30 days.
               </p>
             </div>
           ) : sorted.map((b) => (
@@ -418,8 +417,7 @@ function BackendRow({
             <div className="space-y-2 border-t border-border-default pt-4" data-testid="storage-lifecycle">
               <div className="text-sm font-medium text-text-primary">Lifecycle rule</div>
               <p className="text-xs text-text-secondary">
-                buildd deletes evidence after {b.retentionDays} days. Add this rule to the bucket as a backstop, so
-                objects under <span className="font-mono">{b.prefix}/</span> expire on the same day even if a delete is missed.
+                Expires objects under <span className="font-mono">{b.prefix}/</span> after {b.retentionDays} days, matching buildd&apos;s own cleanup.
               </p>
               <SnippetBlock label="lifecycle.json" text={snippet.config} wrap={false} />
               <SnippetBlock label="Apply it" text={snippet.command} wrap />

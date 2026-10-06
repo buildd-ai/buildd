@@ -167,7 +167,12 @@ function stallReason(input: ReviewerGateInput): string {
   else if (facts.budgetPauses.length) parts.push(...facts.budgetPauses);
   else if (!providerFloor) parts.push('no recorded budget pause');
   if (floor) parts.push(`${providerFloor ? 'provider retry' : 'scheduled start'} floor until ${floor.toISOString()}`);
-  const reason = rt?.context?.lastClaimAttemptReason;
+  // The specific gate (e.g. workspace_cap) beats the coarse diagnostic, which
+  // for a WHERE-clause exclusion is only ever `no_pending_tasks`.
+  const exclusionCode = (rt?.context?.lastClaimAttemptExclusion as { code?: unknown } | undefined)?.code;
+  const reason = typeof exclusionCode === 'string' && exclusionCode.length > 0
+    ? exclusionCode
+    : rt?.context?.lastClaimAttemptReason;
   const stampedAt = rt?.context?.lastClaimAttemptAt;
   // A stamp is historical evidence, not a new pre-filter evaluation. Preserve
   // the exact reason and its observation time instead of asserting it still holds.
@@ -254,7 +259,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   }
 
   if (rt.status === 'failed' || rt.status === 'cancelled') {
-    return { actor: 'human', reason: `Reviewer task ${rt.status} · needs your review` };
+    return { actor: 'human', reason: `Reviewer task ${rt.status} · review needed` };
   }
 
   if (rt.hasLiveWorker) {
@@ -276,7 +281,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   // human rather than silently stranding it.
   return {
     actor: 'human',
-    reason: 'Review finished with no recorded verdict · needs your review',
+    reason: 'Review finished with no recorded verdict · review needed',
   };
 }
 
@@ -326,4 +331,47 @@ export function deriveStoredVerdictFallback(
     return { escalationReason: null, approvalSummary: status.summary ?? 'Reviewer approved · awaiting your merge' };
   }
   return { escalationReason: null, approvalSummary: null };
+}
+
+export interface ReviewInFlightInput {
+  /** The PR's most recent reviewer task — same row `derivePrReviewStatus` reads. */
+  reviewerTask: (Pick<ReviewerGateReviewerTask, 'status' | 'hasLiveWorker' | 'createdAt'> & {
+    result?: unknown;
+    context?: unknown;
+  }) | null;
+  /** The PR's CURRENT head — what would actually be merged. */
+  currentHeadSha: string | null;
+  now: Date;
+  /** Same threshold `resolveReviewerGate` uses for a stall. Default 30. */
+  queuedThresholdMinutes?: number;
+}
+
+/**
+ * Is a review round still in flight on this PR — the state in which every
+ * merge door answers "wait for the verdict" (`evaluateReviewVerdictGate` kind
+ * `in_flight`, which the landing function returns as `waiting_ci`)?
+ *
+ * Home reads this to keep a PR out of "Needs you" while the reviewer owns the
+ * next step, even when the reviewer gate above hands the PR to a human for
+ * another reason (a human-tier policy, or an approval note from an earlier
+ * round that a re-review is now re-checking). Same rule the merge route
+ * applies, read off the same reviewer task row, so the card and the tap
+ * cannot disagree.
+ *
+ * A reviewer that is queued with no live worker past the stall threshold
+ * returns null: that is `resolveReviewerGate`'s stall, which is surfaced to a
+ * person on purpose, not hidden as in-flight work.
+ */
+export function resolveReviewInFlight(input: ReviewInFlightInput): 'queued' | 'reviewing' | null {
+  const rt = input.reviewerTask;
+  if (!rt) return null;
+  const status = derivePrReviewStatus({
+    reviewTask: { id: '', status: rt.status, result: rt.result, context: rt.context },
+    worker: null,
+  });
+  if (evaluateReviewVerdictGate(status, input.currentHeadSha).kind !== 'in_flight') return null;
+  if (rt.hasLiveWorker) return 'reviewing';
+  const threshold = input.queuedThresholdMinutes ?? DEFAULT_QUEUED_THRESHOLD_MINUTES;
+  if (minutesSince(rt.createdAt, input.now) > threshold) return null;
+  return status.state === 'queued' ? 'queued' : 'reviewing';
 }

@@ -26,10 +26,13 @@ RUN arch="$(dpkg --print-architecture)"; \
 # Debian package lags, and GitHub's apt repo only offers the latest version.
 ARG GH_VERSION=2.101.0
 ARG GH_SHA256_AMD64=9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8
+# zstd compresses (and restores) the warm snapshot's dependency cache tarball
+# as a stream (apps/runner/src/warm-repo.ts); without it the tarball goes up
+# uncompressed.
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl git ripgrep tini; \
+    apt-get install -y --no-install-recommends ca-certificates curl git ripgrep tini zstd; \
     rm -rf /var/lib/apt/lists/*; \
     arch="$(dpkg --print-architecture)"; \
     curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" -o /tmp/gh.tgz; \
@@ -37,7 +40,22 @@ RUN set -eux; \
     tar -xzf /tmp/gh.tgz -C /tmp; \
     install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
     rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${arch}"; \
-    gh --version; git --version; rg --version
+    gh --version; git --version; rg --version; zstd --version
+
+# Corepack (ships with Node.js, not with bun) manages the exact
+# package-manager version a task repo pins in package.json's
+# `packageManager` field. Without it, a pnpm monorepo's postinstall/husky
+# hooks shell out to a `pnpm` that does not exist in this image and fail
+# with exit 127. `corepack enable` installs pnpm/yarn shims that fetch the
+# pinned (or, absent a pin, corepack's last-known-good) version from the
+# registry on first use — the same npm-registry access an ordinary `pnpm
+# install` already needs through the egress proxy.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends nodejs; \
+    rm -rf /var/lib/apt/lists/*; \
+    corepack enable; \
+    corepack --version
 
 WORKDIR /opt/buildd
 
@@ -54,6 +72,7 @@ COPY apps/web/package.json apps/web/package.json
 COPY apps/responder/package.json apps/responder/package.json
 COPY apps/cloud-runner/package.json apps/cloud-runner/package.json
 COPY apps/dispatch/package.json apps/dispatch/package.json
+COPY apps/model-policy/package.json apps/model-policy/package.json
 COPY packages/core/package.json packages/core/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ai-kit/package.json packages/ai-kit/package.json

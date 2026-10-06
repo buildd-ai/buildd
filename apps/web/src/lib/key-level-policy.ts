@@ -6,9 +6,14 @@
  *   member        → up to `worker`
  * `trigger` (create-only automation keys) is always available.
  *
+ * "Up to admin" is the `manage_team_keys` permission (permissions.ts): the
+ * roles that hold it may mint admin-level keys, everyone else stops at worker.
+ *
  * Pure functions only — the DB lookup of a caller's role lives in
  * team-access.ts (`getUserTeamRole`).
  */
+import { roleHas, type PermissionOverrides } from './permission-registry';
+
 
 export type ApiKeyLevel = 'trigger' | 'worker' | 'admin';
 export type TeamRole = 'owner' | 'admin' | 'member';
@@ -25,25 +30,25 @@ export function parseKeyLevel(value: unknown): ApiKeyLevel | null {
 }
 
 /** Highest key level a user with this team role may create. */
-export function maxKeyLevelForRole(role: TeamRole): ApiKeyLevel {
-  return role === 'owner' || role === 'admin' ? 'admin' : 'worker';
+export function maxKeyLevelForRole(role: TeamRole, overrides: PermissionOverrides | null): ApiKeyLevel {
+  return roleHas(role, 'manage_team_keys', overrides) ? 'admin' : 'worker';
 }
 
-export function isKeyLevelAllowed(role: TeamRole, level: ApiKeyLevel): boolean {
-  return LEVEL_RANK[level] <= LEVEL_RANK[maxKeyLevelForRole(role)];
+export function isKeyLevelAllowed(role: TeamRole, level: ApiKeyLevel, overrides: PermissionOverrides | null): boolean {
+  return LEVEL_RANK[level] <= LEVEL_RANK[maxKeyLevelForRole(role, overrides)];
 }
 
 /** Lower `level` to the highest level `role` allows (used by interactive login flows). */
-export function clampKeyLevel(role: TeamRole, level: ApiKeyLevel): ApiKeyLevel {
-  return isKeyLevelAllowed(role, level) ? level : maxKeyLevelForRole(role);
+export function clampKeyLevel(role: TeamRole, level: ApiKeyLevel, overrides: PermissionOverrides | null): ApiKeyLevel {
+  return isKeyLevelAllowed(role, level, overrides) ? level : maxKeyLevelForRole(role, overrides);
 }
 
-/** Only team owners and admins manage a team's keys (regenerate, etc.). */
-export function canAdministerTeamKeys(role: TeamRole | null | undefined): boolean {
-  return role === 'owner' || role === 'admin';
+/** Only roles holding `manage_team_keys` manage a team's keys (regenerate, etc.). */
+export function canAdministerTeamKeys(role: TeamRole | null | undefined, overrides: PermissionOverrides | null): boolean {
+  return roleHas(role, 'manage_team_keys', overrides);
 }
 
 /** Plain-language refusal used when a requested level exceeds the caller's role. */
-export function keyLevelNotAllowedMessage(role: TeamRole, level: ApiKeyLevel): string {
-  return `Your team role (${role}) allows API keys up to ${maxKeyLevelForRole(role)} level; ${level} was requested.`;
+export function keyLevelNotAllowedMessage(role: TeamRole, level: ApiKeyLevel, overrides: PermissionOverrides | null): string {
+  return `Your team role (${role}) allows API keys up to ${maxKeyLevelForRole(role, overrides)} level; ${level} was requested.`;
 }

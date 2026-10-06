@@ -1,16 +1,34 @@
 {
-  "$comment": "Single source of truth for every Buildd cron trigger. An external scheduler (cron-job.org) calls these with `Authorization: Bearer $CRON_SECRET`. vercel.json declares NO crons: the Vercel-native mechanism does not fire in this project, and routes parked there silently never ran. Run `bun run cron:plan` to preview, `bun run cron:sync` to apply, `bun run cron:check` as a CI gate. Schedules are 5-field cron expressions evaluated in `timezone`. Reconciliation is origin-scoped: only jobs under CRON_TARGET_BASE_URL + /api/cron/ are ever touched, so unrelated projects sharing the scheduler account are safe. `scripts/cron-coverage.test.ts` enforces that every /api/cron/* route appears here exactly once. See docs/cron-jobs.md and docs/specs/external-cron-triggers.md.",
+  "$comment": "Single source of truth for every Buildd cron trigger. An external scheduler (cron-job.org) calls these with `Authorization: Bearer $CRON_SECRET`. vercel.json declares NO crons: the Vercel-native mechanism does not fire in this project, and routes parked there silently never ran. Run `bun run cron:plan` to preview, `bun run cron:sync` to apply, `bun run cron:check` as a CI gate. Schedules are 5-field cron expressions evaluated in `timezone`. Reconciliation is origin-scoped: only jobs under CRON_TARGET_BASE_URL + /api/cron/ are ever touched, so unrelated projects sharing the scheduler account are safe. Every job carries a `profile`: `core` (the coordination loop), `ops` (operator alarms) or `module:<name>`; `cron:sync --profile core,ops` (or CRON_PROFILES) schedules a subset, and no list schedules everything. `scripts/cron-coverage.test.ts` enforces that every /api/cron/* route appears here exactly once. See docs/cron-jobs.md and docs/specs/external-cron-triggers.md.",
   "timezone": "America/New_York",
   "jobs": [
     {
+      "$comment": "Orchestration shadow readout. Daily on the hour, inside the wake window the schedules tick already opens. Grades a trailing 30-day window with the last 7 days held as the later window, only for teams opting in to orchestration_manifest or orchestration_claim. Upserts a private workspace aggregate and posts a deduped eligibility advisory; promotion remains a reviewed, committed policy entry. No opted-in team -> one cheap query.",
+      "title": "Buildd: Orchestration Readout",
+      "profile": "module:experiments",
+      "path": "/api/cron/orchestration-readout",
+      "schedule": "0 11 * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "Mission/task schedule tick. Hourly, on the hour, all 24 hours. Cadence floor is the finest ENABLED task_schedules row: every one is now hourly-or-coarser, so */30 bought nothing and woke Neon 48x/day instead of 24x. Hour field MUST stay `*` even though nightly is otherwise off \u2014 an hour range here is what silently starved every schedule for 12h a night, and an enabled schedule fires at 06:00. Before making this coarser than a row's cadence, check: isOverdue() allows only interval*2 before flagging a schedule late.",
       "title": "Buildd: Schedules Tick",
+      "profile": "module:schedules",
       "path": "/api/cron/schedules",
       "schedule": "0 * * * *"
     },
     {
+      "$comment": "Core maintenance, split out of the schedules tick so a deployment that runs only the core profile keeps it: fails the workers of accounts whose runners all went quiet (a dead runner never calls /api/tasks/cleanup itself) and releases path claims a terminal task should have released (a held claim blocks the claim gate). Same minute as the schedules tick, so it shares that wake window and buildd.dev's effective schedule is unchanged.",
+      "title": "Buildd: Core Maintenance",
+      "profile": "core",
+      "path": "/api/cron/maintenance",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
       "$comment": "BT-11/BT-19 stall notification. Route comment recommends every 5 minutes. Staged dark \u2014 no trigger has ever existed for this route.",
       "title": "Buildd: Stall Notify",
+      "profile": "module:notifications",
       "path": "/api/cron/stall-notify",
       "schedule": "*/5 * * * *",
       "method": "POST",
@@ -19,6 +37,7 @@
     {
       "$comment": "Distills feedback down-votes/dismissals into memories. Runs every 4 hours. Enabled once the write-type/read-filter mismatch (type=decision vs type=pattern) was fixed in PR that introduced this.",
       "title": "Buildd: Feedback Digest",
+      "profile": "module:knowledge",
       "path": "/api/cron/feedback-digest",
       "schedule": "0 */4 * * *",
       "method": "POST"
@@ -26,6 +45,7 @@
     {
       "$comment": "Weekly signing-key rotation (cross-app-assertion-grant spec B.3). Rotates when the Active key is older than 30d, so a weekly tick is sufficient. Enabled after a first rotation was performed and observed by hand; before that it had been staged dark since it shipped, so keys had never rotated.",
       "title": "Buildd: JWKS Rotation",
+      "profile": "module:connectors",
       "path": "/api/cron/jwks-rotation",
       "schedule": "0 4 * * 0",
       "enabled": true
@@ -33,6 +53,7 @@
     {
       "$comment": "Tier model pools daily step (knowledge-base: buildd/design/tier-weights.md \u00a73c, \u00a74). Hourly at :00 inside the wake window the schedules tick already opens; the work inside is once per UTC day: OpenRouter rankings after 03:00 UTC for teams with an explore pool (their own key, at most 3 requests, no retry), then one step per unfrozen split/explore pool after 06:00 UTC. A second run the same day writes nothing. No pools \u2192 one cheap query.",
       "title": "Buildd: Tier Pools Daily Step",
+      "profile": "module:tiers",
       "path": "/api/cron/tier-pools",
       "schedule": "0 * * * *",
       "method": "GET"
@@ -40,6 +61,7 @@
     {
       "$comment": "Evidence index sweep (docs/specs/byo-evidence-storage.md, 'The evidence corpus'). Indexes evidence_objects rows in index_state queued, and re-drives failed rows past a 1h backoff, into the {workspaceId}:evidence knowledge corpus; this is what makes the best-effort index durable. Hourly at :00, inside the wake window the schedules tick already opens: evidence is searched after a failure, not within minutes of it, so sub-hourly buys nothing. At most 25 rows per run. Sensitive workspaces are marked skipped and never reach the embedder. Empty queue -> one cheap query.",
       "title": "Buildd: Evidence Index Sweep",
+      "profile": "module:knowledge",
       "path": "/api/cron/evidence-index",
       "schedule": "0 * * * *",
       "method": "GET"
@@ -47,13 +69,23 @@
     {
       "$comment": "Serverless fallback for full knowledge-ingest jobs no runner will take (apps/web/src/lib/knowledge-full-ingest-fallback.ts). Takes a queued full job once it is stalled (no runner offered a checkout for an hour) and reads the repo through the GitHub tree/blob API at the job's sha, a bounded slice per tick, resuming from a cursor stored on the job. Hourly at :00, inside the wake window the schedules tick already opens: a full index that lands within hours instead of never is the whole point, minutes buy nothing. Nothing stalled -> one cheap query.",
       "title": "Buildd: Knowledge Ingest Fallback",
+      "profile": "module:knowledge",
       "path": "/api/cron/knowledge-ingest-fallback",
+      "schedule": "0 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Post-session quality loop (apps/web/src/lib/post-session-loop.ts): collect and triage recently terminal workers, then analyse the selected runs, record findings and apply the action policy per workspace mode (off / shadow / propose, absent = shadow). Out of band: nothing in completion, review, merge or release waits on it. Hourly at :00, inside the wake window the schedules tick already opens: findings are read in aggregate, not within minutes of a session. Each pass is capped by a time budget and per-stage limits; leftovers are reported as deferred and taken next hour. Nothing terminal since the last pass -> a few cheap queries.",
+      "title": "Buildd: Post-Session Quality",
+      "profile": "module:health",
+      "path": "/api/cron/post-session-quality",
       "schedule": "0 * * * *",
       "method": "GET"
     },
     {
       "$comment": "Experiment enrolment health (packages/core/experiment-health.ts): nothing enrolled for days, an arm never drawn, a split far off treatmentFraction, one unit holding most of an arm, past its duration cap. Pauses an experiment past its cap and sends one Pushover alert listing every unhealthy one. Daily: every finding is measured in days, and a daily cadence is the alert's dedupe. On the hour, inside the wake window the schedules tick already opens. No running experiments -> one cheap query.",
       "title": "Buildd: Experiment Health",
+      "profile": "module:experiments",
       "path": "/api/cron/experiment-health",
       "schedule": "0 9 * * *",
       "method": "GET"
@@ -61,6 +93,7 @@
     {
       "$comment": "Chat session retros (experiment, apps/web/src/lib/chat-retro/; remove per its REMOVAL.md). Daily, on the hour, inside the wake window the schedules tick already opens. Off for every team unless the team opts in; CHAT_RETRO_ENABLED=0 turns it off everywhere. No opted-in team -> one cheap query.",
       "title": "Buildd: Chat Retro",
+      "profile": "module:chat",
       "path": "/api/cron/chat-retro",
       "schedule": "0 10 * * *",
       "method": "GET"
@@ -68,6 +101,7 @@
     {
       "$comment": "Aggregates 7 days of task outcomes for model-routing calibration. Read-only; weekly is enough since the window is 7d. Staged dark \u2014 no trigger has ever existed for this route.",
       "title": "Buildd: Routing Calibration",
+      "profile": "module:experiments",
       "path": "/api/cron/routing-calibration",
       "schedule": "0 5 * * 1",
       "enabled": false
@@ -75,6 +109,7 @@
     {
       "$comment": "Refreshes expiring Codex/Claude/MCP-connector OAuth credentials and verifies Claude liveness. Moved off Vercel-native cron: it never fired there, so an MCP connector credential holding a valid refresh token stayed dead for 15 days until a manual reconnect. Cadence is load-bearing \u2014 apps/web/src/lib/cron-cadence.ts derives the credential sweep's lookahead window from this expression, so changing it here changes the window. Deliberately NOT restricted to daytime: OAuth tokens expire overnight too, and the sweep window is derived from an EVEN interval \u2014 an hour-restricted schedule leaves an 8h night gap the 5h window cannot cover, which is the exact bug this whole change fixed. 6 runs/day is a negligible share of Neon wake time next to the */30 schedules tick.",
       "title": "Buildd: Credential Refresh",
+      "profile": "core",
       "path": "/api/cron/codex-token-refresh",
       "schedule": "0 */4 * * *",
       "method": "GET"
@@ -82,6 +117,7 @@
     {
       "$comment": "Reminds about connector-blocked tasks and proactively alerts on expired/unrefreshable connector credentials. POST. Moved off Vercel-native cron, which never fired \u2014 the expiry alert added in #1837 could not have worked there. Cadence */5 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): nothing here needs to fire while nobody is awake to act on a push. (was 0 * * * *)",
       "title": "Buildd: Connector Block + Expiry Notify",
+      "profile": "module:notifications",
       "path": "/api/cron/connector-block-notify",
       "schedule": "0 7-23 * * *",
       "method": "POST"
@@ -89,6 +125,7 @@
     {
       "$comment": "Queue-stall watchdog. Alerts when a task has been pending past the route's 4h threshold and was never successfully claimed, naming the claim gate that is holding it. Threshold and cadence are chosen together: the incident this fixes took 5 DAYS to notice, so the target is 'same working day', and hourly x 4h threshold makes worst-case detection ~5h. Daytime only (EST) for the same reason as the other DB-touching jobs — a sub-hourly job never lets Neon's compute autosuspend, and nobody can act on a stalled-queue push at 03:00; a stall that begins overnight is reported at 07:00. Do NOT make this finer than hourly: the route HTTP-probes connectors for role-gated tasks.",
       "title": "Buildd: Queue Stall Watchdog",
+      "profile": "ops",
       "path": "/api/cron/queue-stall",
       "schedule": "0 7-23 * * *",
       "method": "POST"
@@ -96,6 +133,7 @@
     {
       "$comment": "Fleet-idle detector — the SAME route as the queue-stall watchdog above, behind ?scope=fleet-idle, and a different question: not 'is this task gated' but 'is this account's fleet transacting at all'. Alarms when a runner is heartbeating with a free worker slot, claimable work has waited past the route's 45-minute threshold, and workers.started_at shows nothing has started. That is what a tripped claim circuit breaker looks like from the server: a fully-paused runner's heartbeat is byte-identical to a healthy idle one, and its refusal reason never leaves the host. ALL 24 HOURS, and that is the whole point — the incident this detects ran overnight, and with a `7-23` range the back half of the window falls in the nightly gap exactly as it did for the credential sweep ('OAuth tokens expire overnight too') and release health ('releases are cut at any hour'). It can afford 24h because it is pure indexed aggregates with NO network: the gate pass is daytime-only BECAUSE it HTTP-probes every connector a role needs, so do NOT fold these two passes together or merge their schedules — that re-imports the cost that created the gap. On the hour, NOT offset: Neon autosuspends after ~5 idle minutes, so landing inside the window the schedules tick already opens at :00 is free, while an offset 20 minutes out would open a second one every hour. Separate cron_runs slug (queue-stall:fleet-idle, same convention as pr-reconcile:merge-state) so the two cadences stay separate health signals.",
       "title": "Buildd: Fleet Idle Detector",
+      "profile": "ops",
       "path": "/api/cron/queue-stall?scope=fleet-idle",
       "schedule": "0 * * * *",
       "method": "POST"
@@ -103,6 +141,7 @@
     {
       "$comment": "Role-outcomes feed. Records each role's terminal outcomes over the last hour against the prior 24h, plus runner builds on live heartbeats and the web deploy sha, into cron_runs. Judges nothing and notifies nobody: its only consumer is the out-of-band responder's role-regression detector (apps/responder), whose sole production access is SELECT on cron_runs \u2014 so the platform supplies counts and the watcher supplies the thresholds and the page. Exists because after a runner release one role went from all-succeeding to all-failing on one identical error and nobody was paged for most of a working day. ALL 24 HOURS on the hour: the recent window is exactly 60 minutes so runs tile with no gap, that incident ran overnight, and :00 lands inside the wake window the schedules tick and fleet-idle already open. Pure aggregates, no network. `changed` = role buckets recorded (work polarity, declared in CRON_JOB_REGISTRY).",
       "title": "Buildd: Role Outcomes Feed",
+      "profile": "ops",
       "path": "/api/cron/role-outcomes",
       "schedule": "0 * * * *",
       "method": "GET"
@@ -110,6 +149,7 @@
     {
       "$comment": "Mission-state invariant sweep. Eleven named invariants over mission/task/worker/release state; ten report-only, one (orphaned_integration_base) files a deduped friction task. Hourly, because every threshold in the route is hours-to-days and the target is 'caught the same working day' — finer would cost Neon wake time for no detection gain. Daytime only (EST) like the other DB-touching jobs; the tightest threshold is 15m, so an overnight breach is reported at 07:00. A healthy fleet costs one set of queries and spawns nothing.",
       "title": "Buildd: Mission Invariant Sweep",
+      "profile": "module:missions",
       "path": "/api/cron/mission-invariants",
       "schedule": "0 7-23 * * *",
       "method": "POST"
@@ -117,6 +157,7 @@
     {
       "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Cadence */10 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): a stale lease overnight costs nothing but a delayed release. (was 0 * * * *)",
       "title": "Buildd: Lease Expiry Guard",
+      "profile": "core",
       "path": "/api/cron/lease-expiry-guard",
       "schedule": "0 7-23 * * *",
       "method": "GET"
@@ -124,20 +165,23 @@
     {
       "$comment": "Redis-gated fast tick for the SAME route as the hourly guard above, which stays the unconditional floor. Reads one sorted set (buildd:due:lease-expiry, written by /api/runner/credential-lease on acquire/heartbeat/release) and returns without querying Postgres unless a lease has actually lapsed \u2014 so */5 costs 288 Redis reads a day and zero extra Neon wake time. Why it needs to be this fast: the lease TTL is 5 minutes and the broker renews every 60s, so hourly detection was 12x coarser than the state it watches. Fail-open by design: if Redis is unconfigured or erroring the gate proceeds to the DB, because 'I could not ask' must never read as 'nothing to do'. See apps/web/src/lib/cron-due-queue.ts and docs/design/cron-wake-windows.md.",
       "title": "Buildd: Lease Expiry Guard (gated)",
+      "profile": "core",
       "path": "/api/cron/lease-expiry-guard?gate=due",
       "schedule": "*/5 * * * *",
       "method": "GET"
     },
     {
-      "$comment": "Away delivery floor tick: pushes pending watch events to a person's own Pushover key when they are not in buildd (apps/web/src/lib/away-delivery.ts). Runs regardless of the due-queue, so a lost queue write costs at most an hour, and rows left pending while their owner was present are pushed once they have gone. At :13, inside the wake window the :00 schedules tick and the :10 PR sweep already open, so it adds no Neon wake. Odd minute on purpose: the */2 gated tick fires on even minutes, and a shared minute would run two passes over the same rows at once (a per-person lock also guards that). All 24 hours: people are away at night too, and the job is per-person rate limited.",
+      "$comment": "Away delivery floor tick: pushes pending watch events to a person's own Pushover key when they are not in buildd (apps/web/src/lib/away-delivery.ts), and surfaces held agent questions whose resurfaceAt passed while still unanswered (apps/web/src/lib/question-hold.ts), re-seeding their due-queue. Runs regardless of the due-queue, so a lost queue write costs at most an hour, and rows left pending while their owner was present are pushed once they have gone. At :13, inside the wake window the :00 schedules tick and the :10 PR sweep already open, so it adds no Neon wake. Odd minute on purpose: the */2 gated tick fires on even minutes, and a shared minute would run two passes over the same rows at once (a per-person lock also guards that). All 24 hours: people are away at night too, and the job is per-person rate limited.",
       "title": "Buildd: Notify Away",
+      "profile": "module:notifications",
       "path": "/api/cron/notify-away",
       "schedule": "13 * * * *",
       "method": "GET"
     },
     {
-      "$comment": "Redis-gated fast tick for the same route. Reads buildd:due:notify-away (written by recordEvent for each new ledger row, due one 60s coalesce window later) and returns without touching Postgres unless a row is due, so */2 costs Redis reads and no extra Neon wake while nothing happens. This is the latency path for 'tell me when X' while you are away. Fail-open: with Redis unconfigured or erroring the gate proceeds to the DB. See apps/web/src/lib/cron-due-queue.ts.",
+      "$comment": "Redis-gated fast tick for the same route. Reads buildd:due:notify-away (written by recordEvent for each new ledger row, due one 60s coalesce window later) and buildd:due:question-hold (written by the worker PATCH route when a question parks on hold, due at its resurfaceAt), running only the pass whose queue has something due, and returns without touching Postgres unless a row is due, so */2 costs Redis reads and no extra Neon wake while nothing happens. This is the latency path for 'tell me when X' while you are away. Fail-open: with Redis unconfigured or erroring the gate proceeds to the DB. See apps/web/src/lib/cron-due-queue.ts.",
       "title": "Buildd: Notify Away (gated)",
+      "profile": "module:notifications",
       "path": "/api/cron/notify-away?gate=due",
       "schedule": "*/2 * * * *",
       "method": "GET"
@@ -145,6 +189,7 @@
     {
       "$comment": "Dispatch timer (apps/web/src/app/api/cron/dispatch-drain): fires durable wakes that are due in the future \u2014 a deferred startAt, a delivery retry's backoff \u2014 at their due minute. Redis-only when idle: reads buildd:due:dispatch (published from the outbox by every kick and drain) and returns without touching Postgres, and without writing a cron_runs row, unless an intent is due; so every minute costs Redis reads and no Neon wake while nothing is scheduled (knowledge-base: buildd/design/cron-wake-windows.md). When something is due it is the wake that was going to happen anyway. Every minute because this is the timer primitive: a startAt fires within a minute of its time instead of at the next hourly reconcile. Until it moves to a Cloudflare Durable Object alarm. Fail-open: with Redis unconfigured or erroring the gate proceeds to the DB.",
       "title": "Buildd: Dispatch Drain (gated)",
+      "profile": "core",
       "path": "/api/cron/dispatch-drain?gate=due",
       "schedule": "* * * * *",
       "method": "GET"
@@ -152,6 +197,7 @@
     {
       "$comment": "Dispatch repair floor for the SAME route: drains anything a kick or the gated tick missed, re-seeds the due-queue from the outbox so a lost publish costs at most an hour, backfills scheduled wakes for tasks deferred before the outbox existed, and reports overdue/stuck/failed intents. Reconciliation only \u2014 normal dispatch never waits for it. At :10, inside the wake window the hourly PR merge-state sweep already opens, where the startAt sweep it replaces used to run, so it adds no Neon wake.",
       "title": "Buildd: Dispatch Drain Floor",
+      "profile": "core",
       "path": "/api/cron/dispatch-drain",
       "schedule": "10 * * * *",
       "method": "GET"
@@ -159,6 +205,7 @@
     {
       "$comment": "Heals workers whose PR merged on GitHub but whose row still says otherwise \u2014 a missed pull_request webhook delivery starves every dependent task until this corrects it, so the cadence has to be within the working hour, not the working day. Merge-state only: the dead-zone sweep (which spawns conflict-resolution tasks) stays on the daily job below. The sweep is capped and rate-limited per run, so a backlog drains across runs. Offset off :00 to stay clear of the schedules tick, but only by 10 minutes: Neon autosuspends after ~5 idle minutes, so a far-away offset opens a second wake window every hour for no benefit. Routes here cap at 60s. Also carries the Option A' mission-PR sweep, which is the only trigger for a mission's integration PR that does not need a merge event at all \u2014 the webhook opens it when the last task PR merges, and a mission can reach completeness with no such event (last deliverable needs no PR, or every deliverable was cancelled). The completion gate refuses a mission whose PR is missing, so that cannot wait for the daily job. Bounded to opted-in missions inside a recency window.",
       "title": "Buildd: PR Merge-State Sweep",
+      "profile": "core",
       "path": "/api/cron/pr-reconcile?scope=merge-state",
       "schedule": "10 * * * *",
       "method": "GET"
@@ -166,6 +213,7 @@
     {
       "$comment": "Redis-gated fast tick for the landing backstop: re-drives approved, green, unmerged buildd PRs through landPr, the same function every landing door calls, so a PR a missed event left parked still merges (knowledge-base: buildd/design/pr-landing-guarantee.md). Rides the pr-reconcile route as a gated scope because the design chose that over a new route; it shares the installation resolution and GitHub rate limiting. Reads one sorted set (buildd:due:pr-landing) and returns without querying Postgres unless a PR is due, so every 10 minutes costs Redis reads and no extra Neon wake while nothing is waiting. Offset to :05/:15/... so it never fires at the same minute as the :10 merge-state pass, which is the floor: that pass enumerates from Postgres and re-seeds the set, so a lost queue write costs an hour, not the guarantee. Fail-open: with Redis unconfigured or erroring the tick enumerates from Postgres rather than reading idle. Separate cron_runs slug (pr-reconcile:landing). See apps/web/src/lib/cron-due-queue.ts.",
       "title": "Buildd: PR Landing Backstop (gated)",
+      "profile": "core",
       "path": "/api/cron/pr-reconcile?scope=landing&gate=due",
       "schedule": "5-55/10 * * * *",
       "method": "GET"
@@ -173,6 +221,7 @@
     {
       "$comment": "Redis-gated fast tick for the red-PR sweep (lib/ci-red-sweep.ts; knowledge-base: buildd/design/pr-merge-reliability.md M3): an open buildd PR whose CI is red, with no live fix attempt and no escalation, past a short window, gets the CI retry the check_suite webhook would have filed (under the existing per-PR cap), or one escalation to a human per PR + head. The webhook feeds buildd:due:ci-red whenever it skips a retry someone must come back to: a fix attempt in flight that may finish without pushing, which GitHub never reports again. Reads one sorted set and returns without querying Postgres unless a PR is due, so it costs no extra Neon wake while nothing is waiting. Offset to :07/:17/... so it never shares a minute with the landing tick (:05) or the :10 merge-state pass, which is the floor: that pass enumerates ci_failed PRs from Postgres and re-seeds the set. Fail-open on Redis like the landing tick. Separate cron_runs slug (pr-reconcile:ci-red).",
       "title": "Buildd: Red PR Sweep (gated)",
+      "profile": "module:reviews",
       "path": "/api/cron/pr-reconcile?scope=ci-red&gate=due",
       "schedule": "7-57/10 * * * *",
       "method": "GET"
@@ -180,6 +229,7 @@
     {
       "$comment": "Full PR reconcile: merge-state plus the dead-zone sweep, which CREATES conflict-resolution tasks and therefore stays daily. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 02:00 into the working day (EST). (was 0 2 * * *)",
       "title": "Buildd: PR Reconcile",
+      "profile": "module:reviews",
       "path": "/api/cron/pr-reconcile",
       "schedule": "0 9 * * *",
       "method": "GET"
@@ -187,6 +237,7 @@
     {
       "$comment": "Weekly archive of completed tasks. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Moved off 06:00 into the working day (EST). (was 0 6 * * 1)",
       "title": "Buildd: Task Archive",
+      "profile": "core",
       "path": "/api/cron/task-archive",
       "schedule": "0 10 * * 1",
       "method": "GET"
@@ -194,6 +245,7 @@
     {
       "$comment": "Reclaims workers stuck in waiting_input (mission tasks 4h, standalone 24h) across ALL accounts. Exists because the sweep's only automatic driver was each runner's own 30-minute cleanup timer, and the sweep is now correctly account-scoped \u2014 so an account whose runners are all down had nothing to reclaim its stuck workers, which is precisely the case the timeout exists for. A runner-driven trigger cannot be the only trigger for a timeout about runners being unavailable. Hourly x the 4h floor puts worst-case detection ~5h, well inside the threshold's own tolerance. Do NOT make this sub-hourly: it is a DB-touching housekeeping sweep, and sub-hourly work never lets Neon's compute autosuspend. Daytime only (EST): the sweep FAILS a worker and CREATES a retry task, and a retry task queued at 03:00 needs a runner to claim it \u2014 the accounts this cron is for are exactly the ones with no live runner, so firing overnight buys nothing and the 8h night gap adds at most 8h to a wait that is already 4h+ by construction. Offset to :15 \u2014 clear of the schedules tick at :00 and the merge-state sweep at :10, while still inside the wake window they already opened. Spacing crons far apart buys nothing but idle compute. ENABLED on first ship, deliberately: there is no accumulated backlog to detonate \u2014 the pre-fix sweep ran GLOBALLY on every runner's tick, so every account's past-threshold waiting_input worker has already been reaped by whichever runner ticked last. The only rows this can find are ones that accrued after the scoping fix, and each is bounded by the same 4h/24h thresholds that were already in force.",
       "title": "Buildd: Waiting-Input Reclaim Sweep",
+      "profile": "core",
       "path": "/api/cron/waiting-input-sweep",
       "schedule": "15 7-23 * * *",
       "method": "POST"
@@ -201,6 +253,7 @@
     {
       "$comment": "Two jobs in one route: (a) post-deploy health watch \u2014 probes the verificationUrl of every release that recently reached `healthy` and transitions it to `degraded` (auto-filing a workspace task) on non-2xx; (b) stale-`deploying` sweep \u2014 retries verification, then hard-fails to a terminal state. Cadence */2 -> hourly: both DB queries run unconditionally on every tick, so at */2 this single job kept Neon's compute awake 24/7 by itself (720 wakes/day) \u2014 the exact cost the other jobs here are spaced out to avoid. The watch window is NOT hardcoded against this number: apps/web/src/lib/cron-cadence.ts derives it from this expression (interval \u00d7 LOOKAHEAD_SAFETY_FACTOR), so retuning here retunes the window and no release falls in the gap. Accepted tradeoff: degradation detection latency goes ~2min -> <=~1h; minute-granularity prod alerting belongs in uptime monitoring, not in a Neon-touching cron. Must stay an EVEN interval (all 24 hours, no `7-23` range): cronIntervalMinutes() throws on hour-restricted forms because their real gap is the 8h overnight one, and releases are cut at any hour. Offset to :05, NOT :50: Neon autosuspends after ~5 idle minutes, so a tick 50 minutes away from the :00 cluster opens a SECOND wake window every hour, while :05 lands inside the one the schedules tick already opened. Every route here caps at 60s, so 5 minutes is clear of a collision with room to spare. Spacing crons far apart costs wake time; spacing them a few minutes apart costs nothing.",
       "title": "Buildd: Release Health Check",
+      "profile": "module:releases",
       "path": "/api/cron/release-health-check",
       "schedule": "5 * * * *",
       "method": "GET"
@@ -208,6 +261,7 @@
     {
       "$comment": "Standing post-ship guardrail monitor for the workspace-memory-digest experiment (task_scoped shipped 2026-09-18 with the failure-rate guardrail recorded as an accepted caveat — 'ship it and watch the failure rate'). The readout cron that could have watched it was correctly retired with the experiment (PR #2466), which left the accepted arm with no owner; this route is the owner. Compares the shipped arm's rolling 7-day failure rate against the ship-time baseline (Agresti–Caffo risk difference, same interval the terminal readout used for the guardrail itself) and pages via reportOps only when the interval excludes zero — credibly worse, not just noisier. Daily is enough: the window is 7d and nothing here needs sub-daily resolution. Offset to 9:05 EST to land inside the wake window the PR Reconcile job at 0 9 already opens, rather than spending a second Neon wake for a job this infrequent. Also prunes memory_uses and memory_decisions (the Jev verdict log) rows past retention (packages/core/memory-uses-retention.ts), one bounded batch each per run.",
       "title": "Buildd: Memory Digest Guardrail Monitor",
+      "profile": "module:experiments",
       "path": "/api/cron/memory-digest-guardrail",
       "schedule": "5 9 * * *",
       "method": "POST"

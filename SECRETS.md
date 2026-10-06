@@ -9,6 +9,7 @@ come from — that is what this file is for.
 | `prd` | Vercel project `buildd`, Production |
 | `stg` | Vercel project `buildd`, Preview |
 | `dev` | local development, and Vercel Development (`vercel dev`) |
+| `dev_ci` | GitHub Actions secrets, pushed deliberately with `gh-secret-push`. Never synced to Vercel |
 
 ## Local development
 
@@ -62,6 +63,20 @@ Service tokens are read-only and config-scoped, so a leaked CI token cannot reac
 production secrets or write anything. Never put a `VERCEL_TOKEN` in CI or in a
 local `.env`: an agent holding one wiped this project's production env on
 2026-07-19.
+
+## Dispatch Worker
+
+The Cloudflare Worker in `apps/dispatch` holds two secrets, `PUBLISH_SECRET`
+and `CALLBACK_SECRET`. Their values are the same as Doppler `prd`
+`DISPATCH_PUBLISH_SECRET` and `DISPATCH_CALLBACK_SECRET`, and Doppler is their
+only copy: wrangler secrets are write-only. `DISPATCH_URL` (the Worker's
+address) is in `prd` too. Rotation order and the other rules are in
+`apps/dispatch/README.md`.
+
+Its deploy token is separate: `CF_DISPATCH_API_TOKEN` and
+`CF_DISPATCH_ACCOUNT_ID` in `dev_ci`, pushed to GitHub Actions repo secrets
+with `gh-secret-push` and read only by `.github/workflows/deploy-dispatch.yml`.
+Never Vercel.
 
 ## Runbook
 

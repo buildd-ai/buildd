@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, partitionEscalations, isActionableChip, isDocFixClaimStale, summariseActionQueueAge, DOC_FIX_RECHECK_GRACE_MS } from './action-queue';
-import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate, DiscrepancyCandidate } from './action-queue';
+import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, buildFailedTaskItems, partitionEscalations, isActionableChip, isDocFixClaimStale, summariseActionQueueAge, DOC_FIX_RECHECK_GRACE_MS } from './action-queue';
+import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate, DiscrepancyCandidate, FailedTaskCandidate } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
 const PR_URL_B = 'https://github.com/org/repo/pull/1481';
@@ -949,10 +949,27 @@ describe('buildActionQueue — unblocked mission vs own mission', () => {
 describe('buildActionQueue — CI gate', () => {
   it('renders a live CI fix as an informational FIXING_CI card', () => {
     const result = buildActionQueue([], [escalationItem({
-      ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' },
+      ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' },
     })]);
     expect(result[0].chip).toBe('FIXING_CI');
-    expect(result[0].ciGate).toEqual({ kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' });
+    expect(result[0].ciGate).toEqual({ kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' });
+    expect(isActionableChip(result[0].chip)).toBe(false);
+  });
+
+  it('renders a live reviewer-retry fix as an informational FIXING_REVIEW card, never MERGE', () => {
+    const result = buildActionQueue([], [escalationItem({
+      policyTier: 'agent-review',
+      ciGate: {
+        kind: 'fixing',
+        label: 'Fix 1 of 3 queued',
+        taskId: 'fix-1',
+        taskTitle: 'fix: address reviewer feedback on subject anchors',
+        fixKind: 'review',
+      },
+    })]);
+    expect(result[0].chip).toBe('FIXING_REVIEW');
+    expect(result[0].chip).not.toBe('MERGE');
+    expect(result[0].chip).not.toBe('REVIEW');
     expect(isActionableChip(result[0].chip)).toBe(false);
   });
 
@@ -992,7 +1009,7 @@ describe('buildActionQueue — CI gate', () => {
         prUrl: 'https://github.com/org/repo/pull/1',
         prNumber: 1,
         taskId: 'fixing',
-        ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1' },
+        ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' },
       }),
       escalationItem({
         prUrl: 'https://github.com/org/repo/pull/2',
@@ -1012,7 +1029,7 @@ describe('buildActionQueue — CI gate', () => {
 
   it('never offers a merge on a CI-gated card', () => {
     const gated = buildActionQueue([], [escalationItem({
-      ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1' },
+      ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1', taskTitle: null, fixKind: 'ci' },
     })]);
     expect(gated[0].chip).not.toBe('MERGE');
     expect(gated[0].chip).not.toBe('REVIEW');
@@ -1406,3 +1423,65 @@ describe('buildActionQueue — missionMergeBlockedReason pass-through', () => {
     expect(result[0].missionMergeBlockedReason).toBeNull();
   });
 })
+
+describe('buildFailedTaskItems — a failed task whose cause the owner can fix', () => {
+  const failed = (over: Partial<FailedTaskCandidate> = {}): FailedTaskCandidate => ({
+    taskId: 't-1',
+    title: 'Write a haiku about onboarding into hello.md',
+    status: 'failed',
+    backend: 'claude',
+    workerError: 'Not logged in · Please run /login',
+    missionId: null,
+    missionTitle: null,
+    ...over,
+  });
+
+  it('a task that failed on a missing agent key becomes a FAILED card under Needs you', () => {
+    const queue = buildActionQueue(buildFailedTaskItems([failed()]), []);
+    expect(queue).toHaveLength(1);
+    const [item] = queue;
+    expect(item.chip).toBe('FAILED');
+    expect(isActionableChip(item.chip)).toBe(true);
+    expect(item.subjectKey).toBe('task:t-1');
+    expect(item.taskId).toBe('t-1');
+    expect(item.taskTitle).toBe('Write a haiku about onboarding into hello.md');
+    expect(item.failureMessage).toContain('no working model key');
+    expect(item.failureMessage).not.toContain('/login');
+    expect(item.fixHref).toBe('/app/settings/runners#agent-key');
+    expect(item.fixLabel).toBe('Add an agent key');
+  });
+
+  it('re-derives from the task row: a task no longer failed (retried, completed) drops out', () => {
+    for (const status of ['pending', 'in_progress', 'completed', 'cancelled']) {
+      expect(buildFailedTaskItems([failed({ status })])).toEqual([]);
+    }
+  });
+
+  it('a failure with no owner-fixable cause stays off the queue', () => {
+    expect(buildFailedTaskItems([failed({ workerError: 'Tests failed: 3 of 12' })])).toEqual([]);
+    expect(buildFailedTaskItems([failed({ workerError: null })])).toEqual([]);
+  });
+
+  it('a Codex sign-in failure points at the Codex row', () => {
+    const [item] = buildFailedTaskItems([failed({ backend: 'codex', workerError: 'No Codex auth found' })]);
+    expect(item.fixHref).toBe('/app/settings/runners#agent-backends');
+    expect(item.failureMessage).toContain('Codex');
+  });
+
+  it('ranks with RECONNECT: below MERGE, above QUESTION', () => {
+    const queue = buildActionQueue(
+      [
+        { kind: 'answer', workerId: 'w-1', taskId: 't-2', taskTitle: 'q', question: 'why?' },
+        ...buildFailedTaskItems([failed()]),
+        { kind: 'merge', prUrl: 'https://github.com/x/y/pull/1', prNumber: 1, prOpenedAt: new Date(), prLifecycleVerifiedAt: new Date() },
+      ],
+      [],
+    );
+    expect(queue.map(i => i.chip)).toEqual(['MERGE', 'FAILED', 'QUESTION']);
+  });
+
+  it('one card per task', () => {
+    const items = buildFailedTaskItems([failed(), failed()]);
+    expect(buildActionQueue(items, [])).toHaveLength(1);
+  });
+});

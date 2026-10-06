@@ -1,5 +1,5 @@
 {
-  "id": "837d73c8-73e2-4cc0-b926-2a12f51c9308",
+  "id": "1ea4768b-048a-4983-9233-711ce28c5a94",
   "prevId": "7de35de9-59e9-47c8-a16d-382793a93fe8",
   "version": "7",
   "dialect": "postgresql",
@@ -8369,24 +8369,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "branch_refresh_head_sha": {
-          "name": "branch_refresh_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "branch_refresh_lease_until": {
-          "name": "branch_refresh_lease_until",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "branch_refresh_conflict_task_id": {
-          "name": "branch_refresh_conflict_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "orchestration_mode": {
           "name": "orchestration_mode",
           "type": "text",
@@ -10092,6 +10074,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "set_confidence": {
+          "name": "set_confidence",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expected_size": {
+          "name": "expected_size",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "latency_ms": {
           "name": "latency_ms",
           "type": "integer",
@@ -10183,6 +10177,195 @@
           "tableTo": "tasks",
           "columnsFrom": [
             "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.orchestration_overlap_answers": {
+      "name": "orchestration_overlap_answers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "team_id": {
+          "name": "team_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mission_id": {
+          "name": "mission_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pair_key": {
+          "name": "pair_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_a_id": {
+          "name": "task_a_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_b_id": {
+          "name": "task_b_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision_id": {
+          "name": "decision_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "answer": {
+          "name": "answer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confidence": {
+          "name": "confidence",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "orchestration_overlap_answers_pair_decision_idx": {
+          "name": "orchestration_overlap_answers_pair_decision_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pair_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "decision_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "orchestration_overlap_answers_workspace_created_idx": {
+          "name": "orchestration_overlap_answers_workspace_created_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "orchestration_overlap_answers_team_id_teams_id_fk": {
+          "name": "orchestration_overlap_answers_team_id_teams_id_fk",
+          "tableFrom": "orchestration_overlap_answers",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "team_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "orchestration_overlap_answers_workspace_id_workspaces_id_fk": {
+          "name": "orchestration_overlap_answers_workspace_id_workspaces_id_fk",
+          "tableFrom": "orchestration_overlap_answers",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "orchestration_overlap_answers_task_a_id_tasks_id_fk": {
+          "name": "orchestration_overlap_answers_task_a_id_tasks_id_fk",
+          "tableFrom": "orchestration_overlap_answers",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_a_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "orchestration_overlap_answers_task_b_id_tasks_id_fk": {
+          "name": "orchestration_overlap_answers_task_b_id_tasks_id_fk",
+          "tableFrom": "orchestration_overlap_answers",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_b_id"
           ],
           "columnsTo": [
             "id"

@@ -743,7 +743,7 @@ export class WorkerSync {
       if (worker.status === 'done' || worker.status === 'error') {
         //
         // Two stages. First abort and leave the map entry: the session's own
-        // finally block needs it to clean up credentials/config/CBM dirs, and
+        // finally block needs it to clean up credentials/config dirs, and
         // `reapedAt` tells its catch path not to report a failure. Only if the
         // entry is STILL there a full grace period later (the process ignored
         // the abort, so finally never ran) is it dropped outright.

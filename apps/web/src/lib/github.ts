@@ -1,8 +1,5 @@
-import { db } from '@buildd/core/db';
 import { ciLifecycleFromSuites } from '@/lib/ci-lifecycle';
-import { githubInstallations } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
-import { createSign, createPrivateKey, createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 
 // GitHub App configuration
 const GITHUB_APP_ID = process.env.GITHUB_APP_ID;
@@ -45,85 +42,8 @@ export function getGitHubAppConfig() {
   };
 }
 
-// Generate JWT for GitHub App authentication
-export function generateAppJWT(): string {
-  if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
-    throw new Error('GitHub App not configured');
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: 'RS256', typ: 'JWT' };
-  const payload = {
-    iat: now - 60,  // Issued 60 seconds ago to account for clock drift
-    exp: now + 600, // Expires in 10 minutes
-    iss: GITHUB_APP_ID,
-  };
-
-  const encodedHeader = base64UrlEncode(JSON.stringify(header));
-  const encodedPayload = base64UrlEncode(JSON.stringify(payload));
-  const signatureInput = `${encodedHeader}.${encodedPayload}`;
-
-  // Use Node's crypto - handles both PKCS#1 and PKCS#8 key formats
-  const privateKey = createPrivateKey(GITHUB_APP_PRIVATE_KEY);
-  const sign = createSign('RSA-SHA256');
-  sign.update(signatureInput);
-  const signature = sign.sign(privateKey);
-
-  return `${signatureInput}.${base64UrlEncode(signature)}`;
-}
-
-// Get installation access token
-export async function getInstallationToken(installationId: number): Promise<string> {
-  // Check if we have a cached token
-  const installation = await db.query.githubInstallations.findFirst({
-    where: eq(githubInstallations.installationId, installationId),
-  });
-
-  if (installation?.accessToken && installation.tokenExpiresAt) {
-    const expiresAt = new Date(installation.tokenExpiresAt);
-    // Use cached token if it has more than 5 minutes left
-    if (expiresAt > new Date(Date.now() + 5 * 60 * 1000)) {
-      return installation.accessToken;
-    }
-  }
-
-  // Generate new token
-  const appJwt = generateAppJWT();
-  const response = await fetch(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${appJwt}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    }
-  );
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to get installation token: ${error}`);
-  }
-
-  const data = await response.json();
-  const token = data.token;
-  const expiresAt = new Date(data.expires_at);
-
-  // Cache the token
-  if (installation) {
-    await db
-      .update(githubInstallations)
-      .set({
-        accessToken: token,
-        tokenExpiresAt: expiresAt,
-        updatedAt: new Date(),
-      })
-      .where(eq(githubInstallations.installationId, installationId));
-  }
-
-  return token;
-}
+export { generateAppJWT, getInstallationToken } from '@buildd/core/github-installation-auth';
+import { getInstallationToken } from '@buildd/core/github-installation-auth';
 
 // GitHub API client for a specific installation
 export async function githubApi(installationId: number, path: string, options: RequestInit = {}) {
@@ -144,7 +64,7 @@ export async function githubApi(installationId: number, path: string, options: R
     throw new Error(`GitHub API error: ${response.status} ${error}`);
   }
 
-  // Handle 204 No Content (e.g., repository_dispatch)
+  // Handle 204 No Content
   if (response.status === 204) {
     return null;
   }
@@ -214,16 +134,6 @@ export async function verifyWebhookSignature(payload: string, signature: string)
 }
 
 // Helper functions for JWT encoding
-function base64UrlEncode(data: string | Buffer): string {
-  let base64: string;
-  if (typeof data === 'string') {
-    base64 = Buffer.from(data).toString('base64');
-  } else {
-    base64 = data.toString('base64');
-  }
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
 // GitHub GraphQL API client for a specific installation
 export async function githubGraphQL(
   installationId: number,
@@ -543,60 +453,4 @@ export interface GitHubIssuesEvent {
   installation?: {
     id: number;
   };
-}
-
-// Dispatch a repository_dispatch event to trigger GitHub Actions workflows
-/**
- * The repository_dispatch body a task wake sends. Shared by the in-app send
- * below and the Dispatch transport's GitHub Actions grant
- * (lib/dispatch-resolve.ts), so the workflow sees the same event either way.
- */
-export function repositoryDispatchBody(task: { id: string; title: string; workspaceId: string; mode?: string; priority?: number }) {
-  return {
-    event_type: 'buildd-task',
-    client_payload: {
-      task_id: task.id,
-      title: task.title,
-      workspace_id: task.workspaceId,
-      mode: task.mode || 'execution',
-      priority: task.priority || 0,
-    },
-  };
-}
-
-export async function dispatchToGitHubActions(
-  installationId: number,
-  repoFullName: string,
-  task: {
-    id: string;
-    title: string;
-    description: string | null;
-    workspaceId: string;
-    mode?: string;
-    priority?: number;
-  }
-): Promise<boolean> {
-  if (!isGitHubAppConfigured()) {
-    return false;
-  }
-
-  try {
-    const [owner, repo] = repoFullName.split('/');
-    if (!owner || !repo) {
-      console.error(`Invalid repo full name: ${repoFullName}`);
-      return false;
-    }
-
-    await githubApi(installationId, `/repos/${owner}/${repo}/dispatches`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(repositoryDispatchBody(task)),
-    });
-
-    console.log(`Task ${task.id} dispatched to GitHub Actions: ${repoFullName}`);
-    return true;
-  } catch (error) {
-    console.error(`GitHub Actions dispatch failed for ${repoFullName}:`, error);
-    return false;
-  }
 }

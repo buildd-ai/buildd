@@ -3,6 +3,7 @@ import { resolveBranchStrategy } from '@buildd/core/branch-strategy';
 import type { MergePolicy } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
 import type { UserTeam } from '@/lib/team-access';
+import { roleHas, type Permission, type PermissionOverrides } from '@/lib/permission-registry';
 
 export interface WorkspaceRow {
   id: string;
@@ -26,8 +27,11 @@ const TIER_LABEL: Record<MergePolicy['tier'], string> = {
   human: 'Human gate',
 };
 
-function adminTeamsOf(userId: string, teams: UserTeam[]): UserTeam[] {
-  return teams.filter((t) => t.role === 'owner' || t.role === 'admin' || t.slug === `personal-${userId}`);
+/** Each team's permission overrides (getTeamsPermissionOverrides); a missing team = defaults. */
+export type TeamOverrides = ReadonlyMap<string, PermissionOverrides>;
+
+function teamsHolding(userId: string, teams: UserTeam[], permission: Permission, overrides: TeamOverrides): UserTeam[] {
+  return teams.filter((t) => roleHas(t.role, permission, overrides.get(t.id) ?? null) || t.slug === `personal-${userId}`);
 }
 
 /**
@@ -39,8 +43,9 @@ export function moveTargets(
   userId: string,
   teams: UserTeam[],
   workspaceTeamId: string,
+  overrides: TeamOverrides,
 ): Array<{ id: string; name: string }> | null {
-  const admin = adminTeamsOf(userId, teams);
+  const admin = teamsHolding(userId, teams, 'migrate_workspace', overrides);
   if (admin.length < 2 || !admin.some((t) => t.id === workspaceTeamId)) return null;
   return admin.map((t) => ({ id: t.id, name: t.name }));
 }
@@ -53,12 +58,14 @@ export function buildWorkspaceRows({
   userId,
   teams,
   workspaces,
+  overrides,
 }: {
   userId: string;
   teams: UserTeam[];
+  overrides: TeamOverrides;
   workspaces: Array<{ id: string; name: string; teamId: string; gitConfig: WorkspaceGitConfig | null }>;
 }): { rows: WorkspaceRow[]; moveTeams: Array<{ id: string; name: string }> } {
-  const adminTeams = adminTeamsOf(userId, teams);
+  const adminTeams = teamsHolding(userId, teams, 'manage_workspace_settings', overrides);
   const adminIds = new Set(adminTeams.map((t) => t.id));
   const teamName = new Map(teams.map((t) => [t.id, t.name]));
 

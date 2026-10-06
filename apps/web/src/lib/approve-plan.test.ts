@@ -158,6 +158,16 @@ mock.module('@/lib/dispatch-authority', () => ({
   DRAIN_BATCH: 25,
 }));
 
+// The creation-manifest shadow (lib/task-manifest-prediction.ts): the real
+// post-insert hook runs, so its eligibility is exercised here; only the
+// prediction itself is stubbed. Outside a request scope after() throws and
+// the hook runs the prediction detached.
+const predictions: any[] = [];
+mock.module('@buildd/core/manifest-prediction-source', () => ({
+  predictCreationManifest: async (input: any) => { predictions.push(input); return { skipped: 'capability_disabled' }; },
+}));
+const flushPredictions = () => new Promise(r => setTimeout(r, 0));
+
 import { approvePlan } from './approve-plan';
 
 const PLANNING_TASK_ID = 'eeeeeeee-0000-4000-8000-00000000000f';
@@ -175,6 +185,7 @@ function reset() {
   effectiveRoles = new Set();
   resolveEffectiveRoleSlugsCalls.length = 0;
   wakeCalls.length = 0;
+  predictions.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
   workspaceRow = { gitConfig: null };
   missionRow = null;
@@ -793,5 +804,52 @@ describe('approvePlan — waking runners for ready children', () => {
     workspaceRow = null;
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
     expect(wakeCalls).toEqual([{ ids: [NEXT_IDS[0]], cause: 'plan_child.ready' }]);
+  });
+});
+
+describe('approvePlan — schedules the creation-manifest shadow for missing-scope steps', () => {
+  beforeEach(() => {
+    reset();
+    workspaceRow = { id: 'ws-1', teamId: 'team-1', gitConfig: null };
+  });
+
+  it('a step without a manifest schedules a prediction, with the inserted row and the workspace team', async () => {
+    const r = await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Build it', description: 'Do the thing' }] as any);
+    await flushPredictions();
+    expect(predictions).toHaveLength(1);
+    expect(predictions[0]).toMatchObject({
+      taskId: r.taskIds[0],
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      title: 'Build it',
+      description: 'Do the thing',
+      callerManifest: null,
+    });
+    // Prediction never writes: the inserted row carries no manifest or edges from it.
+    expect(insertedValues[0].pathManifest).toBeUndefined();
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('a step with a concrete manifest does not (the caller manifest wins)', async () => {
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Build it', pathManifest: ['apps/web/src/lib/a.ts'] }] as any);
+    await flushPredictions();
+    expect(predictions).toHaveLength(0);
+  });
+
+  it('an analysis step is skipped by kind; an engineering one is predicted', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Measure the thing', kind: 'analysis' },
+      { ref: 'b', title: 'Build the thing', kind: 'engineering' },
+    ] as any);
+    await flushPredictions();
+    expect(predictions.map(p => p.title)).toEqual(['Build the thing']);
+  });
+
+  it('no team on the workspace: nothing scheduled, and approval is unaffected', async () => {
+    workspaceRow = { id: 'ws-1', gitConfig: null };
+    const r = await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Build it' }] as any);
+    await flushPredictions();
+    expect(predictions).toHaveLength(0);
+    expect(r.taskIds).toHaveLength(1);
   });
 });

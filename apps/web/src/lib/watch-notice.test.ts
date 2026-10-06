@@ -30,13 +30,13 @@ describe('watchNotice: the sentence a watch posts, in plain words', () => {
     expect(watchNotice({ ...base, eventType: 'task.completed' }).text).toBe('Checkout rounding is done.');
     expect(watchNotice({ ...base, eventType: 'task.failed' }).text).toBe('Checkout rounding failed.');
     const q = watchNotice({ ...base, eventType: 'task.needs_input' });
-    expect(q.text).toBe('Checkout rounding needs your answer.');
+    expect(q.text).toBe('Checkout rounding asked a question.');
     expect(q.watch).toMatchObject({ label: 'Task', href: `/app/tasks/${TASK}`, linkText: 'Open task', tone: 'attention' });
   });
 
   it('names a task by its plain heading, never the raw commit-style title', () => {
     const n = watchNotice({ eventType: 'task.needs_input', payload: { taskId: TASK, title: 'feat(export): dual-currency CSV' }, subjectRef: {} });
-    expect(n.text).toBe('Dual-currency CSV needs your answer.');
+    expect(n.text).toBe('Dual-currency CSV asked a question.');
   });
 
   it('a task event with no title (a sensitive workspace omits prose) still reads', () => {
@@ -72,6 +72,6 @@ describe('watchWhenPhrase', () => {
     expect(watchWhenPhrase(['task.completed', 'task.failed'])).toBe('it finishes or fails');
     expect(watchWhenPhrase(['pr.merged'])).toBe('it merges');
     expect(watchWhenPhrase(['pr.merged', 'pr.ci_failed'])).toBe('it merges or CI fails');
-    expect(watchWhenPhrase(['task.needs_input'])).toBe('it needs your answer');
+    expect(watchWhenPhrase(['task.needs_input'])).toBe('it asked a question');
   });
 });

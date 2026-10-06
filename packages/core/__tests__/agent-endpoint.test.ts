@@ -9,6 +9,7 @@ import {
   OPENROUTER_AGENT_BASE_URL,
   agentBaseUrlFromGateway,
   agentEndpointProbeModel,
+  endpointAppliesTo,
   mapAgentModel,
   parseAgentEndpointBlob,
   resolveEndpointFromBlob,
@@ -74,6 +75,32 @@ describe('agent endpoint blob', () => {
       { kind: 'anthropic-compatible', baseUrl: 'https://litellm.example.com', apiKey: 'k', models: [] },
     ];
     for (const b of bad) expect(validateAgentEndpointInput(b).ok).toBe(false);
+  });
+
+  it('appliesTo: absent = all workspaces; a list is trimmed and de-duplicated; both kinds keep it', () => {
+    const none = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1', appliesTo: null });
+    expect(none.ok && 'appliesTo' in none.blob).toBe(false);
+    const v = validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'sk-or-1', appliesTo: [' ws-a ', 'ws-b', 'ws-a'] });
+    expect(v.ok && v.blob.appliesTo).toEqual(['ws-a', 'ws-b']);
+    const g = validateAgentEndpointInput({ kind: 'gateway', appliesTo: ['ws-a'] });
+    expect(g.ok && g.blob).toEqual({ kind: 'gateway', appliesTo: ['ws-a'] });
+    if (v.ok) expect(parseAgentEndpointBlob(serializeAgentEndpoint(v.blob))).toEqual(v.blob);
+  });
+
+  it('appliesTo: refuses an empty list or a non-string entry', () => {
+    for (const appliesTo of [[], 'ws-a', [1], [''], ['has space'], {}]) {
+      expect(validateAgentEndpointInput({ kind: 'openrouter', apiKey: 'k', appliesTo }).ok).toBe(false);
+    }
+  });
+
+  it('endpointAppliesTo: team rows honour the list, workspace rows always apply', () => {
+    const blob = { kind: 'gateway' as const, appliesTo: ['ws-a'] };
+    expect(endpointAppliesTo(blob, null, 'ws-a')).toBe(true);
+    expect(endpointAppliesTo(blob, null, 'ws-b')).toBe(false);
+    expect(endpointAppliesTo(blob, null, null)).toBe(false);
+    expect(endpointAppliesTo(blob, 'ws-b', 'ws-b')).toBe(true);
+    expect(endpointAppliesTo({ kind: 'gateway' }, null, null)).toBe(true);
+    expect(endpointAppliesTo({ kind: 'gateway' }, null, 'ws-b')).toBe(true);
   });
 
   it('reads anything malformed as no endpoint', () => {

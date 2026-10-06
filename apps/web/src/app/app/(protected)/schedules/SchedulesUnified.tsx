@@ -474,10 +474,7 @@ export default function SchedulesUnified({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           </div>
-          <h2 className="text-lg font-semibold text-text-primary mb-1">No automation yet</h2>
-          <p className="text-text-secondary text-sm mb-6 max-w-xs mx-auto">
-            Missions get an hourly check-in by default. Put a mission on a cron, or add a workspace schedule.
-          </p>
+          <h2 className="text-lg font-semibold text-text-primary mb-6">No automation</h2>
           <div className="flex flex-wrap items-center justify-center gap-3">
             <Link
               href="/app/missions/new"

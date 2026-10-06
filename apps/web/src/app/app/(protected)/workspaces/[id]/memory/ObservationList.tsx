@@ -560,7 +560,7 @@ export default function ObservationList({
         <div className="text-center py-8 text-text-muted">
           {recheckOnly
             ? 'Nothing needs a re-check. A memory is flagged here when a merged PR touches its files.'
-            : 'No observations yet. Add one here, or workers record them as they finish tasks.'}
+            : 'No observations. Workers add them as they finish tasks.'}
         </div>
       ) : viewMode === 'list' ? (
         <div className="space-y-3">

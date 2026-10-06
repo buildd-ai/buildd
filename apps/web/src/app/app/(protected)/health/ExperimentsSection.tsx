@@ -318,7 +318,7 @@ export function ExperimentsSection({ data }: { data: HealthExperiments | null })
           {items.map(item => <ExperimentCard key={item.experiment.id} item={item} canManage={canManage} />)}
         </div>
       ) : (
-        <p className="text-xs text-text-muted mb-2" data-testid="experiments-empty">No experiments yet.</p>
+        <p className="text-xs text-text-muted mb-2" data-testid="experiments-empty">No experiments.</p>
       )}
       {canManage && <CreateExperimentForm />}
     </div>

@@ -4,23 +4,34 @@ import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import SettingsPage from '../_components/SettingsPage';
 import TimezoneSection from '../TimezoneSection';
+import TeamPermissionsSection from './TeamPermissionsSection';
 import TeamDetailClient from '../../teams/[id]/TeamDetailClient';
 import { loadSettingsContext } from '../_lib/settings-context';
+import { roleHas } from '@/lib/permission-registry';
+import { resolveTeamQaState, withQaFixtureMembers } from './qa-state';
+import { getTeamPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * Settings → Team → Members: the active team's people, plus the team timezone.
+ * Settings → Team → Members: the active team's people, the team timezone, and
+ * who can do what (team permission overrides).
  * Other teams stay reachable from Profile → Your teams (/app/teams/[id]).
+ * `?state=multi-member` (dev server only) adds a synthetic member row — see ./qa-state.ts.
  */
-export default async function TeamSettingsPage() {
+export default async function TeamSettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ state?: string | string[] }>;
+}) {
+  const qaState = resolveTeamQaState((await searchParams).state);
   const { user, teams: userTeams, currentTeam } = await loadSettingsContext();
 
   if (!currentTeam) {
     return (
       <SettingsPage title="Members">
         <div className="card p-6 text-center">
-          <p className="text-sm text-text-secondary mb-3">You are not on a team yet.</p>
+          <p className="text-sm text-text-secondary mb-3">Not on a team.</p>
           <Link href="/app/teams/new" className="btn btn-primary">Create a team</Link>
         </div>
       </SettingsPage>
@@ -43,23 +54,23 @@ export default async function TeamSettingsPage() {
   return (
     <SettingsPage
       title="Members"
-      description={<>People on this team and what each can change. <Link href="/app/team" className="underline hover:text-text-primary">Agent roles</Link> live on the Team page.</>}
+      description={<><Link href="/app/team" className="underline hover:text-text-primary">Agent roles</Link> are on the Team page.</>}
     >
       {team ? (
         <TeamDetailClient
           team={{ id: team.id, name: team.name, slug: team.slug, createdAt: team.createdAt.toISOString() }}
-          members={members.map((m) => ({
+          members={withQaFixtureMembers(members.map((m) => ({
             userId: m.userId,
             role: m.role as 'owner' | 'admin' | 'member',
             joinedAt: m.joinedAt.toISOString(),
             name: m.user.name,
             email: m.user.email,
             image: m.user.image,
-          }))}
+          })), qaState)}
           currentUserRole={role}
           currentUserId={user.id}
           isPersonal={team.slug.startsWith('personal-')}
-          canManage={role === 'owner' || role === 'admin'}
+          canManage={roleHas(role, 'manage_team_members', await getTeamPermissionOverrides(team.id))}
         />
       ) : (
         <p className="text-sm text-text-secondary">Could not load the team.</p>
@@ -69,6 +80,9 @@ export default async function TeamSettingsPage() {
         teams={userTeams.map((t) => ({ id: t.id, name: t.name }))}
         currentTeamId={currentTeam.id}
       />
+
+      {/* A personal team has one member, its owner: there is nothing to grant. */}
+      {team && !team.slug.startsWith('personal-') && <TeamPermissionsSection teamId={team.id} />}
     </SettingsPage>
   );
 }

@@ -330,6 +330,8 @@ describe('assertion coverage over the real migration corpus', () => {
     // 12: *_task_dispatch_outbox_trigger is a function + trigger (durable
     // dispatch intent on every transition into pending); same reason as 10.
     // 13: *_task_dispatch_trigger_hints replaces that trigger's function.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(13);
+    // 14: *_dispatch_transport_default is a lone ALTER COLUMN ... SET DEFAULT.
+    // DbShape has no column defaults; same reason as 9.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(14);
   });
 });

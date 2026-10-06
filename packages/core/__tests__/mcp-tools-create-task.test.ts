@@ -72,6 +72,40 @@ describe('create_task — parentTaskId support', () => {
     expect(body.context.baseBranch).toBe('buildd/abc12345-fix-tests');
   });
 
+  it('passes headBranch in context when provided, pinning the task worker branch', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Continue the private prompt eval work',
+        description: 'Pick up where the last session left off',
+        headBranch: 'ci/private-prompt-evals',
+      },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.context.headBranch).toBe('ci/private-prompt-evals');
+  });
+
+  it('omits headBranch from context when not provided', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Normal task', description: 'No pin' },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.context?.headBranch).toBeUndefined();
+  });
+
+  it('documents headBranch in the create_task params description, naming the head_not_owned failure it prevents', async () => {
+    const description = buildParamsDescription(['create_task']);
+    expect(description).toContain('headBranch?');
+    expect(description).toContain('head_not_owned');
+  });
+
   it('passes explicit and legacy subject identity through to task intake', async () => {
     await handleBuilddAction(
       mockApi as unknown as ApiFn,

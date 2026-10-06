@@ -19,6 +19,7 @@
  * Fails open by construction: disabled, no key, a sensitive workspace, a
  * timeout, an error or a throw all return null, which is today's order.
  */
+import { promptedQuestions } from '@buildd/core/prompted-decision';
 import { createHash } from 'node:crypto';
 import { OPEN_TASK_STATUSES, VISUAL_AUDITOR_ROLE_SLUG } from '@buildd/shared';
 import type {
@@ -31,6 +32,7 @@ import type {
 import { deriveFeedPrState } from './mission-pulse';
 import { unmetDependencyIds, type DependencyRow } from './mission-helpers';
 import type { LocalStrand } from './local-strand';
+import { registerPromptedQuestions } from '@buildd/core/prompted-decision';
 
 export const STRAND_CHOICE_CAPABILITY = 'mission_strand_choice' as const;
 export const STRAND_CHOICE_DECISION_ID = 'mission_strand_choice';
@@ -74,6 +76,14 @@ export const STRAND_CHOICE_QUESTION = {
 } satisfies ChoiceQuestion<StrandChoiceLabel>;
 
 type Questions = { pick: typeof STRAND_CHOICE_QUESTION };
+
+/** The prompts-table id whose active row may replace the question (`@buildd/core/prompted-decision`). */
+export const STRAND_CHOICE_PROMPT_ID = 'buildd.mission_strand_choice';
+
+/** The question and prompt version in effect: an active prompts row, else the public ones. */
+function currentPrompt() {
+  return promptedQuestions(STRAND_CHOICE_PROMPT_ID, { pick: STRAND_CHOICE_QUESTION }, STRAND_CHOICE_PROMPT_VERSION);
+}
 
 export interface StrandChoiceFacts {
   missionId: string;
@@ -179,7 +189,7 @@ export function buildStrandChoiceState(f: StrandChoiceFacts) {
 export function strandChoiceCacheKey(f: StrandChoiceFacts): string {
   const state = buildStrandChoiceState({ ...f, quietMinutes: Math.floor(f.quietMinutes / 60), lastSessionMinutesAgo: null });
   const digest = createHash('sha256').update(JSON.stringify(state)).digest('hex').slice(0, 16);
-  return `${f.missionId}:${STRAND_CHOICE_PROMPT_VERSION}:${digest}`;
+  return `${f.missionId}:${currentPrompt().promptVersion}:${digest}`;
 }
 
 export interface StrandChoice {
@@ -245,7 +255,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
       accountId: facts.accountId ?? null,
       userId: facts.userId ?? null,
       state: buildStrandChoiceState(facts),
-      questions: { pick: STRAND_CHOICE_QUESTION },
+      questions: currentPrompt().questions,
       timeoutMs: STRAND_CHOICE_TIMEOUT_MS,
       decisionId: STRAND_CHOICE_DECISION_ID,
       access,
@@ -262,7 +272,7 @@ export async function adviseStrandChoice(facts: StrandChoiceFacts, deps: StrandC
     // Ids, labels and numbers only.
     log(`${DECISION_SHADOW_LOG_PREFIX} ${JSON.stringify({
       site: 'mission_strand',
-      v: `${STRAND_CHOICE_PROMPT_VERSION}|${res.model}`,
+      v: `${currentPrompt().promptVersion}|${res.model}`,
       mission,
       pick: choice,
       confidence,
@@ -318,3 +328,6 @@ export function strandLabelLine(input: {
 export function emitDecisionLabel(line: string): void {
   console.log(line);
 }
+
+// Registered for the deploy seed and the fallback alert (`@buildd/core/prompts`).
+registerPromptedQuestions(STRAND_CHOICE_PROMPT_ID, { pick: STRAND_CHOICE_QUESTION });

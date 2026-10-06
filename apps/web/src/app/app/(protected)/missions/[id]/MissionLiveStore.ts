@@ -209,8 +209,11 @@ export function classifyMissionEvent(event: string, data: unknown, ctx: MissionE
 
 export interface MissionRefresher {
   onEvent(event: string, data: unknown): void;
-  /** The tab became visible: one catch-up render if a structural event was missed. */
-  onVisible(): void;
+  /**
+   * The shell is about to re-render the page (lib/app-freshness.ts catch-up):
+   * whatever was missed while hidden, or is pending, is covered by that render.
+   */
+  onCaughtUp(): void;
   /** Replace the known task set after a render (new tasks appear). */
   setTaskIds(ids: Iterable<string>): void;
   dispose(): void;
@@ -225,6 +228,12 @@ export function createMissionRefresher(deps: {
   /** One full server render (router.refresh, with the scroll anchor around it). */
   refresh: () => void;
   isHidden: () => boolean;
+  /**
+   * A structural event was skipped because the tab is hidden. The page does
+   * not catch up itself: the shell's freshness coordinator owes one catch-up
+   * on return, shared with every other surface.
+   */
+  onMissed?: () => void;
   clock?: Clock;
   windowMs?: number;
 }): MissionRefresher {
@@ -234,13 +243,12 @@ export function createMissionRefresher(deps: {
     taskIds: new Set(deps.taskIds),
     lastStatusByWorker: new Map(Object.entries(deps.workerStatuses ?? {})),
   };
-  let missedWhileHidden = false;
 
   // Trailing: the first structural event opens a window and one render lands
   // at its end, however many more arrive inside it.
   const throttle = createThrottle(() => {
     if (deps.isHidden()) {
-      missedWhileHidden = true;
+      deps.onMissed?.();
       return;
     }
     deps.refresh();
@@ -253,15 +261,13 @@ export function createMissionRefresher(deps: {
       if (d.patch && d.taskId) deps.store.patch(d.taskId, d.patch);
       if (d.kind === 'patch') return;
       if (deps.isHidden()) {
-        missedWhileHidden = true;
+        deps.onMissed?.();
         return;
       }
       throttle.call();
     },
-    onVisible() {
-      if (!missedWhileHidden || deps.isHidden()) return;
-      missedWhileHidden = false;
-      throttle.call();
+    onCaughtUp() {
+      throttle.cancel();
     },
     setTaskIds(ids) {
       ctx.taskIds = new Set(ids);

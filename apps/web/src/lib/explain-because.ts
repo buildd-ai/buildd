@@ -512,3 +512,67 @@ export function buildConflictBecause(
     conflictingPaths,
   };
 }
+
+// ─── Dispatch wake (a pending task's latest outbox row) ──────────────────────
+
+/** A wake still inside this window is in flight, not stuck. */
+export const DISPATCH_WAKE_GRACE_MS = 5 * 60_000;
+
+/** The newest `task_dispatch_outbox` row of a task, as core latestDispatchForTask returns it. */
+export interface LatestDispatchRow {
+  id?: unknown;
+  status?: unknown;
+  cause?: unknown;
+  transport?: unknown;
+  attempt_count?: unknown;
+  not_before?: unknown;
+  handed_off_at?: unknown;
+  last_error?: unknown;
+}
+
+const isoOf = (v: unknown): string | null => {
+  if (v === null || v === undefined) return null;
+  const d = new Date(v as string);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+/**
+ * Why a pending task has not started, when the reason is its wake: the
+ * latest intent is due and undelivered, handed off to Dispatch past due with
+ * no receipt, or failed. Null when the wake is fine (still inside its window,
+ * scheduled for later, or delivered); the claim gates then explain the rest.
+ */
+export function dispatchWakeLink(row: LatestDispatchRow | null | undefined, subject: BecauseSubjectRefs, nowMs: number): Link | null {
+  if (!row || typeof row.id !== 'string') return null;
+  const refs: ExplainRefs = {
+    ...(subject.taskId ? { taskId: subject.taskId } : {}),
+    ...(subject.workspaceId ? { workspaceId: subject.workspaceId } : {}),
+    outboxId: row.id,
+  };
+  const due = isoOf(row.not_before);
+  const pastDue = due !== null && nowMs - Date.parse(due) > DISPATCH_WAKE_GRACE_MS;
+  const attempts = Number(row.attempt_count ?? 0);
+  const cause = typeof row.cause === 'string' ? row.cause : 'wake';
+  const transport = typeof row.transport === 'string' ? row.transport : 'in_app';
+  const err = typeof row.last_error === 'string' && row.last_error ? `; last error: ${row.last_error.slice(0, 200)}` : '';
+  switch (row.status) {
+    case 'pending':
+      if (!pastDue) return null;
+      return link(`Latest wake (${cause}) has been due since ${due} and is undelivered (${transport}, ${attempts} attempt${attempts === 1 ? '' : 's'}${err}).`, 'task_dispatch_outbox.status', refs);
+    case 'handed_off':
+      if (!pastDue) return null;
+      return link(`Latest wake (${cause}) was handed off to Dispatch at ${isoOf(row.handed_off_at) ?? 'an unknown time'}, has been due since ${due}, and has no delivery receipt${err}.`, 'task_dispatch_outbox.status', refs);
+    case 'failed':
+      return link(`Latest wake (${cause}) failed after ${attempts} attempt${attempts === 1 ? '' : 's'}${err}. It is parked; the next state change writes a new wake.`, 'task_dispatch_outbox.status', refs);
+    default:
+      return null;
+  }
+}
+
+/** Insert the wake link before the chain's closing conclusion, renumbered. */
+export function withDispatchLink(chain: CausalLink[], wake: Link | null): CausalLink[] {
+  if (!wake) return chain;
+  const links: Link[] = chain.map(({ order: _order, ...l }) => l);
+  links.splice(Math.max(0, links.length - 1), 0, wake);
+  return orderChain(links);
+}

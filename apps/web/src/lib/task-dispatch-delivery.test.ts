@@ -1,11 +1,5 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-const mockGitHubDispatch = mock((..._args: unknown[]) => Promise.resolve(true));
-mock.module('@/lib/github', () => ({
-  dispatchToGitHubActions: mockGitHubDispatch,
-  isGitHubAppConfigured: () => false,
-}));
-mock.module('@buildd/core/db', () => ({ db: { query: {} } }));
 
 import {
   buildTaskPayload,

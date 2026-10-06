@@ -28,6 +28,11 @@ describe('taskActionSet', () => {
     expect(taskActionSet({ ...base, phase: 'failed', backend: null, hasHistory: false })).toEqual(['retry']);
   });
 
+  it('the other backend is offered only when it is not known to be unconfigured', () => {
+    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: false })).toEqual(['retry', 'history']);
+    expect(taskActionSet({ ...base, phase: 'failed', otherBackendAvailable: true })).toEqual(['retry', 'switch_backend', 'history']);
+  });
+
   it('a dependency-blocked task only says so', () => {
     expect(taskActionSet({ ...base, phase: 'blocked', isBlocked: true })).toEqual(['blocked']);
   });

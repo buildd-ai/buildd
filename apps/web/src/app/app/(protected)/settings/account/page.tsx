@@ -53,7 +53,7 @@ export default async function AccountSettingsPage() {
         </div>
         {teams.length === 0 ? (
           <div className="card p-6 text-center">
-            <p className="text-text-muted text-sm mb-3">No teams yet</p>
+            <p className="text-text-muted text-sm mb-3">No teams</p>
             <Link href="/app/teams/new" className="text-sm text-primary hover:underline">Create a team</Link>
           </div>
         ) : (

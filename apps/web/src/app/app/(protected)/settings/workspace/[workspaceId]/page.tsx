@@ -8,6 +8,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { MoveToTeamButton } from '@/components/MoveToTeamDialog';
 import { moveTargets } from '../../workspaces/rows';
 import MergePolicyEditor from './MergePolicyEditor';
+import { getTeamsPermissionOverrides } from '@/lib/permissions';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,7 +52,7 @@ export default async function WorkspaceMergePolicyPage({
   const effectivePolicy = resolvePolicy(workspace);
 
   const teams = await getUserTeamsWithDetails(user.id).catch(() => []);
-  const moveTeams = moveTargets(user.id, teams, workspace.teamId);
+  const moveTeams = moveTargets(user.id, teams, workspace.teamId, await getTeamsPermissionOverrides(teams.map((t) => t.id)));
 
   const missionOverrides = missionsWithOverrides
     .filter(m => m.mergePolicy != null)

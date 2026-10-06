@@ -1,5 +1,5 @@
-# Build context for images built from the repo root (apps/runner/Dockerfile.once,
-# docker/worker/Dockerfile). Dockerfiles COPY named paths only; this keeps the
+# Build context for images built from the repo root (apps/runner/Dockerfile.once).
+# Dockerfiles COPY named paths only; this keeps the
 # context small and makes sure local secrets never reach the daemon at all.
 
 # VCS, dependencies, build output

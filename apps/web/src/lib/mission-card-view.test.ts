@@ -327,7 +327,7 @@ describe('review fixes: live count, latest worker, payload', () => {
     expect(view.situation.headline.toLowerCase()).not.toContain('merge');
     expect(JSON.stringify(view.situation.alsoOutstanding)).not.toContain('"merge"');
     const idle = buildMissionCardView(mission({ tasks: [inCi] }), { from: 'missions', now: NOW });
-    expect(idle.situation.headline.toLowerCase()).not.toContain('waiting on you to merge');
+    expect(idle.situation.headline.toLowerCase()).not.toContain('ready to merge');
   });
 
   it('a green PR that has not merged is still a merge ask', () => {
@@ -336,7 +336,7 @@ describe('review fixes: live count, latest worker, payload', () => {
       workers: [{ status: 'completed', prUrl: 'https://example.test/pr/413', prNumber: 413, prLifecycleStatus: 'ci_green' }],
     });
     const view = buildMissionCardView(mission({ tasks: [green] }), { from: 'missions', now: NOW });
-    expect(view.situation.headline.toLowerCase()).toContain('waiting on you to merge');
+    expect(view.situation.headline.toLowerCase()).toContain('ready to merge');
   });
 
   it('builds a card without reading task.result (Home does not load it)', () => {

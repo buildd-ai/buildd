@@ -12,8 +12,8 @@
 import { db } from '@buildd/core/db';
 import { accounts, missions, tasks, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { RUNNER_ONLINE_THRESHOLD_MS, RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
-import { buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
+import { RUNNER_STALE_CUTOFF_MS, type FleetSnapshot } from '@buildd/shared';
+import { FLEET_ONLINE_WINDOW_MS, buildFleetSnapshot, fleetCapacity, type FleetHeartbeatRow, type FleetWorkerRow } from './fleet-view';
 import { buildTickerEvents, type TickerEvent } from './home-ticker';
 import { taskShortLabel } from './segment-label';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
@@ -96,7 +96,7 @@ export async function loadFleetHeartbeats(input: { teamId: string | null; wsIds:
 
 /** `fleetCapacity` over `loadFleetHeartbeats`, with Home's online threshold. */
 export async function loadFleetCapacity(input: { teamId: string | null; wsIds: string[]; now: number }): Promise<number> {
-  return fleetCapacity(await loadFleetHeartbeats(input), { now: input.now, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS });
+  return fleetCapacity(await loadFleetHeartbeats(input), { now: input.now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS });
 }
 
 /**
@@ -131,7 +131,7 @@ export async function loadFleetSnapshot(input: { teamId: string | null; wsIds: s
       roleSlug: r.roleSlug, missionId: r.missionId, taskClass: r.taskClass,
     } : null,
   }));
-  return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS, maxWindowMs: FLEET_WINDOW_MS });
+  return buildFleetSnapshot(heartbeatRows, rows, { now, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS });
 }
 
 export async function loadHomeFleet(input: {
@@ -217,7 +217,7 @@ export async function loadHomeFleet(input: {
   // from an older run feeds the counts, not the lanes.
   const laneRows = rows.filter(r => r.startedAt && new Date(r.startedAt).getTime() >= windowStart.getTime() || (LIVE_WORKER_STATUSES as readonly string[]).includes(r.status));
   const fleet = buildFleetSnapshot(heartbeatRows as FleetHeartbeatRow[], laneRows, {
-    now, roles, onlineThresholdMs: RUNNER_ONLINE_THRESHOLD_MS, maxWindowMs: FLEET_WINDOW_MS,
+    now, roles, onlineThresholdMs: FLEET_ONLINE_WINDOW_MS, maxWindowMs: FLEET_WINDOW_MS,
   });
 
   const runnerNameById = new Map<string, string>();
