@@ -174,3 +174,25 @@ describe('MCP update_progress — self-reported cost', () => {
     expect(body.costUsd).toBe(0.05);
   });
 });
+
+describe('MCP complete_task — 409 on a worker the server already finished', () => {
+  it('a completed task whose local slot was released is not reported as an error', async () => {
+    const api = mock(async () => {
+      throw new Error('API error: 409 - {"error":"Worker already completed","abort":true,"reason":"completed","actualStatus":"completed"}');
+    });
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done' }, context);
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('slot was released');
+  });
+
+  it('a terminated worker still gets the warning', async () => {
+    const api = mock(async () => {
+      throw new Error('API error: 409 - {"error":"Worker was terminated - task may have been reassigned","abort":true}');
+    });
+    const result = await handleBuilddAction(api as unknown as ApiFn, 'complete_task', { summary: 'done' }, context);
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('already terminated');
+  });
+});

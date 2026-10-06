@@ -39,6 +39,8 @@ const mockStaleWorkers = mock(async (_now: Date) => { calls.push('stale-workers'
 const mockPathClaims = mock(async () => { calls.push('path-claims'); return 0; });
 mock.module('./stale-workers', () => ({ runStaleWorkerCleanup: mockStaleWorkers }));
 mock.module('./path-claims', () => ({ sweepAbandonedPathClaims: mockPathClaims }));
+const mockDetach = mock(async (_opts: unknown) => { calls.push('interactive-detach'); return 0; });
+mock.module('@/lib/interactive-detach', () => ({ detachInteractiveWorkersOfEndedTasks: mockDetach }));
 
 const { GET } = await import('./route');
 
@@ -56,6 +58,7 @@ beforeEach(() => {
   calls.length = 0;
   mockStaleWorkers.mockClear();
   mockPathClaims.mockClear();
+  mockDetach.mockClear();
 });
 
 describe('maintenance cron — auth', () => {
@@ -72,20 +75,21 @@ describe('maintenance cron — auth', () => {
 });
 
 describe('maintenance cron — the core sweeps', () => {
-  it('runs stale-worker cleanup then abandoned path-claim release, the order the schedules tick used', async () => {
+  it('runs stale-worker cleanup, abandoned path-claim release, then the ended-task interactive detach', async () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(200);
-    expect(calls).toEqual(['stale-workers', 'path-claims']);
+    expect(calls).toEqual(['stale-workers', 'path-claims', 'interactive-detach']);
     expect(mockStaleWorkers.mock.calls[0]![0]).toBeInstanceOf(Date);
   });
 
   it('returns and records what each sweep did; changed counts real repairs', async () => {
     mockStaleWorkers.mockResolvedValueOnce(2);
     mockPathClaims.mockResolvedValueOnce(3);
+    mockDetach.mockResolvedValueOnce(1);
     const res = await GET(makeRequest());
-    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3 });
+    expect(await res.json()).toEqual({ heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1 });
     const row = cronRunRows.find(r => r.job === 'maintenance');
-    expect(row).toMatchObject({ ok: true, changed: 5, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3 } });
+    expect(row).toMatchObject({ ok: true, changed: 6, errors: 0, result: { heartbeatOrphans: 2, abandonedClaimsReleased: 3, interactiveDetached: 1 } });
   });
 });
 
