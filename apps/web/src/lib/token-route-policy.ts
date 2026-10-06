@@ -66,8 +66,11 @@ export function canAccessTokenRoute(token: ScopedToken, request?: RouteRequest):
       };
       if (!filters[url.pathname]?.some(name => url.searchParams.get(name))) return false;
     }
-    const unfilteredCollections = ['/api/workers/active', '/api/artifacts', '/api/workspaces', '/api/roles', '/api/connectors', '/api/connectors/mounted'];
+    const unfilteredCollections = ['/api/workers/active', '/api/artifacts', '/api/roles', '/api/connectors', '/api/connectors/mounted'];
     if (unfilteredCollections.includes(url.pathname)) return false;
+    // Listing workspaces is filtered to the token's own (listReachableWorkspaceIds),
+    // so name-to-id resolution works; creating one would escape the restriction.
+    if (url.pathname === '/api/workspaces' && request.method !== 'GET' && request.method !== 'HEAD') return false;
     const filteredCollections = ['/api/tasks', '/api/missions', '/api/initiatives', '/api/prs', '/api/releases'];
     if ((request.method === 'GET' || request.method === 'HEAD') && filteredCollections.includes(url.pathname) && !url.searchParams.get('workspaceId')) return false;
   }

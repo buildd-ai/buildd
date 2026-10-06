@@ -29,11 +29,11 @@ it('keyboard selection anchors a summary, expands task details, and keeps its hi
   expect(q('flow-picked')!.getAttribute('aria-modal')).toBe('false');
   expect(q('flow-selection')).not.toBeNull();
   expect(q('flow-picked')!.querySelector('a')?.getAttribute('href')).toStartWith('/app/tasks/');
-  act(() => q('flow-expand')!.click());
+  expect(q('flow-expand')).toBeNull();
   // happy-dom's default 1024px width is md+, so the contextual sheet renders inline
   // (never overlaying the "Agent time by role" card below it) rather than as a
   // viewport-fixed bottom sheet.
-  expect(q('flow-picked')!.className).toContain('max-h-[55vh]');
+  expect(q('flow-picked')!.className).toContain('max-h-[85vh]');
   act(() => q('flow-picked')!.querySelector<HTMLElement>('[aria-label="Close"]')!.click());
   expect(q('flow-picked')).toBeNull();
   expect(q('flow-selection')).not.toBeNull();
@@ -72,4 +72,21 @@ it('a touch picks a point before opening details, and stages remain available fo
   act(() => select.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
   expect(q('flow-summary')!.textContent).toContain('Failed or abandoned');
   expect(q('flow-selection')).not.toBeNull();
+});
+
+it('shows bounded band composition and a filtered task-list link without explanatory prose', () => {
+  render();
+  const svg = container.querySelector('svg')!;
+  act(() => svg.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+  act(() => q('flow-details-trigger')!.click());
+  expect(q('flow-breakdown')!.textContent).toContain('Workspace');
+  expect(q('flow-breakdown')!.textContent).toContain('Outcome');
+  expect(q('flow-picked')!.querySelectorAll('a[href^="/app/tasks/"]').length).toBeLessThanOrEqual(5);
+  const href = q('flow-task-list')!.getAttribute('href')!;
+  expect(href).toContain('band=');
+  expect(href).toContain('at=');
+  expect(container.textContent).not.toContain('About this chart');
+  expect(container.textContent).not.toContain('Ticks above the plot');
+  expect(q('flow-expand')).toBeNull();
+  expect(container.textContent).not.toContain('average tasks with an agent');
 });
