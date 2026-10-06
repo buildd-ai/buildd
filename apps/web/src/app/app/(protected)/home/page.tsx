@@ -991,6 +991,7 @@ export default async function HomePage({
                 reviewerTask: rt ? { status: rt.status as ReviewerTaskStatus, result: rt.result, context: rt.context } : null,
                 currentHeadSha: w.lastCommitSha ?? null,
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
+                hasEscalationNote: escalationNoteTaskIds.has(w.taskId),
                 policyTier: policy.tier,
                 github: githubApprovalByWorkerId.get(w.id) ?? null,
               });

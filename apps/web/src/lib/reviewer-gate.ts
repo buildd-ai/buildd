@@ -390,6 +390,8 @@ export function resolveHumanPrReview(input: {
   reviewerTask: StoredVerdictFallbackInput['reviewerTask'];
   currentHeadSha: string | null;
   escalationReason: string | null;
+  /** An explicit human handoff, rather than a verdict-gate refusal reason. */
+  hasEscalationNote?: boolean;
   policyTier: string;
   github: GithubApprovalFacts | null;
 }): HumanPrReview | null {
@@ -410,7 +412,7 @@ export function resolveHumanPrReview(input: {
   if (status.state === 'escalated' && gate.kind !== 'in_flight') {
     return { label: 'Review on GitHub', reason: `Review required · ${status.escalationReason ?? status.summary ?? input.escalationReason ?? 'reviewer requested a human'}` };
   }
-  if (input.escalationReason && status.state !== 'approved' && gate.kind !== 'in_flight') {
+  if (input.hasEscalationNote && input.escalationReason && status.state !== 'approved' && gate.kind !== 'in_flight') {
     return { label: 'Review on GitHub', reason: `Review required · ${input.escalationReason}` };
   }
   return null;

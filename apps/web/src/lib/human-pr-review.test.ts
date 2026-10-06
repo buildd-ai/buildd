@@ -57,3 +57,11 @@ it('a bot approval or a stale-head approval cannot clear the review action', () 
 it('required code-owner approval remains actionable after another human approves', () => {
   expect(resolveHumanPrReview({ ...base, github: { reviewDecision: 'REVIEW_REQUIRED', humanApproved: true } })?.label).toBe('Approve on GitHub');
 });
+it('request-changes remains machine-owned while a fix is available, without an explicit human escalation', () => {
+  const action = resolveHumanPrReview({ ...base, github: { reviewDecision: null, humanApproved: false },
+    reviewerTask: { ...escalation, result: { structuredOutput: { verdict: 'request-changes' } } },
+    escalationReason: 'Reviewer requested changes' });
+  expect(action).toBeNull();
+  const item = card(action, { ciGate: { kind: 'fixing', fixKind: 'review', taskId: 'fix' } });
+  expect(item.chip).toBe('FIXING_REVIEW');
+});
