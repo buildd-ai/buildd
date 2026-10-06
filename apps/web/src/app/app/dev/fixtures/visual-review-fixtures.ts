@@ -30,6 +30,8 @@ export const MISSION_LIST_EXECUTOR_FIXTURE_STATE = 'mission-list-executor';
 export const MISSION_CHECK_INS_FIXTURE_STATE = 'mission-check-ins';
 /** The task page's Evidence files section in each state (TaskEvidenceFilesFixture.tsx). */
 export const TASK_EVIDENCE_FIXTURE_STATE = 'task-evidence';
+/** The mission's Goal criteria sheet: not-verifiable and ready states (GoalCriteriaFixture.tsx). */
+export const GOAL_CRITERIA_FIXTURE_STATE = 'goal-criteria';
 
 /** The workspace onboarding card with a stubbed readiness report (OnboardingFixture.tsx). */
 export const ONBOARDING_FIXTURE_STATE = 'onboarding';
@@ -39,6 +41,8 @@ export const EVIDENCE_STORAGE_FIXTURE_STATE = 'evidence-storage';
 
 /** Team settings → Platform Operator access, team ceiling + per-workspace grants (OperatorAccessFixture.tsx). */
 export const OPERATOR_ACCESS_FIXTURE_STATE = 'operator-access';
+/** Settings → Model providers with a gateway, a team agent endpoint and two overrides (ModelProvidersFixture.tsx). */
+export const MODEL_PROVIDERS_FIXTURE_STATE = 'model-providers';
 
 /** The completed task page's What shipped header, and Checks by commit (task-shipped-fixtures.ts). */
 export const TASK_SHIPPED_FIXTURE_STATE = 'task-shipped';
@@ -46,11 +50,15 @@ export const COMMIT_CHECKS_FIXTURE_STATE = 'commit-checks';
 
 /** A question's answer pending, recorded, already answered and failed (AnswerStatesFixture.tsx). */
 export const ANSWER_STATES_FIXTURE_STATE = 'answer-states';
+export const AGENT_ACCESS_FIXTURE_STATE = 'agent-access';
+
+/** Health's tool list with every row's breakdown, collapsed and open (tool-breakdown-fixture.tsx). */
+export const TOOL_BREAKDOWN_FIXTURE_STATE = 'tool-breakdown';
 
 /** The mission Board's Landed strip and its tethered drawer (mission-task-strip-fixtures.ts). */
 export const MISSION_TASK_STRIP_FIXTURE_STATE = 'mission-task-strip';
 
-export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE];
+export const FIXTURE_VIEWS: readonly string[] = [...Object.keys(mockWorkers), VISUAL_REVIEW_FIXTURE_STATE, MISSION_BOARD_VISUAL_FIXTURE_STATE, MISSION_LIST_EXECUTOR_FIXTURE_STATE, MISSION_CHECK_INS_FIXTURE_STATE, GOAL_CRITERIA_FIXTURE_STATE, TASK_EVIDENCE_FIXTURE_STATE, EVIDENCE_STORAGE_FIXTURE_STATE, MODEL_PROVIDERS_FIXTURE_STATE, OPERATOR_ACCESS_FIXTURE_STATE, TASK_SHIPPED_FIXTURE_STATE, COMMIT_CHECKS_FIXTURE_STATE, ANSWER_STATES_FIXTURE_STATE, AGENT_ACCESS_FIXTURE_STATE, ONBOARDING_FIXTURE_STATE, MISSION_TASK_STRIP_FIXTURE_STATE, TOOL_BREAKDOWN_FIXTURE_STATE];
 
 export function isFixtureView(value: string | null | undefined): value is string {
   return value != null && FIXTURE_VIEWS.includes(value);

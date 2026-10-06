@@ -64,8 +64,7 @@
     "cron:check": "bun run scripts/sync-crons.ts --check",
     "migrations:lint": "bun test packages/core/__tests__/migration-journal-ordering.test.ts && bun test packages/core/__tests__/prod-build-runs-migrations.test.ts",
     "env:verify": "bun apps/runner/src/index.ts env verify",
-    "prepare": "git config core.hooksPath .githooks || true",
-    "cbm:seed": "bun run apps/runner/scripts/cbm-seed.ts"
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "next": "^16.0.0",

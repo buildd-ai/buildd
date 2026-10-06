@@ -31,7 +31,7 @@
  *
  * ── What it is NOT ──────────────────────────────────────────────────────────
  *   - NOT "runner offline". That is the heartbeat-stale rule in
- *     `cron/schedules/maintenance/stale-workers.ts`, which pages through the
+ *     `cron/maintenance/stale-workers.ts`, which pages through the
  *     `runner-offline` ops source. Requiring a FRESH heartbeat here is what
  *     keeps one outage from paging twice; muted alerts detect nothing.
  *   - NOT "no work queued". Zero claimable tasks is normal idle and must stay

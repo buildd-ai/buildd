@@ -97,3 +97,27 @@ describe('models that reject disabled thinking outright', () => {
     expect(requiresThinkingEnabled('claude-sonnet-5')).toBe(false);
   });
 });
+
+describe('Claude Sonnet / Haiku 5.5 thinking guard', () => {
+  for (const model of ['claude-sonnet-5-5', 'claude-haiku-5-5', 'Claude-Sonnet-5-5', 'claude-sonnet-5-5-20260928']) {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', undefined] as const) {
+      test(`${model} strips disabled thinking at effort ${effort}`, () => {
+        expect(resolveEffectiveThinking(model, effort, { type: 'disabled' })).toBeUndefined();
+      });
+      test(`${model} preserves other thinking settings at effort ${effort}`, () => {
+        expect(resolveEffectiveThinking(model, effort, { type: 'adaptive' })).toEqual({ type: 'adaptive' });
+        expect(resolveEffectiveThinking(model, effort, { type: 'enabled' })).toEqual({ type: 'enabled' });
+        expect(resolveEffectiveThinking(model, effort, undefined)).toBeUndefined();
+      });
+    }
+    test(`${model} requires thinking enabled`, () => {
+      expect(requiresThinkingEnabled(model)).toBe(true);
+    });
+  }
+
+  test('preserves disabled thinking for older Sonnet / Haiku and other version numbers', () => {
+    for (const model of ['claude-sonnet-5', 'claude-haiku-5', 'claude-sonnet-5-50']) {
+      expect(resolveEffectiveThinking(model, 'max', { type: 'disabled' })).toEqual({ type: 'disabled' });
+    }
+  });
+});

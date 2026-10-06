@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { BASH_BUCKETS, SEARCH_SHAPES } from '../../../runner/src/bash-classify';
 import {
-  buildCbmToolsBlock,
   groupToolsByServer,
   KNOWN_BASH_BUCKETS,
   KNOWN_SEARCH_SHAPES,
@@ -130,28 +129,12 @@ describe('buildd actions', () => {
   });
 });
 
-describe('codebase-graph tools', () => {
-  it('lists every tool over the session population, with sessions per tool', () => {
-    const block = buildCbmToolsBlock([
-      { toolCalls: { search_graph: 3, trace_path: 1 } },
-      { toolCalls: { search_graph: 1, get_code_snippet: 2 } },
-      { toolCalls: {} },
-    ]);
-    expect(block.sessions).toBe(3);
-    expect(block.totalCalls).toBe(7);
-    expect(sum(block.tools)).toBe(block.totalCalls);
-    expect(block.tools.map(t => t.tool)).toEqual(['search_graph', 'get_code_snippet', 'trace_path']);
-    expect(block.tools[0]).toMatchObject({ calls: 4, sessions: 2 });
-  });
-});
-
 describe('tools grouped by server', () => {
   const tool = (name: string, calls: number) => ({ name, calls, share: 0, tasks: 1, exactCalls: calls, exactTasks: 1 });
   const tools = [
     tool('Bash', 50),
     tool('mcp__buildd__buildd', 20),
     tool('Read', 30),
-    tool('mcp__codebase-memory__search_graph', 4),
     tool('mcp__buildd__recall', 3),
     tool('mcp__github__get_pr', 2),
     tool('ToolSearch', 1),
@@ -164,14 +147,13 @@ describe('tools grouped by server', () => {
     expect(listed.sort()).toEqual(tools.map(t => t.name).sort());
   });
 
-  it('orders groups built-in, buildd, codebase-memory, other MCP, overflow', () => {
-    expect(groupToolsByServer(tools).map(g => g.key)).toEqual(['built-in', 'buildd', 'codebase-memory', 'other-mcp', 'overflow']);
+  it('orders groups built-in, buildd, other MCP, overflow', () => {
+    expect(groupToolsByServer(tools).map(g => g.key)).toEqual(['built-in', 'buildd', 'other-mcp', 'overflow']);
   });
 
   it('classifies by server', () => {
     expect(toolGroupOf('ToolSearch')).toBe('built-in');
     expect(toolGroupOf('mcp__buildd__recall')).toBe('buildd');
-    expect(toolGroupOf('mcp__codebase-memory__trace_path')).toBe('codebase-memory');
     expect(toolGroupOf('mcp__dispatch__dispatch_read')).toBe('other-mcp');
     expect(toolGroupOf('__other__')).toBe('overflow');
   });

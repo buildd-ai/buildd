@@ -4,6 +4,8 @@ import { tasks, workers } from '@buildd/core/db/schema';
 import type { ClaimTaskExclusion, ClaimTaskExclusionCode } from '@buildd/shared';
 import { shouldSerializeByManifest } from '@buildd/core/path-overlap';
 import { dependencySatisfied } from './deps-gate';
+import { GATE_SLUGS } from '@buildd/core/gate-slugs';
+import type { RecordGateEventInput } from '@buildd/core/gate-events';
 
 /**
  * Why an explicitly requested task (claim with `taskId`) was not claimed.
@@ -227,6 +229,44 @@ export async function diagnoseExplicitTaskExclusion(opts: {
   }
 }
 
+/**
+ * Codes that say the task was not claimable at all (gone, done, already
+ * running). Every other code is a gate refusing a task that IS waiting to run.
+ */
+const NOT_A_REFUSAL: ReadonlySet<ClaimTaskExclusionCode> = new Set<ClaimTaskExclusionCode>([
+  'not_found', 'not_pending', 'already_claimed', 'active_worker', 'state_changed',
+]);
+
+/**
+ * The gate-ledger row for an explicit claim the WHERE clause refused, or null.
+ *
+ * A runner's wake-driven claim names its task, and a WHERE gate that drops it
+ * returns only `no_pending_tasks` to the runner and records nothing anywhere —
+ * unlike a dispatch-loop `deferTask`, which writes a `claim_loop_deferral` row.
+ * So a reviewer refused on every wake by, say, `workspace_cap` had an empty
+ * gate history and `explain` could only call it a wait. Recording the refusal
+ * under the same gate and reason vocabulary puts the exact exclusion on the
+ * task (explain's gateHistory) and feeds the stranded-task sweep's
+ * consecutive-deferral count.
+ */
+export function explicitExclusionGateEvent(opts: {
+  taskId: string;
+  exclusion: ClaimTaskExclusion;
+  workspaceId: string | null;
+}): RecordGateEventInput | null {
+  if (NOT_A_REFUSAL.has(opts.exclusion.code)) return null;
+  return {
+    gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+    surface: 'POST /api/workers/claim',
+    outcome: 'deferred',
+    reason: opts.exclusion.code,
+    workspaceId: opts.workspaceId,
+    taskId: opts.taskId,
+    callerOrigin: 'worker',
+    detail: { explicitClaim: true, detail: opts.exclusion.detail },
+  };
+}
+
 /** Force-claim audit names for the SQL gates a force claim lifts. */
 export type ForcedGateName = 'deps' | 'missionHeld' | 'missionLocal' | 'subject' | 'workspaceCap' | 'workspaceExecutor' | 'startAt';
 const FORCED_GATE_CODES: Record<ForcedGateName, ClaimTaskExclusionCode> = {
@@ -324,6 +364,8 @@ export async function stampLastClaimAttempt(opts: {
   workspaceIds: string[];
   reason: string;
   deferrals?: Record<string, number>;
+  /** The specific gate, when the claim named one — `reason` alone is often just `no_pending_tasks`. */
+  exclusion?: ClaimTaskExclusion;
   now: Date;
 }): Promise<void> {
   if (opts.workspaceIds.length === 0) return;
@@ -334,6 +376,7 @@ export async function stampLastClaimAttempt(opts: {
           lastClaimAttemptAt: opts.now.toISOString(),
           lastClaimAttemptReason: opts.reason,
           ...(opts.deferrals ? { lastClaimAttemptDeferrals: opts.deferrals } : {}),
+          ...(opts.exclusion ? { lastClaimAttemptExclusion: { code: opts.exclusion.code, detail: opts.exclusion.detail } } : {}),
         })}::jsonb`,
         updatedAt: opts.now,
       })

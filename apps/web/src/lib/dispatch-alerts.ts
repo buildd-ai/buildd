@@ -84,7 +84,7 @@ export async function alertDispatchFailed(
     title: alerted.length === 1 ? '[buildd] Dispatch delivery failed' : `[buildd] Dispatch delivery failed in ${alerted.length} workspaces`,
     message: lines.join('\n'),
     priority: 0,
-    url: `${APP_BASE_URL}/app/health`,
+    url: `${APP_BASE_URL}/app/health/operator`,
     urlTitle: 'Dispatch health',
   });
   return { alerted, muted };
@@ -168,7 +168,7 @@ export async function alertFloorRepair(conditions: readonly FloorCondition[], ov
     title: '[buildd] Dispatch floor had to repair',
     message: lines.join('\n'),
     priority: 0,
-    url: `${APP_BASE_URL}/app/health`,
+    url: `${APP_BASE_URL}/app/health/operator`,
     urlTitle: 'Dispatch health',
   });
   return 'alerted';

@@ -338,9 +338,13 @@ mock.module('@/lib/task-dependencies', () => ({
 const mockDiagnoseExplicitTaskExclusion = mock((_opts: any) => Promise.resolve(null as any));
 const mockStampLastClaimAttempt = mock((_opts: any) => Promise.resolve());
 const mockEvaluateForcedGates = mock((_opts: any) => Promise.resolve([] as string[]));
+const mockExplicitExclusionGateEvent = mock((opts: any) => ({
+  gate: 'claim_loop_deferral', outcome: 'deferred', reason: opts.exclusion.code, taskId: opts.taskId, workspaceId: opts.workspaceId,
+}));
 mock.module('./explicit-task-exclusion', () => ({
   diagnoseExplicitTaskExclusion: mockDiagnoseExplicitTaskExclusion,
   evaluateForcedGates: mockEvaluateForcedGates,
+  explicitExclusionGateEvent: mockExplicitExclusionGateEvent,
   stampLastClaimAttempt: mockStampLastClaimAttempt,
 }));
 
@@ -376,20 +380,15 @@ mock.module('@buildd/core/tier-pool-source', () => ({
   recordAgentPoolAssignment: mockRecordAgentPoolAssignment,
 }));
 
-// CBM-access experiment glue. The real module is exercised in
-// packages/core/__tests__/cbm-access-experiment-source.test.ts; here only the
-// call-site wiring is under test. Default: no running experiment.
-const mockEnrolCbmAccessExperiment = mock((_args: any): Promise<any> => Promise.resolve(null));
-mock.module('@buildd/core/cbm-access-experiment-source', () => ({
-  enrolCbmAccessExperiment: mockEnrolCbmAccessExperiment,
-}));
-
 // Records every tier lookup the claim makes and delegates to the real
 // resolver, so tests can check the surface a claim asks for.
 // mock.module rewrites the live namespace, so the real function is captured first.
 const realTierRegistry = { ...(await import('@buildd/core/model-tier-registry')) };
 const realResolveTierEntry = realTierRegistry.resolveTierEntry;
 const tierLookups: unknown[][] = [];
+// With no team registry a claim still resolves through the model policy, so
+// the routed model is the tier's bundled default, never a bare router alias.
+const tierModel = (tier: 'premium' | 'standard' | 'budget') => realTierRegistry.TIER_DEFAULTS[tier].model;
 mock.module('@buildd/core/model-tier-registry', () => ({
   ...realTierRegistry,
   resolveTierEntry: (...args: Parameters<typeof realResolveTierEntry>) => {
@@ -428,6 +427,7 @@ mock.module('./hold-start-shadow', () => ({
 }));
 
 import { POST } from './route';
+import { planPersonalWorkspaceLinks, personalTeamSlug } from '@/lib/personal-workspace-links-plan';
 import { choice as choiceQ, defineDecision as defineD } from '@builddai/ai-kit/decide';
 import { CLAIM_CREDENTIAL_FIELDS } from '@buildd/shared';
 import { claimHoldIdentity } from '@buildd/core/orchestration-promotion';
@@ -1008,6 +1008,83 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(res.status).toBe(200);
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+  });
+
+  // A new user's first task sat at "Waiting for a runner" forever: sign-in
+  // creates "My Workspace" restricted, and the account `buildd login` minted
+  // had no link to it. The links come from the same planner the login paths
+  // apply (lib/personal-workspace-links), so these prove the end-to-end rule.
+  describe("fresh user's login token and their auto-created workspace", () => {
+    const userId = 'user-fresh';
+    const personalTeam = { id: 'team-personal', slug: personalTeamSlug(userId) };
+    const myWorkspace = { id: 'ws-mine', teamId: 'team-personal', accessMode: 'restricted' };
+    const pendingTask = () => ({
+      id: 'task-1',
+      workspaceId: 'ws-mine',
+      title: 'First task',
+      dependsOn: [],
+      workspace: { id: 'ws-mine', gitConfig: null, teamId: 'team-personal' },
+    });
+    const linksFor = (account: { id: string; type: string; teamId: string }) =>
+      planPersonalWorkspaceLinks({
+        userId,
+        canManageTeamKeys: account.teamId === personalTeam.id,
+        team: personalTeam,
+        account: { ...account, workspaceIds: null },
+        teamWorkspaces: [myWorkspace],
+      }).map(({ workspaceId, canClaim, canCreate }) => ({ workspaceId, canClaim, canCreate }));
+
+    function setupClaimWrites() {
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]) })) })),
+      });
+      mockDbExecute.mockReturnValue(Promise.resolve({
+        rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+      }));
+    }
+
+    it('claims a task in My Workspace with the login token', async () => {
+      const loginAccount = { id: 'acct-login', type: 'user', teamId: 'team-personal' };
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...loginAccount, authType: 'api', level: 'worker', maxConcurrentWorkers: 3, workspaceIds: null,
+      });
+      mockGetAccountWorkspacePermissions.mockResolvedValue(linksFor(loginAccount));
+      // Restricted: the team's open-workspace query finds nothing; the link
+      // lookup resolves the workspace.
+      mockWorkspacesFindMany.mockResolvedValueOnce([]);
+      mockWorkspacesFindMany.mockResolvedValueOnce([{ id: 'ws-mine' }]);
+      mockTasksFindMany.mockResolvedValueOnce([pendingTask()]);
+      setupClaimWrites();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner' },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers.length).toBe(1);
+      expect(data.workers[0].taskId).toBe('task-1');
+    });
+
+    it("another team's token still cannot claim there", async () => {
+      const outsider = { id: 'acct-outsider', type: 'user', teamId: 'team-other' };
+      mockAuthenticateApiKey.mockResolvedValue({
+        ...outsider, authType: 'api', level: 'worker', maxConcurrentWorkers: 3, workspaceIds: null,
+      });
+      expect(linksFor(outsider)).toEqual([]);
+      mockGetAccountWorkspacePermissions.mockResolvedValue(linksFor(outsider));
+      mockWorkspacesFindMany.mockResolvedValue([]);
+      mockTasksFindMany.mockResolvedValue([pendingTask()]);
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', workspaceId: 'ws-mine' },
+      }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.workers ?? []).toHaveLength(0);
+      expect(data.diagnostics?.reason).toBe('no_workspaces');
+    });
   });
 
   describe('budget failover to Codex', () => {
@@ -2079,11 +2156,11 @@ describe('POST /api/workers/claim', () => {
         id, canonicalId: null, openRouterId: `anthropic/${id}`, provider: 'anthropic', displayName: id,
         contextLength: 1_000_000, created: 1_790_000_000 + createdDay * 86_400, input, output: input * 5, cacheRead: 0, cacheWrite: 0,
       });
-      // opus-5-5 is the newest model with a recorded CLI floor; sonnet-5-5 postdates it.
+      // Sonnet 5.5 has a recorded floor; hypothetical Sonnet 6 is still unvouched.
       const CATALOG = [
-        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15),
+        entry('claude-sonnet-5', 0), entry('claude-opus-5', 1, 5), entry('claude-opus-5-5', 10, 4), entry('claude-sonnet-5-5', 15), entry('claude-sonnet-6', 20),
       ];
-      const BAD = 'claude-sonnet-5-5';
+      const BAD = 'claude-sonnet-6';
 
       beforeEach(() => {
         mockGetCatalog.mockResolvedValue(CATALOG as any);
@@ -2110,12 +2187,12 @@ describe('POST /api/workers/claim', () => {
 
         const claimSet = sets.find(v => v.status === 'assigned');
         expect(claimSet.predictedModel).not.toBe(BAD);
-        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5-5');
 
         expect(errorTraceRows).toHaveLength(1);
         expect(errorTraceRows[0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', pattern: 'dispatch_model_rejected', source: 'claim' });
         expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from pin (newer_than_floor_table)`);
-        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5-5"');
       });
 
       it('a pool challenger on an unvouched id never reaches the runner: the incumbent is served and the arm is un-served', async () => {
@@ -2127,11 +2204,11 @@ describe('POST /api/workers/claim', () => {
         await POST(claimReq());
 
         const claimSet = sets.find(v => v.status === 'assigned');
-        expect(claimSet.predictedModel).toBe('claude-sonnet-5');
-        expect(claimSet.context.model).toBe('claude-sonnet-5');
+        expect(claimSet.predictedModel).toBe('claude-sonnet-5-5');
+        expect(claimSet.context.model).toBe('claude-sonnet-5-5');
         expect(errorTraceRows).toHaveLength(1);
         expect(errorTraceRows[0].excerpt).toContain(`"${BAD}" from tier_pool_arm`);
-        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5"');
+        expect(errorTraceRows[0].excerpt).toContain('served "claude-sonnet-5-5"');
       });
 
       it('an arm the guard rejects after it was served is un-served in the recorded assignment', async () => {
@@ -2141,11 +2218,11 @@ describe('POST /api/workers/claim', () => {
         mockApplyAgentPoolArm.mockReturnValue({ model: BAD, provider: 'anthropic' });
         await POST(claimReq());
 
-        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5');
+        expect(sets.find(v => v.status === 'assigned').predictedModel).toBe('claude-sonnet-5-5');
         expect(draw.served).toBe(false);
-        expect(draw.assignedModel).toBe('claude-sonnet-5');
+        expect(draw.assignedModel).toBe('claude-sonnet-5-5');
         expect(draw.eligibility).toMatchObject({ fallback: 'model_unrecognized' });
-        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5' });
+        expect(mockRecordAgentPoolAssignment.mock.calls[0][1]).toMatchObject({ resolvedModel: 'claude-sonnet-5-5' });
       });
 
       it('a recognised model is left alone and leaves no trace', async () => {
@@ -2166,51 +2243,19 @@ describe('POST /api/workers/claim', () => {
       });
     });
 
-    describe('CBM-access experiment wiring', () => {
-      beforeEach(() => {
-        mockEnrolCbmAccessExperiment.mockReset();
-        mockEnrolCbmAccessExperiment.mockResolvedValue(null);
+    // The codebase-memory graph was removed. A runner in the field still sends
+    // the old `cbm_withhold` feature; the claim must ignore it, not refuse it.
+    it('ignores the retired cbm_withhold runner feature', async () => {
+      setup();
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { ...(await claimReq().json()), runnerFeatures: ['cbm_withhold'] },
       });
-
-      it('asks the experiment about every claimed task, with its team and the runner CLI version', async () => {
-        setup();
-        const res = await POST(claimReq());
-        const data = await res.json();
-        expect(data.workers.length).toBe(1);
-        expect(mockEnrolCbmAccessExperiment).toHaveBeenCalledTimes(1);
-        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0]).toMatchObject({
-          teamId: 'team-1', task: { id: 'task-1' }, roleCbmDisabled: false, runnerCliVersion: '2.1.300',
-          // This request declares no runnerFeatures: an old runner, not enrolable.
-          runnerCanWithhold: false,
-        });
-        // Not enrolled: the payload carries no marker, so the runner runs CBM as today.
-        expect(data.workers[0].cbmExperiment).toBeUndefined();
-      });
-
-      it('a runner that declares the withhold feature is enrolable', async () => {
-        setup();
-        const req = createMockRequest({
-          headers: { Authorization: 'Bearer bld_test' },
-          body: { ...(await claimReq().json()), runnerFeatures: ['cbm_withhold'] },
-        });
-        await POST(req);
-        expect(mockEnrolCbmAccessExperiment.mock.calls[0][0].runnerCanWithhold).toBe(true);
-      });
-
-      it('a withheld draw reaches the runner on the claimed worker', async () => {
-        setup();
-        const marker = { experimentId: 'exp-cbm', policyVersion: 1, arm: 'treatment', withheld: true };
-        mockEnrolCbmAccessExperiment.mockResolvedValue(marker);
-        const data = await (await POST(claimReq())).json();
-        expect(data.workers[0].cbmExperiment).toEqual(marker);
-      });
-
-      it('does not enrol a task whose claim lock was lost', async () => {
-        setup();
-        mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => ({ returning: mock(() => []) })) })) });
-        await POST(claimReq());
-        expect(mockEnrolCbmAccessExperiment).not.toHaveBeenCalled();
-      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.workers.length).toBe(1);
+      expect((data.workers[0] as any).cbmExperiment).toBeUndefined();
     });
   });
 
@@ -2716,6 +2761,37 @@ describe('POST /api/workers/claim', () => {
     expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({
       taskId: 'task-held', workspaceIds: ['ws-1'], reason: 'no_pending_tasks',
     });
+  });
+
+  // The PR #3678 reviewer: filed, woken, and the runner's wake claim named it
+  // within a second — but a WHERE gate (the workspace cap) dropped it, so the
+  // runner heard only `no_pending_tasks` and nothing recorded why. The exact
+  // exclusion must reach the task's gate history and its stamp.
+  it('a wake claim the WHERE refuses records the exact gate on the task (ledger + stamp)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 10, type: 'user', authType: 'oauth',
+    });
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValueOnce([]);
+    const exclusion = { code: 'workspace_cap', detail: 'The workspace is at its concurrent-task cap.' };
+    mockDiagnoseExplicitTaskExclusion.mockReset();
+    mockDiagnoseExplicitTaskExclusion.mockResolvedValueOnce(exclusion);
+    mockStampLastClaimAttempt.mockReset();
+    mockFireDeferralEvent.mockClear();
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'coder-workspace', taskId: 'reviewer-task', workspaceId: 'ws-1' },
+    }));
+    const data = await res.json();
+    expect(data.diagnostics).toMatchObject({ reason: 'no_pending_tasks', taskExclusion: exclusion });
+
+    await new Promise((r) => setTimeout(r, 0));
+    const events = (mockFireDeferralEvent.mock.calls as any[]).map(c => c[0]).filter((e: any) => e.taskId === 'reviewer-task');
+    expect(events).toEqual([expect.objectContaining({ gate: 'claim_loop_deferral', reason: 'workspace_cap', workspaceId: 'ws-1' })]);
+    expect(mockStampLastClaimAttempt.mock.calls[0][0]).toMatchObject({ taskId: 'reviewer-task', exclusion });
   });
 
   it('an explicit claim rejected for no_slots still stamps, scoped to the claimable workspaces', async () => {
@@ -3724,8 +3800,8 @@ describe('POST /api/workers/claim', () => {
       expect(data.workers.length).toBe(1);
 
       // engineering/simple → haiku (baseline matrix)
-      expect(lastTaskSetPayload.predictedModel).toBe('haiku');
-      expect(lastTaskSetPayload.context?.model).toBe('haiku');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('budget'));
+      expect(lastTaskSetPayload.context?.model).toBe(tierModel('budget'));
     });
 
     it('downshifts engineering/complex to sonnet when daily budget > 70%', async () => {
@@ -3759,7 +3835,7 @@ describe('POST /api/workers/claim', () => {
       await POST(req);
 
       // baseline=opus, but 70–90% band downshifts engineering → sonnet
-      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('standard'));
     });
 
     it('skips the task when the router returns paused (budget >= 95%, priority 0)', async () => {
@@ -3903,11 +3979,11 @@ describe('POST /api/workers/claim', () => {
 
     it('a requeued task re-routes when its complexity changes (no team registry)', async () => {
       const first = await claimOnce({ complexity: 'simple' });
-      expect(first.predictedModel).toBe('haiku');
+      expect(first.predictedModel).toBe(tierModel('budget'));
 
       const second = await claimOnce({ complexity: 'complex', context: first.context });
       expect(second.context.routingReason).not.toBe('explicit_override');
-      expect(second.predictedModel).toBe('opus');
+      expect(second.predictedModel).toBe(tierModel('premium'));
     });
 
     it('rows claimed before the pin marker shipped (model + non-explicit routingReason) are not pins', async () => {
@@ -3916,7 +3992,7 @@ describe('POST /api/workers/claim', () => {
         context: { model: 'haiku', routingReason: 'baseline' },
       });
       expect(res.context.routingReason).not.toBe('explicit_override');
-      expect(res.predictedModel).toBe('opus');
+      expect(res.predictedModel).toBe(tierModel('premium'));
     });
 
     it('a user pin set at create time survives requeue', async () => {
@@ -3929,13 +4005,33 @@ describe('POST /api/workers/claim', () => {
       expect(second.predictedModel).toBe('claude-opus-4-8');
     });
 
+    it('a shorthand pin is a tier request: the policy resolves which model it is, and the pin stays sticky', async () => {
+      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      tierLookups.length = 0;
+      const res = await claimOnce({ workspace, complexity: 'simple', context: { model: 'opus', modelPinned: true } });
+      expect(res.predictedModel).toBe(TIER_DEFAULTS.premium.model);
+      expect(res.context.modelPinned).toBe(true);
+      expect(res.context.resolvedTier).toMatchObject({ tier: 'premium' });
+      expect(res.context.resolvedTier.policy).toMatchObject({ surface: 'coding' });
+      expect(tierLookups.some((a) => a[0] === 'premium' && a[3] === 'agent')).toBe(true);
+    });
+
+    it('an exact-id pin is the escape hatch: no tier lookup, no policy decision', async () => {
+      const workspace = { id: 'ws-1', gitConfig: null, teamId: 'team-1' };
+      tierLookups.length = 0;
+      const res = await claimOnce({ workspace, context: { model: 'claude-opus-4-8', modelPinned: true } });
+      expect(res.predictedModel).toBe('claude-opus-4-8');
+      expect(res.context.resolvedTier).toBeUndefined();
+      expect(tierLookups).toHaveLength(0);
+    });
+
     it('modelPinned: false means routing applies even though context.model is present', async () => {
       const res = await claimOnce({
         complexity: 'complex',
         context: { model: 'claude-opus-4-8', modelPinned: false },
       });
       expect(res.context.routingReason).not.toBe('explicit_override');
-      expect(res.predictedModel).toBe('opus');
+      expect(res.predictedModel).toBe(tierModel('premium'));
       expect(res.context.modelPinned).toBe(false);
     });
 
@@ -3977,7 +4073,7 @@ describe('POST /api/workers/claim', () => {
       await POST(req);
 
       // engineering/complex baseline=opus, spike downshifts → sonnet
-      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('standard'));
     });
 
     it('role floor clamps a simple engineering task up from haiku', async () => {
@@ -4017,7 +4113,7 @@ describe('POST /api/workers/claim', () => {
       await POST(req);
 
       // baseline=haiku, role floor=sonnet → clamped up to sonnet
-      expect(lastTaskSetPayload.predictedModel).toBe('sonnet');
+      expect(lastTaskSetPayload.predictedModel).toBe(tierModel('standard'));
     });
 
     // --- Role model precedence (docs/design/role-routing.md §3.1, §4) ---
@@ -6725,7 +6821,7 @@ describe('entity catalog injection at claim time', () => {
 
       const data = await res.json();
       expect(data.workers).toHaveLength(1);
-      expect(claimPayload()?.predictedModel).toBe('sonnet');
+      expect(claimPayload()?.predictedModel).toBe(tierModel('standard'));
       // Well under half the window: parallelism is untouched, so no seat count.
       expect(mockCountLiveSeatWorkers).not.toHaveBeenCalled();
     });
@@ -6744,7 +6840,7 @@ describe('entity catalog injection at claim time', () => {
       expect(data.workers).toHaveLength(1);
       // 80% pressure used to downshift opus → sonnet. The forecast is not
       // trusted to change what runs, only how much runs at once.
-      expect(claimPayload()?.predictedModel).toBe('opus');
+      expect(claimPayload()?.predictedModel).toBe(tierModel('premium'));
     });
 
     // The whole point of the Start button is that it does something. Pacing must

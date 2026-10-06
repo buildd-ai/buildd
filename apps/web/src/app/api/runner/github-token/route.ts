@@ -18,6 +18,10 @@
  * when workerId is given, it is that worker). Repo identity comes from the
  * workspace's github_repos link, never from the free-text workspaces.repo.
  *
+ * `protectedBranches` and `pushableBranches` feed the egress push guard
+ * (apps/cloud-runner/src/outbound.ts): the first is a deny-list, the second
+ * the allow-list of branches this run may move (taskPushableBranches).
+ *
  * The response also carries the task's workspaceId, which the dispatcher uses
  * to key its per-workspace snapshot store (Phase 2, warm repos), and, when the
  * workspace sets one, its warm snapshot cap (lib/warm-snapshot-cap.ts).
@@ -29,8 +33,9 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { resolveDispatchPrincipal } from '@/lib/agent-capabilities/dispatch-principal';
+import { resolveDispatchPrincipal, taskPushableBranches } from '@/lib/agent-capabilities/dispatch-principal';
 import { authorizeGithubRepoGrant, mintGithubRepoGrant, repoProtectedBranches } from '@/lib/agent-capabilities/github';
+import { recordCapabilityDecision } from '@/lib/agent-capabilities/audit';
 import { resolveWarmSnapshotMaxBytes } from '@/lib/warm-snapshot-cap';
 
 /** Mirrors DISPATCH_TOKEN_HEADER in apps/cloud-runner/src/outbound.ts. */
@@ -65,17 +70,33 @@ export async function POST(req: NextRequest) {
   }
 
   const resolved = await resolveDispatchPrincipal(account, { taskId, workerId, dispatchToken });
-  if (!resolved.ok) return fail(resolved.status, resolved.error);
+  if (!resolved.ok) {
+    void recordCapabilityDecision({ capability: 'github.repo_grant', decision: 'refused', accountId: account.id, principalVia: 'dispatch', resource: `task:${taskId}`, reasonCode: resolved.reasonCode });
+    return fail(resolved.status, resolved.error);
+  }
   const ws = resolved.workspace;
+  const p = resolved.principal;
+  const audit = { capability: 'github.repo_grant' as const, workspaceId: p.workspaceId, taskId: p.taskId, workerId: p.workerId, accountId: p.accountId, principalVia: p.via };
 
   const decision = authorizeGithubRepoGrant(resolved.principal, ws);
-  if (!decision.allowed) return fail(decision.status, decision.error);
+  if (!decision.allowed) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', reasonCode: decision.reasonCode });
+    return fail(decision.status, decision.error);
+  }
 
   try {
     const minted = await mintGithubRepoGrant(decision);
     // Branches the cloud egress merge guard (apps/cloud-runner/src/outbound.ts
     // pushedProtectedBranch) must refuse a direct `git push` to.
     const protectedBranches = repoProtectedBranches(ws, ws.githubRepo?.defaultBranch);
+    // The only branches the egress push allow-list lets this run move: its
+    // worker's own branch (and the task's shared working branch, if pinned).
+    const pushableBranches = taskPushableBranches({
+      workerBranch: resolved.principal.workerBranch,
+      context: resolved.task.context,
+      protectedBranches,
+    });
+    void recordCapabilityDecision({ ...audit, decision: 'allowed', resource: `github_repo:${decision.resource.id}`, expiresAt: minted.expiresAt, sideEffect: { pushableBranches: pushableBranches.length } });
     // The workspace's warm snapshot cap (gitConfig.warmSnapshot.maxBytes,
     // bounded here). Absent: the dispatcher's own default applies.
     const warmSnapshotMaxBytes = resolveWarmSnapshotMaxBytes(ws.gitConfig);
@@ -88,9 +109,11 @@ export async function POST(req: NextRequest) {
       // container nor the webhook body chooses it.
       workspaceId: ws.id,
       protectedBranches,
+      pushableBranches,
       ...(warmSnapshotMaxBytes !== null ? { warmSnapshotMaxBytes } : {}),
     }, { headers: NO_STORE });
   } catch (err) {
+    void recordCapabilityDecision({ ...audit, decision: 'refused', resource: `github_repo:${decision.resource.id}`, reasonCode: 'mint_failed' });
     console.error(`[github-token] mint failed for task ${taskId}:`, err instanceof Error ? err.message : String(err));
     return fail(502, 'Could not mint a GitHub token');
   }

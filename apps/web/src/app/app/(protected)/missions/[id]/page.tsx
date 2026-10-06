@@ -1368,6 +1368,7 @@ export default async function MissionDetailPage({
       autoVerify={autoVerifyFlag}
       readonly={isTerminal}
       failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+      missionPrCount={prCount}
       overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
     />
   );
@@ -1385,6 +1386,7 @@ export default async function MissionDetailPage({
       isHeld={isHeld}
       displayState={displayState}
       hasPrimaryAction={hasPrimaryAction}
+      executor={(mission as any).executor === 'local' ? 'local' : (mission as any).executor === 'runner' ? 'runner' : null}
     />
   );
   const back = mastheadBack(from, breadcrumb.links);

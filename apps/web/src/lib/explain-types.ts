@@ -193,6 +193,12 @@ export interface ExplainAnswer {
    */
   evidenceObjects?: InlineEvidenceObject[];
   /**
+   * For a task subject: what its runs were given and refused (repo access,
+   * buildd tokens, PR actions), oldest first, repeats folded. Absent when
+   * nothing was recorded. From agent_capability_decisions.
+   */
+  access?: import('./agent-capabilities/access-log').AccessItem[];
+  /**
    * Why the task runs (or last ran) on a backend other than the one it was
    * filed with: a claim-time flip (budget failover, provider toggle) or a
    * worker-report failover. Absent when nothing moved it. `describeBackendRouting`

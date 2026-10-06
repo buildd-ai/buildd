@@ -68,11 +68,20 @@ export class CodexBackend implements AgentBackend {
     // which models are accepted; a host with a newer codex CLI can run newer
     // account models (e.g. gpt-5.5) that the bundled binary rejects.
     const codexPathOverride = opts.env?.CODEX_PATH_OVERRIDE || process.env.CODEX_PATH_OVERRIDE;
+    const spawnEnv = auth.codexHome
+      ? { ...(opts.env || {}), CODEX_HOME: auth.codexHome }
+      : opts.env;
     const codex = new Codex({
       ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
       workingDirectory: opts.cwd,
       ...(opts.env?.OPENAI_BASE_URL ? { baseUrl: opts.env.OPENAI_BASE_URL } : {}),
       ...(codexPathOverride ? { codexPathOverride } : {}),
+      // The codex CLI gets exactly the task env. Without `env` the SDK copies
+      // the runner's whole process.env into it — the runner key (when set by
+      // env), and every other runner secret the allowlisted agent env exists
+      // to withhold (agent-env.ts).
+      // No task env (direct callers) keeps the SDK default.
+      ...(opts.env && spawnEnv ? { env: spawnEnv } : {}),
     });
     const threadOpts = {
       workingDirectory: opts.cwd,
@@ -85,10 +94,6 @@ export class CodexBackend implements AgentBackend {
     const thread = opts.resumeThreadId
       ? codex.resumeThread(opts.resumeThreadId, threadOpts)
       : codex.startThread(threadOpts);
-
-    const spawnEnv = auth.codexHome
-      ? { ...(opts.env || {}), CODEX_HOME: auth.codexHome }
-      : opts.env;
 
     // Usage/cost accumulate ACROSS turns so the synthetic `result` (R4) is
     // emitted exactly once at the end with aggregate totals — never per turn,

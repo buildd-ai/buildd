@@ -53,6 +53,7 @@ export interface LoserCandidate {
   missionId: string | null;
   workspaceId: string;
   updatedAt: Date;
+  prBaseRef: string | null;
 }
 
 export interface ShutdownResult {
@@ -169,7 +170,20 @@ async function supersedePrEscalations(
 
 const ACTIVE_WORK_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes — don't close if recently worked
 
-function isTier1Eligible(loser: LoserCandidate, workerUpdatedAt: Date | null): boolean {
+// Two PRs anchored to the same subject can never supersede one another when
+// they target different base branches — a PR into `dev` cannot carry a change
+// destined for `main` (or vice versa), no matter how related the underlying
+// tasks are. Unknown base refs (null on either side) don't block — the column
+// is only populated once GitHub's webhook has observed the PR.
+function isSameBase(loserBaseRef: string | null, winnerBaseRef: string | null): boolean {
+  return loserBaseRef == null || winnerBaseRef == null || loserBaseRef === winnerBaseRef;
+}
+
+function isTier1Eligible(
+  loser: LoserCandidate,
+  workerUpdatedAt: Date | null,
+  winnerBaseRef: string | null,
+): boolean {
   // Tier 1: winner merged → close immediately (non-conflict supersession).
   // Conflict-dead PRs go through Tier 2 or 3 so the conflictDeadDays guard applies.
   //
@@ -182,7 +196,8 @@ function isTier1Eligible(loser: LoserCandidate, workerUpdatedAt: Date | null): b
     loser.prLifecycleStatus !== 'closed' &&
     loser.prLifecycleStatus !== 'merged' &&
     loser.prLifecycleStatus !== 'conflict' &&
-    !isRecentlyActive
+    !isRecentlyActive &&
+    isSameBase(loser.prBaseRef, winnerBaseRef)
   );
 }
 
@@ -190,10 +205,12 @@ function isTier2Eligible(
   loser: LoserCandidate,
   conflictDeadDays: number,
   workerUpdatedAt: Date | null,
+  winnerBaseRef: string | null,
 ): boolean {
   // Tier 2: conflict-dead for ≥ conflictDeadDays with a green winner.
   if (loser.prLifecycleStatus !== 'conflict') return false;
   if (!loser.conflictDetectedAt) return false;
+  if (!isSameBase(loser.prBaseRef, winnerBaseRef)) return false;
 
   // Safety: same active-work guard as Tier 1 — a worker actively retrying the
   // conflict resolution that made this loser Tier-2-eligible should not be
@@ -253,7 +270,7 @@ export async function shutdownDeadBuilddPrs(
       eq(workers.workspaceId, workspaceId),
       eq(workers.prNumber, eventPrNumber),
     ),
-    columns: { id: true, taskId: true },
+    columns: { id: true, taskId: true, prBaseRef: true },
   });
   if (!eventWorker?.taskId) return result;
 
@@ -303,6 +320,7 @@ export async function shutdownDeadBuilddPrs(
       conflictDetectedAt: true,
       workspaceId: true,
       updatedAt: true,
+      prBaseRef: true,
     },
   });
 
@@ -320,17 +338,18 @@ export async function shutdownDeadBuilddPrs(
       missionId: missionById[w.taskId!] ?? null,
       workspaceId: w.workspaceId,
       updatedAt: w.updatedAt,
+      prBaseRef: w.prBaseRef,
     }));
 
   // ── 4. Apply tier logic to each loser ────────────────────────────────────
 
   for (const loser of losers) {
     try {
-      if (eventMerged && isTier1Eligible(loser, loser.updatedAt)) {
+      if (eventMerged && isTier1Eligible(loser, loser.updatedAt, eventWorker.prBaseRef)) {
         // Tier 1: winner merged → immediately close loser
         await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
         result.closedPrNumbers.push(loser.prNumber);
-      } else if (eventMerged && isTier2Eligible(loser, policy.conflictDeadDays, loser.updatedAt)) {
+      } else if (eventMerged && isTier2Eligible(loser, policy.conflictDeadDays, loser.updatedAt, eventWorker.prBaseRef)) {
         // Tier 2: conflict-dead ≥ conflictDeadDays with green winner → close
         await closePrWithComment(loser, eventPrNumber, installationId, repoFullName);
         result.closedPrNumbers.push(loser.prNumber);

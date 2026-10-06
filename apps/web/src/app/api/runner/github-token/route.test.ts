@@ -12,6 +12,8 @@ const mockMint = mock((_p: any) => Promise.resolve({ token: 'ghs_scoped_token', 
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 mock.module('@/lib/account-workspace-cache', () => ({ getAccountWorkspacePermissions: mockGetPermissions }));
 mock.module('@/lib/github-scoped-token', () => ({ mintRepoScopedInstallationToken: mockMint }));
+const mockRecord = mock((_r: any) => Promise.resolve());
+mock.module('@/lib/agent-capabilities/audit', () => ({ recordCapabilityDecision: mockRecord }));
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -39,10 +41,11 @@ import { POST } from './route';
 const ACCOUNT = { id: 'account-1', teamId: 'team-1', level: 'worker' };
 const DISPATCH = 'dispatch-token-value';
 
-function taskRow(overrides: { workspace?: Record<string, unknown> } = {}) {
+function taskRow(overrides: { workspace?: Record<string, unknown>; context?: Record<string, unknown> } = {}) {
   return {
     id: 'task-1',
     workspaceId: 'ws-1',
+    context: overrides.context ?? {},
     workspace: {
       id: 'ws-1',
       teamId: 'team-1',
@@ -59,7 +62,7 @@ function taskRow(overrides: { workspace?: Record<string, unknown> } = {}) {
 }
 
 const liveWorker = (o: Record<string, unknown> = {}) => ({
-  id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1', status: 'running', ...o,
+  id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1', accountId: 'account-1', status: 'running', branch: 'buildd/task0001-fix-thing', ...o,
 });
 
 function req(opts: { apiKey?: string | null; dispatch?: string | null; body?: unknown } = {}) {
@@ -79,6 +82,7 @@ beforeEach(() => {
   mockWorkersFindMany.mockReset();
   mockGetPermissions.mockReset();
   mockMint.mockClear();
+  mockRecord.mockClear();
   // Like the real one: no key, no account.
   mockAuthenticateApiKey.mockImplementation((key: string | null) => Promise.resolve(key ? ACCOUNT : null));
   mockTasksFindFirst.mockResolvedValue(taskRow());
@@ -103,6 +107,8 @@ describe('POST /api/runner/github-token', () => {
       // protectedBaseBranches() includes 'main' unconditionally even with no
       // gitConfig/releaseConfig set (see auto-merge-bound.ts).
       protectedBranches: ['main'],
+      // The egress push allow-list: only the worker's own branch.
+      pushableBranches: ['buildd/task0001-fix-thing'],
     });
     // Repo identity from the github_repos link, not free text.
     expect(mockMint).toHaveBeenCalledWith({ installationId: 99, repoId: 4242, installedPermissions: { contents: 'write' } });
@@ -118,6 +124,38 @@ describe('POST /api/runner/github-token', () => {
     }));
     const body = await (await POST(req())).json();
     expect(new Set(body.protectedBranches)).toEqual(new Set(['main', 'dev', 'master']));
+  });
+
+  describe('pushableBranches (egress push allow-list)', () => {
+    it("is the named worker's own branch, not another live worker's", async () => {
+      mockWorkersFindMany.mockResolvedValue([liveWorker({ id: 'worker-0', branch: 'buildd/other' }), liveWorker()]);
+      const body = await (await POST(req({ body: { taskId: 'task-1', workerId: 'worker-1' } }))).json();
+      expect(body.pushableBranches).toEqual(['buildd/task0001-fix-thing']);
+    });
+
+    it("adds the task's pinned shared working branch, deduped against the worker's", async () => {
+      mockTasksFindFirst.mockResolvedValue(taskRow({ context: { headBranch: 'mission/shared-abcd1234' } }));
+      expect((await (await POST(req())).json()).pushableBranches).toEqual(['buildd/task0001-fix-thing', 'mission/shared-abcd1234']);
+      mockWorkersFindMany.mockResolvedValue([liveWorker({ branch: 'mission/shared-abcd1234' })]);
+      expect((await (await POST(req())).json()).pushableBranches).toEqual(['mission/shared-abcd1234']);
+    });
+
+    it("never includes a stacked phase's base (its predecessor's branch)", async () => {
+      mockTasksFindFirst.mockResolvedValue(taskRow({ context: { baseBranch: 'buildd/phase1-branch' } }));
+      expect((await (await POST(req())).json()).pushableBranches).toEqual(['buildd/task0001-fix-thing']);
+    });
+
+    it('never includes a protected branch, even when the task pins one', async () => {
+      mockTasksFindFirst.mockResolvedValue(taskRow({ context: { headBranch: 'main' } }));
+      expect((await (await POST(req())).json()).pushableBranches).toEqual(['buildd/task0001-fix-thing']);
+      mockWorkersFindMany.mockResolvedValue([liveWorker({ branch: 'main' })]);
+      expect((await (await POST(req())).json()).pushableBranches).toEqual([]);
+    });
+
+    it('ignores a non-string headBranch', async () => {
+      mockTasksFindFirst.mockResolvedValue(taskRow({ context: { headBranch: 42 } }));
+      expect((await (await POST(req())).json()).pushableBranches).toEqual(['buildd/task0001-fix-thing']);
+    });
   });
 
   it('carries the workspace warm snapshot cap from gitConfig.warmSnapshot.maxBytes, bounded server-side', async () => {
@@ -265,5 +303,21 @@ describe('POST /api/runner/github-token', () => {
     const res = await POST(req());
     expect(res.status).toBe(502);
     expect(JSON.stringify(await res.json())).not.toContain('ghs_');
+  });
+});
+
+describe('capability audit', () => {
+  it('records an allowed grant with its expiry and repo, and no token', async () => {
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    const allowed = mockRecord.mock.calls.map(c => c[0]).find((r: any) => r.decision === 'allowed');
+    expect(allowed).toMatchObject({ capability: 'github.repo_grant', principalVia: 'dispatch', workerId: 'worker-1', resource: 'github_repo:repo-row-1' });
+    expect(JSON.stringify(mockRecord.mock.calls)).not.toContain('ghs_scoped_token');
+  });
+
+  it('records a refusal with its reason', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await POST(req());
+    expect(mockRecord.mock.calls.map(c => c[0])).toContainEqual(expect.objectContaining({ decision: 'refused', reasonCode: 'no_live_worker' }));
   });
 });

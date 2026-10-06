@@ -11,6 +11,7 @@ import { parseKeyLevel, isKeyLevelAllowed, keyLevelNotAllowedMessage, canAdminis
 import { resolveClaudeCredential, extractJwtSub } from '@/lib/claude-credential';
 import { isOpenWithinTeams } from '@/lib/open-workspaces';
 import { getTeamPermissionOverrides, roleHas } from '@/lib/permissions';
+import { linkAccountToPersonalWorkspaces } from '@/lib/personal-workspace-links';
 
 function generateApiKey(): string {
   return `bld_${randomBytes(32).toString('hex')}`;
@@ -176,6 +177,14 @@ export async function POST(req: NextRequest) {
         canClaim: true,
         canCreate: true,
       });
+    }
+
+    // A token that names no workspaces of its own, minted by the owner of a
+    // personal team, reaches that team's restricted workspaces (the "My
+    // Workspace" sign-in creates). Shared teams are untouched: see
+    // lib/personal-workspace-links-plan.
+    if (requestedLinks == null && account) {
+      await linkAccountToPersonalWorkspaces({ accountId: account.id, userId: user.id });
     }
 
     // Return plaintext key once - it won't be retrievable after this

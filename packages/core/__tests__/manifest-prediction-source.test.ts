@@ -119,13 +119,6 @@ describe('schema', () => {
   });
 });
 
-describe('the CBM candidate adapter', () => {
-  it('is unavailable server-side (no revision-pinned index), so coverage is neighbour-diff only', async () => {
-    const r = await src.getServerCbmCandidateAdapter().lookup({ workspaceId: WS, revision: null, seedText: 'x', limit: 10 });
-    expect(r.status).toBe('unavailable');
-  });
-});
-
 describe('the tree-pinned candidate adapter (§1d)', () => {
   const REPO = 'acme/widgets';
   const SHA = 'a'.repeat(40);
@@ -301,11 +294,10 @@ describe('predictCreationManifest', () => {
     expect(row.selected).toEqual(['a.ts', 'b.ts']);
     expect(row.stopReason).toBe('exhausted');
     expect(row.complete).toBe(true);
-    // CBM unavailable server-side ⇒ omissions unknown ⇒ never a complete manifest.
+    // Neighbour diffs alone ⇒ omissions unknown ⇒ never a complete manifest.
     expect(row.unknownScope).toBe(true);
     expect(row.allApplied).toBe(false);
     expect(row.coverage.source).toBe('neighbour_diff_only');
-    expect(row.coverage.cbm).toBe('unavailable');
     expect(row.coverage.excludedFuture).toBe(1);
     expect(row.picks).toHaveLength(2);
     expect(row.picks[1].offered).toEqual([1]);

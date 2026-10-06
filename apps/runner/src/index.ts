@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+import { bundledTierEntry } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
@@ -13,6 +13,7 @@ import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox, createReplayHandler } from './outbox';
 import { parseOnceArgs, runOnceFromCli, ONCE_USAGE, EXIT_USAGE } from './run-once';
+import { classifyCliArgs, RUNNER_USAGE, EXIT_CLI_USAGE } from './cli-args';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, rollbackTo, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
   buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
   isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
@@ -37,6 +38,26 @@ const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
 // Single source of truth, shared with the heartbeat payload — see updater.ts.
 const BRANCH = TRACKED_BRANCH;
+
+// --help / unknown arguments: answer and exit before anything can start. A
+// typo'd flag used to be ignored and the runner started anyway (cli-args.ts).
+const CLI = classifyCliArgs(process.argv);
+if (CLI.kind === 'help') {
+  console.log(RUNNER_USAGE);
+  process.exit(0);
+}
+if (CLI.kind === 'unknown') {
+  console.error(`Unknown argument: ${CLI.arg}\n\n${RUNNER_USAGE}`);
+  process.exit(EXIT_CLI_USAGE);
+}
+
+// --version: print and exit. Deliberately after every static import above, so a
+// zero exit also proves the runner's whole module graph loads (the installer
+// smoke test relies on that).
+if (process.argv.includes('--version') || process.argv[2] === 'version') {
+  console.log(`buildd runner ${PKG_VERSION}`);
+  process.exit(0);
+}
 
 // --doctor: run diagnostics and exit
 if (process.argv.includes('--doctor')) {
@@ -482,7 +503,7 @@ const config: LocalUIConfig = {
   builddServer: process.env.BUILDD_SERVER || savedConfig.builddServer || 'https://buildd.dev',
   apiKey: resolvedApiKey,
   maxConcurrent: savedConfig.maxConcurrent || parseInt(process.env.MAX_CONCURRENT || '3'),
-  model: process.env.MODEL || savedConfig.model || TIER_DEFAULTS.standard.model,
+  model: process.env.MODEL || savedConfig.model || bundledTierEntry('standard').model,
   // LLM provider (OpenRouter, etc.)
   llmProvider: buildProviderConfig(),
   // Serverless only if no API key configured
@@ -2677,7 +2698,7 @@ if (!config.apiKey && !config.serverless) {
   if (DEBUG_MODE) {
     console.log(`   ${RED}▸${RESET} No API key — visit ${terminalLink(localUrl)} to set up`);
   } else {
-    console.log(`   ${RED}▸${RESET} No API key — run with ${BOLD}--debug${RESET} or set ${BOLD}BUILDD_API_KEY${RESET}`);
+    console.log(`   ${RED}▸${RESET} Not logged in — run ${BOLD}buildd login${RESET} (or set ${BOLD}BUILDD_API_KEY${RESET}), then start buildd again`);
   }
 }
 console.log('');

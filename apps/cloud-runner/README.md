@@ -409,9 +409,22 @@ SPEC.md` §4a). Before any credential is attached, `rewriteOutbound` refuses:
   the repo's own GitHub default branch — set by `/api/runner/github-token`)
 
 All three come back `403` with a message pointing at buildd's `merge_pr` MCP
-action. See `docs/specs/cloud-egress-merge-guard.md` for the full contract,
-including what is deliberately NOT covered (gzip-encoded push bodies,
-non-`refs/heads/*` refs, GitHub's own branch-protection rules API).
+action.
+
+GitHub cannot scope the token to a branch, so the grant also carries
+`pushableBranches`: the worker's own branch, plus the task's pinned shared
+working branch if it has one, never a protected branch. When it is present,
+the only refs an agent can move are `refs/heads/<b>` for those branches —
+by `git push`, by REST (`git/refs`, `contents`, `merges`, ...) or by a
+ref-moving GraphQL mutation (refused by name). Tags and every other ref are
+refused, and so is any push or ref write whose target cannot be read (a
+compressed or truncated push, an unparseable JSON body): `403`,
+`reason: 'push_not_allowed'`. An older buildd server that sends no
+`pushableBranches` gets the deny-list above only.
+
+See `docs/specs/cloud-egress-merge-guard.md` for the full contract,
+including what is deliberately NOT covered (GitHub's own branch-protection
+rules API, and what the deny-list alone does not inspect).
 
 ### Warm repos
 

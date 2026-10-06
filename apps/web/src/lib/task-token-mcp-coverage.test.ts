@@ -18,7 +18,9 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { join } from 'path';
-import { workerActions } from '@buildd/core/mcp-tools';
+import {
+  adminActions, orchestrationTaskTokenRefusal, ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS, workerActions,
+} from '@buildd/core/mcp-tools';
 
 const REPO = join(import.meta.dir, '../../../..');
 const API = 'apps/web/src/app/';
@@ -37,10 +39,6 @@ const REFUSED_CALLS: Record<string, Record<string, string>> = {
   manage_experiments: {
     'apps/web/src/app/api/experiments/[id]/readout/route.ts':
       'a readout counts tasks across every workspace on the team; narrowing it to one would change what it measures',
-  },
-  update_task: {
-    'apps/web/src/app/api/workers/[id]/instruct/route.ts':
-      'delivers an edited description to the task’s active worker; a task token edits only its own task, and that worker is itself, so delivery is skipped',
   },
   list_artifacts: {
     'apps/web/src/app/api/workspaces/route.ts': 'fallback lookup when no workspace is known; the MCP route pins a task token to its own workspace',
@@ -151,5 +149,96 @@ describe('worker MCP actions under a per-task token', () => {
   it('can fail: an action calling a route nobody opted in is a gap', () => {
     expect(resolveRoute('/api/tasks/${id}/notes', ['apps/web/src/app/api/tasks/[id]/notes/route.ts'])).not.toBeNull();
     expect(opted.has('apps/web/src/app/api/health/budget/route.ts')).toBe(false);
+  });
+});
+
+/**
+ * The admin actions an orchestration task's admin-level per-task token is
+ * refused outright, and why. Every admin action is either here or in
+ * ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS (packages/core/mcp-tools.ts); the MCP
+ * route refuses these before any handler runs.
+ */
+const REFUSED_ADMIN_ACTIONS: Record<string, string> = {
+  create_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
+  update_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
+  delete_schedule: 'a schedule is workspace configuration that outlives the run and fires unattended',
+  pause_schedules: 'pauses every schedule in a workspace, not one mission',
+  register_skill: 'skills and roles are team configuration (prompts, tools, env); the run gets its own role at claim',
+  list_skills: 'reads team role configuration through the admin skill routes; the run gets its own role at claim',
+  get_skill: 'reads team role configuration through the admin skill routes; the run gets its own role at claim',
+  update_skill: 'skills and roles are team configuration (prompts, tools, env)',
+  delete_skill: 'skills and roles are team configuration (prompts, tools, env)',
+  manage_secrets: 'credentials are team-wide by nature',
+  adjudicate_discrepancy: 'an owner decision on the spec ledger, not one mission',
+  promote_discrepancy: 'mints a new mission',
+  get_visual_review: 'no orchestration prompt uses it, and its route takes admin account keys only',
+  manage_initiatives: 'an initiative spans missions across the team',
+  link_tracker: "links a mission to an external tracker through the team's integration; the owner's call",
+  manage_workspaces: 'creates and configures workspaces and repos; a coordination-workspace organizer, which needs it, is never minted an admin token and keeps the runner key',
+  manage_watched_projects: 'team configuration of watched external projects',
+  manage_model_tiers: 'team model routing and spend',
+  manage_evidence_backends: 'team storage backends and their credentials',
+  trigger_release: 'a release ships the whole workspace, not one mission',
+  release_status: 'reads the release gate through the admin release routes; not one mission',
+  correct_task_result: "overrides a completed task's verdict, an owner's judgement",
+  consolidate_knowledge: "maintains the team's knowledge store; archives entries",
+  memory_delete: "permanently deletes from the team's memory",
+};
+
+/** Calls inside an allowed admin action that a task token is refused, and why. */
+const REFUSED_ADMIN_CALLS: Record<string, Record<string, string>> = {
+  manage_missions: {
+    'apps/web/src/app/api/missions/route.ts':
+      'list and create reach other missions on the team, or make new ones; the sub-action gate refuses them before the call',
+  },
+};
+
+describe("admin MCP actions under an orchestration task's per-task token", () => {
+  const src = readFileSync(join(REPO, 'packages/core/mcp-tools.ts'), 'utf8');
+  const routes = trackedRoutes();
+  const opted = optedIn();
+  const allowed = Object.keys(ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS);
+
+  it('every admin action is either allowed or refused with a reason, never both', () => {
+    const all = [...adminActions].sort();
+    expect([...allowed, ...Object.keys(REFUSED_ADMIN_ACTIONS)].sort()).toEqual(all);
+    expect(allowed.filter(a => REFUSED_ADMIN_ACTIONS[a])).toEqual([]);
+  });
+
+  it('the MCP route refuses exactly the refused ones', () => {
+    for (const action of Object.keys(REFUSED_ADMIN_ACTIONS)) {
+      expect({ action, refused: orchestrationTaskTokenRefusal(action, { action: 'get' }) !== null }).toEqual({ action, refused: true });
+    }
+    for (const [action, subs] of Object.entries(ORCHESTRATION_TASK_TOKEN_ADMIN_ACTIONS)) {
+      expect({ action, refused: orchestrationTaskTokenRefusal(action, { action: subs?.[0] }) }).toEqual({ action, refused: null });
+    }
+    for (const action of workerActions) expect(orchestrationTaskTokenRefusal(action)).toBeNull();
+  });
+
+  it('each allowed one reaches only opted-in routes, or is refused the call with a reason', () => {
+    const gaps: Record<string, string[]> = {};
+    for (const action of allowed) {
+      const refused = REFUSED_ADMIN_CALLS[action] ?? {};
+      const missing = callsOf(action, src, routes).filter(f => !opted.has(f) && !refused[f]);
+      if (missing.length > 0) gaps[action] = missing;
+    }
+    expect(gaps).toEqual({});
+  });
+
+  it('has no stale reasons', () => {
+    const stale: string[] = [];
+    for (const [action, calls] of Object.entries(REFUSED_ADMIN_CALLS)) {
+      if (!allowed.includes(action)) stale.push(`${action}: not an allowed admin action`);
+      const actual = callsOf(action, src, routes);
+      for (const file of Object.keys(calls)) {
+        if (!actual.includes(file)) stale.push(`${action} → ${file}: no longer called`);
+        else if (opted.has(file)) stale.push(`${action} → ${file}: opted in now`);
+      }
+    }
+    expect(stale).toEqual([]);
+  });
+
+  it('can fail: an allowed action calling a route nobody opted in is a gap', () => {
+    expect(callsOf('manage_secrets', src, routes).some(f => !opted.has(f))).toBe(true);
   });
 });

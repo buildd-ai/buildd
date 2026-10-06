@@ -46,20 +46,20 @@ import { tmpdir } from 'node:os';
 // entry is how this gate lost its coverage (see C30 above). Each entry
 // states why.
 const ALLOWLIST: string[] = [
-  'packages/core/model-aliases.ts', // the alias table: model IDs are its content
+  'packages/core/model-aliases.ts', // the alias map itself is derived from the bundled policy
+  'packages/core/model-thinking.ts', // thinking guards match model families by pattern (split out of model-aliases so the runner never loads the db client)
   'packages/core/model-prices.ts', // price book keyed by model ID
-  'packages/core/model-tier-registry.ts', // tier → model resolution
-  'packages/core/model-tier-defaults.ts', // code-level fallback tiers
   'packages/core/model-tier-liveness.ts', // audits tier IDs; the IDs in its docstrings ARE the spec of the parser
   'packages/core/model-display.ts', // humanises model IDs; the IDs in its docstrings ARE the spec of the parser
   'packages/core/model-catalog.ts', // normalises vendor model IDs; every hit is prose in a docstring, the code itself contains no ID literal
-  'packages/ai-kit/src/policy/defaults.ts', // the kit's bundled fallback policy; standalone (no core import), contract.test.ts pins it to model-tier-defaults.ts
+  'packages/ai-kit/src/policy/defaults.ts', // the bundled fallback policy: the ONE list of tier models (buildd's TIER_DEFAULTS and alias map are derived from it)
   'packages/core/mcp-tools.ts', // help/param documentation strings only
   'apps/runner/src/index.ts', // runner UI model dropdown
   'apps/runner/src/backends/codex-backend.ts', // brokers OpenAI/codex model IDs for the SDK
   'apps/web/src/lib/config-helpers.ts', // mission-config UI dropdown options
   'apps/web/src/app/api/models/route.ts', // filters legacy generations out of the live catalog
   'packages/core/model-capability-requirements.ts', // min-CLI-version floor per model: a registry keyed by model ID
+  'apps/web/src/app/app/dev/fixtures/ModelProvidersFixture.tsx', // dev-only Model providers fixture: shows how real tier model IDs map through an endpoint
   'scripts/lint-model-ids.ts', // this file: self-test fixtures deliberately contain literal model IDs to exercise the matcher
 ];
 

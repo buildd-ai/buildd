@@ -313,3 +313,117 @@ describe('buildFlowSeries: window edges', () => {
     ]);
   });
 });
+
+describe('buildFlowSeries: shipping without a release edge', () => {
+  const merged = (over: Partial<FlowWorkerRow> = {}) => worker({
+    workerId: 'w1', taskId: 't1', startedAt: T0, completedAt: T0 + H,
+    prNumber: 1, mergedAt: T0 + 2 * H, prLifecycleStatus: 'merged', prBaseRef: 'dev', ...over,
+  });
+
+  it('a merge ships with the first healthy release cut after it, even with no attribution row', () => {
+    const s = buildFlowSeries(input({
+      workers: [merged()],
+      releases: [{ id: 'r1', workspaceId: 'ws-a', version: 'v1', state: 'healthy', at: T0 + 5 * H, cutAt: T0 + 4 * H }],
+      releaseWorkspaceIds: ['ws-a'],
+    }));
+    expect(s.tasks[0].shippedAt).toBe(T0 + 5 * H);
+    expect(s.buckets[9].merged).toBe(0);
+    expect(s.headline.shippedTasks).toBe(1);
+  });
+
+  it('a release cut before the merge does not carry it', () => {
+    const s = buildFlowSeries(input({
+      workers: [merged()],
+      releases: [{ id: 'r1', workspaceId: 'ws-a', version: 'v1', state: 'healthy', at: T0 + 3 * H, cutAt: T0 + 1 * H }],
+      releaseWorkspaceIds: ['ws-a'],
+    }));
+    expect(s.tasks[0].shippedAt).toBeNull();
+    expect(s.buckets[9].merged).toBe(1);
+  });
+
+  it('skips a failed release and ships with the next healthy one', () => {
+    const s = buildFlowSeries(input({
+      workers: [merged()],
+      releases: [
+        { id: 'r1', workspaceId: 'ws-a', version: 'v1', state: 'failed', at: T0 + 4 * H, cutAt: T0 + 3 * H },
+        { id: 'r2', workspaceId: 'ws-a', version: 'v2', state: 'degraded', at: T0 + 7 * H, cutAt: T0 + 6 * H },
+      ],
+      releaseWorkspaceIds: ['ws-a'],
+    }));
+    expect(s.tasks[0].shippedAt).toBe(T0 + 7 * H);
+  });
+
+  it("another workspace's release does not ship it", () => {
+    const s = buildFlowSeries(input({
+      workers: [merged()],
+      releases: [{ id: 'r1', workspaceId: 'ws-b', version: 'v1', state: 'healthy', at: T0 + 5 * H, cutAt: T0 + 4 * H }],
+      releaseWorkspaceIds: ['ws-a', 'ws-b'],
+    }));
+    expect(s.tasks[0].shippedAt).toBeNull();
+  });
+
+  it('an attribution row wins when it is earlier', () => {
+    const s = buildFlowSeries(input({
+      workers: [merged()],
+      releases: [
+        { id: 'r1', workspaceId: 'ws-a', version: 'v1', state: 'healthy', at: T0 + 3 * H, cutAt: T0 + 1 * H },
+        { id: 'r2', workspaceId: 'ws-a', version: 'v2', state: 'healthy', at: T0 + 6 * H, cutAt: T0 + 5 * H },
+      ],
+      releaseTasks: [{ releaseId: 'r1', taskId: 't1' }],
+      releaseWorkspaceIds: ['ws-a'],
+    }));
+    expect(s.tasks[0].shippedAt).toBe(T0 + 3 * H);
+  });
+
+  it('a mission-branch merge ships with the first release after the mission reached trunk', () => {
+    const s = buildFlowSeries(input({
+      workers: [merged({ prBaseRef: 'mission/x', missionId: 'm1' })],
+      releases: [
+        { id: 'r1', workspaceId: 'ws-a', version: 'v1', state: 'healthy', at: T0 + 4 * H, cutAt: T0 + 3 * H },
+        { id: 'r2', workspaceId: 'ws-a', version: 'v2', state: 'healthy', at: T0 + 8 * H, cutAt: T0 + 7 * H },
+      ],
+      releaseWorkspaceIds: ['ws-a'],
+      missionTrunkMergedAt: { m1: T0 + 6 * H },
+    }));
+    expect(s.tasks[0].shippedAt).toBe(T0 + 8 * H);
+  });
+
+  it("a mission-branch merge whose mission hasn't reached trunk stays merged", () => {
+    const s = buildFlowSeries(input({
+      workers: [merged({ prBaseRef: 'mission/x', missionId: 'm1' })],
+      releases: [{ id: 'r1', workspaceId: 'ws-a', version: 'v1', state: 'healthy', at: T0 + 4 * H, cutAt: T0 + 3 * H }],
+      releaseWorkspaceIds: ['ws-a'],
+    }));
+    expect(s.tasks[0].shippedAt).toBeNull();
+    expect(s.buckets[9].merged).toBe(1);
+  });
+});
+
+describe('buildFlowSeries: agent time of workers that never recorded an end', () => {
+  it("caps a finished worker with no end time instead of running it until its row's last update", () => {
+    const s = buildFlowSeries(input({
+      window: { from: T0, to: T0 + 400 * H },
+      now: T0 + 400 * H,
+      workers: [worker({ workerId: 'w1', taskId: 't1', status: 'failed', taskStatus: 'completed', startedAt: T0, completedAt: null, updatedAt: T0 + 300 * H })],
+    }));
+    expect(s.tasks[0].agentHours).toBeLessThanOrEqual(8);
+    expect(s.headline.inFlightHours + s.headline.otherHours).toBeLessThanOrEqual(8);
+  });
+
+  it('keeps a short unended run at its real length', () => {
+    const s = buildFlowSeries(input({
+      workers: [worker({ workerId: 'w1', taskId: 't1', status: 'failed', taskStatus: 'completed', startedAt: T0, completedAt: null, updatedAt: T0 + 2 * H })],
+    }));
+    expect(s.tasks[0].agentHours).toBeCloseTo(2, 5);
+  });
+
+  it('counts each worker once even when two rows share a task', () => {
+    const s = buildFlowSeries(input({
+      workers: [
+        worker({ workerId: 'w1', taskId: 't1', startedAt: T0, completedAt: T0 + H }),
+        worker({ workerId: 'w1', taskId: 't1', startedAt: T0, completedAt: T0 + H }),
+      ],
+    }));
+    expect(s.tasks[0].agentHours).toBeCloseTo(1, 5);
+  });
+});
