@@ -31,7 +31,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { SNAPSHOT_BUCKET, deployNames, describePlan, planDeploy, renderWranglerConfig, type DeployNames, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
+import { SNAPSHOT_BUCKET, containerClasses, deployNames, describePlan, planDeploy, renderWranglerConfig, type DeployNames, type DeployStep, type ObservedWebhook } from '../src/deploy-plan';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const APP_DIR = join(dirname(new URL(import.meta.url).pathname), '..');
@@ -190,8 +190,11 @@ async function main() {
 
   let names: DeployNames;
   try { names = deployNames(args.name); } catch (err) { die((err as Error).message); }
+  const baseConfig = readFileSync(join(APP_DIR, 'wrangler.jsonc'), 'utf8');
+  // Both container classes (standard and large), as the deploy will create them.
+  const classes = containerClasses(baseConfig);
   if (names.custom) {
-    writeFileSync(join(APP_DIR, GENERATED_CONFIG), renderWranglerConfig(readFileSync(join(APP_DIR, 'wrangler.jsonc'), 'utf8'), names));
+    writeFileSync(join(APP_DIR, GENERATED_CONFIG), renderWranglerConfig(baseConfig, names));
     configArgs = ['--config', GENERATED_CONFIG];
     console.log(`worker: ${names.worker} (bucket ${names.bucket}, config ${GENERATED_CONFIG})`);
   }
@@ -229,7 +232,7 @@ async function main() {
   });
 
   console.log(`${args.dryRun ? 'plan (dry run, nothing changed)' : 'plan'}:`);
-  for (const line of describePlan(plan, names)) console.log(`  ${line}`);
+  for (const line of describePlan(plan, names, classes)) console.log(`  ${line}`);
   if (!plan.ok) process.exit(1);
   if (args.dryRun) return;
 
